@@ -262,9 +262,9 @@ def test_preview_warm_cache_avoids_reexecuting_representative_dag(
     assert warm[_TARGET_NODE].row_count == _ROW_LIMIT
 
     assert node_calls == Counter(dict.fromkeys(_EXPECTED_NODE_IDS, 1))
-    preview_fp = _preview_cache.fingerprint
+    preview_fp = _preview_cache.most_recent_key
     assert preview_fp is not None
-    cache_entry = _preview_cache.try_get(preview_fp)
+    cache_entry = _preview_cache.get(preview_fp)
     assert cache_entry is not None
     assert tuple(cache_entry["order"]) == _EXPECTED_NODE_IDS
     assert set(cache_entry["eager_outputs"]) == {_TARGET_NODE}
@@ -364,9 +364,9 @@ def test_trace_reuses_preview_cache_then_hits_trace_cache(
     preview_lookups: list[str] = []
 
     class RecordingPreview:
-        def try_get(self, fingerprint: str) -> dict[str, Any] | None:
+        def get(self, fingerprint: str) -> dict[str, Any] | None:
             preview_lookups.append(fingerprint)
-            return _preview_cache.try_get(fingerprint)
+            return _preview_cache.get(fingerprint)
 
     preview_reader = RecordingPreview()
 

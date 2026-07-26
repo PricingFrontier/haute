@@ -1612,7 +1612,7 @@ describe("usePipelineAPI", () => {
 
   it("sets nodeIdCounter to 0 when no nodes have numeric suffixes", async () => {
     mockLoad.mockResolvedValue({
-      nodes: [makeNode("legacy_node")],
+      nodes: [makeNode("plain_node")],
       edges: [],
     })
     const params = makeParams()

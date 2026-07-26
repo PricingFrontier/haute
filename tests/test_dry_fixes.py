@@ -288,9 +288,7 @@ class TestFinalizeFrontier:
                     "mode": "online",
                     "constraints": {"loss": {"max": 1.05}},
                     "frontier_enabled": True,
-                    # Per the absolute-range design, frontier_ranges is required;
-                    # the previous test relied on legacy auto-derivation that
-                    # was removed when ranges stopped being baseline multipliers.
+                    # The absolute-range design requires frontier_ranges.
                     "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
                 },
             }
@@ -343,8 +341,7 @@ class TestFinalizeFrontier:
                     "mode": "ratebook",
                     "constraints": {"loss": {"max": 1.05}},
                     "frontier_enabled": True,
-                    "frontier_min": 0.8,
-                    "frontier_max": 1.1,
+                    "frontier_ranges": {"loss": {"min": 0.8, "max": 1.1}},
                     "frontier_steps": 3,
                 },
             }

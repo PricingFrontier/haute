@@ -284,12 +284,10 @@ def _preview_supersession_key(
         str(row_limit),
         "requested_preview_columns",
         *requested_columns,
-        # A different frame selection is a DISTINCT request, not a newer
-        # version of the same one — so frame B's request must not cancel
-        # frame A's mid-flight. "" reproduces the legacy first-frame key
-        # exactly for single-frame / default-frame previews.
+        # A different frame selection is a distinct request, not a newer
+        # version of the same one.
         "port_label",
-        port_label or "",
+        repr(port_label),
     )
 
 
@@ -543,10 +541,7 @@ async def trace_row(body: TraceRequest) -> JSONResponse:
                         row_values=body.row_values,
                         # Inject the executor's preview cache explicitly so the
                         # trace module is not coupled to a private singleton on
-                        # another module.  ``FingerprintCache``
-                        # already satisfies the :class:`~haute.trace.PreviewReader`
-                        # protocol - its ``try_get`` returns the slot dict on hit
-                        # or ``None`` on miss.
+                        # another module.
                         preview=_preview_cache,
                         fingerprint_memo=fingerprint_memo,
                         execution_context=trace_context,

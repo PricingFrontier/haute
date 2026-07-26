@@ -2,7 +2,7 @@
 
 Covers:
   - _prune_live_switch_edges  — scenario-based edge pruning
-  - _prepare_graph            — topo sort, parent building, id_to_name
+  - prepare_graph             — topo sort, parent building, id_to_name
   - _execute_lazy             — lazy execution path
   - _build_funcs              — function building for eager execution
   - _execute_eager_core       — eager execution with swallow_errors, timings, memory
@@ -23,7 +23,6 @@ from haute._execute_lazy import (
     _execute_eager_core,
     _execute_lazy,
     _extract_error_line,
-    _prepare_graph,
     _prune_live_switch_edges,
 )
 from haute._types import (
@@ -197,7 +196,7 @@ class TestPruneLiveSwitchEdges:
 
 
 # ===========================================================================
-# _prepare_graph
+# prepare_graph
 # ===========================================================================
 
 
@@ -207,21 +206,21 @@ class TestPrepareGraph:
             nodes=[_source_node("a"), _transform_node("b")],
             edges=[_e("a", "b")],
         )
-        node_map, order, parents, id_to_name = _prepare_graph(g)
-        assert set(order) == {"a", "b"}
-        assert parents["b"] == ["a"]
-        assert parents["a"] == []
-        assert id_to_name["a"] == "a"
-        assert id_to_name["b"] == "b"
+        prepared = projection_planner.prepare_graph(g)
+        assert set(prepared.order) == {"a", "b"}
+        assert prepared.parents_of["b"] == ["a"]
+        assert prepared.parents_of["a"] == []
+        assert prepared.id_to_name["a"] == "a"
+        assert prepared.id_to_name["b"] == "b"
 
     def test_target_filters_to_ancestors(self):
         g = PipelineGraph(
             nodes=[_source_node("a"), _transform_node("b"), _transform_node("c")],
             edges=[_e("a", "b"), _e("a", "c")],
         )
-        _, order, _, _ = _prepare_graph(g, target_node_id="b")
-        assert set(order) == {"a", "b"}
-        assert "c" not in order
+        prepared = projection_planner.prepare_graph(g, target_node_id="b")
+        assert set(prepared.order) == {"a", "b"}
+        assert "c" not in prepared.order
 
     def test_scenario_passed_to_prune(self):
         """Verify scenario is used for live_switch pruning."""
@@ -233,9 +232,9 @@ class TestPrepareGraph:
             ],
             edges=[_e("live", "sw"), _e("batch", "sw")],
         )
-        _, order, parents, _ = _prepare_graph(g, source="live")
+        prepared = projection_planner.prepare_graph(g, source="live")
         # "batch" should not be a parent of "sw" in live scenario
-        assert "batch" not in parents.get("sw", [])
+        assert "batch" not in prepared.parents_of.get("sw", [])
 
     @pytest.mark.parametrize(
         ("scenario", "expected_edge_id"),
@@ -272,8 +271,8 @@ class TestPrepareGraph:
             ],
             edges=[],
         )
-        _, _, _, id_to_name = _prepare_graph(g)
-        assert id_to_name["n1"] == "My_Node"
+        prepared = projection_planner.prepare_graph(g)
+        assert prepared.id_to_name["n1"] == "My_Node"
 
 
 # ===========================================================================
@@ -358,17 +357,20 @@ class TestBuildFuncs:
     def test_builds_funcs_for_all_nodes(self):
         node_map = {"a": _source_node("a"), "b": _transform_node("b")}
         order = ["a", "b"]
-        parents_of = {"a": [], "b": ["a"]}
         id_to_name = {"a": "a", "b": "b"}
         all_parents = {"b": ["a"]}
+        edge = _e("a", "b")
+        incoming_edges = {"b": [edge]}
 
         funcs = _build_funcs(
             order,
             node_map,
-            parents_of,
             id_to_name,
             all_parents,
             _simple_build_fn,
+            incoming_edges_by_target=incoming_edges,
+            all_incoming_edges_by_target=incoming_edges,
+            all_node_map=node_map,
         )
         assert "a" in funcs
         assert "b" in funcs
@@ -388,10 +390,12 @@ class TestBuildFuncs:
         _build_funcs(
             ["a"],
             node_map,
-            {"a": []},
             {"a": "a"},
             {},
             build_fn,
+            incoming_edges_by_target={},
+            all_incoming_edges_by_target={},
+            all_node_map=node_map,
             row_limit=100,
         )
         assert captured_kwargs["a"]["row_limit"] == 100
@@ -407,10 +411,12 @@ class TestBuildFuncs:
         _build_funcs(
             ["a"],
             node_map,
-            {"a": []},
             {"a": "a"},
             {},
             build_fn,
+            incoming_edges_by_target={},
+            all_incoming_edges_by_target={},
+            all_node_map=node_map,
             source="test_batch",
         )
         assert captured_kwargs["a"]["source"] == "test_batch"

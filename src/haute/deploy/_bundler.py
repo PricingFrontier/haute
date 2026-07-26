@@ -225,7 +225,7 @@ def _verify_static_input_schema(
             config, base_dir=pipeline_dir, profile=ExecutionProfile.DEPLOY_BATCH
         )
         frame.collect_schema()
-        streaming_collect(frame.head(1), profile=ExecutionProfile.DEPLOY_BATCH)
+        streaming_collect(frame.head(1))
     except Exception as exc:
         raise DeployError(
             f"Could not validate static Data Input node {node_id!r} against "

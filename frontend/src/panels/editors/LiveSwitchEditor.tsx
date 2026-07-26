@@ -62,7 +62,7 @@ export default function LiveSwitchEditor({
                 data-testid={`live-switch-input-${src.edgeId}`}
                 className="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs"
                 style={{
-                  background: isActive ? withAlpha(accentColor, 0.1) : 'var(--bg-surface)',
+                  background: isActive ? withAlpha(accentColor, 0.1) : 'var(--bg-panel)',
                   border: isActive ? `1px solid ${withAlpha(accentColor, 0.3)}` : '1px solid var(--border)',
                 }}
               >

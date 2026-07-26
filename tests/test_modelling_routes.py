@@ -61,7 +61,7 @@ def _completed_train_result() -> object:
         feature_importance=[],
         model_path="outputs/test_model.cbm",
         train_rows=48,
-        test_rows=12,
+        validation_rows=12,
         features=["x1", "x2"],
         cat_features=[],
     )
@@ -305,7 +305,7 @@ class TestTrainEndpoint:
         result = status["result"]
         assert result["metrics"]
         assert result["train_rows"] > 0
-        assert result["test_rows"] > 0
+        assert result["validation_rows"] > 0
         # Should have ave_per_feature for the 2 features (x1, x2)
         assert "ave_per_feature" in result
         assert isinstance(result["ave_per_feature"], list)
@@ -471,7 +471,7 @@ class TestTrainBackgroundLaunchFailures:
                     feature_importance=[],
                     model_path=str(model_path),
                     train_rows=10,
-                    test_rows=0,
+                    validation_rows=0,
                     features=["x"],
                     cat_features=[],
                 )
@@ -1047,7 +1047,7 @@ class TestMlflowLogSuccess:
             metrics={"gini": 0.85, "rmse": 0.12},
             model_path="/tmp/model.cbm",
             train_rows=80,
-            test_rows=20,
+            validation_rows=20,
         )
         _store.jobs["test_log"] = {
             "status": "completed",
@@ -1604,17 +1604,6 @@ class TestValidateConfig:
             )
         assert exc_info.value.status_code == 400
         assert "family" in exc_info.value.detail.lower()
-
-    def test_glm_family_in_params_only_passes(self):
-        """params["family"] wins over top-level (build_train_params precedence)."""
-        TrainService._validate_config(
-            {
-                "target": "y",
-                "algorithm": "glm",
-                "all_factors": True,
-                "params": {"family": "poisson"},
-            }
-        )
 
     def test_glm_empty_factors_without_all_raises_400(self):
         """An empty factor set must not silently auto-term over every column."""

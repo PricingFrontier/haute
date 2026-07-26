@@ -271,6 +271,8 @@ async def mlflow_check() -> MlflowCheckResponse:
     if importlib.util.find_spec("mlflow") is None:
         return MlflowCheckResponse(
             mlflow_installed=False,
+            mlflow_importable=False,
+            tracking_configured=False,
             detail="MLflow package is not installed",
         )
 
@@ -397,7 +399,7 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             algorithm=config.get("algorithm", "catboost"),
             task=config.get("task", "regression"),
             train_rows=result.train_rows,
-            test_rows=result.test_rows,
+            validation_rows=result.validation_rows,
             holdout_rows=result.holdout_rows,
             features=features,
             split_config=config.get("split", {}),

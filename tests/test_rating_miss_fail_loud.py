@@ -41,8 +41,7 @@ from haute._rating import (
     apply_rating_step_from_config,
 )
 from haute._rating_step_config import (
-    compact_rating_step_config_for_sidecar,
-    expand_rating_step_config_from_sidecar,
+    normalise_rating_step_config,
 )
 from haute.executor import _build_node_fn
 from haute.graph_utils import GraphNode, NodeData
@@ -358,8 +357,8 @@ class TestOptInNeutral:
     def test_on_missing_round_trips_through_sidecar(self) -> None:
         """The opt-in key must survive compact -> JSON -> expand unchanged."""
         config = _age_region_config(onMissing="neutral")
-        compacted = compact_rating_step_config_for_sidecar(config)
-        rehydrated = expand_rating_step_config_from_sidecar(json.loads(json.dumps(compacted)))
+        compacted = normalise_rating_step_config(config)
+        rehydrated = normalise_rating_step_config(json.loads(json.dumps(compacted)))
         assert rehydrated["tables"][0]["onMissing"] == "neutral"
         with structlog.testing.capture_logs() as logs:
             out = apply_rating_step_from_config(_renamed_band_frame(), rehydrated).collect()

@@ -450,12 +450,8 @@ class TestSaveSidecar:
     def test_source_keys_round_trip_verbatim(self, tmp_path):
         """Source keys survive save→load byte-for-byte, case included.
 
-        The frontend now mints source keys with the blessed ``sanitizeName``
-        (case-preserving — the old fold lowercased, so ``My_Src`` is a new
-        key shape on disk). The sidecar layer must treat keys as opaque
-        strings in both directions: no folding, no reformatting, membership
-        checks only. Legacy lowercase keys and new case-preserved keys must
-        coexist unchanged.
+        The sidecar treats source keys as opaque strings in both directions:
+        no folding or reformatting, only exact membership checks.
         """
         py_path = tmp_path / "pipeline.py"
         keys = ["live", "my_src", "My_Src", "node_2024"]
@@ -1156,36 +1152,6 @@ class TestParsePipelineToGraph:
 
         node = next(n for n in graph.nodes if n.id == "submodel__model_stuff")
         assert node.position == {"x": 700.0, "y": 800.0}
-
-    def test_legacy_bare_name_submodel_position_still_loads(self, tmp_path):
-        """Sidecars written before the fix keyed submodel positions by the
-        bare ``sanitize(label)``.  The load path must fall back to that legacy
-        key so existing pipelines don't lose submodel positions on first reload.
-        """
-        from haute.routes._helpers import parse_pipeline_to_graph
-
-        py_path = tmp_path / "pipeline.py"
-        py_path.write_text("# parsed back via patched parser\n")
-        # Legacy key shape: bare name, no submodel__ prefix.
-        py_path.with_suffix(".haute.json").write_text(
-            json.dumps({"positions": {"model_stuff": {"x": 12.0, "y": 34.0}}})
-        )
-
-        parsed = PipelineGraph(
-            nodes=[
-                GraphNode(
-                    id="submodel__model_stuff",
-                    position={"x": 0.0, "y": 0.0},
-                    data=NodeData(label="model_stuff", nodeType=NodeType.SUBMODEL),
-                ),
-            ],
-            edges=[],
-        )
-        with patch("haute.parser.parse_pipeline_file", return_value=parsed):
-            graph = parse_pipeline_to_graph(py_path)
-
-        node = next(n for n in graph.nodes if n.id == "submodel__model_stuff")
-        assert node.position == {"x": 12.0, "y": 34.0}
 
     def test_sources_without_live_get_live_prepended(self, tmp_path):
         """When sidecar sources list does not contain 'live', it is prepended."""

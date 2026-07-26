@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_submodel_graph.py` | Shared helpers: build a `SUBMODEL` placeholder node, classify cross-boundary edges into input/output ports, rewire edges to/from a placeholder. Used by both the parser's hierarchical merge and the GUI create-submodel operation. |
-| `src/haute/_submodel_paths.py` | Resolve a submodel file reference (`modules/<name>.py`) to an absolute path plus its config base directory, honouring pipeline-local vs. project-root precedence. |
+| `src/haute/_submodel_paths.py` | Resolve a submodel file reference (`modules/<name>.py`) relative to the active pipeline directory and return that directory as its config base. |
 | `src/haute/_flatten.py` | Dissolve one named submodel or every submodel into a flat graph: inline stored child nodes/internal edges, consume boundary handles, restore edge-join target roles, deduplicate edges, and retain metadata for untargeted submodels. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
 | `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): `POST /create`, `GET /{name}`, `POST /dissolve`. Wires validation, the pure transform, and the shared save transaction together; owns all file I/O and HTTP error mapping. |
@@ -61,8 +61,8 @@ what the type constructors enforce.
 
 ### `classify_ports(cross_edges, child_node_ids)`
 
-Iterates `cross_edges` (accepts 2-, 3-, or 4-tuples — only `edge[0]`/`edge[1]`
-are read, extra fields such as source-port are ignored here) and buckets each
+Iterates canonical `GraphEdge` instances (reading `edge.source` and
+`edge.target`) and buckets each
 into `input_ports` (target inside, source outside) and/or `output_ports`
 (source inside, target outside) — a single node can land in both lists if it
 has both directions of cross-boundary edge. Both lists are order-preserving
@@ -83,8 +83,8 @@ For each edge, classify `src_inside`/`tgt_inside` against `child_node_ids`:
   replaced authored source handle moves to `sourcePort`.
 - neither inside → passed through unchanged.
 
-Bare rewired edges retain the legacy deterministic id. Ported boundary ids
-add a digest of the authored source/target ports, so edges sharing endpoints
+Every rewired boundary id appends a deterministic digest of the authored
+source/target ports (including when both are absent), so edges sharing endpoints
 but carrying distinct hidden handles remain unique. Cross-boundary
 reconstruction likewise deduplicates only an exact endpoint-and-authored-port
 identity through hierarchical merge and flattening.
@@ -93,26 +93,14 @@ identity through hierarchical merge and flattening.
 
 1. `resolved_root = project_root.resolve()`; `active_dir = (pipeline_dir or
    project_root).resolve()`.
-2. Build `local_path = (active_dir / rel_path).resolve()` and `project_path =
-   (resolved_root / rel_path).resolve()`.
-3. For **both** candidates: if not `is_relative_to(resolved_root)`, raise
-   `ValueError` immediately (before any filesystem check) — this makes both
-   returned-path branches below unconditionally safe.
-4. If `local_path.is_file()`: return `(local_path, active_dir)` — the
-   pipeline-local module wins when it actually exists.
-5. Elif `project_path.is_relative_to(active_dir)`: return `(project_path,
-   active_dir)` — an explicit project-root-prefixed reference that still
-   happens to live under the active pipeline directory keeps that directory
-   as its config base.
-6. Else: return `(project_path, resolved_root)` — legacy single-file-project
-   fallback; the config base is the project root, not the (irrelevant)
-   pipeline directory.
+2. Build `submodel_path = (active_dir / rel_path).resolve()`.
+3. If `submodel_path` is not below `resolved_root`, raise `ValueError`.
+4. Return `(submodel_path, active_dir)`.
 
 `resolve_submodel_by_name(name, *, pipeline_dir, project_root)` is a thin
-wrapper calling the above with `rel_path=f"modules/{name}.py"` — this is the
-exact preference order `_parser_submodels.py` uses for `pipeline.submodel()`
-imports, so drill-down and the actually-loaded pipeline never disagree about
-which file is authoritative.
+wrapper calling the above with `rel_path=f"modules/{name}.py"`. This is the
+same convention `_parser_submodels.py` uses for `pipeline.submodel()` imports,
+so drill-down and the actually-loaded pipeline never disagree.
 
 ### `flatten_graph(graph, target_name=None)`
 
@@ -158,7 +146,7 @@ the stricter prefix/membership validation gate.
 5. Classify `graph.edges` into `internal_edges` (both endpoints in
    `child_node_ids`), `cross_edges` (exactly one endpoint inside — XOR), and
    `external_edges` (neither endpoint inside).
-6. `classify_ports` on `cross_edges` (as `(source, target)` pairs) →
+6. `classify_ports` on canonical `cross_edges` →
    `input_ports`, `output_ports`.
 7. Build the submodel's internal graph dict: `{"nodes": [child node dumps],
    "edges": [internal edge dumps], "submodel_name": sm_name,
@@ -271,11 +259,8 @@ Acquires `save_lock`, runs the body in a threadpool:
   edge-join child recovers the base/join `targetHandle` through
   `build_edge_join_boundary_target_roles`; ordinary inbound boundaries clear the synthetic handle
   to `None`.
-- **`_submodel_paths.py`'s escapes-project-directory check runs against
-  *both* the local and project-root candidate paths, before either is
-  filesystem-checked** — a relative reference that would escape via either
-  resolution order fails closed rather than only checking the one that ends
-  up used.
+- **`_submodel_paths.py` checks the resolved pipeline-relative path before
+  returning it** — a relative reference that escapes the project fails closed.
 - **The Windows reserved-name check is platform-unconditional.** It runs on
   every OS at create time (not just Windows), so a pipeline saved on
   Linux/macOS cannot mint a submodel that becomes unloadable on a Windows
@@ -341,11 +326,10 @@ plus `tests/test_flatten.py`, with related parser coverage in
   endpoint has (`test_create_rejects_unallowlisted_codegen_path_and_rolls_back`);
   writing modules/configs beside a configured nested pipeline root rather
   than the project root; drill-down not-found, dotted/traversal-looking names
-  resolving safely to a plain `404` rather than an error, configured-root and
-  legacy-root-fallback module resolution matching the parser's own
-  preference; dissolve not-found, missing `source_file`, happy path
+  resolving safely to a plain `404` rather than an error, and configured-root
+  module resolution matching the parser; dissolve not-found, missing `source_file`, happy path
   (including `pipeline_description` forwarding), submodel file deletion,
-  configured-root vs. legacy-root deletion targeting, and two explicit
+  configured-root deletion targeting, and two explicit
   rollback tests (`test_dissolve_sidecar_failure_rolls_back_main_file`,
   `test_dissolve_delete_failure_rolls_back_main_file`) that force a mid-
   transaction failure and assert the parent file's original content and the
@@ -368,3 +352,10 @@ plus `tests/test_flatten.py`, with related parser coverage in
 Known coverage gap: `tests/test_flatten.py` pins silent dropping for a missing handle, but does not
 directly pin the wrong-prefix non-empty `removeprefix` case or an unknown derived child id. The
 adjacent `src/haute/_parser_submodels.py` remains owned and covered by expression-parsing.
+
+## Approved change contract — canonical-only submodel identity
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+submodel paths, boundary-edge identifiers, and sidecar lookup keys use only their current
+project-relative, port-aware representations. There is no fallback to a project-root path, bare
+sanitised sidecar key, unported edge tuple, or historical edge id.

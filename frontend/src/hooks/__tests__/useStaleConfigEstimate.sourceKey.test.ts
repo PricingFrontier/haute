@@ -81,22 +81,6 @@ describe("useStaleConfigEstimate staleness key completeness", () => {
     expect(result.current.isStale).toBe(true)
   })
 
-  it("treats a legacy cached result with no source field as stale", async () => {
-    const endpoint = vi.fn().mockResolvedValue(sampleEstimate)
-
-    const { result } = renderHook(() =>
-      useStaleConfigEstimate<FakeEstimate>(
-        "node_1",
-        config,
-        { configHash: hashConfig(config) },
-        endpoint,
-        { source: "source_a", structuralVersion: 1 },
-      ),
-    )
-
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(result.current.isStale).toBe(true)
-  })
 })
 
 describe("solve/train cached results carry source identity", () => {
@@ -136,7 +120,7 @@ describe("solve/train cached results carry source identity", () => {
       feature_importance: [],
       model_path: "m",
       train_rows: 1,
-      test_rows: 1,
+      validation_rows: 1,
     } as never)
 
     const cached = useNodeResultsStore.getState().trainResults["node_1"]

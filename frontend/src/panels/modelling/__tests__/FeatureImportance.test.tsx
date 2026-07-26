@@ -10,7 +10,7 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
     feature_importance: [],
     model_path: "/tmp/model.cbm",
     train_rows: 1000,
-    test_rows: 200,
+    validation_rows: 200,
     ...overrides,
   }
 }

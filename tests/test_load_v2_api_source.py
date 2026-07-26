@@ -489,14 +489,14 @@ def test_manifest_without_parquet_content_signature_is_invalid(tmp_path: Path) -
     meta = orjson.loads(meta_path.read_bytes())
     meta["tables"][0].pop("content_signature", None)
     meta_path.write_bytes(orjson.dumps(meta))
-    legacy_meta_bytes = meta_path.read_bytes()
+    unsigned_meta_bytes = meta_path.read_bytes()
 
     assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is False
 
     frame = load_v2_api_source(str(data), cfg)["root"].collect()
 
     assert frame["id"].to_list() == [9]
-    assert meta_path.read_bytes() == legacy_meta_bytes
+    assert meta_path.read_bytes() == unsigned_meta_bytes
 
     build_per_port_cache(str(data), cfg, cache_dir)
 
@@ -888,7 +888,7 @@ def test_load_per_port_cache_rejects_wrong_schema_mode(tmp_path: Path) -> None:
     cache_dir = _json_cache_dir(str(data), "working")
     meta_path = cache_dir / "meta.json"
     meta = orjson.loads(meta_path.read_bytes())
-    meta["schema_mode"] = "v1"
+    meta["schema_mode"] = "unexpected"
     meta_path.write_bytes(orjson.dumps(meta))
 
     assert load_per_port_cache(cache_dir, cfg) == {}
@@ -990,7 +990,7 @@ def test_is_per_port_cache_valid_false_states(tmp_path: Path) -> None:
     bad = tmp_path / "bad"
     bad.mkdir()
     (bad / "meta.json").write_bytes(
-        orjson.dumps({"schema_mode": "v1", "schema_fingerprint": "x", "tables": []}),
+        orjson.dumps({"schema_mode": "unexpected", "schema_fingerprint": "x", "tables": []}),
     )
     assert is_per_port_cache_valid(bad, cfg, data_path=data) is False
     # Byte-corrupt meta (interrupted external write).

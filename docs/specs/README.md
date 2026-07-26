@@ -19,6 +19,26 @@ the change has shipped. When implementation lands, the release step folds the ap
 into the normal present-tense sections, removes the temporary section, and verifies that code,
 tests, and specification agree.
 
+## Approved change contract — prerelease canonical-only formats
+
+The approved implementation plan is
+[ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
+Haute is prerelease software with no external compatibility obligation. Each boundary therefore
+accepts exactly its current canonical Haute representation. Production code must not retain an
+obsolete Haute format through conversion, fallback, deprecated aliases, temporary
+response keys, old generated-code recognition, warning-only handling, or historical-path cleanup.
+
+The implementation has no branches or diagnostics that recognise historical Haute input. Such
+input has no special status and is subject only to the ordinary validation of the current
+canonical schema. All maintained call sites use current symbols and old symbols are removed.
+Compatibility required for supported Python/platform/browser/dependency versions and explicitly
+current public aliases is not historical Haute-format support and remains in scope.
+
+Acceptance is a repository-wide executable inventory: migration-specific tests and fixtures are
+deleted, canonical inputs remain green, maintained call-site searches cover removed internals,
+and residual scans contain no unexplained executable legacy/backward-compatibility path. Owning
+component specs state their canonical formats before the corresponding production changes.
+
 ## System overview
 
 A Haute pipeline is a directed acyclic graph of nodes, authored as a decorated Python file

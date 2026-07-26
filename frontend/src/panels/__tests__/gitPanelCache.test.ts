@@ -32,8 +32,6 @@ const entryFor = (branch: string): BranchHistoryEntry => {
     milestonesJson: serializePayload(milestones),
     pending,
     pendingJson: serializePayload(pending),
-    forkBranches: [],
-    forkBranchesJson: serializePayload([]),
   }
 }
 

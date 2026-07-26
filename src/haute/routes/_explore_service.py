@@ -559,7 +559,6 @@ def _build_frame_stats(
 
     aggregate_row = streaming_collect(
         lf.select(aggregations),
-        profile=ExecutionProfile.EXPLORE_ANALYSIS,
         execution_context=execution_context,
     ).row(0, named=True)
 
@@ -630,17 +629,6 @@ def _build_frame_stats(
             categorical_values_by_column,
         ),
     )
-
-
-def _build_column_stats(
-    lf: pl.LazyFrame,
-    schema: pl.Schema,
-    *,
-    execution_context: ExecutionContext,
-) -> list[ExploreColumnStat]:
-    """Compute per-column schema stats for tests and legacy internal callers."""
-
-    return _build_frame_stats(lf, schema, execution_context=execution_context).columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -737,8 +725,6 @@ class ExploreService:
         return self.status(job_id)
 
     def _prepare_spec(self, body: ExploreRunRequest) -> ExploreCacheSpec:
-        from haute.executor import ENFORCE_CONTRACTS
-
         graph = body.graph
         node = find_typed_node(graph, body.node_id, NodeType.EXPLORE, "explore")
         parents = graph.parents_of.get(node.id, [])
@@ -764,7 +750,7 @@ class ExploreService:
             profile=ExecutionProfile.EXPLORE_ANALYSIS,
             input_fingerprint=input_fingerprint,
             target_node_id=node.id,
-            enforce_contracts=ENFORCE_CONTRACTS,
+            enforce_contracts=True,
             preamble_ns_supplied=bool(graph.preamble),
             streaming_chunk_size=body.streaming_chunk_size or DEFAULT_STREAMING_CHUNK_SIZE,
         )
@@ -893,7 +879,6 @@ class ExploreService:
         execution_context: ExecutionContext,
     ) -> ExploreCacheReport:
         from haute.executor import (
-            ENFORCE_CONTRACTS,
             _build_node_fn,
             _compile_preamble,
             _pipeline_dir,
@@ -910,7 +895,7 @@ class ExploreService:
             target_node_id=spec.node_id,
             preamble_ns=preamble_ns or None,
             source=body.source,
-            enforce_contracts=ENFORCE_CONTRACTS,
+            enforce_contracts=True,
             execution_context=execution_context,
             dataframe_cache_request=spec.dataframe_cache_request,
         )

@@ -253,29 +253,6 @@ class TestSplitConfiguration:
         assert repr(DEFAULT_SPLIT_DICT) in script
 
 
-class TestCVFolds:
-    """``cv_folds`` was removed in Phase 2 Package 2C-5 — the generated
-    script must never contain it, even if an obsolete config dict still
-    carries the key.
-    """
-
-    def test_cv_folds_never_rendered(self):
-        # Legacy config might still have the key; the generator must
-        # strip it rather than emit an unknown-kwarg call.
-        config = {**MINIMAL_CONFIG, "cv_folds": 5}
-        script = generate_training_script(config, "d.parquet")
-        assert "cv_folds" not in script
-
-    def test_cv_folds_excluded_when_absent(self):
-        script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        assert "cv_folds" not in script
-
-    def test_cv_folds_excluded_when_none(self):
-        config = {**MINIMAL_CONFIG, "cv_folds": None}
-        script = generate_training_script(config, "d.parquet")
-        assert "cv_folds" not in script
-
-
 class TestMLflow:
     def test_mlflow_experiment_included(self):
         config = {**MINIMAL_CONFIG, "mlflow_experiment": "/Shared/test"}
@@ -448,12 +425,6 @@ class TestGLMExportParity:
         assert "'link': 'log'" in script
         assert "'terms':" in script
 
-    def test_params_dict_values_win_over_top_level(self):
-        config = {**self.GLM_CONFIG, "params": {"family": "gaussian"}}
-        script = generate_training_script(config, "d.parquet")
-        job = self._script_job(script)
-        assert job.params["family"] == "gaussian"
-
     def test_glm_offset_merged_into_params_and_kwarg(self):
         config = {**self.GLM_CONFIG, "offset": "log_exposure"}
         script = generate_training_script(config, "d.parquet")
@@ -483,19 +454,6 @@ class TestGLMExportParity:
         assert job.params["family"] == "tweedie"
         assert job.params["var_power"] == 1.8
         assert job.variance_power == 1.8
-
-    def test_glm_variance_power_alias_routes_to_param_and_job_kwarg(self):
-        config = {
-            **self.GLM_CONFIG,
-            "family": "tweedie",
-            "link": "log",
-            "variance_power": 1.7,
-        }
-        script = generate_training_script(config, "d.parquet")
-        job = self._script_job(script)
-        assert job.params["family"] == "tweedie"
-        assert job.params["var_power"] == 1.7
-        assert job.variance_power == 1.7
 
 
 class TestPreviouslyDroppedTrainingKwargs:

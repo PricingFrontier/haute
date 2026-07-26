@@ -115,3 +115,14 @@ This contract implements the optimiser portions of ROAD-UI-02 and ROAD-UI-03 in 
   Browser evidence pins saved constraint/range fields across reload, frontier point identity,
   local apply identity, and the intercepted MLflow request/response identity without a live
   service.
+
+## Approved change contract — prerelease canonical frontier-range editor
+
+This contract implements the optimiser-editor portion of
+[ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
+The panel reads and writes only per-constraint `frontier_ranges`. It does not use global
+`frontier_min`/`frontier_max` as display defaults and does not mirror a single constraint back to
+those fields. Existing auto-range and validation behaviour remains on the canonical map.
+
+Component tests assert that range edits preserve unrelated constraint ranges and persist only the
+canonical map.

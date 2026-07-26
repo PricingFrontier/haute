@@ -11,19 +11,17 @@ Modules:
     _cache.py        — graph_fingerprint
     _io.py           — read_source, read_data_source, load_external_object
     _flatten.py      — flatten_graph
-    _execute_lazy.py — _prepare_graph, _execute_lazy
+    _execute_lazy.py — _execute_lazy
 """
 
 from haute._cache import graph_fingerprint as graph_fingerprint
 from haute._execute_lazy import EagerResult as EagerResult
 from haute._execute_lazy import _execute_eager_core as _execute_eager_core
 from haute._execute_lazy import _execute_lazy as _execute_lazy
-from haute._execute_lazy import _prepare_graph as _prepare_graph
 from haute._execute_lazy import (
     _prune_live_switch_edges as _prune_live_switch_edges,
 )
 from haute._flatten import flatten_graph as flatten_graph
-from haute._graph_utils import _resolve_sink_path as _resolve_sink_path
 from haute._graph_utils import _sanitize_func_name as _sanitize_func_name
 from haute._graph_utils import build_instance_mapping as build_instance_mapping
 from haute._graph_utils import resolve_orig_source_names as resolve_orig_source_names

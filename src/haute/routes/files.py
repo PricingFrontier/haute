@@ -118,10 +118,9 @@ def _browse_files_blocking(
 
 def _collect_file_preview(lf: pl.LazyFrame) -> pl.DataFrame:
     """Collect a small schema-preview frame through the profiled helper."""
-    from haute._execution_context import ExecutionProfile
     from haute._polars_utils import streaming_collect
 
-    return streaming_collect(lf, profile=ExecutionProfile.PREVIEW_EAGER)
+    return streaming_collect(lf)
 
 
 def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:

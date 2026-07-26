@@ -350,7 +350,7 @@ class TestScoreTestQuotesThreadsArtifacts:
 
         quotes = tmp_path / "quotes"
         quotes.mkdir()
-        (quotes / "a.json").write_text(json.dumps([{"x": 1.0}]))
+        (quotes / "a.json").write_text(json.dumps([{"input": {"x": 1.0}}]))
 
         model = tmp_path / "model.cbm"
         model.write_bytes(b"model-bytes")

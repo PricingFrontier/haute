@@ -164,7 +164,7 @@ class TestTrainingFeatureSelection:
             {
                 "algorithm": "glm",
                 "target": "target",
-                "params": {"terms": {"feature_a": {}, "feature_b": {}}},
+                "terms": {"feature_a": {}, "feature_b": {}},
             },
             ["feature_b", "target", "feature_a", "unused"],
         )
@@ -188,7 +188,7 @@ class TestTrainingFeatureSelection:
                 {
                     "algorithm": "glm",
                     "target": "target",
-                    "params": {"terms": {"missing": {}}},
+                    "terms": {"missing": {}},
                 },
                 ["target", "feature"],
             )

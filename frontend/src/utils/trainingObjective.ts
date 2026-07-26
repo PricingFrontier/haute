@@ -14,21 +14,13 @@
 
 export type ObjectiveIssue = { field: string; message: string }
 
-function firstSet(...values: unknown[]): unknown {
-  for (const value of values) {
-    if (value !== null && value !== undefined) return value
-  }
-  return undefined
-}
-
 export function trainingObjectiveIssue(
   config: Record<string, unknown>,
 ): ObjectiveIssue | null {
-  const params = (config.params as Record<string, unknown> | undefined) ?? {}
   const algorithm = String(config.algorithm ?? "catboost").toLowerCase()
 
   if (algorithm === "glm") {
-    const family = params.family ?? config.family
+    const family = config.family
     if (!family) {
       return {
         field: "distribution family",
@@ -38,7 +30,7 @@ export function trainingObjectiveIssue(
           "gaussian model.",
       }
     }
-    const varPower = firstSet(params.var_power, config.var_power, config.variance_power)
+    const varPower = config.var_power
     if (String(family).toLowerCase() === "tweedie" && varPower === undefined) {
       return {
         field: "Tweedie variance power",
@@ -47,7 +39,7 @@ export function trainingObjectiveIssue(
           "value would silently fit at power 1.5.",
       }
     }
-    const theta = firstSet(params.theta, config.theta)
+    const theta = config.theta
     if (String(family).toLowerCase() === "negbinomial" && theta === undefined) {
       return {
         field: "Neg. Binomial dispersion (theta)",
@@ -56,10 +48,8 @@ export function trainingObjectiveIssue(
           "the data — an unset value would silently fit at theta=1.0.",
       }
     }
-    const terms = firstSet(params.terms, config.terms) as
-      | Record<string, unknown>
-      | undefined
-    const allFactors = firstSet(params.all_factors, config.all_factors)
+    const terms = config.terms as Record<string, unknown> | undefined
+    const allFactors = config.all_factors
     const hasTerms = !!terms && Object.keys(terms).length > 0
     if (!hasTerms && !allFactors) {
       return {
@@ -69,8 +59,8 @@ export function trainingObjectiveIssue(
           "silently auto-build a term for every column.",
       }
     }
-    const regularization = firstSet(params.regularization, config.regularization)
-    const l1Ratio = firstSet(params.l1_ratio, config.l1_ratio)
+    const regularization = config.regularization
+    const l1Ratio = config.l1_ratio
     if (String(regularization ?? "").toLowerCase() === "elastic_net" && l1Ratio === undefined) {
       return {
         field: "elastic-net L1 ratio",
@@ -92,7 +82,7 @@ export function trainingObjectiveIssue(
         "under the library default.",
     }
   }
-  const variancePower = firstSet(config.variance_power, config.var_power)
+  const variancePower = config.variance_power
   if (String(lossFunction) === "Tweedie" && variancePower === undefined) {
     return {
       field: "Tweedie variance power",

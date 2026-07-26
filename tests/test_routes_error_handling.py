@@ -441,22 +441,6 @@ class TestSchemaBroadExceptionStructuralFix:
         assert error_events[-1].get("exc_info") is True
         assert error_events[-1].get("error_class") == "RuntimeError"
 
-    def _deprecated_schema_handler_logs_full_stack_trace_source_check(self) -> None:
-        import inspect
-
-        from haute.routes import files
-
-        src = inspect.getsource(files.get_schema)
-        # After the fix: the broad catch must hand the exception to
-        # structured logging with exc_info or use logger.exception so the
-        # stack trace is preserved server-side.
-        has_exc_info = "exc_info=True" in src or "logger.exception" in src
-        assert has_exc_info, (
-            "#24: get_schema's broad except must capture the full stack "
-            "trace via exc_info=True or logger.exception — currently the "
-            "real error is silenced."
-        )
-
 
 # ---------------------------------------------------------------------------
 # SPA catch-all must NOT swallow /api/* and /ws/* GET 404s as HTML

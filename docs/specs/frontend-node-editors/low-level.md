@@ -17,8 +17,8 @@
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
 | `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, cached capabilities, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, persisted/inferred schema conversion, reconciliation and row actions. |
-| `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/pathCanonicalWarning.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites, canonical-path hints and preview. |
-| `frontend/src/panels/editors/ColumnsTab.tsx`, `frontend/src/panels/editors/GroupedColumnsTab.tsx` | Generic flat/grouped column configuration. |
+| `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
+| `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx` | Explore-code and overview-card configuration. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
 | `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
@@ -206,7 +206,6 @@ ScenarioExpander, ModelScore, OptimiserApply, Banding, ExternalFile, ExploreCode
 hover suite) migrates its fixtures — a compile-time-loud migration, not a runtime fallback.
 
 Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
-`frontend/e2e/migration/v1-to-v2-node-continuity.spec.ts`,
 `frontend/e2e/persistence/api-input-render-gate.spec.ts`,
 `frontend/e2e/persistence/api-input-v2-native.spec.ts`, and
 `frontend/e2e/persistence/api-input-frame-alignment.spec.ts` (downstream frame-naming chips
@@ -322,3 +321,22 @@ The owned configuration-shape matrix is:
 - `WriteOutputArgs` adds `overwrite?: boolean` and serialises an explicit
   boolean. Tests reset the write store between cases and exercise unmount/
   remount while a deferred request is unresolved.
+
+## Approved change contract — prerelease canonical editor formats
+
+The target is defined in
+[the frontend node-editor high-level contract](high-level.md#approved-change-contract--prerelease-canonical-editor-formats).
+
+- `RatingStepEditor.tsx` removes `isLegacy`, reads only `combinedOutputs`, and sends only that key.
+- `OutputEditor.tsx` and `outputMappingSchema.ts` remove v1 classification/conversion and the
+  migration banner; the editor state is built only from canonical `outputMapping`, whose rows
+  carry required `source_port`, `source_column`, `output_path`, and `enabled` fields without
+  omitted-field defaults.
+- `ApiInputEditor.tsx` and `apiInputSchema.ts` remove pre-v2 key classification and conversion;
+  the editor state is built only from canonical `tables`.
+- `NODE_TYPE_META` creates rating and output nodes with only those canonical editor fields; new
+  nodes never begin life in an obsolete working-copy shape.
+- Optimiser Apply derives an MLflow selection's optimiser mode only from its persisted
+  `params.mode`; run metrics are not an alternate metadata format.
+- Migration-specific fixtures/tests are deleted. Canonical editor interaction tests remain
+  unchanged in intent.

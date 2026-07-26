@@ -95,7 +95,7 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{
           tables: [{
-            name: "Stale", factors: ["empty_one"], outputColumn: "factor", defaultValue: "1.0",
+            factors: ["empty_one"], outputColumn: "factor", defaultValue: "1.0",
             entries: [{ empty_one: "stale", value: 1.2 }],
           }],
         }}
@@ -138,63 +138,36 @@ describe("RatingStepEditor", () => {
     expect(screen.queryByPlaceholderText("Age Factor")).toBeNull()
   })
 
-  it("uses output columns as table selector labels and falls back to table number when blank", () => {
-    render(
-      <RatingStepEditor
-        config={{
-          tables: [
-            { name: "Legacy Age Name", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-            { name: "Legacy Blank Name", factors: [], outputColumn: "   ", defaultValue: "1.0", entries: [] },
-          ],
-        }}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByRole("button", { name: /^age_factor problem$/ })).toBeTruthy()
-    expect(screen.getByRole("button", { name: /^Table 2 problem$/ })).toBeTruthy()
-    expect(screen.queryByRole("button", { name: /Legacy Age Name/ })).toBeNull()
-    expect(screen.queryByRole("button", { name: /Legacy Blank Name/ })).toBeNull()
-  })
-
   it("shows healthy and problem status markers in the rating table selector", () => {
     render(
       <RatingStepEditor
         config={{
           tables: [
             {
-              name: "Healthy",
               factors: ["age_band"],
               outputColumn: "age_factor",
               defaultValue: "1.0",
               entries: [{ age_band: "young", value: 1.1 }],
             },
             {
-              name: "Blank Output",
               factors: ["age_band"],
               outputColumn: " ",
               defaultValue: "1.0",
               entries: [{ age_band: "young", value: 1.1 }],
             },
             {
-              name: "No Structure",
               factors: [],
               outputColumn: "region_factor",
               defaultValue: "1.0",
               entries: [],
             },
             {
-              name: "Duplicate A",
               factors: ["region"],
               outputColumn: "duplicate_factor",
               defaultValue: "1.0",
               entries: [{ region: "north", value: 1.0 }],
             },
             {
-              name: "Duplicate B",
               factors: ["region"],
               outputColumn: "duplicate_factor",
               defaultValue: "1.0",
@@ -223,16 +196,14 @@ describe("RatingStepEditor", () => {
       <RatingStepEditor
         config={{
           tables: [
-            { name: "Blank Output", factors: [], outputColumn: " ", defaultValue: "1.0", entries: [] },
+            { factors: [], outputColumn: " ", defaultValue: "1.0", entries: [] },
             {
-              name: "Duplicate A",
               factors: ["region"],
               outputColumn: "duplicate_factor",
               defaultValue: "1.0",
               entries: [{ region: "north", value: 1.0 }],
             },
             {
-              name: "Duplicate B",
               factors: ["region"],
               outputColumn: "duplicate_factor",
               defaultValue: "1.0",
@@ -259,7 +230,6 @@ describe("RatingStepEditor", () => {
 
   it("searches and selects rating tables when many are configured", () => {
     const tables = Array.from({ length: 24 }, (_, idx) => ({
-      name: `Legacy Table ${idx + 1}`,
       factors: ["age_band"],
       outputColumn: idx === 19 ? "telematics_adjustment" : `factor_${String(idx + 1).padStart(2, "0")}`,
       defaultValue: "1.0",
@@ -292,38 +262,12 @@ describe("RatingStepEditor", () => {
     expect(screen.getByLabelText("Output Column")).toHaveValue("telematics_adjustment")
   })
 
-  it("renders legacy tables without string outputColumn as blank output columns", () => {
-    render(
-      <RatingStepEditor
-        config={{
-          tables: [
-            { name: "Legacy Table", factors: [], defaultValue: "1.0", entries: [] },
-            { name: "Numeric Output", factors: [], outputColumn: 42, defaultValue: "1.0", entries: [] },
-          ],
-        }}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByRole("button", { name: /^Table 1 problem$/ })).toBeTruthy()
-    expect(screen.getByRole("button", { name: /^Table 2 problem$/ })).toBeTruthy()
-    expect(screen.queryByRole("button", { name: /Legacy Table/ })).toBeNull()
-    expect(screen.queryByRole("button", { name: /Numeric Output/ })).toBeNull()
-    expect(screen.getByLabelText("Output Column")).toHaveValue("")
-    expect(screen.getByLabelText("Output Column")).toHaveAttribute("aria-invalid", "true")
-  })
-
-  it("syncs the persisted table name from output column on blur for compatibility", () => {
+  it("persists only the output column on blur", () => {
     const onUpdate = vi.fn()
     render(
       <RatingStepEditor
         config={{
-          tables: [
-            { name: "Legacy Age Name", factors: [], outputColumn: "", defaultValue: "1.0", entries: [] },
-          ],
+          tables: [{ factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }],
         }}
         onUpdate={onUpdate}
         inputSources={[]}
@@ -337,36 +281,7 @@ describe("RatingStepEditor", () => {
     fireEvent.blur(outputColumnInput)
 
     expect(onUpdate).toHaveBeenCalledWith("tables", [
-      expect.objectContaining({ outputColumn: "age_factor", name: "age_factor" }),
-    ])
-  })
-
-  it("normalises legacy table names to the output column before later table edits", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        config={{
-          tables: [
-            { name: "Legacy Age Name", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-          ],
-        }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    const defaultInput = screen.getByDisplayValue("1.0")
-    fireEvent.change(defaultInput, { target: { value: "1.25" } })
-    fireEvent.blur(defaultInput)
-
-    expect(onUpdate).toHaveBeenCalledWith("tables", [
-      expect.objectContaining({
-        name: "age_factor",
-        outputColumn: "age_factor",
-        defaultValue: "1.25",
-      }),
+      expect.objectContaining({ outputColumn: "age_factor" }),
     ])
   })
 
@@ -476,24 +391,6 @@ describe("RatingStepEditor", () => {
     expect(screen.getByText("Polars Code")).toBeTruthy()
   })
 
-  it("keeps legacy blank combinedColumn configs in Tables mode", () => {
-    render(
-      <RatingStepEditor
-        config={{
-          tables: [{ name: "T1", factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }],
-          combinedColumn: "",
-        }}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText("Select at least one factor to populate the rating table")).toBeTruthy()
-  })
-
   it("'Select at least one factor' shown when no factors", () => {
     render(
       <RatingStepEditor
@@ -586,44 +483,6 @@ describe("RatingStepEditor", () => {
     expect(combinedOutputInput.getAttribute("placeholder")).toBeNull()
     expect(combinedOutputInput).toHaveAttribute("aria-invalid", "true")
     expect(screen.getByText("Combined output column is required")).toBeTruthy()
-  })
-
-  it("keeps legacy min/max combined columns on the legacy no-base path", () => {
-    const onUpdate = vi.fn()
-    render(
-      <RatingStepEditor
-        config={{
-          tables: [
-            { name: "T1", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-            { name: "T2", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
-          ],
-          operation: "min",
-          combinedColumn: "legacy_min",
-        }}
-        onUpdate={onUpdate}
-        inputSources={[]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.queryByLabelText("Base Value")).toBeNull()
-    expect(document.body.textContent || "").toContain("min(age_factor, region_factor)")
-
-    fireEvent.blur(screen.getByLabelText("Combined Output Column"))
-    expect(onUpdate).toHaveBeenCalledWith({
-      combinedColumn: "legacy_min",
-      operation: "min",
-    })
-
-    fireEvent.click(screen.getByLabelText("Add combined output"))
-    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      combinedColumn: "legacy_min",
-      operation: "min",
-      combinedOutputs: [
-        expect.objectContaining({ outputColumn: "combined_1" }),
-      ],
-    }))
   })
 
   it("surfaces invalid configured combined outputs without masking them", () => {
@@ -781,8 +640,8 @@ describe("RatingStepEditor", () => {
 
     // Should call onUpdate with tables array containing 2 tables
     expect(onUpdate).toHaveBeenCalledWith("tables", expect.arrayContaining([
-      expect.objectContaining({ name: "Table 1" }),
-      expect.objectContaining({ name: "Table 2" }),
+      expect.objectContaining({ outputColumn: "" }),
+      expect.objectContaining({ outputColumn: "" }),
     ]))
   })
 
@@ -790,8 +649,8 @@ describe("RatingStepEditor", () => {
     const onUpdate = vi.fn()
     const config = {
       tables: [
-        { name: "Legacy Table A", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-        { name: "Legacy Table B", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
+        { factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
+        { factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
       ],
     }
     render(
@@ -823,7 +682,7 @@ describe("RatingStepEditor", () => {
   it("cannot remove last table", () => {
     const config = {
       tables: [
-        { name: "Legacy Only Table", factors: [], outputColumn: "only_factor", defaultValue: "1.0", entries: [] },
+        { factors: [], outputColumn: "only_factor", defaultValue: "1.0", entries: [] },
       ],
     }
     render(
@@ -919,10 +778,9 @@ describe("RatingStepEditor", () => {
     )
     const operationSelect = screen.getByDisplayValue("× Multiply")
     fireEvent.change(operationSelect, { target: { value: "add" } })
-    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      operation: "add",
+    expect(onUpdate).toHaveBeenCalledWith({
       combinedOutputs: [expect.objectContaining({ operation: "add", baseValue: "0.0" })],
-    }))
+    })
   })
 
   it("removing the last combined output leaves the combined section empty", () => {
@@ -942,11 +800,7 @@ describe("RatingStepEditor", () => {
     )
 
     fireEvent.click(screen.getByLabelText("Remove combined output"))
-    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      combinedOutputs: [],
-      combinedColumn: "",
-      operation: "multiply",
-    }))
+    expect(onUpdate).toHaveBeenCalledWith({ combinedOutputs: [] })
   })
 
   it("supports multiple combined outputs with a banding-style selector row", () => {
@@ -1140,29 +994,6 @@ describe("RatingStepEditor", () => {
         ]),
       }),
     ]))
-  })
-
-  it("renders table selector options", () => {
-    const config = {
-      tables: [
-        { name: "Legacy Table A", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
-        { name: "Legacy Table B", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
-      ],
-    }
-    render(
-      <RatingStepEditor
-        config={config}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-    expect(screen.getByRole("button", { name: /^age_factor problem$/ })).toBeTruthy()
-    expect(screen.getByRole("button", { name: /^region_factor problem$/ })).toBeTruthy()
-    expect(screen.queryByRole("button", { name: /Legacy Table A/ })).toBeNull()
-    expect(screen.queryByRole("button", { name: /Legacy Table B/ })).toBeNull()
   })
 
   it("shows factor count label", () => {
@@ -1482,8 +1313,7 @@ describe("RatingStepEditor", () => {
         { name: "T1", factors: [], outputColumn: "age_factor", defaultValue: "1.0", entries: [] },
         { name: "T2", factors: [], outputColumn: "region_factor", defaultValue: "1.0", entries: [] },
       ],
-      operation: "multiply",
-      combinedColumn: "combined",
+      combinedOutputs: [{ outputColumn: "combined", operation: "multiply", baseValue: "1.0" }],
     }
     render(
       <RatingStepEditor

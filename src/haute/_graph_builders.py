@@ -137,32 +137,18 @@ def _extract_decorated_nodes(
 
 def _build_edges(
     raw_nodes: list[dict],
-    explicit_connect_pairs: (
-        list[tuple[str, str, str | None, str | None]]
-        | list[tuple[str, str, str | None]]
-        | list[tuple[str, str]]
-    ),
+    explicit_connect_pairs: list[tuple[str, str, str | None, str | None]],
 ) -> list[GraphEdge]:
     """Build GraphEdge models from explicit connect() calls and implicit param-name matching.
 
-    Accepts legacy 2-tuples, source-port 3-tuples, and full
-    ``(src, tgt, source_port, target_port)`` tuples. Port metadata is
-    lifted onto the corresponding React Flow handle fields.
+    Port metadata from each four-field tuple is lifted onto the corresponding
+    React Flow handle fields.
     """
     node_names = {n["func_name"] for n in raw_nodes}
     edges: list[GraphEdge] = []
     explicit_edges: set[tuple[str, str]] = set()
 
-    for edge_tuple in explicit_connect_pairs:
-        if len(edge_tuple) == 4:
-            src, tgt, source_port, target_port = edge_tuple
-        elif len(edge_tuple) == 3:
-            src, tgt, source_port = edge_tuple
-            target_port = None
-        else:
-            src, tgt = edge_tuple
-            source_port = None
-            target_port = None
+    for src, tgt, source_port, target_port in explicit_connect_pairs:
         if src in node_names and tgt in node_names:
             explicit_edges.add((src, tgt))
             edges.append(

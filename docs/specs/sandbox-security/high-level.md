@@ -120,9 +120,8 @@ Out of scope (owned elsewhere, linked where relevant):
   requires an explicit HTTP(S) Origin with the same scheme, normalized loopback host,
   and effective port as the request Host. The response is no-store and places the
   credential only in an HttpOnly, SameSite=Strict cookie. Protected API calls accept
-  that cookie or the legacy non-browser `x-haute-session-token` header; an absent
-  Origin is accepted only when one of those credentials is already valid. WebSocket
-  handshakes always require an explicit matching Origin and cookie/header credential.
+  only that cookie; an absent Origin is accepted only when the cookie is already valid.
+  WebSocket handshakes always require an explicit matching Origin and the cookie.
   Query-string token transport is unsupported. `OPTIONS` skips only the token check,
   never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` remains an explicit
   local development escape hatch; the loopback/forwarded-header gate remains active.

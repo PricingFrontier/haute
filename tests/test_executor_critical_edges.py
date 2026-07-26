@@ -173,7 +173,7 @@ def test_column_reference_extraction_handles_editor_config_shapes() -> None:
             "weight": "",
             "offset": "offset",
             "exclude": ["excluded", None, ""],
-            "factors": [{"column": "band"}, {"column": ""}, "legacy"],
+            "factors": [{"column": "band"}, {"column": ""}, "not-a-factor"],
             "tables": [{"factors": ["rating", "", 42]}, "not-a-table"],
             "output_column": "excluded",
             "outputColumn": "selected",

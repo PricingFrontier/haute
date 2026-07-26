@@ -8,10 +8,10 @@
 
 import { formatNumber } from "../../utils/formatValue"
 import { CHART_COLORS } from "../../theme/colors"
-import type { SolveResult } from "../OptimiserPreview"
+import type { OptimiserSolveResult } from "../../api/types"
 
 interface ConvergenceChartProps {
-  result: SolveResult
+  result: OptimiserSolveResult
 }
 
 export default function ConvergenceChart({ result }: ConvergenceChartProps) {

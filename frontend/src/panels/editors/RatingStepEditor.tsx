@@ -29,7 +29,6 @@ type CombinedOutput = {
   outputColumn: string
   operation: string
   baseValue: string
-  isLegacy?: boolean
 }
 
 const OPERATION_OPTIONS: { value: CombinedOperation; label: string }[] = [
@@ -55,40 +54,23 @@ function defaultBaseValue(operation: string): string {
 function resolveInitialSection(config: Record<string, unknown>): RatingSection {
   if (typeof config.code === "string" && config.code.trim()) return "code"
   if (Array.isArray(config.combinedOutputs) && config.combinedOutputs.length > 0) return "combined"
-  if (typeof config.combinedColumn === "string" && config.combinedColumn.trim()) return "combined"
   return "tables"
 }
 
 function normaliseCombinedOutputs(config: Record<string, unknown>): CombinedOutput[] {
-  const legacyOperation = asOperation(config.operation)
-  const legacyOutputColumn = typeof config.combinedColumn === "string" ? config.combinedColumn.trim() : ""
-  const legacyOutput = legacyOutputColumn
-    ? [{
-        outputColumn: legacyOutputColumn,
-        operation: legacyOperation,
-        baseValue: "",
-        isLegacy: true,
-      }]
-    : []
-
-  if (Array.isArray(config.combinedOutputs) && config.combinedOutputs.length > 0) {
-    const configured = config.combinedOutputs.map((raw) => {
-      const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {}
-      return {
-        outputColumn: typeof item.outputColumn === "string" ? item.outputColumn : "",
-        operation: typeof item.operation === "string" && item.operation.trim()
-          ? item.operation
-          : "multiply",
-        baseValue: typeof item.baseValue === "string" || typeof item.baseValue === "number"
-          ? String(item.baseValue)
-          : "",
-      }
-    })
-    const hasMirroredLegacy = configured.some(output => output.outputColumn.trim() === legacyOutputColumn)
-    return legacyOutputColumn && !hasMirroredLegacy ? [...legacyOutput, ...configured] : configured
-  }
-
-  return legacyOutput
+  if (!Array.isArray(config.combinedOutputs)) return []
+  return config.combinedOutputs.map((raw) => {
+    const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : {}
+    return {
+      outputColumn: typeof item.outputColumn === "string" ? item.outputColumn : "",
+      operation: typeof item.operation === "string" && item.operation.trim()
+        ? item.operation
+        : "multiply",
+      baseValue: typeof item.baseValue === "string" || typeof item.baseValue === "number"
+        ? String(item.baseValue)
+        : "",
+    }
+  })
 }
 
 function formulaFor(operation: string, columns: string[], baseValue: string): string {
@@ -104,19 +86,9 @@ function nextCombinedOutputName(outputs: CombinedOutput[], tableOutputColumns: s
     ...tableOutputColumns,
     ...outputs.map(output => output.outputColumn.trim()).filter(Boolean),
   ])
-  let idx = outputs.filter(output => !output.isLegacy).length + 1
+  let idx = outputs.length + 1
   while (used.has(`combined_${idx}`)) idx += 1
   return `combined_${idx}`
-}
-
-function serialiseCombinedOutputs(outputs: CombinedOutput[]): CombinedOutput[] {
-  return outputs
-    .filter(output => !output.isLegacy)
-    .map(output => ({
-      outputColumn: output.outputColumn,
-      operation: output.operation,
-      baseValue: output.baseValue,
-    }))
 }
 
 function combinedOutputHasIssue(
@@ -130,9 +102,7 @@ function combinedOutputHasIssue(
     tableOutputColumns.includes(outputName) ||
     outputs.some((other, otherIdx) => otherIdx !== idx && other.outputColumn.trim() === outputName)
   const operationIssue = !isCombinedOperation(output.operation)
-  const baseValueIssue = !output.isLegacy && (
-    output.baseValue.trim() === "" || !Number.isFinite(Number(output.baseValue))
-  )
+  const baseValueIssue = output.baseValue.trim() === "" || !Number.isFinite(Number(output.baseValue))
   return outputNameIssue || operationIssue || baseValueIssue
 }
 
@@ -150,10 +120,6 @@ function onlyNonBandedLevels(
 
 function tableDisplayName(table: RatingTable, idx: number): string {
   return table.outputColumn.trim() || `Table ${idx + 1}`
-}
-
-function tableNameFromOutputColumn(outputColumn: string, idx: number): string {
-  return outputColumn.trim() || `Table ${idx + 1}`
 }
 
 function tableStatusLabel(state: "healthy" | "problem"): string {
@@ -215,7 +181,7 @@ export default function RatingStepEditor({
 
   const availableColumns = Object.keys(factorLevels)
   const safeIdx = Math.min(activeTab, tables.length - 1)
-  const table = tables[safeIdx] || { name: "Table 1", factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
+  const table = tables[safeIdx] || { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }
   const tableStatuses = tables.map((candidate, idx) => ratingTableStatus(candidate, idx, tables))
   const activeTableStatus = tableStatuses[safeIdx] || { state: "problem" as const, issues: [] }
   const activeTableSummaryIssues = activeTableStatus.issues.filter(issue => !issue.startsWith("Output column"))
@@ -257,7 +223,7 @@ export default function RatingStepEditor({
   const combinedBaseValueErrorId = `${combinedBaseValueInputId}-error`
   const combinedOperationErrorId = `rating-combined-operation-${safeCombinedIdx}-error`
   const combinedBaseValueBlank = combinedOutput.baseValue.trim() === ""
-  const combinedBaseValueInvalid = hasCombinedOutput && !combinedOutput.isLegacy && (
+  const combinedBaseValueInvalid = hasCombinedOutput && (
     combinedBaseValueBlank || !Number.isFinite(Number(combinedOutput.baseValue))
   )
   const combinedOperationInvalid = hasCombinedOutput && !isCombinedOperation(combinedOutput.operation)
@@ -340,7 +306,7 @@ export default function RatingStepEditor({
   }
 
   const addTable = () => {
-    commitTables([...tables, { name: `Table ${tables.length + 1}`, factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }])
+    commitTables([...tables, { factors: [], outputColumn: "", defaultValue: "1.0", entries: [] }])
     setTableSearch("")
     setTableFilter("all")
     selectTable(tables.length)
@@ -359,28 +325,10 @@ export default function RatingStepEditor({
   }
 
   const commitCombinedOutputs = (next: CombinedOutput[]) => {
-    const legacyOutput = next.find(output => output.isLegacy)
-    const configuredOutputs = serialiseCombinedOutputs(next)
-    const compatibilityOutput = legacyOutput ?? configuredOutputs[0]
-    onUpdate({
-      combinedOutputs: configuredOutputs,
-      combinedColumn: compatibilityOutput?.outputColumn ?? "",
-      operation: compatibilityOutput?.operation ?? "multiply",
-    })
+    onUpdate({ combinedOutputs: next })
   }
 
   const updateCombinedOutput = (idx: number, patch: Partial<CombinedOutput>) => {
-    const target = combinedOutputs[idx]
-    if (target?.isLegacy) {
-      const operation = patch.operation ?? target.operation
-      const outputColumn = patch.outputColumn ?? target.outputColumn
-      onUpdate({
-        combinedColumn: outputColumn,
-        operation,
-      })
-      return
-    }
-
     const next = combinedOutputs.map((item, i) => {
       if (i !== idx) return item
       const operation = patch.operation ?? item.operation
@@ -511,7 +459,7 @@ export default function RatingStepEditor({
           role="group"
           aria-label="Rating tables"
           className="max-h-44 overflow-y-auto rounded-lg"
-          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}
+          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
         >
           {visibleTableItems.map((item, position) => {
             const selected = item.idx === safeIdx
@@ -671,10 +619,7 @@ export default function RatingStepEditor({
             id={outputColumnInputId}
             onBlur={(e) => {
               const outputColumn = e.target.value
-              updateTable(safeIdx, {
-                outputColumn,
-                name: tableNameFromOutputColumn(outputColumn, safeIdx),
-              })
+              updateTable(safeIdx, { outputColumn })
             }}
             aria-invalid={outputColumnInvalid}
             aria-describedby={outputColumnInvalid ? outputColumnErrorId : undefined}
@@ -699,7 +644,7 @@ export default function RatingStepEditor({
       {factorCount > 0 && (
         <button onClick={rebuildCurrentEntries}
           className="accent-hover-btn w-full px-2 py-1.5 text-[11px] font-medium rounded-lg"
-          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}>
+          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-secondary)', ['--node-accent' as string]: accentColor }}>
           ↻ Rebuild from factor levels
         </button>
       )}
@@ -832,7 +777,7 @@ export default function RatingStepEditor({
           </div>
 
           {!hasCombinedOutput && (
-            <div className="px-2 py-4 text-center text-[11px] rounded-lg" style={{ background: 'var(--bg-surface)', border: '1px dashed var(--border)', color: 'var(--text-muted)' }}>
+            <div className="px-2 py-4 text-center text-[11px] rounded-lg" style={{ background: 'var(--bg-panel)', border: '1px dashed var(--border)', color: 'var(--text-muted)' }}>
               No combined output
             </div>
           )}
@@ -883,28 +828,26 @@ export default function RatingStepEditor({
                   </div>
                 )}
               </div>
-              {!combinedOutput.isLegacy && (
-                <div>
-                  <label htmlFor={combinedBaseValueInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: combinedBaseValueInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Base Value</label>
-                  <input
-                    key={`combined-base-${safeCombinedIdx}-${combinedOutput.operation}`}
-                    id={combinedBaseValueInputId}
-                    type="number"
-                    step="any"
-                    defaultValue={combinedOutput.baseValue}
-                    onBlur={(e) => updateCombinedOutput(safeCombinedIdx, { baseValue: e.target.value })}
-                    aria-invalid={combinedBaseValueInvalid}
-                    aria-describedby={combinedBaseValueInvalid ? combinedBaseValueErrorId : undefined}
-                    className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
-                    style={{ ...INPUT_STYLE, border: combinedBaseValueInvalid ? '1px solid var(--danger-border-strong)' : INPUT_STYLE.border }}
-                  />
-                  {combinedBaseValueInvalid && (
-                    <div id={combinedBaseValueErrorId} className="mt-1 text-[10px] font-medium" style={{ color: 'var(--danger)' }}>
-                      Base value is required
-                    </div>
-                  )}
-                </div>
-              )}
+              <div>
+                <label htmlFor={combinedBaseValueInputId} className="text-[11px] font-bold uppercase tracking-[0.08em] block mb-1" style={{ color: combinedBaseValueInvalid ? 'var(--danger)' : 'var(--text-muted)' }}>Base Value</label>
+                <input
+                  key={`combined-base-${safeCombinedIdx}-${combinedOutput.operation}`}
+                  id={combinedBaseValueInputId}
+                  type="number"
+                  step="any"
+                  defaultValue={combinedOutput.baseValue}
+                  onBlur={(e) => updateCombinedOutput(safeCombinedIdx, { baseValue: e.target.value })}
+                  aria-invalid={combinedBaseValueInvalid}
+                  aria-describedby={combinedBaseValueInvalid ? combinedBaseValueErrorId : undefined}
+                  className="w-full px-2 py-1.5 text-xs font-mono rounded-lg focus:outline-none"
+                  style={{ ...INPUT_STYLE, border: combinedBaseValueInvalid ? '1px solid var(--danger-border-strong)' : INPUT_STYLE.border }}
+                />
+                {combinedBaseValueInvalid && (
+                  <div id={combinedBaseValueErrorId} className="mt-1 text-[10px] font-medium" style={{ color: 'var(--danger)' }}>
+                    Base value is required
+                  </div>
+                )}
+              </div>
             </div>
 
             {tableOutputColumns.length > 0 && (

@@ -9,9 +9,9 @@ and we route through it.
 
 These tests pin:
 
-1. The docstring names the eager-load behaviour AND points readers at the
-   parquet path (so engineers who hit the memory wall find the escape hatch
-   without spelunking source).
+1. The docstring names the eager-load behaviour and recommends a lazy format
+   so engineers who hit the memory wall find the supported path without
+   spelunking source.
 2. NDJSON goes through ``pl.scan_ndjson`` — a truly lazy path — and
    ``.head()`` gets pushed into the scan so the frame actually collected
    is only N rows, not the full file.
@@ -40,7 +40,7 @@ from haute import _io
 from haute._io import read_source
 
 # ---------------------------------------------------------------------------
-# Docstring pinning — eager behaviour and parquet escape hatch must be named.
+# Docstring pinning — eager behaviour and lazy alternatives must be named.
 # ---------------------------------------------------------------------------
 
 
@@ -85,17 +85,12 @@ class TestDocstringDocumentsLimitation:
             "for .json files (e.g. 'eager', 'entire file', 'no scan_json')."
         )
 
-    def test_docstring_points_at_parquet_escape_hatch(self) -> None:
-        """The docstring names the parquet/flatten-cache alternative.
-
-        ``read_json_flat`` caches to parquet and returns ``scan_parquet()``,
-        which *is* lazy.  Callers hitting the eager-read memory ceiling need
-        to know this exists without reading the implementation.
-        """
+    def test_docstring_points_at_a_lazy_format(self) -> None:
+        """The docstring names a supported lazy alternative."""
         doc = (read_source.__doc__ or "").lower()
-        assert any(term in doc for term in ("read_json_flat", "parquet", "cache")), (
-            "read_source docstring must point at the parquet/read_json_flat "
-            "escape hatch so callers hitting the memory wall find the fix."
+        assert any(term in doc for term in ("parquet", "ndjson")), (
+            "read_source docstring must point at Parquet or NDJSON so callers "
+            "hitting the memory wall find a supported lazy format."
         )
 
 
@@ -235,14 +230,3 @@ class TestPlainJSONIsEager:
 
         df = read_source(str(path)).collect()
         assert len(df) == 10_000
-
-
-# ---------------------------------------------------------------------------
-# Smoke — the recommended escape hatch actually exists and is importable.
-# ---------------------------------------------------------------------------
-
-
-class TestParquetEscapeHatchExists:
-    """v1 read_json_flat removed; v2 shred contracts live in test_v2_codec_and_shred.py."""
-
-    pass

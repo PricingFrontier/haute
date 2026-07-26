@@ -33,7 +33,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from haute._api_input_schema import ApiInputSchemaError, is_v2_shape
+from haute._api_input_schema import ApiInputSchemaError
 from haute._env import float_env
 from haute._logging import get_logger
 from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
@@ -43,7 +43,6 @@ from haute.routes._timeouts import run_blocking_with_response_timeout
 from haute.schemas import (
     JsonCacheBuildRequest,
     JsonCacheBuildResponse,
-    JsonCacheCancelResponse,
     JsonCacheInferRequest,
     JsonCacheInferResponse,
     JsonCacheProgressResponse,
@@ -117,8 +116,7 @@ def _api_input_schema_error_response(err: ApiInputSchemaError) -> JSONResponse:
     """422 response with the structured discriminator.
 
     Frontend reads ``body.type === "ApiInputSchemaError"`` to branch
-    rather than string-matching ``body.detail``. The shape is verified
-    by T8 in ``tests/test_v1_removal_contract.py``.
+    rather than string-matching ``body.detail``.
     """
     return JSONResponse(
         status_code=422,
@@ -181,34 +179,16 @@ def _resolve_config_path(path: str | None) -> str | None:  # pragma: no mutate
         raise runtime_path_http_exception(exc) from None
 
 
-def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:  # pragma: no mutate
-    """Read *config_path* and return it iff it carries a v2 ``tables[]`` array.
+def _read_v2_config(config_path: str | None) -> Any | None:  # pragma: no mutate
+    """Decode *config_path* for canonical schema validation.
 
-    Per D9 — corrupt-mix tolerance — a config that ALSO has stray
-    pre-v2 keys (``flattenSchema``, ``column_renames``, ``selected_columns``)
-    is still treated as v2 if ``tables`` is present.
-
-    Bundle 2.a — those stray legacy keys are now **stripped** from the
-    returned dict (promoted from "silently ignored" to "silently
-    stripped"). The strip mirrors the one applied by
-    ``_normalise_loaded_config`` for the parser load path; both funnels
-    that materialise a disk-resident apiInput config into an in-memory
-    dict must agree, otherwise the cache-build path and the executor
-    would see different shapes. Contract pinning test:
-    tests/test_strict_v2_contract.py::TestReadV2ConfigStripsLegacyKeys.
-
-    Returns ``None`` when the file is **absent**, or when it is **valid
-    JSON that simply isn't a v2 schema** (a legacy ``flattenSchema`` config
-    or an empty ``{}`` — the migration path: the user opens the editor and
-    clicks *Infer Tables*).
+    Returns ``None`` only when the path or file is absent.
 
     Raises :class:`ApiInputSchemaError` when the file is **present but
     unreadable or not valid JSON** (corruption from external tooling or an
     interrupted write). This is deliberately distinct from the absent case:
     collapsing corruption into ``None`` would surface the misleading "no
-    schema source" message and hide a real write-bug behind a migration
-    prompt — the precise "incorrect and hard to notice" fallback the project
-    forbids. The corrupt-data-file path already fails loud the same way.
+    schema source" message and hide a real write bug.
     """
     if not config_path:
         return None
@@ -234,17 +214,10 @@ def _read_v2_config(config_path: str | None) -> dict[str, Any] | None:  # pragma
             f"config file at {config_path!r} is not valid JSON — it may have "
             "been corrupted by external tooling or an interrupted write",
         ) from exc
-    if not isinstance(raw, dict) or not is_v2_shape(raw):
-        # Valid JSON, but not a v2 schema (legacy/empty) → migration path.
-        return None
-    # Bundle 2.a — strip legacy apiInput-only keys. Imported lazily to
-    # keep this route module's import surface minimal.
-    from haute._config_io import _API_INPUT_LEGACY_KEYS_TO_STRIP
-
-    return {k: v for k, v in raw.items() if k not in _API_INPUT_LEGACY_KEYS_TO_STRIP}
+    return raw
 
 
-def _select_v2_config(body: JsonCacheBuildRequest) -> dict[str, Any] | None:  # pragma: no mutate
+def _select_v2_config(body: JsonCacheBuildRequest) -> Any | None:  # pragma: no mutate
     """Apply the volatile-then-disk dispatch.
 
     Returns the v2 config dict to act on, or ``None`` if no schema
@@ -296,11 +269,6 @@ def _aggregate_v2_tables(
             for name, dtype in table_columns.items()
         ):
             columns.update({f"{label}.{name}": dtype for name, dtype in table_columns.items()})
-        elif parquet_path is not None and parquet_path.exists():
-            import polars as pl
-
-            schema = pl.scan_parquet(parquet_path).collect_schema()
-            columns.update({f"{label}.{name}": str(dtype) for name, dtype in schema.items()})
     return row_count, column_count, columns, size_bytes, cached_at
 
 
@@ -344,9 +312,8 @@ def _aggregate_v2_status_response(
     """Same aggregation as the build response, for status queries.
 
     ``meta`` is read back from disk, so the ``skipped`` payload uses
-    tolerant ``.get`` access (consistent with the rest of this function's
-    handling of on-disk metadata) — pre-W2 metas can't reach here anyway
-    because they fail the data-file-signature validity check.
+    tolerant ``.get`` access, consistent with the rest of this function's
+    handling of on-disk metadata.
     """
     tables = meta.get("tables", []) or []
     row_count, column_count, columns, size_bytes, cached_at = _aggregate_v2_tables(
@@ -449,22 +416,6 @@ async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
     _mark_working_consulted(data_path)
     elapsed = time.monotonic() - t0
     return _aggregate_v2_build_response(summary, cache_dir, data_path, elapsed)
-
-
-@router.post("/cancel", response_model=JsonCacheCancelResponse)
-async def cancel_json_cache_build(body: JsonCacheBuildRequest) -> JsonCacheCancelResponse:
-    """Cancel an in-progress JSON cache build.
-
-    No-op until the v2 per-port build path grows a cancellation
-    mechanism. Returns ``cancelled=False`` so a UI that polls for
-    cancellation acknowledges the request without claiming success.
-
-    Path validation still fires (`_resolve_data_path`) so a malicious
-    caller can't probe filesystem with a path-traversal payload via
-    this stub endpoint.
-    """
-    _resolve_data_path(body.path)
-    return JsonCacheCancelResponse(cancelled=False, data_path=body.path)
 
 
 @router.get("/progress", response_model=JsonCacheProgressResponse)

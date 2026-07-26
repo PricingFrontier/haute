@@ -555,9 +555,8 @@ class TestBuildNodeFn:
         assert df.columns == ["a"]
 
     def test_output_empty_mapping_returns_empty_document(self):
-        # v2 has no implicit passthrough: an empty outputMapping maps no
-        # columns, so the assembled document is empty (the v1 "empty fields =
-        # pass everything through" behaviour is gone).
+        # An empty outputMapping maps no columns, so the assembled document
+        # is empty.
         node = _output_node("out", fields=[])
         _, fn, _ = _build_node_fn(node)
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
@@ -790,36 +789,36 @@ class TestPruneLiveSwitchEdges:
         assert len(pruned) == len(g.edges)
 
     def test_prepare_graph_excludes_pruned_ancestors(self):
-        """_prepare_graph with scenario should exclude the inactive branch
+        """Graph preparation should exclude the inactive branch
         from the topo order entirely."""
-        from haute._execute_lazy import _prepare_graph
+        from haute.projection import prepare_graph
 
         g = self._make_live_switch_graph()
-        _, order, parents_of, id_to_name = _prepare_graph(
+        prepared = prepare_graph(
             g,
             target_node_id="down",
             source="live",
         )
         # batch should not be in the execution order
-        assert "batch" not in order
-        assert "api" in order
-        assert "feat" in order
-        assert "sw" in order
+        assert "batch" not in prepared.order
+        assert "api" in prepared.order
+        assert "feat" in prepared.order
+        assert "sw" in prepared.order
 
     def test_prepare_graph_nb_batch_excludes_live_branch(self):
-        from haute._execute_lazy import _prepare_graph
+        from haute.projection import prepare_graph
 
         g = self._make_live_switch_graph()
-        _, order, parents_of, id_to_name = _prepare_graph(
+        prepared = prepare_graph(
             g,
             target_node_id="down",
             source="nb_batch",
         )
         # api and feat should not be in the execution order
-        assert "api" not in order
-        assert "feat" not in order
-        assert "batch" in order
-        assert "sw" in order
+        assert "api" not in prepared.order
+        assert "feat" not in prepared.order
+        assert "batch" in prepared.order
+        assert "sw" in prepared.order
 
 
 # ---------------------------------------------------------------------------
@@ -1218,281 +1217,6 @@ class TestDataSourceUserCode:
             assert "code" not in parsed, (
                 "Config JSON should not contain 'code' — it lives in the .py file"
             )
-
-    def test_parser_extracts_data_source_code_no_sentinel(self, tmp_path):
-        """Parser extracts user code from a dataInput body.
-
-        The parser identifies user code as everything after the
-        auto-generated ``df = pl.scan_parquet(...)`` boilerplate line.
-        """
-        py_file = tmp_path / "pipeline.py"
-        parquet_path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": [1, 2, 3]}).write_parquet(parquet_path)
-
-        py_file.write_text(
-            f"import polars as pl\n"
-            f"import haute\n"
-            f'pipeline = haute.Pipeline("test")\n\n'
-            f'@pipeline.data_input(config="config/data_input/my_src.json")\n'
-            f"def my_src() -> pl.LazyFrame:\n"
-            f'    """my_src node"""\n'
-            f'    df = pl.scan_parquet("{parquet_path.as_posix()}")\n'
-            f"    df = df.limit(2)\n"
-            f"    return df\n"
-        )
-        cfg_dir = tmp_path / "config" / "data_input"
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "my_src.json").write_text(json.dumps(_file_input_config(str(parquet_path))))
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(py_file)
-        assert len(graph.nodes) == 1
-        node = graph.nodes[0]
-        assert node.data.nodeType == "dataInput"
-        code = node.data.config.get("code", "")
-        assert "limit(2)" in code, (
-            f"Parser should extract .limit(2) from the function body, got: {code!r}"
-        )
-
-    def test_parser_does_not_put_repeated_source_load_in_code_box(self, tmp_path):
-        """A repeated generated source load is scaffold, not user transform code."""
-        py_file = tmp_path / "pipeline.py"
-        parquet_path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": [1, 2, 3]}).write_parquet(parquet_path)
-
-        py_file.write_text(
-            "import polars as pl\n"
-            "import haute\n"
-            "from pathlib import Path\n"
-            'pipeline = haute.Pipeline("test")\n\n'
-            '@pipeline.data_input(config="config/data_input/src.json")\n'
-            "def src() -> pl.LazyFrame:\n"
-            '    """src node"""\n'
-            '    df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
-            "    df = pl.scan_parquet(\n"
-            '        Path(__file__).parent / "data.parquet"\n'
-            "    )\n"
-            "    df = df.limit(2)\n"
-            "    return df\n"
-        )
-        cfg_dir = tmp_path / "config" / "data_input"
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "src.json").write_text(json.dumps(_file_input_config(str(parquet_path))))
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(py_file)
-        code = graph.nodes[0].data.config.get("code", "")
-        assert "scan_parquet" not in code
-        assert code == "df = df.limit(2)"
-
-    def test_parsed_data_source_code_executes_correctly(self, tmp_path):
-        """Full round-trip: parse .py → execute_graph → user code applied."""
-        py_file = tmp_path / "pipeline.py"
-        parquet_path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": range(100)}).write_parquet(parquet_path)
-
-        py_file.write_text(
-            f"import polars as pl\n"
-            f"import haute\n"
-            f'pipeline = haute.Pipeline("test")\n\n'
-            f'@pipeline.data_input(config="config/data_input/src.json")\n'
-            f"def src() -> pl.LazyFrame:\n"
-            f'    """src node"""\n'
-            f'    df = pl.scan_parquet("{parquet_path.as_posix()}")\n'
-            f"    df = df.limit(5)\n"
-            f"    return df\n"
-        )
-        cfg_dir = tmp_path / "config" / "data_input"
-        cfg_dir.mkdir(parents=True)
-        (cfg_dir / "src.json").write_text(json.dumps(_file_input_config(str(parquet_path))))
-
-        from haute.parser import parse_pipeline_file
-
-        graph = parse_pipeline_file(py_file)
-        results = execute_graph(graph)
-        assert results["src"].status == "ok"
-        assert results["src"].row_count == 5, (
-            f"Expected 5 rows (limit applied), got {results['src'].row_count}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Additional Polars code scaffold sanitisation
-# ---------------------------------------------------------------------------
-
-
-class TestAdditionalPolarsCodeScaffoldSanitisation:
-    def test_data_source_exec_strips_stale_loader_code(self, tmp_path):
-        source_path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": range(5)}).write_parquet(source_path)
-        node = _n(
-            {
-                "id": "src",
-                "data": {
-                    "label": "src",
-                    "nodeType": "dataInput",
-                    "config": _file_input_config(
-                        str(source_path),
-                        code=(
-                            "from pathlib import Path\n"
-                            'df = pl.scan_parquet(Path(__file__).parent / "data.parquet")\n'
-                            "df = df.limit(2)\n"
-                            "return df"
-                        ),
-                    ),
-                },
-            }
-        )
-        _, fn, _ = _build_node_fn(node)
-        assert fn().collect().height == 2
-
-    def test_transform_exec_strips_stale_alias_and_return(self):
-        lf = pl.DataFrame({"x": range(5)}).lazy()
-        node = _n(
-            {
-                "id": "clean",
-                "data": {
-                    "label": "clean",
-                    "nodeType": "polars",
-                    "config": {"code": "df = claims\ndf = df.limit(2)\nreturn df"},
-                },
-            }
-        )
-        _, fn, _ = _build_node_fn(node, source_names=["claims"])
-        assert fn(lf).collect().height == 2
-
-    def test_scenario_expander_exec_strips_stale_alias_and_return(self):
-        lf = pl.DataFrame({"quote_id": [1, 2, 3]}).lazy()
-        node = _n(
-            {
-                "id": "expand",
-                "data": {
-                    "label": "expand",
-                    "nodeType": "scenarioExpander",
-                    "config": {
-                        "quote_id": "quote_id",
-                        "column_name": "scenario_value",
-                        "steps": 3,
-                        "code": "df = quotes\ndf = df.limit(2)\nreturn df",
-                    },
-                },
-            }
-        )
-        _, fn, _ = _build_node_fn(node, source_names=["quotes"])
-        assert fn(lf).collect().height == 2
-
-    def test_rating_step_exec_strips_stale_apply_scaffold(self):
-        lf = pl.DataFrame({"region": ["North", "South", "West"]}).lazy()
-        node = _n(
-            {
-                "id": "rate",
-                "data": {
-                    "label": "rate",
-                    "nodeType": "ratingStep",
-                    "config": {
-                        "tables": [
-                            {
-                                "name": "Region",
-                                "factors": ["region"],
-                                "outputColumn": "region_factor",
-                                "entries": [{"region": "North", "value": 1.1}],
-                                "defaultValue": "1.0",
-                            }
-                        ],
-                        "code": (
-                            "from pathlib import Path\n"
-                            "from haute.graph_utils import apply_rating_step_from_config\n"
-                            "base = Path(__file__).parent\n"
-                            "df = apply_rating_step_from_config(\n"
-                            '    quotes, "config/rating_step/rate.json", base_dir=base\n'
-                            ")\n"
-                            "df = df.limit(2)\n"
-                            "return df"
-                        ),
-                    },
-                },
-            }
-        )
-        _, fn, _ = _build_node_fn(node, source_names=["quotes"])
-        assert fn(lf).collect().height == 2
-
-    def test_external_file_exec_strips_stale_loader_scaffold(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "haute._builders.load_external_object_from_config",
-            lambda _config, *, base_dir=None: {"ok": True},
-        )
-        model_path = tmp_path / "model.json"
-        model_path.write_text(json.dumps({"ok": True}))
-        lf = pl.DataFrame({"x": range(5)}).lazy()
-        node = _n(
-            {
-                "id": "ext",
-                "data": {
-                    "label": "ext",
-                    "nodeType": "externalFile",
-                    "config": {
-                        "path": str(model_path),
-                        "fileType": "json",
-                        "code": (
-                            "from pathlib import Path\n"
-                            "from haute.graph_utils import load_external_object\n"
-                            "obj = load_external_object(\n"
-                            '    Path(__file__).parent / "model.json", "json"\n'
-                            ")\n"
-                            "df = df.limit(2)\n"
-                            "return df"
-                        ),
-                    },
-                },
-            }
-        )
-        _, fn, _ = _build_node_fn(node, source_names=["features"])
-        assert fn(lf).collect().height == 2
-
-    def test_model_score_exec_strips_stale_scoring_scaffold(self, monkeypatch):
-        class FakeScoringModel:
-            feature_names = ["x"]
-            cat_feature_names: list[str] = []
-
-        def fake_score_eager(scoring_model, lf, features, output_col, task):
-            return lf.with_columns(pl.lit(1.0).alias(output_col))
-
-        monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", lambda **_: FakeScoringModel())
-        monkeypatch.setattr("haute._mlflow_io._score_eager", fake_score_eager)
-        lf = pl.DataFrame({"x": range(5)}).lazy()
-        node = _n(
-            {
-                "id": "score",
-                "data": {
-                    "label": "score",
-                    "nodeType": "modelScore",
-                    "config": {
-                        "sourceType": "run",
-                        "run_id": "abc123",
-                        "artifact_path": "model",
-                        "task": "regression",
-                        "output_column": "prediction",
-                        "code": (
-                            "from pathlib import Path\n"
-                            "from haute.graph_utils import score_from_config\n"
-                            "base = str(Path(__file__).parent)\n"
-                            "result = score_from_config(\n"
-                            '    source, config="config/model_scoring/score.json",\n'
-                            "    base_dir=base,\n"
-                            ")\n"
-                            "result = result.limit(2)\n"
-                            "return result"
-                        ),
-                    },
-                },
-            }
-        )
-        _, fn, _ = _build_node_fn(node, source_names=["source"])
-        df = fn(lf).collect()
-        assert df.height == 2
-        assert "prediction" in df.columns
 
 
 # ---------------------------------------------------------------------------
@@ -1998,32 +1722,6 @@ class TestLiveSwitch:
         assert results["switch"].status == "ok"
         # With empty map, should fall back to first input (live_src, 3 rows)
         assert results["switch"].row_count == 3
-
-
-# ---------------------------------------------------------------------------
-# API Input large-file gating
-# ---------------------------------------------------------------------------
-
-
-def _api_input_node(nid: str, path: str, config_extra: dict | None = None) -> _n:
-    """Build a minimal apiInput node."""
-    config = {"path": path}
-    if config_extra:
-        config.update(config_extra)
-    return _n(
-        {
-            "id": nid,
-            "data": {
-                "label": nid,
-                "nodeType": "apiInput",
-                "config": config,
-            },
-        }
-    )
-
-
-class TestApiInputLargeFileGating:
-    pass  # v1 cache tests removed; v2 contracts live in test_v2_codec_and_shred.py
 
 
 # ---------------------------------------------------------------------------
@@ -2552,7 +2250,7 @@ class TestResolveBatchScenario:
 
 
 # ---------------------------------------------------------------------------
-# GAP 1: FingerprintCache partial-hit path
+# GAP 1: preview-cache partial-hit path
 # Production failure: User clicks node A, cache populates.  Then clicks
 # node B (deeper in the graph).  The cache has the same fingerprint but
 # node B isn't in the cached outputs.  The executor must re-execute for
@@ -2575,7 +2273,7 @@ class TestPreviewCachePartialHit:
         """
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "d.parquet"
         pl.DataFrame({"x": [1, 2, 3]}).write_parquet(p)
@@ -2613,7 +2311,7 @@ class TestPreviewCachePartialHit:
         assert "mid" in results2
         assert results2["mid"].status == "ok"
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_projection_cache_suffix_signs_scope_columns_and_port(self):
         from haute.executor import _preview_projection_cache_suffix
@@ -2650,7 +2348,7 @@ class TestPreviewCachePartialHit:
 
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "d.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
@@ -2671,7 +2369,7 @@ class TestPreviewCachePartialHit:
             mock_exec.assert_not_called()
         assert results["src"].status == "ok"
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
 
 class TestRequestedPreviewProjection:
@@ -2691,7 +2389,7 @@ class TestRequestedPreviewProjection:
         import haute._execute_lazy as execute_lazy_mod
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "wide.parquet"
         pl.DataFrame(
@@ -2737,19 +2435,19 @@ class TestRequestedPreviewProjection:
         assert results["leaf"].preview == [{"z": 20}, {"z": 30}, {"z": 40}]
         assert collect_calls == 1
 
-        fp = _preview_cache.fingerprint
+        fp = _preview_cache.most_recent_key
         assert fp is not None
-        cache_entry = _preview_cache.try_get(fp)
+        cache_entry = _preview_cache.get(fp)
         assert cache_entry is not None
         assert set(cache_entry["eager_outputs"]) == {"leaf"}
         assert set(cache_entry["output_columns"]) == {"src", "mid", "leaf"}
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_requested_preview_columns_project_before_collect(self, tmp_path):
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
         p = tmp_path / "wide.parquet"
         pl.DataFrame({"feature": [1, 2, 3], "keep": [10, 20, 30]}).write_parquet(p)
 
@@ -2784,12 +2482,12 @@ df = df.with_columns(
             "unused_bomb",
         ]
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_requested_preview_cache_key_includes_requested_columns(self, tmp_path):
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
         p = tmp_path / "wide.parquet"
         pl.DataFrame({"a": [1], "b": [2]}).write_parquet(p)
         graph = _g({"nodes": [_source_node("src", str(p))], "edges": []})
@@ -2814,7 +2512,7 @@ df = df.with_columns(
         assert second["src"].preview_columns == ["b"]
         assert [column.name for column in second["src"].columns] == ["a", "b"]
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_model_score_requested_preview_keeps_full_schema(self, tmp_path, monkeypatch):
         from haute.executor import _preview_cache
@@ -2823,10 +2521,17 @@ df = df.with_columns(
             feature_names = ["feature"]
             cat_feature_names: list[str] = []
 
-        def fake_score_eager(scoring_model, lf, features, output_col, task):
+        def fake_score_eager(
+            scoring_model,
+            lf,
+            features,
+            output_col,
+            task,
+            offset_column=None,
+        ):
             return lf.with_columns(pl.lit(0.75).alias(output_col))
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
         monkeypatch.setattr("haute._mlflow_io.load_mlflow_model", lambda **_: FakeScoringModel())
         monkeypatch.setattr("haute._mlflow_io._score_eager", fake_score_eager)
 
@@ -2878,7 +2583,7 @@ df = df.with_columns(
             "prediction",
         ]
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_requested_preview_columns_preserve_join_left_passthrough_columns(self, tmp_path):
         """Fan-in projection should not treat inputs_by_parent as a passthrough allow-list."""
@@ -3467,13 +3172,13 @@ df = df.with_columns(
 # ---------------------------------------------------------------------------
 # GAP 2: Preview cache invalidation
 # Production failure: User edits a node's code, but the preview still
-# shows stale results because _preview_cache.invalidate() was not called
+# shows stale results because _preview_cache.clear() was not called
 # or didn't actually clear the cache.
 # ---------------------------------------------------------------------------
 
 
 class TestPreviewCacheInvalidation:
-    """Verify _preview_cache.invalidate() actually clears cached results."""
+    """Verify _preview_cache.clear() actually clears cached results."""
 
     def test_preamble_change_forces_re_execution(self, tmp_path):
         """Changing only graph.preamble must not serve stale preview rows."""
@@ -3547,7 +3252,7 @@ class TestPreviewCacheInvalidation:
         """
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "d.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(p)
@@ -3563,20 +3268,20 @@ class TestPreviewCacheInvalidation:
         assert results1["src"].status == "ok"
 
         # Invalidate the cache
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
-        # After invalidation, try_get should return None for any fingerprint
+        # After clearing, get should return None for any fingerprint
         from haute.graph_utils import graph_fingerprint
 
         fp = graph_fingerprint(graph, "None:live")
-        assert _preview_cache.try_get(fp) is None
+        assert _preview_cache.get(fp) is None
 
         # Re-execute should still work
         results2 = execute_graph(graph)
         assert results2["src"].status == "ok"
         assert results2["src"].row_count == 2
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -3788,7 +3493,7 @@ class TestPreambleLockConcurrency:
 
         monkeypatch.chdir(tmp_path)
         executor._compile_preamble.cache_clear()  # type: ignore[attr-defined]
-        executor._preview_cache.invalidate()
+        executor._preview_cache.clear()
 
         util_dir = tmp_path / "utility"
         util_dir.mkdir()
@@ -3834,7 +3539,7 @@ class TestPreambleLockConcurrency:
             helper_file.resolve(): 1,
         }
 
-        executor._preview_cache.invalidate()
+        executor._preview_cache.clear()
 
     def test_concurrent_preamble_compilation_no_crash(self, tmp_path, monkeypatch):
         """Two threads compiling the same preamble concurrently should not
@@ -3920,7 +3625,7 @@ class TestMaxPreviewRowsTruncation:
         """
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "big.parquet"
         pl.DataFrame({"x": list(range(500))}).write_parquet(p)
@@ -3939,7 +3644,7 @@ class TestMaxPreviewRowsTruncation:
         # preview should be truncated
         assert len(results["src"].preview) == 10
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_max_preview_rows_smaller_than_data(self, tmp_path):
         """When max_preview_rows < actual rows, preview is capped but
@@ -3950,7 +3655,7 @@ class TestMaxPreviewRowsTruncation:
         """
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": list(range(200))}).write_parquet(p)
@@ -3972,7 +3677,7 @@ class TestMaxPreviewRowsTruncation:
         assert "x" in results["t"].preview[0]
         assert "y" in results["t"].preview[0]
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_max_preview_rows_default_caps_at_10k(self, tmp_path):
         """Default max_preview_rows=10_000 should cap large DataFrames.
@@ -3981,7 +3686,7 @@ class TestMaxPreviewRowsTruncation:
         """
         from haute.executor import _MAX_PREVIEW_ROWS, _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "huge.parquet"
         n_rows = _MAX_PREVIEW_ROWS + 100
@@ -3998,7 +3703,7 @@ class TestMaxPreviewRowsTruncation:
         assert results["src"].row_count == n_rows
         assert len(results["src"].preview) == _MAX_PREVIEW_ROWS
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -4020,7 +3725,7 @@ class TestEmptyDataFrameFullPipeline:
         """
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p = tmp_path / "empty.parquet"
         pl.DataFrame(
@@ -4050,7 +3755,7 @@ class TestEmptyDataFrameFullPipeline:
         t2_cols = {c.name for c in results["t2"].columns}
         assert {"x", "y", "z", "w"} <= t2_cols
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_empty_source_through_join(self, tmp_path):
         """0-row left source joined with non-empty right should produce
@@ -4061,7 +3766,7 @@ class TestEmptyDataFrameFullPipeline:
         """
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         p_empty = tmp_path / "empty.parquet"
         p_full = tmp_path / "full.parquet"
@@ -4104,7 +3809,7 @@ class TestEmptyDataFrameFullPipeline:
         join_cols = {c.name for c in results["join"].columns}
         assert {"key", "a", "b"} <= join_cols
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_empty_source_sink_writes_empty_file(self, tmp_path):
         """write_data_output with 0-row input should write a valid empty
@@ -4310,7 +4015,7 @@ class TestPreambleFailureIsolation:
 
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         graph = _g(
             {
@@ -4332,7 +4037,7 @@ class TestPreambleFailureIsolation:
         assert results["t1"].status == "error"
         assert results["t2"].status == "error"
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_broken_preamble_live_switch_gets_error(self, tmp_path, monkeypatch):
         """liveSwitch nodes should also receive the preamble error.
@@ -4354,7 +4059,7 @@ class TestPreambleFailureIsolation:
 
         from haute.executor import _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         graph = _g(
             {
@@ -4392,7 +4097,7 @@ class TestPreambleFailureIsolation:
         assert results["sw"].status == "error"
         assert "undefined_name" in results["sw"].error
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
     def test_broken_preamble_does_not_error_model_score_or_sink(self, tmp_path, monkeypatch):
         """Non-preamble node types (dataOutput, etc.) should not receive
@@ -4413,7 +4118,7 @@ class TestPreambleFailureIsolation:
 
         from haute.executor import _eager_execute, _preview_cache
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()
 
         graph = _g(
             {
@@ -4444,4 +4149,4 @@ class TestPreambleFailureIsolation:
         # have the preamble error injected
         assert "sink" not in errors or "bad_name" not in errors.get("sink", "")
 
-        _preview_cache.invalidate()
+        _preview_cache.clear()

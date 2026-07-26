@@ -43,7 +43,7 @@ Out of scope (owned elsewhere):
   the shared edge-join demand-narrowing helper that planner consumes.
 - Submodel definition, boundary rewiring, and expansion into an executable graph —
   see [submodels](../submodels/high-level.md).
-- The HTTP routes that drive JSON-cache build/status/delete/cancel
+- The HTTP routes that drive JSON-cache build/status/delete
   (`routes/json_cache.py`) — see [caching](../caching/high-level.md).
 
 ## Behaviour
@@ -60,8 +60,7 @@ Building the cache writes one parquet per emitting table plus a `meta.json`
 manifest; the manifest carries a content fingerprint of the schema and a signature
 of the source data file. Every table entry also records the size and SHA-256 of its
 derived parquet, so payload corruption is rejected before the footer-only schema
-probe can accept it. Old unsigned manifests invalidate once and are repaired by the
-next optional cache build. Caching is an optional performance prewarm: runtime first
+probe can accept it. Caching is an optional performance prewarm: runtime first
 tries signed, readable, exact-schema `working/` then `committed/` parquets; when
 neither can serve, it applies the same parsed table specs, shredding, type checks,
 skip accounting, and conservation guards directly in memory without creating or
@@ -95,8 +94,8 @@ unique column names, known column types, and an optional row-ID column that must
 columns. Table paths end at an array boundary; columns may live at that boundary
 or at an ancestor boundary so an ancestor value can be distributed into child
 rows. The OUTPUT side consumes only active, complete mapping rows and requires
-the same array-outer path grammar (parseable bracket-name spellings are
-accepted; the writer emits the canonical dotted form). Its explicit structural
+the same single array-outer path grammar: `$[:]` at the root, dotted ASCII
+identifier keys, and `[:]` for array traversal. Its explicit structural
 validator rejects same-port duplicate or prefix-comparable destinations.
 Assembly returns a top-level list of objects:
 sibling array branches are nested independently (never cross-multiplied),
@@ -170,9 +169,8 @@ shred's own build and by promoting `working/` to `committed/` at save time.
 > filesystem operation. Between `live -> backup` and `temp -> live`, a concurrent
 > reader can observe the live path as absent. The lock covers builders and promotion
 > in this process, but not readers or other processes. An abrupt process exit in that
-> window (or a failed restoration) can also leave only the uniquely named backup;
-> the next successful swap only cleans the legacy fixed `.build-old` name, not those
-> UUID backups. Tests cover same-process builder serialization, staged-write failure,
+> window (or a failed restoration) can also leave only the uniquely named backup.
+> Tests cover same-process builder serialization, staged-write failure,
 > transient rename retry, synchronous restoration attempts, staged mirror tampering,
 > and already-returned LazyFrames surviving rebuild, mirror, and clear. A brand-new
 > concurrent reader can still observe the absent live path and reject that candidate;
@@ -199,7 +197,7 @@ strict build and raises a specific, column-named error instead.
   see [execution-engine](../execution-engine/high-level.md).
 - The JSON-cache build/status/delete HTTP routes owned by
   [caching](../caching/high-level.md) drive the build and cache-lifecycle functions
-  in this component. Its compatibility cancel route does not stop a shred build.
+  in this component.
 - The shared path grammar (`_jsonpath.py`) is used by both the INPUT codec and
   this component's OUTPUT-mapping assembler, so both addressing directions stay
   single-sourced.
@@ -317,8 +315,8 @@ JSON shredding implements the accepted parts of
 - Inference rejects every source object key outside the path grammar's ASCII
   identifier set, as well as the reserved `$value` sentinel, before returning a
   schema. The error names the key and tells the user to rename it. Hand-authored
-  bracket paths containing a dot are rejected because the dotted-leaf runtime
-  cannot represent a literal dotted key.
+  keys outside the dotted identifier grammar are rejected because the runtime
+  cannot represent them.
 - Config sidecars continue to use duplicate-key-rejecting loading. Raw
   JSON/NDJSON source records retain the streaming decoder's native duplicate-key
   semantics and are not rescanned solely to reject duplicates; inference and
@@ -340,5 +338,5 @@ without benchmark evidence, or any relaxation of signed cache validation.
 Acceptance evidence covers late/null-first nested OUTPUT fields through direct
 and generated execution; an inference/build accepted-and-rejected value matrix;
 scalar-table nested-list skip accounting; early invalid-key diagnostics; real
-cache-response columns; dotted bracket rejection; and lock reclamation without
+  cache-response columns; non-canonical path rejection; and lock reclamation without
 loss of concurrent build serialisation.

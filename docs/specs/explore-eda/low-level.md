@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin `run`/`status`/`cancel` endpoints. Wires `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before delegating to a module-level `ExploreService` singleton. |
-| `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_column_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
 | `src/haute/schemas.py` | Shared Explore API/report contracts: column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
 
@@ -83,8 +83,8 @@
    the graph reachable to the Explore node, the source, etc.
 4. `execution_facade.build_dataframe_execution_cache_request(...)` builds the
    `DataFrameExecutionCacheRequest` in the `"explore_dataset"` namespace, using
-   `ExecutionProfile.EXPLORE_ANALYSIS`, `ENFORCE_CONTRACTS` (imported lazily from
-   `haute.executor` to avoid an import cycle), and `body.streaming_chunk_size or
+   `ExecutionProfile.EXPLORE_ANALYSIS`, contract enforcement enabled, and
+   `body.streaming_chunk_size or
    DEFAULT_STREAMING_CHUNK_SIZE`.
 5. `dataframe_key = dataframe_cache_request.keys_by_node[node.id].cache_key`.
 6. `report_cache_key` is `"explore:v{EXPLORE_CACHE_VERSION}:{digest}"` where `digest` is
@@ -124,7 +124,7 @@ Error handling section): `ExecutionCancelledError` → `token.terminal_reason or
 2. `_compile_preamble(body.graph.preamble or "", pipeline_dir=_pipeline_dir(body.graph))`
    (imported lazily from `haute.executor`).
 3. `execution_facade.execute_lazy_graph(body.graph, _build_node_fn, target_node_id=spec.node_id,
-   preamble_ns=preamble_ns or None, source=body.source, enforce_contracts=ENFORCE_CONTRACTS,
+   preamble_ns=preamble_ns or None, source=body.source, enforce_contracts=True,
    execution_context=execution_context, dataframe_cache_request=spec.dataframe_cache_request)` —
    executes the graph lazily up to (and including) the Explore node's own analysis code, reusing
    the dataframe cache when the request's cache key already has a hit.
@@ -167,10 +167,6 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
    as valid-values-only.
 4. `row_count = int(aggregate_row["row_count"])`.
 5. Returns `ExploreFrameStats(row_count, columns, overview_summary=_build_overview_summary(...))`.
-
-`_build_column_stats(lf, schema, execution_context=...)` is a thin wrapper returning only
-`_build_frame_stats(...).columns`, kept for tests and legacy internal callers that only need
-per-column stats.
 
 ### Data-quality summary (`_build_data_quality_summary`)
 
@@ -279,7 +275,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   `_CATEGORICAL_VALUE_FIELD`/`_CATEGORICAL_COUNT_FIELD` prefixed with `__haute_`) avoids
   colliding with a user column literally named `count` (regression test
   `test_build_frame_stats_categorical_value_counts_handle_count_column_name`).
-- **Empty schema**: `_build_column_stats`/`_build_frame_stats` on a zero-column `LazyFrame`
+- **Empty schema**: `_build_frame_stats` on a zero-column `LazyFrame`
   return `columns == []` without error.
 - **Value truncation for display**: any min/max or categorical value longer than 80 characters
   (`_VALUE_DISPLAY_MAX_CHARS`) is clipped to exactly 80 characters plus a single `"…"` marker
@@ -352,7 +348,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     `test_all_null_column_has_none_min_max_values`, `test_column_order_matches_schema`) driven
     through the full `/api/explore/run` → poll path with an identity prep step, so per-column
     assertions are deterministic.
-  - A large block of direct unit tests against `_build_column_stats`/`_build_frame_stats` (no
+  - A large block of direct unit tests against `_build_frame_stats` (no
     HTTP layer) covering: Object vs. Struct distinct-count handling, empty schema, numeric
     profile fields, boolean min/max-vs-value-count casing consistency, all-null numeric columns,
     the full data-quality summary issue set and ordering, bounded categorical value counts

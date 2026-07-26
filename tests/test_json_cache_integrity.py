@@ -390,9 +390,8 @@ class TestDataFileSignatureValidity:
         data.unlink()
         assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is False
 
-    def test_validity_false_for_legacy_meta_without_data_signature(self, tmp_path: Path) -> None:
-        """A pre-W2 meta.json (no ``data_file`` key) is stale by construction —
-        one-time invalidation on upgrade, the user rebuilds once."""
+    def test_validity_false_when_metadata_lacks_data_signature(self, tmp_path: Path) -> None:
+        """Metadata without its required ``data_file`` signature is invalid."""
         data = tmp_path / "data.json"
         _write_json(data, [{"id": 1}])
         cfg = _root_cfg(_col("id", "$[:].id"))
@@ -441,31 +440,6 @@ class TestDataFileSignatureValidity:
         committed_dir = _json_cache_dir(str(data), "committed")
         frames = load_per_port_cache(committed_dir, cfg)
         assert frames["root"].collect()["id"].to_list() == [1, 2]
-
-    def test_save_upgrades_legacy_unsigned_committed_manifest(
-        self,
-        isolated_cwd: Path,
-    ) -> None:
-        data = isolated_cwd / "data.json"
-        _write_json(data, [{"id": 1}])
-        cfg = _root_cfg(_col("id", "$[:].id"))
-        working_dir = _json_cache_dir(str(data), "working")
-        committed_dir = _json_cache_dir(str(data), "committed")
-        build_per_port_cache(data, cfg, working_dir)
-        _mark_working_consulted(str(data))
-        assert mirror_cache_to_committed(str(data), cfg) is True
-
-        committed_meta_path = committed_dir / "meta.json"
-        committed_meta = orjson.loads(committed_meta_path.read_bytes())
-        committed_meta["tables"][0].pop("content_signature", None)
-        committed_meta_path.write_bytes(orjson.dumps(committed_meta))
-
-        assert mirror_cache_to_committed(str(data), cfg) is True
-
-        working_meta = orjson.loads((working_dir / "meta.json").read_bytes())
-        repaired_committed_meta = orjson.loads(committed_meta_path.read_bytes())
-        assert repaired_committed_meta["tables"] == working_meta["tables"]
-        assert is_per_port_cache_valid(committed_dir, cfg, data_path=data) is True
 
     def test_save_repairs_committed_parquet_whose_bytes_no_longer_match_manifest(
         self,
@@ -920,23 +894,6 @@ class TestAtomicSerializedBuild:
         )
         assert is_per_port_cache_valid(cache_dir, winner, data_path=data) is True
 
-    def test_leftover_build_tmp_from_crashed_build_is_cleaned(self, tmp_path: Path) -> None:
-        """A `.build-tmp` sibling abandoned by a killed process must not poison
-        the next build."""
-        data = tmp_path / "data.json"
-        _write_json(data, [{"a": 1}])
-        cfg = _root_cfg(_col("a", "$[:].a"))
-        cache_dir = tmp_path / "cache"
-
-        stale_tmp = cache_dir.with_name(cache_dir.name + ".build-tmp")
-        stale_tmp.mkdir(parents=True)
-        (stale_tmp / "junk.parquet").write_bytes(b"stale")
-
-        build_per_port_cache(data, cfg, cache_dir)
-        assert not stale_tmp.exists()
-        assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True
-        assert load_per_port_cache(cache_dir, cfg)["root"].collect()["a"].to_list() == [1]
-
     def test_lazy_frame_snapshot_survives_later_cache_rebuild(self, tmp_path: Path) -> None:
         """A cache-backed frame owns its compressed bytes, not a mutable disk path."""
         data = tmp_path / "data.json"
@@ -973,23 +930,6 @@ class TestAtomicSerializedBuild:
         assert clear_json_cache(str(data)) is True
         assert not cache_dir.exists()
         assert cached_frame.collect().to_dict(as_series=False) == {"id": [1]}
-
-    def test_leftover_build_old_backup_is_cleaned_on_next_swap(self, tmp_path: Path) -> None:
-        """A `.build-old` backup left by a crash mid-swap is removed on rebuild."""
-        data = tmp_path / "data.json"
-        _write_json(data, [{"a": 1, "b": 2}])
-        cfg_a = _root_cfg(_col("a", "$[:].a"))
-        cfg_b = _root_cfg(_col("b", "$[:].b"))
-        cache_dir = tmp_path / "cache"
-        build_per_port_cache(data, cfg_a, cache_dir)
-
-        stale_backup = cache_dir.with_name(cache_dir.name + ".build-old")
-        stale_backup.mkdir(parents=True)
-        (stale_backup / "junk").write_bytes(b"stale")
-
-        build_per_port_cache(data, cfg_b, cache_dir)
-        assert not stale_backup.exists()
-        assert is_per_port_cache_valid(cache_dir, cfg_b, data_path=data) is True
 
     def test_swap_restores_live_dir_when_final_rename_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

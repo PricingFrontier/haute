@@ -63,8 +63,7 @@ Out of scope (owned by neighbouring components):
 - Evaluating user-authored Polars expressions / rating formulas at runtime —
   [expression-parsing](../expression-parsing/high-level.md).
 - Packaging and shipping the generated file tree to a deployment target —
-  [deploy](../deploy/high-level.md) (`src/haute/deploy/`), which itself imports
-  `_strip_generated_boilerplate_from_code` for its own scoring code path.
+  [deploy](../deploy/high-level.md) (`src/haute/deploy/`).
 - Executing the generated functions at graph-preview time — the executor
   (`haute._builders`) has its own per-type builders that produce runtime
   closures rather than source text; codegen's builders are its source-level
@@ -205,19 +204,17 @@ Out of scope (owned by neighbouring components):
   topological ordering before any source is emitted.
 - **Shares** `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` with the parser
   (`src/haute/parser.py`, `src/haute/_graph_builders.py`,
-  `src/haute/_parser_helpers.py`, `src/haute/_parser_regex.py`,
+  `src/haute/_parser_regex.py`,
   `src/haute/_parser_submodels.py`) — generation and extraction
   are two halves of one round-trip contract; a change to how codegen wraps
   user code generally requires a matching change to how extraction unwraps
   it.
 - **Depended on by** the save-pipeline route, which calls
-  `graph_to_code_multi` to produce the file tree written to disk (and by
-  `graph_to_code` for legacy/simple single-file callers).
-- **Depended on by** [deploy](../deploy/high-level.md), whose scorer module
-  imports `_strip_generated_boilerplate_from_code` directly to re-derive
-  user code from an already-generated model-score body.
-- **Depended on by** `haute.projection`, which also reuses
-  `_strip_generated_boilerplate_from_code` for a non-save code path.
+  `graph_to_code_multi` to produce a multi-file tree and `graph_to_code`
+  for graphs that produce one pipeline file.
+- Parsed configs contain user code only. Runtime builders, projection, deploy,
+  and code generation consume that canonical text directly; they do not accept
+  generated function bodies as another config-code representation.
 - Contract computation calls into `src/haute/_contracts.py`
   (`get_column_contract`, `Contract`), whose callbacks are registered by the execution builders;
   this is shared registry/contract infrastructure, not expression evaluation.

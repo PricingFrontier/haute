@@ -125,8 +125,8 @@ const useSettingsStore = create<SettingsState>()((set, get) => ({
     })
     Promise.race([checkMlflow(), timeout])
       .then((data) => {
-        const mlflowImportable = data.mlflow_importable ?? data.mlflow_installed
-        const trackingConfigured = data.tracking_configured ?? (data.mlflow_installed && mlflowImportable)
+        const mlflowImportable = data.mlflow_importable
+        const trackingConfigured = data.tracking_configured
         if (data.mlflow_installed && mlflowImportable && trackingConfigured) {
           set({
             mlflow: {

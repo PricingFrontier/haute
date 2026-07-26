@@ -3,7 +3,7 @@
 Regression coverage for the multi-frame review findings:
 
 - a *present-but-corrupt* config file was collapsed into ``None`` and
-  surfaced the misleading "No v2 schema source" message (a migration prompt)
+  surfaced the misleading "No v2 schema source" message
   instead of naming the corruption — the precise "incorrect and hard to
   notice" fallback the project forbids. It must now return a distinct 422.
 - a scalar array used to crash the strict build with an opaque 500; it must
@@ -47,7 +47,7 @@ def _root_schema(columns: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Corrupt vs absent vs legacy config — distinct, honest messages
+# Corrupt versus absent config — distinct, honest messages
 # ---------------------------------------------------------------------------
 
 
@@ -67,7 +67,7 @@ def test_build_present_but_corrupt_config_returns_distinct_422(
     assert body["type"] == "ApiInputSchemaError"
     detail = body["detail"].lower()
     assert "not valid json" in detail or "corrupt" in detail
-    # Crucially NOT the misleading migration message.
+    # Crucially not the misleading missing-schema message.
     assert "no v2 schema source" not in detail
 
 
@@ -107,22 +107,6 @@ def test_build_absent_config_returns_no_schema_source(client: TestClient, tmp_pa
     )
     assert resp.status_code == 422
     assert "No v2 schema source" in resp.json()["detail"]
-
-
-def test_build_legacy_config_is_migration_not_corruption(
-    client: TestClient, tmp_path: Path
-) -> None:
-    """A valid-JSON v1 config (no tables[]) is the migration path, not corruption."""
-    (tmp_path / "data.json").write_text(json.dumps([{"id": 1}]))
-    (tmp_path / "cfg.json").write_text(json.dumps({"flattenSchema": {"id": "int"}}))
-
-    resp = client.post(
-        "/api/json-cache/build",
-        json={"path": "data.json", "config_path": "cfg.json"},
-    )
-    assert resp.status_code == 422
-    detail = resp.json()["detail"]
-    assert "No v2 schema source" in detail  # migration prompt, not corruption
 
 
 # ---------------------------------------------------------------------------
@@ -190,27 +174,6 @@ def test_read_v2_config_unreadable_path_raises(tmp_path: Path) -> None:
     assert "could not be read" in str(ei.value)
 
 
-def test_read_v2_config_strips_legacy_keys(tmp_path: Path) -> None:
-    """A v2 config carrying stray legacy apiInput keys is returned with them stripped."""
-    from haute.routes.json_cache import _read_v2_config
-
-    cfg = tmp_path / "c.json"
-    cfg.write_text(
-        json.dumps(
-            {
-                "tables": [{"path": "$[:]", "label": "r", "emit": True, "columns": []}],
-                "flattenSchema": {"x": "int"},
-                "selected_columns": ["x"],
-            }
-        )
-    )
-    out = _read_v2_config(str(cfg))
-    assert out is not None
-    assert "tables" in out
-    assert "flattenSchema" not in out
-    assert "selected_columns" not in out
-
-
 def test_infer_missing_data_file_returns_404(client: TestClient, tmp_path: Path) -> None:
     resp = client.post("/api/json-cache/infer", json={"path": "missing.json"})
     assert resp.status_code == 404
@@ -247,29 +210,6 @@ def test_aggregators_skip_missing_or_nonstr_parquet(tmp_path: Path) -> None:
     status = _aggregate_v2_status_response(tmp_path, "data.json", summary)
     assert status.cached is True
     assert status.row_count == 3
-
-
-def test_aggregator_reads_real_parquet_schema_for_older_metadata(tmp_path: Path) -> None:
-    import polars as pl
-
-    from haute.routes.json_cache import _aggregate_v2_build_response
-
-    pl.DataFrame({"id": [1], "name": ["Ada"]}).write_parquet(tmp_path / "root.parquet")
-    summary = {
-        "tables": [
-            {
-                "label": "root",
-                "parquet": "root.parquet",
-                "row_count": 1,
-                "column_count": 2,
-            }
-        ],
-        "skipped": {"records": 0, "rows_by_table": {}},
-    }
-
-    response = _aggregate_v2_build_response(summary, tmp_path, "data.json", 0.1)
-
-    assert response.columns == {"root.id": "Int64", "root.name": "String"}
 
 
 def test_infer_then_build_scalar_array_end_to_end(client: TestClient, tmp_path: Path) -> None:

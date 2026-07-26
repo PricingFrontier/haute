@@ -44,6 +44,10 @@ present on the wire. `pushed_refs` names the explicit branch refspecs submitted 
 atomic push (not implicit `--follow-tags` tags), and does not necessarily mean each tip
 changed.
 
+**`GitRemote`** — `{ name, url, working, ledger }`. `working` and `ledger` are
+`GitRemoteLeg | null` and are the only divergence fields; the working leg is not duplicated
+into top-level `ahead`/`behind` counters.
+
 **`GitState`** (the store) — see `frontend/src/stores/useGitStore.ts` for the full field
 list. Notable invariants:
 - `statusError` is transport/server failure text, never a synonym for a successful
@@ -89,19 +93,18 @@ row), `fold-in`/`fold-out` (the siding's merge into / departure from a milestone
 across every row and 1px box border the run crosses.
 
 **`BranchHistoryEntry`** (`gitPanelCache.ts`) — one branch's last-seen `{milestones,
-milestonesJson, pending, pendingJson, forkBranches, forkBranchesJson}`. The `*Json` fields
+milestonesJson, pending, pendingJson}`. The `*Json` fields
 are `JSON.stringify` serializations kept alongside the parsed data specifically to drive
 `GitPanel`'s unchanged-payload short-circuit without re-serializing on every compare.
 
 **`SpawnChipBranch`** (`GitPanel.tsx`) — `{ name; is_archived; colorIndex? }`, the minimal
-shape shared by the graph-derived spawn chips and the legacy `forks.json`-derived fallback
-chips (`colorIndex` is `undefined` on the fallback path, rendered as a plain accent chip).
+graph-derived shape used for in-row spawn chips.
 
 ## Control flow
 
 **Panel mount / branch resolution.** `GitPanel` derives `branchKey = viewBranch ?? workingBranch`
 (the peek target, else the current working branch). On mount it seeds `milestones`/`pending`/
-`forkBranches`/`graph` synchronously from `gitPanelCache` (`readBranchHistory`,
+`graph` synchronously from `gitPanelCache` (`readBranchHistory`,
 `readGraphCache`) so a previously-viewed branch paints with no loading flash, then always
 runs `refresh()` (stale-while-revalidate — see Edge cases). A `branchKey` change (peek
 start/clear, or the workingBranch resolving after the panel mounted before status loaded)
@@ -152,10 +155,8 @@ branch while `viewBranch` has already changed, and drawing the rail against mism
 rows would mislabel them, so the rail simply withholds itself until `rowsBranch` catches
 up (`refresh()` sets `rowsBranch` only once its own response is applied). `rail === null`
 whenever `computeGitGraphLayout` degrades to `laneCount === 0` too. `spawnChipsBySha`
-derives in-row branch chips from `graph.branches` ancestry rather than `forkBranches`
-(`forks.json`) whenever a rail exists, because ancestry sees branches created in another
-clone that never wrote a local `forks.json` entry; `chipsAt()` falls back to
-`forksAt()` (the `forks.json`-derived list) only when there is no rail at all.
+derives in-row branch chips solely from `graph.branches` ancestry. When there is no graph
+payload, no topology chips are rendered.
 
 **Overlay geometry** (`GitPanel.tsx:552-593`). A `useLayoutEffect` measures every
 `[data-rail-row]` element inside the milestones box after paint (and on `ResizeObserver`
@@ -437,3 +438,8 @@ Known coverage gaps: none flagged in the suites' own comments; the layout test f
 breadth (60+ cases) suggests `computeGitGraphLayout`/`computeRailRuns` are the
 highest-risk, most thoroughly defended part of this component, consistent with them being
 the only pure, intricate geometry code in the surface.
+
+## Approved change contract — canonical branch source
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+the Git panel renders topology chips only from the current graph payload.

@@ -11,7 +11,7 @@ import {
 import { useDataInputColumns } from "../hooks/useDataInputColumns"
 import { useConstraintHandlers } from "../hooks/useConstraintHandlers"
 import { useStaleConfigEstimate } from "../hooks/useStaleConfigEstimate"
-import type { SolveResult } from "./OptimiserPreview"
+import type { OptimiserSolveResult } from "../api/types"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import useNodeResultsStore, { type SolveProgress } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -151,11 +151,6 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-function optionalConfigNumber(config: Record<string, unknown>, key: string): number | undefined {
-  const value = config[key]
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
-
 function parseOptionalNumber(raw: string): number | undefined {
   const trimmed = raw.trim()
   if (trimmed === "") return undefined
@@ -226,7 +221,7 @@ export default function OptimiserConfig({
   const solveError = solveJob ? solveJob.error : (cachedResult?.error ?? null)
   const solveTerminalStatus = solveJob?.progress ?? cachedResult?.terminalStatus ?? null
   const solveTerminalMetrics = solveTerminalStatus?.execution_metrics ?? null
-  const solveResult: SolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
+  const solveResult: OptimiserSolveResult | null = cachedResult?.error ? null : (cachedResult?.result ?? null)
   const solveIterationSummary = solveResult ? formatOptimiserIterationSummary(solveResult) : null
   // Collapse state from UI store (persisted)
   const advancedOpen = useSettingsStore((s) => s.isSectionOpen("optimiser.advanced"))
@@ -247,8 +242,6 @@ export default function OptimiserConfig({
   const recordHistory = configField(config, "record_history", false)
   const maxCdIterations = configField(config, "max_cd_iterations", 10)
   const cdTolerance = configField(config, "cd_tolerance", 1e-3)
-  const frontierMin = optionalConfigNumber(config, "frontier_min")
-  const frontierMax = optionalConfigNumber(config, "frontier_max")
   const frontierSteps = configField(config, "frontier_steps", 15)
   const frontierEnabled = configField(config, "frontier_enabled", false)
   const frontierRanges = configField<Record<string, FrontierRangeConfig>>(config, "frontier_ranges", {})
@@ -431,11 +424,11 @@ export default function OptimiserConfig({
     (name: string): FrontierRangeConfig => {
       const configured = frontierRanges[name]
       return {
-        min: typeof configured?.min === "number" && Number.isFinite(configured.min) ? configured.min : frontierMin,
-        max: typeof configured?.max === "number" && Number.isFinite(configured.max) ? configured.max : frontierMax,
+        min: typeof configured?.min === "number" && Number.isFinite(configured.min) ? configured.min : undefined,
+        max: typeof configured?.max === "number" && Number.isFinite(configured.max) ? configured.max : undefined,
       }
     },
-    [frontierRanges, frontierMin, frontierMax],
+    [frontierRanges],
   )
 
   const handleFrontierRangeChange = useCallback(
@@ -452,13 +445,9 @@ export default function OptimiserConfig({
       } else {
         nextRanges[name] = nextRange
       }
-      const updates: Record<string, unknown> = { frontier_ranges: nextRanges }
-      if (constraintCount === 1) {
-        updates[key === "min" ? "frontier_min" : "frontier_max"] = value
-      }
-      onUpdate(updates)
+      onUpdate({ frontier_ranges: nextRanges })
     },
-    [constraintCount, frontierRanges, onUpdate, rangeForConstraint],
+    [frontierRanges, onUpdate, rangeForConstraint],
   )
 
   const handleAutoRange = useCallback(async () => {
@@ -546,13 +535,7 @@ export default function OptimiserConfig({
       if (Object.keys(nextRanges).length === 0) {
         throw new Error("No ranges returned for the selected constraints")
       }
-      const firstRange = nextRanges[constraintEntries[0]?.[0]]
-      onUpdate({
-        frontier_ranges: nextRanges,
-        ...(constraintCount === 1 && firstRange
-          ? { frontier_min: firstRange.min, frontier_max: firstRange.max }
-          : {}),
-      })
+      onUpdate({ frontier_ranges: nextRanges })
       if (response.warning) setAutoRangeError(response.warning)
     } catch (err) {
       if (!controller.signal.aborted) {
@@ -579,7 +562,7 @@ export default function OptimiserConfig({
         setAutoRangeLoading(false)
       }
     }
-  }, [buildGraphCb, constraintCount, constraintEntries, nodeId, onUpdate])
+  }, [buildGraphCb, constraintEntries, nodeId, onUpdate])
 
   const renderConstraintBoundRows = () => (
     <div className="space-y-1.5">
@@ -739,7 +722,7 @@ export default function OptimiserConfig({
                       onClick={() => handleToggleFactor(name)}
                       className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors"
                       style={{
-                        background: selected ? withAlpha(accentColor, 0.1) : "var(--bg-surface)",
+                        background: selected ? withAlpha(accentColor, 0.1) : "var(--bg-panel)",
                         border: `1px solid ${selected ? withAlpha(accentColor, 0.3) : "var(--border)"}`,
                       }}
                     >
@@ -800,7 +783,7 @@ export default function OptimiserConfig({
             <div
               data-testid="constraint-settings-card"
               className="p-2 rounded-lg space-y-2"
-              style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}
+              style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
             >
               <div className="space-y-1.5">
                 {constraintEntries.map(([name]) => {
@@ -1098,7 +1081,7 @@ export default function OptimiserConfig({
 
       {/* Source size preview (hidden when unreadable — metadata isn't available for live data) */}
       {solveEstimate && solveEstimate.quote_count != null && solveEstimate.expanded_row_count != null && (
-        <div className="grid grid-cols-3 gap-2 px-3 py-2 rounded-lg text-[11px]" style={{ background: "var(--bg-surface)", border: "1px solid var(--border)" }}>
+        <div className="grid grid-cols-3 gap-2 px-3 py-2 rounded-lg text-[11px]" style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}>
           <div className="min-w-0">
             <div style={{ color: "var(--text-muted)" }}>Quotes</div>
             <div className="font-mono truncate" style={{ color: "var(--text-primary)" }}>

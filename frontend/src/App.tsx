@@ -92,7 +92,7 @@ const NodeSearch = lazy(() => import("./components/NodeSearch"))
 const OptimiserPreview = lazy(() => import("./panels/OptimiserPreview"))
 
 // ---------------------------------------------------------------------------
-// Module-level constants (no dynamic values â€” avoids re-creating each render)
+// Module-level constants (no dynamic values — avoids re-creating each render)
 // ---------------------------------------------------------------------------
 
 const defaultEdgeOptions = {
@@ -199,7 +199,7 @@ const edgeJoinSwapFailureMessages: Record<EdgeJoinSwapInputsFailureReason, strin
 // work are carried into that registry module.
 
 // ---------------------------------------------------------------------------
-// FlowEditor â€” main orchestrator
+// FlowEditor — main orchestrator
 // ---------------------------------------------------------------------------
 
 function FlowEditor() {
@@ -302,7 +302,7 @@ function FlowEditor() {
 
   // The last selected id is updated at selection event boundaries so the panel
   // can remain visible while React Flow reports a canvas deselection.
-  // Ref for setPreviewData â€” resolved after usePipelineAPI hook below.
+  // Ref for setPreviewData — resolved after usePipelineAPI hook below.
   // Needed because closePanel is defined before the hook for hook-ordering rules.
   const setPreviewDataRef = useRef<(d: null) => void>(() => {})
 
@@ -316,7 +316,7 @@ function FlowEditor() {
     setGitOpen(false)
   }, [setUtilityOpen, setImportsOpen, setGitOpen])
 
-  // Node results store â€” background jobs + cached results
+  // Node results store — background jobs + cached results
   const getOptimiserPreview = useNodeResultsStore((s) => s.getOptimiserPreview)
   const getModellingPreview = useNodeResultsStore((s) => s.getModellingPreview)
   const touchOptimiserPreview = useNodeResultsStore((s) => s.touchOptimiserPreview)
@@ -771,13 +771,10 @@ function FlowEditor() {
       setSelectedNode((prev) => (prev && prev.id === id ? { ...prev, data } : prev))
 
       if (removed.length > 0) {
-        const ports = removed
-          .map((r) => (r.sourceHandle === null ? "the default frame" : `frame "${r.sourceHandle}"`))
-          .join(", ")
         const label = String(data.label ?? id)
         addToast(
           "warning",
-          `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: ${ports} no longer ${removed.length === 1 ? "exists" : "exist"} after your edit.`,
+          `Disconnected ${removed.length} edge${removed.length === 1 ? "" : "s"} from ${label}: the source ${removed.length === 1 ? "frame no longer exists" : "frames no longer exist"} after your edit.`,
         )
       }
       return { ok: true }
@@ -1084,7 +1081,7 @@ function FlowEditor() {
             <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] font-medium"
               style={{ background: 'var(--danger-soft-strong)', color: 'var(--danger-text)', borderBottom: '1px solid var(--danger-border-strong)' }}>
               <span className="flex-1 truncate">{syncBanner}</span>
-              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">âœ•</button>
+              <button onClick={() => setSyncBanner(null)} className="opacity-60 hover:opacity-100">✕</button>
             </div>
           )}
           <ErrorBoundary name="Canvas">

@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest"
 import { NODE_TYPES, NODE_TYPE_META, PALETTE_TYPES, SINK_ONLY_TYPES, SOURCE_ONLY_TYPES, isSingletonType } from "../nodeTypes"
 
 describe("canonical data IO node types", () => {
-  it("exposes dataInput and dataOutput but no legacy source or sink", () => {
+  it("exposes dataInput and dataOutput", () => {
     expect(NODE_TYPES.DATA_INPUT).toBe("dataInput")
     expect(NODE_TYPES.DATA_OUTPUT).toBe("dataOutput")
-    expect(Object.values(NODE_TYPES)).not.toContain("dataSource")
-    expect(Object.values(NODE_TYPES)).not.toContain("dataSink")
   })
 
   it("uses complete canonical defaults", () => {

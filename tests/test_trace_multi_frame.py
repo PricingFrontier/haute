@@ -61,7 +61,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.chdir(tmp_path)
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
     data_path = tmp_path / "data" / "data_model_example.json"
     data_path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,7 +73,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     )
     yield data_path
     set_project_root(original)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
 
 def test_trace_through_multi_frame_source_succeeds(project: Path) -> None:
@@ -297,7 +297,7 @@ def test_banding_factor_dtypes_scoped_to_consumed_frame(
     drivers_table = next(t for t in config["tables"] if t["label"] == "drivers")
     next(c for c in drivers_table["columns"] if c["name"] == "policy_id")["type"] = "float"
     build_per_port_cache(project, config, _json_cache_dir(project, "working"))
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
     graph = make_graph(
         {
@@ -350,7 +350,7 @@ def test_rating_factor_dtypes_scoped_to_consumed_frame(
     drivers_table = next(t for t in config["tables"] if t["label"] == "drivers")
     next(c for c in drivers_table["columns"] if c["name"] == "policy_id")["type"] = "float"
     build_per_port_cache(project, config, _json_cache_dir(project, "working"))
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
     graph = make_graph(
         {

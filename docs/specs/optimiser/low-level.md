@@ -5,11 +5,12 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point summary derivation, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
-| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), frontier-auto-range estimation (foreground and streaming/background), ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
+| `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
 | `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for the `OPTIMISER_APPLY` node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked `OPTIMISER_APPLY` output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
 | `src/haute/schemas.py` | Shared Pydantic contracts for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
+| `frontend/src/api/types.ts` | Canonical frontend optimiser response contracts, including `OptimiserSolveResult`; panels, stores, and tests import this type directly without panel-owned aliases. |
 
 ## Key types and data structures
 
@@ -28,8 +29,8 @@ in `optimiser.py`). Instance state:
   `CancellableJobRegistry` instances. `_solve_jobs`/`_auto_range_jobs` key single-job
   cancellation by `(job_type, job_id)`/a job key respectively; `_graph_node_setup_jobs` keys by
   the *graph+node* coordination key so solve setup and background auto-range setup cannot overlap
-  for a given graph/node. Synchronous `/estimate` and synchronous auto-range do not register in
-  this coordinator. `register_latest` on the registry supersedes/stops whatever was previously
+  for a given graph/node. Synchronous `/estimate` does not register in this coordinator.
+  `register_latest` on the registry supersedes/stops whatever was previously
   registered under the same key — the single-flight check normally rejects such overlap first.
 - `_graph_node_setup_singleflight: SingleFlightCoordinator` — a second bookkeeping structure
   keyed identically to `_graph_node_setup_jobs`, used to *reject* (409) a concurrent submission
@@ -173,10 +174,10 @@ The spawned solver thread updates progress to "Solving", then — inside
 - **Online** (`_solve_online`): constructs `price_contour.OnlineOptimiser(objective,
   constraints, max_iter, tolerance, record_history)` and solves directly against the passed
   `QuoteGrid`.
-- **Ratebook** (`_solve_ratebook`): requires a non-`None` ratebook factors handle
-  (raises `RuntimeError` otherwise — "Ratebook mode requires a banding source"); persists an
-  eager `pl.DataFrame` handle if one was passed directly rather than already on disk; validates
-  the configured factor columns against the artifact's own columns; builds `factor_contexts` via
+- **Ratebook** (`_solve_ratebook`): requires a persisted ratebook factors handle
+  (raises `RuntimeError` otherwise — "Ratebook mode requires a banding source"); validates
+  the configured factor columns and configured quote-id column against the artifact's own
+  columns; builds `factor_contexts` via
   `_build_ratebook_factor_contexts` (which calls
   `price_contour.build_ratebook_factor_contexts_from_parquet_chunked` with the solved
   `QuoteGrid`'s quote population passed in for cross-validation); constructs
@@ -206,17 +207,12 @@ classification is purely by exception type, not by origin.
 
 ### Frontier auto-range estimation
 
-Two entry points share `_prepare_frontier_auto_range` — validate config/mode, resolve
+`start_frontier_auto_range` uses `_prepare_frontier_auto_range` to validate config/mode, resolve
 chunk size/partition count/timeout, compute the required-column projection, and attempt to
 prove a `_StreamingAutoRangePlan` (`_build_streaming_auto_range_plan`), falling back to
 the classic non-streaming path when the plan cannot be proven (`ProjectionImpossibleError`) or
 raising a 422 when the chunking itself is unsupported (`ChunkPlanUnsupportedError`).
 
-- `estimate_frontier_auto_range` — **synchronous**: runs on the request thread, admits
-  a non-cancellable execution context, calls `_run_frontier_auto_range_job` directly, and
-  unconditionally deletes the job from the store in `finally` regardless of outcome. There is no
-  polling API for this variant; any progress/metrics written to the job during execution are
-  discarded the moment the request returns.
 - `start_frontier_auto_range` — **background**: under `_start_lock`, idempotently
   returns the existing job id if an auto-range job with the same graph fingerprint and node id is
   already running (request-only `streaming_chunk_size` is not part of this key; unlike
@@ -236,7 +232,7 @@ raising a 422 when the chunking itself is unsupported (`ChunkPlanUnsupportedErro
 phase and a background sweep phase, mirroring the solve submission pattern:
 
 1. **Synchronous** (still on the request thread, so contract errors surface as 4xx on this
-   request exactly as the old fully-inline route did): resolves the job's solver/quote-grid
+   request): resolves the job's solver/quote-grid
    runtime state (touching heavy objects back into presence if evicted), enforces the compute
    budget (`haute.routes._optimiser_limits.enforce_frontier_compute_budget` — rejects with 422 before
    the solver is invoked if `n_points_per_dim ** n_constraints` would exceed
@@ -320,8 +316,9 @@ go through the same shared `configure_mlflow_tracking()` / `resolve_experiment_n
 
 ### Artifact lifecycle (persist / validate / load / cleanup)
 
-Two artifact families, both rooted under a resolved subdirectory of the OS temp directory
-(`<tempdir>/haute/optimiser_apply`, `<tempdir>/haute/optimiser_ratebook_factors`):
+Two artifact families, both rooted under the versioned marker-aware OS-temp hierarchy
+(`<tempdir>/haute/artifacts/v1/optimiser_apply`,
+`<tempdir>/haute/artifacts/v1/optimiser_ratebook_factors`):
 
 - **Persist** (`_persist_apply_result_artifact`, `_persist_ratebook_factors_artifact`,
   `_persist_ratebook_factors_lazy_artifact` — the lazy variant sinks a
@@ -353,10 +350,12 @@ Two artifact families, both rooted under a resolved subdirectory of the OS temp 
   (`updated_job.get("artifact_handles") is not artifact_handles`) rather than an equality check,
   used to detect when the atomic job-store update silently no-opped because the job's expected
   status no longer held.
-- **Restart cleanup**: `reap_stale_optimiser_artifacts` reads the strict non-negative
-  `HAUTE_ARTIFACT_STALE_SECONDS` interval (default 86,400 seconds), reaps only valid stale markers
-  from the two dedicated roots, and logs bounded inspected/removed/failed/reclaimed-byte counts.
-  The server lifespan invokes it once after loading the project environment.
+- **Restart cleanup**: the server lifespan reads the strict non-negative
+  `HAUTE_ARTIFACT_STALE_SECONDS` interval (default 86,400 seconds) after loading the project
+  environment, then passes it to `reap_stale_optimiser_artifacts`. The reaper checks only valid
+  stale markers from the two dedicated roots and logs bounded
+  inspected/removed/failed/reclaimed-byte counts. One tracked worker-thread reap is scheduled
+  without delaying readiness; shutdown observes the task.
 
 ### Ratebook factor-table canonicalisation (`src/haute/routes/_optimiser_service.py`)
 
@@ -484,23 +483,14 @@ returned as a generic `status: "error"` payload.
   `_check_no_concurrent_jobs` scans the shared optimiser store and blocks a second solve for any
   graph/node. `estimate`, `frontier_auto_range`, and `frontier_recompute` are explicitly excluded
   (`_NON_BLOCKING_RUNNING_JOB_TYPES`), so they do not reserve that global solve slot. Independently,
-  the graph/node coordinator prevents a solve setup and a *background* auto-range setup from
-  overlapping on the same graph/node; synchronous estimate and synchronous auto-range do not use
-  that coordinator.
+  the graph/node coordinator prevents a solve setup and a background auto-range setup from
+  overlapping on the same graph/node; synchronous estimate does not use that coordinator.
 - **`_ESTIMATE_JOB_TYPE` is assigned by `/estimate`, not by frontier auto-range.**
   `haute.routes.optimiser._optimiser_input_metrics` (backing `POST /api/optimiser/estimate`)
   creates a short-lived job tagged `job_type = _ESTIMATE_JOB_TYPE` and
-  unconditionally removes it in a `finally: _remove_estimate_job(job_id)` block
-  — mirroring the "synchronous auto-range job is unconditionally deleted" pattern below. This
-  tag is what lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an
+  unconditionally removes it in a `finally: _remove_estimate_job(job_id)` block. This tag is what
+  lets `_NON_BLOCKING_RUNNING_JOB_TYPES` exempt an
   in-flight `/estimate` call from `_check_no_concurrent_jobs`'s store-wide scan.
-  `estimate_frontier_auto_range`'s own internal job, by contrast, is created with
-  `job_type = _FRONTIER_AUTO_RANGE_JOB_TYPE`, not `_ESTIMATE_JOB_TYPE` — a separate, correctly
-  distinct job type, not evidence that `_ESTIMATE_JOB_TYPE` itself is unused.
-- **Synchronous auto-range job is unconditionally deleted.** `estimate_frontier_auto_range`
-  deletes its internal job from the store in `finally` regardless of success or failure, so any
-  execution-metrics publisher bound to that job during the run is write-only from an external
-  poller's perspective — nothing can observe its progress before the request returns.
 - **std of a single-quote scenario-value distribution is hardcoded to `0.0`.**
   `_compute_scenario_value_stats` special-cases `n == 1` rather than calling Polars' sample
   standard deviation (`ddof=1`), which is undefined (`null`) for a single observation and would
@@ -532,9 +522,6 @@ returned as a generic `status: "error"` payload.
   row-local (global state, ordering-sensitive logic, arbitrary custom code) silently falls back
   to the full non-streaming estimate path rather than raising — this is a memory/latency
   trade-off, not a correctness gate.
-- **Ratebook factor artifact quote-id fallback.** `_ratebook_factor_artifact_quote_id` prefers
-  the configured `quote_id` column name but falls back to a literal `"quote_id"` column if
-  present, for compatibility with older artifacts that used the default name unconditionally.
 - **Two overlapping single-active-job mechanisms.** `_graph_node_setup_jobs` (a
   `CancellableJobRegistry`) and `_graph_node_setup_singleflight` (a `SingleFlightCoordinator`)
   are both keyed identically by graph+node and released together at every exit path found in the
@@ -560,8 +547,8 @@ returned as a generic `status: "error"` payload.
 
 ## Error handling
 
-- **Synchronous request-thread paths** (`optimiser.py` route handlers, and
-  `estimate_frontier_auto_range`) raise `fastapi.HTTPException` directly for validation and
+- **Synchronous request-thread paths** (`optimiser.py` route handlers) raise
+  `fastapi.HTTPException` directly for validation and
   contract failures: 400 (bad config, missing/wrong-dtype columns, null quote ids, non-finite
   values, a null value in an objective/constraint/scenario column, disconnected `data_input`,
   missing ratebook banding source, malformed frontier-point data, incomplete job summaries), 404
@@ -752,3 +739,14 @@ Focused route/service tests cover canonical data-input schema discovery, file an
 projection, missing/corrupt/stale generations, optional-code output columns, multiple direct
 parents, fingerprint changes across refresh, lease lifetime/cancellation, no provider calls on
 cache reads, and absence of `DATA_SOURCE`.
+
+## Approved change contract — prerelease canonical frontier ranges
+
+The target is defined in
+[the optimiser high-level contract](high-level.md#approved-change-contract--prerelease-canonical-frontier-ranges).
+
+- `src/haute/routes/_optimiser_service.py::_auto_frontier_ranges_from_config` resolves ranges
+  exclusively from `frontier_ranges`; it contains no global-range compatibility branch.
+- The missing/malformed/range-order failure model remains strict and names the exact constraint.
+- Backend fixtures that exercise frontier computation use per-constraint ranges; historical
+  scalar-field fixtures are deleted.

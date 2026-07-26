@@ -52,8 +52,6 @@ __all__ = [
     "_extract_rating_step_user_code",
     "_extract_external_user_code",
     "_unwrap_chain_assignment",
-    "_strip_generated_boilerplate_from_code",
-    "_strip_source_load_boilerplate_from_code",
     "extract_user_code",
     "BOILERPLATE_MATCHERS",
     "BoilerplateMatcher",
@@ -283,25 +281,6 @@ def _strip_redundant_rhs_wrapper_once(code: str) -> str | None:
 def _unwrap_chain_assignment(code: str) -> str | None:
     """Strip provably-redundant parens wrapping the entire RHS of ``df = (...)``.
 
-    Historically this helper rewrote legacy chain-wrapped bodies
-    (``df = (\\n <upstream>\\n .filter(...)\\n)``) into bare expression
-    chains for the GUI code box.  That contract was retired for two
-    reasons:
-
-    * The textual split it used (first ``(`` / trailing ``)``) corrupted
-      any statement whose parens were NOT one wrapping pair —
-      ``df = (a + b) * c`` became the invalid ``a + b) * c`` and one
-      save/load cycle made the file unrunnable (CODE_REVIEW.md C5).
-    * Expression-form output is itself round-trip-unsafe: the save path
-      (``_codegen_builders._wrap_user_code``) re-emits code boxes
-      verbatim as statement bodies, so a bare multi-line chain re-emits
-      as invalid Python and a single-line expression re-emits as a dead
-      expression statement that silently turns the node into a
-      passthrough.
-
-    The replacement contract — round-trip safety beats cosmetic
-    unwrapping:
-
     * Output is always STATEMENT form (``df = ...``), never a bare
       expression, so re-emitting through codegen is a fixpoint.
     * A wrapping paren pair is removed only when
@@ -416,28 +395,6 @@ def _strip_generated_passthrough_from_code(
 # ---------------------------------------------------------------------------
 
 
-def _strip_source_load_boilerplate_from_code(code: str) -> str:
-    """Strip generated data-source load statements from transform code.
-
-    Data-source ``code`` is user-authored post-import transformation code. The
-    file/table load itself comes from declarative config and must not round-trip
-    into the UI code box, even if an older generated file contains duplicated
-    ``df = pl.scan_parquet(...)`` lines.
-    """
-    stripped = code.strip()
-    if not stripped:
-        return ""
-
-    lines = stripped.splitlines()
-    end_idx = _source_load_boilerplate_end_index(lines)
-    has_source_load = any(_is_source_load_statement_start(line) for line in lines[:end_idx])
-    if not has_source_load:
-        return stripped
-    code = "\n".join(lines[end_idx:]).strip()
-    code_lines = _strip_trailing_return(code.splitlines(), ("df",))
-    return "\n".join(code_lines).strip()
-
-
 class MatcherResult(NamedTuple):
     """Result of a boilerplate matcher.
 
@@ -469,24 +426,7 @@ def _match_polars(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherRe
     return MatcherResult(start_idx=0, return_vars=("df",))
 
 
-_SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
-    "df=pl.scan_parquet(",
-    "df=pl.scan_csv(",
-    "df=pl.scan_ndjson(",
-    "df=pl.read_json(",
-    "df=read_source(",
-    "df=read_data_source(",
-    "df=resolve_data_input_from_config(",
-    "df=resolve_api_input_from_config(",
-    "returnpl.scan_parquet(",
-    "returnpl.scan_csv(",
-    "returnpl.scan_ndjson(",
-    "returnpl.read_json(",
-    "returnread_source(",
-    "returnread_data_source(",
-    "returnresolve_data_input_from_config(",
-    "returnresolve_api_input_from_config(",
-)
+_SOURCE_LOAD_PREFIXES: tuple[str, ...] = ("df=resolve_data_input_from_config(",)
 
 
 def _is_source_load_statement_start(line: str) -> bool:
@@ -538,12 +478,10 @@ def _match_source(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherRe
 
 
 def _match_scenario_expander(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
-    """ScenarioExpander nodes: skip generated expansion scaffold or legacy alias.
+    """ScenarioExpander nodes: skip the generated expansion scaffold.
 
-    Current codegen emits the shared-helper scaffold (imports + ``df =
-    expand_scenarios_from_config(...)``) exactly like ratingStep; older files
-    carried only a bare ``df = <param>`` / ``return <param>`` alias.  Both are
-    generated boilerplate to skip before the user's post-expansion code.
+    Current codegen emits imports plus ``df =
+    expand_scenarios_from_config(...)`` before user post-expansion code.
     """
     if not cleaned:
         return MatcherResult(start_idx=0, return_vars=("df",))
@@ -561,14 +499,6 @@ def _match_scenario_expander(cleaned: list[str], param_names: tuple[str, ...]) -
             depth += cleaned[j].count("(") - cleaned[j].count(")")
         return MatcherResult(start_idx=j + 1, return_vars=("df",), generated_scaffold=True)
 
-    first = param_names[0] if param_names else "df"
-    first_line = cleaned[0].strip().replace(" ", "")
-    generated_aliases = {f"df={first}", f"return{first}"}
-    if first_line in generated_aliases:
-        return MatcherResult(
-            start_idx=_statement_end_index(cleaned, 0),
-            return_vars=("df",),
-        )
     return MatcherResult(start_idx=0, return_vars=("df",))
 
 
@@ -645,8 +575,8 @@ def _match_model_score(cleaned: list[str], param_names: tuple[str, ...]) -> Matc
     start_idx = _outer_boilerplate_call_end_line(cleaned, _MODEL_SCORE_CALL_NAMES)
     if start_idx is None:
         # No call found — treat the whole body as boilerplate (empty user code)
-        return MatcherResult(start_idx=len(cleaned) + 1, return_vars=("df", "result"))
-    return MatcherResult(start_idx=start_idx, return_vars=("df", "result"))
+        return MatcherResult(start_idx=len(cleaned) + 1, return_vars=("df",))
+    return MatcherResult(start_idx=start_idx, return_vars=("df",))
 
 
 def _match_rating_step(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
@@ -662,54 +592,28 @@ def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> Matcher
 
     The generated boilerplate (see the ``_RETAINED_EXTERNAL`` template in
     ``_codegen_builders``) is loader imports followed by the obj-load —
-    either ``obj = load_external_object(...)`` or a legacy
-    ``with open(...)`` block.  User code is emitted strictly AFTER the
-    load, so the load is the boundary that makes import position
-    meaningful:
+    ``obj = load_external_object_from_config(...)``. User code is emitted
+    strictly AFTER the load, so the load is the boundary that makes import
+    position meaningful:
 
     * Imports BEFORE the load belong to the loader and are stripped —
       codegen regenerates them on every save.
-    * Imports AFTER the load are user code and are preserved.  The old
-      scan treated every import in the prefix as boilerplate, silently
-      dropping user imports that directly followed the load and
-      re-emitting files that no longer ran standalone.
+    * Imports AFTER the load are user code and are preserved.
     * A body with NO load at all contains no generated boilerplate, so
       its imports are user code too.
 
-    ``with open(...)`` blocks and ``obj = …`` / ``obj.…`` statements in
-    the prefix are still treated as load boilerplate wherever they
-    appear (legacy multi-step loads); only import handling is
-    position-aware.
     """
     if not cleaned:
         return MatcherResult(start_idx=0, return_vars=("df",))
 
-    # Determine the base indentation from the first non-blank line
-    base_indent = 0
-    for line in cleaned:
-        if line.strip():
-            base_indent = len(line) - len(line.lstrip())
-            break
-
     i = 0
-    in_with = False
     saw_load = False
     first_import_idx: int | None = None
     while i < len(cleaned):
         s = cleaned[i].strip()
-        line_indent = len(cleaned[i]) - len(cleaned[i].lstrip()) if s else 0
-
         if not s:
             i += 1
             continue
-
-        # Inside a with-block: skip indented body lines
-        if in_with:
-            if line_indent > base_indent:
-                i += 1
-                continue
-            in_with = False
-            # fall through to check this line normally
 
         if s.startswith("import ") or s.startswith("from "):
             if saw_load:
@@ -718,12 +622,7 @@ def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> Matcher
                 first_import_idx = i
             i += 1
             continue
-        if s.startswith("with open("):
-            saw_load = True
-            in_with = True
-            i += 1
-            continue
-        if s.startswith("obj = ") or s.startswith("obj."):
+        if "load_external_object_from_config(" in s:
             saw_load = True
             i = _statement_end_index(cleaned, i)
             continue
@@ -738,25 +637,15 @@ def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> Matcher
     return MatcherResult(start_idx=i, return_vars=("df",))
 
 
-# Registry of boilerplate matchers, keyed by *kind*.  The kind string
-# is the public key callers use to select a matcher; aliases for the
-# same matcher are allowed so callers can use either the NodeType style
-# ("dataInput") or the Python-snake style ("data_input", "source").
+# Registry of boilerplate matchers, keyed by the internal kind supplied by
+# each extractor.
 BOILERPLATE_MATCHERS: dict[str, BoilerplateMatcher] = {
     "polars": _match_polars,
-    "transform": _match_polars,
     "source": _match_source,
-    "dataInput": _match_source,
-    "data_input": _match_source,
     "scenario_expander": _match_scenario_expander,
-    "scenarioExpander": _match_scenario_expander,
     "model_score": _match_model_score,
-    "modelScore": _match_model_score,
     "rating_step": _match_rating_step,
-    "ratingStep": _match_rating_step,
     "external": _match_external,
-    "externalFile": _match_external,
-    "external_file": _match_external,
 }
 
 
@@ -834,7 +723,6 @@ def _finalise_polars(code: str, param_names: tuple[str, ...]) -> str:
 
 def _finalise_source(code: str, param_names: tuple[str, ...]) -> str:
     """Source-specific post-processing: unwrap chain-assignment pattern if present."""
-    code = _strip_source_load_boilerplate_from_code(code)
     chain = _unwrap_chain_assignment(code)
     if chain is not None:
         return chain
@@ -875,14 +763,8 @@ def _rewrite_identifier_tokens(source: str, *, old: str, new: str, context: str)
 
 
 def _finalise_model_score(code: str, param_names: tuple[str, ...]) -> str:
-    """Normalise legacy modelScore post-code from ``result`` to ``df``."""
-    rewritten = _rewrite_identifier_tokens(
-        code,
-        old="result",
-        new="df",
-        context="model score user code",
-    )
-    return _strip_generated_passthrough_from_code(rewritten, ("df",))
+    """Strip current generated model-score passthrough code."""
+    return _strip_generated_passthrough_from_code(code, ("df",))
 
 
 def _finalise_rating_step(code: str, param_names: tuple[str, ...]) -> str:
@@ -937,78 +819,12 @@ def _finalise_external(code: str, param_names: tuple[str, ...]) -> str:
 # engine pass.
 _FINALISERS: dict[str, Callable[[str, tuple[str, ...]], str]] = {
     "polars": _finalise_polars,
-    "transform": _finalise_polars,
     "source": _finalise_source,
-    "dataInput": _finalise_source,
-    "data_input": _finalise_source,
     "scenario_expander": _finalise_polars,
-    "scenarioExpander": _finalise_polars,
     "model_score": _finalise_model_score,
-    "modelScore": _finalise_model_score,
     "rating_step": _finalise_rating_step,
-    "ratingStep": _finalise_rating_step,
     "external": _finalise_external,
-    "externalFile": _finalise_external,
-    "external_file": _finalise_external,
 }
-
-
-def _strip_generated_boilerplate_from_code(
-    code: str,
-    *,
-    kind: str,
-    param_names: tuple[str, ...] | list[str] | None = None,
-) -> str:
-    """Strip generated scaffold from a persisted code-editor snippet.
-
-    Parser extraction handles full function bodies. Codegen also needs a narrow
-    guard for older or polluted configs where generated scaffold has already
-    leaked into ``config["code"]``. This helper only invokes the heavier
-    extractor when a scaffold marker is present; ordinary user code is returned
-    unchanged.
-    """
-    stripped = code.strip()
-    if not stripped:
-        return ""
-
-    params = tuple(param_names or ())
-    if kind in {"source", "dataInput", "data_input"}:
-        return _strip_source_load_boilerplate_from_code(stripped)
-    if kind in {"scenario_expander", "scenarioExpander"}:
-        if "expand_scenarios_from_config(" in stripped:
-            return extract_user_code(stripped, kind="scenario_expander", param_names=params)
-        first = params[0] if params else ""
-        first_line = stripped.splitlines()[0].strip().replace(" ", "")
-        if first and first_line in {f"df={first}", f"return{first}"}:
-            return extract_user_code(stripped, kind="scenario_expander", param_names=params)
-        return stripped
-    if kind in {"model_score", "modelScore"}:
-        if "score_from_config(" in stripped:
-            return extract_user_code(stripped, kind="model_score", param_names=params)
-        return _finalise_model_score(stripped, params)
-    if kind in {"rating_step", "ratingStep"}:
-        if "apply_rating_step_from_config(" in stripped:
-            return extract_user_code(stripped, kind="rating_step", param_names=params)
-        return _finalise_rating_step(stripped, params)
-    if kind in {"external", "externalFile", "external_file"}:
-        markers = (
-            "load_external_object(",
-            "with open(",
-            "pickle.load(",
-            "joblib.load(",
-            "obj = load",
-        )
-        if any(marker in stripped for marker in markers):
-            return extract_user_code(stripped, kind="external", param_names=params)
-        return stripped
-    if kind in {"polars", "transform"}:
-        first = params[0] if params else ""
-        first_line = stripped.splitlines()[0].strip().replace(" ", "")
-        if len(params) == 1 and first and first_line in {f"df={first}", f"return{first}"}:
-            return extract_user_code(stripped, kind="polars", param_names=params)
-        return stripped
-
-    return stripped
 
 
 def extract_user_code(
@@ -1099,10 +915,9 @@ def _extract_user_code(body_source: str, param_names: list[str]) -> str:
 def _extract_source_user_code(body_source: str) -> str:
     """Extract user code from a Data Input body.
 
-    The auto-generated boilerplate is a source-load assignment or return
-    statement at the top (for example ``df = pl.scan_parquet("...")`` or
-    ``return resolve_api_input_from_config(...)``). Everything after that
-    load — minus the trailing ``return df`` — is user code.
+    The generated boilerplate assigns
+    ``resolve_data_input_from_config(...)`` to ``df``. Everything after that
+    assignment — minus the trailing ``return df`` — is user code.
 
     User code follows the generated boilerplate directly.
     """
@@ -1121,12 +936,7 @@ def _extract_scenario_expander_user_code(body_source: str, param_names: list[str
 def _extract_model_score_user_code(body_source: str) -> str:
     """Extract user post-processing code from a MODEL_SCORE function body.
 
-    The auto-generated boilerplate is the ``from pathlib ...`` /
-    ``score_from_config(...)`` block.  Everything after the
-    ``result = score_from_config(...)`` line (minus ``return result``)
-    is user code.
-
-    User code follows the generated scoring block directly.
+    User code follows the generated ``score_from_config(...)`` block.
     """
     return extract_user_code(body_source, kind="model_score")
 
@@ -1139,12 +949,7 @@ def _extract_rating_step_user_code(body_source: str, param_names: list[str]) -> 
 def _extract_external_user_code(body_source: str, param_names: list[str]) -> str:
     """Extract user code from an externalFile function body.
 
-    Strips the docstring, then scans forward to skip the generated
-    file-loading boilerplate (loader imports, with-open blocks, obj
-    assignments / method calls).  Imports are loader boilerplate only
-    while they precede the obj-load; user imports after the load — and
-    all imports in a body with no load — are preserved (see
-    :func:`_match_external`).  Everything between the boilerplate and a
-    trailing ``return df`` is the user code.
+    Strips the generated ``load_external_object_from_config(...)`` block and
+    trailing ``return df`` while preserving authored code.
     """
     return extract_user_code(body_source, kind="external", param_names=tuple(param_names))

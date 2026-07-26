@@ -38,6 +38,7 @@ dependencies = [
     "libcst>=1.8.6,<2",
     "watchfiles>=1.1.1,<2",
     "catboost>=1.2.10,<2",
+    "numpy>=2.0,<3",
     "structlog>=25.5.0,<26",
     "orjson>=3.11.7,<4",
     "price-contour>=0.4.1,<0.5",

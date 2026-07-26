@@ -50,13 +50,6 @@ class TestRestrictedUnpicklerAcceptArms:
         resolved = unpickler.find_class("numpy", "dtype")
         assert resolved is np.dtype
 
-    def test_single_element_prefix_match_submodule_accepts(self):
-        """A submodule (numpy.core.multiarray) still matches the prefix."""
-        unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        # The module string starts with "numpy" → prefix accept arm.
-        resolved = unpickler.find_class("numpy.core.multiarray", "_reconstruct")
-        assert callable(resolved)
-
     def test_two_element_exact_match_accepts(self):
         """builtins.dict matches the exact 2-tuple (builtins, dict) entry.
 

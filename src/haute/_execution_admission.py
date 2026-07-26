@@ -22,7 +22,6 @@ _MIB = 1024 * 1024
 _GIB = 1024 * _MIB
 _MEMORY_POLICY_ENV = "HAUTE_EXECUTION_MEMORY_POLICY"
 _ADAPTIVE_MEMORY_POLICY_NAME = "local_adaptive"
-_ADAPTIVE_MEMORY_POLICY_ALIAS = "adaptive"
 _FIXED_MEMORY_POLICY_NAME = "fixed"
 _STRICT_SERVER_MEMORY_POLICY_NAME = "strict_server"
 _OS_RESERVE_ENV = (
@@ -338,8 +337,6 @@ def _fixed_default_memory_limit(profile: ExecutionProfile) -> _ResolvedMemoryLim
 def _memory_policy_name() -> str:
     raw = os.environ.get(_MEMORY_POLICY_ENV, _ADAPTIVE_MEMORY_POLICY_NAME)
     policy = raw.strip().lower()
-    if policy == _ADAPTIVE_MEMORY_POLICY_ALIAS:
-        return _ADAPTIVE_MEMORY_POLICY_NAME
     if policy not in {
         _ADAPTIVE_MEMORY_POLICY_NAME,
         _FIXED_MEMORY_POLICY_NAME,
@@ -469,26 +466,6 @@ def create_admitted_execution_context(
             admission_release()
         raise
     return context
-
-
-def admit_execution(
-    *,
-    operation: str,
-    profile: ExecutionProfile,
-    job_id: str | None = None,
-    cancellation_token: ExecutionCancellationToken | None = None,
-    memory_sampler: Callable[[], int | None] | None = None,
-    memory_pressure_callback: Callable[..., None] | None = None,
-) -> ExecutionContext:
-    """Compatibility helper that resolves a budget and optionally records admission."""
-    return create_admitted_execution_context(
-        operation=operation,
-        profile=profile,
-        job_id=job_id,
-        cancellation_token=cancellation_token,
-        memory_sampler=memory_sampler,
-        memory_pressure_callback=memory_pressure_callback,
-    )
 
 
 def _memory_env_candidates(profile: ExecutionProfile) -> tuple[tuple[str, int], ...]:

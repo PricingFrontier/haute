@@ -38,9 +38,7 @@ In scope:
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `ImportsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
-  `ImportsPanel` is conditionally rendered; the older `SettingsModal` remains
-  a maintained, directly testable component but is not mounted by the
-  application.
+  `ImportsPanel` is the sole pipeline-imports editor.
 - Small generic hooks with no domain knowledge: `useClickOutside`,
   `useDragResize`, `useJobPolling` (+ its orchestrator
   `useBackgroundJobs`), `useMlflowBrowser`, `useSchemaFetch`,
@@ -121,8 +119,7 @@ the same machinery without re-implementing fetch/retry. `api/dispersion.ts`
 does own its response parsing locally rather than adding to
 `types/guards.ts` — a deliberate exception to the "every response goes
 through `types/guards.ts`" rule below, made for the same bundle-size reason
-the module is split out in the first place. Some
-mutation endpoints (`runFrontier`, `runDispersionEstimate`) front a
+the module is split out in the first place. `runDispersionEstimate` fronts a
 backend job that runs off the request thread: the client function itself
 polls a `.../status/{job_id}` endpoint on a fixed interval and resolves
 only once the job reaches a terminal status, so callers can still `await`
@@ -178,7 +175,7 @@ submodel navigation stack and is hidden entirely at depth 1.
 **Reusable controls and style.** The global stylesheet establishes the initial dark canvas and
 semantic tokens that all panels consume; it also owns native-control, scrollbar, and React
 Flow interaction defaults. `NodeTypeIcon` displays the canonical icon/colour and maps an
-unknown historical node type to Polars. `ToggleButtonGroup` is a real single-choice radio
+unknown node type to Polars. `ToggleButtonGroup` is a real single-choice radio
 group: only the selected option is in the tab order and Arrow keys/Home/End change both
 selection and focus. The shared form primitives associate labels with controls, honour
 disabled state, and buffer text locally until an explicit commit boundary, so typing into a
@@ -188,8 +185,7 @@ graph-backed configuration cannot create one undo entry per character.
 toolbar and rendered by the app's mutually-exclusive right-panel cascade. It delegates editing
 to `CodeEditor` and calls its parent for every editor change; the app applies those changes with
 the graph store's raw preamble setter, so importing text immediately affects derived dirty state
-without making an undo entry per keystroke. `SettingsModal` has the older dialog implementation
-of the same callback contract, but no production import or render site.
+without making an undo entry per keystroke.
 
 **Leaf helpers.** Chart ticks and optimiser-mode inference are deterministic and side-effect
 free. Trace formatting makes special values and calculation substitution visible rather than
@@ -285,9 +281,8 @@ therefore fail at the caller, consistent with the application's fail-loud policy
 - Cache-limit misconfiguration (`MAX_CACHED_*` set to a non-positive
   integer) throws immediately from `assertValidCacheLimit` rather than
   silently disabling eviction.
-- `runFrontier`/`runDispersionEstimate`'s embedded poll loop rejects with
-  an `ApiError` (carrying the job's message and, for frontier, its
-  `http_status_code`) on any non-`running`/non-`completed` terminal
+- `runDispersionEstimate`'s embedded poll loop rejects with
+  an `ApiError` carrying the job's message on any non-`running`/non-`completed` terminal
   status, and with a plain `Error` if a `"completed"` status arrives
   without a result/value payload — a job that finishes without the data
   it promised is a contract violation, not treated as success. A caller

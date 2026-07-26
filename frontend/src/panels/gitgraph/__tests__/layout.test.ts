@@ -44,7 +44,6 @@ const branch = (
   tip_sha: entries[0]?.sha ?? "",
   fork_point_sha: null,
   fork_of: null,
-  forked_from: null,
   fork_source_sha: null,
   fork_credit_sha: null,
   truncated: false,

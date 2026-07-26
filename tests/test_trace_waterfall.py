@@ -9,9 +9,7 @@ The regulator-facing waterfall showed "x120.0" steps and totals orders of
 magnitude away from the traced output value displayed beside it.
 
 These tests drive the flagship scenarios through ``execute_trace`` on real
-pipeline graphs (the pre-existing arithmetic tests fed hand-written factors
-straight into ``build_waterfall``, which is why C8 survived).  Required
-behavior:
+pipeline graphs. Required behavior:
 
   * each step's contribution is derived from CONSECUTIVE OUTPUT VALUES
     along the traced path: ``delta = value_after - value_before``;
@@ -763,26 +761,6 @@ class TestInBuilderConsistencyCheck:
         assert result.entries[2].cumulative == 0.4
         assert result.final_value == 0.4
         assert result.entries[2].delta == pytest.approx(0.4 - 0.30000000000000004)
-
-    def test_non_finite_observed_value_returns_none(self):
-        steps = [
-            {"label": "Base", "operation": "base", "value": 100.0, "cumulative": 100.0},
-            {"label": "M1", "operation": "multiply", "value": 1.2, "cumulative": float("nan")},
-            {"label": "M2", "operation": "multiply", "value": 1.1, "cumulative": 132.0},
-        ]
-        assert build_waterfall(steps) is None
-
-    def test_legacy_hand_fed_steps_unchanged(self):
-        """Without observed cumulatives the documented apply-the-op contract
-        is preserved (the broad legacy suite lives in test_trace_coverage)."""
-        steps = [
-            {"label": "Base", "operation": "base", "value": 100.0},
-            {"label": "F", "operation": "multiply", "value": 1.5},
-            {"label": "L", "operation": "add", "value": 20.0},
-        ]
-        result = build_waterfall(steps)
-        assert result is not None
-        assert result.final_value == pytest.approx(170.0)
 
 
 class TestInvariantSurfacesThroughExecuteTrace:

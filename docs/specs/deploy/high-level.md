@@ -200,7 +200,7 @@ approving it.
   categorical-level declarations) to detect train-vs-score drift.
 - **[optimiser](../optimiser/high-level.md)** (spec pending) — `_scorer.py` intercepts
   `optimiserApply` nodes and dispatches to `haute._optimiser_io` /
-  `haute.executor._dispatch_apply` for both file-based and MLflow-sourced ratebook
+  `haute._builders._dispatch_apply` for both file-based and MLflow-sourced ratebook
   artefacts.
 - **[io-layer](../io-layer/high-level.md)** — `_bundler.py` and `_schema.py` read static
   data sources and infer schemas via `haute._io.read_data_source` /

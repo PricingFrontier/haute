@@ -1,6 +1,6 @@
 import { useMemo } from "react"
 import type { Edge, Node } from "@xyflow/react"
-import type { SimpleEdge, SimpleNode } from "../panels/NodePanel"
+import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import useGraphStore from "../stores/useGraphStore"
 import { nodeData } from "../types/node"
 

@@ -7,12 +7,12 @@
 | `src/haute/trace.py` | Public facade and orchestrator. `execute_trace()` entry point, `PreviewReader` protocol, `TraceStep`/`TraceOmission`/`TraceResult` dataclasses, the trace execution cache (`_cache`, `TRACE_CACHE_MAX_BYTES`), row/omission assembly, column-relevance pruning, provenance, and JSON serialisation (`trace_result_to_dict`). Re-imports and re-exports expression-parser and node-type enricher names so `monkeypatch.setattr("haute.trace.<name>", ...)` in tests reaches the dispatch code in `_trace_enrichment.py`. |
 | `src/haute/_trace_correlation.py` | Post-hoc row correlation and schema diff. Value predicates/coercion (`_trace_values_match`, `_jsonify_row`), `SchemaDiff` computation, dtype-robust Polars match-expression construction, exact/relaxed row matching with ambiguity diagnostics, edge-join provenance-aware parent-row projection, per-frame row matching (`_match_parent_row`, shared by the single-frame and multi-frame paths), multi-frame per-edge parent resolution (`_resolve_multi_frame_parent`), and the backward-walk driver `_correlate_rows_posthoc`. |
 | `src/haute/_trace_enrichment.py` | Node-type enrichers (`enrich_rating_step`, `enrich_banding`, `enrich_model_score`, `enrich_scenario_expansion`, `enrich_live_switch`, `enrich_optimiser_apply`), row-lineage-type detection (`detect_row_lineage_type`, backed by `_node_output_row_count` for multi-frame-safe row counting), and the per-step dispatch walk (`enrich_steps`) that drives expression parsing/evaluation (with a pre-assignment-value guard for self-referential columns), intra-node chain analysis, recursive upstream input-source derivation, rename detection, and node-type dispatch for every `TraceStep`. |
-| `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the generic `build_waterfall()` API (hand-authored factor lists), the value-derived `build_waterfall_from_steps()` (traced-path driver), and the C8 arithmetic-reconciliation guards. |
+| `src/haute/_trace_waterfall.py` | Waterfall assembly for sequential multiplicative/additive rating chains. `WaterfallEntry`/`WaterfallResult` dataclasses, the value-derived `build_waterfall_from_steps()` traced-path driver, and the C8 arithmetic-reconciliation guards. |
 
 ## Key types and data structures
 
 - **`PreviewReader`** (`trace.py`, `@runtime_checkable` `Protocol`) — anything
-  exposing `try_get(fingerprint: str) -> dict[str, Any] | None`. `FingerprintCache`
+  exposing `get(fingerprint: str) -> dict[str, Any] | None`. `LRUCache`
   satisfies it by construction.
 - **`TraceStep`** (`trace.py`, dataclass) — one node's contribution: `node_id`,
   `node_name`, `node_type`, `schema_diff: SchemaDiff`, `input_values` /
@@ -20,6 +20,16 @@
   `column_relevant: bool` (default `True`), and enrichment fields populated by
   `_enrich_steps`: `expression`, `calculation`, `node_detail`,
   `row_lineage_type`.
+- **Node-detail contracts** — enrichment consumes the same node config shape as
+  execution: banding uses `factors`, model score uses `output_column`, and scenario
+  expansion uses `column_name`. The emitted detail discriminators are
+  `rating_step`, `banding`, `model_score`, `scenario_expander`, `live_switch`, and
+  `optimiser_apply`. Rating detail is carried by `tables`/`combined_outputs`;
+  each banding factor uses `input_column`, `output_column`, `input_value`, and
+  `matched_band` (with match metadata such as bounds/status);
+  scenario detail by `scenario_value`/`scenario_column`/`scenario_index`/`parameters`;
+  live-switch detail by `active_branch`/`active_scenario`/`pruned_branches`.
+  The frontend renders those emitted shapes directly.
 - **`TraceOmission`** (`trace.py`, frozen dataclass) — one relevant graph node
   whose row could not be correlated: `node_id`, `node_name`, `node_type`,
   `topological_rank`, `reason`, and `diagnostic_index`. It never carries
@@ -50,8 +60,8 @@
   `_RECONCILE_REL_TOL` (`_trace_waterfall.py`, `1e-9`) for waterfall
   reconciliation.
 - **Trace execution cache** (`trace.py`) — `_cache`, a module-level
-  `FingerprintCache` with slots `("eager_outputs", "order", "parents_of",
-  "node_map", "source_ids")`. `TRACE_CACHE_MAX_BYTES` defaults to
+  `LRUCache[str, dict[str, Any]]`; each value contains `eager_outputs`, `order`,
+  `parents_of`, `node_map`, and `source_ids`. `TRACE_CACHE_MAX_BYTES` defaults to
   `PREVIEW_CACHE_MAX_BYTES` (see [caching](../caching/high-level.md)), overridable
   via `HAUTE_TRACE_CACHE_MAX_BYTES`. Both values are parsed into module constants
   at import time by `executor._positive_int_from_env`; a malformed, zero, or
@@ -87,9 +97,8 @@
    node in topological order, computed from the node list in *declared* order —
    not a set — so the tie-break is deterministic across process invocations,
    independent of CPython hash randomisation).
-2. Compute `runtime_input_extra_keys(graph)` (execution-engine) and a
-   `graph_fingerprint()` over the graph, target, `f"{row_limit}:{source}"`, and
-   those extra keys, memoised via a `GraphFingerprintMemo` — the caller's, if one
+2. Compute the canonical dataframe graph input fingerprint over the graph,
+   target, row limit, and source, memoised via a `GraphFingerprintMemo` — the caller's, if one
    was passed in `fingerprint_memo` (the trace route reuses the memo it already
    built for its supersession key), otherwise a fresh one scoped to this call.
 3. On a trace-cache hit (`_cache.try_get(fp)`), reuse the cached
@@ -144,7 +153,7 @@
    raw dict → used verbatim. Trace does not attempt the target-only projected
    key because that cache shape cannot contain the required ancestor evidence.
 2. If the preview data has a materialized output for `target_node_id` **and**
-   every node in the trace's topological order (built via `_prepare_graph`) has a
+   every node in the trace's topological order (built via `prepare_graph`) has a
    non-`None` output in that preview snapshot, reuse those DataFrames directly —
    no re-execution. A *partial* preview cache (e.g. a target-only projected
    preview) intentionally falls through to a cold execution instead of trace-ing
@@ -328,8 +337,7 @@ one step's unforeseen failure cannot abort the whole enrichment pass) and:
    `waterfall_sign_change`). `_operation_hint()` (AST-based, not substring
    matching) can still force additive display when the node's own expression's
    top-level operator is `+`/`-`.
-6. `build_waterfall()` (the generic, hand-authored-list-compatible core) is
-   called with the assembled step dicts, each carrying an observed
+6. `build_waterfall()` is called with the internally assembled step dicts, each carrying an observed
    `"cumulative"` — this snaps each entry's cumulative to the OBSERVED value
    (never re-applying `value` arithmetically) and runs
    `_check_display_consistency()` per step, which raises
@@ -361,14 +369,13 @@ snapshot deterministically.
   explicitly raises `WaterfallUnavailableError` for an integer (or a
   JSON-safe-integer-marked string) outside JavaScript's exact integer range,
   rather than silently truncating precision into a rendered number.
-- **`_build_value_match_expr` is dtype-robust.** Comparing a numeric trace value
+- **`_typed_value_match_expr` is dtype-robust.** Comparing a numeric trace value
   against a non-numeric column, or a non-finite float against a non-`Float`
   column, would otherwise raise `ComputeError`/`InvalidOperationError` at collect
-  time inside Polars and crash the whole correlation walk. When the column's
-  dtype is known, such a mismatch degrades to an always-false predicate
-  (preserving the documented `(None, -1)` fail-soft contract) instead of
-  crashing; a genuine cross-type coercion (an int-like key matching a string
-  column) still goes through a stringwise compare.
+  time inside Polars and crash the whole correlation walk. The typed matcher
+  returns either the exact predicate or an explicit unsupported reason; the
+  correlation result records that state rather than coercing across dtype
+  families.
 - **Positional alignment is gated, never assumed from row-count equality alone.**
   Equal row counts between parent and child is necessary but not sufficient — a
   row-reordering transform (sort/join/group_by/gather/sample/shuffle/unique/
@@ -399,7 +406,7 @@ snapshot deterministically.
   node instance whose own code lacks `.with_columns(` borrows the *original*
   node's code so the step that structurally created a column gets the correct
   expression, not a blank one.
-- **The trace cache fingerprint includes `runtime_input_extra_keys(graph)`** so
+- **The trace cache fingerprint includes the canonical dataframe graph input fingerprint** so
   an out-of-band re-export of a file-backed `dataInput`/`externalFile`, a
   model-artifact signature change, or an `apiInput` JSON-cache rebuild
   invalidates cached trace frames even though the graph structure itself did not
@@ -724,3 +731,10 @@ Remaining tracing improvement work is tracked in the
 - Tests cover each provider group, direct/snapshot equivalence, code-before-correlation,
   generation refresh invalidation, redaction, external-file separation, and source searches
   excluding executable legacy branches.
+
+## Approved change contract — canonical-only trace contracts
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+trace correlation and enrichment consume only current typed values, rating configuration, and
+diagnostic payloads. Historical value matchers, simplified test configuration, wrapper
+expressions, and temporary duplicate response fields are removed.

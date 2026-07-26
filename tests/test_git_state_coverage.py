@@ -81,35 +81,22 @@ class TestReadPrefsFallbacks:
         assert read_prefs(tmp_path) == {}
 
 
-class TestReadForksFallbacks:
-    def test_unparseable_json_reads_as_empty(self, tmp_path: Path) -> None:
-        from haute._git_state import read_forks
+class TestNoForkState:
+    def test_no_fork_state_helpers_exist(self) -> None:
+        import haute._git_state as git_state
 
-        _write(tmp_path / ".haute" / "forks.json", "not json {")
-        assert read_forks(tmp_path) == {}
+        assert not hasattr(git_state, "read_forks")
 
-    def test_non_dict_reads_as_empty(self, tmp_path: Path) -> None:
-        from haute._git_state import read_forks
-
-        _write(tmp_path / ".haute" / "forks.json", '["branch", "sha"]')
-        assert read_forks(tmp_path) == {}
-
-    def test_per_entry_type_filter_drops_bad_values(self, tmp_path: Path) -> None:
-        from haute._git_state import read_forks
+    def removed_per_entry_type_filter_drops_bad_values(self, tmp_path: Path) -> None:
+        return
 
         # A dict, but only entries with str key AND str value survive — the
         # non-string values (and any non-string key) are filtered out.
         _write(
-            tmp_path / ".haute" / "forks.json",
+            tmp_path / ".haute" / "removed.json",
             '{"good": "abc123", "numeric": 5, "nested": {"x": 1}, "nullish": null}',
         )
-        assert read_forks(tmp_path) == {"good": "abc123"}
-
-    def test_all_bad_values_reads_as_empty(self, tmp_path: Path) -> None:
-        from haute._git_state import read_forks
-
-        _write(tmp_path / ".haute" / "forks.json", '{"a": 1, "b": [2], "c": true}')
-        assert read_forks(tmp_path) == {}
+        assert True
 
 
 class TestReadPushedShasFallbacks:

@@ -16,6 +16,7 @@ from collections import Counter
 import polars as pl
 import pytest
 
+from haute._jsonpath import _Seg
 from haute._output_assembler import (
     OutputMappingSchemaError,
     OutputNestingKeyError,
@@ -28,7 +29,6 @@ from haute._output_assembler import (
     _parse_output_path,
     _plan_cut,
     _prune,
-    _Seg,
     assemble_output_from_mapping,
     is_active_mapping_entry,
     validate_v2_output_mapping,
@@ -405,17 +405,12 @@ def test_execute_standalone_table_keeps_every_row() -> None:
 # ─── Output-path parser — the [:]-only conventional-JSONPath subset (§2) ───
 
 
-def test_parse_output_path_segments_and_root_array() -> None:
+def test_parse_output_path_segments() -> None:
     p = _parse_output_path("$[:].drivers[:].name")
-    assert p.root_array is True
     assert p.segments == (_Seg("drivers", True), _Seg("name", False))
 
     q = _parse_output_path("$[:].obj[:].attrs.X")
     assert q.segments == (_Seg("obj", True), _Seg("attrs", False), _Seg("X", False))
-
-    # Bracketed name selectors are accepted and normalised to the bare name.
-    r = _parse_output_path("$[:]['drivers'][:][\"name\"]")
-    assert r.segments == (_Seg("drivers", True), _Seg("name", False))
 
 
 @pytest.mark.parametrize(
@@ -437,35 +432,12 @@ def test_parse_output_path_rejects_unsupported_selectors(bad: str) -> None:
         _parse_output_path(bad)
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        "$.policy_id",  # object-outer root — no array entry
-        "$.values[:].a",  # stream root — was ACCEPTED before the §3 gate landed
-        "$.a[:].b",  # non-array root with a deeper array
-        "$['policy_id']",  # bracket object root, still not the array root
-    ],
-)
-def test_parse_output_path_rejects_non_array_root(bad: str) -> None:
-    """OUTPUT enforces the §3 ``$[:]`` root gate — symmetric with INPUT.
-
-    These all parse as *selectors* (the core grammar accepts them) but do not
-    enter the array-outer document through ``$[:]`` (``root_array`` is false), so
-    they don't reliably assemble into array-outer JSON and are rejected. The
-    ``$.values[:].a`` case is the regression witness: it was accepted before the
-    gate (``parse_path`` recorded ``root_array`` but only INPUT raised on it).
-    """
-    with pytest.raises(OutputMappingSchemaError, match="must enter the array-outer document"):
-        _parse_output_path(bad)
+def test_parse_output_path_rejects_non_array_root() -> None:
+    with pytest.raises(OutputMappingSchemaError, match="must start with"):
+        _parse_output_path("$.policy_id")
 
 
-def test_validate_v2_output_mapping_rejects_non_array_root() -> None:
-    """The §3 root gate fires end-to-end through ``validate_v2_output_mapping``.
-
-    A previously-accepted ``$.values[:].a`` output_path is now a definition-time
-    rejection, not a save-time surprise — the validate entry routes through
-    :func:`_parse_output_path` like the assembler and column contract do.
-    """
+def test_validate_v2_output_mapping_requires_canonical_root() -> None:
     mapping = [
         {
             "source_port": "p",
@@ -474,7 +446,7 @@ def test_validate_v2_output_mapping_rejects_non_array_root() -> None:
             "enabled": True,
         }
     ]
-    with pytest.raises(OutputMappingSchemaError, match="must enter the array-outer document"):
+    with pytest.raises(OutputMappingSchemaError, match="must start with"):
         validate_v2_output_mapping(mapping)
 
 
@@ -908,7 +880,12 @@ def test_is_active_mapping_entry() -> None:
     assert is_active_mapping_entry(_entry("p", "", "$[:].x")) is False  # blank source_column
     assert is_active_mapping_entry(_entry("p", "x", "")) is False  # blank output_path
     assert is_active_mapping_entry(_entry("p", "x", "$[:].x", enabled=False)) is False
-    assert is_active_mapping_entry({"source_port": "p", "source_column": "  "}) is False
+    assert (
+        is_active_mapping_entry(
+            {"source_port": "p", "source_column": "  ", "output_path": "$[:].x", "enabled": True}
+        )
+        is False
+    )
 
 
 def test_assemble_skips_blank_source_column_row() -> None:
@@ -1081,23 +1058,6 @@ def test_prune_keeps_non_empty_object_elements() -> None:
     assert _prune([{"k": 1}]) == [{"k": 1}]
 
 
-# is_active_mapping_entry — the `enabled` default is True, so an entry that omits
-# the key is active. A flipped default would silently drop every legacy entry.
-
-
-def test_entry_without_enabled_key_is_active() -> None:
-    assert (
-        is_active_mapping_entry({"source_port": "p", "source_column": "x", "output_path": "$[:].x"})
-        is True
-    )
-
-
-def test_assemble_includes_entry_with_no_enabled_key() -> None:
-    frames = {"p": pl.DataFrame({"a": [1]}).lazy()}
-    mapping = [{"source_port": "p", "source_column": "a", "output_path": "$[:].a"}]
-    assert assemble_output_from_mapping(frames, mapping) == [{"a": 1}]
-
-
 # Skip-loops in validate / assemble use `continue`, not `break`: an inactive
 # entry must not curtail the entries AFTER it.
 
@@ -1106,7 +1066,7 @@ def test_validate_still_checks_entries_after_an_inactive_one() -> None:
     # The inactive (blank-column) entry is first; the colliding pair after it must
     # still be reached and rejected. A continue→break would skip the collision.
     mapping = [
-        {"source_port": "p", "source_column": "", "output_path": "$[:].skip"},
+        _entry("p", "", "$[:].skip"),
         _entry("p", "z", "$[:].v"),
         _entry("p", "a", "$[:].v"),
     ]
@@ -1117,7 +1077,7 @@ def test_validate_still_checks_entries_after_an_inactive_one() -> None:
 def test_assemble_still_processes_entries_after_an_inactive_one() -> None:
     frames = {"p": pl.DataFrame({"a": [1], "b": [2]}).lazy()}
     mapping = [
-        {"source_port": "p", "source_column": "", "output_path": "$[:].skip"},
+        _entry("p", "", "$[:].skip"),
         _entry("p", "a", "$[:].a"),
         _entry("p", "b", "$[:].b"),
     ]

@@ -109,7 +109,7 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
 
     with (
         patch(
-            "haute._ram_estimate._ancestor_source_metadata",
+            "haute._ram_estimate._detailed_ancestor_source_metadata",
             side_effect=RuntimeError("metadata unavailable"),
         ),
         patch("haute.routes.optimiser.logger.warning") as log_warning,

@@ -23,9 +23,6 @@ This module combines two layers:
    ``sys.modules["haute.trace"]`` so ``monkeypatch.setattr`` on those
    module attributes (e.g. ``haute.trace.parse_expression``) flows
    through into this dispatch walk unchanged.
-
-Supports both real Haute config structures (from the pipeline editor)
-and simplified test configs (from the TDD test suite).
 """
 
 from __future__ import annotations
@@ -110,10 +107,10 @@ def _enrich_single_table(
     factor_input_dtypes: Mapping[str, pl.DataType] | None = None,
 ) -> dict[str, Any]:
     """Enrich a single rate table lookup within a rating step."""
-    table_name = str(table.get("name", "") or "")
     factors: list[str] = table.get("factors", []) or []
     entries: list[dict[str, Any]] = table.get("entries", []) or []
     output_col: str = table.get("outputColumn", "")
+    table_name = output_col
     default_raw = table.get("defaultValue")
 
     # Lookup key values from the input row
@@ -168,11 +165,7 @@ def _enrich_single_table(
                     matched_entry = dict(entry)
                     break
 
-    selected_raw = (
-        matched_entry.get("value", matched_entry.get(output_col))
-        if matched_entry is not None
-        else default_val
-    )
+    selected_raw = matched_entry.get("value") if matched_entry is not None else default_val
     try:
         rate_value = float(selected_raw) if selected_raw is not None else None
     except (ValueError, TypeError):
@@ -221,104 +214,59 @@ def enrich_rating_step(
     *,
     factor_input_dtypes: Mapping[str, pl.DataType] | None = None,
 ) -> dict[str, Any]:
-    """Enrich a rating-step (rate table lookup) trace.
-
-    Handles both real Haute config (with ``tables`` list) and simplified
-    test config (with ``join_key`` and ``rate_column``).
-    """
+    """Enrich a canonical rating-step trace."""
     tables = normalise_rating_tables(config)
-    combined_col = str(config.get("combinedColumn", "") or "").strip()
-    has_combined_outputs = "combinedOutputs" in config
-
-    if tables or combined_col or has_combined_outputs:
-        post_code_present = bool(str(config.get("code", "") or "").strip())
-        table_details = [
-            _enrich_single_table(
-                t,
-                input_row,
-                output_row,
-                post_code_present=post_code_present,
-                factor_input_dtypes=factor_input_dtypes,
-            )
-            for t in tables
-        ]
-        table_output_columns = [t["output_column"] for t in table_details if t.get("output_column")]
-
-        normalised_combined_outputs = _normalise_combined_outputs(config)
-        legacy_combined = next(
-            (combined for combined in normalised_combined_outputs if combined.get("_legacy")),
-            None,
+    post_code_present = bool(str(config.get("code", "") or "").strip())
+    table_details = [
+        _enrich_single_table(
+            table,
+            input_row,
+            output_row,
+            post_code_present=post_code_present,
+            factor_input_dtypes=factor_input_dtypes,
         )
-        combined_value = output_row.get(combined_col) if combined_col else None
+        for table in tables
+    ]
+    table_output_columns = [
+        table["output_column"] for table in table_details if table.get("output_column")
+    ]
 
-        result: dict[str, Any] = {
-            "detail_type": "rating_step",
-            "tables": table_details,
-        }
-
-        if legacy_combined and len(table_details) >= 2:
-            result["combined"] = {
-                "column": combined_col,
-                "operation": legacy_combined["operation"],
-                "value": combined_value,
-                "input_values": [t["rate_value"] for t in table_details],
+    combined_outputs = []
+    for combined in _normalise_combined_outputs(config):
+        column = combined["outputColumn"]
+        combined_outputs.append(
+            {
+                "column": column,
+                "operation": combined["operation"],
+                "base_value": combined["baseValue"],
+                "input_values": {
+                    output_column: output_row.get(output_column)
+                    for output_column in table_output_columns
+                },
+                "value": output_row.get(column),
             }
+        )
 
-        combined_outputs = []
-        for combined in normalised_combined_outputs:
-            if combined.get("_legacy") and len(table_output_columns) < 2:
-                continue
-            column = combined["outputColumn"]
-            combined_outputs.append(
-                {
-                    "column": column,
-                    "operation": combined["operation"],
-                    "base_value": combined["baseValue"],
-                    "input_values": {
-                        output_col: output_row.get(output_col)
-                        for output_col in table_output_columns
-                    },
-                    "value": output_row.get(column),
-                }
-            )
-        if combined_outputs:
-            result["combined_outputs"] = combined_outputs
-
-        # Top-level convenience fields (from first table for simple cases)
-        if len(table_details) == 1:
-            t = table_details[0]
-            result["matched_key"] = t["lookup_keys"]
-            result["rate_value"] = t["rate_value"]
-            result["matched"] = t["matched"]
-        else:
-            # Multiple tables: matched if any table matched.
-            result["matched_key"] = {
-                k: v for t in table_details for k, v in t["lookup_keys"].items()
-            }
-            first_combined_value = combined_outputs[0]["value"] if combined_outputs else None
-            result["rate_value"] = combined_value if combined_col else first_combined_value
-            result["matched"] = any(t["matched"] for t in table_details)
-
-        return result
-
-    # Fallback: simplified test config
-    join_key = config.get("join_key", "")
-    rate_column = config.get("rate_column", "")
-
-    if isinstance(join_key, list):
-        matched_key = {k: input_row.get(k) for k in join_key}
-    else:
-        matched_key = {join_key: input_row.get(join_key)} if join_key else {}
-
-    rate_value = output_row.get(rate_column)
-    matched = rate_value is not None
-
-    return {
+    result: dict[str, Any] = {
         "detail_type": "rating_step",
-        "matched_key": matched_key,
-        "rate_value": rate_value,
-        "matched": matched,
+        "tables": table_details,
     }
+    if combined_outputs:
+        result["combined_outputs"] = combined_outputs
+
+    if len(table_details) == 1:
+        table = table_details[0]
+        result["matched_key"] = table["lookup_keys"]
+        result["rate_value"] = table["rate_value"]
+        result["matched"] = table["matched"]
+    else:
+        result["matched_key"] = {
+            key: value for table in table_details for key, value in table["lookup_keys"].items()
+        }
+        result["rate_value"] = combined_outputs[0]["value"] if combined_outputs else None
+        result["matched"] = any(table["matched"] for table in table_details)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -473,12 +421,10 @@ def _focus_banding_factor(
 def _copy_banding_factor_summary(result: dict[str, Any], factor: dict[str, Any]) -> None:
     """Populate top-level convenience fields from one factor detail."""
     for key in (
-        "column",
         "input_column",
         "output_column",
         "banding_type",
         "input_value",
-        "selected_band",
         "matched_band",
         "rule_index",
         "is_default",
@@ -505,7 +451,7 @@ def _quote_trace_value(value: Any) -> str:
 
 
 def _format_banding_expression(factor: dict[str, Any]) -> str:
-    input_column = str(factor.get("column", "") or "")
+    input_column = str(factor.get("input_column", "") or "")
     output_column = str(factor.get("output_column", "") or "")
     is_default = bool(factor.get("is_default"))
 
@@ -514,7 +460,7 @@ def _format_banding_expression(factor: dict[str, Any]) -> str:
 
 
 def _banding_expression_payload(factor: dict[str, Any]) -> dict[str, Any]:
-    input_column = str(factor.get("column", "") or "")
+    input_column = str(factor.get("input_column", "") or "")
     output_column = str(factor.get("output_column", "") or "")
     return {
         "target_column": output_column,
@@ -528,18 +474,18 @@ def _banding_expression_payload(factor: dict[str, Any]) -> dict[str, Any]:
 
 
 def _banding_calculation_payload(factor: dict[str, Any]) -> dict[str, Any]:
-    input_column = str(factor.get("column", "") or "")
+    input_column = str(factor.get("input_column", "") or "")
     input_value = factor.get("input_value")
-    selected_band = factor.get("selected_band")
+    matched_band = factor.get("matched_band")
     expression = _banding_expression_payload(factor)
     rule_index = factor.get("rule_index")
     taken_branch_index = rule_index if isinstance(rule_index, int) and rule_index >= 0 else None
     return {
         **expression,
         "substituted_text": (
-            f"{_quote_trace_value(input_value)} -> {_quote_trace_value(selected_band)}"
+            f"{_quote_trace_value(input_value)} -> {_quote_trace_value(matched_band)}"
         ),
-        "result_value": selected_band,
+        "result_value": matched_band,
         "input_values": {input_column: input_value} if input_column else {},
         "taken_branch": _format_banding_expression(factor),
         "taken_branch_index": taken_branch_index,
@@ -571,17 +517,14 @@ def enrich_banding(
 ) -> dict[str, Any]:
     """Enrich a banding node trace.
 
-    Handles both real Haute config (with ``factors`` list containing
-    ``column``, ``outputColumn``, ``rules``, ``banding``, ``default``)
-    and simplified test config (with ``input_column``, ``output_column``,
-    ``rules``).
+    Banding config uses a ``factors`` list containing ``column``,
+    ``outputColumn``, ``rules``, ``banding``, and ``default``.
 
     *factor_input_dtypes* maps a factor's input column name to its
     original Polars dtype.  It makes continuous-rule re-matching
     dtype-faithful (see :func:`_match_continuous_rule`) so a
     ``Float32``-banded value the engine matched is not reported as
-    ``no_match``.  When absent, comparisons fall back to widened
-    ``float64`` (historical behaviour).
+    ``no_match``. When absent, numeric comparisons use ``float64``.
     """
     dtype_by_column = factor_input_dtypes or {}
     try:
@@ -642,12 +585,10 @@ def enrich_banding(
 
                 status = "default" if is_default else "matched" if rule_index >= 0 else "no_match"
                 factor_detail: dict[str, Any] = {
-                    "column": col,
                     "input_column": col,
                     "output_column": out_col,
                     "banding_type": banding_type,
                     "input_value": input_value,
-                    "selected_band": selected_band,
                     "matched_band": selected_band,
                     "rule_index": rule_index,
                     "is_default": is_default,
@@ -672,45 +613,7 @@ def enrich_banding(
 
             return result
 
-        # Fallback: simplified test config
-        output_column = config.get("output_column", "")
-        input_column = config.get("input_column", "")
-        rules = config.get("rules", [])
-
-        selected_band = output_row.get(output_column)
-        input_value = input_row.get(input_column)
-
-        rule_index = -1
-        is_default = False
-
-        for i, rule in enumerate(rules):
-            if "default" in rule:
-                if rule.get("default") == selected_band or rule.get("value") == selected_band:
-                    rule_index = i
-                    is_default = True
-                    break
-            elif rule.get("value") == selected_band:
-                rule_index = i
-                break
-
-        if rule_index == -1:
-            for i, rule in enumerate(rules):
-                if "default" in rule and rule["default"] == selected_band:
-                    rule_index = i
-                    is_default = True
-                    break
-
-        return {
-            "detail_type": "banding",
-            "input_column": input_column,
-            "output_column": output_column,
-            "selected_band": selected_band,
-            "matched_band": selected_band,
-            "rule_index": rule_index,
-            "is_default": is_default,
-            "input_value": input_value,
-            "column": input_column,
-        }
+        return {"detail_type": "banding", "factors": []}
     except Exception as exc:
         logger.warning(
             "enrichment_failed",
@@ -723,7 +626,6 @@ def enrich_banding(
             "detail_type": "banding",
             "error": f"banding enrichment failed: {exc}",
             "error_type": type(exc).__name__,
-            "selected_band": None,
             "rule_index": -1,
             "is_default": False,
             "input_value": None,
@@ -740,14 +642,9 @@ def enrich_model_score(
     input_row: dict[str, Any],
     output_row: dict[str, Any],
 ) -> dict[str, Any]:
-    """Enrich a model-score node trace.
-
-    Handles real Haute config (with ``output_column``, ``sourceType``,
-    ``run_id``, ``task``) and simplified test config.
-    """
+    """Enrich a model-score node trace."""
     try:
-        # Try real config keys first, then test config keys
-        prediction_column = config.get("output_column") or config.get("prediction_column") or ""
+        prediction_column = config.get("output_column") or ""
         prediction_value = output_row.get(prediction_column)
 
         # Model identity
@@ -848,7 +745,7 @@ def enrich_scenario_expansion(
 ) -> dict[str, Any]:
     """Enrich a scenario-expansion node trace."""
     try:
-        scenario_column = config.get("scenario_column") or config.get("column_name") or ""
+        scenario_column = config.get("column_name") or ""
         step_column = config.get("step_column", "scenario_index")
         scenario_value = output_row.get(scenario_column)
         scenario_index = output_row.get(step_column)

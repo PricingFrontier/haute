@@ -94,7 +94,7 @@ const graphTwoBranch = {
   branches: [
     {
       name: "pricing-dev", is_archived: false, is_current: true, tip_sha: "m1full",
-      fork_point_sha: null, fork_of: null, forked_from: null,
+      fork_point_sha: null, fork_of: null,
       fork_source_sha: null, fork_credit_sha: null, truncated: false,
       entries: [
         { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: T, version_label: "1.0", is_root: false, parents: ["m2full", "s2"] },
@@ -103,7 +103,7 @@ const graphTwoBranch = {
     },
     {
       name: "pricing/nick/spur", is_archived: false, is_current: false, tip_sha: "b1full",
-      fork_point_sha: "m2full", fork_of: "pricing-dev", forked_from: null,
+      fork_point_sha: "m2full", fork_of: "pricing-dev",
       fork_source_sha: null, fork_credit_sha: null, truncated: false,
       entries: [
         { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: T, version_label: null, is_root: false, parents: ["m2full", "s9"] },

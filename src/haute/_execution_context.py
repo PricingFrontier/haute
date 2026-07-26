@@ -929,10 +929,6 @@ class ExecutionContext:
             first_error.add_note(self._cleanup_failure_note(error))
         raise first_error
 
-    def close(self) -> None:
-        """Alias for callers that treat execution contexts as resources."""
-        self.release_admission()
-
     def fault_point(self, name: str, *, node_id: str | None = None) -> None:
         """Invoke the request-local deterministic fault seam when configured."""
         injector = self.fault_injector
@@ -1161,11 +1157,6 @@ class ExecutionContext:
         payload["rss_limit_bytes"] = self._effective_rss_limit_bytes()
         payload["admission"] = self.admission.to_dict() if self.admission is not None else None
         projection_plan = self.projection_plan
-        payload["projection_plan_diagnostics"] = (
-            projection_plan.diagnostics_payload(profile=self.profile.value)
-            if projection_plan is not None and hasattr(projection_plan, "diagnostics_payload")
-            else None
-        )
         diagnostic = getattr(projection_plan, "diagnostic", None)
         payload["execution_strategy"] = (
             diagnostic.to_dict()

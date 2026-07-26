@@ -29,7 +29,6 @@ from haute._git import (
 from haute._git_state import (
     read_prefs,
     record_trash,
-    set_fork,
     write_pref,
     write_working_branch,
 )
@@ -220,10 +219,9 @@ class TestAtomicCloneState:
         monkeypatch.setattr(git_state, "atomic_write_text", tracking_write)
         write_working_branch(repo, WORKING)
         write_pref(repo, "skipSwitchConfirm", True)
-        set_fork(repo, WORKING, "a" * 40)
         record_trash(repo, WORKING, {"branch_tip": "b" * 40})
 
-        assert set(written) == {"state.json", "prefs.json", "forks.json", "trash.json"}
+        assert set(written) == {"state.json", "prefs.json", "trash.json"}
 
     def test_concurrent_preference_updates_preserve_both_keys(self, repo: Path) -> None:
         barrier = threading.Barrier(2)

@@ -30,7 +30,7 @@ The proposed end-state is:
 3. **Parser validates user-declared contracts.**  If the user writes
 
        @pipeline.banding(
-           factors=[{"column": "age", "outputColumn": "age_band", ...}],
+           factors=[{"column": "age", "output_column": "age_band", ...}],
            contract=Contract(inputs=["age"], outputs=["age_band"]),
        )
 
@@ -64,21 +64,15 @@ The difference from today: opacity is now declared (a concrete
 ``OPAQUE_CONTRACT`` entry in the registry) rather than implicit
 (absence from the registry).
 
-Proposed public API
-===================
-
-The tests below assume this minimal shape; the dev can refine names
-and internals but the behaviour must match.
+Canonical API
+=============
 
 .. code-block:: python
 
-    from haute._builders import (
-        Contract,           # dataclass(frozen=True): inputs, outputs
-        OPAQUE_CONTRACT,    # Contract(inputs=None, outputs=None)
-        declare_contract,   # decorator for user-side explicit declaration
-        get_contract,       # new name for get_column_contract
-        validate_contract,  # parser-time cross-check
-        assert_contract,    # executor-time boundary check
+    from haute._contracts import (
+        Contract,
+        OPAQUE_CONTRACT,
+        get_column_contract,
     )
 """
 

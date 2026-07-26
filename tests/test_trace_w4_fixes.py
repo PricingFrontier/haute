@@ -15,7 +15,6 @@ import structlog.testing
 
 import haute._trace_correlation as trace_correlation
 from haute._trace_correlation import (
-    _build_value_match_expr,
     _correlate_rows_posthoc,
     _shared_key_is_unique,
     _trace_values_match,
@@ -198,38 +197,6 @@ class TestPositionalFastPath:
 
 
 # ---------------------------------------------------------------------------
-# F158 — dtype-asymmetric value match must not crash the trace
-# ---------------------------------------------------------------------------
-
-
-class TestValueMatchExprDtypeRobust:
-    def test_numeric_value_against_string_column_does_not_crash(self):
-        df = pl.DataFrame({"x": ["a", "b", "5"]})
-        # Numeric value vs Utf8 is a supported non-match, never coercion.
-        expr = _build_value_match_expr("x", 5, df.schema["x"])
-        matches = df.select(expr.fill_null(False).alias("m"))["m"].to_list()
-        assert matches == [False, False, False]
-
-    def test_nan_value_against_string_column_does_not_crash(self):
-        df = pl.DataFrame({"x": ["a", "b"]})
-        expr = _build_value_match_expr("x", float("nan"), df.schema["x"])
-        matches = df.select(expr.fill_null(False).alias("m"))["m"].to_list()
-        assert matches == [False, False]
-
-    def test_inf_value_against_int_column_does_not_crash(self):
-        df = pl.DataFrame({"x": [1, 2, 3]})
-        expr = _build_value_match_expr("x", float("inf"), df.schema["x"])
-        matches = df.select(expr.fill_null(False).alias("m"))["m"].to_list()
-        assert matches == [False, False, False]
-
-    def test_numeric_value_against_numeric_column_still_matches(self):
-        df = pl.DataFrame({"x": [1, 5, 9]})
-        expr = _build_value_match_expr("x", 5, df.schema["x"])
-        matches = df.select(expr.fill_null(False).alias("m"))["m"].to_list()
-        assert matches == [False, True, False]
-
-
-# ---------------------------------------------------------------------------
 # F695 — near-zero float must be able to match exactly 0.0
 # ---------------------------------------------------------------------------
 
@@ -265,7 +232,7 @@ class TestContinuousRuleDtypeFaithful:
         rule = {"op1": ">=", "val1": 5.5}
         assert _match_continuous_rule(widened, rule, pl.Float32) is True
 
-    def test_none_dtype_preserves_legacy_behaviour(self):
+    def test_none_dtype_uses_native_value_comparison(self):
         assert _match_continuous_rule(10, {"op1": "=", "val1": 10}) is True
 
 

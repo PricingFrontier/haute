@@ -61,6 +61,9 @@ Out of scope, owned elsewhere:
   columns to exclude (or an explicit feature list), algorithm (`catboost` or `glm`),
   task, split configuration, requested metrics, and algorithm-specific parameters
   (CatBoost hyperparameters, or GLM terms/family/link/regularization/interactions).
+  CatBoost hyperparameters live in the node's `params` object and its Tweedie power is
+  `variance_power`; GLM settings live at the node's top level and its Tweedie power is
+  `var_power`.
 - Starting training (`POST /api/modelling/train`) validates the config, estimates
   memory requirements, executes the upstream pipeline to materialise training data,
   and derives the exact feature choice from the materialised schema in the request

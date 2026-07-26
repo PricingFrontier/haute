@@ -494,10 +494,9 @@ def _assert_config_equivalence(
         _assert_code_roundtrip(node_id, orig, parsed, all_node_ids)
 
     elif node_type == NodeType.OUTPUT:
-        # v2: the OUTPUT config lives in a sidecar JSON keyed on ``outputMapping``
-        # (the legacy ``fields`` shape is gone). The parser may re-derive a
-        # ``contract`` annotation on load, so assert on the mapping that defines
-        # the node, not the whole config dict.
+        # OUTPUT config lives in a sidecar JSON keyed on ``outputMapping``.
+        # The parser may re-derive a ``contract`` annotation on load, so assert
+        # on the mapping that defines the node, not the whole config dict.
         assert parsed.get("outputMapping") == orig.get("outputMapping"), (
             f"[{node_id}] outputMapping mismatch: "
             f"{parsed.get('outputMapping')!r} != {orig.get('outputMapping')!r}"
@@ -1347,57 +1346,6 @@ class TestEdgeCases:
         _assert_structural_equivalence(graph, parsed)
         src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_INPUT)
         assert "select" in src_node.data.config.get("code", "")
-
-    def test_data_input_stale_generated_loader_is_dropped_from_code_box(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """Stale generated import/load code is not parsed as source user code."""
-        graph = PipelineGraph(
-            nodes=[
-                GraphNode(
-                    id="src",
-                    data=NodeData(
-                        label="src",
-                        nodeType=NodeType.DATA_INPUT,
-                        config={
-                            "path": "data/input.parquet",
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "cacheMode": "direct",
-                            "arguments": {},
-                            "code": "\n".join(
-                                [
-                                    "from pathlib import Path",
-                                    (
-                                        "df = pl.scan_parquet("
-                                        'Path(__file__).parent / "data/input.parquet")'
-                                    ),
-                                    "df = df.limit(10)",
-                                ]
-                            ),
-                        },
-                    ),
-                ),
-                GraphNode(
-                    id="out",
-                    data=NodeData(
-                        label="out",
-                        nodeType=NodeType.OUTPUT,
-                        config=make_output_config(["x"]),
-                    ),
-                ),
-            ],
-            edges=[GraphEdge(id="e1", source="src", target="out")],
-            pipeline_name="roundtrip_test",
-        )
-        parsed = _parse_roundtrip(graph, tmp_path)
-        src_node = next(n for n in parsed.nodes if n.data.nodeType == NodeType.DATA_INPUT)
-        parsed_code = src_node.data.config.get("code", "")
-        assert parsed_code == "df = df.limit(10)"
-        assert "scan_parquet" not in parsed_code
-        assert "from pathlib" not in parsed_code
 
     def test_multiple_constants_roundtrip(self, tmp_path: Path) -> None:
         """Multiple constant values with numeric and string coercion."""

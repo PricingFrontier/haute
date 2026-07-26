@@ -63,20 +63,6 @@ def _edge_id(
     return f"e_{source}_{target}_{digest}"
 
 
-def _resolve_sink_path(path: str, fmt: str) -> str:
-    """Normalise a sink output path.
-
-    Prepends ``outputs/`` when the path has no directory component and
-    appends the format extension (``.parquet`` or ``.csv``) when missing.
-    """
-    ext = ".csv" if fmt == "csv" else ".parquet"
-    if "/" not in path and "\\" not in path:
-        path = f"outputs/{path}"
-    if not path.endswith(ext):
-        path = f"{path}{ext}"
-    return path
-
-
 def _sanitize_func_name(label: str) -> str:
     """Convert a human label to a valid Python function name (preserves casing).
 
@@ -271,48 +257,20 @@ def build_instance_mapping(
 def resolve_orig_source_names(
     node: GraphNode,
     node_map: dict[str, GraphNode],
-    all_parents: dict[str, list[str]],
-    id_to_name: dict[str, str],
-    incoming_edges_by_target: Mapping[str, list[GraphEdge]] | None = None,
+    incoming_edges_by_target: Mapping[str, list[GraphEdge]],
 ) -> list[str] | None:
     """For an instance node, return the names of the original's input edges.
 
-    Uses *all_parents* (built from the full edge list, not filtered by
-    ``target_node_id``) so this works even when the original node isn't
-    in the current execution subgraph.
-
-    When *incoming_edges_by_target* is supplied, each name is derived from
-    the original's incoming edge with :func:`edge_input_name`, preserving the
-    same frame-label semantics as the executable original node.  The parent
-    lookup remains as a compatibility path for direct callers that only have
-    the historical adjacency map; production execution always supplies edge
-    metadata.
+    Each name is derived from the original's incoming edge with
+    :func:`edge_input_name`, preserving the same frame-label semantics as the
+    executable original node.
 
     Returns ``None`` for non-instance nodes.
     """
     ref = node.data.config.get("instanceOf")
     if not ref or ref not in node_map:
         return None
-    result: list[str] = []
-    if incoming_edges_by_target is not None:
-        for edge in incoming_edges_by_target.get(ref, []):
-            source_node = node_map.get(edge.source)
-            if source_node is None:
-                # A target-only execution may omit the original's upstream
-                # node from its prepared map.  The edge-derived name is still
-                # recoverable for ordinary sources from the full node label
-                # when available; an absent source node is malformed graph
-                # input and retains the historical raw-id diagnostic.
-                source_name = id_to_name.get(edge.source, edge.source)
-                result.append(source_name)
-            else:
-                result.append(edge_input_name(edge, source_node))
-        return result
-
-    for pid in all_parents.get(ref, []):
-        if pid in id_to_name:
-            result.append(id_to_name[pid])
-        else:
-            n = node_map.get(pid)
-            result.append(_sanitize_func_name(n.data.label) if n else pid)
-    return result
+    return [
+        edge_input_name(edge, node_map[edge.source])
+        for edge in incoming_edges_by_target.get(ref, [])
+    ]

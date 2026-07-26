@@ -28,14 +28,6 @@ from haute.errors import FeatureMismatchError
 
 Task = Literal["classification", "regression"]
 
-_REQUIRED_FIELDS: tuple[str, ...] = (
-    "features",
-    "feature_types",
-    "categorical_features",
-    "target_name",
-    "target_type",
-    "task",
-)
 _FIELDS: tuple[str, ...] = (
     "features",
     "feature_types",
@@ -83,18 +75,14 @@ def _canonical_payload(
         "features": list(features),
         "feature_types": dict(feature_types),
         "categorical_features": list(categorical_features),
+        "categorical_levels": {
+            str(column): list(levels) for column, levels in (categorical_levels or {}).items()
+        },
         "target_name": target_name,
         "target_type": target_type,
         "task": task,
+        "offset_column": offset_column,
     }
-    if categorical_levels:
-        payload["categorical_levels"] = {
-            str(column): list(levels) for column, levels in categorical_levels.items()
-        }
-    # Only present when set, so the hashes of offset-less contracts written
-    # before this field existed stay valid.
-    if offset_column:
-        payload["offset_column"] = offset_column
     return payload
 
 
@@ -168,9 +156,8 @@ def save_contract(contract: FeatureContract, path: Path | str) -> None:
         "target_type": contract.target_type,
         "task": contract.task,
         "contract_hash": contract.contract_hash,
+        "offset_column": contract.offset_column,
     }
-    if contract.offset_column:
-        payload["offset_column"] = contract.offset_column
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -196,7 +183,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         )
 
     keys = set(raw)
-    missing = (frozenset(_REQUIRED_FIELDS) | {"contract_hash"}) - keys
+    missing = _ALL_KEYS - keys
     if missing:
         raise FeatureMismatchError(
             "contract file missing required field(s)",
@@ -214,17 +201,16 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
     _check_type(raw, "features", list, path)
     _check_type(raw, "feature_types", dict, path)
     _check_type(raw, "categorical_features", list, path)
-    if "categorical_levels" in raw:
-        _check_type(raw, "categorical_levels", dict, path)
+    _check_type(raw, "categorical_levels", dict, path)
     _check_type(raw, "target_name", str, path)
     _check_type(raw, "target_type", str, path)
     _check_type(raw, "task", str, path)
     _check_type(raw, "contract_hash", str, path)
-    if "offset_column" in raw:
+    if raw["offset_column"] is not None:
         _check_type(raw, "offset_column", str, path)
 
     categorical_levels = normalise_categorical_levels(
-        raw.get("categorical_levels"),
+        raw["categorical_levels"],
         features=raw["features"],
         categorical_features=raw["categorical_features"],
         path=path,
@@ -240,7 +226,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
                 raw["target_name"],
                 raw["target_type"],
                 raw["task"],
-                raw.get("offset_column"),
+                raw["offset_column"],
             )
         )
         stored = raw["contract_hash"]
@@ -261,7 +247,7 @@ def load_contract(path: Path | str, *, verify_hash: bool = True) -> FeatureContr
         target_type=raw["target_type"],
         task=raw["task"],
         contract_hash=raw["contract_hash"],
-        offset_column=raw.get("offset_column"),
+        offset_column=raw["offset_column"],
     )
 
 
@@ -458,7 +444,6 @@ def validate_categorical_value_domains(
     """
     import polars as pl
 
-    from haute._execution_context import ExecutionProfile
     from haute._polars_utils import streaming_collect
 
     levels = normalise_categorical_levels(categorical_levels)
@@ -490,10 +475,7 @@ def validate_categorical_value_domains(
             .alias(column)
         )
 
-    examples = streaming_collect(
-        lazy.select(invalid_example_exprs),
-        profile=ExecutionProfile.TRAINING_PREP,
-    )
+    examples = streaming_collect(lazy.select(invalid_example_exprs))
     for column, allowed in levels.items():
         invalid_series = examples[column][0]
         invalid_values = (

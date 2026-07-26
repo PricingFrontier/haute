@@ -132,8 +132,6 @@ _EXPECTED_DEBT_IDS = {
     "c87e80ef52f08568",
     "50a51dcce3b28cae",
     "fea0501479ba2a0e",
-    # "0bc154a7e1745baa" removed — debt site lived in a v1-codec test that
-    # was deleted as part of commit 5.5 (v1 removal).
     "4328a90240a0dbba",
     "55b3c4a50777661d",
     "3c5baaf0a02d232d",

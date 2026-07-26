@@ -155,10 +155,9 @@ Sidecar writes pass every config dict through an allowlist derived from each nod
 catches off-spec keys smuggled in by external tooling, a not-yet-hardened code path, or a
 frontend bug, without failing the save itself.
 
-Rating-step sidecars have one canonical persisted entry shape: ordered row arrays. The loader
-still accepts the historical nested object-key maps, migrates them in deterministic key order,
-and the next save writes rows. This exception to compact object-key maps is required because a
-JSON object key cannot preserve the scalar identity or dtype metadata of a rating level.
+Rating-step sidecars have one canonical persisted entry shape: ordered row arrays. Reads and
+writes validate that shape directly. Object-key maps are not accepted because a JSON object key
+cannot preserve the scalar identity or dtype metadata of a rating level.
 Validation and canonicalisation finish before the save service stages any file, so a malformed
 rating table leaves the prior sidecar untouched.
 
@@ -274,7 +273,7 @@ Remaining pipeline-configuration improvement work is tracked in the
   Repository-owned pipelines which contain removed decorators are intentionally reset to blank
   pipelines; no parser conversion, alias, migration command, or config salvage is provided.
 - Config validation enforces active-branch keys, group/format agreement, safe connection
-  references, cache-mode constraints, and the absence of `code` on outputs. Unknown legacy
+  references, cache-mode constraints, and the absence of `code` on outputs. Unknown
   decorators/configs fail through the ordinary unknown-node/config error surface.
 - The node registry, decorator map, config-folder map, valid-key map, standalone pipeline API,
   scaffold, assistant-facing graph schema, and parse/build round trip contain no removed node

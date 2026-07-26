@@ -254,7 +254,7 @@ describe("preview panels no longer mutate e.currentTarget.style.*", () => {
 
       it("uses or delegates to shared class-driven hover chrome", () => {
         // Once the mutations are gone, there has to be a replacement
-        // mechanism.  The legacy panel files should delegate their chrome to
+        // mechanism. The panel files should delegate their chrome to
         // PreviewPanelFrame, and PreviewPanelFrame should carry the Tailwind
         // `hover:` utility or shared `.hover-chrome` class itself.
         const source = readSource(file)
@@ -432,7 +432,8 @@ vi.mock("../../panels/modelling/GLMRelativitiesTab", () => ({
 // ── Fixture data ────────────────────────────────────────────────────
 
 import type { PreviewData } from "../../panels/DataPreview"
-import type { OptimiserPreviewData, SolveResult } from "../../panels/OptimiserPreview"
+import type { OptimiserPreviewData } from "../../panels/OptimiserPreview"
+import type { OptimiserSolveResult } from "../../api/types"
 import type { ModellingPreviewData } from "../../panels/ModellingPreview"
 
 function makePreviewData(): PreviewData {
@@ -455,7 +456,7 @@ function makePreviewData(): PreviewData {
   }
 }
 
-function makeSolveResult(): SolveResult {
+function makeSolveResult(): OptimiserSolveResult {
   return {
     total_objective: 1.5,
     baseline_objective: 1.0,
@@ -487,7 +488,7 @@ function makeModellingPreviewData(): ModellingPreviewData {
       feature_importance: [{ feature: "x", importance: 1.0 }],
       model_path: "/tmp/model",
       train_rows: 100,
-      test_rows: 20,
+      validation_rows: 20,
     },
     jobId: "job-m1",
     nodeLabel: "Model Node",

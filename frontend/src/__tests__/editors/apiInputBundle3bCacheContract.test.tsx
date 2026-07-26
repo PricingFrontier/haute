@@ -39,7 +39,6 @@ const mockGetJsonCacheStatus = vi.fn()
 const mockGetJsonCacheStatusForSchema = vi.fn()
 const mockGetJsonCacheProgress = vi.fn()
 const mockDeleteJsonCache = vi.fn()
-const mockCancelJsonCache = vi.fn()
 const mockInferJsonCacheSchema = vi.fn()
 
 vi.mock("../../api/client", () => ({
@@ -49,7 +48,6 @@ vi.mock("../../api/client", () => ({
   getJsonCacheStatus: (...args: unknown[]) => mockGetJsonCacheStatus(...args),
   getJsonCacheStatusForSchema: (...args: unknown[]) => mockGetJsonCacheStatusForSchema(...args),
   deleteJsonCache: (...args: unknown[]) => mockDeleteJsonCache(...args),
-  cancelJsonCache: (...args: unknown[]) => mockCancelJsonCache(...args),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {
     status: number
@@ -75,7 +73,6 @@ beforeEach(() => {
   mockGetJsonCacheStatusForSchema.mockReset().mockResolvedValue({ cached: false })
   mockGetJsonCacheProgress.mockReset().mockResolvedValue({ active: false })
   mockDeleteJsonCache.mockReset()
-  mockCancelJsonCache.mockReset()
   mockInferJsonCacheSchema.mockReset()
 })
 

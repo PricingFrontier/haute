@@ -458,7 +458,7 @@ export default function BandingEditor({
                   onClick={() => updateFactor(safeIdx, { rules: [{ boundary: "", label: "" } as BreakpointRule] })}
                   className="px-3 py-1.5 rounded-md text-[11px] font-medium transition-colors"
                   style={{
-                    background: "var(--bg-surface)",
+                    background: "var(--bg-panel)",
                     border: "1px solid var(--border)",
                     color: "var(--text-secondary)",
                   }}

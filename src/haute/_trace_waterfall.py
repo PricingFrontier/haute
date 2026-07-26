@@ -259,14 +259,10 @@ def _check_display_consistency(
     numbers re-apply to within float noise.  The tolerance scales with
     the magnitudes involved so it never fires on ulp drift.
 
-    Note on the traced path: ``build_waterfall_from_steps`` snaps each
-    entry's cumulative to the OBSERVED value and derives the display
-    number from consecutive observations, so ``reapplied`` reduces
-    algebraically to ``observed`` and this per-step guard cannot fire
-    there — it is meaningful only for the hand-authored ``build_waterfall``
-    API.  Traced-path correctness therefore rests on the FINAL
-    reconciliation against the traced output value, which is asserted
-    separately in ``build_waterfall_from_steps``.
+    ``build_waterfall_from_steps`` snaps each entry's cumulative to the
+    observed value and derives the display number from consecutive
+    observations. Final reconciliation against the traced output value
+    is asserted separately in ``build_waterfall_from_steps``.
     """
     if operation == "base":
         reapplied = display_value
@@ -301,69 +297,21 @@ def _check_display_consistency(
 
 
 def build_waterfall(steps: list[dict[str, Any]]) -> WaterfallResult | None:
-    """Build a waterfall from a list of rating steps.
-
-    Each step dict has keys: ``label``, ``operation`` (``"base"``,
-    ``"multiply"``, ``"add"``), and ``value``.
-
-    A step may additionally carry ``"cumulative"`` — the OBSERVED
-    post-step value of the traced column.  When present, the entry's
-    cumulative snaps to that observation (no re-application drift), the
-    delta is the difference of consecutive observations, and ``value``
-    is validated against the observed chain — a display number that
-    contradicts the observations raises
-    :class:`WaterfallReconciliationError` (the C8 invariant).  Without
-    ``"cumulative"`` the step is applied arithmetically (hand-authored
-    factor lists).
-
-    Returns ``None`` if fewer than 3 steps are provided (not enough
-    for a meaningful waterfall) or if any value is non-numeric or
-    non-finite.
-    """
+    """Build a waterfall from internally observed trace-step values."""
     if len(steps) < 3:
         return None
 
     entries: list[WaterfallEntry] = []
     cumulative = 0.0
 
-    if not all(isinstance(step, dict) for step in steps):
-        return None
-
     for step in steps:
-        label = step.get("label", "")
-        operation = step.get("operation", "base")
-        raw_value = step.get("value", 0)
-        try:
-            value = float(raw_value)
-        except (ValueError, TypeError):
-            return None
-
-        observed_raw = step.get("cumulative")
-        if observed_raw is not None:
-            try:
-                observed = float(observed_raw)
-            except (ValueError, TypeError):
-                return None
-            if not math.isfinite(observed):
-                return None
-            _check_display_consistency(operation, cumulative, value, observed, label)
-            delta = 0.0 if operation == "base" else observed - cumulative
-            cumulative = observed
-        elif operation == "base":
-            cumulative = value
-            delta = 0.0
-        elif operation == "multiply":
-            new_cumulative = cumulative * value
-            delta = new_cumulative - cumulative
-            cumulative = new_cumulative
-        elif operation == "add":
-            delta = value
-            cumulative = cumulative + value
-        else:
-            delta = 0.0
-
-        if not math.isfinite(cumulative):
-            return None
+        label = step["label"]
+        operation = step["operation"]
+        value = step["value"]
+        observed = step["cumulative"]
+        _check_display_consistency(operation, cumulative, value, observed, label)
+        delta = 0.0 if operation == "base" else observed - cumulative
+        cumulative = observed
 
         entries.append(
             WaterfallEntry(

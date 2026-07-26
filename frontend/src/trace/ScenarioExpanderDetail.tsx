@@ -10,12 +10,11 @@ export function ScenarioExpanderDetailBlock({ detail }: {
   detail: ScenarioExpanderNodeDetail
 }) {
   const expander = detail
-  const scenarioColumn = expander.scenario_column ??
-    (typeof expander.step === "string" && expander.step.length > 0 ? expander.step : "scenario")
-  const scenarioValue = expander.scenario_value ?? expander.multiplier
+  const scenarioColumn = expander.scenario_column ?? "scenario"
+  const scenarioValue = expander.scenario_value
   const scenarioIndex = expander.scenario_index
-  const minValue = expander.parameters?.min_value ?? expander.range?.min
-  const maxValue = expander.parameters?.max_value ?? expander.range?.max
+  const minValue = expander.parameters?.min_value
+  const maxValue = expander.parameters?.max_value
   const stepCount = expander.parameters?.steps
   const hasGridSettings = minValue !== undefined || maxValue !== undefined || stepCount !== undefined
   return (

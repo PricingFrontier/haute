@@ -5,7 +5,6 @@ import type { RatingTable } from "../ratingTableUtils"
 
 function makeTable(overrides: Partial<RatingTable> = {}): RatingTable {
   return {
-    name: "Table 1",
     factors: ["age_band"],
     outputColumn: "age_factor",
     defaultValue: "1.0",

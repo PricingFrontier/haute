@@ -97,8 +97,8 @@ class TestRequestValidation:
         from haute.executor import _preview_cache
         from haute.trace import _cache as _trace_cache
 
-        _preview_cache.invalidate()
-        _trace_cache.invalidate()
+        _preview_cache.clear()
+        _trace_cache.clear()
 
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
@@ -121,8 +121,8 @@ class TestRequestValidation:
         from haute.executor import _preview_cache
         from haute.trace import _cache as _trace_cache
 
-        _preview_cache.invalidate()
-        _trace_cache.invalidate()
+        _preview_cache.clear()
+        _trace_cache.clear()
 
         p = _simple_parquet(tmp_path)
         graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")
@@ -145,8 +145,8 @@ class TestRequestValidation:
         from haute.executor import _preview_cache
         from haute.trace import _cache as _trace_cache
 
-        _preview_cache.invalidate()
-        _trace_cache.invalidate()
+        _preview_cache.clear()
+        _trace_cache.clear()
 
         p = _simple_parquet(tmp_path, data={"x": [1, 1, 2], "y": [10, 10, 30]})
         graph = _simple_graph(p, "df = df.with_columns(z=pl.col('x') + pl.col('y'))")

@@ -10,6 +10,7 @@ documentation accuracy.
 
 | Package | State | Priority | Outcome |
 | --- | --- | --- | --- |
+| ROAD-CANON-01 | Active | P0 | Remove every obsolete Haute format and compatibility shim before release. |
 | ROAD-TEST-01 | Active | P0 | Ratchet high-risk boundary contracts with named evidence. |
 | ROAD-TEST-02 | Active | P0 | Complete optimiser property and chunk-oracle coverage. |
 | ROAD-TEST-03 | Active | P0 | Prove ratebook canonicalisation across dtype boundaries. |
@@ -20,6 +21,41 @@ documentation accuracy.
 | AUD-QUALITY-03 | Reverify | P2 | Batch remaining quality debt under enforceable policy. |
 
 ## Planned improvements
+
+### ROAD-CANON-01 — Prerelease canonical-only contract
+
+**Why:** Haute has no released or external user base. Retaining migrations, deprecated aliases,
+old field fallbacks, historical generated-code readers, and cleanup paths for obsolete Haute
+artifacts creates multiple behavioural contracts without protecting a real user. It also hides
+invalid current data behind silent conversion.
+
+**Plan:** Inventory executable backend and frontend compatibility paths, then remove them in four
+dependency-ordered groups: persisted configuration and editor formats; pipeline, sidecar, and
+generated-code shapes; deploy and wire contracts; internal wrappers, aliases, warnings, and
+old-artifact cleanup. Each owning component defines its one canonical representation before code
+changes. Code does not recognise, read, migrate, strip, rewrite, warn about, scan, or delete a
+path solely because an earlier Haute implementation produced it. Unsupported data receives only
+the ordinary validation applied to the current schema; there are no legacy-specific diagnostics.
+
+This policy does not remove compatibility with currently supported Python versions, operating
+systems, browsers, third-party services, dependency versions, or explicitly current public API
+aliases. Schema-version fields and typed adapters remain when they describe the current contract
+rather than accepting an obsolete Haute representation.
+
+**Acceptance:** Production source contains no executable obsolete-format migration, deprecated
+Haute alias, old-key/path fallback, temporary legacy response field, or historical-artifact
+housekeeping branch. Canonical inputs retain their current semantics. Migration-specific tests and
+fixtures are deleted; canonical tests and maintained call sites demonstrate the surviving
+contract. Backend and frontend residual scans distinguish forbidden Haute compatibility from the
+allowed platform/dependency meanings above. Relevant targeted suites, static checks, and the
+broad preflight are green.
+
+**Dependencies:** Pipeline config, JSON shredding, rating, optimiser, submodels, codegen, deploy,
+modelling, caching, execution, tracing, frontend node editors, graph canvas, git UI, and shared
+frontend contracts own their canonical formats and errors.
+
+**Evidence:** `src/haute/`; `frontend/src/`; `tests/`; `frontend/src/**/__tests__/`;
+`docs/specs/README.md`; owning component specifications.
 
 ### ROAD-TEST-01 — Boundary-contract inventory and ratchet
 

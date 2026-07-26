@@ -19,7 +19,6 @@ import pytest
 from pydantic import ValidationError
 
 from haute._graph_utils import (
-    _resolve_sink_path,
     _sanitize_func_name,
     build_instance_mapping,
     resolve_orig_source_names,
@@ -460,7 +459,7 @@ class TestResolveOrigSourceNamesExtended:
             id="inst",
             data=NodeData(label="inst", config={"instanceOf": "nonexistent"}),
         )
-        result = resolve_orig_source_names(node, {"inst": node}, {}, {})
+        result = resolve_orig_source_names(node, {"inst": node}, {})
         assert result is None
 
     def test_instance_with_no_parents(self):
@@ -471,81 +470,5 @@ class TestResolveOrigSourceNamesExtended:
             data=NodeData(label="inst", config={"instanceOf": "orig"}),
         )
         node_map = {"orig": orig, "inst": inst}
-        all_parents: dict[str, list[str]] = {}
-        result = resolve_orig_source_names(inst, node_map, all_parents, {})
+        result = resolve_orig_source_names(inst, node_map, {})
         assert result == []
-
-    def test_instance_parent_in_id_to_name(self):
-        """Parent found in id_to_name uses that name."""
-        orig = GraphNode(id="orig", data=NodeData(label="orig"))
-        parent = GraphNode(id="p", data=NodeData(label="Parent"))
-        inst = GraphNode(
-            id="inst",
-            data=NodeData(label="inst", config={"instanceOf": "orig"}),
-        )
-        node_map = {"orig": orig, "p": parent, "inst": inst}
-        all_parents = {"orig": ["p"]}
-        id_to_name = {"p": "Parent"}
-        result = resolve_orig_source_names(inst, node_map, all_parents, id_to_name)
-        assert result == ["Parent"]
-
-    def test_instance_parent_not_in_id_to_name_uses_label(self):
-        """Parent not in id_to_name falls back to sanitized label."""
-        orig = GraphNode(id="orig", data=NodeData(label="orig"))
-        parent = GraphNode(id="p", data=NodeData(label="My Parent"))
-        inst = GraphNode(
-            id="inst",
-            data=NodeData(label="inst", config={"instanceOf": "orig"}),
-        )
-        node_map = {"orig": orig, "p": parent, "inst": inst}
-        all_parents = {"orig": ["p"]}
-        id_to_name: dict[str, str] = {}
-        result = resolve_orig_source_names(inst, node_map, all_parents, id_to_name)
-        assert result == ["My_Parent"]
-
-    def test_instance_parent_not_in_node_map(self):
-        """Parent ID not in node_map — uses raw ID as fallback."""
-        orig = GraphNode(id="orig", data=NodeData(label="orig"))
-        inst = GraphNode(
-            id="inst",
-            data=NodeData(label="inst", config={"instanceOf": "orig"}),
-        )
-        node_map = {"orig": orig, "inst": inst}
-        all_parents = {"orig": ["ghost"]}
-        id_to_name: dict[str, str] = {}
-        result = resolve_orig_source_names(inst, node_map, all_parents, id_to_name)
-        assert result == ["ghost"]
-
-
-# ===========================================================================
-# _resolve_sink_path
-# ===========================================================================
-
-
-class TestResolveSinkPath:
-    def test_windows_backslash_not_prefixed(self):
-        result = _resolve_sink_path("dir\\file", "parquet")
-        assert not result.startswith("outputs/")
-        assert result.endswith(".parquet")
-
-    def test_multiple_extensions(self):
-        result = _resolve_sink_path("archive.tar.gz", "parquet")
-        assert result == "outputs/archive.tar.gz.parquet"
-
-    def test_empty_path_gets_outputs_prefix(self):
-        result = _resolve_sink_path("", "parquet")
-        assert result.startswith("outputs/")
-        assert result.endswith(".parquet")
-
-    def test_forward_slash_not_prefixed(self):
-        result = _resolve_sink_path("my/data", "csv")
-        assert not result.startswith("outputs/")
-        assert result.endswith(".csv")
-
-    def test_bare_name_gets_prefix_and_extension(self):
-        result = _resolve_sink_path("results", "parquet")
-        assert result == "outputs/results.parquet"
-
-    def test_already_has_extension(self):
-        result = _resolve_sink_path("results.parquet", "parquet")
-        assert result == "outputs/results.parquet"

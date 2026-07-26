@@ -422,13 +422,13 @@ class TestServe:
         ready_open.assert_called_once_with("http://localhost:5173", "127.0.0.1", 8765)
         timer_cls.assert_not_called()
 
-    def test_prod_mode_opens_browser_when_flag_not_set(
+    def test_plain_serve_uses_localhost_for_bind_and_browser(
         self,
         runner: CliRunner,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Prod mode without --no-browser should schedule _open_browser."""
+        """A bare ``haute serve`` must establish the browser-safe local authority."""
         monkeypatch.chdir(tmp_path)
         static = _built_static_dir(tmp_path)
 
@@ -440,17 +440,18 @@ class TestServe:
                 side_effect=FileNotFoundError("no frontend/ anywhere"),
             ),
             patch("haute.server.STATIC_DIR", static),
-            patch("uvicorn.run"),
+            patch("uvicorn.run") as mock_run,
             patch("threading.Timer", return_value=mock_timer) as timer_cls,
         ):
             result = runner.invoke(cli, ["serve"])
 
         assert result.exit_code == 0, result.output
-        timer_cls.assert_called_once()
-        # Timer should target host:port for prod mode
-        call_args = timer_cls.call_args
-        assert call_args[0][0] == 1.5
-        assert "8000" in str(call_args)
+        assert mock_run.call_args.kwargs["host"] == "localhost"
+        timer_cls.assert_called_once_with(
+            1.5,
+            serve_mod._open_browser,
+            args=("http://localhost:8000",),
+        )
         mock_timer.start.assert_called_once()
 
     def test_prod_mode_custom_host_port_browser_url(

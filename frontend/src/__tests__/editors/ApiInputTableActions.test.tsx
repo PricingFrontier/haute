@@ -27,7 +27,6 @@ vi.mock("../../api/client", () => ({
   getJsonCacheStatus: vi.fn().mockResolvedValue({ cached: false }),
   getJsonCacheStatusForSchema: vi.fn().mockResolvedValue({ cached: false }),
   deleteJsonCache: vi.fn(),
-  cancelJsonCache: vi.fn(),
   inferJsonCacheSchema: vi.fn(),
 }))
 vi.mock("../../hooks/useSchemaFetch", () => ({

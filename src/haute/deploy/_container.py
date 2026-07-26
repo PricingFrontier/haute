@@ -330,9 +330,9 @@ def _quote_ndjson_chunks(plan):
     try:
         for batch in bounded_collect_batches(
             plan.lazy_frame,
-            profile=plan.execution_context.profile,
             chunk_size=_DEPLOY_STREAM_CHUNK_SIZE,
             maintain_order=True,
+            execution_context=plan.execution_context,
             execution_context=plan.execution_context,
             stage_name="deploy_stream_batch",
             node_id=_output_node_id,

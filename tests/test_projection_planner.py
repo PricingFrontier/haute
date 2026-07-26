@@ -7,10 +7,9 @@ import json
 import pytest
 
 from haute._edge_join import narrow_join_parent_demand
-from haute._execute_lazy import _compute_projection_plan
 from haute._execution_context import ExecutionProfile
 from haute.errors import ContractMismatchError
-from haute.graph_utils import NodeType, _prepare_graph
+from haute.graph_utils import NodeType
 from haute.projection import (
     UNPROJECTED_STREAMING_BOUNDARY_RULE_NAME,
     AllExcept,
@@ -19,6 +18,7 @@ from haute.projection import (
     explain,
     model_score_required_output_columns,
     plan,
+    prepare_graph,
     projection_rule_coverage_by_node_type,
     source_scan_projection,
     validate_projection_rule_coverage,
@@ -261,77 +261,13 @@ def _model_score_graph():
 
 
 def _children_of_for_target(graph, target_node_id: str):
-    node_map, order, parents_of, _id_to_name = _prepare_graph(graph, target_node_id)
-    children_of: dict[str, list[str]] = {node_id: [] for node_id in order}
-    for child_id, parent_ids in parents_of.items():
+    prepared = prepare_graph(graph, target_node_id)
+    children_of: dict[str, list[str]] = {node_id: [] for node_id in prepared.order}
+    for child_id, parent_ids in prepared.parents_of.items():
         for parent_id in parent_ids:
             if parent_id in children_of:
                 children_of[parent_id].append(child_id)
-    return node_map, order, children_of
-
-
-def test_public_projection_plan_matches_private_projection_engine():
-    graph = _fan_in_graph()
-    required = {"out": {"quote_id", "left_value", "right_value"}}
-    node_map, order, children_of = _children_of_for_target(graph, "out")
-
-    private_plan = _compute_projection_plan(
-        order,
-        children_of,
-        node_map,
-        required_columns_by_node=required,
-        strict_projection=True,
-    )
-    public_plan = plan(
-        ProjectionRequest(
-            graph=graph,
-            target_node_id="out",
-            profile=ExecutionProfile.LAZY_SINK,
-            required_columns_by_node=required,
-        )
-    )
-
-    assert public_plan.needed_by_node == {
-        node_id: None if columns is None else frozenset(columns)
-        for node_id, columns in private_plan.needed_by_node.items()
-    }
-    assert public_plan.edge_demands == {
-        edge: None if columns is None else frozenset(columns)
-        for edge, columns in private_plan.edge_demands.items()
-    }
-
-
-def test_public_projection_plan_does_not_delegate_to_executor_private_planner(
-    monkeypatch,
-):
-    graph = _fan_in_graph()
-    required = {"out": {"quote_id", "left_value", "right_value"}}
-
-    def _private_planner_called(*_args, **_kwargs):
-        raise AssertionError("public projection planner called executor private planner")
-
-    import haute._execute_lazy as execute_lazy
-
-    monkeypatch.setattr(
-        execute_lazy,
-        "_compute_projection_plan",
-        _private_planner_called,
-    )
-
-    projection = plan(
-        ProjectionRequest(
-            graph=graph,
-            target_node_id="out",
-            profile=ExecutionProfile.LAZY_SINK,
-            required_columns_by_node=required,
-        )
-    )
-
-    assert projection.needed_by_node["joined"] == frozenset(
-        {"quote_id", "left_value", "right_value"}
-    )
-    assert projection.edge_demands[("left", "joined")] == frozenset({"quote_id", "left_value"})
-    assert projection.edge_demands[("right", "joined")] == frozenset({"quote_id", "right_value"})
+    return prepared.node_map, prepared.order, children_of
 
 
 def test_public_projection_plan_routes_fan_in_demands_by_parent():
@@ -708,7 +644,7 @@ def test_execution_facade_attaches_projection_strategy_to_context():
     projection = plan_execution_strategy(request, execution_context=context)
 
     assert context.projection_plan is projection
-    diagnostics = context.metrics_payload(status="completed")["projection_plan_diagnostics"]
+    diagnostics = context.projection_plan.diagnostics_payload()
     assert diagnostics["strategy_summary"]["profile"] == "lazy_sink"
 
 
@@ -2377,7 +2313,7 @@ def test_public_projection_plan_treats_empty_polars_node_as_passthrough():
     assert projection.needed_by_node["source"] == frozenset({"quote_id"})
 
 
-def test_public_projection_plan_preview_profile_preserves_compatibility():
+def test_public_projection_plan_preview_profile_preserves_opaque_propagation():
     projection = plan(
         ProjectionRequest(
             graph=_fan_in_graph(declared_parent_inputs=False),

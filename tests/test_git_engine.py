@@ -2268,36 +2268,6 @@ class TestCreateWorkingBranch:
         assert pend[0].message == "save 3"
         assert pend[0].timestamp == orig_ts  # replay preserved the author date
 
-    def test_records_fork_point_and_removes_on_delete(self, repo: Path) -> None:
-        ids = _fork_setup(repo)
-        create_working_branch("feature", repo, cwd=repo)  # forks at latest milestone
-
-        def by_name() -> dict[str, object]:
-            return {b.name: b for b in working_branches(repo, cwd=repo).branches}
-
-        assert by_name()["feature"].forked_from == ids["m1"]  # type: ignore[attr-defined]
-        delete_working_pair("feature", repo, confirm=True, cwd=repo)
-        assert "feature" not in by_name()  # fork entry gone with the branch
-
-    def test_fork_point_follows_archive_and_restore(self, repo: Path) -> None:
-        ids = _fork_setup(repo)
-        create_working_branch("feature", repo, cwd=repo)
-        archive_working_pair("feature", repo, cwd=repo)
-        archived = {b.name: b for b in working_branches(repo, cwd=repo).branches}
-        assert archived["archive/feature"].forked_from == ids["m1"]
-        restore_working_pair("archive/feature", repo, cwd=repo)
-        live = {b.name: b for b in working_branches(repo, cwd=repo).branches}
-        assert live["feature"].forked_from == ids["m1"]
-
-    def test_stale_fork_point_dropped(self, repo: Path) -> None:
-        from haute._git_state import set_fork
-
-        _fork_setup(repo)
-        create_working_branch("feature", repo, cwd=repo)
-        set_fork(repo, "feature", "0" * 40)  # point at a non-existent commit
-        by_name = {b.name: b for b in working_branches(repo, cwd=repo).branches}
-        assert by_name["feature"].forked_from is None
-
     def test_adopt_create_when_unset_switches(self, tmp_path: Path) -> None:
         repo = tmp_path / "fresh"
         repo.mkdir()
@@ -2384,7 +2354,7 @@ class TestRemotesAndPush:
         r = res.remotes[0]
         assert r.url == str(bare)
         # No remote-tracking ref exists yet, so divergence is unknown (not 0).
-        assert r.ahead is None and r.behind is None
+        assert r.working is not None and r.working.status == "untracked"
 
     def test_push_sends_both_working_and_ledger(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)
@@ -2452,14 +2422,16 @@ class TestRemotesAndPush:
         _git(repo, "fetch", "origin")  # establish remote-tracking refs locally
         # Just pushed: the working branch is level with the remote.
         synced = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
-        assert synced.ahead == 0 and synced.behind == 0
+        assert synced.working is not None
+        assert synced.working.ahead == 0 and synced.working.behind == 0
         # A local milestone advances the working branch beyond the remote. It is a
         # merge commit, so raw commit-count ahead is 2 (the folded ledger save +
         # the merge commit itself) — ahead/behind are honest git commit counts.
         _write_and_save(repo, WORKING, {"rating.py": "# v2\n"})
         commit_milestone("local milestone", repo, cwd=repo)
         r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
-        assert r.ahead == 2 and r.behind == 0
+        assert r.working is not None
+        assert r.working.ahead == 2 and r.working.behind == 0
 
     def test_legs_untracked_before_any_push(self, repo: Path, tmp_path: Path) -> None:
         # F2 honesty: never pushed ⇒ both legs "untracked", NOT "synced" — the
@@ -2469,7 +2441,6 @@ class TestRemotesAndPush:
         r = next(x for x in list_remotes(repo, cwd=repo).remotes if x.name == "origin")
         assert r.working is not None and r.working.status == "untracked"
         assert r.ledger is not None and r.ledger.status == "untracked"
-        assert r.ahead is None and r.behind is None  # back-compat counts stay null
 
     def test_legs_synced_after_push(self, repo: Path, tmp_path: Path) -> None:
         self._setup_pair(repo)

@@ -9,6 +9,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, act } from "@testing-library/react"
 import { useState } from "react"
 import ApiInputEditor from "../../panels/editors/ApiInputEditor"
+import type { OnUpdateConfig } from "../../panels/editors/_shared"
 
 afterEach(cleanup)
 
@@ -35,7 +36,6 @@ const mockGetJsonCacheStatus = vi.fn()
 const mockGetJsonCacheStatusForSchema = vi.fn()
 const mockGetJsonCacheProgress = vi.fn()
 const mockDeleteJsonCache = vi.fn()
-const mockCancelJsonCache = vi.fn()
 const mockInferJsonCacheSchema = vi.fn()
 const mockFetchSchemaForPath = vi.fn()
 const schemaFetchState = vi.hoisted(() => ({ error: null as string | null }))
@@ -47,7 +47,6 @@ vi.mock("../../api/client", () => ({
   getJsonCacheStatus: (...args: unknown[]) => mockGetJsonCacheStatus(...args),
   getJsonCacheStatusForSchema: (...args: unknown[]) => mockGetJsonCacheStatusForSchema(...args),
   deleteJsonCache: (...args: unknown[]) => mockDeleteJsonCache(...args),
-  cancelJsonCache: (...args: unknown[]) => mockCancelJsonCache(...args),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {
     status: number
@@ -74,16 +73,19 @@ beforeEach(() => {
   mockGetJsonCacheStatusForSchema.mockReset().mockResolvedValue({ cached: false })
   mockGetJsonCacheProgress.mockReset().mockResolvedValue({ active: false })
   mockDeleteJsonCache.mockReset()
-  mockCancelJsonCache.mockReset()
   mockInferJsonCacheSchema.mockReset()
   mockFetchSchemaForPath.mockReset()
   schemaFetchState.error = null
   DEFAULT_PROPS.onUpdate.mockClear()
 })
 
+function successfulOnUpdateSpy() {
+  return vi.fn<OnUpdateConfig>(() => ({ ok: true }))
+}
+
 const DEFAULT_PROPS = {
   config: {} as Record<string, unknown>,
-  onUpdate: vi.fn(),
+  onUpdate: successfulOnUpdateSpy(),
   accentColor: "#10b981",
 }
 
@@ -515,7 +517,7 @@ describe("ApiInputEditor", () => {
   })
 
   it("Add Table creates a root table with emit=true", () => {
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -532,7 +534,7 @@ describe("ApiInputEditor", () => {
   })
 
   it("ticking a table's emit toggle pushes the change back", () => {
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -559,7 +561,7 @@ describe("ApiInputEditor", () => {
   })
 
   it("Add Column appends a column with selected=true and type=str", () => {
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -573,7 +575,9 @@ describe("ApiInputEditor", () => {
       />,
     )
     fireEvent.click(screen.getByTestId("api-input-table-0-add-col"))
-    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    const lastCall = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0] as {
+      tables: Array<{ columns: Array<{ selected: boolean; type: string }> }>
+    }
     const newCols = lastCall.tables[0].columns
     expect(newCols).toHaveLength(1)
     expect(newCols[0].selected).toBe(true)
@@ -599,7 +603,7 @@ describe("ApiInputEditor", () => {
         { label: "ghost", emit: true, columns: [] },
       ],
     })
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -613,7 +617,9 @@ describe("ApiInputEditor", () => {
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalled()
     })
-    const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0] as {
+      tables: Array<{ columns: Array<{ type: string }> }>
+    }
     // junk table dropped
     expect(arg.tables.length).toBe(1)
     // bad column type coerced to "str"
@@ -626,7 +632,7 @@ describe("ApiInputEditor", () => {
         { path: "$[:]", label: "inferred_policies", emit: true, columns: [] },
       ],
     })
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -671,7 +677,7 @@ describe("ApiInputEditor", () => {
         },
       ],
     })
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -697,9 +703,16 @@ describe("ApiInputEditor", () => {
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalled()
     })
-    const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+    const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0] as {
+      tables: Array<{
+        path: string
+        label: string
+        emit: boolean
+        columns: unknown[]
+      }>
+    }
     // Matching-path table keeps user's label + emit choice...
-    const root = arg.tables.find((t: { path: string }) => t.path === "$[:]")
+    const root = arg.tables.find((t) => t.path === "$[:]")!
     expect(root.label).toBe("my_quotes")
     expect(root.emit).toBe(false)
     // ...but picks up the inferred columns.
@@ -712,7 +725,7 @@ describe("ApiInputEditor", () => {
     mockInferJsonCacheSchema.mockResolvedValue({
       tables: [{ path: "$[:]", label: "inferred", emit: true, columns: [] }],
     })
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -757,7 +770,7 @@ describe("ApiInputEditor", () => {
         },
       ],
     })
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
     render(
       <ApiInputEditor
         {...DEFAULT_PROPS}
@@ -773,7 +786,9 @@ describe("ApiInputEditor", () => {
     })
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalled()
-      const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0]
+      const arg = onUpdate.mock.calls[onUpdate.mock.calls.length - 1][0] as {
+        tables: unknown[]
+      }
       expect(arg.tables.length).toBe(2)
     })
   })
@@ -1201,7 +1216,7 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
   it("surfaces a rename preflight rejection until a later commit succeeds", () => {
     const collisionError =
       'Target "Pricing Node" already has an input named "quotes".'
-    const onUpdate = vi.fn()
+    const onUpdate = successfulOnUpdateSpy()
       .mockReturnValueOnce({ ok: false, error: collisionError })
       .mockReturnValueOnce({ ok: true })
     render(
@@ -1233,8 +1248,8 @@ describe("ApiInputEditor — W1.4 label validation (blank / duplicate / sanitise
   })
 
   it("an already-committed duplicate (e.g. loaded from disk) surfaces validation without any interaction", () => {
-    // The editor can't prevent invalid configs arriving from legacy
-    // files or an infer-merge; it must SHOW the problem (the backend
+    // The editor can't prevent invalid configs arriving from a hand edit
+    // or an infer-merge; it must SHOW the problem (the backend
     // will reject the save until it's fixed).
     const config = {
       tables: [
@@ -1448,15 +1463,10 @@ describe("ApiInputEditor — W1.9 column-name validation (blank / duplicate)", (
 
 // ─── readV2 render-gate: disk-arriving blanks SURFACE, never vanish ──
 //
-// The W1.x work above closed the INTERACTIVE blank-commit vector (the
-// editor refuses to commit a blank name/path/label). But a blank entry
-// can still arrive from disk — a hand-edited/legacy file, or the residue
-// of the pre-W1.x per-keystroke editor that committed `name:""`. Until
-// `readV2` was fixed it silently dropped those, so the row rendered
-// nowhere (and was re-serialised away on the next edit — see the
-// round-trip suite below). `readV2` now KEEPS them; these tests pin that
-// the editor surfaces every persisted entry with inline validation,
-// WITHOUT any interaction (the 1:1 JSON↔UI render-gate invariant).
+// The editor refuses to commit a blank name/path/label, but a hand-edited
+// persisted config can still contain one. These tests pin that every
+// persisted entry remains visible with inline validation and is never
+// silently dropped during the 1:1 JSON↔UI render pass.
 describe("ApiInputEditor — disk-arriving blank entries surface (render-gate)", () => {
   it("a blank-NAME column from disk renders its row with a visible name error", () => {
     const config = {

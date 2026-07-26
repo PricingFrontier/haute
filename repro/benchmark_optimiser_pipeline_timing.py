@@ -185,9 +185,9 @@ def timing_hooks(
     import haute._execute_lazy as execute_lazy
     import haute._model_scorer as model_scorer
 
-    original_safe_sink = execute_lazy.safe_sink
+    original_bounded_sink = execute_lazy.bounded_sink
 
-    def timed_safe_sink(lf: Any, path: str | Path, *args: Any, **kwargs: Any) -> Any:
+    def timed_bounded_sink(lf: Any, path: str | Path, *args: Any, **kwargs: Any) -> Any:
         label = f"checkpoint:{Path(path).stem}"
         with timed(
             label,
@@ -195,11 +195,11 @@ def timing_hooks(
             kind="checkpoint",
             memory_sample_interval=memory_sample_interval,
         ):
-            result = original_safe_sink(lf, path, *args, **kwargs)
+            result = original_bounded_sink(lf, path, *args, **kwargs)
         events[-1].update(parquet_stats(path))
         return result
 
-    execute_lazy.safe_sink = timed_safe_sink
+    execute_lazy.bounded_sink = timed_bounded_sink
 
     original_sink_to_temp = model_scorer._sink_to_temp
 
@@ -379,7 +379,7 @@ def timing_hooks(
     try:
         yield
     finally:
-        execute_lazy.safe_sink = original_safe_sink
+        execute_lazy.bounded_sink = original_bounded_sink
         model_scorer._sink_to_temp = original_sink_to_temp
         model_scorer._batch_score_to_parquet = original_batch_score
 

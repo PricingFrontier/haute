@@ -157,8 +157,8 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       graph.preamble or "", pipeline_dir=_pipeline_dir(graph))`; then
       `lazy_outputs, *_ = execute_lazy_graph(flat, _build_node_fn, target_node_id=node,
       preserve_node_ids={node}, preamble_ns=preamble_ns or None,
-      source=graph.active_source, enforce_contracts=ENFORCE_CONTRACTS)`
-      (`_build_node_fn`/`_compile_preamble`/`_pipeline_dir`/`ENFORCE_CONTRACTS` from
+      source=graph.active_source, enforce_contracts=True)`
+      (`_build_node_fn`/`_compile_preamble`/`_pipeline_dir` from
       `haute.executor`; `preserve_node_ids` keeps the target frame alive through the
       engine's buffer-release; `source=graph.active_source` — the facade's `"live"`
       default would silently pick the wrong live-switch branch for a pipeline whose saved

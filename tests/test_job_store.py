@@ -173,24 +173,6 @@ class TestJobStoreTTL:
         assert job is not None
         assert job["status"] == "fresh"
 
-    def test_missing_created_at_uses_zero_for_ttl_eviction(self) -> None:
-        store = JobStore(ttl_seconds=10)
-        store.jobs["legacy"] = {"status": "completed"}
-
-        with patch("haute.routes._job_store.time.time", return_value=10.5):
-            store._evict_stale()
-
-        assert "legacy" not in store.jobs
-
-    def test_missing_created_at_zero_is_not_stale_before_ttl_window(self) -> None:
-        store = JobStore(ttl_seconds=10)
-        store.jobs["legacy"] = {"status": "completed"}
-
-        with patch("haute.routes._job_store.time.time", return_value=9.5):
-            store._evict_stale()
-
-        assert store.jobs["legacy"]["status"] == "completed"
-
     def test_mixed_stale_and_fresh(self) -> None:
         store = JobStore(ttl_seconds=5)
         stale_id = store.create_job({"status": "stale", "created_at": time.time() - 100})
@@ -323,40 +305,6 @@ class TestJobStoreTTL:
         assert log_warning.call_args.kwargs["path"] == str(artifact_dir)
         assert log_warning.call_args.kwargs["kind"] == kind
         assert log_warning.call_args.kwargs["exc_info"] is True
-
-    def test_stale_job_artifact_cleanup_skips_malformed_handles(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        store = JobStore(ttl_seconds=1)
-        kind = "test_job_store_cleanup_with_malformed_handles"
-        artifact_path = tmp_path / "valid_apply_result.parquet"
-        artifact_path.write_bytes(b"artifact")
-
-        def cleaner(handle: dict) -> None:
-            Path(handle["path"]).unlink()
-
-        register_artifact_cleaner(kind, cleaner)
-
-        job_id = store.create_job(
-            {
-                "status": "completed",
-                "created_at": time.time() - 10,
-                "artifact_handles": {
-                    "legacy_string_handle": "not-a-dict",
-                    "empty_path_handle": {"path": ""},
-                    "apply_result": {
-                        "kind": kind,
-                        "version": 1,
-                        "format": "parquet",
-                        "path": str(artifact_path),
-                    },
-                },
-            }
-        )
-
-        assert store.get_job(job_id) is None
-        assert not artifact_path.exists()
 
     def test_stale_job_path_cleanup_failure_is_observable_through_registered_cleaner(
         self,
@@ -1527,11 +1475,6 @@ class TestHeavyObjectLifecyclePolicy:
 
         with pytest.raises(RuntimeError, match="without an expiry"):
             store._schedule_heavy_object_cleanup_if_needed("job-id", True, None)
-
-    def test_heavy_object_expiry_falls_back_to_zero_timestamp(self) -> None:
-        store = JobStore(heavy_object_ttl_seconds=900)
-
-        assert store._heavy_objects_expires_at({"status": "completed"}) == pytest.approx(900.0)
 
     def test_touch_heavy_objects_returns_false_for_running_job(self) -> None:
         store = JobStore(ttl_seconds=3600, heavy_object_ttl_seconds=900)

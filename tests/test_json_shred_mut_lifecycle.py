@@ -319,31 +319,25 @@ def _working_cache(data: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# 1123 — `if meta.get("schema_mode") != "v2":` (NotEq cluster).
+# 1123 — current schema-mode equality (NotEq cluster).
 # ---------------------------------------------------------------------------
 
 
-def test_validity_requires_schema_mode_v2(tmp_path: Path) -> None:
-    """A meta with schema_mode != "v2" is invalid; the same meta with "v2"
-    (matching fingerprint + signature + parquet) is valid.
-
-    Kills 1123's NotEq: flipping `!=` to `==` would mark the genuine v2 cache
-    invalid and the v1 cache valid — both assertions below would flip."""
+def test_validity_requires_current_schema_mode(tmp_path: Path) -> None:
+    """Only the current schema mode is valid."""
     data = _write(tmp_path, [{"id": 1}])
     cfg = {"tables": [_table("$[:]", "root", [_col("id", "$[:].id")])]}
     cache_dir = tmp_path / "cache"
     build_per_port_cache(str(data), cfg, cache_dir)
 
-    # As built (schema_mode == "v2") → valid.
+    # Metadata written by the current builder is valid.
     assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is True
 
-    # Rewrite meta.json with schema_mode == "v1", keeping every other field
-    # (fingerprint, data_file, tables) intact so schema_mode is the deciding
-    # check, not a fingerprint/signature mismatch.
+    # Keep every other field intact so schema_mode is the deciding check.
     meta_path = cache_dir / "meta.json"
     meta = orjson.loads(meta_path.read_bytes())
     assert meta["schema_mode"] == "v2"
-    meta["schema_mode"] = "v1"
+    meta["schema_mode"] = "unsupported"
     meta_path.write_bytes(orjson.dumps(meta))
     assert is_per_port_cache_valid(cache_dir, cfg, data_path=data) is False
 

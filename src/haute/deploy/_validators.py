@@ -61,14 +61,6 @@ def _parse_test_quote_case(row: Any, *, row_index: int) -> _TestQuoteCase:
     if not isinstance(row, dict):
         raise ValueError(f"test quote row {row_index}: expected a JSON object")
 
-    is_golden = any(key in row for key in ("expected", "tolerance_pct"))
-    if not is_golden:
-        return _TestQuoteCase(
-            input=_strip_metadata_fields(row),
-            expected=None,
-            tolerance_pct=0.0,
-        )
-
     unknown_keys = sorted(
         key for key in row if not key.startswith("_") and key not in _GOLDEN_QUOTE_KEYS
     )
@@ -115,8 +107,8 @@ def _load_test_quote_cases(path: Path) -> list[_TestQuoteCase]:
 def load_test_quote_file(path: Path) -> list[dict]:
     """Load a test quote JSON file, strip metadata fields (``_`` prefixed).
 
-    Golden rows of the form ``{"input": {...}, "expected": {...}}`` are
-    unwrapped so live smoke tests send only the API input payload.
+    Rows use ``{"input": {...}, "expected": {...}?}``; live smoke tests send
+    only the unwrapped API input payload.
 
     Returns a list of cleaned quote dicts ready for scoring.
 

@@ -838,7 +838,7 @@ def _apply_rating_table(
     # but it must never hide a factor that is absent from the input frame.
     frame_schema = input_schema if input_schema is not None else _frame_schema(lf)
     existing_cols = set(_schema_names(frame_schema))
-    table_label = str(table.get("name") or "").strip() or output_col
+    table_label = output_col
     for factor in factors:
         if factor not in existing_cols:
             raise RatingFactorMissingError(
@@ -1102,28 +1102,10 @@ def _rating_extrema_expr(
 
 
 def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return validated combined-output definitions for a rating step.
-
-    Legacy configs with ``combinedColumn``/``operation`` are converted to a
-    single output definition. New ``combinedOutputs`` entries are validated
-    strictly so misspelled operations or non-finite base values fail loudly.
-    """
+    """Return strictly validated canonical combined-output definitions."""
     raw_outputs = config.get("combinedOutputs")
-    combined_raw = config.get("combinedColumn")
-    combined = str(combined_raw).strip() if combined_raw is not None else ""
-    operation = _normalise_combine_operation(config.get("operation", "multiply"))
-    legacy_output = (
-        {
-            "outputColumn": str(combined),
-            "operation": operation,
-            "baseValue": None,
-            "_legacy": True,
-        }
-        if combined
-        else None
-    )
     if raw_outputs is None or raw_outputs == []:
-        return [legacy_output] if legacy_output else []
+        return []
     if not isinstance(raw_outputs, list):
         raise ValueError("ratingStep combinedOutputs must be a list")
 
@@ -1133,14 +1115,6 @@ def _normalise_combined_outputs(config: dict[str, Any]) -> list[dict[str, Any]]:
         for t in config.get("tables", []) or []
         if str(t.get("outputColumn", "") or "").strip()
     }
-    raw_output_cols = {
-        str(item.get("outputColumn", "") or "").strip()
-        for item in raw_outputs
-        if isinstance(item, dict)
-    }
-    if legacy_output and combined not in raw_output_cols:
-        outputs.append(legacy_output)
-        seen_output_cols.add(combined)
     for idx, item in enumerate(raw_outputs):
         if not isinstance(item, dict):
             raise ValueError(f"ratingStep combinedOutputs[{idx}] must be an object")
@@ -1283,14 +1257,12 @@ def _apply_rating_step_outputs(
             # instead of a silently dropped column.
             logger.warning(
                 "rating_table_skipped_incomplete",
-                table=str(table.get("name") or "").strip() or output_col,
+                table=output_col,
                 output_column=output_col,
                 reason=skip_reason,
             )
 
     for combined in combined_outputs:
-        if combined.get("_legacy") and len(out_cols) < 2:
-            continue
         lf = _combine_rating_output(
             lf,
             out_cols,

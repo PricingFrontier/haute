@@ -10,12 +10,6 @@
   --bg-panel: #141721;
   --bg-input: #0d0f17;
   --bg-hover: #1f2333;
-  /* Card-on-panel surface. Aliases --bg-panel: call sites historically
-     referenced this token without it being declared, so they rendered
-     transparent and showed the panel colour through — this pins that
-     appearance while making the token real (and individually themeable). */
-  --bg-surface: var(--bg-panel);
-
   /* Chrome (header/sidebar) */
   --chrome: #0b0d14;
   --chrome-hover: #161a26;
@@ -505,8 +499,7 @@ html, body, #root {
 
 /* Breakdown dropdown trigger: hovers to text-secondary color only
    when the dropdown is closed AND there is data to show
-   (data-hover-enabled="true").  Matches the pre-migration guard
-   `if (!open && hasData)`.  Resting colors + background live here —
+   (data-hover-enabled="true"). Resting colors + background live here —
    NOT as inline `style={{ color, background }}` — because equal-
    specificity inline styles would beat the `:hover` rule. */
 .hover-breakdown[data-open="false"] {
@@ -641,31 +634,6 @@ html, body, #root {
 .file-browser-row[data-selected="true"]:hover,
 .file-browser-row[data-selected="true"]:focus-visible {
   background: var(--accent-soft);
-}
-
-/* GroupedColumnsTab group-header — rests on var(--bg-elevated)
-   (the elevated row inside the scroll container), hovers to
-   var(--bg-hover). */
-.grouped-col-group-header {
-  background: var(--bg-elevated);
-  transition: background 150ms;
-}
-.grouped-col-group-header:hover,
-.grouped-col-group-header:focus-visible {
-  background: var(--bg-hover);
-}
-
-/* GroupedColumnsTab pattern-row — rests transparent, hovers to
-   var(--bg-hover).  Parent `.file-browser-row` hover shares the same
-   pattern but a different selected-row policy, so a dedicated class
-   keeps the two independent. */
-.grouped-col-pattern-row {
-  background: transparent;
-  transition: background 150ms;
-}
-.grouped-col-pattern-row:hover,
-.grouped-col-pattern-row:focus-visible {
-  background: var(--bg-hover);
 }
 
 /* RatingStepEditor / Sink / generic "themed" chrome button: a

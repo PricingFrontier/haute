@@ -23,7 +23,6 @@ import {
   ConstantEditor,
   SubmodelEditor,
   ColumnsTab,
-  GroupedColumnsTab,
   ModellingConfig,
   OptimiserConfig,
   LazyEditorBoundary,
@@ -35,9 +34,6 @@ import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 import { CommittedTextField } from "../components/form"
-
-// Re-export types (preserve public API for App.tsx)
-export type { SimpleNode, SimpleEdge } from "./editors"
 
 type NodePanelProps = {
   node: SimpleNode | null
@@ -60,17 +56,7 @@ type NodePanelProps = {
 // Output already has its own field selection; submodels/ports are placeholders;
 // modelling and explore nodes are sink-only (no outputs).
 //
-// Bundle 3a — API_INPUT was added here as part of the v2-consolidation
-// decision. The v2-native column-filter surface is the per-column
-// `selected: bool` inside `tables[].columns[]` (in the Schema panel).
-// The legacy `Columns` tab wrote the universal-but-apiInput-illegitimate
-// keys `selected_columns` / `column_renames` via `GroupedColumnsTab`
-// and let the user double-author the same intent. Removing the tab
-// here removes the only UI write path for those keys on apiInput;
-// any residual values on disk are stripped at load time by Bundle 2.a
-// (`_normalise_loaded_config` in `src/haute/_config_io.py`) and at
-// write time by Bundle 2.α. Contract pinning test:
-// `src/__tests__/editors/apiInputBundle3aContract.test.tsx`.
+// API input column selection lives in `tables[].columns[]` in its Schema panel.
 const NO_COLUMNS_TAB = new Set<string>([
   NODE_TYPES.API_INPUT,
   NODE_TYPES.OUTPUT,
@@ -141,7 +127,10 @@ function submodelGraphFromMetadata(
   if (!isRecord(metadata)) {
     return { status: "malformed", submodelName, reason: "metadata must be an object" }
   }
-  const graph = isRecord(metadata.graph) ? metadata.graph : metadata
+  if (!isRecord(metadata.graph)) {
+    return { status: "malformed", submodelName, reason: "metadata.graph must be an object" }
+  }
+  const graph = metadata.graph
   if (!isSimpleNodeArray(graph.nodes)) {
     return { status: "malformed", submodelName, reason: "graph.nodes must be an array of nodes" }
   }
@@ -296,7 +285,7 @@ function InstanceReferenceDiagnostic({
         </p>
         <pre
           className="text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-words rounded-md px-3 py-2 select-text overflow-x-auto"
-          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
         >
           {JSON.stringify(configDiagnostic, null, 2)}
         </pre>
@@ -451,7 +440,7 @@ function InstancePanel({
             )}
             <div className="flex flex-col gap-1.5">
               {origInputs.map((orig) => (
-                <div key={orig} className="flex items-center gap-2 px-2 py-1.5 rounded-md" style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+                <div key={orig} className="flex items-center gap-2 px-2 py-1.5 rounded-md" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
                   <span className="text-[11px] font-mono shrink-0 min-w-[90px] truncate" style={{ color: 'var(--text-secondary)' }} title={orig}>
                     {orig}
                   </span>
@@ -624,7 +613,7 @@ function UnknownNodeTypeDiagnostic({
           data-testid="unknown-node-config-diagnostic"
           aria-label="Raw config diagnostic"
           className="text-[11px] leading-relaxed font-mono whitespace-pre-wrap break-words rounded-md px-3 py-2 select-text overflow-x-auto"
-          style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
+          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
         >
           {JSON.stringify(config, null, 2)}
         </pre>
@@ -1105,21 +1094,12 @@ export default function NodePanel({
       <div className="flex-1 min-h-0 overflow-y-auto">
         <LazyEditorBoundary>
           {activeTab === "columns" && showColumnsTab ? (
-            nodeType === NODE_TYPES.API_INPUT ? (
-              <GroupedColumnsTab
-                config={config}
-                onUpdate={handleConfigUpdate}
-                availableColumns={availableColumns}
-                columns={currentColumns}
-              />
-            ) : (
-              <ColumnsTab
-                config={config}
-                onUpdate={handleConfigUpdate}
-                availableColumns={availableColumns}
-                columns={currentColumns}
-              />
-            )
+            <ColumnsTab
+              config={config}
+              onUpdate={handleConfigUpdate}
+              availableColumns={availableColumns}
+              columns={currentColumns}
+            />
           ) : renderEditor()}
         </LazyEditorBoundary>
       </div>

@@ -263,9 +263,7 @@ def test_optimiser_reaper_targets_only_owned_marked_roots(
     unrelated.mkdir()
     monkeypatch.setattr(service, "_apply_artifact_root", lambda: apply_root)
     monkeypatch.setattr(service, "_ratebook_factors_artifact_root", lambda: factors_root)
-    monkeypatch.setenv("HAUTE_ARTIFACT_STALE_SECONDS", "0")
-
-    reports = service.reap_stale_optimiser_artifacts()
+    reports = service.reap_stale_optimiser_artifacts(0)
 
     assert reports["apply"]["removed"] == 1
     assert reports["ratebook_factors"]["removed"] == 1
@@ -280,10 +278,10 @@ def test_optimiser_reaper_rejects_invalid_stale_configuration(
     monkeypatch.setenv("HAUTE_ARTIFACT_STALE_SECONDS", "1.5")
 
     with pytest.raises(ValueError, match="non-negative integer"):
-        service.reap_stale_optimiser_artifacts()
+        service._artifact_stale_seconds()
 
 
-def test_server_lifespan_reaps_artifacts_before_serving(
+def test_server_lifespan_reaps_artifacts_without_delaying_readiness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import haute.deploy._config as deploy_config
@@ -291,27 +289,60 @@ def test_server_lifespan_reaps_artifacts_before_serving(
 
     calls: list[str] = []
     lifespan_thread = threading.get_ident()
+    reaper_started = threading.Event()
+    allow_reaper_finish = threading.Event()
+
     monkeypatch.setattr(server, "_clear_bytecache", lambda: calls.append("clear_bytecache"))
     monkeypatch.setattr(server, "configure_logging", lambda: calls.append("configure_logging"))
     monkeypatch.setattr(deploy_config, "_load_env", lambda _path: calls.append("load_env"))
     monkeypatch.setattr(server, "configure_execution_telemetry", lambda: calls.append("telemetry"))
     monkeypatch.setattr(
         server,
+        "_artifact_stale_seconds",
+        lambda: calls.append("artifact_config") or 86_400,
+        raising=False,
+    )
+
+    def blocking_reaper(*_args: object, **_kwargs: object) -> None:
+        calls.append(f"reap_artifacts:{threading.get_ident()}")
+        reaper_started.set()
+        if not allow_reaper_finish.wait(timeout=5):
+            raise TimeoutError("test did not release optimiser artifact reaper")
+
+    monkeypatch.setattr(
+        server,
         "reap_stale_optimiser_artifacts",
-        lambda: calls.append(f"reap_artifacts:{threading.get_ident()}"),
+        blocking_reaper,
     )
     monkeypatch.setattr(server, "_ensure_pipeline_index", lambda: calls.append("pipeline_index"))
 
     async def noop_watcher() -> None:
-        return None
+        await asyncio.Event().wait()
 
     monkeypatch.setattr(server, "_watcher_forever", noop_watcher)
 
     async def exercise_lifespan() -> None:
-        async with server._lifespan(server.app):
+        entered = asyncio.Event()
+        leave = asyncio.Event()
+
+        async def run_lifespan() -> None:
+            async with server._lifespan(server.app):
+                calls.append("ready")
+                entered.set()
+                await leave.wait()
+
+        task = asyncio.create_task(run_lifespan())
+        try:
+            assert await asyncio.to_thread(reaper_started.wait, 1)
+            await asyncio.wait_for(entered.wait(), timeout=1)
             reaper_call = next(call for call in calls if call.startswith("reap_artifacts:"))
             assert reaper_call != f"reap_artifacts:{lifespan_thread}"
-            assert calls.index(reaper_call) < calls.index("pipeline_index")
-            assert calls.index("load_env") < calls.index("telemetry") < calls.index(reaper_call)
+            assert calls.index("load_env") < calls.index("telemetry")
+            assert calls.index("artifact_config") < calls.index("pipeline_index")
+            assert "ready" in calls
+        finally:
+            allow_reaper_finish.set()
+            leave.set()
+            await task
 
     asyncio.run(exercise_lifespan())

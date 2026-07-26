@@ -84,7 +84,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.chdir(tmp_path)  # cwd == project root, NOT the pipeline dir
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
     _pipeline_dir.cache_clear()
 
     # haute.toml declares the nested pipeline — the anchor both the cache route
@@ -111,7 +111,7 @@ def nested_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     yield config, data_path
 
     set_project_root(original)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
     _pipeline_dir.cache_clear()
 
 

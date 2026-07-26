@@ -120,7 +120,7 @@ class TestPyprojectParseIsTomlAware:
         # is the first occurrence the str.replace() will hit.
         pyproject.write_text(
             "[tool.poetry]\n"
-            'name = "foo-legacy"\n'
+            'name = "foo-example"\n'
             'version = "0.1.0"\n'
             'dependencies = [\n    "requests",\n]\n'
             "\n"

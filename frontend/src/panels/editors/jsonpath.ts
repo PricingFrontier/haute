@@ -13,16 +13,12 @@
  * construct so the two cannot drift. It carries the spec's three lynchpin
  * constructs:
  *
- *   - the **acceptance** grammar — the regex pieces plus {@link parsePath}, which
- *     accepts the full-width set (§2.2) and rejects everything in §3;
- *   - the **canonicality** predicate — {@link isCanonical}, true iff a path uses
- *     only the canonical spellings (§2.1);
- *   - the **canonical writer** — {@link makeOutputPath}, emitting the one
- *     canonical spelling.
+ *   - the canonical parser, {@link parsePath};
+ *   - the canonical writer, {@link makeOutputPath}.
  *
  * The **transport shape** is the seam for siblings (object-outer JSON, JSONL,
  * … — §5): today its only value is array-outer, captured by the root constructs
- * `ROOT_ARRAY` / `ROOT` and the `$[:]` canonical prefix.
+ * `ROOT_ARRAY` and the `$[:]` prefix.
  *
  * Backend parity: the backend injects each side's HauteError subclass so a
  * rejected path raises that side's discriminated type. The frontend mirror is a
@@ -37,33 +33,20 @@
 // The lynchpin — the grammar IS these named constructs (PATH_GRAMMAR.md)
 // ---------------------------------------------------------------------------
 //
-// Acceptance grammar (full-width, §2.2): the identifier charset, the canonical
-// dotted-name object selector, and the full-width bracket-name object selector
-// (normalised to the bare name). The array selector `[:]` and the root are
-// matched literally below. Everything else is rejected (§3).
+// Acceptance grammar: the identifier charset and dotted-name object selector.
+// The array selector `[:]` and root are matched literally below.
 //
-// These mirror `_jsonpath.py` `_NAME` / `_DOT_NAME` / `_BRACKET_NAME` exactly.
+// These mirror `_jsonpath.py` `_NAME` / `_DOT_NAME` exactly.
 // They are anchored (`^…`) here because they are matched against a tail slice
 // (`raw.slice(i)`) rather than via Python's `re.match(raw, i)` positional match.
 
 /** Identifier charset — object key. Mirror of backend `_NAME`. */
 export const NAME = /[A-Za-z_][A-Za-z0-9_]*/
-/** Object comprehension (canonical) — mirror of backend `_DOT_NAME`. */
+/** Object comprehension — mirror of backend `_DOT_NAME`. */
 const DOT_NAME = /^\.([A-Za-z_][A-Za-z0-9_]*)/
-/** Bracket object name (full-width) — mirror of backend `_BRACKET_NAME`.
- * NOTE: `[^'"]+` still admits non-identifier names like `['first.last']` whose
- * `.first.last` rewrite would corrupt them into two hops — the §5 designed-out
- * case. {@link canonicalForm} guards against that (returns null), never a
- * corrupting rewrite. */
-const BRACKET_NAME = /^\[(['"])([^'"]+)\1\]/
-/** Test whether a captured bracket name is a bare identifier (so it has a SAFE
- * `.name` canonical form). Anchored full-string match of {@link NAME}. */
-const IS_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
-// Transport shape = array-outer JSON. The root container is `$`; the sole data
-// entry into it is the array selector, so `$[:]` is the canonical root prefix.
+// Transport shape = array-outer JSON.
 const ARRAY = "[:]" // array comprehension — the only array selector
-const ROOT = "$" // the root container (not itself a data path)
 const ROOT_ARRAY = "$[:]" // the canonical (array-outer) data root
 
 /** One path segment: a JSON key, and whether it iterates an array. Mirror of
@@ -78,8 +61,6 @@ export interface Seg {
 export interface ParsedPath {
   raw: string
   segments: Seg[]
-  /** Whether the document root itself is an array (`$[:]`). */
-  rootArray: boolean
 }
 
 /** The rejection thrown by {@link parsePath} — mirrors the backend's injected
@@ -98,23 +79,17 @@ export class PathError extends Error {
  * Parse a path, rejecting every selector outside the accepted subset (§2/§3) —
  * the OUTPUT mode of the grammar, mirror of backend `parse_path`.
  *
- * Accepts the root `$`/`$[:]`, dot name selectors (`.name`), bracketed name
- * selectors (`['name']` / `["name"]`), and the whole-array selector `[:]`.
+ * Accepts the root `$[:]`, dot name selectors (`.name`), and the whole-array selector `[:]`.
  * Rejects (PATH_GRAMMAR.md) index (`[0]`), range (`[0:5]`), filter (`[?(...)]`),
  * descendant (`..`), and non-array wildcard (`.*`, `[*]`) selectors — the
  * dropped `.:` dot form included. Throws {@link PathError} on anything else.
  */
 export function parsePath(raw: string): ParsedPath {
-  if (!raw.startsWith(ROOT)) {
-    throw new PathError("output path must start with '$'", raw)
+  if (!raw.startsWith(ROOT_ARRAY)) {
+    throw new PathError("output path must start with '$[:]'", raw)
   }
 
-  let i = 1
-  let rootArray = false
-  if (raw.slice(i, i + ARRAY.length) === ARRAY) {
-    rootArray = true
-    i += ARRAY.length
-  }
+  let i = ROOT_ARRAY.length
 
   const segments: Seg[] = []
   while (i < raw.length) {
@@ -125,22 +100,11 @@ export function parsePath(raw: string): ParsedPath {
       if (m === null) {
         throw new PathError(
           "unsupported output-path selector " +
-            "(only '.name', \"['name']\" and whole-array '[:]' are accepted)",
+            "(only '.name' and whole-array '[:]' are accepted)",
           raw,
         )
       }
       name = m[1]
-      i += m[0].length
-    } else if (ch === "[") {
-      const m = BRACKET_NAME.exec(raw.slice(i))
-      if (m === null) {
-        throw new PathError(
-          "unsupported array selector " +
-            "(index/range/filter/wildcard are rejected; use '[:]' for the whole array)",
-          raw,
-        )
-      }
-      name = m[2]
       i += m[0].length
     } else {
       throw new PathError("malformed output path", raw)
@@ -156,11 +120,11 @@ export function parsePath(raw: string): ParsedPath {
   if (segments.length === 0) {
     throw new PathError("output path must name a leaf field, not the bare root array", raw)
   }
-  return { raw, segments, rootArray }
+  return { raw, segments }
 }
 
 export interface ParseDataPathOptions {
-  /** With `allowRoot`, the bare root `$` / `$[:]` parses to zero segments — the
+  /** With `allowRoot`, `$[:]` parses to zero segments — the
    * spelling an INPUT *table path* uses for the outermost level. */
   allowRoot?: boolean
   /** The INPUT-only reserved leaf (`$value` — the scalar-array element-itself
@@ -180,7 +144,7 @@ export interface ParseDataPathOptions {
  *   - **Mandatory array-outer root** — a data path enters the document only
  *     through `$[:]`. A bare-`$` data root (`$.key` — object-outer, a
  *     *different transport*, §5) is rejected.
- *   - **Root selectable** — with `allowRoot`, the bare root `$` / `$[:]` is
+ *   - **Root selectable** — with `allowRoot`, `$[:]` is
  *     accepted as the root array itself (zero segments).
  *   - **Reserved leaf sentinel** — `reservedLeaf` (INPUT's `$value`) is accepted
  *     only as a trailing object hop, becoming a final non-array segment.
@@ -200,37 +164,28 @@ export function parseDataPath(raw: string, opts: ParseDataPathOptions = {}): Par
     core = raw.slice(0, -`.${reservedLeaf}`.length)
   }
 
-  if (core === ROOT || core === ROOT_ARRAY) {
+  if (core === ROOT_ARRAY) {
     if (sentinelSeg.length > 0) {
       // `$[:].$value` — the sentinel sits directly on the root array, so it
       // names a leaf (a column path) regardless of `allowRoot`.
-      return { raw, segments: sentinelSeg, rootArray: true }
+      return { raw, segments: sentinelSeg }
     }
     if (allowRoot) {
       // Bare root array — the INPUT root table level; no further segments.
-      return { raw, segments: [], rootArray: true }
+      return { raw, segments: [] }
     }
     // A column path naming no leaf falls through to parsePath's rejection.
   }
 
   const parsed = parsePath(core)
-  if (!parsed.rootArray) {
-    throw new PathError(
-      "data path must enter the array-outer document via '$[:]' " +
-        "(a bare-'$' object root is a different transport)",
-      raw,
-    )
-  }
-  return { raw, segments: [...parsed.segments, ...sentinelSeg], rootArray: true }
+  return { raw, segments: [...parsed.segments, ...sentinelSeg] }
 }
 
 /**
  * The canonical writer — emit the one canonical spelling (§2.1). Mirror of
  * backend `make_output_path`.
  *
- * Renders `$[:]` root + `.name` per segment + `[:]` after each array segment. No
- * bracket forms, no bare `$` data root: the output is canonical by construction
- * (`isCanonical(makeOutputPath(segs))` is always true).
+ * Renders `$[:]` root + `.name` per segment + `[:]` after each array segment.
  */
 export function makeOutputPath(segments: readonly Seg[]): string {
   let out = ROOT_ARRAY
@@ -239,54 +194,6 @@ export function makeOutputPath(segments: readonly Seg[]): string {
     if (seg.isArray) out += ARRAY
   }
   return out
-}
-
-/**
- * The canonicality predicate — true iff `path` uses only canonical spellings.
- * Mirror of backend `is_canonical`.
- *
- * Canonical (§2.1): `$[:]` root, `.name` object hops, `[:]` array hops; NO
- * bracket forms, NO bare-`$` data root. Equivalent to round-tripping through the
- * canonical writer: a valid path is canonical iff re-emitting its parsed
- * segments reproduces it verbatim, *and* it carries the canonical array-outer
- * root. An unparseable (rejected) path is not canonical.
- */
-export function isCanonical(path: string): boolean {
-  let parsed: ParsedPath
-  try {
-    parsed = parsePath(path)
-  } catch {
-    return false
-  }
-  return parsed.rootArray && makeOutputPath(parsed.segments) === path
-}
-
-/**
- * The canonical rewrite of `path`, or `null` when no SAFE canonical exists.
- *
- * Returns the canonical spelling (`makeOutputPath` of the parsed segments) for
- * any path whose every object name is a bare identifier. Returns `null` when:
- *   - the path is invalid (rejected by {@link parsePath}); OR
- *   - a non-identifier bracket name (e.g. `['first.last']`, `['2024']`) appears,
- *     whose `.first.last` rewrite would corrupt it into two hops — the §5
- *     designed-out case. Never suggest a corrupting rewrite.
- *
- * Callers only reach here with a path that already passed its side's `$[:]` root
- * gate (PATH_GRAMMAR.md), so the `$[:]`-prefix is correct by construction.
- */
-export function canonicalForm(path: string): string | null {
-  let parsed: ParsedPath
-  try {
-    parsed = parsePath(path)
-  } catch {
-    return null
-  }
-  // Guard the §5 designed-out case: a bracket name that is not a bare
-  // identifier has no safe `.name` rewrite (it would split or mis-key).
-  for (const seg of parsed.segments) {
-    if (!IS_IDENTIFIER.test(seg.name)) return null
-  }
-  return makeOutputPath(parsed.segments)
 }
 
 // ---------------------------------------------------------------------------

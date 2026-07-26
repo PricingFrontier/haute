@@ -486,27 +486,15 @@ class ResolvedDeploy:
 def _load_env(project_root: Path) -> None:
     """Load .env file into os.environ if it exists.
 
-    Uses python-dotenv for robust parsing (quoted values, interpolation,
-    multi-line, etc.).  Falls back to no-op if dotenv is not installed.
+    Uses the required python-dotenv dependency for quoted values,
+    interpolation, and multi-line entries.
     """
     env_path = project_root / ".env"
     if not env_path.is_file():
         return
-    try:
-        from dotenv import load_dotenv
+    from dotenv import load_dotenv
 
-        load_dotenv(env_path, override=False)
-    except ImportError:
-        # Graceful fallback: minimal key=value parsing
-        for line in read_user_text(env_path).splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip().strip("'\"")
-            if key:
-                os.environ.setdefault(key, value)
+    load_dotenv(env_path, override=False)
 
 
 def resolve_config(config: DeployConfig) -> ResolvedDeploy:

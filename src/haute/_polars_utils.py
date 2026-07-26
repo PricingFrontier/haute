@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import threading
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
@@ -13,161 +12,69 @@ import polars as pl
 
 from haute._execution_context import (
     ExecutionContext,
-    ExecutionProfile,
     current_execution_context,
 )
 from haute._logging import get_logger
-from haute.errors import BoundedMemoryUnsupportedError
 
 logger = get_logger(component="polars_utils")
 _STREAMING_CHUNK_SIZE_LOCK = threading.RLock()
 
 DEFAULT_STREAMING_CHUNK_SIZE: int = 500_000
 
-_POLARS_STREAMING_ERRORS = (
-    pl.exceptions.ComputeError,
-    pl.exceptions.InvalidOperationError,
-    pl.exceptions.SchemaError,
-)
-
-# No reproducible streaming-incompatibility exception was harvested for the
-# locked Polars 1.39.3 corpus during the spec evidence step.  The empty table
-# is therefore intentional: a future entry must name the exact version,
-# concrete exception class, and anchored full-message signature.
-_POLARS_STREAMING_COMPATIBILITY_SIGNATURES: tuple[tuple[str, type[BaseException], str], ...] = ()
-
-
-_BROAD_COLLECT_PROFILES = frozenset({ExecutionProfile.PREVIEW_EAGER})
-
-
-def _normalise_profile(profile: ExecutionProfile | str) -> ExecutionProfile:
-    if isinstance(profile, ExecutionProfile):
-        return profile
-    return ExecutionProfile(profile)
-
-
-def _is_streaming_compatibility_error(exc: BaseException) -> bool:
-    return any(
-        pl.__version__ == version
-        and type(exc) is exception_type
-        and re.fullmatch(message_signature, str(exc), flags=re.IGNORECASE) is not None
-        for version, exception_type, message_signature in (
-            _POLARS_STREAMING_COMPATIBILITY_SIGNATURES
-        )
-    )
-
-
-def _is_streaming_sink_error(exc: BaseException) -> bool:
-    return _is_streaming_compatibility_error(exc)
-
 
 def streaming_collect(
     lf: pl.LazyFrame,
     *,
-    profile: ExecutionProfile | str,
-    allow_broad: bool = False,
     execution_context: ExecutionContext | None = None,
 ) -> pl.DataFrame:
-    """Collect a LazyFrame through the profiled streaming collect contract.
-
-    Bounded-memory callers leave ``allow_broad`` at the default and receive a
-    typed Haute error if Polars cannot honour streaming execution. Callers that
-    intentionally materialise small/interactive data must opt into
-    ``allow_broad=True`` at the call site.
-    """
+    """Collect a LazyFrame once through Polars' streaming engine."""
     metrics_context = execution_context or current_execution_context()
-    normalised_profile = (
-        metrics_context.profile if metrics_context is not None else _normalise_profile(profile)
-    )
-    profile_name = normalised_profile.value
-    if allow_broad and normalised_profile not in _BROAD_COLLECT_PROFILES:
-        raise ValueError(f"allow_broad=True is not permitted for profile {profile_name!r}")
-    try:
-        if metrics_context is not None:
-            metrics_context.fault_point("collect_before_native")
-            metrics_context.record_collect()
-        return lf.collect(engine="streaming")
-    except _POLARS_STREAMING_ERRORS as exc:
-        if not _is_streaming_compatibility_error(exc):
-            raise
-        if not allow_broad:
-            raise BoundedMemoryUnsupportedError(
-                "Bounded streaming collect failed",
-                profile=profile_name,
-                cause=type(exc).__name__,
-            ) from exc
-        logger.info(
-            "collect_streaming_fallback",
-            profile=profile_name,
-            cause=type(exc).__name__,
-        )
-        if metrics_context is not None:
-            metrics_context.fault_point("collect_before_native")
-            metrics_context.record_collect()
-        return lf.collect()
+    if metrics_context is not None:
+        metrics_context.fault_point("collect_before_native")
+        metrics_context.record_collect()
+    return lf.collect(engine="streaming")
 
 
 def bounded_collect_batches(
     lf: pl.LazyFrame,
     *,
-    profile: ExecutionProfile | str,
     chunk_size: int,
     maintain_order: bool = False,
     execution_context: ExecutionContext | None = None,
     stage_name: str = "collect_batches",
     node_id: str | None = None,
 ) -> Iterator[pl.DataFrame]:
-    """Yield streaming batches with the same fail-loud contract as collect.
-
-    Native Polars batch iteration can fail during iterator construction or on
-    any ``next()`` call.  This wrapper maps streaming-compatibility failures
-    to :class:`BoundedMemoryUnsupportedError` and inserts cooperative
-    cancellation/memory checkpoints between batches.
-    """
+    """Yield native streaming batches with execution checkpoints."""
 
     if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
         raise ValueError("chunk_size must be a positive integer")
     metrics_context = execution_context or current_execution_context()
-    normalised_profile = (
-        metrics_context.profile if metrics_context is not None else _normalise_profile(profile)
+    if metrics_context is not None:
+        metrics_context.fault_point("collect_before_native", node_id=node_id)
+    batches = lf.collect_batches(
+        chunk_size=chunk_size,
+        maintain_order=maintain_order,
+        engine="streaming",
     )
-    profile_name = normalised_profile.value
-    try:
-        if metrics_context is not None:
-            metrics_context.fault_point("collect_before_native", node_id=node_id)
-        batches = lf.collect_batches(
-            chunk_size=chunk_size,
-            maintain_order=maintain_order,
-            engine="streaming",
-        )
-        if metrics_context is not None:
-            metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
-        while True:
-            try:
-                if metrics_context is not None:
-                    with metrics_context.stage(
-                        stage_name,
-                        node_id=node_id,
-                        skip_metric_on_exception=(StopIteration,),
-                    ):
-                        batch = next(batches)
-                        metrics_context.record_collect()
-                else:
-                    batch = next(batches)
-            except StopIteration:
-                break
+    if metrics_context is not None:
+        metrics_context.checkpoint(label="before_collect_batches", node_id=node_id)
+    while True:
+        try:
             if metrics_context is not None:
-                metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
-            yield batch
-    except _POLARS_STREAMING_ERRORS as exc:
-        if not _is_streaming_compatibility_error(exc):
-            raise
-        raise BoundedMemoryUnsupportedError(
-            "Bounded streaming batch collection failed",
-            profile=profile_name,
-            chunk_size=chunk_size,
-            cause=type(exc).__name__,
-        ) from exc
+                with metrics_context.stage(
+                    stage_name,
+                    node_id=node_id,
+                    skip_metric_on_exception=(StopIteration,),
+                ):
+                    batch = next(batches)
+                    metrics_context.record_collect()
+            else:
+                batch = next(batches)
+        except StopIteration:
+            break
+        if metrics_context is not None:
+            metrics_context.checkpoint(label="after_collect_batch", node_id=node_id)
+        yield batch
 
 
 def _checkpoint_compression(fast_checkpoint: bool) -> Literal["lz4", "zstd"]:
@@ -229,10 +136,6 @@ def temporary_streaming_chunk_size(chunk_size: int | None) -> Iterator[None]:
             pl.Config.load(saved_config)
 
 
-# Backwards-compatible private alias for older internal tests/imports.
-_temporary_streaming_chunk_size = temporary_streaming_chunk_size
-
-
 def streaming_sink(
     lf: pl.LazyFrame,
     path: str | Path,
@@ -258,32 +161,15 @@ def bounded_sink(
     fast_checkpoint: bool = False,
     streaming_chunk_size: int | None = None,
 ) -> None:
-    """Sink a LazyFrame without any eager broadening fallback.
-
-    This is the default for production/bounded-memory paths.  Polars sink
-    incompatibilities are converted to a Haute typed error so API layers can
-    explain that the current plan cannot be written in a bounded way instead
-    of silently collecting a potentially huge frame.
-    """
+    """Sink a LazyFrame through the native streaming API."""
     path = Path(path)
     metrics_context = current_execution_context()
-    try:
-        if metrics_context is not None:
-            metrics_context.fault_point("sink_before_native")
-        with temporary_streaming_chunk_size(streaming_chunk_size):
-            streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint)
-        if metrics_context is not None:
-            metrics_context.fault_point("sink_after_native")
-    except _POLARS_STREAMING_ERRORS as exc:
-        if not _is_streaming_sink_error(exc):
-            raise
-        raise BoundedMemoryUnsupportedError(
-            "Bounded streaming sink failed",
-            path=str(path),
-            fmt=fmt,
-            fast_checkpoint=fast_checkpoint,
-            cause=type(exc).__name__,
-        ) from exc
+    if metrics_context is not None:
+        metrics_context.fault_point("sink_before_native")
+    with temporary_streaming_chunk_size(streaming_chunk_size):
+        streaming_sink(lf, path, fmt=fmt, fast_checkpoint=fast_checkpoint)
+    if metrics_context is not None:
+        metrics_context.fault_point("sink_after_native")
     if metrics_context is not None:
         metrics_context.record_bytes_written(path.stat().st_size)
 

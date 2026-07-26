@@ -157,7 +157,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
     monkeypatch.chdir(tmp_path)
     original = _get_project_root()
     set_project_root(tmp_path)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
     from haute.server import app
 
@@ -166,7 +166,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
     data_path.write_text(_FIXTURE.read_text())
     yield TestClient(app), data_path
     set_project_root(original)
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
 
 def test_multi_frame_save_build_preview_round_trips(project) -> None:

@@ -19,7 +19,7 @@ import type { PipelineEdge } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
-import { reconcileApiInputEdges } from "../utils/apiInputPorts"
+import { apiInputFrameLabels } from "../utils/apiInputPorts"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -71,6 +71,12 @@ export interface FetchPreviewOptions {
 
 function nodeLabel(node: Node): string {
   return String(node.data.label || node.id)
+}
+
+function previewPortLabel(node: Node): string | undefined {
+  const data = nodeData(node)
+  if (data.nodeType !== NODE_TYPES.API_INPUT) return undefined
+  return apiInputFrameLabels(data.config)[0]
 }
 
 type ColumnDef = ColumnFingerprintInput[number]
@@ -291,18 +297,8 @@ export default function usePipelineAPI({
         const data = parsePipelineResponse(raw)
         const pipelineNodes = data.nodes
         const pipelineEdges = data.edges
-        let reconciledEdges = normalizeEdges(pipelineEdges)
-        for (const node of pipelineNodes) {
-          if (nodeData(node).nodeType !== NODE_TYPES.API_INPUT) continue
-          reconciledEdges = reconcileApiInputEdges({
-            nodeId: node.id,
-            config: nodeData(node).config,
-            edges: reconciledEdges,
-            pruneNamedStale: false,
-          }).edges
-        }
         setNodesRaw(pipelineNodes)
-        setEdgesRaw(reconciledEdges)
+        setEdgesRaw(normalizeEdges(pipelineEdges))
         if (data.preamble != null) {
           setPreamble(data.preamble)
           preambleRef.current = data.preamble
@@ -527,6 +523,7 @@ export default function usePipelineAPI({
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: dsNode ? previewColumnNamesForNode(dsNode) : undefined,
+            portLabel: previewPortLabel(dsNode),
             streamingChunkSize: snapshotChunkSize,
             signal: controller.signal,
           })
@@ -571,12 +568,14 @@ export default function usePipelineAPI({
       maybeFinishPropagation()
     })
 
+    const portLabel = previewPortLabel(node)
     previewNode({
       graph,
       nodeId: node.id,
       rowLimit: snapshotRowLimit,
       source: snapshotSource,
       requestedPreviewColumns: previewColumnNamesForNode(node),
+      portLabel,
       streamingChunkSize: snapshotChunkSize,
       signal: controller.signal,
     })
@@ -584,7 +583,7 @@ export default function usePipelineAPI({
         // Superseded by a newer preview request: that request owns the
         // panel surface and will reach its own terminal state.
         if (previewRequestSeq.current !== requestId) return
-        const preview = resultToPreview(node.id, label, result)
+        const preview = resultToPreview(node.id, label, result, portLabel)
         if (!requestStillCurrent()) {
           // The graph changed while this response was in flight (e.g. an
           // editor mirrored artifact metadata into node config, bumping
@@ -786,6 +785,7 @@ export default function usePipelineAPI({
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream),
+            portLabel: previewPortLabel(upstream),
             streamingChunkSize: snapshotChunkSize,
             signal: controller.signal,
           })

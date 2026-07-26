@@ -468,32 +468,6 @@ describe("TracePanel — Calculation Display", () => {
 describe("TracePanel — Node Detail", () => {
   afterEach(cleanup)
 
-  it("renders rate table lookup info for rating step", () => {
-    render(
-      <TracePanel
-        trace={makeTrace({
-          steps: [
-            makeStep({
-              node_id: "n1",
-              node_name: "Rate Lookup",
-              node_type: "rating",
-              node_detail: {
-                detail_type: "rate_table_lookup",
-                lookup_keys: { age_band: "25-30", region: "East" },
-                matched_row: 12,
-                default_used: false,
-              },
-            }),
-          ] as TraceStep[],
-        })}
-        onClose={vi.fn()}
-      />,
-    )
-    const stepButton = screen.getByText("Rate Lookup").closest("button") as HTMLElement
-    fireEvent.click(stepButton)
-    expect(screen.getByText("Rate Lookup")).toBeInTheDocument()
-  })
-
   it("renders banding detail with matched band info", () => {
     render(
       <TracePanel
@@ -1058,32 +1032,6 @@ describe("TracePanel — Node Detail", () => {
     const stepButton = screen.getByText("Unknown Detail").closest("button") as HTMLElement
     fireEvent.click(stepButton)
     expect(screen.getByText("Unknown Detail")).toBeInTheDocument()
-  })
-
-  it("renders rate table lookup with default_used = true", () => {
-    render(
-      <TracePanel
-        trace={makeTrace({
-          steps: [
-            makeStep({
-              node_id: "n1",
-              node_name: "Default Rate",
-              node_type: "rating",
-              node_detail: {
-                detail_type: "rate_table_lookup",
-                lookup_keys: { age_band: "unknown" },
-                matched_row: null,
-                default_used: true,
-              },
-            }),
-          ] as TraceStep[],
-        })}
-        onClose={vi.fn()}
-      />,
-    )
-    const stepButton = screen.getByText("Default Rate").closest("button") as HTMLElement
-    fireEvent.click(stepButton)
-    expect(screen.getByText("Default Rate")).toBeInTheDocument()
   })
 
   it("renders backend rating_step table factors, selected values, and combined outputs", () => {

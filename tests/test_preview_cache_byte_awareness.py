@@ -8,7 +8,7 @@ from threading import Event
 import polars as pl
 import pytest
 
-from haute._fingerprint_cache import FingerprintCache
+from haute._lru_cache import LRUCache
 from haute.executor import (
     PREVIEW_CACHE_MAX_BYTES,
     _estimate_preview_cache_entry_bytes,
@@ -22,22 +22,21 @@ def _entry_size(entry: dict) -> int:
     return int(entry["payload"]["bytes"])
 
 
-class TestFingerprintCacheByteLimit:
+class TestPreviewCacheByteLimit:
     def test_large_entry_evicts_older_entries_below_count_cap(self) -> None:
-        cache = FingerprintCache(
-            slots=("payload",),
-            max_entries=10,
+        cache = LRUCache(
+            max_size=10,
             max_bytes=100,
             size_of=_entry_size,
         )
 
-        cache.store("small-old", payload={"bytes": 30})
-        cache.store("small-new", payload={"bytes": 20})
-        cache.store("large", payload={"bytes": 60})
+        cache.put("small-old", {"payload": {"bytes": 30}})
+        cache.put("small-new", {"payload": {"bytes": 20}})
+        cache.put("large", {"payload": {"bytes": 60}})
 
-        assert cache.try_get("small-old") is None
-        assert cache.try_get("small-new") is not None
-        assert cache.try_get("large") is not None
+        assert cache.get("small-old") is None
+        assert cache.get("small-new") is not None
+        assert cache.get("large") is not None
         assert cache.stats() == {
             "entries": 2,
             "max_entries": 10,
@@ -47,34 +46,32 @@ class TestFingerprintCacheByteLimit:
         }
 
     def test_small_entries_can_coexist_until_byte_cap(self) -> None:
-        cache = FingerprintCache(
-            slots=("payload",),
-            max_entries=10,
+        cache = LRUCache(
+            max_size=10,
             max_bytes=100,
             size_of=_entry_size,
         )
 
-        cache.store("a", payload={"bytes": 10})
-        cache.store("b", payload={"bytes": 20})
-        cache.store("c", payload={"bytes": 30})
+        cache.put("a", {"payload": {"bytes": 10}})
+        cache.put("b", {"payload": {"bytes": 20}})
+        cache.put("c", {"payload": {"bytes": 30}})
 
-        assert cache.try_get("a") is not None
-        assert cache.try_get("b") is not None
-        assert cache.try_get("c") is not None
+        assert cache.get("a") is not None
+        assert cache.get("b") is not None
+        assert cache.get("c") is not None
         assert cache.stats()["bytes"] == 60
 
     def test_store_reports_oversized_rejection_and_retains_stale_entry(self) -> None:
-        cache = FingerprintCache(
-            slots=("payload",),
-            max_entries=10,
+        cache = LRUCache(
+            max_size=10,
             max_bytes=50,
             size_of=_entry_size,
         )
 
-        assert cache.store("same-fp", payload={"bytes": 25}) is True
-        assert cache.store("same-fp", payload={"bytes": 75}) is False
+        assert cache.put("same-fp", {"payload": {"bytes": 25}}) is True
+        assert cache.put("same-fp", {"payload": {"bytes": 75}}) is False
 
-        assert cache.try_get("same-fp") == {"payload": {"bytes": 25}}
+        assert cache.get("same-fp") == {"payload": {"bytes": 25}}
         assert cache.stats()["bytes"] == 25
 
     def test_last_completed_concurrent_accepted_same_key_store_wins(self) -> None:
@@ -88,27 +85,26 @@ class TestFingerprintCacheByteLimit:
                 assert release_slow_measure.wait(timeout=5)
             return int(payload["bytes"])
 
-        cache = FingerprintCache(
-            slots=("payload",),
-            max_entries=10,
+        cache = LRUCache(
+            max_size=10,
             max_bytes=100,
             size_of=controlled_size,
         )
         with ThreadPoolExecutor(max_workers=1) as pool:
             slow_store = pool.submit(
-                cache.store,
+                cache.put,
                 "same-fp",
-                payload={"bytes": 40, "label": "slow"},
+                {"payload": {"bytes": 40, "label": "slow"}},
             )
             assert slow_measure_started.wait(timeout=5)
-            assert cache.store(
+            assert cache.put(
                 "same-fp",
-                payload={"bytes": 30, "label": "fast"},
+                {"payload": {"bytes": 30, "label": "fast"}},
             )
             release_slow_measure.set()
             assert slow_store.result(timeout=5)
 
-        assert cache.try_get("same-fp") == {"payload": {"bytes": 40, "label": "slow"}}
+        assert cache.get("same-fp") == {"payload": {"bytes": 40, "label": "slow"}}
         assert cache.stats()["bytes"] == 40
 
     def test_concurrent_rejected_same_key_store_preserves_accepted_value(self) -> None:
@@ -122,39 +118,37 @@ class TestFingerprintCacheByteLimit:
                 assert release_rejected_measure.wait(timeout=5)
             return int(payload["bytes"])
 
-        cache = FingerprintCache(
-            slots=("payload",),
-            max_entries=10,
+        cache = LRUCache(
+            max_size=10,
             max_bytes=100,
             size_of=controlled_size,
         )
         with ThreadPoolExecutor(max_workers=1) as pool:
             rejected_store = pool.submit(
-                cache.store,
+                cache.put,
                 "same-fp",
-                payload={"bytes": 101, "label": "rejected"},
+                {"payload": {"bytes": 101, "label": "rejected"}},
             )
             assert rejected_measure_started.wait(timeout=5)
-            assert cache.store(
+            assert cache.put(
                 "same-fp",
-                payload={"bytes": 30, "label": "accepted"},
+                {"payload": {"bytes": 30, "label": "accepted"}},
             )
             release_rejected_measure.set()
             assert rejected_store.result(timeout=5) is False
 
-        assert cache.try_get("same-fp") == {"payload": {"bytes": 30, "label": "accepted"}}
+        assert cache.get("same-fp") == {"payload": {"bytes": 30, "label": "accepted"}}
         assert cache.stats()["bytes"] == 30
 
     def test_invalid_byte_limits_fail_loudly(self) -> None:
         with pytest.raises(ValueError, match="max_bytes must be >= 1"):
-            FingerprintCache(
-                slots=("payload",),
+            LRUCache(
                 max_bytes=0,
                 size_of=_entry_size,
             )
 
         with pytest.raises(ValueError, match="size_of is required"):
-            FingerprintCache(slots=("payload",), max_bytes=100)
+            LRUCache(max_size=10, max_bytes=100)
 
     def test_trace_cache_is_byte_bounded(self) -> None:
         # Remediation 2.9: the trace cache holds the same class of payload
@@ -166,67 +160,6 @@ class TestFingerprintCacheByteLimit:
 
         assert stats["max_bytes"] == TRACE_CACHE_MAX_BYTES
         assert TRACE_CACHE_MAX_BYTES > 0
-
-    def test_update_slot_remeasures_and_evicts_lru_when_entry_grows(self) -> None:
-        cache = FingerprintCache(
-            slots=("payload", "meta"),
-            max_entries=10,
-            max_bytes=100,
-            size_of=_entry_size,
-        )
-
-        cache.store("old", payload={"bytes": 30})
-        cache.store("target", payload={"bytes": 40})
-        cache.update_slot("payload", {"bytes": 80}, fingerprint="target")
-
-        assert cache.try_get("old") is None
-        target = cache.try_get("target")
-        assert target is not None
-        assert target["payload"] == {"bytes": 80}
-        assert target["meta"] == {}
-        assert cache.stats()["bytes"] == 80
-
-    def test_update_slot_oversized_replacement_retains_stale_entry(self) -> None:
-        cache = FingerprintCache(
-            slots=("payload",),
-            max_entries=10,
-            max_bytes=50,
-            size_of=_entry_size,
-        )
-
-        cache.store("same-fp", payload={"bytes": 25})
-        cache.update_slot("payload", {"bytes": 75}, fingerprint="same-fp")
-
-        assert cache.try_get("same-fp") == {"payload": {"bytes": 25}}
-        assert cache.stats()["bytes"] == 25
-
-    def test_update_slot_preserves_size_for_non_size_sensitive_slots(self) -> None:
-        calls = 0
-
-        def entry_size(entry: dict) -> int:
-            nonlocal calls
-            calls += 1
-            return int(entry["payload"]["bytes"])
-
-        cache = FingerprintCache(
-            slots=("payload", "meta"),
-            max_entries=10,
-            max_bytes=100,
-            size_of=entry_size,
-            size_sensitive_slots=("payload",),
-        )
-
-        cache.store("target", payload={"bytes": 40}, meta={"version": 1})
-        assert calls == 1
-
-        cache.update_slot("meta", {"version": 2}, fingerprint="target")
-
-        assert calls == 1
-        assert cache.stats()["bytes"] == 40
-        assert cache.try_get("target") == {
-            "payload": {"bytes": 40},
-            "meta": {"version": 2},
-        }
 
 
 class TestPreviewCacheSizing:

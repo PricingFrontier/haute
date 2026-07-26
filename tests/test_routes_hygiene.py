@@ -8,18 +8,16 @@ when the developer ships the corresponding change:
   imports inside three handlers (lines 68, 165, 212 at time of writing).
   The fix is to hoist them to module top.  An AST-walk meta-test pins that.
 
-* **#102** — ``src/haute/routes/_helpers.py::save_sidecar`` builds a plain
-  dict and serialises via ``_json.dumps``.  The fix is to introduce a
-  ``SidecarModel`` Pydantic model and use ``model_dump_json()``; tests
-  pin a round-trip, forward-compat parsing of the current manual-JSON
-  shape, and a default-field migration path.
+* **#102** — ``src/haute/routes/_helpers.py::save_sidecar`` uses a
+  ``SidecarModel`` Pydantic model and ``model_dump_json()``; tests pin its
+  round-trip and default-field behaviour.
 
 * **#103** — ``src/haute/_cache.py`` exposes ``graph_fingerprint`` but
   does not embed an algorithm version in the digest, so a future
   canonicalisation tweak silently collides with existing cache entries.
   The fix is to introduce ``ALGO_VERSION = 1`` and prefix every digest
   with ``"v{ALGO_VERSION}:"``; bumping the version invalidates the
-  cache.  An in-memory ``FingerprintCache`` round-trip with two
+  cache. An in-memory ``LRUCache`` round-trip with two
   versions pins the non-collision property.
 
 * **#126** — Each of ``modelling.py``, ``optimiser.py``, and the two
@@ -641,25 +639,25 @@ class TestBumpVersionInvalidatesCache:
         """Simulate the real caching path: store an entry at v1, bump to v2,
         store another — both must be retrievable independently."""
         import haute._cache as cache_mod
-        from haute._fingerprint_cache import FingerprintCache
+        from haute._lru_cache import LRUCache
 
-        cache = FingerprintCache(slots=("payload",))
+        cache: LRUCache[str, dict[str, object]] = LRUCache(max_size=8)
 
         g = _build_chain_graph()
 
         # Phase 1: store under current (v1) fingerprint.
         fp_v1 = cache_mod.graph_fingerprint(g)
-        cache.store(fp_v1, payload={"era": "v1"})
+        cache.put(fp_v1, {"payload": {"era": "v1"}})
 
         # Phase 2: pretend we shipped a new algo version.
         monkeypatch.setattr(cache_mod, "ALGO_VERSION", cache_mod.ALGO_VERSION + 1)
         fp_v2 = cache_mod.graph_fingerprint(g)
-        cache.store(fp_v2, payload={"era": "v2"})
+        cache.put(fp_v2, {"payload": {"era": "v2"}})
 
         assert fp_v1 != fp_v2
 
-        v1_entry = cache.try_get(fp_v1)
-        v2_entry = cache.try_get(fp_v2)
+        v1_entry = cache.get(fp_v1)
+        v2_entry = cache.get(fp_v2)
         assert v1_entry is not None
         assert v2_entry is not None
         assert v1_entry["payload"] == {"era": "v1"}
@@ -842,7 +840,6 @@ class TestNoNewPrivateEngineImports:
         "haute.projection": None,
         "haute.graph_utils": {
             "_execute_lazy",
-            "_prepare_graph",
             "_prune_live_switch_edges",
         },
     }

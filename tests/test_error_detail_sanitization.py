@@ -1267,7 +1267,7 @@ class TestSensitiveInfoLeakage:
                 holdout_metrics=None,
                 diagnostics_set=None,
                 train_rows=100,
-                test_rows=20,
+                validation_rows=20,
                 holdout_rows=10,
                 features=["x"],
                 best_iteration=50,

@@ -287,8 +287,8 @@ class TestSubprocessCounts:
         # Unchanged repo: every spine, windowed log, ancestry probe and parent
         # read is served from the SHA-keyed caches; what remains is the fixed
         # per-request work (repo check, current branch, user slug, one
-        # for-each-ref, one tag read) plus the forks.json reachability probe.
-        assert second_count <= 8  # measured: 7 (first call: 15)
+        # for-each-ref, and one tag read).
+        assert second_count <= 7  # measured: 6 (first call: 14)
         assert second_count <= first_count - 6  # the content reads all went away
 
     def test_working_branches_second_call_is_cheap(
@@ -311,10 +311,9 @@ class TestSubprocessCounts:
         assert len(second.branches) == 4
         # Second call: zero per-branch subprocesses (tips come from the single
         # for-each-ref; every unmerged-saves merge-base is cache-served) — the
-        # count is the fixed request overhead + one reachability probe per
-        # forks.json entry, i.e. O(1) amortized per branch.
+        # count is the fixed request overhead, i.e. O(1) amortized per branch.
         assert second_count <= first_count - len(second.branches)
-        assert second_count <= 10  # measured: 9 (first call: 13)
+        assert second_count <= 6  # measured: 5 (first call: 9)
 
 
 class TestTreeOfCache:

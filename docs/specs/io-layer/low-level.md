@@ -16,7 +16,7 @@
 | `src/haute/_path_case_audit.py` | `case_equivalent_siblings`/`warn_if_case_ambiguous`/`wrap_path_case_audit` — cross-platform case-ambiguity detection for user-facing paths. |
 | `src/haute/discovery.py` | `discover_pipelines` — finds `.py` files containing `haute.Pipeline`, honouring a `haute.toml` override. |
 | `src/haute/_polars_dtypes.py` | `parse_dtype`/`dtype_to_spec`/`parse_schema_mapping` — the struct-capable dtype JSON codec shared by the registry's `schema`/`schema_overrides`/`hive_schema`/`dtypes` arguments. |
-| `src/haute/_polars_utils.py` | `streaming_collect`, `bounded_collect_batches`, `bounded_sink`, `best_effort_sink`/`safe_sink`, `atomic_write`, `read_parquet_metadata`, `temporary_streaming_chunk_size`, `_malloc_trim`. |
+| `src/haute/_polars_utils.py` | `streaming_collect`, `bounded_collect_batches`, `bounded_sink`, `atomic_write`, `read_parquet_metadata`, `temporary_streaming_chunk_size`, `_malloc_trim`. |
 
 ## Key types and data structures
 
@@ -182,7 +182,7 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
    `ValueError` subclass. Route adapters classify these concrete exception
    types and never infer malformed-vs-forbidden status from message text.
 
-### `discover_pipelines(root, *, strict)` (`discovery.py`)
+### `discover_pipelines(root)` (`discovery.py`)
 
 1. `_configured_pipeline(root)` reads `haute.toml`'s `[project].pipeline`
    (logging — not raising — if the TOML is missing, unreadable, or
@@ -193,8 +193,8 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
 2. Independently scans `sorted(root.glob("*.py"))`, skipping `_SKIP` names and
    anything already matched in step 1, appending any file containing
    `haute.Pipeline`.
-3. `strict=True` converts an `OSError` while reading a candidate file into
-   a raised `ConfigError` instead of a logged-and-skipped warning.
+3. An `OSError` while reading either the configured pipeline or any candidate
+   file raises `ConfigError`; discovery never skips an unreadable candidate.
 
 ### Atomic writes (`_file_ops.py`, `_polars_utils.py`)
 
@@ -229,34 +229,17 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
 
 ### Streaming collect/sink (`_polars_utils.py`)
 
-- `streaming_collect(lf, *, profile, allow_broad, execution_context)`:
-  resolves the effective profile from an active `ExecutionContext` when one
-  exists — **the passed `profile` argument is a fallback only, overridden
-  by any active context's profile.** `allow_broad=True` is rejected unless
-  the effective profile is in `_BROAD_COLLECT_PROFILES` (`PREVIEW_EAGER`
-  only). Calls `lf.collect(engine="streaming")`; on a Polars streaming-
-  compatibility error (message contains `"stream"`, see `_is_streaming_
-  compatibility_error`) with `allow_broad=False`, wraps as
-  `BoundedMemoryUnsupportedError`; with `allow_broad=True`, logs and falls
-  back to `lf.collect()`. A `_POLARS_STREAMING_ERRORS`-typed exception whose
-  message does *not* look streaming-related re-raises unchanged.
-- `bounded_collect_batches(lf, *, profile, chunk_size, ...)`: same
-  streaming-error mapping, applied around `lf.collect_batches(...,
-  engine="streaming")` construction and each `next()` call; inserts
+- `streaming_collect(lf, *, execution_context)`: records the active context's
+  fault point/collect metric and calls `lf.collect(engine="streaming")`
+  exactly once. Native exceptions propagate unchanged; there is no profile
+  argument, compatibility classifier, or broad/eager fallback.
+- `bounded_collect_batches(lf, *, chunk_size, ...)`: validates the chunk
+  size, calls `lf.collect_batches(..., engine="streaming")`, and inserts
   `execution_context` checkpoints between batches when a context is active.
+  Iterator-construction and iteration failures propagate unchanged.
 - `bounded_sink`/`streaming_sink`: `sink_csv`/`sink_parquet` via
-  `_streaming_sink_to_path`, wrapped in `temporary_streaming_chunk_size`;
-  a streaming-incompatibility error maps to `BoundedMemoryUnsupportedError`
-  with no collect fallback.
-- `best_effort_sink`/`safe_sink`: same streaming attempt, but on a
-  `_POLARS_STREAMING_ERRORS` failure falls back to
-  `streaming_collect(..., profile=<active context's profile or LAZY_SINK>)`
-  then an eager `write_csv`/`write_parquet`. `best_effort_sink` requires its
-  caller to pass `allow_broad=True` or raises `ValueError` immediately — no
-  accidental fallback path. `safe_sink(lf, path, *, fmt, fast_checkpoint)`
-  has no `allow_broad` parameter of its own; it is a fixed wrapper that
-  always calls `best_effort_sink(..., allow_broad=True)`, so it can never
-  raise that `ValueError`.
+  `_streaming_sink_to_path`, wrapped in `temporary_streaming_chunk_size`.
+  Native exceptions propagate unchanged and no collect fallback exists.
 - `temporary_streaming_chunk_size(chunk_size)`: `_STREAMING_CHUNK_SIZE_LOCK`
   (a module-level `threading.RLock`) serialises save/set/restore of
   Polars' process-global streaming chunk size config, since Polars exposes
@@ -342,13 +325,11 @@ sinker and returns `None`, `mode="write"` streaming-collects then calls the
 | Declared schema mismatch (missing column or dtype disagreement) | `SchemaMismatchError` | `_io._validate_declared_schema` (all formats); `_polars_dtypes.parse_dtype`/`parse_schema_mapping` for a malformed dtype spec. |
 | Plain JSON / CSV without full dtypes in a bounded profile | `BoundedMemoryUnsupportedError` | `_io.read_source`, before parsing. |
 | Eager mode, no scan surface, or missing required `schema` in a bounded profile | `BoundedMemoryUnsupportedError` | `_polars_io_registry.read_polars_input`, before the polars call. |
-| Streaming collect/sink incompatibility (no broadening allowed) | `BoundedMemoryUnsupportedError` | `_polars_utils.streaming_collect`, `bounded_collect_batches`, `bounded_sink`. |
+| Native streaming collect/sink failure | Original Polars exception | `_polars_utils.streaming_collect`, `bounded_collect_batches`, `bounded_sink`. |
 | Unknown format / mode / argument / missing engine / non-table result | `PolarsIoConfigError` (`ValueError` subclass) | `_polars_io_registry` — `format_for_config`, `resolve_input_mode`/`resolve_output_mode`, `validate_arguments`, `_require_engines`, `read_polars_input`. |
 | Missing engine package surfaced only at call time (`ImportError`) | Re-wrapped `PolarsIoConfigError` | `read_polars_input`/`write_polars_output`'s `except (ImportError, ModuleNotFoundError)`. |
 | Unknown polars I/O callable key | `KeyError` | `_polars_io_schema.io_function`, listing known keys. |
-| `best_effort_sink` called without `allow_broad=True` | `ValueError` | `_polars_utils.best_effort_sink`, before any I/O. `safe_sink` has no `allow_broad` parameter and always calls `best_effort_sink` with `allow_broad=True`, so it can never hit this error. |
-| `streaming_collect(allow_broad=True)` for a non-`PREVIEW_EAGER` profile | `ValueError` | `_polars_utils.streaming_collect`. |
-| Unreadable candidate file during pipeline discovery | Logged warning (default) or `ConfigError` (`strict=True`) | `discovery.discover_pipelines`. |
+| Unreadable candidate file during pipeline discovery | `ConfigError` naming the file | `discovery.discover_pipelines`. |
 | No valid path candidate at all | `RuntimePathOutsideProjectError` (`ValueError` subclass) | `_path_resolution.resolve_runtime_file_path`. |
 | Embedded NUL byte in a path | `MalformedRuntimePathError` (`ValueError` subclass) | `_path_resolution._normalise_path_text`. |
 | Windows atomic-write rename blocked by a reader | `PermissionError` (propagated, not wrapped) | `_file_ops.atomic_write_bytes`. |
@@ -386,10 +367,9 @@ Tests live across several files, split roughly by module:
   committed file itself), `TestSchemaLoaderHelpers` (`io_function`/
   `argument_names` behaviour including the unknown-key error).
 - `tests/test_json_read_documented.py` — documents/pins the JSON-is-eager,
-  NDJSON-uses-scan_ndjson, Parquet-has-an-escape-hatch behaviours
+  NDJSON-uses-scan_ndjson, and Parquet/NDJSON recommendation behaviours
   specifically (`TestDocstringDocumentsLimitation`,
-  `TestNDJSONUsesScanNDJSON`, `TestPlainJSONIsEager`,
-  `TestParquetEscapeHatchExists`).
+  `TestNDJSONUsesScanNDJSON`, `TestPlainJSONIsEager`).
 - `tests/test_data_io_nodes.py` / `tests/test_data_io_roundtrips.py` —
   integration-level coverage of `dataInput`/`dataOutput` node execution end
   to end (sink execution, output-path resolution, codegen/parse
@@ -414,28 +394,16 @@ Tests live across several files, split roughly by module:
   `enforce_project_root` behaviour; the properties file adds
   Hypothesis-style property coverage (`TestPathResolutionProperties`,
   `TestWindowsReservedNameProperties`).
-- `tests/test_discovery.py` / `tests/test_discovery_fail_loudly.py` —
-  configured-pipeline-first ordering plus the root glob scan, empty/single/multiple
-  matches, `_SKIP` filtering, content-matching (`haute.Pipeline` substring),
-  unreadable-file handling in both non-strict (log-and-continue, other
-  files still processed) and `strict=True` (raises `ConfigError`) modes,
+- `tests/test_discovery.py` — configured-pipeline-first ordering plus the root
+  glob scan, empty/single/multiple matches, `_SKIP` filtering, content-matching
+  (`haute.Pipeline` substring), fail-loud unreadable-file handling,
   symlink/dedup behaviour, and `haute.toml` edge cases.
 - `tests/test_polars_utils.py` — `streaming_collect`/`bounded_collect_batches`
-  streaming-engine usage, metrics/context integration, typed-error-without-
-  fallback behaviour, and active-context-profile precedence over an
-  explicit `profile` argument; `bounded_sink`/`best_effort_sink`/`safe_sink`
-  fallback and non-fallback behaviour for both CSV and Parquet, and the
-  `allow_broad` guard; `atomic_write` and `read_parquet_metadata`; the
+  streaming-engine usage, metrics/context integration, and unchanged native
+  error propagation; `bounded_sink` behaviour for CSV and Parquet;
+  `atomic_write` and `read_parquet_metadata`; the
   process-global `temporary_streaming_chunk_size` lock; `_malloc_trim`
   dispatch across simulated platforms.
-
-Known coverage gaps: the streaming-error classification helpers
-(`_is_streaming_compatibility_error`/`_is_streaming_sink_error`) rely on a
-string-matching heuristic (`"stream" in str(exc).lower()`) to distinguish
-a genuine streaming-incompatibility `ComputeError`/`InvalidOperationError`/
-`SchemaError` from an unrelated Polars error of the same exception type;
-the test suite exercises both branches but does not exhaustively probe
-every Polars error message shape that could hit this heuristic.
 
 No test exercises two concurrent `_polars_utils.atomic_write`/profiled-sink
 calls to the same destination. The fixed temp path makes that unsupported in
@@ -447,33 +415,12 @@ contract is directly tested.
 Remaining I/O improvement work is tracked in the
 [I/O layer roadmap](../../roadmap/io-layer.md).
 
-- Replace substring-based streaming failure detection in `_polars_utils` with a committed
-  classifier table whose key is `(polars_version, exception_class,
-  anchored_full_message_signature)`. The first supported version is exactly Polars `1.39.3`.
-  A spec-only evidence step must reproduce real incompatible operations on that version and
-  commit their concrete exception classes and complete messages here before classifier code
-  begins. An empty verified table is valid; broad invented signatures are not. Message
-  signatures are anchored and evaluated as full-message matches.
-- Only a listed tuple is classified and may be converted or handed to the existing caller's
-  documented fallback branch. A version mismatch, subclass/type mismatch, or message mismatch
-  re-raises the original exception object unchanged and never selects a broad/eager fallback.
-  Adding support for another Polars version requires independently harvested signatures and
-  an explicit table-version update.
+- Keep `_polars_utils` on one native streaming path: no compatibility table, no exception
+  conversion, and no eager-fallback selector. Native exceptions propagate unchanged.
 - Execution telemetry exposes byte and column counters only where the Polars operation supplies them. Use an explicit unavailable value/state when a counter cannot be obtained; do not coerce absence to `0`.
-- The repository audit for this plan found no production import/caller, package re-export,
-  generated reference, or supported published contract for the private underscored-module
-  `best_effort_sink` and `safe_sink` symbols. Remove the helpers, fallback tests, and call
-  sites; if contrary evidence appears before the batch, stop and revise this contract first.
-  Retain `bounded_sink` as a strict
-  bounded-memory surface. Add a 0.6 pre-1.0 migration/release note naming the removals, with no
-  deprecation shim because retaining the unsafe fallback is worse than a loud break.
 - Do not alter CSV recounting in this change. A later implementation requires a benchmark showing a material win and tests proving identical semantics.
 
-Tests must exercise each harvested Polars 1.39.3 tuple and assert exact propagation of the
-original exception for an unknown version, wrong exception class, prefix/suffix message drift,
-and unrelated messages containing tempting tokens such as `downstream`, `upstream`, or
-`stream_id`. They also cover counter availability and, after a successful removal audit, prove
-that no public or internal caller can select the removed broadening helpers.
+Tests assert one native call, unchanged exception propagation, and counter availability.
 
 ## Approved change contract — 0.7.0 data I/O convergence
 

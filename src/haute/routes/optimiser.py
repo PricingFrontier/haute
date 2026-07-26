@@ -71,7 +71,6 @@ from haute.schemas import (
     OptimiserEstimateRequest,
     OptimiserEstimateResponse,
     OptimiserFrontierAutoRangeRequest,
-    OptimiserFrontierAutoRangeResponse,
     OptimiserFrontierAutoRangeStartResponse,
     OptimiserFrontierAutoRangeStatusResponse,
     OptimiserFrontierRequest,
@@ -340,7 +339,6 @@ def _optimiser_input_metrics(body: OptimiserEstimateRequest) -> dict[str, int | 
                         non_null_counts.mean().alias("scenarios_per_quote_mean"),
                         non_null_counts.sum().alias("expanded_row_count"),
                     ),
-                    profile=ExecutionProfile.OPTIMISER_SETUP,
                 ).row(0, named=True)
             null_quote_id_rows = int(row["null_quote_id_row_count"] or 0)
             if null_quote_id_rows > 0:
@@ -1172,16 +1170,17 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
     aggregation scan over the projected solver columns.  The solver itself
     is never invoked.
     """
-    from haute._ram_estimate import _ancestor_source_metadata
+    from haute._ram_estimate import _detailed_ancestor_source_metadata
 
     body = cast(OptimiserEstimateRequest, _prepare_optimiser_execution_request(body))
     total_rows: int | None = None
     try:
-        total_rows, _max_cols = _ancestor_source_metadata(
+        source_metadata = _detailed_ancestor_source_metadata(
             body.graph,
             body.node_id,
             body.source,
         )
+        total_rows = source_metadata.row_count
     except Exception as exc:
         logger.warning("optimiser_estimate_failed", error=str(exc), node_id=body.node_id)
 
@@ -1205,18 +1204,6 @@ def estimate_solve(body: OptimiserEstimateRequest) -> OptimiserEstimateResponse:
         scenarios_per_quote_mean=cast(float | None, metrics.get("scenarios_per_quote_mean")),
         expanded_row_count=cast(int | None, metrics.get("expanded_row_count")),
     )
-
-
-@router.post("/frontier/auto-range", response_model=OptimiserFrontierAutoRangeResponse)
-def estimate_frontier_auto_range(
-    body: OptimiserFrontierAutoRangeRequest,
-) -> OptimiserFrontierAutoRangeResponse:
-    """Estimate absolute efficient-frontier ranges from the scenario dataframe."""
-    body = cast(
-        OptimiserFrontierAutoRangeRequest,
-        _prepare_optimiser_execution_request(body),
-    )
-    return _solve_service.estimate_frontier_auto_range(body)
 
 
 @router.post("/frontier/auto-range/start", response_model=OptimiserFrontierAutoRangeStartResponse)
@@ -1516,8 +1503,8 @@ def run_frontier(body: OptimiserFrontierRequest) -> OptimiserFrontierResponse:
     """Start an efficient-frontier sweep for a completed optimisation job.
 
     Validation (job/runtime availability, range resolution, the compute-budget
-    cap) stays synchronous so contract errors surface as 4xx on this request,
-    exactly as the old inline route did.  The sweep itself runs on a
+    cap) stays synchronous so contract errors surface as 4xx on this request.
+    The sweep itself runs on a
     background thread; the response carries a pollable job handle for
     ``GET /frontier/status/{job_id}``.
     """

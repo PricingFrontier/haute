@@ -24,8 +24,11 @@
 
 ## Key types and data structures
 
-- **`BaseAlgorithm`** (ABC, `_algorithms.py`) — `fit()`, `predict()`,
-  `feature_importance()`, `save()`. `CatBoostAlgorithm` and `GLMAlgorithm` implement it.
+- **`BaseAlgorithm`** (ABC, `_algorithms.py`) — `fit()`,
+  `predict(model, df, features, offset=...)`, `feature_importance()`, `save()`.
+  Training and PDP diagnostics always call the declared `predict` signature, including
+  `offset=None`; reduced-arity duck-typed implementations are not another interface.
+  `CatBoostAlgorithm` and `GLMAlgorithm` implement it.
   Both also expose algorithm-specific methods that `_training_job._compute_metrics`
   probes with `hasattr()` rather than an interface method — `shap_summary` /
   `feature_importance_typed` (CatBoost only), `coefficients_table` / `relativities` /
@@ -43,7 +46,9 @@
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
   `feature_types`, `categorical_features`, `categorical_levels`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
-  other field), `offset_column: str | None`. `CONTRACT_FILENAME = "feature_contract.json"`;
+  other field), `offset_column: str | None`. Serialized contracts always contain every
+  one of those fields, including an empty `categorical_levels` object and a nullable
+  `offset_column`. `CONTRACT_FILENAME = "feature_contract.json"`;
   per-model files are named via `_training_job.model_contract_filename(name)` →
   `"{name}.feature_contract.json"`.
 - **`TrainingJob`** (`_training_job.py`) — the orchestrator. Constructor stores
@@ -56,9 +61,14 @@
   snapshot (`_contract_feature_dtypes`, `_contract_categorical_levels`,
   `_contract_target_dtype`, `_contract_offset_dtype`) is populated inside `_prepare_data`
   and consumed by `_save_artifacts` and `_log_to_mlflow`.
+- **Modelling-node algorithm config** — CatBoost constructor hyperparameters are the
+  contents of top-level `params`, with CatBoost Tweedie power in top-level
+  `variance_power`. GLM configuration is exclusively top-level
+  (`terms`, `all_factors`, `family`, `link`, `interactions`, `regularization`, `alpha`,
+  `l1_ratio`, `intercept`, `var_power`, `theta`, `offset`); `build_train_params`
+  projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
 - **`TrainResult`** (`_training_job.py`, dataclass) — the full public result: `metrics`,
-  `feature_importance`, `model_path`, `train_rows`, `test_rows` (legacy name for the
-  *validation*-set count — kept for API/frontend back-compat), `features`,
+  `feature_importance`, `model_path`, `train_rows`, `validation_rows`, `features`,
   `cat_features`, `holdout_rows`, `holdout_metrics`, `diagnostics_set`
   (`"train"|"validation"|"holdout"`), `best_iteration`, `loss_history`, every chart's
   underlying data (`double_lift`, `shap_summary`, `feature_importance_loss`,
@@ -188,8 +198,7 @@
    diagnostics DataFrame and unlinks the split parquet.
 6. **`_save_artifacts`** — write the native model file
    (`.cbm`/`.rsglm`/`.model` from `_MODEL_EXT_MAP`); when features are supplied, build
-   and save the per-model `FeatureContract`, warning (never overwriting or deleting) if
-   a legacy shared `feature_contract.json` is present in the same output directory.
+   and save the per-model `FeatureContract`.
 7. Assemble `TrainResult`; if `mlflow_experiment` is set, `_log_to_mlflow` delegates to
    `_mlflow_log.log_experiment`, reusing the same contract-dtype snapshot for the
    `ModelSignature`.
@@ -292,6 +301,11 @@ change).
 
 ### MLflow-log-after-the-fact
 
+`GET /mlflow/check` always returns the complete availability tuple:
+`mlflow_installed`, `mlflow_importable`, and `tracking_configured`. Package
+discovery, importability, and tracking resolution are distinct states; none of
+the three response fields is inferred from a missing value.
+
 `POST /mlflow/log` looks up a completed job's cached `TrainResponse`; if the saved
 model file exists, reloads its persisted feature contract from disk (via
 `load_contract_cached`, next to the model at `model_contract_filename(model.stem)`) —
@@ -386,10 +400,7 @@ native CatBoost flavor.
   observed row values; `validate_categorical_value_domains` only checks observed rows
   against a declared domain and raises `FeatureMismatchError` with example offending
   values when violated.
-- Per-model contract files exist because a prior shared `feature_contract.json` design
-  let two models trained into one `output_dir` silently overwrite each other's
-  contract; a detected legacy shared file is warned about and left untouched, never
-  trusted or deleted.
+- Feature contracts are written only to each model's canonical companion path.
 - Column-projection pushdown (`_glm_select_columns` / `_catboost_select_columns` /
   `_training_required_columns_by_node`) bounds parquet-read memory: GLM reads only its
   term + target + weight + offset columns; CatBoost's required-columns demand is an
@@ -479,11 +490,11 @@ roughly 700+ test functions across about 30 files that exercise this component:
   validation branch, worker-side failure mapping, cancellation).
 - `test_modelling_export.py` (74 tests) — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules.
-- `test_train_config_builder.py` (48 tests) — unit tests for the config→kwargs builder,
+- `test_train_config_builder.py` — unit tests for the config→kwargs builder,
   including regression coverage for the GLM-vs-CatBoost key-routing bugs it was written
-  to prevent, and the Negative Binomial `theta` gate (unset fails loud, set via `params`
-  or top-level config passes, non-negbinomial families are unaffected, `theta` survives
-  script export).
+  to prevent, and the Negative Binomial `theta` gate (unset fails loud, top-level
+  `theta` passes, non-negbinomial families are unaffected, `theta` survives script
+  export).
 - `test_metrics.py` (96 tests) and `test_metrics_gini_ties.py` (27 tests, labelled the
   "C6 regression suite") — metric correctness and the tie-corrected Gini/Lorenz
   row-order-independence guarantee.
@@ -514,13 +525,12 @@ roughly 700+ test functions across about 30 files that exercise this component:
 - Narrow, remediation-pinned regression suites: `test_training_memory_safety.py`,
   `test_training_temp_cleanup.py`, `test_training_split_streaming.py`,
   `test_training_null_target_fused_split.py`, `test_training_catboost_projection.py`,
-  `test_training_contract_per_model.py`, `test_training_job_no_glm_cv.py` (a deleted
-  GLM cross-validation path), `test_training_lorenz_nonfinite.py`.
+  `test_training_contract_per_model.py`, `test_training_lorenz_nonfinite.py`.
 - Additional targeted coverage: `test_modelling_loud_errors.py`,
   `test_modelling_golden.py` (golden-snapshot pins for route response shapes),
   `test_bundle6_trust_model_cleanup.py`, `test_catboost_training_demand.py`,
   `test_cli_train.py`, `test_model_explainability.py`, `test_train_param_routing.py`,
-  `test_codegen_split.py`.
+  and `test_modelling_export.py`.
 
 Strategy is overwhelmingly unit/regression: fast, isolated tests per module, heavy use
 of `unittest.mock` to avoid exercising real CatBoost/RustyStats/MLflow where feasible,
@@ -529,10 +539,10 @@ skip cleanly when RustyStats is not installed, matching the production lazy-regi
 behaviour in `ALGORITHM_REGISTRY`.
 
 Known coverage gap: there is no single dedicated test file for `_split.py` in
-isolation — split logic (random/temporal/group strategies, the mask functions) is
+isolation — split logic (random/temporal/group strategies and mask functions) is
 exercised indirectly through `test_modelling.py`,
-`test_training_null_target_fused_split.py`, `test_training_split_streaming.py`, and
-`test_codegen_split.py` rather than one focused suite.
+`test_training_null_target_fused_split.py`, and
+`test_training_split_streaming.py` rather than one focused suite.
 
 ## Polars backend contracts (0.6.0)
 
@@ -572,3 +582,10 @@ tracked in the [modelling roadmap](../../roadmap/modelling.md).
 - Tests use real spawn only for protocol/entrypoint contract cases. Service unit tests inject a
   deterministic protocol runner rather than depending on fork inheritance or patching objects
   inside a child.
+
+## Approved change contract — canonical-only modelling artifacts
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+training reads and writes only the current run-scoped feature contract and artifact layout. It
+does not probe for, warn about, or interpret a historical shared contract path. Result and CLI
+field names describe their current meaning rather than retaining an obsolete name.

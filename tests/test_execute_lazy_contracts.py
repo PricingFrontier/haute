@@ -11,7 +11,6 @@ import pytest
 import haute.execution as execution_facade
 from haute._contracts import Contract
 from haute._execute_lazy import (
-    _effective_contract,
     _execute_eager_core,
     _execute_lazy,
     _resolve_effective_contract,
@@ -33,26 +32,6 @@ def _node(node_type: NodeType, config: dict[str, object] | None = None) -> Graph
         id="node_1",
         data=NodeData(label="Node 1", nodeType=node_type, config=config or {}),
     )
-
-
-def test_effective_contract_downgrades_config_error_to_opaque() -> None:
-    with patch(
-        "haute._execute_lazy.get_column_contract",
-        side_effect=ConfigError("missing model"),
-    ):
-        contract = _effective_contract(_node(NodeType.MODEL_SCORE))
-
-    assert contract == Contract.opaque()
-
-
-def test_effective_contract_downgrades_oserror_to_opaque() -> None:
-    with patch(
-        "haute._execute_lazy.get_column_contract",
-        side_effect=OSError("disk offline"),
-    ):
-        contract = _effective_contract(_node(NodeType.MODEL_SCORE))
-
-    assert contract == Contract.opaque()
 
 
 @pytest.mark.parametrize(
@@ -87,7 +66,7 @@ def test_strict_contract_resolution_raises_typed_redacted_error(
     assert str(error) not in exc_info.value.message
 
 
-def test_non_strict_contract_resolution_reports_opaque_degradation() -> None:
+def test_preview_contract_resolution_reports_opaque_degradation() -> None:
     with patch(
         "haute._execute_lazy.get_column_contract",
         side_effect=ConfigError("missing model"),
@@ -121,6 +100,10 @@ def test_bounded_profiles_require_strict_contract_resolution(
     assert _strict_contract_resolution(profile) is True
 
 
+def test_unprofiled_execution_requires_strict_contract_resolution() -> None:
+    assert _strict_contract_resolution(None) is True
+
+
 @pytest.mark.parametrize(
     "profile",
     [ExecutionProfile.PREVIEW_EAGER],
@@ -129,29 +112,6 @@ def test_materialising_profiles_allow_diagnosed_contract_degradation(
     profile: ExecutionProfile,
 ) -> None:
     assert _strict_contract_resolution(profile) is False
-
-
-def test_contextless_lazy_execution_degrades_contract_resolution_for_compatibility() -> None:
-    graph = make_graph(
-        {
-            "nodes": [
-                {"id": "source", "data": {"label": "source", "nodeType": "dataInput", "config": {}}}
-            ],
-            "edges": [],
-        }
-    )
-
-    def build_node_fn(node: GraphNode, **_kwargs):
-        return node.id, lambda: pl.LazyFrame({"value": [1]}), True
-
-    with patch(
-        "haute._execute_lazy.get_column_contract", side_effect=ConfigError("known missing contract")
-    ):
-        outputs, *_ = _execute_lazy(
-            graph, build_node_fn, target_node_id="source", enforce_contracts=True
-        )
-
-    assert outputs["source"].collect().to_dict(as_series=False) == {"value": [1]}
 
 
 def test_lazy_and_eager_bounded_execution_share_typed_resolution_failure() -> None:
@@ -207,40 +167,42 @@ def test_lazy_and_eager_bounded_execution_share_typed_resolution_failure() -> No
     assert payloads[0] == payloads[1]
 
 
-def test_effective_contract_reraises_attribute_error() -> None:
+def test_contract_resolution_reraises_attribute_error() -> None:
     with patch(
         "haute._execute_lazy.get_column_contract",
         side_effect=AttributeError("bug"),
     ):
         with pytest.raises(AttributeError, match="bug"):
-            _effective_contract(_node(NodeType.MODEL_SCORE))
+            _resolve_effective_contract(_node(NodeType.MODEL_SCORE), strict=True)
 
 
-def test_effective_contract_raises_contract_mismatch_for_malformed_declared_contract() -> None:
+def test_contract_resolution_raises_for_malformed_declared_contract() -> None:
     with patch(
         "haute._execute_lazy.get_column_contract",
         return_value=({"premium"}, {"base_rate"}),
     ):
         with pytest.raises(ContractMismatchError, match="malformed"):
-            _effective_contract(
+            _resolve_effective_contract(
                 _node(
                     NodeType.POLARS,
                     {"contract": {"inputs": ["base_rate"]}},
-                )
+                ),
+                strict=True,
             )
 
 
-def test_effective_contract_merges_declared_inputs_with_builder_outputs() -> None:
+def test_contract_resolution_merges_declared_inputs_with_builder_outputs() -> None:
     with patch(
         "haute._execute_lazy.get_column_contract",
         return_value=({"premium"}, {"base_rate"}),
     ):
-        contract = _effective_contract(
+        contract = _resolve_effective_contract(
             _node(
                 NodeType.POLARS,
                 {"contract": {"inputs": ["declared_rate"], "outputs": None}},
-            )
-        )
+            ),
+            strict=True,
+        ).contract
 
     assert contract == Contract(
         inputs=frozenset({"declared_rate"}),
@@ -248,12 +210,15 @@ def test_effective_contract_merges_declared_inputs_with_builder_outputs() -> Non
     )
 
 
-def test_effective_contract_declared_opaque_preserves_builder_contract() -> None:
+def test_contract_resolution_declared_opaque_preserves_builder_contract() -> None:
     with patch(
         "haute._execute_lazy.get_column_contract",
         return_value=({"premium"}, {"base_rate"}),
     ):
-        contract = _effective_contract(_node(NodeType.POLARS, {"contract": "opaque"}))
+        contract = _resolve_effective_contract(
+            _node(NodeType.POLARS, {"contract": "opaque"}),
+            strict=True,
+        ).contract
 
     assert contract == Contract(
         inputs=frozenset({"base_rate"}),
@@ -680,7 +645,7 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
         "right_value": [2],
     }
     assert context.projection_plan is not None
-    diagnostics = context.metrics_payload(status="completed")["projection_plan_diagnostics"]
+    diagnostics = context.projection_plan.diagnostics_payload()
     assert diagnostics is not None
     assert diagnostics["edge_reasons"]["left->joined"]["rule"] == ("runtime_inferred_streaming")
     assert diagnostics["edge_reasons"]["right->joined"]["rule"] == ("runtime_inferred_streaming")

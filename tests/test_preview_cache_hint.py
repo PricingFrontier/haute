@@ -124,11 +124,11 @@ def _clear_caches():
     Without this, prior tests' cached DataFrames would hide any
     source-read call-count regressions.
     """
-    _preview_cache.invalidate()
-    _trace_cache.invalidate()
+    _preview_cache.clear()
+    _trace_cache.clear()
     yield
-    _preview_cache.invalidate()
-    _trace_cache.invalidate()
+    _preview_cache.clear()
+    _trace_cache.clear()
 
 
 # ===========================================================================
@@ -424,7 +424,7 @@ class TestMemoryNeutralOnRealisticGraph:
 
         peaks: list[int] = []
         for _ in range(2):
-            _preview_cache.invalidate()
+            _preview_cache.clear()
             tracemalloc.start()
             try:
                 execute_graph(graph, target_node_id=sink_id)

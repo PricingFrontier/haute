@@ -20,7 +20,7 @@ import {
   commonRootPath,
   dropMappingHeader,
 } from "./outputPathTools"
-import { nonCanonicalHint, nonCanonicalNote } from "./pathCanonicalWarning"
+import { parsePath } from "./jsonpath"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { apiInputFrameLabels, edgeInputName } from "../../utils/apiInputPorts"
 
@@ -39,7 +39,6 @@ const PREVIEW_ROW_LIMIT = 50
 import {
   classifyConfig,
   emptyV2,
-  migrateV1,
   writeV2,
   validateOutputPath,
   type OutputConfigV2,
@@ -198,48 +197,6 @@ function frameSchemaColumns(
   return []
 }
 
-/**
- * Classify a frame's source for the per-frame DATA preview.
- *
- * `previewNode` now accepts a `port_label` (the frame's `sourceHandle`), so the
- * route returns THAT frame's rows for a multi-frame apiInput — not just the
- * first frame. `previewFrameData` passes the handle, so the common case is
- * fully resolvable and needs no caveat. The ONE case that still can't be
- * resolved: a multi-frame source where this edge's `sourceHandle` matches none
- * of the source's emit-true labels (a dangling handle). The backend then
- * degrades to the first frame, so the preview may not be this frame's rows.
- *
- * Returns:
- *   - `multiFrame`: the source emits 2+ frames (an apiInput with 2+ emit tables);
- *   - `resolvable`: this edge's frame can be selected on the source (its handle
- *     names an actual emit-true table), so the preview is genuinely this frame.
- * For a single-frame source `multiFrame` is false and `resolvable` is true.
- */
-function frameSourceKind(
-  edge: SimpleEdge,
-  sourceNode: SimpleNode | undefined,
-): { multiFrame: boolean; resolvable: boolean } {
-  if (!sourceNode) return { multiFrame: false, resolvable: true }
-  const cfg = (sourceNode.data as Record<string, unknown>).config as
-    | Record<string, unknown>
-    | undefined
-  const tables = cfg && Array.isArray(cfg.tables) ? (cfg.tables as unknown[]) : null
-  if (!tables) return { multiFrame: false, resolvable: true }
-  const emitLabels = tables
-    .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
-    .filter((t) => t.emit === true)
-    .map((t) => t.label)
-    .filter((l): l is string => typeof l === "string")
-  const multiFrame = emitLabels.length >= 2
-  if (!multiFrame) return { multiFrame: false, resolvable: true }
-  // Multi-frame: the frame resolves when its handle names a real emit table —
-  // then `port_label` selects it and the preview is this frame's own rows. A
-  // handle that names no emit table is a dangling frame; the backend falls back
-  // to the first frame, so the preview may not match (keep the caveat).
-  const resolvable = edge.sourceHandle != null && emitLabels.includes(edge.sourceHandle)
-  return { multiFrame, resolvable }
-}
-
 // ─── Editor-only row status ───────────────────────────────────────
 //
 // "Inferred" vs "Confirmed" is tracked in EDITOR STATE ONLY — it is never
@@ -295,8 +252,8 @@ export default function OutputEditor({
     [allNodes],
   )
 
-  // Per-edge resolved frame port + label, computed once so the render, the
-  // duplicate-port guard, and the v1 migration all agree on one derivation.
+  // Per-edge resolved frame port + label, computed once for rendering and the
+  // duplicate-port guard.
   const frames = useMemo(
     () =>
       incomingEdges.map((edge) => {
@@ -337,22 +294,12 @@ export default function OutputEditor({
     return [...counts.entries()].filter(([, n]) => n > 1).map(([p]) => p)
   }, [frames])
 
-  // Classify the on-disk config. v1 → migration banner + live working copy
-  // (the migrated v2 is what we render and what the first Save persists).
+  // Classify the on-disk config and use an empty canonical config when fresh.
   const shape = useMemo(() => classifyConfig(config), [config])
-  const isV1 = shape.kind === "v1"
   const v2: OutputConfigV2 = useMemo(() => {
     if (shape.kind === "v2") return shape.v2
-    if (shape.kind === "v1") {
-      // v1 is the legacy single-frame shape; resolve the lone incoming edge's
-      // frame id (handle, else sanitised source label) so the migrated rows
-      // persist the SAME `source_port` the backend will key by. Fall back to
-      // "" only when no edge is wired (the backend n==1 rescue then binds it).
-      const frameId = frames.length === 1 ? frames[0].port : ""
-      return migrateV1(config, frameId)
-    }
     return emptyV2()
-  }, [shape, config, frames])
+  }, [shape])
 
   // Editor-only row status (Inferred pill). Never persisted. Keyed by ABSOLUTE
   // index into v2.outputMapping.
@@ -361,8 +308,6 @@ export default function OutputEditor({
   // edge), not the resolved port, so two frames resolving to the same port
   // never share expand/collapse state.
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  // Whether the v1→v2 migration banner has been dismissed by a Save.
-  const [migrated, setMigrated] = useState(false)
   // Whether the top "Frames (N)" table is expanded to show each frame's
   // read-only input schema (columns + types). Default collapsed.
   const [framesExpanded, setFramesExpanded] = useState(false)
@@ -376,9 +321,8 @@ export default function OutputEditor({
   const writeBack = useCallback(
     (next: OutputConfigV2) => {
       onUpdate(writeV2(next))
-      if (isV1) setMigrated(true)
     },
-    [onUpdate, isV1],
+    [onUpdate],
   )
 
   // ─── Assembled-output preview ───────────────────────────────────
@@ -467,8 +411,7 @@ export default function OutputEditor({
   // ─── Per-frame input-data preview ───────────────────────────────
   //
   // Preview a frame's INPUT rows by previewing its upstream SOURCE node (the
-  // best available data path — there is no per-frame row endpoint, see
-  // `frameSourceKind`). Projects to the frame's column set. Returns the source's
+  // best available data path. Projects to the frame's column set. Returns the source's
   // preview rows + the pre-cap total (so JsonPreview shows "showing N of M").
   const previewFrameData = useCallback(
     async (
@@ -486,11 +429,7 @@ export default function OutputEditor({
         // Project to this frame's columns where known, so the preview shows the
         // frame's fields (best-effort; the backend tolerates a superset).
         requestedPreviewColumns: columns.length > 0 ? columns : undefined,
-        // Select THIS frame from a multi-frame source via its handle, so the
-        // preview shows the frame's OWN rows rather than the source's first
-        // frame. A null handle (single-frame source) omits it → first frame,
-        // which IS the frame. An unknown handle degrades to the first frame
-        // backend-side (the `frameSourceKind` caveat covers that case).
+        // Select this frame from a multi-frame source via its handle.
         portLabel: edge.sourceHandle ?? undefined,
       })
       if (res.status !== "ok") {
@@ -724,23 +663,6 @@ export default function OutputEditor({
         Response Mapping
       </EditorLabel>
 
-      {/* v1 → v2 migration banner. Shown while the on-disk config is v1 and the
-          user hasn't yet saved (which writes migrateV1 and silences it). */}
-      {isV1 && !migrated && (
-        <div
-          data-testid="output-migration-banner"
-          className="px-2.5 py-2 rounded-md text-[11px] leading-relaxed"
-          style={{
-            background: "var(--warning-soft)",
-            border: "1px solid var(--warning-border)",
-            color: "var(--text-muted)",
-          }}
-        >
-          This OUTPUT node uses the legacy format; saving will convert it to the
-          new mapping format.
-        </div>
-      )}
-
       {/* Duplicate resolved-port guard. Two incoming frames that resolve to the
           same `source_port` would silently merge on disk; block until the user
           disambiguates. */}
@@ -872,11 +794,10 @@ export default function OutputEditor({
           />
 
           <div className="space-y-2">
-            {frames.map(({ edge, sourceNode, parentLabel, port, label, frameUnresolved, columns }, ei) => {
+            {frames.map(({ edge, parentLabel, port, label, frameUnresolved, columns }, ei) => {
               const rows = rowsForPort(port)
               const isOpen = expanded[edge.id] ?? false
               const anyEnabled = rows.some((r) => r.entry.enabled)
-              const sourceKind = frameSourceKind(edge, sourceNode)
               return (
                 <FrameBlock
                   key={edge.id}
@@ -892,11 +813,6 @@ export default function OutputEditor({
                   rowStatus={rowStatus}
                   frameSchema={writeV2({ ...v2, outputMapping: rows.map((r) => r.entry) })}
                   loadFrameData={() => previewFrameData(edge, columns)}
-                  frameDataCaveat={
-                    sourceKind.multiFrame && !sourceKind.resolvable
-                      ? "This frame's handle doesn't match any of the source's emitted frames, so the input preview falls back to the source's first frame and may not match this frame's rows."
-                      : null
-                  }
                   onToggleExpand={() => toggleExpanded(edge.id)}
                   onToggleFrameEnabled={(on) => {
                     // Per-frame enable toggles every row in the frame at once.
@@ -943,7 +859,6 @@ function FrameBlock({
   rowStatus,
   frameSchema,
   loadFrameData,
-  frameDataCaveat,
   onToggleExpand,
   onToggleFrameEnabled,
   onUpdateEntry,
@@ -969,9 +884,6 @@ function FrameBlock({
   frameSchema: Record<string, unknown>
   /** Fetch this frame's INPUT rows (previews the upstream source node). */
   loadFrameData: () => Promise<{ rows: Record<string, unknown>[]; total: number }>
-  /** A caveat to show on the input preview (e.g. multi-frame first-frame
-   * collapse), or null when the preview is exact. */
-  frameDataCaveat: string | null
   onToggleExpand: () => void
   onToggleFrameEnabled: (on: boolean) => void
   onUpdateEntry: (absIndex: number, patch: Partial<OutputMappingEntryV2>) => void
@@ -1297,7 +1209,6 @@ function FrameBlock({
             onRefresh={runDataPreview}
             loading={dataLoading}
             error={dataError}
-            note={frameDataCaveat}
             emptyMessage="No input rows for this frame."
           />
 
@@ -1370,53 +1281,14 @@ function detectConflicts(rows: { entry: OutputMappingEntryV2; index: number }[])
   return conflicting
 }
 
-/** One output-path segment, mirroring the backend `_Seg`: a JSON key plus
- * whether a `[:]` selector iterates its value as an array. */
-interface PathSeg {
-  name: string
-  isArray: boolean
-}
-
-/** Segment list of a path (names of `.name` / `['name']` selectors, each
- * flagged `isArray` when followed by a `[:]` whole-array selector; the root and
- * the bare `[:]` markers are not segments). Used only for prefix comparison,
- * mirroring the backend `_parse_output_path` segment construction. */
-function pathSegments(path: string): PathSeg[] {
-  const segs: PathSeg[] = []
-  let i = path.startsWith("$[:]") ? 4 : 1
-  const dot = /^\.([A-Za-z_][A-Za-z0-9_]*)/
-  const bracket = /^\[(['"])([^'"]+)\1\]/
-  while (i < path.length) {
-    const rest = path.slice(i)
-    let name: string
-    let m = dot.exec(rest)
-    if (m) {
-      name = m[1]
-      i += m[0].length
-    } else {
-      m = bracket.exec(rest)
-      if (m) {
-        name = m[2]
-        i += m[0].length
-      } else {
-        break
-      }
-    }
-    const isArray = path.slice(i, i + 3) === "[:]"
-    if (isArray) i += 3
-    segs.push({ name, isArray })
-  }
-  return segs
-}
-
 /** True when one path's segment list is a prefix of the other's (or equal),
  * comparing `(name, isArray)` PAIRS — mirroring the backend `_prefix_comparable`
  * over `_Seg` tuples. A scalar leaf `$[:].obj` and an array container
  * `$[:].obj[:].x` differ at the `obj` segment's `isArray` flag, so they are NOT
  * prefix-comparable (the backend accepts them; the editor must not false-flag). */
 function prefixComparable(a: string, b: string): boolean {
-  const sa = pathSegments(a)
-  const sb = pathSegments(b)
+  const sa = parsePath(a).segments
+  const sb = parsePath(b).segments
   const n = Math.min(sa.length, sb.length)
   for (let i = 0; i < n; i++) {
     if (sa[i].name !== sb[i].name || sa[i].isArray !== sb[i].isArray) return false
@@ -1565,12 +1437,6 @@ function CommittedTextInput({
   }
   const shown = draft ?? value
   const error = validate(shown)
-  // Persistent §4 highlight: a VALID but non-canonical path (typed or inferred)
-  // is flagged informationally — it commits and assembles identically, so this
-  // never blocks. Only computed when the path is grammar-valid (error === null);
-  // an invalid path surfaces its grammar error instead. OUTPUT paths are always
-  // path inputs, so there is no label/column-name exemption here.
-  const hint = error === null ? nonCanonicalHint(shown) : null
   const commit = () => {
     if (draft === null) return
     if (draft === value) {
@@ -1598,9 +1464,7 @@ function CommittedTextInput({
         style={
           error !== null
             ? { ...style, border: "1px solid var(--danger-border-strong)" }
-            : hint !== null
-              ? { ...style, border: "1px solid var(--accent-soft-strong)" }
-              : style
+            : style
         }
       />
       {error !== null && (
@@ -1619,15 +1483,6 @@ function CommittedTextInput({
           style={{ background: "var(--warning-soft)", color: "var(--warning-strong)" }}
         >
           {conflictNote}
-        </div>
-      )}
-      {hint !== null && (
-        <div
-          data-testid={`${dataTestId}-noncanonical`}
-          className="mt-0.5 px-1.5 py-0.5 rounded text-[10px] leading-snug"
-          style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-        >
-          {nonCanonicalNote(hint)}
         </div>
       )}
     </div>

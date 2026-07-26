@@ -175,7 +175,7 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
       const errorMessage = trainErrorMessage(e)
       useNodeResultsStore.getState().completeTrainJob(nodeId, {
         status: "error", metrics: {}, feature_importance: [],
-        model_path: "", train_rows: 0, test_rows: 0, error: errorMessage,
+        model_path: "", train_rows: 0, validation_rows: 0, error: errorMessage,
       }, trainFailureStatus(e, errorMessage))
     } finally {
       setSubmitting(false)

@@ -2,7 +2,7 @@
 
 Covers:
   - get_column_contract          — builder-registered column contracts
-  - _compute_needed_columns      — backward pass computing minimal column sets
+  - prepared projection plans     — backward pass computing minimal column sets
   - checkpoint projection in _execute_lazy — end-to-end parquet projection
 """
 
@@ -13,12 +13,8 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from haute._builders import get_column_contract
-from haute._execute_lazy import (
-    _compute_needed_columns,
-    _compute_projection_plan,
-    _execute_lazy,
-)
+from haute._contracts import get_column_contract
+from haute._execute_lazy import _execute_lazy
 from haute._execution_context import ExecutionContext, ExecutionProfile
 from haute._types import (
     GraphEdge,
@@ -28,6 +24,7 @@ from haute._types import (
     PipelineGraph,
 )
 from haute.errors import ContractMismatchError, ProjectionImpossibleError
+from haute.projection import compute_prepared_plan
 from tests.conftest import make_output_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
@@ -66,13 +63,11 @@ def _banding_node(
 def _rating_step_node(
     nid: str,
     tables: list[dict] | None = None,
-    combined_column: str = "",
 ) -> GraphNode:
     return _node(
         nid,
         NodeType.RATING_STEP,
         tables=tables or [],
-        combinedColumn=combined_column,
     )
 
 
@@ -168,7 +163,13 @@ class TestGetColumnContract:
                     {"factors": ["age", "region"], "outputColumn": "age_factor"},
                     {"factors": ["vehicle_type"], "outputColumn": "vehicle_factor"},
                 ],
-                "combinedColumn": "combined",
+                "combinedOutputs": [
+                    {
+                        "outputColumn": "combined",
+                        "operation": "multiply",
+                        "baseValue": 1,
+                    }
+                ],
             },
         )
         assert produced == {"age_factor", "vehicle_factor", "combined"}
@@ -181,7 +182,7 @@ class TestGetColumnContract:
         )
         assert produced == {"x_out"}
 
-    def test_rating_step_empty_combined_outputs_without_legacy_multiple_tables_is_noop(self):
+    def test_rating_step_empty_combined_outputs_multiple_tables_is_noop(self):
         produced, referenced = get_column_contract(
             NodeType.RATING_STEP,
             {
@@ -189,21 +190,6 @@ class TestGetColumnContract:
                     {"factors": ["age"], "outputColumn": "age_factor"},
                     {"factors": ["region"], "outputColumn": "region_factor"},
                 ],
-                "combinedOutputs": [],
-            },
-        )
-        assert produced == {"age_factor", "region_factor"}
-        assert referenced == {"age", "region"}
-
-    def test_rating_step_empty_combined_outputs_with_blank_legacy_is_noop(self):
-        produced, referenced = get_column_contract(
-            NodeType.RATING_STEP,
-            {
-                "tables": [
-                    {"factors": ["age"], "outputColumn": "age_factor"},
-                    {"factors": ["region"], "outputColumn": "region_factor"},
-                ],
-                "combinedColumn": "  ",
                 "combinedOutputs": [],
             },
         )
@@ -241,23 +227,7 @@ class TestGetColumnContract:
         }
         assert referenced == {"age", "region"}
 
-    def test_rating_step_legacy_combined_survives_empty_combined_outputs(self):
-        produced, referenced = get_column_contract(
-            NodeType.RATING_STEP,
-            {
-                "tables": [
-                    {"factors": ["age"], "outputColumn": "age_factor"},
-                    {"factors": ["region"], "outputColumn": "region_factor"},
-                ],
-                "operation": "multiply",
-                "combinedColumn": "technical_premium",
-                "combinedOutputs": [],
-            },
-        )
-        assert produced == {"age_factor", "region_factor", "technical_premium"}
-        assert referenced == {"age", "region"}
-
-    def test_rating_step_empty_combined_outputs_without_legacy_is_noop(self):
+    def test_rating_step_empty_combined_outputs_is_noop(self):
         produced, referenced = get_column_contract(
             NodeType.RATING_STEP,
             {
@@ -284,24 +254,6 @@ class TestGetColumnContract:
         )
         assert produced == {"technical_premium"}
         assert referenced == set()
-
-    def test_rating_step_legacy_combined_produced_with_new_combined_outputs(self):
-        produced, referenced = get_column_contract(
-            NodeType.RATING_STEP,
-            {
-                "tables": [
-                    {"factors": ["age"], "outputColumn": "age_factor"},
-                    {"factors": ["region"], "outputColumn": "region_factor"},
-                ],
-                "operation": "min",
-                "combinedColumn": "legacy_min",
-                "combinedOutputs": [
-                    {"outputColumn": "new_total", "operation": "add", "baseValue": 10},
-                ],
-            },
-        )
-        assert produced == {"age_factor", "region_factor", "legacy_min", "new_total"}
-        assert referenced == {"age", "region"}
 
     def test_rating_step_with_code_is_opaque(self):
         produced, referenced = get_column_contract(
@@ -485,7 +437,7 @@ class TestGetColumnContract:
 
 
 # ===========================================================================
-# _compute_needed_columns — backward pass
+# Prepared projection plan — backward pass
 # ===========================================================================
 
 
@@ -497,6 +449,23 @@ def _build_children_of(order, parents_of):
             if pid in children_of:
                 children_of[pid].append(nid)
     return children_of
+
+
+def _needed_by_node(
+    order,
+    children_of,
+    node_map,
+    required_columns_by_node=None,
+    *,
+    strict_projection=False,
+):
+    return compute_prepared_plan(
+        order,
+        children_of,
+        node_map,
+        required_columns_by_node,
+        strict_projection=strict_projection,
+    ).needed_by_node
 
 
 class TestComputeNeededColumns:
@@ -518,7 +487,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "band": ["src"], "out": ["band"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["out"] == {"age_band"}
         # needed["band"] = what downstream needs from band's output = {age_band}
@@ -536,7 +505,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "out": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["out"] is None
         assert needed["src"] is None
@@ -553,7 +522,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "t": ["src"], "out": ["t"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # needed["t"] = what downstream needs from t's output = {"z"}
         assert needed["t"] == {"z"}
@@ -584,7 +553,7 @@ class TestComputeNeededColumns:
         }
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # BandA: output needs {a_band, x}, band creates {a_band}, reads {a}
         #   → needs from src: {x, a}
@@ -614,7 +583,7 @@ class TestComputeNeededColumns:
         children_of = _build_children_of(order, parents_of)
 
         with patch("haute._mlflow_io.load_mlflow_model", return_value=mock_model):
-            needed = _compute_needed_columns(order, children_of, node_map)
+            needed = _needed_by_node(order, children_of, node_map)
 
         # Output needs {pred, extra_col}.
         # ModelScore creates {pred}, reads {feat_a, feat_b}.
@@ -632,7 +601,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "opt": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(
+        needed = _needed_by_node(
             order,
             children_of,
             node_map,
@@ -654,7 +623,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "mid": ["src"], "out": ["mid"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(
+        needed = _needed_by_node(
             order,
             children_of,
             node_map,
@@ -676,7 +645,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "sw": ["src"], "out": ["sw"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["sw"] == {"a", "b"}
         assert needed["src"] == {"a", "b"}
@@ -689,7 +658,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "sink": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["sink"] is None
         assert needed["src"] is None
@@ -706,7 +675,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "o1": ["src"], "o2": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         assert needed["src"] is None
 
@@ -722,7 +691,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "t": ["src"], "out": ["src"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # POLARS child is opaque → src needs None
         assert needed["src"] is None
@@ -732,7 +701,7 @@ class TestComputeNeededColumns:
         nodes = [_source_node("src")]
         node_map = {n.id: n for n in nodes}
 
-        needed = _compute_needed_columns(["src"], {"src": []}, node_map)
+        needed = _needed_by_node(["src"], {"src": []}, node_map)
 
         assert needed["src"] is None  # terminal non-OUTPUT
 
@@ -757,7 +726,7 @@ class TestComputeNeededColumns:
         parents_of = {"src": [], "rs": ["src"], "out": ["rs"]}
         children_of = _build_children_of(order, parents_of)
 
-        needed = _compute_needed_columns(order, children_of, node_map)
+        needed = _needed_by_node(order, children_of, node_map)
 
         # RatingStep creates {col_factor}, reads {col}
         # → from source: {col}
@@ -784,7 +753,7 @@ class TestProjectionImpossibleDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,
@@ -795,7 +764,7 @@ class TestProjectionImpossibleDiagnostics:
         assert plan.needed_by_node["left"] is None
         assert plan.needed_by_node["right"] is None
 
-    def test_non_strict_projection_allows_opaque_fan_in_for_compatibility(self):
+    def test_non_strict_projection_allows_opaque_fan_in(self):
         nodes = [
             _source_node("left"),
             _source_node("right"),
@@ -812,7 +781,7 @@ class TestProjectionImpossibleDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(order, children_of, node_map)
+        plan = compute_prepared_plan(order, children_of, node_map)
 
         assert plan.needed_by_node["left"] is None
         assert plan.needed_by_node["right"] is None
@@ -835,7 +804,7 @@ class TestProjectionImpossibleDiagnostics:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ProjectionImpossibleError, match="Projection seed"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -873,7 +842,7 @@ class TestProjectionImpossibleDiagnostics:
         children_of = _build_children_of(order, parents_of)
 
         with pytest.raises(ProjectionImpossibleError, match="could not be parsed"):
-            _compute_projection_plan(
+            compute_prepared_plan(
                 order,
                 children_of,
                 node_map,
@@ -909,7 +878,7 @@ class TestProjectionImpossibleDiagnostics:
         }
         children_of = _build_children_of(order, parents_of)
 
-        plan = _compute_projection_plan(
+        plan = compute_prepared_plan(
             order,
             children_of,
             node_map,

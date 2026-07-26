@@ -1189,8 +1189,8 @@ class TestRemoveConfigFileEdgeCases:
         assert remove_config_file(NodeType.POLARS, "t", tmp_path) is False
 
 
-class TestRatingStepCompactSidecars:
-    def test_save_writes_compact_entries_and_load_expands_to_rows(self, tmp_path):
+class TestRatingStepSidecars:
+    def test_save_and_load_preserve_rating_rows(self, tmp_path):
         config = {
             "tables": [
                 {
@@ -1234,49 +1234,6 @@ class TestRatingStepCompactSidecars:
         assert saved["tables"][1]["entries"] == config["tables"][1]["entries"]
         assert saved["combinedOutputs"] == config["combinedOutputs"]
         assert load_node_config(rel, base_dir=tmp_path) == config
-
-    def test_load_expands_three_factor_entries_from_nested_maps(self, tmp_path):
-        path = tmp_path / "config" / "rating_step" / "vehicle.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "tables": [
-                        {
-                            "name": "vehicle_factor",
-                            "factors": ["vehicle_age_band", "cover_type", "channel"],
-                            "outputColumn": "vehicle_factor",
-                            "entries": {
-                                "direct": {
-                                    "comprehensive": {
-                                        "1-3": 0.9,
-                                        "10+": 1.0,
-                                    }
-                                }
-                            },
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        loaded = load_node_config(path)
-
-        assert loaded["tables"][0]["entries"] == [
-            {
-                "vehicle_age_band": "1-3",
-                "cover_type": "comprehensive",
-                "channel": "direct",
-                "value": 0.9,
-            },
-            {
-                "vehicle_age_band": "10+",
-                "cover_type": "comprehensive",
-                "channel": "direct",
-                "value": 1.0,
-            },
-        ]
 
     def test_save_writes_three_factor_entries_in_editor_axis_order(self, tmp_path):
         config = {
@@ -1359,7 +1316,7 @@ class TestRatingStepCompactSidecars:
             },
         ]
 
-    def test_collect_node_configs_writes_compact_rating_entries(self):
+    def test_collect_node_configs_writes_rating_rows(self):
         graph = make_graph(
             {
                 "nodes": [
@@ -1447,38 +1404,6 @@ class TestRatingStepCompactSidecars:
             }
         ]
 
-    def test_find_config_by_func_name_expands_compact_rating_entries(self, tmp_path):
-        path = tmp_path / "config" / "rating_step" / "adjustments.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "tables": [
-                        {
-                            "name": "vehicle_factor",
-                            "factors": ["vehicle_age_band", "cover_type"],
-                            "outputColumn": "vehicle_factor",
-                            "entries": {"1-3": {"comprehensive": 0.9}},
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        result = find_config_by_func_name("adjustments", tmp_path)
-
-        assert result is not None
-        config, node_type = result
-        assert node_type is NodeType.RATING_STEP
-        assert config["tables"][0]["entries"] == [
-            {
-                "vehicle_age_band": "1-3",
-                "cover_type": "comprehensive",
-                "value": 0.9,
-            }
-        ]
-
     def test_save_preserves_ordered_duplicate_rating_factor_keys(self, tmp_path):
         config = {
             "tables": [
@@ -1537,31 +1462,6 @@ class TestRatingStepCompactSidecars:
         ):
             _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
 
-    def test_save_compacts_rows_that_use_output_column_as_value_key(self, tmp_path):
-        config = {
-            "tables": [
-                {
-                    "name": "area_factor",
-                    "factors": ["area"],
-                    "outputColumn": "area_factor",
-                    "entries": [
-                        {"area": "London", "area_factor": 1.25},
-                        {"area": "Rural", "area_factor": 0.85},
-                    ],
-                }
-            ]
-        }
-
-        rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
-        saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
-
-        expected_entries = [
-            {"area": "London", "value": 1.25},
-            {"area": "Rural", "value": 0.85},
-        ]
-        assert saved["tables"][0]["entries"] == expected_entries
-        assert load_node_config(rel, base_dir=tmp_path)["tables"][0]["entries"] == expected_entries
-
     def test_save_preserves_rating_entry_metadata(self, tmp_path):
         config = {
             "tables": [
@@ -1569,13 +1469,13 @@ class TestRatingStepCompactSidecars:
                     "name": "area_factor",
                     "factors": ["area"],
                     "outputColumn": "area_factor",
-                    "entries": [{"area": "London", "value": 1.25, "note": "legacy"}],
+                    "entries": [{"area": "London", "value": 1.25, "note": "kept"}],
                 }
             ]
         }
 
         rel = _write_node_config_sidecar(NodeType.RATING_STEP, "adjustments", config, tmp_path)
-        expected_entries = [{"area": "London", "value": 1.25, "note": "legacy"}]
+        expected_entries = [{"area": "London", "value": 1.25, "note": "kept"}]
 
         saved = json.loads((tmp_path / rel).read_text(encoding="utf-8"))
         assert saved["tables"][0]["entries"] == expected_entries
@@ -1600,7 +1500,7 @@ class TestRatingStepCompactSidecars:
                             "name": "area_factor",
                             "factors": "area",
                             "outputColumn": "area_factor",
-                            "entries": {"London": 1.25},
+                            "entries": [{"area": "London", "value": 1.25}],
                         }
                     ]
                 }
@@ -1609,28 +1509,6 @@ class TestRatingStepCompactSidecars:
         )
 
         with pytest.raises(ValueError, match="ratingStep tables\\[0\\].factors must be a list"):
-            load_node_config(path)
-
-    def test_load_rejects_shallow_rating_entries_map(self, tmp_path):
-        path = tmp_path / "config" / "rating_step" / "shallow.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "tables": [
-                        {
-                            "name": "vehicle_factor",
-                            "factors": ["vehicle_age_band", "cover_type"],
-                            "outputColumn": "vehicle_factor",
-                            "entries": {"1-3": 0.9},
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        with pytest.raises(ValueError, match="must be nested to match 2 factors"):
             load_node_config(path)
 
     def test_load_rejects_duplicate_rating_json_keys(self, tmp_path):
@@ -1644,10 +1522,13 @@ class TestRatingStepCompactSidecars:
       "name": "area_factor",
       "factors": ["area"],
       "outputColumn": "area_factor",
-      "entries": {
-        "London": 1.25,
-        "London": 1.1
-      }
+      "entries": [
+        {
+          "area": "London",
+          "value": 1.25,
+          "value": 1.1
+        }
+      ]
     }
   ]
 }
@@ -1655,5 +1536,5 @@ class TestRatingStepCompactSidecars:
             encoding="utf-8",
         )
 
-        with pytest.raises(ValueError, match="duplicate JSON key 'London'"):
+        with pytest.raises(ValueError, match="duplicate JSON key 'value'"):
             load_node_config(path)

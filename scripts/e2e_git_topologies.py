@@ -8,9 +8,7 @@ multi-branch history. Every history-constructing step goes through the engine �
 ``/api/pipeline/save`` route captures ledger saves through) /
 ``commit_milestone`` / ``create_working_branch`` / ``archive_working_pair`` —
 so every asserted topology is one haute itself can produce. Raw git is used
-only for reads and file edits give the saves content; the one deliberate
-out-of-band mutation is deleting a ``forks.json`` entry (via the engine's own
-``remove_fork``) to simulate a branch created in another clone.
+only for reads and file edits give the saves content.
 
 Cases:
 
@@ -18,7 +16,7 @@ Cases:
   assertions: a 7-milestone spine with version labels and pending saves, a
   crystallized fork at a pending save, forks at older milestones, two forks
   off one commit, a fork-of-fork, two branches rooted at the repo root, an
-  archived pair, and a branch with no forks.json entry.
+  archived pair, and two branches with equal fork ancestry.
 * ``deep`` — >50 milestones plus one old fork; pytest-only, for truncation.
 
 CLI (one-shot per project reset — branch names and version labels collide on a
@@ -44,7 +42,7 @@ from haute._git import (
     create_working_branch,
     set_working_branch,
 )
-from haute._git_state import read_working_branch, remove_fork
+from haute._git_state import read_working_branch
 
 # Matches scripts/run_frontend_e2e_server.py::E2E_WORKING_BRANCH — the pair the
 # harness seeds; a bare scaffold gets the same name so specs stay uniform.
@@ -139,8 +137,7 @@ def seed_rich(project_root: Path) -> SeededTopology:
     * old-idea      [A1 M1 R]               archived after its milestone
     * indie-a/-b    [I? R]                  rooted at the repo root itself
 
-    Version labels: M2 → v1.0, M5 → v2.0. twin-a's forks.json entry is removed
-    (a branch made in another clone); topology must not depend on it.
+    Version labels: M2 → v1.0, M5 → v2.0.
     """
     work = _ensure_baseline(project_root)
     crystal = _fork_name(work, "crystal")
@@ -219,12 +216,10 @@ def seed_rich(project_root: Path) -> SeededTopology:
     _save(project_root, indie_b, "i2")
     commits["I2"] = _milestone(project_root, "Indie B 1")
 
-    # Back on the main line: archive the dead pair (not current → rename only),
-    # drop twin-a's forks.json back-link (as if forked in another clone), and
-    # leave two pending saves on the current ledger.
+    # Back on the main line: archive the dead pair (not current → rename only)
+    # and leave two pending saves on the current ledger.
     _adopt(project_root, work)
     archived = archive_working_pair(old_idea, project_root, cwd=project_root).archived_as
-    remove_fork(project_root, twin_a)
     commits["P1"] = _save(project_root, work, "p1")
     commits["P2"] = _save(project_root, work, "p2")
 

@@ -27,11 +27,11 @@ def port_available() -> None:
         yield
 
 
-def test_cli_default_host_is_loopback() -> None:
+def test_cli_default_host_uses_browser_safe_localhost_authority() -> None:
     with patch("haute.cli._serve.handle_serve") as handle:
         result = CliRunner().invoke(cli, ["serve", "--no-browser"])
     assert result.exit_code == 0, result.output
-    assert handle.call_args.args[0].host == "127.0.0.1"
+    assert handle.call_args.args[0].host == "localhost"
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "127.0.0.42", "::1"])

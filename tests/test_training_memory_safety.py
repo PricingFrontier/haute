@@ -65,17 +65,15 @@ def test_prepare_data_null_target_count_uses_streaming_collect(
     def recording_streaming_collect(
         lf: pl.LazyFrame,
         *,
-        profile: ExecutionProfile | str,
-        allow_broad: bool = False,
+        execution_context: ExecutionContext | None = None,
     ) -> pl.DataFrame:
         calls.append(
             {
                 "columns": lf.collect_schema().names(),
-                "profile": profile,
-                "allow_broad": allow_broad,
+                "execution_context": execution_context,
             }
         )
-        return original(lf, profile=profile, allow_broad=allow_broad)
+        return original(lf, execution_context=execution_context)
 
     monkeypatch.setattr(training_job, "streaming_collect", recording_streaming_collect)
 
@@ -89,8 +87,7 @@ def test_prepare_data_null_target_count_uses_streaming_collect(
     assert prepared.target_null_count == 1
     assert {
         "columns": ["target"],
-        "profile": ExecutionProfile.TRAINING_PREP,
-        "allow_broad": False,
+        "execution_context": context,
     } in calls
     assert "training_target_null_count" in context.metrics_summary().stage_elapsed_ms
 
@@ -115,11 +112,10 @@ def test_group_split_mask_uses_streaming_collect_for_split_column_only(
     def recording_streaming_collect(
         lf: pl.LazyFrame,
         *,
-        profile: ExecutionProfile | str,
-        allow_broad: bool = False,
+        execution_context: ExecutionContext | None = None,
     ) -> pl.DataFrame:
         calls.append(lf.collect_schema().names())
-        return original(lf, profile=profile, allow_broad=allow_broad)
+        return original(lf, execution_context=execution_context)
 
     monkeypatch.setattr(training_job, "streaming_collect", recording_streaming_collect)
 
@@ -172,11 +168,10 @@ def test_partition_reads_use_streaming_collect_and_preserve_projection(
     def recording_streaming_collect(
         lf: pl.LazyFrame,
         *,
-        profile: ExecutionProfile | str,
-        allow_broad: bool = False,
+        execution_context: ExecutionContext | None = None,
     ) -> pl.DataFrame:
         calls.append(lf.collect_schema().names())
-        return original(lf, profile=profile, allow_broad=allow_broad)
+        return original(lf, execution_context=execution_context)
 
     monkeypatch.setattr(training_job, "streaming_collect", recording_streaming_collect)
 
@@ -594,7 +589,7 @@ def test_training_mlflow_log_receives_cancellation_checkpoint(tmp_path: Path) ->
         feature_importance=[],
         model_path=str(tmp_path / "model.cbm"),
         train_rows=1,
-        test_rows=0,
+        validation_rows=0,
         features=["x"],
         cat_features=[],
     )

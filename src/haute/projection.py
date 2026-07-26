@@ -16,7 +16,6 @@ from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from haute._cache import canonical_json
-from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import (
     build_edge_join_kwargs,
@@ -514,18 +513,6 @@ class ExecutionStrategyResult:
     def diagnostics(self) -> ProjectionDiagnostics:
         return self.projection_plan.diagnostics
 
-    def diagnostics_payload(self, *, profile: str | None = None) -> dict[str, Any]:
-        """Return V1 wire fields plus the temporary legacy detail keys.
-
-        The compatibility keys carry existing internal metrics consumers until
-        P12 migrates them; strategy decisions themselves come only from the V1
-        fields above.
-        """
-        payload = self.diagnostic.to_dict()
-        legacy = self.projection_plan.diagnostics_payload(profile=profile or self.profile)
-        payload.update(legacy)
-        return payload
-
 
 def build_execution_strategy_result(
     projection_plan: ProjectionPlan,
@@ -1005,15 +992,9 @@ def model_score_required_output_columns(
     those shapes.  When the caller has no explicit projection seed, return
     ``None``: config-level ``selected_columns`` may contain stale columns and
     is applied later with optional semantics by the executor.
-    Callers that already strip generated boilerplate should pass the sanitized
-    post-processing code so no-op scaffolding does not disable projection.
     """
     code = (
-        _strip_generated_boilerplate_from_code(
-            config.get("code") or "",
-            kind="model_score",
-            param_names=("df",),
-        )
+        str(config.get("code") or "").strip()
         if post_processing_code is None
         else post_processing_code
     )
@@ -1146,7 +1127,7 @@ def source_user_code_preserves_column_projection(code: str) -> bool:
     column values, alter the schema, or obscure the frame flow remains opaque
     and must be described with a concrete contract in strict profiles.
     """
-    stripped = _strip_generated_boilerplate_from_code(code, kind="data_source")
+    stripped = code.strip()
     if not stripped:
         return True
     try:

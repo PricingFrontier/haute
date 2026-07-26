@@ -15,7 +15,7 @@
 - **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the bare `connect("a", "b")` form used by ordinary single-output sources. Every `apiInput` edge — including one from a sole-frame source — carries its frame label as `source_port`, so the generated file always names the frame each connection delivers; a bare connect from an `apiInput` is not emitted.
 - **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], str]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
 - **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means a generated `df = <helper>(...)` line already produced `df`, so the polars finaliser must not treat the node's first parameter as a strippable alias.
-- **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per "kind" (`polars`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS` with aliases for both NodeType-style and Python-snake-style kind spellings.
+- **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per internal kind (`polars`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS`.
 - **`_FINALISERS`** (`_code_extraction.py`) — `dict[str, Callable[[str, tuple[str, ...]], str]]`, the post-processing step per kind that runs after the shared strip-docstring → dedent → skip-boilerplate → strip-trailing-return pass (e.g. `_finalise_polars` unwraps redundant `df = (...)` parens and rewrites bare `return expr` to `df = expr`).
 - **`_UserCodeParseError`** (`_code_extraction.py`) — multiple-inherits `ParseError` (Haute's error hierarchy) and `ValueError`; raised by `_parse_user_code` when extractable text isn't valid Python, chaining the original `SyntaxError`.
 
@@ -139,14 +139,6 @@ text between the parens is non-whitespace).
    `_finalise_polars` with no param names (the scaffold already bound `df`);
    otherwise run the kind's registered finaliser with the real param names.
 
-`_strip_generated_boilerplate_from_code` is the narrower guard codegen
-itself calls before re-embedding `config["code"]` into a fresh body: it only
-invokes the heavier `extract_user_code` engine when a scaffold marker
-(`score_from_config(`, `apply_rating_step_from_config(`,
-`load_external_object(`, a generated `df = <param>` alias, etc.) is actually
-present in the stored text; ordinary already-clean user code is returned
-unchanged, avoiding a full re-parse on every save for the common case.
-
 ## Edge cases and invariants
 
 - **Multi-edge into one node** (the same upstream `apiInput` feeding a node
@@ -209,11 +201,9 @@ unchanged, avoiding a full re-parse on every save for the common case.
   relocatable.
 - **External-file user imports directly after the generated load** —
   `_match_external` is position-aware: imports BEFORE the generated
-  `load_external_object(...)`/`with open(...)` call are stripped as
+  `load_external_object_from_config(...)` call are stripped as
   boilerplate, imports AFTER it (or all imports, if there was no load at
-  all) are preserved as user code. An earlier version treated every import
-  in the prefix as boilerplate regardless of position, silently dropping
-  user imports.
+  all) are preserved as user code.
 - **Model-score / rating-step boilerplate call detection** —
   `_outer_boilerplate_call_end_line` locates `score_from_config(...)` /
   `apply_rating_step_from_config(...)` via an AST walk over a
@@ -279,10 +269,6 @@ than one file per module:
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
   `_gen_data_sink`) plus `TestCodegenExecValidation`, which executes
   generated code to check that it is runnable, not just syntactically valid.
-- **`test_codegen_split.py`** — pins down the module-split refactor itself:
-  the unified registry has no dead entries, no cyclic imports, and codegen
-  output is behaviourally identical to (an implied) pre-split baseline;
-  `TestRegistryMatchesLegacyPairs` cross-checks builder pairing.
 - **`test_codegen_injection.py`** — the triple-quote / brace / paren-inside-
   string decorator-injection bug class specifically: sanitize-description
   correctness, triple-quote injection attempts, curly braces in values,
@@ -390,7 +376,7 @@ Remaining code-generation improvement work is tracked in the
   the same candidate order and enforce containment against that root, including
   when the selected pipeline is outside the process working directory.
 - The source-code extractor recognises
-  `resolve_api_input_from_config(...)` as generated load boilerplate, so a
+  `resolve_data_input_from_config(...)` as generated load boilerplate, so a
   parse/save/reload cycle does not copy that call into the user's `code` field.
 - `_gen_external_file` obtains its config path with `config_path_for_node` and
   emits `load_external_object_from_config`; `_RETAINED_EXTERNAL` does not
@@ -398,3 +384,14 @@ Remaining code-generation improvement work is tracked in the
 - The `graph_utils` facade exports both helpers. Builder tests assert the
   absence of baked data paths and execute generated functions after
   sidecar-only edits.
+
+## Approved change contract — one generated source form
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+code generation emits one current scaffold per node type and code extraction recognises that
+scaffold plus ordinary user code only. Historical generated chains, aliases, variable names, and
+multi-step loading scaffolds are not parsed or rewritten. Tests for those old generated forms are
+deleted rather than converted into special failures.
+
+Rating-step code generation emits only canonical table fields and `combined_outputs`; it neither
+reads nor writes retired table labels or singular combined-output arguments.

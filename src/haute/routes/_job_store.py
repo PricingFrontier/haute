@@ -106,9 +106,9 @@ class JobStore:
     def _job_eviction_timestamp_locked(self, job_id: str, job: dict[str, Any]) -> float:
         """Return the timestamp used for metadata TTL eviction."""
         if job.get("status") == "running":
-            return self._running_activity_at.get(job_id, float(job.get("created_at", 0)))
+            return self._running_activity_at.get(job_id, float(job["created_at"]))
         self._running_activity_at.pop(job_id, None)
-        return float(job.get("created_at", 0))
+        return float(job["created_at"])
 
     def _remove_job_locked(self, job_id: str) -> None:
         job = self._jobs.pop(job_id, None)
@@ -121,14 +121,10 @@ class JobStore:
     @staticmethod
     def _cleanup_artifact_handles(job_id: str, job: dict[str, Any]) -> None:
         """Remove persisted artifact files when the owning job expires."""
-        handles = job.get("artifact_handles")
-        if not isinstance(handles, dict):
-            return
+        handles = job.get("artifact_handles", {})
         for handle in handles.values():
-            if not isinstance(handle, dict):
-                continue
-            kind = handle.get("kind")
-            cleaner = _ARTIFACT_CLEANERS.get(kind) if isinstance(kind, str) else None
+            kind = handle["kind"]
+            cleaner = _ARTIFACT_CLEANERS.get(kind)
             if cleaner is None:
                 logger.warning(
                     "job_artifact_cleanup_unknown_handle_kind",
@@ -204,8 +200,7 @@ class JobStore:
         expires_at = job.get(_HEAVY_OBJECT_EXPIRES_AT_KEY)
         if expires_at is not None:
             return float(expires_at)
-        completed_at = job.get("completed_at", job.get("created_at", 0.0))
-        return float(completed_at) + self._heavy_object_ttl_seconds
+        return float(job["completed_at"]) + self._heavy_object_ttl_seconds
 
     def _prepare_heavy_object_policy_locked(
         self,
@@ -321,7 +316,7 @@ class JobStore:
                 return False
 
             now = time.time()
-            metadata_expires_at = float(job.get("created_at", now)) + self._ttl_seconds
+            metadata_expires_at = float(job["created_at"]) + self._ttl_seconds
             refreshed_expires_at = min(now + self._heavy_object_ttl_seconds, metadata_expires_at)
             current_expires_at = self._heavy_objects_expires_at(job)
             if refreshed_expires_at <= current_expires_at:

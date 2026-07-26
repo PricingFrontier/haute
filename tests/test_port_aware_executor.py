@@ -6,8 +6,8 @@ These tests cover the live pieces that keep multi-port data flow explicit:
    Pydantic ingest. Null means "no port specified"; empty string is an
    invalid serialisation that surfaces immediately.
 
-2. ``PreparedGraph.relevant_edges`` and ``_prepare_graph_with_edges``
-   expose the post-pruning, ancestor-filtered edge list. The executor
+2. ``PreparedGraph.relevant_edges`` exposes the post-pruning,
+   ancestor-filtered edge list. The executor
    uses this to look up per-edge ``sourceHandle`` when picking frames
    from multi-port sources.
 
@@ -29,11 +29,10 @@ from pydantic import ValidationError
 from haute._execute_lazy import (
     _build_funcs,
     _execute_eager_core,
-    _prepare_graph,
-    _prepare_graph_with_edges,
 )
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import ConfigError
+from haute.projection import prepare_graph
 
 # 1. Pydantic validator rejects "" handles
 
@@ -59,7 +58,7 @@ def test_edge_rejects_empty_target_handle() -> None:
         GraphEdge(id="e", source="a", target="b", targetHandle="")
 
 
-# 2. PreparedGraph.relevant_edges + _prepare_graph_with_edges
+# 2. PreparedGraph.relevant_edges
 
 
 def _simple_polars_graph() -> PipelineGraph:
@@ -86,21 +85,17 @@ def _simple_polars_graph() -> PipelineGraph:
     )
 
 
-def test_prepare_graph_with_edges_exposes_relevant_edges() -> None:
+def test_prepare_graph_exposes_relevant_edges() -> None:
     g = _simple_polars_graph()
-    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(g)
-    assert [e.source for e in relevant_edges] == ["src"]
-    assert [e.target for e in relevant_edges] == ["tfm"]
-    # Backward-compat helper still returns the 4-tuple it always did.
-    legacy = _prepare_graph(g)
-    assert len(legacy) == 4
-    assert legacy[2] == parents_of
-    assert node_map["src"].data.label == "src"
-    assert order == ["src", "tfm"]
-    assert id_to_name["tfm"] == "tfm"
+    prepared = prepare_graph(g)
+    assert [e.source for e in prepared.relevant_edges] == ["src"]
+    assert [e.target for e in prepared.relevant_edges] == ["tfm"]
+    assert prepared.node_map["src"].data.label == "src"
+    assert prepared.order == ["src", "tfm"]
+    assert prepared.id_to_name["tfm"] == "tfm"
 
 
-def test_prepare_graph_with_edges_prunes_live_switch_inactive_edges() -> None:
+def test_prepare_graph_prunes_live_switch_inactive_edges() -> None:
     """Only the active source's edge survives in ``relevant_edges``."""
     g = PipelineGraph(
         nodes=[
@@ -136,11 +131,11 @@ def test_prepare_graph_with_edges_prunes_live_switch_inactive_edges() -> None:
         sources=["live", "nb_batch"],
         active_source="live",
     )
-    _, _, parents_of, _, relevant_edges = _prepare_graph_with_edges(g, source="live")
-    edges_into_sw = [e for e in relevant_edges if e.target == "sw"]
+    prepared = prepare_graph(g, source="live")
+    edges_into_sw = [e for e in prepared.relevant_edges if e.target == "sw"]
     assert len(edges_into_sw) == 1
     assert edges_into_sw[0].source == "live"
-    assert parents_of.get("sw") == ["live"]
+    assert prepared.parents_of.get("sw") == ["live"]
 
 
 def test_dead_build_input_kwargs_api_is_absent() -> None:
@@ -228,18 +223,23 @@ def _build_graph_funcs(
     graph: PipelineGraph,
     build_node_fn: Callable[..., tuple[str, Callable[..., Any], bool]],
 ) -> None:
-    node_map, order, parents_of, id_to_name, relevant_edges = _prepare_graph_with_edges(graph)
+    prepared = prepare_graph(graph)
+    node_map = prepared.node_map
+    order = prepared.order
+    id_to_name = prepared.id_to_name
+    relevant_edges = prepared.relevant_edges
     incoming: dict[str, list[GraphEdge]] = {}
     for edge in relevant_edges:
         incoming.setdefault(edge.target, []).append(edge)
     _build_funcs(
         order,
         node_map,
-        parents_of,
         id_to_name,
         graph.parents_of,
         build_node_fn,
         incoming_edges_by_target=incoming,
+        all_incoming_edges_by_target=incoming,
+        all_node_map=graph.node_map,
     )
 
 

@@ -5,7 +5,7 @@
   "feature_importance": [],
   "model_path": "",
   "train_rows": 0,
-  "test_rows": 0,
+  "validation_rows": 0,
   "holdout_rows": 0,
   "holdout_metrics": {},
   "diagnostics_set": "validation",

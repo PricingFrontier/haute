@@ -19,10 +19,8 @@ import type {
   ExploreRunResponse,
   ExploreStatusResponse,
   FileListItem,
-  FrontierAutoRangeResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
-  FrontierResponse,
   FrontierSelectResponse,
   FrontierStatusResponse,
   GitArchiveResponse,
@@ -94,10 +92,8 @@ import {
   parseDissolveSubmodelResponse,
   parseExploreRunResponse,
   parseExploreStatusResponse,
-  parseFrontierAutoRangeResponse,
   parseFrontierAutoRangeStartResponse,
   parseFrontierAutoRangeStatusResponse,
-  parseFrontierResponse,
   parseFrontierStatusResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
@@ -570,9 +566,8 @@ export interface PreviewNodeArgs {
   source?: string
   requestedPreviewColumns?: string[]
   /** Frame/emit-table label to preview for a multi-frame producer (a
-   * multi-table apiInput). Omitted = first frame (the legacy default). Sent
-   * as `port_label`; part of the backend preview cache key, so each frame is
-   * a distinct cache entry. */
+   * multi-table apiInput). Sent as `port_label`; part of the backend preview
+   * cache key, so each frame is a distinct cache entry. */
   portLabel?: string
   streamingChunkSize?: number
   signal?: AbortSignal
@@ -1035,63 +1030,6 @@ export function getFrontierStatus(
   ).then(parseFrontierStatusResponse)
 }
 
-const FRONTIER_POLL_INTERVAL_MS = 500
-
-/**
- * Start a frontier sweep and poll its background job until it finishes.
- *
- * The backend runs the sweep off the request thread and returns a job
- * handle immediately; this wrapper preserves the old promise contract by
- * resolving with the final frontier payload (or rejecting on job failure).
- */
-export async function runFrontier(
-  payload: { job_id: string; threshold_ranges: Record<string, [number, number]>; n_points_per_dim?: number },
-  options?: { signal?: AbortSignal },
-): Promise<FrontierResponse> {
-  const started = await post<unknown>("/api/optimiser/frontier", payload, { timeout: 120_000, ...options })
-    .then((data) => parseFrontierResponse(data))
-  if (started.status !== "started" || !started.job_id) return started
-  for (;;) {
-    const status = await getFrontierStatus(started.job_id, options)
-    if (status.status === "completed") {
-      if (!status.result) {
-        throw new ApiError("Frontier job completed without a result", 500, status.message)
-      }
-      return status.result
-    }
-    if (status.status !== "running") {
-      throw new ApiError(
-        status.message || "Frontier computation failed",
-        status.http_status_code ?? 500,
-        status.message,
-      )
-    }
-    if (options?.signal?.aborted) {
-      throw new DOMException("Frontier polling aborted", "AbortError")
-    }
-    await new Promise((resolve) => setTimeout(resolve, FRONTIER_POLL_INTERVAL_MS))
-  }
-}
-
-export interface EstimateOptimiserFrontierAutoRangeArgs {
-  graph: GraphPayload
-  node_id: string
-  streamingChunkSize?: number
-  signal?: AbortSignal
-  timeout?: number
-}
-
-export function estimateOptimiserFrontierAutoRange(
-  args: EstimateOptimiserFrontierAutoRangeArgs,
-): Promise<FrontierAutoRangeResponse> {
-  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
-  const body = streamingChunkSize !== undefined
-    ? { ...payload, streaming_chunk_size: streamingChunkSize }
-    : payload
-  return post<unknown>("/api/optimiser/frontier/auto-range", body, { signal, timeout })
-    .then(parseFrontierAutoRangeResponse)
-}
-
 export interface StartOptimiserFrontierAutoRangeArgs {
   graph: GraphPayload
   node_id: string
@@ -1183,13 +1121,6 @@ export function buildJsonCache(
   options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<JsonCacheBuildResponse> {
   return post<unknown>("/api/json-cache/build", payload, { timeout: 1_800_000, ...options }).then(parseJsonCacheBuildResponse)
-}
-
-export function cancelJsonCache(
-  path: string,
-  options?: { signal?: AbortSignal },
-): Promise<{ cancelled: boolean; data_path: string }> {
-  return post("/api/json-cache/cancel", { path }, options)
 }
 
 export function getJsonCacheProgress(

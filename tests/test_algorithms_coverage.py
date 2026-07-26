@@ -1197,7 +1197,7 @@ class TestLogToMlflowCoverage:
             feature_importance=[{"feature": "x1", "importance": 1.0}],
             model_path=str(tmp_path / "model.cbm"),
             train_rows=100,
-            test_rows=20,
+            validation_rows=20,
             features=["x1"],
             cat_features=[],
             holdout_rows=0,
@@ -1290,7 +1290,7 @@ class TestSplitDataCoverage:
         )
         result = job.run()
         assert result.train_rows == 2
-        assert result.test_rows == 2
+        assert result.validation_rows == 2
 
     def test_split_data_with_holdout(self, tmp_path):
         """Split with holdout creates three partitions."""
@@ -1314,7 +1314,7 @@ class TestSplitDataCoverage:
         )
         result = job.run()
         assert result.holdout_rows == 10
-        assert result.test_rows == 20
+        assert result.validation_rows == 20
         assert result.train_rows == 70
 
     def test_split_no_validation(self, tmp_path):
@@ -1334,7 +1334,7 @@ class TestSplitDataCoverage:
         )
         result = job.run()
         assert result.train_rows == n
-        assert result.test_rows == 0
+        assert result.validation_rows == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1805,7 +1805,7 @@ class TestLogToMlflowFull:
             feature_importance=[],
             model_path=str(tmp_path / "model.cbm"),
             train_rows=100,
-            test_rows=20,
+            validation_rows=20,
             features=["x1"],
             cat_features=[],
             holdout_rows=10,
@@ -1954,7 +1954,7 @@ class TestGLMFullTrainingJob:
         result = job.run()
 
         assert result.train_rows > 0
-        assert result.test_rows >= 0
+        assert result.validation_rows >= 0
         assert len(result.features) == 2
         assert "gini" in result.metrics or "rmse" in result.metrics
 
@@ -2148,7 +2148,7 @@ class TestSplitConfigFromSplitConfig:
         )
         assert job.split_config is sc
         result = job.run()
-        assert result.test_rows == 15
+        assert result.validation_rows == 15
 
 
 # ---------------------------------------------------------------------------

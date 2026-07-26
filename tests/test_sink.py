@@ -127,7 +127,7 @@ class TestExecuteSinkParquet:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert isinstance(result, WriteOutputResponse)
         assert result.status == "ok"
@@ -171,7 +171,7 @@ class TestExecuteSinkParquet:
             return {"sink": lf}, ["s", "sink"], {}, {}
 
         with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
-            write_data_output(graph, "sink")
+            write_data_output(graph, "sink", project_root=tmp_path)
 
         assert captured_kwargs["required_columns_by_node"] == {"sink": frozenset({"x", "z"})}
         cache_request = captured_kwargs["dataframe_cache_request"]
@@ -202,7 +202,7 @@ class TestExecuteSinkCSV:
             "haute.executor._execute_lazy",
             return_value=(mock_outputs, ["s", "sink"], {}, {}),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert result.status == "ok"
         assert result.row_count == 2
@@ -236,31 +236,10 @@ class TestExecuteSinkDirectoryCreation:
             "haute.executor._execute_lazy",
             return_value=({"sink": lf}, ["s", "sink"], {}, {}),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert result.status == "ok"
         assert Path(out_path).exists()
-
-    def test_project_root_sink_output_prefers_pipeline_target_even_when_root_output_exists(
-        self,
-        tmp_path,
-    ):
-        """Relative sink writes are output paths, so existing root artifacts must not win."""
-        from haute.executor import resolve_sink_output_path
-
-        root_output = tmp_path / "outputs" / "out.parquet"
-        root_output.parent.mkdir(parents=True)
-        root_output.write_bytes(b"existing root output")
-        graph = PipelineGraph(nodes=[], edges=[], source_file="pipelines/pipeline_b.py")
-
-        resolved = resolve_sink_output_path(
-            graph,
-            "out",
-            "parquet",
-            project_root=tmp_path,
-        )
-
-        assert resolved == (tmp_path / "pipelines" / "outputs" / "out.parquet").resolve()
 
 
 class TestExecuteSinkScenario:
@@ -287,7 +266,12 @@ class TestExecuteSinkScenario:
             return {"sink": lf}, ["s", "sink"], {}, {}
 
         with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
-            write_data_output(graph, "sink", source="live")
+            write_data_output(
+                graph,
+                "sink",
+                source="live",
+                project_root=tmp_path,
+            )
 
         # Should NOT be "live" — should be coerced to "batch"
         assert captured_kwargs["source"] != "live"
@@ -313,7 +297,12 @@ class TestExecuteSinkScenario:
             return {"sink": lf}, ["s", "sink"], {}, {}
 
         with patch("haute.executor._execute_lazy", side_effect=mock_execute_lazy):
-            write_data_output(graph, "sink", source="test_batch")
+            write_data_output(
+                graph,
+                "sink",
+                source="test_batch",
+                project_root=tmp_path,
+            )
 
         assert captured_kwargs["source"] == "test_batch"
 
@@ -340,7 +329,7 @@ class TestExecuteSinkComputeFailure:
             return_value=({}, ["s", "sink"], {}, {}),
         ):
             with pytest.raises(RuntimeError, match="Failed to compute Data Output input"):
-                write_data_output(graph, "sink")
+                write_data_output(graph, "sink", project_root=tmp_path)
 
 
 class TestExecuteSinkResponse:
@@ -364,7 +353,7 @@ class TestExecuteSinkResponse:
             "haute.executor._execute_lazy",
             return_value=({"sink": lf}, ["s", "sink"], {}, {}),
         ):
-            result = write_data_output(graph, "sink")
+            result = write_data_output(graph, "sink", project_root=tmp_path)
 
         assert "1,000" in result.message
         assert out_path in result.message

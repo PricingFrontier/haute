@@ -7,7 +7,7 @@ import useNodeResultsStore, {
   MAX_CACHED_TRAIN_RESULTS,
   type TrainResult,
 } from "../../stores/useNodeResultsStore"
-import type { SolveResult } from "../../panels/OptimiserPreview"
+import type { OptimiserSolveResult } from "../../api/types"
 
 function resetStore() {
   useNodeResultsStore.setState({
@@ -21,7 +21,9 @@ function resetStore() {
   })
 }
 
-function makeSolveResult(overrides: Partial<SolveResult> = {}): SolveResult {
+function makeSolveResult(
+  overrides: Partial<OptimiserSolveResult> = {},
+): OptimiserSolveResult {
   return {
     total_objective: 100,
     baseline_objective: 80,
@@ -40,7 +42,7 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
     feature_importance: [{ feature: "x", importance: 0.9 }],
     model_path: "/tmp/model.pkl",
     train_rows: 1000,
-    test_rows: 200,
+    validation_rows: 200,
     ...overrides,
   }
 }

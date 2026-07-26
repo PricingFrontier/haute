@@ -86,7 +86,7 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
     ],
     model_path: "/models/glm_model.rsglm",
     train_rows: 8000,
-    test_rows: 2000,
+    validation_rows: 2000,
     ...overrides,
   }
 }

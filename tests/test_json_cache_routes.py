@@ -1,9 +1,4 @@
-"""API integration tests for JSON cache endpoints (routes/json_cache.py).
-
-The route is v2-only (per-port shred). v1 symbols (build_json_cache,
-json_cache_info, read_json_flat, _json_cache_path, JsonCacheCancelledError,
-flatten_progress, cancel_json_cache) were removed with the v1 codec. Tests
-that exercised v1-only behaviour have been deleted.
+"""API integration tests for per-port JSON cache endpoints.
 
 Covers:
   - POST /api/json-cache/build: 422 without schema source, 404 missing file,
@@ -13,8 +8,6 @@ Covers:
   - GET /api/json-cache/status: missing-path 422
   - POST /api/json-cache/status: 422 without schema source
   - DELETE /api/json-cache: success (clear_json_cache called), missing-path 422
-  - POST /api/json-cache/cancel: always returns cancelled=False (v2 stub),
-    missing-path 422
 """
 
 from __future__ import annotations
@@ -88,9 +81,16 @@ class TestBuildJsonCache:
             "tables": [
                 {
                     "label": "root",
-                    "path": "$",
+                    "path": "$[:]",
                     "emit": True,
-                    "columns": [{"name": "a", "path": "$.a", "type": "int", "selected": True}],
+                    "columns": [
+                        {
+                            "name": "a",
+                            "path": "$[:].a",
+                            "type": "int",
+                            "selected": True,
+                        }
+                    ],
                 }
             ]
         }
@@ -132,9 +132,16 @@ class TestBuildJsonCache:
             "tables": [
                 {
                     "label": "root",
-                    "path": "$",
+                    "path": "$[:]",
                     "emit": True,
-                    "columns": [{"name": "a", "path": "$.a", "type": "int", "selected": True}],
+                    "columns": [
+                        {
+                            "name": "a",
+                            "path": "$[:].a",
+                            "type": "int",
+                            "selected": True,
+                        }
+                    ],
                 }
             ]
         }
@@ -440,25 +447,6 @@ class TestDeleteJsonCache:
         assert resp.status_code == 422
 
 
-# ---------------------------------------------------------------------------
-# POST /api/json-cache/cancel
-# ---------------------------------------------------------------------------
-
-
-class TestCancelJsonCache:
-    def test_cancel_always_returns_false(self, client: TestClient) -> None:
-        """v2 cancel endpoint is a stub that always returns cancelled=False."""
-        resp = client.post("/api/json-cache/cancel", json={"path": "data.jsonl"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["cancelled"] is False
-        assert data["data_path"] == "data.jsonl"
-
-    def test_cancel_missing_path_returns_422(self, client: TestClient) -> None:
-        resp = client.post("/api/json-cache/cancel", json={})
-        assert resp.status_code == 422
-
-
 class TestStatusPathValidatesSchema:
     """F053: the status/validity path must enforce the SAME v2 invariants
     as ``build_per_port_cache`` (which runs ``validate_v2_schema`` first).
@@ -632,3 +620,22 @@ class TestBuildStatusAggregateEquality:
         #   build carries cache_seconds; status carries cached=True.
         assert build_resp.cache_seconds == 0.1
         assert status_resp.cached is True
+
+    def test_aggregate_uses_only_canonical_metadata_columns(self, tmp_path: Path) -> None:
+        """Aggregate responses derive columns only from canonical metadata."""
+        from haute.routes.json_cache import _aggregate_v2_tables
+
+        (tmp_path / "root.parquet").write_bytes(b"not a parquet file")
+        _rows, _count, columns, _size, _cached_at = _aggregate_v2_tables(
+            tmp_path,
+            [
+                {
+                    "label": "root",
+                    "parquet": "root.parquet",
+                    "row_count": 1,
+                    "column_count": 1,
+                }
+            ],
+        )
+
+        assert columns == {}

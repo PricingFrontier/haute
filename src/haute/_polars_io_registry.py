@@ -765,7 +765,7 @@ def write_polars_output(
 
     try:
         if fmt.source_kind == "database":
-            df = streaming_collect(lf, profile=profile)
+            df = streaming_collect(lf)
             rows = df.write_database(target["table"], connection=target["uri"], **arguments)
             return int(rows) if isinstance(rows, int) else df.height
 
@@ -776,7 +776,7 @@ def write_polars_output(
         if mode == "sink":
             getattr(lf, callable_name)(resolved_path, **arguments)
             return None
-        df = streaming_collect(lf, profile=profile)
+        df = streaming_collect(lf)
         getattr(df, callable_name)(resolved_path, **arguments)
         return df.height
     except (ImportError, ModuleNotFoundError) as exc:
@@ -986,8 +986,8 @@ def registry_capabilities() -> dict[str, Any]:
             "arguments": input_arguments,
             # Database Data Input is acquired by the bounded provider adapter
             # rather than Polars' eager read_database_uri callable. Its engine
-            # requirements therefore belong to that adapter, not this legacy
-            # Polars format metadata.
+            # requirements therefore belong to that adapter, not the Polars
+            # format metadata.
             "engines_missing": (
                 []
                 if fmt.source_kind == "database"

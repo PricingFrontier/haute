@@ -924,7 +924,7 @@ class TestStripDocstringMixedQuotes:
     """
 
     def test_mixed_quote_docstring_fully_stripped(self):
-        from haute._parser_helpers import _strip_docstring
+        from haute._ast_helpers import _strip_docstring
 
         lines = [
             "    \"\"\"It's a '''test'''\"\"\"",
@@ -937,7 +937,7 @@ class TestStripDocstringMixedQuotes:
         """_strip_docstring now tracks opening_quote style, so inner ''' no longer
         causes early termination of a \"\"\" docstring.
         """
-        from haute._parser_helpers import _strip_docstring
+        from haute._ast_helpers import _strip_docstring
 
         lines = [
             '    """',

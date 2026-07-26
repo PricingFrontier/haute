@@ -300,7 +300,7 @@ describe("useBackgroundJobs", () => {
         feature_importance: [],
         model_path: "/m.pkl",
         train_rows: 100,
-        test_rows: 20,
+        validation_rows: 20,
       }
       mockGetStatus.mockResolvedValueOnce(
         makeTrainProgress({ status: "completed", progress: 1.0, result: trainResult }),

@@ -5,7 +5,6 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/parser.py` | Public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates the AST-vs-regex-fallback branch, pipeline metadata/node/edge extraction, submodel resolution + merge, graph-shape validation, and warning aggregation for a whole pipeline `.py` file. |
-| `src/haute/_parser_helpers.py` | Pure re-export facade. Aggregates `src/haute/_ast_helpers.py` and `src/haute/_code_extraction.py` from [codegen](../codegen/low-level.md), plus `src/haute/_config_builder.py` and `src/haute/_graph_builders.py` from [pipeline-config](../pipeline-config/low-level.md), behind one import surface. Contains **no logic of its own** — every name in its `__all__` is imported, not defined, here. Neither `src/haute/parser.py` nor `src/haute/_parser_regex.py` imports the facade; its consumers are tests that retain it as a stable import/patch target. |
 | `src/haute/_parser_conservation.py` | Shared fail-loud acceptance gate for both parser paths. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_regex.py` | `fallback_parse` and its helpers: a regex-anchored + AST-fragment recovery parser used when `ast.parse` fails on the whole file. Locates `@pipeline.<type>` decorator blocks, `pipeline.connect()`/`pipeline.submodel()` call sites, and pipeline metadata textually, then re-parses each recovered fragment with real `ast` wherever possible. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_calls` / `parse_submodel_source` / `merge_submodels`: resolves `pipeline.submodel("path")` references, parses each referenced submodel file into its own `PipelineGraph`, and merges child graphs into the parent (hierarchical placeholder or flattened). |
@@ -47,7 +46,7 @@
 **`parse_pipeline_source`** (`parser.py`): `ast.parse(source)` → on `SyntaxError`, delegate the
 *whole file* to `_fallback_parse` (in `src/haute/_parser_regex.py`) and return its result directly
 → else extract pipeline meta / decorated nodes / connect edges / preamble / preserved blocks by
-importing their implementation modules directly (not through the `_parser_helpers` facade) →
+importing their implementation modules directly →
 collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
 `pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
 raise with every unresolved authored path), resolve + parse each submodel file, reject repeated

@@ -147,17 +147,11 @@ def _load_toml_server_host(project_dir: Path) -> str | None:
 
 @dataclass
 class ServeConfig:
-    """Parsed inputs for the ``haute serve`` command.
-
-    ``host`` defaults to ``127.0.0.1`` so every non-CLI caller
-    (programmatic tests, future alternative frontends) inherits the
-    same safe default as the Click wrapper — there is no path through
-    which an uninitialised ``ServeConfig`` binds to the wider network.
-    """
+    """Parsed inputs for the ``haute serve`` command."""
 
     port: int
     no_browser: bool
-    host: str = "127.0.0.1"
+    host: str = "localhost"
 
 
 def _socket_family_for_host(host: str) -> socket.AddressFamily:
@@ -539,7 +533,7 @@ def handle_serve(config: ServeConfig) -> None:
     default=None,
     help=(
         "Host to bind to. Defaults to ``haute.toml``'s ``[server] host`` "
-        "if set, otherwise 127.0.0.1. Only loopback hosts are accepted."
+        "if set, otherwise localhost. Only loopback hosts are accepted."
     ),
 )
 @click.option("--port", default=8000, type=int, help="Backend API port.")
@@ -552,11 +546,11 @@ def serve(host: str | None, port: int, no_browser: bool) -> None:
     1. ``--host`` passed on the CLI.
     2. ``[server] host = "..."`` in ``haute.toml`` at the current
        working directory.
-    3. ``127.0.0.1`` (loopback-only default).
+    3. ``localhost`` (loopback-only default).
 
     Whichever source wins, non-loopback values are rejected before startup.
     """
     if host is None:
-        host = _load_toml_server_host(Path.cwd()) or "127.0.0.1"
+        host = _load_toml_server_host(Path.cwd()) or "localhost"
     config = ServeConfig(host=host, port=port, no_browser=no_browser)
     handle_serve(config)

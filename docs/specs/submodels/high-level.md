@@ -21,9 +21,8 @@ In scope:
 - Building a submodel placeholder node, classifying its input/output ports
   from cross-boundary edges, and rewiring those edges to/from the placeholder
   (`src/haute/_submodel_graph.py`).
-- Resolving a submodel's `.py` file on disk, matching the same
-  pipeline-local-first / project-root-fallback preference the parser itself
-  uses (`src/haute/_submodel_paths.py`).
+- Resolving a submodel's `.py` file relative to the active pipeline directory,
+  using the same convention as the parser (`src/haute/_submodel_paths.py`).
 - The pure, I/O-free graph transform that extracts selected nodes out of a
   `PipelineGraph` into a new submodel (`src/haute/routes/_submodel_ops.py`).
 - Flattening one named submodel or every submodel into a flat execution graph, including boundary
@@ -133,9 +132,8 @@ Out of scope (owned elsewhere, linked where relevant):
   invariants could drift out of sync.
 - **Submodel path resolution deliberately mirrors the parser's own module
   lookup**, rather than inventing a second convention: `modules/<name>.py` is
-  preferred relative to the active pipeline's directory (for configured
-  nested projects), falling back to the project root for legacy single-file
-  projects. If drill-down (`GET /api/submodel/{name}`) resolved a different
+  resolved relative to the active pipeline's directory. If drill-down
+  (`GET /api/submodel/{name}`) resolved a different
   file than the parser would load for the same reference, the GUI and the
   actually-executed pipeline would show different things.
 - **Nesting is disallowed by construction, not by convention.** Rejecting any

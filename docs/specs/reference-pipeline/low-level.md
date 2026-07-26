@@ -7,7 +7,6 @@
 | `rating/main.haute.json` | Stores the main pipeline canvas positions, available source list, and active source selection. |
 | `rating/main.py` | Generated `my_pipeline` graph: v2 JSON API input, output node, and four named port connections. |
 | `rating/config/quote_input/quotes.json` | V2 API-input sidecar defining emitted quotes/drivers/vehicles/licenses tables, JSONPath columns, inferred statuses, and opaque contract. |
-| `rating/config/quote_response/Quote_Response_7.json` | Older/minimal response sidecar containing an empty `fields` list. |
 | `rating/config/quote_response/Quote_Response_9.json` | Output sidecar defining JSON output mappings for columns from each input port and an empty input/output contract declaration. |
 | `rating/modules/model_stuff.py` | Generated `model_stuff` submodel with Polars transforms, a scenario-expander transform, and its internal graph connections. |
 | `rating/utility/__init__.py` | Marks the project utility package and supplies its module documentation. |

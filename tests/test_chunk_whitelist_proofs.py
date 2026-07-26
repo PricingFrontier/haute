@@ -117,7 +117,7 @@ def _xform_graph(
 # across chunks. That deliberate, chunk-size-sensitive transform would make
 # chunked != full for reasons unrelated to the construct being proven. Comparing
 # the ``xform`` frame proves exactly the row-locality property this module exists
-# to defend. (Retargeted from ``out`` during the v1->v2 OUTPUT-config migration.)
+# to defend.
 def _chunk_plan(graph, *, chunk_size: int):
     return chunk_plan(ChunkPlanRequest(graph=graph, target_node_id="xform", chunk_size=chunk_size))
 

@@ -93,8 +93,7 @@ const TARGET_FILES = [
 ] as const
 
 // Strip block and line comments from a TS/TSX blob before scanning for
-// the forbidden pattern. Matches the approach in
-// `frontend/src/__tests__/components/configInputRemoval.test.ts`.
+// the forbidden pattern.
 function stripComments(src: string): string {
   let out = src.replace(/\/\*[\s\S]*?\*\//g, "")
   out = out.replace(/\/\/[^\n]*/g, "")

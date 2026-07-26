@@ -24,7 +24,7 @@
     ],
     "model_path": "outputs/model.cbm",
     "train_rows": 100,
-    "test_rows": 25,
+    "validation_rows": 25,
     "holdout_rows": 10,
     "holdout_metrics": {
       "rmse": 0.2

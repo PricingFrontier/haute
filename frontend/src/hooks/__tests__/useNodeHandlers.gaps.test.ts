@@ -82,27 +82,6 @@ describe("useNodeHandlers — handleRenameNode", () => {
     expect(dialog).toBeNull()
   })
 
-  it("coerces non-string label to string via String()", () => {
-    // Catches: if node.data.label is a number (e.g. from a legacy
-    // pipeline), String() coercion prevents passing a raw number
-    // to the rename dialog's text input.
-    const params = makeParams()
-    const n1 = makeNode("n1", "polars", { data: { label: 42 as unknown as string, nodeType: "polars", config: {} } })
-    params.graphRef.current = { nodes: [n1], edges: [] }
-
-    const { result } = renderHook(() => useNodeHandlers(params))
-
-    act(() => {
-      result.current.handleRenameNode("n1")
-    })
-
-    const dialog = useUIStore.getState().renameDialog
-    expect(dialog).toEqual({
-      nodeId: "n1",
-      currentLabel: "42",
-    })
-  })
-
   it("handleDeleteNode clears lastSelectedNodeRef when deleting the selected node", () => {
     // Catches: stale lastSelectedNodeRef causes the next node-click to
     // skip selection because the ref still points to the deleted node.

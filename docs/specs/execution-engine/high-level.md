@@ -468,8 +468,8 @@ the contract already holds; they do not justify a second planner or execution pa
   resolved-node contract result. Contract-resolution strictness is independent of projection and
   materialisation policy: every profiled production execution fails before node work with one
   typed `contract_resolution_failed` error when a builder contract cannot be resolved, including
-  both deploy-live and deploy-batch. Interactive preview and context-less low-level compatibility
-  calls may retain explicitly diagnosed opaque degradation. A broken preamble remains node-local
+  both deploy-live and deploy-batch. Only interactive preview may retain explicitly diagnosed
+  opaque degradation; unprofiled low-level calls are strict. A broken preamble remains node-local
   only for interactive preview; every non-preview profile propagates the typed
   `preamble_failed` failure before materialisation.
 - **Partitioned Parquet remains a lazy source boundary.** A direct Parquet data input may identify

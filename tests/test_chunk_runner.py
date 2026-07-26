@@ -686,8 +686,8 @@ def test_chunk_runner_reuses_model_score_model_across_chunks(tmp_path: Path) -> 
     scoring_model = ScoringModel(object(), ["feature"])
     scored_chunk_sizes: list[int] = []
 
-    def fake_score_eager(scoring_model, lf, features, output_col, task):
-        del scoring_model, features, task
+    def fake_score_eager(scoring_model, lf, features, output_col, task, offset_column=None):
+        del scoring_model, features, task, offset_column
         scored_chunk_sizes.append(lf.select(pl.len()).collect().item())
         return lf.with_columns((pl.col("feature") * 10).alias(output_col))
 

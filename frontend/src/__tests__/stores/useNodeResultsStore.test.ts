@@ -13,7 +13,7 @@ import useNodeResultsStore, {
 } from "../../stores/useNodeResultsStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
-import type { SolveResult } from "../../panels/OptimiserPreview.tsx"
+import type { OptimiserSolveResult } from "../../api/types.ts"
 import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
 import type { ExploreCacheReport } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
@@ -55,7 +55,9 @@ function makePreviewData(overrides: Partial<PreviewData> = {}): PreviewData {
   }
 }
 
-function makeSolveResult(overrides: Partial<SolveResult> = {}): SolveResult {
+function makeSolveResult(
+  overrides: Partial<OptimiserSolveResult> = {},
+): OptimiserSolveResult {
   return {
     total_objective: 100,
     baseline_objective: 80,
@@ -74,7 +76,7 @@ function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
     feature_importance: [{ feature: "x", importance: 0.9 }],
     model_path: "/tmp/model.pkl",
     train_rows: 1000,
-    test_rows: 200,
+    validation_rows: 200,
     ...overrides,
   }
 }
@@ -576,7 +578,7 @@ describe("useNodeResultsStore", () => {
       )
     })
 
-    it("does not collide for the known legacy DJB2 collision", () => {
+    it("does not collide for a known DJB2 collision", () => {
       expect(hashConfig({ value: "10ry7jgv0xesb" })).not.toBe(
         hashConfig({ value: "n2mwwma6ztkt" }),
       )

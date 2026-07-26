@@ -743,19 +743,23 @@ class TestConfigRoundtrip:
         rating_config = {
             "tables": [
                 {
-                    "name": "age_table",
                     "factors": ["age_band"],
                     "outputColumn": "age_factor",
                     "entries": [
-                        {"age_band": "young", "age_factor": 1.5},
-                        {"age_band": "middle", "age_factor": 1.0},
-                        {"age_band": "senior", "age_factor": 1.2},
+                        {"age_band": "young", "value": 1.5},
+                        {"age_band": "middle", "value": 1.0},
+                        {"age_band": "senior", "value": 1.2},
                     ],
                     "defaultValue": "1.0",
                 }
             ],
-            "operation": "multiply",
-            "combinedColumn": "total_factor",
+            "combinedOutputs": [
+                {
+                    "outputColumn": "total_factor",
+                    "operation": "multiply",
+                    "baseValue": 1,
+                }
+            ],
         }
         nodes = [
             _make_node("ds", "ds", NodeType.DATA_INPUT, make_file_input_config("data.parquet")),
@@ -774,9 +778,10 @@ class TestConfigRoundtrip:
         assert len(rt_node) == 1
         tables = rt_node[0].data.config.get("tables", [])
         assert len(tables) == 1
-        assert tables[0]["name"] == "age_table"
+        assert tables[0]["outputColumn"] == "age_factor"
         entries = tables[0].get("entries", [])
         assert len(entries) == 3
+        assert rt_node[0].data.config["combinedOutputs"] == rating_config["combinedOutputs"]
 
     def test_model_score_config_roundtrip(self, tmp_path, _widen_sandbox_root):
         ms_config = {

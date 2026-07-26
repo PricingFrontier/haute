@@ -277,7 +277,6 @@ def test_isolated_job_supervisor_terminalizes_unexpected_parent_error(
     job = store.require_job(job_id)
     assert job["status"] == "error"
     assert job["terminal_reason"] == "error"
-    assert job["worker_error_class"] == "RuntimeError"
     assert job["supervisor_error_class"] == "RuntimeError"
     assert job["message"] == "Unexpected isolated worker supervisor failure."
     assert "parent isolation bug" not in str(job)

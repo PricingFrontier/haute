@@ -1,13 +1,7 @@
-"""Cache-layer infrastructure for JSON apiInput sources.
+"""Dual-layer cache infrastructure for JSON apiInput sources.
 
-Historically this module also owned the v1 schema-aware flattening
-codec (``flatten``, ``read_json_flat``, ``build_json_cache``, …). That
-surface has been removed — the v2 per-frame shred in
-:mod:`haute._json_shred` is the only JSON apiInput codec.
-
-What remains here is the dual-layer (working/committed) cache directory
-infrastructure that both v2 routes (build / status / delete) and the
-save pipeline (mirror working → committed) depend on. Specifically:
+The working/committed cache directories support the per-frame shred routes
+(build / status / delete) and the save pipeline's promotion step. Specifically:
 
   - :func:`_json_cache_dir` — resolves
     ``.haute_cache/<layer>/json_<hash>/`` for a JSON data file's cache.
@@ -119,37 +113,6 @@ def _clear_session() -> None:
     _session_consulted_hashes.clear()
 
 
-def _wipe_legacy_flat_cache(data_path: str | Path) -> bool:
-    """Remove pre-dual-cache `.haute_cache/json_<hash>.parquet` flat-layout artifacts.
-
-    Pre-dual-cache, the cache was a single parquet at
-    `.haute_cache/json_<hash>.parquet` with a sidecar `.meta.json`. The
-    dual-cache migration policy is wipe-on-first-run: on the first
-    dual-cache operation for a given data file, legacy artifacts get
-    unlinked. Runtime execution continues directly from JSON; the optional
-    Cache button can prewarm the new layout afterward.
-
-    Returns True if anything was deleted (so callers can log).
-    """
-    cache_root = Path.cwd() / _CACHE_DIR
-    legacy_stem = f"json_{_path_hash(data_path)}"
-    artifacts = [
-        cache_root / f"{legacy_stem}.parquet",
-        cache_root / f"{legacy_stem}.parquet.meta.json",
-        cache_root / f"{legacy_stem}.parquet.tmp",
-        cache_root / f"{legacy_stem}.raw.parquet",
-        cache_root / f"{legacy_stem}.raw.parquet.tmp",
-    ]
-    deleted = False
-    for artifact in artifacts:
-        if artifact.exists() and artifact.is_file():
-            artifact.unlink()
-            deleted = True
-    if deleted:
-        logger.info("legacy_flat_cache_wiped", data_path=str(data_path))
-    return deleted
-
-
 def _read_cache_meta(cache_dir: Path) -> dict[str, object] | None:
     """Read `meta.json` from a layer's `<hash>/` directory, or return None if absent."""
     meta_path = _json_cache_meta_path(cache_dir)
@@ -246,7 +209,6 @@ def clear_json_cache(
     """Delete cached parquet artifacts for a JSON data file in one layer.
 
     Default is the volatile working/ layer — used by the DELETE endpoint.
-    Always wipes any pre-dual-cache flat-layout artifacts too.
 
     The consulted-hashes flag is intentionally NOT cleared. The user is
     still in the same process, so they remain authoritative for this
@@ -256,7 +218,6 @@ def clear_json_cache(
 
     Returns True if anything was deleted.
     """
-    _wipe_legacy_flat_cache(data_path)
     cache_dir = _json_cache_dir(data_path, layer)
     if not cache_dir.exists():
         return False
@@ -280,8 +241,7 @@ def mirror_cache_to_committed(
         still matches *data_path*, and every signed table artifact is intact.
         No-op trapdoor: skip the copy only when both manifests agree on schema,
         source-file identity, and signed table entries, and both layers' actual
-        parquet bytes match those signatures. This also upgrades an old unsigned
-        committed manifest and repairs externally damaged bytes.
+        parquet bytes match those signatures and repairs externally damaged bytes.
       - If working/ does not exist: ensure committed/ also does not exist.
 
     Returns True if the on-disk committed/ state changed.
@@ -304,7 +264,6 @@ def mirror_cache_to_committed(
         _unique_build_tmp_dir,
     )
 
-    _wipe_legacy_flat_cache(data_path)
     if not _is_working_consulted(data_path):
         # Stale on-disk working/ from a previous session; or no cache ever.
         return False
@@ -383,9 +342,6 @@ def mirror_cache_to_committed(
         # process-local build lock; a mixed/partial copy must never replace a
         # healthy committed generation.
         committed_dir.parent.mkdir(parents=True, exist_ok=True)
-        legacy_tmp_dir = committed_dir.with_name(committed_dir.name + ".tmp")
-        if legacy_tmp_dir.exists():
-            shutil.rmtree(legacy_tmp_dir)
         tmp_dir = _unique_build_tmp_dir(committed_dir)
         try:
             shutil.copytree(working_dir, tmp_dir)

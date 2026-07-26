@@ -30,7 +30,6 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from haute._code_extraction import _strip_generated_boilerplate_from_code
 from haute._config_io import config_path_for_node
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
@@ -38,6 +37,7 @@ from haute._graph_utils import (
     _sanitize_func_name,
     duplicate_input_names,
 )
+from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
 from haute._registry import (
     CodegenFn,
@@ -495,11 +495,7 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
     source_type = config.get("sourceType", "run")
     task_val = config.get("task", "regression")
     output_column = config.get("output_column", "prediction")
-    user_code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="model_score",
-        param_names=source_names,
-    )
+    user_code = str(config.get("code") or "").strip()
     params = _build_params(source_names)
     first_param = _first_source(source_names)
     cfg_path = config_path_for_node(NodeType.MODEL_SCORE, func_name).as_posix()
@@ -616,15 +612,10 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
     tables = normalise_rating_tables(config)
     params = _build_params(source_names)
     first = _first_source(source_names)
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="rating_step",
-        param_names=(first,),
-    )
+    code = str(config.get("code") or "").strip()
     emit_tables = []
     for t in tables:
         et: dict = {
-            "name": t.get("name", ""),
             "factors": t.get("factors", []),
             "output_column": t.get("outputColumn", ""),
             "entries": t.get("entries", []),
@@ -633,15 +624,17 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
             et["default_value"] = t["defaultValue"]
         emit_tables.append(et)
     extra_parts: list[str] = []
-    op = config.get("operation")
-    if op and op != "multiply":
-        extra_parts.append(f"operation={op!r}")
-    combined = config.get("combinedColumn")
-    if combined:
-        extra_parts.append(f"combined_column={combined!r}")
-    combined_outputs = config.get("combinedOutputs")
+    combined_outputs = _normalise_combined_outputs(config)
     if combined_outputs:
-        extra_parts.append(f"combined_outputs={combined_outputs!r}")
+        decorator_outputs = [
+            {
+                "output_column": output["outputColumn"],
+                "operation": output["operation"],
+                "base_value": output["baseValue"],
+            }
+            for output in combined_outputs
+        ]
+        extra_parts.append(f"combined_outputs={decorator_outputs!r}")
     extra_kwargs = (", " + ", ".join(extra_parts)) if extra_parts else ""
     config_path_repr = _safe_path(config_path_for_node(NodeType.RATING_STEP, func_name).as_posix())
     if code:
@@ -688,11 +681,7 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
     config_path_repr = _safe_path(
         config_path_for_node(NodeType.SCENARIO_EXPANDER, func_name).as_posix()
     )
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="scenario_expander",
-        param_names=(first,),
-    )
+    code = str(config.get("code") or "").strip()
 
     # The body applies the sidecar config at runtime — the same shared helper
     # the executor calls — so a standalone ``pipeline.run()`` expands the
@@ -806,11 +795,7 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     params = _build_params(source_names)
     first = source_names[0]
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="polars",
-        param_names=(first,),
-    )
+    code = str(config.get("code") or "").strip()
     overview = config["overview"] if "overview" in config else {}
     decorator_args = _explore_decorator_args(overview)
     if code:
@@ -834,11 +819,7 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.EXTERNAL_FILE)
 def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="external",
-        param_names=source_names,
-    )
+    code = str(config.get("code") or "").strip()
     params = _build_params(source_names)
     body = _wrap_external_code(code)
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
@@ -859,10 +840,7 @@ def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
     # to ``config=`` by codegen, and the body executes the same registry
     # invocation the canvas executor uses, anchored to the pipeline dir.
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="data_input",
-    )
+    code = str(config.get("code") or "").strip()
     body = _wrap_external_code(code)
     return (
         f"@pipeline.data_input(config={_safe_path(cfg_path)})\n"
@@ -901,8 +879,7 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
     # ``config=``. The body routes through the SAME assembler the canvas
     # executor calls, so a standalone ``pipeline.run()`` / ``score()``
     # returns the assembled response document — not a passthrough of the
-    # raw upstream frame. The legacy v1 ``fields=`` / ``.select(...)`` form
-    # is gone.
+    # raw upstream frame.
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     args = "".join(f"        {p},\n" for p in param_names)
     return (
@@ -924,11 +901,7 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
 def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     first = source_names[0] if source_names else "df"
-    code = _strip_generated_boilerplate_from_code(
-        config.get("code") or "",
-        kind="polars",
-        param_names=tuple(source_names),
-    )
+    code = str(config.get("code") or "").strip()
     params = _build_params(source_names)
     sel = config.get("selected_columns", [])
 
@@ -1051,7 +1024,7 @@ _set_codegen_in_registry(NodeType.SUBMODEL_PORT, _gen_submodel_placeholder_unrea
 
 
 # ---------------------------------------------------------------------------
-# Public re-exports — symbols callers may still import from this module.
+# Module export surface.
 # ---------------------------------------------------------------------------
 
 

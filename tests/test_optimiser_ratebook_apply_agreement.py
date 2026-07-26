@@ -60,16 +60,8 @@ def _table(name: str, levels: dict[Any, float]) -> list[dict[str, Any]]:
 
 def _artifact(
     factor_tables: dict[str, list[dict[str, Any]]],
-    factor_dtypes: dict[str, list[dict[str, Any]]] | None = None,
+    factor_dtypes: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    if factor_dtypes is None:
-        factor_dtypes = {}
-        for name, entries in factor_tables.items():
-            table = _ratebook_lookup_table(name, entries)
-            assert table is not None
-            factor_dtypes[name] = [
-                {"column": column, "dtype": {"kind": "String"}} for column in table["factors"]
-            ]
     return {
         "version": "rb_v1",
         "mode": "ratebook",
@@ -90,25 +82,21 @@ def _engine_matches(frame: pl.DataFrame, name: str, entries: list[dict[str, Any]
     the neutral fill, so nulls mark true misses — independent of the mirror
     under test.
     """
-    legacy_table = _ratebook_lookup_table(name, entries)
-    assert legacy_table is not None
+    join_columns = [name] if name in frame.columns else name.split(":")
     dtype_records = [
         {
             "column": column,
             "dtype": rating_dtype_descriptor(frame.schema[column]),
         }
-        for column in legacy_table["factors"]
+        for column in join_columns
     ]
     table = _ratebook_lookup_table(name, entries, dtype_records)
-    assert table is not None
     out = _apply_rating_table(frame.lazy(), table).collect()
     return [value is not None for value in out[table["outputColumn"]].to_list()]
 
 
 def _mirror_matches(frame: pl.DataFrame, name: str, entries: list[dict[str, Any]]) -> list[bool]:
-    table = _ratebook_lookup_table(name, entries)
-    assert table is not None
-    join_columns = table["factors"]
+    join_columns = [name] if name in frame.columns else name.split(":")
     results: list[bool] = []
     for row in frame.iter_rows(named=True):
         input_values = [row.get(column) for column in join_columns]
@@ -205,7 +193,20 @@ class TestMirrorAgreesWithEngine:
             {"__factor_group__": f"online{SEP}18-25", "optimal_scenario_value": 1.20},
         ]
         frame = pl.DataFrame({"channel": ["online"], "age_band": ["18-25"]})
-        out = _apply_ratebook(frame.lazy(), _artifact({"channel:age_band": entries}), "", "__v__")
+        out = _apply_ratebook(
+            frame.lazy(),
+            _artifact(
+                {"channel:age_band": entries},
+                {
+                    "channel:age_band": [
+                        {"column": "channel", "dtype": {"kind": "String"}},
+                        {"column": "age_band", "dtype": {"kind": "String"}},
+                    ]
+                },
+            ),
+            "",
+            "__v__",
+        )
         engine_value = out.collect()["channel:age_band_optimised_factor"][0]
         matched = _match_ratebook_entry(
             entries,

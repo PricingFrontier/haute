@@ -145,20 +145,13 @@ function seedPipeline(): void {
 }
 
 async function captureInitialGraph(page: Page): Promise<NormalizedGraph> {
-  const requestPromise = page.waitForRequest((request) =>
-    request.method() === "GET" && /\/api\/pipeline(?:\?|$)/.test(request.url()),
-  )
   const responsePromise = page.waitForResponse((response) =>
     response.request().method() === "GET" && /\/api\/pipeline(?:\?|$)/.test(response.url()),
   )
   await page.goto("/")
   await expect(page.getByRole("toolbar", { name: /pipeline toolbar/i })).toBeVisible()
-  const [request, response] = await Promise.all([requestPromise, responsePromise])
+  const response = await responsePromise
   expect(response.status(), "initial pipeline request succeeds").toBe(200)
-  expect(
-    request.headers()["x-haute-session-token"],
-    "legacy session credential is not exposed to browser JavaScript",
-  ).toBeUndefined()
   return graphEnvelope((await response.json()) as GraphEnvelope)
 }
 

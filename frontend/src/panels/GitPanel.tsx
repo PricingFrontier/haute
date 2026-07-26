@@ -15,9 +15,7 @@ import {
   createWorkingBranch, getGitGraph, getMilestones, getMilestoneSaves, getPendingSaves,
   setWorkingBranch,
 } from "../api/client"
-import type {
-  GitMilestoneEntry, GitGraphResponse, GitLedgerSave, GitFileChange, GitManagedBranch,
-} from "../api/types"
+import type { GitMilestoneEntry, GitGraphResponse, GitLedgerSave, GitFileChange } from "../api/types"
 import { computeGitGraphLayout, computeRailRuns, railWidth } from "./gitgraph/layout"
 import type { RailModel, RailRow, RailRowGeom, RowDescriptor } from "./gitgraph/layout"
 import { GraphRailCell, GraphRailHeader, GraphRailOverlay } from "./gitgraph/GraphCell"
@@ -28,12 +26,10 @@ import {
   readMilestoneSaves, writeMilestoneSaves, serializePayload,
 } from "./gitPanelCache"
 
-/** Minimal branch shape the in-row spawn chips need — satisfied by both the
- *  graph payload's branches and the legacy GitManagedBranch fallback. */
+/** Minimal graph-branch shape the in-row spawn chips need. */
 interface SpawnChipBranch {
   name: string
   is_archived: boolean
-  /** Lane colour; undefined on the forks.json fallback path (accent chip). */
   colorIndex?: number
 }
 
@@ -61,8 +57,6 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
   const addToast = useToastStore((s) => s.addToast)
   const status = useGitStore((s) => s.status)
   const loadStatus = useGitStore((s) => s.loadStatus)
-  const branches = useGitStore((s) => s.branches)
-  const branchesLoaded = useGitStore((s) => s.branchesLoaded)
   const dirty = useGraphStore((s) => s.dirty)
   // Peek state lives in the store so the toolbar indicator can return to the
   // current branch without the panel being open (S38).
@@ -102,11 +96,6 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
   // Highlight only for now (S38). Set on a save-row click or after a milestone
   // commit; cleared when peeking a different branch.
   const [selectedSha, setSelectedSha] = useState<string | null>(null)
-  // Working branches keyed by the commit they were spawned from, so a milestone
-  // or save can back-link to the branch(es) it spawned (S38).
-  const [forkBranches, setForkBranches] = useState<GitManagedBranch[]>(seed?.forkBranches ?? [])
-  const forkBranchesRef = useRef(forkBranches)
-  forkBranchesRef.current = forkBranches
   const [dirtyNavigation, setDirtyNavigation] = useState<(() => void) | null>(null)
   // Right-click "new branch from here" (S38): the anchor is the menu position +
   // fork point; the draft is the naming step once an option is picked.
@@ -146,12 +135,10 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
     branch: string | null
     milestones: string | null
     pending: string | null
-    forks: string | null
   }>({
     branch: seed !== null ? branchKey : null,
     milestones: seed?.milestonesJson ?? null,
     pending: seed?.pendingJson ?? null,
-    forks: seed?.forkBranchesJson ?? null,
   })
   const appliedGraphJson = useRef<string | null>(graphSeed?.json ?? null)
 
@@ -205,13 +192,8 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
       // write (it would overwrite a fresher snapshot with older data).
       if (generation !== refreshGeneration.current) return null
       const resolvedBranch = viewBranch ?? ms.working_branch
-      const branchState = useGitStore.getState()
-      const forks = branchState.branchesLoaded
-        ? branchState.branches.filter((b) => b.forked_from)
-        : forkBranchesRef.current
       const msJson = serializePayload(ms.entries)
       const psJson = serializePayload(ps.saves)
-      const fbJson = serializePayload(forks)
       // Always snapshot the successful response for cross-remount hydration —
       // permissive by design, because a hydrated mount always revalidates.
       // (resolvedBranch is null only when the backend reports no working
@@ -220,7 +202,6 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
         writeBranchHistory(resolvedBranch, {
           milestones: ms.entries, milestonesJson: msJson,
           pending: ps.saves, pendingJson: psJson,
-          forkBranches: forks, forkBranchesJson: fbJson,
         })
       }
       // Unchanged-payload short-circuit: skip each setState whose payload is
@@ -229,8 +210,7 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
       const sameBranch = a.branch === resolvedBranch
       if (!(sameBranch && a.milestones === msJson)) setMilestones(ms.entries)
       if (!(sameBranch && a.pending === psJson)) setPending(ps.saves)
-      if (!(sameBranch && a.forks === fbJson)) setForkBranches(forks)
-      applied.current = { branch: resolvedBranch, milestones: msJson, pending: psJson, forks: fbJson }
+      applied.current = { branch: resolvedBranch, milestones: msJson, pending: psJson }
       setRowsBranch(resolvedBranch)
       // NB: don't clear `expanded` here — that would collapse a milestone the
       // user opened on every auto-refresh. Expansion is reset only on a peek
@@ -270,15 +250,6 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
     refresh()
   }, [loadStatus, refresh])
 
-  useEffect(() => {
-    if (!branchesLoaded) return
-    const forks = branches.filter((branch) => branch.forked_from)
-    const forksJson = serializePayload(forks)
-    if (forksJson === applied.current.forks) return
-    applied.current = { ...applied.current, forks: forksJson }
-    setForkBranches(forks)
-  }, [branches, branchesLoaded])
-
   // Viewing a different branch shows a different history — reset expansion and
   // clear the selection (it referred to the previous branch's save). The row
   // data hydrates from the session cache when this branch was viewed before
@@ -307,14 +278,12 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
         branch: branchKey,
         milestones: cached.milestonesJson,
         pending: cached.pendingJson,
-        forks: cached.forkBranchesJson,
       }
       setMilestones(cached.milestones)
       setPending(cached.pending)
-      setForkBranches(cached.forkBranches)
       setRowsBranch(branchKey)
     } else {
-      applied.current = { branch: null, milestones: null, pending: null, forks: null }
+      applied.current = { branch: null, milestones: null, pending: null }
       setMilestones([])
       setPending([])
       setRowsBranch(null)
@@ -517,9 +486,6 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
     }
   }
 
-  const forksAt = (sha: string): GitManagedBranch[] =>
-    forkBranches.filter((b) => b.forked_from === sha)
-
   const guardNavigation = (proceed: () => void) => {
     if (dirty) setDirtyNavigation(() => proceed)
     else proceed()
@@ -626,9 +592,7 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
     return computeRailRuns(rail, rowGeom)
   }, [rail, rowGeom])
 
-  // In-row spawn chips, derived from the graph's ancestry-based fork
-  // attachments rather than the lossy clone-local forks.json (a branch made
-  // in another clone has no forks.json entry but is real topology). Anchor
+  // In-row spawn chips, derived from graph ancestry. Anchor
   // rules mirror the rail's stubs: the source save's row when visible (live
   // branches only), else the credit milestone, else the fork point. Branches
   // with their own lane (the viewed one and its ancestors) never chip.
@@ -661,10 +625,8 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
     return map
   }, [graph, rail, milestones, pending, expanded])
 
-  // With no graph (rail off), fall back to the legacy forks.json chips so the
-  // panel still back-links what it can.
   const chipsAt = (sha: string): SpawnChipBranch[] =>
-    rail !== null ? (spawnChipsBySha.get(sha) ?? []) : forksAt(sha)
+    spawnChipsBySha.get(sha) ?? []
 
   // rail.rows is 1:1 with railRowData.rows (both derive from the same state
   // in the same render), so the key lookup always lands when rail is set.
@@ -1311,8 +1273,7 @@ function FileRow({ file }: { file: GitFileChange }) {
 // spans (not buttons) so they can live inside the milestone's <button> row;
 // clicking PEEKS the branch (view, not switch). stopPropagation keeps a milestone
 // row from toggling its expansion when a link is clicked. Chips wear their
-// branch's lane colour when the graph supplied one (archived chips carry the
-// parent's colour, muted); the forks.json fallback keeps the accent chip.
+// branch's lane colour (archived chips carry the parent's colour, muted).
 function ForkLinks({
   branches,
   onPeek,

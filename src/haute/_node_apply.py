@@ -360,9 +360,7 @@ def assemble_output_from_config(
 
     if mapping is None:
         raise OutputMappingSchemaError(
-            f"OUTPUT node {label or '<unnamed>'!r} has no `outputMapping`; the "
-            "legacy `fields` shape is no longer supported — open the OUTPUT "
-            "editor to migrate.",
+            f"OUTPUT node {label or '<unnamed>'!r} requires `outputMapping`.",
         )
 
     positional = [lf.lazy() for lf in dfs]
@@ -370,7 +368,7 @@ def assemble_output_from_config(
     names = list(source_names) if source_names is not None else []
     frames: dict[str, _Frame] = dict(zip(names, positional, strict=False))
     frames.update(named)
-    referenced_ports = {e["source_port"] for e in mapping if e.get("enabled", True)}
+    referenced_ports = {e["source_port"] for e in mapping if e["enabled"]}
     incoming = positional + list(named.values())
     if len(incoming) == 1 and referenced_ports:
         frames = {port: incoming[0] for port in referenced_ports}

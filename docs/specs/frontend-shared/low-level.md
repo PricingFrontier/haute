@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
-| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). `runFrontier` starts a frontier sweep then polls `getFrontierStatus` to a terminal state, preserving the old resolve-with-final-payload contract over what is now a backend background job. |
+| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
 | `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`; re-exports canonical node/trace types. |
 | `frontend/src/types/node.ts` | `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
@@ -31,7 +31,6 @@
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
 | `frontend/src/components/Toolbar.tsx` | App top chrome: source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, utility/imports buttons, zoom, centre/layout, save split-button. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
-| `frontend/src/components/SettingsModal.tsx` | Legacy pipeline-imports/preamble editor dialog (custom overlay, not `ModalShell`). It has component tests but no production import or render site; `ImportsPanel` is the active UI. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
 | `frontend/src/components/NodeSearch.tsx` | Ctrl+K command palette: dynamically imported by `App.tsx` only while open, filters/windows the current React Flow node list, supports arrow-key navigation, and jumps the canvas viewport to the selected node. |
 | `frontend/src/components/BreadcrumbBar.tsx` | Pipeline → submodel navigation trail; renders nothing at stack depth ≤ 1. |
@@ -44,10 +43,10 @@
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, and semantic surface/status/chart/git-node tokens consumed by the theme module and components. |
+| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, and canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components. |
 | `frontend/src/utils/chartHelpers.ts` | Small pure chart leaf helpers: compact K/M/scientific axis labels and inclusive evenly spaced Y ticks (a degenerate range yields one tick). |
 | `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, quotes ordinary strings, escapes column names before substitution, and uses longest names first to avoid partial replacement. |
-| `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: explicit `params.mode` wins; legacy convergence metrics infer ratebook versus online; insufficient evidence yields the empty mode rather than guessing. |
+| `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: the canonical `params.mode` value selects ratebook versus online; absent or invalid values yield the empty mode. |
 | `frontend/src/components/NodeTypeIcon.tsx` | Shared node-type icon wrapper: looks up canonical metadata and deliberately renders the Polars icon for an absent or unknown type, so compact lists never crash on incomplete historical data. |
 | `frontend/src/components/ToggleButtonGroup.tsx` | Generic controlled segmented single-choice group with radio semantics, roving `tabIndex`, Arrow/Home/End selection and focus movement, optional accessible name, and token-derived active styling. |
 | `frontend/src/components/form/CommittedTextField.tsx` | Controlled-looking input/textarea with a local draft: commits once on blur (and Enter for the input), skips no-op commits, and discards a stale draft when the external value changes, preserving one edit/one undo snapshot. |
@@ -110,8 +109,8 @@
 - **`FrontierStatusResponse`** (`api/types.ts`): `{status: JobStatus,
   progress, message, elapsed_seconds, result: FrontierResponse | null,
   terminal_reason?, error_code?, http_status_code?, error_detail?,
-  execution_metrics?}` — the poll target for `runFrontier`'s background
-  job. `FrontierResponse` itself gained an optional `job_id` for the
+  execution_metrics?}` — the response from the frontier background-job
+  status endpoint. `FrontierResponse` has an optional `job_id` for the
   `status === "started"` case.
 - **`NodeResultsState`**: the store's full shape — six job/result record
   pairs (`{previews, solveResults+solveJobs, trainResults+trainJobs,
@@ -166,19 +165,14 @@ is the one endpoint module that parses its own responses (`parseDispersion*`)
 rather than adding to `types/guards.ts`, for the bundle-size reason it's
 split out in the first place.
 
-**Client-embedded job polling** (`runFrontier`, `runDispersionEstimate`):
-a third polling shape alongside `useJobPolling` and `useNodeResultsStore`'s
-result caches — the poll loop lives directly inside the `async` client
-function rather than in a hook or store action. The initial POST either
-returns the finished payload inline (small/fast sweeps) or a
-`{status: "started", job_id}` handle; on the latter, the function loops
-`await getFrontierStatus(jobId)` / `getDispersionStatus(jobId)` on a fixed
-interval (`FRONTIER_POLL_INTERVAL_MS` / `pollIntervalMs` option, both
-500ms by default) until the status is terminal, resolving or rejecting the
-single outer promise. Because there is no store entry for this job, a
-caller that unmounts mid-poll relies entirely on its own `AbortSignal` to
-stop the loop — there is no background-job registry to fall back on the
-way `useBackgroundJobs` provides for solve/train/explore.
+**Client-embedded job polling** (`runDispersionEstimate`): a third polling
+shape alongside `useJobPolling` and `useNodeResultsStore`'s result caches —
+the poll loop lives directly inside the `async` client function rather than
+in a hook or store action. It starts the job, polls
+`getDispersionStatus(jobId)` at the configured interval (500ms by default),
+and resolves or rejects the single outer promise. Because there is no store
+entry for this job, a caller that unmounts mid-poll relies on its own
+`AbortSignal` to stop the loop.
 
 **Result-cache write path** (`useNodeResultsStore`): each `complete*Job`
 action (1) removes the corresponding entry from the `*Jobs` in-flight map,
@@ -238,8 +232,7 @@ focus is restored to the element that was focused before the modal opened.
   `ApiTimeoutError`, so a caller-cancelled request never gets misreported
   as a timeout even if both fire near-simultaneously.
 - **No browser-readable session token exists.** `api/client.ts` never reads a
-  window global or Vite token variable and never creates
-  `x-haute-session-token`; browser authentication is cookie-managed.
+  window global or Vite token variable; browser authentication is cookie-managed.
 - **Column cache freshness** (`useNodeResultsStore.getColumns`) is
   `structuralVersion === useGraphStore.getState().structuralVersion` — a
   direct cross-store read at call time, not a subscription, so a stale
@@ -264,12 +257,9 @@ focus is restored to the element that was focused before the modal opened.
   `activeSource`. `Toolbar`'s add-source form keeps itself open and shows
   the reason as inline error text on rejection, rather than closing
   silently as it did when the return type was a bare `string | null`.
-- **`useStaleConfigEstimate`'s staleness check fails toward "stale", never
-  toward "current", on an incomplete cached-result shape.** A
-  `cachedResult` missing `source`/`structuralVersion` (a pre-contract
-  shape) compares as `undefined !== context.source`, which is always
-  true, so the estimate is always treated as stale rather than
-  risking a false "still current" read against an old cache entry.
+- **`useStaleConfigEstimate` compares the complete result identity.**
+  `cachedResult` carries `configHash`, `source`, and `structuralVersion`;
+  any mismatch marks the estimate stale.
 - **Toast dedup** compares only `(type, text)`; it does not advance the
   toast id counter on a suppressed duplicate, so the counter's absence of
   increment is itself the observable "nothing was added" signal used by
@@ -331,13 +321,9 @@ same Vitest config.
   shared fixtures from `testSupport/uiContractFixtures.ts` and asserts every
   exported client function's request/response shape against them, so a
   backend schema change that isn't mirrored in `api/types.ts` fails here
-  first. `client.test.ts`'s "runFrontier background polling" block covers
-  the started→poll→completed happy path, continued polling while
-  `"running"`, an `ApiError` on a terminal non-completed status (message +
-  `http_status_code` preserved), a completed-without-result rejection, and
-  the inline-answer (no `job_id`) fast path resolving from a single fetch.
-- **`api/dispersion.ts`** (`api/__tests__/dispersion.test.ts`): the same
-  shape of coverage as `runFrontier` — `estimateGlmDispersion` request
+  first.
+- **`api/dispersion.ts`** (`api/__tests__/dispersion.test.ts`):
+  `estimateGlmDispersion` request
   shape (including the `source` default and the 600s timeout matching
   `/train`), `runDispersionEstimate`'s poll-to-completion and
   poll-to-terminal-failure paths, abort mid-poll rejecting with
@@ -377,8 +363,7 @@ same Vitest config.
   empty-name and duplicate-name error text, `aria-invalid`/
   `aria-describedby` wiring, the error clearing on next keystroke and on
   successful submission),
-  `SettingsModal.gaps.test.tsx` (the standalone legacy dialog), `ImportsPanel.test.tsx`
-  (the active imports surface), `BreadcrumbBar.test.tsx` (root-level),
+  `ImportsPanel.test.tsx`, `BreadcrumbBar.test.tsx` (root-level),
   `KeyboardShortcuts.test.tsx` (root-level),
   `BackgroundJobPolling.renderIsolation.test.tsx` (asserts the component
   itself never re-renders its own subtree — it exists purely to host the

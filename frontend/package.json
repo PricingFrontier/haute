@@ -15,7 +15,7 @@
     "test": "vitest run",
     "test:shuffle": "vitest run --sequence.shuffle",
     "test:coverage": "vitest run --coverage && node scripts/check-critical-coverage.mjs",
-    "test:benchmark:pr": "vitest run src/__tests__/App.shallowHash.test.ts src/hooks/__tests__/columnsEqual.fingerprint.test.ts src/hooks/__tests__/nodesWithStatus.memo.test.tsx src/utils/__tests__/graphPerformance.test.ts",
+    "test:benchmark:pr": "vitest run src/__tests__/App.shallowHash.test.ts src/utils/__tests__/columnFingerprint.test.ts src/hooks/__tests__/nodesWithStatus.memo.test.tsx src/utils/__tests__/graphPerformance.test.ts",
     "test:e2e": "playwright test --grep-invert @benchmark",
     "test:e2e:benchmark": "playwright test --grep @benchmark --project=chromium --retries=0",
     "test:e2e:smoke": "playwright test --grep @smoke --retries=0",

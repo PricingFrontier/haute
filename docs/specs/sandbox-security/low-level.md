@@ -38,9 +38,10 @@
   `_ASTValidator._check_format_call`, the guard against dunder traversal via
   `str.format`-family calls.
 - **`_ALLOWED_PICKLE_GLOBALS: frozenset[tuple[str, str]]`** — exact
-  `(module, qualname)` pairs for scaffolding *functions* (numpy reconstruction
-  helpers, `copyreg` helpers, `_codecs.encode`, pandas block/index reconstruction
-  helpers, builtin container/scalar constructors). Returned verbatim when matched.
+  `(module, qualname)` pairs for scaffolding *functions* (NumPy 2 `_core`
+  reconstruction helpers, `copyreg` helpers, `_codecs.encode`, pandas block/index
+  reconstruction helpers, builtin container/scalar constructors). Returned verbatim
+  when matched; the pre-NumPy-2 `numpy.core` pickle layout is not retained.
 - **`_ALLOWED_PICKLE_CLASSES: frozenset[tuple[str, str]]`** — exact
   `(module, qualname)` pairs for model/data *classes* (numpy `dtype`/`ndarray`,
   pandas `DataFrame`/`Series`/`Index`/`RangeIndex`/`BlockManager`/
@@ -180,11 +181,11 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    `_origin_state(...) == "trusted"`; bootstrap then reaches the route that writes
    the token only as an HttpOnly, SameSite=Strict cookie. Other requests reject an
    untrusted Origin, then require `_request_token_matches` (constant-time match
-   against either the cookie or `x-haute-session-token`). A missing Origin is
+   against the HttpOnly session cookie). A missing Origin is
    accepted only after that credential check succeeds.
 3. `websocket_rejection_reason(headers, scope_scheme=...)` runs before
    `websocket.accept()`: auth-disabled short-circuit, explicit exact matching
-   Origin, then cookie/header token. Browser WebSockets receive the HttpOnly cookie
+   Origin, then the session cookie. Browser WebSockets receive the HttpOnly cookie
    automatically; URL query parameters are never read.
 
 **Runtime local-file containment (`_path_resolution.py` + execution core)**
@@ -413,3 +414,9 @@ Remaining sandbox and security improvement work is tracked in the
   malformed digest/generation ids, staging-path containment, and secret-free user namespaces.
   Extend sandbox tests only for the retained input-code entry point; the underlying AST/global
   allow-list contract does not fork by provider.
+
+## Approved change contract — canonical sandbox payload
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+the sandbox accepts only the current generated payload namespace. Historical module aliases and
+shim globals are removed; allow-list and containment behavior for the current payload is unchanged.

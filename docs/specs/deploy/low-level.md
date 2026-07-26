@@ -77,9 +77,8 @@
    `liveSwitch` node — selection is **per edge**, matching `input_scenario_map`'s
    `"live"`-valued key against each edge's input name
    (`haute._graph_utils.edge_input_name`), never per source node, so two frames from
-   one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge (the
-   legacy fallback matches `inputs[0]` the same way) — then `ancestors()` walks backward
-   from the output node over the filtered edge set.
+   one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge —
+   then `ancestors()` walks backward from the output node over the filtered edge set.
 6. `find_deploy_input_nodes(pruned_graph)` — nodes with `nodeType="apiInput"`. If none,
    fall back to the single source node in the pruned graph (`ValueError` if zero or
    multiple non-apiInput sources exist).
@@ -235,16 +234,12 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   the common case at construction time) and again in `resolve_config()` (catches
   mutation via `.override()`, env overrides, or direct attribute writes after
   construction — the actual last chokepoint before a build is committed).
-- **`liveSwitch` live-branch resolution has two paths**: primary is matching
-  `input_scenario_map`'s `"live"`-valued key against a connected edge's **input name**
+- **`liveSwitch` live-branch resolution** matches `input_scenario_map`'s
+  `"live"`-valued key against a connected edge's **input name**
   (`haute._graph_utils.edge_input_name` — the frame label for an apiInput-frame edge,
   the sanitised source label otherwise; the same derivation the executor, projection,
-  and codegen use, so two frames from one apiInput are individually routable); if no
-  `input_scenario_map` exists, fallback matches `config["inputs"][0]` (positional) the
-  same way. Both paths fail loud: if an explicit `input_scenario_map` names a live input
-  that doesn't match any connected edge, or the legacy `inputs[0]` fallback is absent or
-  matches no edge, a `ValueError` names the switch and the unmatched input — the pruner
-  never records an empty live set and silently drops all incoming switch edges.
+  and codegen use, so two frames from one apiInput are individually routable). The
+  configured live input must match a connected edge.
 - **Feature-contract bundling filename convention**: the bundler only looks for a bare
   `feature_contract.json` sitting next to a downloaded model (the MLflow-download-cache
   convention); training itself writes per-model `{name}.feature_contract.json` and never
@@ -254,10 +249,10 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   rejects any value `> 1` with a message suggesting the likely intended value divided by
   100 — guards against an operator writing `tolerance_pct: 5` meaning "5%" and
   accidentally accepting a 500%-tolerant (i.e. any-value-passes) golden quote.
-- **Golden vs plain test-quote rows** are distinguished purely by key presence (`expected`
-  or `tolerance_pct` present ⇒ golden; row must then be `{"input": {...}, "expected":
-  {...}?, "tolerance_pct": ...?}` with only those keys plus `_`-prefixed metadata keys).
-  A `tolerance_pct` without `expected` is an error (nothing to compare against tolerance).
+- **Test-quote rows** use one envelope:
+  `{"input": {...}, "expected": {...}?, "tolerance_pct": ...?}`, with only those keys
+  plus `_`-prefixed metadata keys. A `tolerance_pct` without `expected` is an error
+  because there is nothing to compare against tolerance.
 - **Zero-baseline percent-change is defined, not undefined**: per-row zero production
   values are accepted only when staging equals production exactly; otherwise the change
   raises `ValueError`. `_CHANGE_EPSILON` applies to changed-row counting and the aggregate
@@ -307,7 +302,7 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 | Exception | Raised where | Propagates to |
 |---|---|---|
 | `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id` and the underlying provider/schema `error`) rendered into `str()`. |
-| `ValueError` | `_pruner.py` (missing/multiple output nodes, bad explicit `liveSwitch` config), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
+| `ValueError` | `_pruner.py` (missing/multiple output nodes or a configured `liveSwitch` input not connected to the graph), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_container.py` (Docker unavailable/build/push failure, unpinned Dockerfile dependency), `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), `_mlflow.py` (Databricks host/token unset, unreachable, `run_id`-less registered model version) | Uncaught to caller; `_check_docker_available`'s message specifically redirects the operator to CI. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches` (live schema disagrees with bundled training contract on feature set, dtype, or categorical levels) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
@@ -355,8 +350,8 @@ what they cover:
 - **`test_deploy_dispatch.py`** — `_dispatch_resolved` routing for every target family
   (Databricks, container, platform-container, planned/`NotImplementedError`,
   unknown/`ValueError`) and `DeployResult` field population.
-- **`test_deploy_expected_output_validation.py`** — golden test-quote parsing (legacy flat
-  vs. wrapped `input`/`expected` forms), tolerance comparison (numeric, boolean, Decimal,
+- **`test_deploy_expected_output_validation.py`** — canonical test-quote envelope parsing,
+  tolerance comparison (numeric, boolean, Decimal,
   large-integer zero-tolerance), missing-expected-column and row-count-mismatch failure
   modes, malformed golden-row rejection, end-to-end `validate_deploy` blocking on drift.
 - **`test_deploy_identity_parity.py`** — `artifact_identity_fingerprint` determinism, the
@@ -451,3 +446,10 @@ Remaining deployment improvement work is tracked in the
   scoring runtime does not launch a process worker per request.
 - Container-generation tests pin the environment line and health field. Execution-admission
   tests continue to pin strict-server fixed budgets and API-visible 507 payloads.
+
+## Approved change contract — canonical-only scoring inputs
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+generated deployment pruning and scoring bind inputs exclusively through the current named input
+handle contract. There is no positional-first-input or bare-frame fallback. Deployment tests use
+the same canonical handles produced by current graph/code generation.

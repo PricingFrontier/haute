@@ -1643,7 +1643,7 @@ def create_working_branch(
     to the fork point, and switches you over. Move is valid only at the latest
     milestone or a pending save.
     """
-    from haute._git_state import read_working_branch, set_fork, write_working_branch
+    from haute._git_state import read_working_branch, write_working_branch
 
     _assert_git_repo(cwd)
     _validate_ref_name(name)
@@ -1700,7 +1700,6 @@ def create_working_branch(
         except GitError:
             _run_git_ok("branch", "-D", name, cwd=cwd)  # don't leak a lone ref
             raise
-        set_fork(project_root, name, point)  # back-link the spawning commit
         logger.info("working_branch_forked", name=name, at=point[:8], moved=False)
         return GitCreateWorkingBranchResponse(
             working_branch=name,
@@ -1764,7 +1763,6 @@ def create_working_branch(
                 "incomplete. Inspect the repository before retrying."
             ) from exc
         raise
-    set_fork(project_root, name, point)  # back-link the spawning commit
     logger.info("working_branch_forked", name=name, at=point[:8], moved=True)
     return GitCreateWorkingBranchResponse(
         working_branch=name,
@@ -2220,8 +2218,7 @@ def pending_ledger_saves(
 # ---------------------------------------------------------------------------
 # Graph topology — the whole working-branch forest for the panel's graph rail:
 # every pair's first-parent spine plus fork attachments computed from git
-# ancestry (claim-based over full spines), never from the clone-local
-# forks.json (which is lossy: entries from other clones are simply absent).
+# ancestry (claim-based over full spines).
 # ---------------------------------------------------------------------------
 
 
@@ -2433,16 +2430,12 @@ def graph_topology(
     sharing no claimed commit roots its own tree
     (both null) — the fork FOREST is real, since the root commit lives on the
     default branch, which is not a working pair. Archived pairs are included
-    (the client filters); ``forked_from`` passes the clone-local forks.json
-    back-link through for API completeness (the fork chips read
-    /api/git/working-branches) and plays no part in the topology.
     Pure read — no checkout, no HEAD movement, no ref or state writes."""
-    from haute._git_state import read_forks, read_working_branch
+    from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
     working = read_working_branch(project_root)
     default = _get_default_branch(cwd)
-    forks = read_forks(project_root)
 
     # Same enumeration as the branch manager (working pairs only, ledgers
     # implicit, the deploy branch excluded) — but archived pairs stay in.
@@ -2500,10 +2493,6 @@ def graph_topology(
             fork_source_sha, fork_credit_sha = _fork_source_and_credit(
                 spine, fork_point_sha, spines[fork_of], tips.get(ledger_name(fork_of)), cwd=cwd
             )
-        # forks.json passthrough, with the same reachability guard the branch
-        # manager applies (a stale entry is dropped, never surfaced dangling).
-        fork = forks.get(name)
-        forked_from = fork if fork and _rev_parse(fork, cwd=cwd) is not None else None
         branches.append(
             GitGraphBranch(
                 name=name,
@@ -2514,7 +2503,6 @@ def graph_topology(
                 fork_of=fork_of,
                 fork_source_sha=fork_source_sha,
                 fork_credit_sha=fork_credit_sha,
-                forked_from=forked_from,
                 truncated=len(spine) > limit,
                 entries=_graph_entries(spine[0], limit, labels, cwd=cwd),
             )
@@ -2667,16 +2655,6 @@ def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLe
     return GitRemoteLeg(status="synced", ahead=ahead, behind=behind)
 
 
-def _ahead_behind(
-    working: str, remote: str, cwd: Path | None = None
-) -> tuple[int | None, int | None]:
-    """(ahead, behind) of *working* vs ``<remote>/<working>`` — the working leg's
-    counts, kept for back-compat. See :func:`_leg_state` for the structured
-    per-leg state (including the ledger leg)."""
-    leg = _leg_state(working, remote, cwd=cwd)
-    return leg.ahead, leg.behind
-
-
 @_serialized_mutation
 def fetch_pair(remote: str, working: str, cwd: Path | None = None) -> bool:
     """Refresh the working pair's remote-tracking refs (oW + oL) so divergence
@@ -2742,8 +2720,6 @@ def list_remotes(project_root: Path, cwd: Path | None = None) -> GitRemotesRespo
             GitRemote(
                 name=name,
                 url=_redact_remote_url(url) if ok_url and url.strip() else None,
-                ahead=working_leg.ahead if working_leg else None,
-                behind=working_leg.behind if working_leg else None,
                 working=working_leg,
                 ledger=ledger_leg,
             )
@@ -3370,7 +3346,7 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
     (S35: surfaced, never silent). NOT the move-mode rewind — no ref is ever wound
     back. ``oL`` absent (X2) → repoint only ``W`` and let the ledger respawn at the
     refreshed tip. Atomic with rollback; the caller pauses the watcher (M4)."""
-    from haute._git_state import read_working_branch, set_fork, write_working_branch
+    from haute._git_state import read_working_branch, write_working_branch
 
     _assert_git_repo(cwd)
     _assert_no_git_op_in_progress(cwd)
@@ -3455,9 +3431,6 @@ def branch_away(remote: str, project_root: Path, cwd: Path | None = None) -> Git
             ) from exc
         raise
 
-    base = _merge_base(old_w, remote_w, cwd=cwd)
-    if base is not None:
-        set_fork(project_root, aside, base)  # branch-manager back-link for the set-aside line
     logger.info("branched_away", working=working, set_aside=aside, remote=remote)
     return GitBranchAwayResponse(working_branch=working, set_aside_as=aside)
 
@@ -3492,12 +3465,11 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
     """The branch manager's view: every working branch (active + archived),
     ledgers hidden, the repo's default deploy branch excluded — each with its
     current/archived flags and whether its ledger has unmerged saves."""
-    from haute._git_state import read_forks, read_working_branch
+    from haute._git_state import read_working_branch
 
     _assert_git_repo(cwd)
     current = read_working_branch(project_root)
     default = _get_default_branch(cwd)
-    forks = read_forks(project_root)
     # The working tree belongs to whatever HEAD points at (the current branch's
     # ledger); tracked, uncommitted changes block the switch-away that archive/
     # delete of the *current* pair needs. Compute once.
@@ -3517,10 +3489,6 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
         if branch_category(b.name) != "working" or b.name == default:
             continue
         is_current = b.name == current
-        # The commit this branch was spawned from, if still reachable (a stale
-        # fork-point — its lineage deleted — is dropped so no dangling back-link).
-        fork = forks.get(b.name)
-        forked_from = fork if fork and _rev_parse(fork, cwd=cwd) is not None else None
         entries.append(
             GitManagedBranch(
                 name=b.name,
@@ -3530,7 +3498,6 @@ def working_branches(project_root: Path, cwd: Path | None = None) -> GitWorkingB
                     tips.get(b.name), tips.get(ledger_name(b.name)), cwd=cwd
                 ),
                 has_uncommitted_changes=is_current and tree_dirty,
-                forked_from=forked_from,
             )
         )
     return GitWorkingBranchesResponse(current=current, branches=entries)
@@ -3622,24 +3589,11 @@ def archive_working_pair(
     if working.startswith(f"{_ARCHIVE_PREFIX}/"):
         raise GitDomainError(f"'{working}' is already archived.")
 
-    from haute._git_state import (
-        clear_working_branch,
-        read_forks,
-        read_working_branch,
-        remove_fork,
-        rename_fork,
-        set_fork,
-        write_working_branch,
-    )
+    from haute._git_state import clear_working_branch, read_working_branch, write_working_branch
 
     ledger = ledger_name(working)
     previous_working = read_working_branch(project_root)
     archived = _unique_archive_name(working, cwd=cwd)
-    forks_before = read_forks(project_root)
-    fork_snapshot = {
-        working: forks_before.get(working),
-        archived: forks_before.get(archived),
-    }
     head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
     if not head_attached:
         previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
@@ -3653,7 +3607,6 @@ def archive_working_pair(
         if _rev_parse(ledger, cwd=cwd) is not None:
             _run_git("branch", "-m", ledger, ledger_name(archived), cwd=cwd)
             renamed_ledger = True
-        rename_fork(project_root, working, archived)  # keep the back-link valid
     except (GitError, OSError) as exc:
         restored = True
         if renamed_ledger:
@@ -3663,11 +3616,6 @@ def archive_working_pair(
             ok, _ = _run_git_ok("branch", "-m", archived, working, cwd=cwd)
             restored &= ok
         try:
-            for name, value in fork_snapshot.items():
-                if value is None:
-                    remove_fork(project_root, name)
-                else:
-                    set_fork(project_root, name, value)
             if previous_working is None:
                 clear_working_branch(project_root)
             else:
@@ -3712,8 +3660,8 @@ def delete_working_pair(
 
     The delete is trash-preserving: before the branch refs go, both tips are
     pinned under ``refs/haute/trash/`` (an instant ref write that also shields
-    the objects from gc) and a tombstone — tips, forks.json back-link,
-    archived flag, delete time — lands in ``.haute/trash.json``, so
+    the objects from gc) and a tombstone — tips, archived flag, delete time —
+    lands in ``.haute/trash.json``, so
     ``undelete_working_pair`` can rebuild the pair exactly. The deleted
     lineage therefore survives locally even though the branches vanish."""
     _assert_git_repo(cwd)
@@ -3736,22 +3684,16 @@ def delete_working_pair(
 
     from haute._git_state import (
         clear_working_branch,
-        read_forks,
         read_working_branch,
         record_trash,
-        remove_fork,
         remove_trash,
-        set_fork,
         write_working_branch,
     )
 
     previous_working = read_working_branch(project_root)
-    forks_before = read_forks(project_root)
-    fork_snapshot = forks_before.get(working)
     head_attached, previous_head = _run_git_ok("symbolic-ref", "--short", "HEAD", cwd=cwd)
     if not head_attached:
         previous_head = _run_git("rev-parse", "HEAD", cwd=cwd)
-    forked_from = fork_snapshot
 
     try:
         # A confirmed delete is destructive by intent — discard a dirty tree
@@ -3771,7 +3713,6 @@ def delete_working_pair(
             {
                 "branch_tip": working_tip,
                 "ledger_tip": ledger_tip,
-                "forked_from": forked_from,
                 "was_archived": working.startswith(f"{_ARCHIVE_PREFIX}/"),
                 "deleted_at": datetime.now(UTC).isoformat(),
             },
@@ -3780,7 +3721,6 @@ def delete_working_pair(
         _run_git("branch", "-D", working, cwd=cwd)
         if ledger_tip is not None and _rev_parse(ledger, cwd=cwd) is not None:
             _run_git("branch", "-D", ledger, cwd=cwd)
-        remove_fork(project_root, working)
     except (GitError, OSError) as exc:
         restored = True
         if _rev_parse(working, cwd=cwd) is None:
@@ -3794,10 +3734,6 @@ def delete_working_pair(
                 clear_working_branch(project_root)
             else:
                 write_working_branch(project_root, previous_working)
-            if fork_snapshot is None:
-                remove_fork(project_root, working)
-            else:
-                set_fork(project_root, working, fork_snapshot)
             remove_trash(project_root, working)
             state_restored = True
         except OSError:
@@ -3828,8 +3764,7 @@ def undelete_working_pair(
     inverse of delete_working_pair's recovery net.
 
     Pure ref/state ops (no checkout, no HEAD movement): the working and
-    ledger refs are recreated at their recorded tips, the forks.json
-    back-link comes back when one was recorded, and the trash refs +
+    ledger refs are recreated at their recorded tips, and the trash refs +
     tombstone are consumed. The archived flag needs no separate restore —
     archived-ness IS the ``archive/`` name prefix, and the pair is recreated
     under the exact name it was deleted as. The restored pair is NOT adopted
@@ -3839,14 +3774,7 @@ def undelete_working_pair(
     restored name already occupied, or the recorded commit no longer exists
     (tombstones can outlive their objects if the trash refs were hand-deleted
     and gc ran)."""
-    from haute._git_state import (
-        read_forks,
-        read_trash,
-        record_trash,
-        remove_fork,
-        remove_trash,
-        set_fork,
-    )
+    from haute._git_state import read_trash, record_trash, remove_trash
 
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
@@ -3872,8 +3800,6 @@ def undelete_working_pair(
     if not (isinstance(ledger_tip, str) and _rev_parse(ledger_tip, cwd=cwd) is not None):
         ledger_tip = None  # pair deleted before its ledger ever spawned
 
-    forked_from = entry.get("forked_from")
-    prior_fork = read_forks(project_root).get(working)
     created_working = created_ledger = False
     try:
         _run_git("update-ref", f"refs/heads/{working}", branch_tip, cwd=cwd)
@@ -3881,9 +3807,6 @@ def undelete_working_pair(
         if ledger_tip is not None:
             _run_git("update-ref", f"refs/heads/{ledger}", ledger_tip, cwd=cwd)
             created_ledger = True
-
-        if isinstance(forked_from, str) and forked_from:
-            set_fork(project_root, working, forked_from)
 
         _run_git("update-ref", "-d", _trash_ref(working), cwd=cwd)
         _run_git("update-ref", "-d", _trash_ref(ledger), cwd=cwd)
@@ -3902,10 +3825,6 @@ def undelete_working_pair(
             ok, _ = _run_git_ok("update-ref", _trash_ref(ledger), ledger_tip, cwd=cwd)
             restored &= ok
         try:
-            if prior_fork is None:
-                remove_fork(project_root, working)
-            else:
-                set_fork(project_root, working, prior_fork)
             if working not in read_trash(project_root):
                 record_trash(project_root, working, entry)
             state_restored = True
@@ -3928,7 +3847,7 @@ def restore_working_pair(
     """Un-archive a pair: rename ``archive/<X>`` → ``<X>`` and its ledger back
     (the inverse of archive_working_pair). Bidirectional (accepts either archived
     name); refuses if a live branch already occupies either restored name. Ref
-    and fork-state changes compensate as one transaction on failure."""
+    changes compensate as one transaction on failure."""
     _assert_git_repo(cwd)
     _validate_ref_name(branch)
     archived_working = _normalize_to_working(branch)
@@ -3946,14 +3865,7 @@ def restore_working_pair(
     if _rev_parse(restored_ledger, cwd=cwd) is not None:
         raise GitDomainError(f"Cannot restore: a branch named '{restored_ledger}' already exists.")
 
-    from haute._git_state import read_forks, remove_fork, rename_fork, set_fork
-
     archived_ledger = ledger_name(archived_working)
-    forks_before = read_forks(project_root)
-    fork_snapshot = {
-        archived_working: forks_before.get(archived_working),
-        restored: forks_before.get(restored),
-    }
     renamed_working = renamed_ledger = False
     try:
         _run_git("branch", "-m", archived_working, restored, cwd=cwd)
@@ -3961,7 +3873,6 @@ def restore_working_pair(
         if _rev_parse(archived_ledger, cwd=cwd) is not None:
             _run_git("branch", "-m", archived_ledger, restored_ledger, cwd=cwd)
             renamed_ledger = True
-        rename_fork(project_root, archived_working, restored)
     except (GitError, OSError) as exc:
         restored_ok = True
         if renamed_ledger:
@@ -3970,16 +3881,7 @@ def restore_working_pair(
         if renamed_working:
             ok, _ = _run_git_ok("branch", "-m", restored, archived_working, cwd=cwd)
             restored_ok &= ok
-        try:
-            for name, value in fork_snapshot.items():
-                if value is None:
-                    remove_fork(project_root, name)
-                else:
-                    set_fork(project_root, name, value)
-            state_restored = True
-        except OSError:
-            state_restored = False
-        if not restored_ok or not state_restored:
+        if not restored_ok:
             raise GitTransactionError(
                 "Restoring the archived branch failed and automatic rollback was incomplete. "
                 "Inspect the repository before retrying."

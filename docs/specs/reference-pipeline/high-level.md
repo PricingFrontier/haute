@@ -52,8 +52,7 @@ Out of scope:
   The sidecar declares four emitted tables: quotes, drivers, vehicles, and
   licenses.
 - The output node returns the `quotes` frame. Its response sidecar maps selected
-  columns from those four input ports back into nested JSON locations; the older
-  `Quote_Response_7` sidecar declares no fields.
+  columns from those four input ports back into nested JSON locations.
 - The submodel reference declares Polars transforms and a scenario-expander
   node. Its utility helpers provide Polars date/interval, postcode, column-name,
   and column-selection expressions for project-authored pipeline code.

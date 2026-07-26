@@ -81,7 +81,7 @@ const graphTwoBranch = {
   branches: [
     {
       name: "pricing-dev", is_archived: false, is_current: true, tip_sha: "m1full",
-      fork_point_sha: null, fork_of: null, forked_from: null,
+      fork_point_sha: null, fork_of: null,
       fork_source_sha: null, fork_credit_sha: null, truncated: false,
       entries: [
         { sha: "m1full", short_sha: "m1abc", message: "First milestone", timestamp: now(), version_label: "1.0", is_root: false, parents: ["m2full", "s2"] },
@@ -90,7 +90,7 @@ const graphTwoBranch = {
     },
     {
       name: "pricing/nick/spur", is_archived: false, is_current: false, tip_sha: "b1full",
-      fork_point_sha: "m2full", fork_of: "pricing-dev", forked_from: null,
+      fork_point_sha: "m2full", fork_of: "pricing-dev",
       fork_source_sha: null, fork_credit_sha: null, truncated: false,
       entries: [
         { sha: "b1full", short_sha: "b1abcd", message: "Spur milestone", timestamp: now(), version_label: null, is_root: false, parents: ["m2full", "s9"] },
@@ -560,25 +560,6 @@ describe("GitPanel", () => {
     await waitFor(() => expect(screen.queryByTestId("git-panel-fork-menu")).not.toBeInTheDocument())
   })
 
-  it("back-links a spawning milestone to its branch and peeks on click", async () => {
-    mockGetWorkingBranches.mockResolvedValue({
-      current: "pricing-dev",
-      branches: [
-        {
-          name: "pricing/nick/spur", is_current: false, is_archived: false,
-          has_unmerged_saves: false, has_uncommitted_changes: false,
-          forked_from: "m1full",
-        },
-      ],
-    })
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getByTestId("git-panel-fork-link")).toBeInTheDocument())
-    expect(screen.getByTestId("git-panel-fork-link")).toHaveTextContent("spur")
-    fireEvent.click(screen.getByTestId("git-panel-fork-link"))
-    // peeking the spawned branch (view, not switch) → the peek banner appears
-    await waitFor(() => expect(screen.getByTestId("git-panel-peeking")).toBeInTheDocument())
-  })
-
   it("survives a milestones load failure without crashing", async () => {
     mockGetMilestones.mockRejectedValue(new Error("boom"))
     render(<GitPanel {...defaultProps} />)
@@ -768,9 +749,7 @@ describe("GitPanel", () => {
     expect(screen.getByTestId("git-graph-lane-menu-view")).toBeDisabled()
   })
 
-  it("derives in-row spawn chips from the graph even without forks.json backing (twin-a)", async () => {
-    // getWorkingBranches reports NO forked_from entries (a branch created in
-    // another clone) — the graph payload alone must still chip the row.
+  it("derives in-row spawn chips from graph topology (twin-a)", async () => {
     mockGetGitGraph.mockResolvedValue(graphTwoBranch)
     mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
     render(<GitPanel {...defaultProps} />)
@@ -857,7 +836,7 @@ describe("GitPanel", () => {
     await waitFor(() => expect(screen.getAllByTestId("git-graph-rail").length).toBeGreaterThan(0))
   })
 
-  // ── Rail mode: legacy row behaviours with the graph present ─────────────
+  // ── Rail mode: row behaviours with the graph present ────────────────────
   // The rail restructures the row DOM (rail cell as first flex child, padding
   // moved onto the content side); re-run the highest-value list behaviours
   // under a real topology to pin that the affordances still fire.

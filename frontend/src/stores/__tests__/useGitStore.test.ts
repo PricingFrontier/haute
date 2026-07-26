@@ -67,7 +67,7 @@ describe("useGitStore", () => {
   it("de-duplicates concurrent branch loads and publishes the shared listing", async () => {
     const branches: GitManagedBranch[] = [{
       name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
-      has_uncommitted_changes: false, forked_from: null,
+      has_uncommitted_changes: false,
     }]
     let resolve!: (value: { current: string; branches: GitManagedBranch[] }) => void
     vi.mocked(getWorkingBranches).mockReturnValue(new Promise((done) => { resolve = done }))

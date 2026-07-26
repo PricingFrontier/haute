@@ -134,8 +134,7 @@ describe("apiInputFrameLabels", () => {
   it("returns no frame labels when every emitted label is blank", () => {
     // This config is backend-invalid (validate_v2_schema rejects blank
     // labels) and unreachable through the editor, which blocks blank
-    // commits; it can only arrive from a legacy disk file. No bindable id
-    // is invented for it.
+    // commits. No bindable id is invented for malformed state.
     const labels = apiInputFrameLabels({
       tables: [
         { path: "$[:]", emit: true, columns: [{ name: "c", selected: true }] },
@@ -386,20 +385,6 @@ describe("reconcileApiInputEdges", () => {
     targetHandle: null,
   })
 
-  it.each([
-    ["zero", { tables: [] }],
-    ["one", { tables: [table("policies", true)] }],
-  ])("removes a null-handle edge with %s eligible frames", (_count, config) => {
-    const legacyEdge = outgoing(null)
-    const result = reconcileApiInputEdges({
-      nodeId: "api_1",
-      config,
-      edges: [legacyEdge],
-    })
-    expect(result.edges).toEqual([])
-    expect(result.removed).toEqual([{ edge: legacyEdge, sourceHandle: null }])
-  })
-
   it("keeps a sole frame's labelled handle and preserves edge-array identity", () => {
     const labelledEdge = outgoing("policies")
     const edges = [labelledEdge]
@@ -438,17 +423,6 @@ describe("reconcileApiInputEdges", () => {
     })
     expect(result.edges).toEqual([liveEdge])
     expect(result.removed.map((r) => r.edge)).toEqual([goneEdge])
-  })
-
-  it("removes a null-handle edge with multiple frames too", () => {
-    const legacyEdge = outgoing(null, "e_legacy")
-    const result = reconcileApiInputEdges({
-      nodeId: "api_1",
-      config: { tables: [table("policies", true), table("drivers", true)] },
-      edges: [legacyEdge],
-    })
-    expect(result.edges).toEqual([])
-    expect(result.removed.map((r) => r.edge)).toEqual([legacyEdge])
   })
 
   it("ignores edges that do not originate from the node", () => {

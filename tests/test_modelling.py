@@ -933,7 +933,7 @@ class TestTrainingJob:
         assert isinstance(result, TrainResult)
         assert "gini" in result.metrics
         assert "rmse" in result.metrics
-        assert result.train_rows + result.test_rows == len(synth_data)
+        assert result.train_rows + result.validation_rows == len(synth_data)
         assert len(result.features) == 2  # x1, x2
         assert (output_dir / "test_model.cbm").exists()
 
@@ -1030,18 +1030,9 @@ class TestTrainingJob:
             output_dir=str(tmp_path),
         )
         result = job.run()
-        assert result.test_rows == 18
+        assert result.validation_rows == 18
 
-    def test_test_rows_field_carries_validation_set_count(self, synth_data, tmp_path):
-        """F541: ``test_rows`` is a legacy name that holds the VALIDATION count.
-
-        The field is named ``test_rows`` across ``TrainResult`` /
-        ``TrainResponse`` and the frontend contract, but it has always carried
-        the *validation*-set row count (``split_result.n_validation``), never a
-        separate test set. The name is frozen by the external API/frontend
-        contract, but its MEANING must not silently drift — pin it here so a
-        future change cannot repurpose it to mean the test or holdout count.
-        """
+    def test_validation_rows_field_carries_validation_set_count(self, synth_data, tmp_path):
         split_config = SplitConfig(strategy="random", validation_size=0.3, seed=99)
         mask = split_mask(len(synth_data), split_config)
         expected_validation_rows = int((mask == PARTITION_VALIDATION).sum())
@@ -1058,7 +1049,7 @@ class TestTrainingJob:
         )
         result = job.run()
 
-        assert result.test_rows == expected_validation_rows
+        assert result.validation_rows == expected_validation_rows
         assert result.diagnostics_set == "validation"
 
     def test_unknown_algorithm_raises(self, synth_data, tmp_path):
@@ -1472,48 +1463,3 @@ class TestSHAP:
         shap_features = {s["feature"] for s in result.shap_summary}
         assert shap_features == {"x1", "x2"}
         assert len(result.feature_importance_loss) == 2
-
-
-# ---------------------------------------------------------------------------
-# Cross-Validation (removed — Phase 2 Package 2C-5)
-#
-# The GLM CV code path in ``TrainingJob`` has been fully deleted. The
-# ``cv_folds`` kwarg, ``cv_results`` field on ``TrainResult``, and the
-# ``cross_validate`` algorithm methods are all gone. The regression
-# contract is enforced by ``tests/test_training_job_no_glm_cv.py``.
-# ---------------------------------------------------------------------------
-
-
-class TestNoCvResultsField:
-    @pytest.fixture(autouse=True)
-    def _fast_optional_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _stub_optional_catboost_diagnostics(monkeypatch)
-
-    def test_training_job_no_cv_results_attr(self, tmp_path):
-        """After the delete, ``TrainResult`` no longer exposes ``cv_results``.
-
-        Also confirms that ``cv_folds`` is not accepted as a kwarg — passing
-        it must raise ``TypeError`` because the argument has been removed.
-        """
-        rng = np.random.RandomState(42)
-        n = 60
-        df = pl.DataFrame({"x1": rng.randn(n), "y": rng.randn(n)})
-        job = TrainingJob(
-            name="no_cv",
-            data=df,
-            target="y",
-            params=_fast_training_params(iterations=3),
-            output_dir=str(tmp_path),
-        )
-        result = job.run()
-        assert not hasattr(result, "cv_results")
-
-        with pytest.raises(TypeError, match="cv_folds"):
-            TrainingJob(
-                name="no_cv",
-                data=df,
-                target="y",
-                params=_fast_training_params(iterations=3),
-                cv_folds=3,  # type: ignore[call-arg]
-                output_dir=str(tmp_path),
-            )

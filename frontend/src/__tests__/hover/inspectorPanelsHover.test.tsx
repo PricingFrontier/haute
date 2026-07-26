@@ -72,11 +72,7 @@
  *      - CalculationHero: still contains no hover mutations (regression
  *        trip-wire).
  *
- * Precedent: `frontend/src/__tests__/components/configInputRemoval.test.ts`
- * (Phase 2 Wave 5 Package 5A item #70) for the AST-walk shape, and
- * `frontend/src/panels/__tests__/errorToastMigration.test.tsx`
- * (Phase 2 Package 3D item #83) for the hybrid structural + behavioural
- * suite layout.
+ * The suite combines structural scanning with behavioural assertions.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
@@ -143,8 +139,7 @@ const TARGETS: readonly { rel: string; abs: string; siteCount: number }[] = [
 
 /**
  * Strip block and line comments from a TS/TSX blob before scanning.
- * Same approach as configInputRemoval.test.ts — sufficient for catching
- * real `currentTarget.style` writes without introducing a parser
+ * This is sufficient for catching real `currentTarget.style` writes without introducing a parser
  * dependency to prove a negative.  Since the four targets are real
  * components (not tests), they shouldn't contain `currentTarget.style`
  * in string literals; the comment strip handles the common case of a

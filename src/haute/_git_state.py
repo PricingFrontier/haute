@@ -22,7 +22,6 @@ logger = get_logger(component="git_state")
 _STATE_DIR = ".haute"
 _STATE_FILE = "state.json"
 _PREFS_FILE = "prefs.json"
-_FORKS_FILE = "forks.json"
 _PUSHED_FILE = "pushed.json"
 _TRASH_FILE = "trash.json"
 _WORKING_BRANCH_KEY = "workingBranch"
@@ -45,10 +44,6 @@ def _state_path(project_root: Path) -> Path:
 
 def _prefs_path(project_root: Path) -> Path:
     return project_root / _STATE_DIR / _PREFS_FILE
-
-
-def _forks_path(project_root: Path) -> Path:
-    return project_root / _STATE_DIR / _FORKS_FILE
 
 
 def _pushed_path(project_root: Path) -> Path:
@@ -136,64 +131,10 @@ def write_pref(project_root: Path, key: str, value: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Fork map — which commit each working branch was spawned from, so the history
-# view can back-link a commit to the branch(es) it spawned (S38). Per-clone
-# (forks are a local working-branch concept), also untracked.
-# ---------------------------------------------------------------------------
-
-
-def read_forks(project_root: Path) -> dict[str, str]:
-    """Map of working-branch name → the fork-point commit it was spawned at."""
-    path = _forks_path(project_root)
-    with repository_mutation(project_root):
-        try:
-            raw = json.loads(path.read_text())
-        except FileNotFoundError:
-            return {}
-        except (OSError, json.JSONDecodeError):
-            logger.warning("git_forks_unreadable", path=str(path))
-            return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
-
-
-def _write_forks(project_root: Path, forks: dict[str, str]) -> None:
-    path = _forks_path(project_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(forks, indent=2) + "\n")
-
-
-def set_fork(project_root: Path, branch: str, sha: str) -> None:
-    """Record *branch* as spawned from *sha*."""
-    with repository_mutation(project_root):
-        forks = read_forks(project_root)
-        forks[branch] = sha
-        _write_forks(project_root, forks)
-
-
-def remove_fork(project_root: Path, branch: str) -> None:
-    """Forget *branch*'s fork point (e.g. on delete)."""
-    with repository_mutation(project_root):
-        forks = read_forks(project_root)
-        if forks.pop(branch, None) is not None:
-            _write_forks(project_root, forks)
-
-
-def rename_fork(project_root: Path, old: str, new: str) -> None:
-    """Move a fork entry when a branch is renamed (archive/restore)."""
-    with repository_mutation(project_root):
-        forks = read_forks(project_root)
-        if old in forks:
-            forks[new] = forks.pop(old)
-            _write_forks(project_root, forks)
-
-
-# ---------------------------------------------------------------------------
 # Trash tombstones — recovery metadata for deleted working pairs, keyed by the
 # deleted working-branch name. Each entry records the pair's tips (the objects
-# themselves are pinned under ``refs/haute/trash/``), the forks.json back-link
-# at delete time, whether the pair was archived, and when it was deleted — so
+# themselves are pinned under ``refs/haute/trash/``), whether the pair was
+# archived, and when it was deleted — so
 # ``undelete_working_pair`` can rebuild the pair exactly. Per-clone (deletes
 # are local ref surgery), also untracked, capped to the newest
 # ``_TRASH_MAX_ENTRIES`` (insertion order IS recency: a re-recorded name moves

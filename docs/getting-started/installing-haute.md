@@ -49,7 +49,7 @@ uv add "haute[databricks]"         # Adds mlflow + databricks-sdk (for Databrick
 
 **`haute serve` doesn't open anything in my browser**
 
-Look at the terminal output for a line like `Running on http://127.0.0.1:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).
+Look at the terminal output for a line like `Running on http://localhost:8000`. Copy that address and paste it into your browser. If you see an error, make sure your virtual environment is active (`(.venv)` in your prompt).
 
 **`(.venv)` isn't showing in my terminal prompt**
 

@@ -79,27 +79,13 @@ export interface RatingStepNodeDetail {
   detail_type: "rating_step"
   tables?: RatingStepTableDetail[]
   combined_outputs?: RatingStepCombinedOutputDetail[]
-  combined?: {
-    column?: string
-    operation?: string
-    value?: unknown
-    input_values?: unknown[]
-  }
-  matched_key?: Record<string, unknown>
-  lookup_keys?: Record<string, unknown>
-  matched_row?: unknown
-  default_used?: boolean
-  rate_value?: unknown
-  matched?: boolean
 }
 
 export interface BandingFactorDetail {
-  column?: string
   input_column?: string
   output_column?: string
   banding_type?: string
   input_value?: unknown
-  selected_band?: unknown
   matched_band?: unknown
   rule_index?: number
   is_default?: boolean
@@ -114,11 +100,9 @@ export interface BandingFactorDetail {
 export interface BandingNodeDetail {
   detail_type: "banding"
   factors?: BandingFactorDetail[]
-  column?: string
   input_column?: string
   output_column?: string
   input_value?: unknown
-  selected_band?: unknown
   matched_band?: unknown
   rule_index?: number
   is_default?: boolean
@@ -266,12 +250,6 @@ export interface ScenarioExpanderNodeDetail {
     max_value?: unknown
     steps?: unknown
   }
-  step?: unknown
-  multiplier?: unknown
-  range?: {
-    min?: unknown
-    max?: unknown
-  }
   error?: string
   error_type?: string
 }
@@ -281,8 +259,6 @@ export interface LiveSwitchNodeDetail {
   active_branch?: string
   active_scenario?: string
   pruned_branches?: string[]
-  selected_branch?: string
-  available_branches?: string[]
   error?: string
   error_type?: string
 }

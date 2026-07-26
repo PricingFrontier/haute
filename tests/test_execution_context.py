@@ -232,24 +232,6 @@ def test_execution_metrics_payload_includes_memory_budget() -> None:
     assert payload["memory_limit_bytes"] == 123_456
 
 
-def test_execution_admission_uses_profile_specific_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute._execution_admission import admit_execution
-
-    monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_LIMIT_BYTES", "100")
-    monkeypatch.setenv("HAUTE_PREVIEW_MEMORY_LIMIT_BYTES", "250")
-
-    context = admit_execution(
-        operation="pipeline_preview",
-        profile=ExecutionProfile.PREVIEW_EAGER,
-        memory_sampler=lambda: 10,
-    )
-
-    assert context.profile == ExecutionProfile.PREVIEW_EAGER
-    assert context.memory_limit_bytes == 250
-
-
 def test_execution_admission_policy_covers_every_engine_profile() -> None:
     from haute import _execution_admission as admission
 
@@ -358,17 +340,6 @@ def test_explicit_global_memory_cap_remains_hard_for_all_profiles(
         budget = execution_budget_for_profile(profile)
         assert budget.memory_limit_bytes == 768 * 1024 * 1024
         assert budget.config_key == "HAUTE_EXECUTION_MEMORY_LIMIT_MB"
-
-
-def test_execution_admission_rejects_invalid_memory_budget(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from haute._execution_admission import admit_execution
-
-    monkeypatch.setenv("HAUTE_SINK_MEMORY_LIMIT_BYTES", "0")
-
-    with pytest.raises(RuntimeError, match="HAUTE_SINK_MEMORY_LIMIT_BYTES"):
-        admit_execution(operation="pipeline_sink", profile=ExecutionProfile.LAZY_SINK)
 
 
 def test_default_execution_budget_is_adaptive_across_local_engine_profiles(
@@ -506,7 +477,7 @@ def test_execution_context_releases_registered_cleanups_once() -> None:
     context.add_cleanup(lambda: released.append("second"))
 
     context.release_admission()
-    context.close()
+    context.release_admission()
 
     assert released == ["second", "first"]
     with pytest.raises(RuntimeError, match="released execution context"):
@@ -632,7 +603,7 @@ def test_preview_execution_admission_does_not_reserve_heavy_budget(
         context.release_admission()
 
 
-def test_fixed_memory_policy_keeps_legacy_profile_defaults(
+def test_fixed_memory_policy_uses_profile_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute import _execution_admission as admission_mod
@@ -652,7 +623,7 @@ def test_fixed_memory_policy_keeps_legacy_profile_defaults(
     assert budget.available_ram_bytes is None
 
 
-def test_strict_server_memory_policy_keeps_legacy_profile_defaults(
+def test_strict_server_memory_policy_uses_profile_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from haute import _execution_admission as admission_mod
@@ -1000,17 +971,18 @@ def test_preview_cache_does_not_pin_when_store_rejects_entry(
 
     class RejectingPreviewCache:
         fingerprint = None
+        most_recent_key = None
 
         def __init__(self) -> None:
-            self.store_calls = 0
+            self.put_calls = 0
             self.pin_calls = 0
             self.unpin_calls = 0
 
-        def try_get(self, _fingerprint):
+        def get(self, _fingerprint):
             return None
 
-        def store(self, _fingerprint, **_slots):
-            self.store_calls += 1
+        def put(self, _fingerprint, _entry):
+            self.put_calls += 1
             return False
 
         def pin(self, _fingerprint):
@@ -1033,7 +1005,7 @@ def test_preview_cache_does_not_pin_when_store_rejects_entry(
         )
 
     assert result["source"].status == "ok"
-    assert rejecting_cache.store_calls == 1
+    assert rejecting_cache.put_calls == 1
     assert rejecting_cache.pin_calls == 0
     assert rejecting_cache.unpin_calls == 0
     assert any(record.get("event") == "preview_cache_store_skipped" for record in logs)
@@ -1042,7 +1014,7 @@ def test_preview_cache_does_not_pin_when_store_rejects_entry(
 def test_preview_execution_metrics_identify_cache_miss_and_hit(tmp_path) -> None:
     from haute.executor import _preview_cache, execute_graph
 
-    _preview_cache.invalidate()
+    _preview_cache.clear()
     data_path = tmp_path / "input.parquet"
     pl.DataFrame({"a": [1, 2]}).write_parquet(data_path)
     graph = make_graph({"nodes": [make_source_node("source", str(data_path))], "edges": []})
@@ -1082,7 +1054,7 @@ def test_preview_execution_metrics_identify_cache_miss_and_hit(tmp_path) -> None
     assert "preview_cache_miss" not in hit_stages
     assert "eager_collect" not in hit_stages
 
-    _preview_cache.invalidate()
+    _preview_cache.clear()
 
 
 def test_execution_context_records_stage_metric_with_rss_delta() -> None:
@@ -1326,7 +1298,7 @@ def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
         operation="training",
         profile=ExecutionProfile.TRAINING_PREP,
     )
-    context.projection_plan = ProjectionPlan(
+    plan = ProjectionPlan(
         needed_by_node={"train": None},
         edge_demands={("source", "train"): frozenset({"target"})},
         opaque_boundaries=frozenset({"train"}),
@@ -1353,9 +1325,9 @@ def test_execution_metrics_payload_includes_projection_diagnostics() -> None:
         ),
     )
 
-    payload = context.metrics_payload(status="completed")
+    context.projection_plan = plan
 
-    assert payload["projection_plan_diagnostics"] == {
+    assert plan.diagnostics_payload(profile=context.profile.value) == {
         "opaque_reasons": {
             "train": {
                 "rule": "schema_all_except",
@@ -3325,13 +3297,10 @@ def test_optimiser_execute_pipeline_forwards_execution_context(tmp_path) -> None
     assert stored_metrics["job_id"] == job_id
 
 
-def test_optimiser_auto_range_entry_points_create_admitted_contexts(monkeypatch) -> None:
+def test_optimiser_auto_range_start_creates_admitted_context(monkeypatch) -> None:
     from haute.routes._job_store import JobStore
     from haute.routes._optimiser_service import OptimiserSolveService
-    from haute.schemas import (
-        OptimiserFrontierAutoRangeRequest,
-        OptimiserFrontierAutoRangeResponse,
-    )
+    from haute.schemas import OptimiserFrontierAutoRangeRequest
 
     monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "320")
     monkeypatch.setattr("haute._execution_admission.current_rss_bytes", lambda: 7_000)
@@ -3362,19 +3331,6 @@ def test_optimiser_auto_range_entry_points_create_admitted_contexts(monkeypatch)
         "required_columns_by_node": None,
         "streaming_plan": None,
     }
-    response = OptimiserFrontierAutoRangeResponse(status="ok", ranges={})
-
-    with (
-        patch.object(service, "_prepare_frontier_auto_range", return_value=prepared),
-        patch.object(service, "_run_frontier_auto_range_job", return_value=response) as run_job,
-    ):
-        assert service.estimate_frontier_auto_range(body).status == "ok"
-
-    sync_context = run_job.call_args.kwargs["execution_context"]
-    assert sync_context.profile == ExecutionProfile.AUTO_RANGE
-    assert sync_context.memory_limit_bytes == 320 * 1024 * 1024
-    assert sync_context.admission is not None
-
     with (
         patch.object(service, "_prepare_frontier_auto_range", return_value=prepared),
         patch.object(service, "_launch_frontier_auto_range_background") as launch,

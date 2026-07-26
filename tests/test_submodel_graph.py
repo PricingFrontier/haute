@@ -94,8 +94,8 @@ class TestClassifyPorts:
         """Inbound edges → input ports, outbound → output ports."""
         child_ids = {"a", "b"}
         cross_edges = [
-            ("external", "a"),  # external → child a: input
-            ("b", "external2"),  # child b → external: output
+            GraphEdge(id="in", source="external", target="a"),
+            GraphEdge(id="out", source="b", target="external2"),
         ]
         inputs, outputs = classify_ports(cross_edges, child_ids)
         assert inputs == ["a"]
@@ -105,8 +105,8 @@ class TestClassifyPorts:
         """Duplicate port references are deduplicated, preserving order."""
         child_ids = {"a"}
         cross_edges = [
-            ("x", "a"),
-            ("y", "a"),
+            GraphEdge(id="x-a", source="x", target="a"),
+            GraphEdge(id="y-a", source="y", target="a"),
         ]
         inputs, outputs = classify_ports(cross_edges, child_ids)
         assert inputs == ["a"]
@@ -122,8 +122,8 @@ class TestClassifyPorts:
         """A child node can be both input and output port."""
         child_ids = {"a"}
         cross_edges = [
-            ("ext1", "a"),
-            ("a", "ext2"),
+            GraphEdge(id="in", source="ext1", target="a"),
+            GraphEdge(id="out", source="a", target="ext2"),
         ]
         inputs, outputs = classify_ports(cross_edges, child_ids)
         assert inputs == ["a"]
@@ -132,7 +132,7 @@ class TestClassifyPorts:
     def test_internal_edges_ignored(self):
         """Edges fully inside the submodel produce no ports."""
         child_ids = {"a", "b"}
-        cross_edges = [("a", "b")]  # both inside
+        cross_edges = [GraphEdge(id="a-b", source="a", target="b")]
         inputs, outputs = classify_ports(cross_edges, child_ids)
         assert inputs == []
         assert outputs == []
@@ -143,7 +143,12 @@ class TestClassifyPorts:
 
     def test_node_both_input_and_output(self):
         child_ids = {"a", "b"}
-        cross_edges = [("ext1", "a"), ("a", "ext2"), ("ext3", "b"), ("b", "ext4")]
+        cross_edges = [
+            GraphEdge(id="in-a", source="ext1", target="a"),
+            GraphEdge(id="out-a", source="a", target="ext2"),
+            GraphEdge(id="in-b", source="ext3", target="b"),
+            GraphEdge(id="out-b", source="b", target="ext4"),
+        ]
         inputs, outputs = classify_ports(cross_edges, child_ids)
         assert inputs == ["a", "b"]
         assert outputs == ["a", "b"]
@@ -151,18 +156,22 @@ class TestClassifyPorts:
     def test_deduplication_with_order_preservation(self):
         child_ids = {"a", "b", "c"}
         cross_edges = [
-            ("ext", "c"),
-            ("ext", "a"),
-            ("ext", "c"),
-            ("ext", "b"),
-            ("ext", "a"),
+            GraphEdge(id="ext-c-1", source="ext", target="c"),
+            GraphEdge(id="ext-a-1", source="ext", target="a"),
+            GraphEdge(id="ext-c-2", source="ext", target="c"),
+            GraphEdge(id="ext-b", source="ext", target="b"),
+            GraphEdge(id="ext-a-2", source="ext", target="a"),
         ]
         inputs, _ = classify_ports(cross_edges, child_ids)
         assert inputs == ["c", "a", "b"]
 
     def test_all_edges_internal_empty_ports(self):
         child_ids = {"a", "b", "c"}
-        cross_edges = [("a", "b"), ("b", "c"), ("a", "c")]
+        cross_edges = [
+            GraphEdge(id="a-b", source="a", target="b"),
+            GraphEdge(id="b-c", source="b", target="c"),
+            GraphEdge(id="a-c", source="a", target="c"),
+        ]
         inputs, outputs = classify_ports(cross_edges, child_ids)
         assert inputs == []
         assert outputs == []
@@ -235,15 +244,14 @@ class TestRewireEdges:
         assert rewire_edges([], "submodel__grp", {"a"}) == []
 
     def test_edge_id_format(self):
-        """Rewired edge IDs follow the expected naming convention."""
+        """Rewired boundary IDs include a deterministic port digest."""
         edges = [
             self._edge("ext", "child"),
             self._edge("child", "ext2"),
         ]
         result = rewire_edges(edges, "submodel__grp", {"child"})
-        ids = {e.id for e in result}
-        assert "e_ext_submodel__grp__child" in ids
-        assert "e_submodel__grp_ext2__child" in ids
+        assert result[0].id.startswith("e_ext_submodel__grp__child_")
+        assert result[1].id.startswith("e_submodel__grp_ext2__child_")
 
     def test_all_internal_all_dropped(self):
         edges = [self._edge("a", "b"), self._edge("b", "c"), self._edge("a", "c")]
@@ -281,7 +289,10 @@ class TestRewireEdges:
         edges = [self._edge("ext", "child")]
         r1 = rewire_edges(edges, "submodel__grp", {"child"})
         r2 = rewire_edges(edges, "submodel__grp", {"child"})
-        assert r1[0].id == r2[0].id == "e_ext_submodel__grp__child"
+        base_id = "e_ext_submodel__grp__child"
+        assert r1[0].id == r2[0].id
+        assert r1[0].id.startswith(f"{base_id}_")
+        assert r1[0].id != base_id
 
     def test_cross_submodel_edge_keeps_both_boundary_handles(self):
         """A child-of-A → child-of-B edge is rewired once per submodel.

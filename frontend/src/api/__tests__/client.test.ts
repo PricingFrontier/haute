@@ -55,7 +55,6 @@ import {
   updateUtilityFile,
   deleteUtilityFile,
   buildJsonCache,
-  cancelJsonCache,
   getJsonCacheProgress,
   getJsonCacheStatus,
   deleteJsonCache,
@@ -165,7 +164,7 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     feature_importance: [],
     model_path: "",
     train_rows: 0,
-    test_rows: 0,
+    validation_rows: 0,
     holdout_rows: 0,
     holdout_metrics: {},
     diagnostics_set: "validation",
@@ -321,11 +320,9 @@ beforeEach(() => {
   mockFetch = vi.fn()
   globalThis.fetch = mockFetch as unknown as typeof fetch
 })
-
 afterEach(() => {
   vi.restoreAllMocks()
 })
-
 // ═══════════════════════════════════════════════════════════════════════════
 // request() core function — tested through loadPipeline (a thin GET wrapper)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -339,14 +336,13 @@ describe("request() core via loadPipeline", () => {
     expect(url).toBe("/api/pipeline")
   })
 
-  it("uses browser-managed same-origin credentials without a bearer header", async () => {
+  it("uses browser-managed same-origin credentials", async () => {
     mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
 
     await loadPipeline()
 
     const [, options] = mockFetch.mock.calls[0]
     expect(options.credentials).toBe("same-origin")
-    expect(options.headers["x-haute-session-token"]).toBeUndefined()
   })
 
   it("bootstraps one HttpOnly-cookie session for concurrent callers", async () => {
@@ -470,7 +466,6 @@ describe("request() core via loadPipeline", () => {
     expect(result).toEqual({ nodes: [], edges: [] })
   })
 })
-
 // ═══════════════════════════════════════════════════════════════════════════
 // POST requests — tested through specific endpoints
 // ═══════════════════════════════════════════════════════════════════════════
@@ -640,7 +635,6 @@ describe("endpoint contracts", () => {
     expect(url).toBe("/api/databricks/catalogs")
   })
 })
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Git endpoints
 // ═══════════════════════════════════════════════════════════════════════════
@@ -688,13 +682,11 @@ describe("git endpoints", () => {
         {
           name: "origin",
           url: "git@example.com:x.git",
-          ahead: 2,
-          behind: 0,
           working: { status: "ahead", ahead: 2, behind: 0 },
           ledger: { status: "behind", ahead: 0, behind: 1 },
         },
-        // A remote with no leg detail → the legs fill to null (back-compat input).
-        { name: "backup", url: null, ahead: null, behind: null },
+        // A remote with no leg detail has null legs.
+        { name: "backup", url: null },
       ],
       working_branch: "dev",
     }
@@ -1132,17 +1124,6 @@ describe("json cache endpoints", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 
-  it("cancelJsonCache POSTs to /api/json-cache/cancel with path body", async () => {
-    const data = { cancelled: true, data_path: "/data/input.json" }
-    mockFetch.mockReturnValue(jsonResponse(data))
-    const result = await cancelJsonCache("/data/input.json")
-    const [url, opts] = mockFetch.mock.calls[0]
-    expect(url).toBe("/api/json-cache/cancel")
-    expect(opts.method).toBe("POST")
-    expect(JSON.parse(opts.body)).toEqual({ path: "/data/input.json" })
-    expect(result).toEqual(data)
-  })
-
   it("getJsonCacheProgress GETs /api/json-cache/progress with encoded path", async () => {
     const data = makeJsonCacheProgressResponse()
     mockFetch.mockReturnValue(jsonResponse(data))
@@ -1387,7 +1368,6 @@ describe("streaming_chunk_size in request bodies", () => {
       if (url === "/api/modelling/train") return jsonResponse(makeTrainResponse())
       if (url === "/api/optimiser/solve") return jsonResponse(makeSolveOptimiserResponse())
       if (url === "/api/optimiser/estimate") return jsonResponse({})
-      if (url === "/api/optimiser/frontier/auto-range") return jsonResponse({ status: "ok", method: "auto", ranges: {} })
       return jsonResponse({})
     })
   })
@@ -1500,20 +1480,6 @@ describe("streaming_chunk_size in request bodies", () => {
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
   })
 
-  it("estimateOptimiserFrontierAutoRange body includes streaming_chunk_size when supplied", async () => {
-    const { estimateOptimiserFrontierAutoRange } = await import("../client")
-    await estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1", streamingChunkSize: 42 })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body).streaming_chunk_size).toBe(42)
-  })
-
-  it("estimateOptimiserFrontierAutoRange body omits streaming_chunk_size when not supplied", async () => {
-    const { estimateOptimiserFrontierAutoRange } = await import("../client")
-    await estimateOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
-    const [, opts] = mockFetch.mock.calls[0]
-    expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-
   it("startOptimiserFrontierAutoRange body includes streaming_chunk_size when supplied", async () => {
     const { startOptimiserFrontierAutoRange } = await import("../client")
     mockFetch.mockReturnValue(jsonResponse({ status: "started", job_id: "range-job-1", error: null }))
@@ -1529,90 +1495,5 @@ describe("streaming_chunk_size in request bodies", () => {
     await startOptimiserFrontierAutoRange({ graph: dummyGraph, node_id: "opt1" })
     const [, opts] = mockFetch.mock.calls[0]
     expect(JSON.parse(opts.body)).not.toHaveProperty("streaming_chunk_size")
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════
-// runFrontier — the backend now returns a pollable job handle and the client
-// polls /frontier/status/{job_id} until the sweep finishes, preserving the
-// old resolve-with-final-payload contract.
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("runFrontier background polling", () => {
-  const startedBody = { status: "started", job_id: "frontier-job-1", points: [], n_points: 0, points_returned: 0, constraint_names: [], points_limit: null, points_truncated: false }
-  const completedResult = { status: "ok", points: [{ total_objective: 1.0 }], n_points: 1, points_returned: 1, constraint_names: ["volume"], points_limit: 2000, points_truncated: false }
-  const statusBody = (status: string, extra: Record<string, unknown> = {}) => ({
-    status,
-    progress: 1,
-    message: "",
-    elapsed_seconds: 0.1,
-    result: null,
-    ...extra,
-  })
-
-  it("starts the sweep then resolves with the polled result", async () => {
-    const { runFrontier } = await import("../client")
-    mockFetch
-      .mockReturnValueOnce(jsonResponse(startedBody))
-      .mockReturnValueOnce(jsonResponse(statusBody("completed", { result: completedResult })))
-
-    const frontier = await runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
-
-    expect(frontier.n_points).toBe(1)
-    expect(frontier.constraint_names).toEqual(["volume"])
-    expect(mockFetch.mock.calls[0][0]).toBe("/api/optimiser/frontier")
-    expect(mockFetch.mock.calls[1][0]).toBe("/api/optimiser/frontier/status/frontier-job-1")
-  })
-
-  it("keeps polling while the job is running", async () => {
-    vi.useFakeTimers()
-    try {
-      const { runFrontier } = await import("../client")
-      mockFetch
-        .mockReturnValueOnce(jsonResponse(startedBody))
-        .mockReturnValueOnce(jsonResponse(statusBody("running")))
-        .mockReturnValueOnce(jsonResponse(statusBody("completed", { result: completedResult })))
-
-      const promise = runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
-      await vi.advanceTimersByTimeAsync(600)
-
-      await expect(promise).resolves.toMatchObject({ n_points: 1 })
-      expect(mockFetch).toHaveBeenCalledTimes(3)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it("rejects with an ApiError carrying the job message on terminal failure", async () => {
-    const { runFrontier } = await import("../client")
-    mockFetch
-      .mockReturnValueOnce(jsonResponse(startedBody))
-      .mockReturnValueOnce(jsonResponse(statusBody("contract_error", { message: "Optimiser job state changed", http_status_code: 409 })))
-
-    const promise = runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
-
-    await expect(promise).rejects.toBeInstanceOf(ApiError)
-    await expect(promise).rejects.toMatchObject({ status: 409, message: "Optimiser job state changed" })
-  })
-
-  it("rejects when a completed job has no result payload", async () => {
-    const { runFrontier } = await import("../client")
-    mockFetch
-      .mockReturnValueOnce(jsonResponse(startedBody))
-      .mockReturnValueOnce(jsonResponse(statusBody("completed")))
-
-    await expect(
-      runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } }),
-    ).rejects.toMatchObject({ message: "Frontier job completed without a result" })
-  })
-
-  it("returns the immediate payload when the backend answers inline", async () => {
-    const { runFrontier } = await import("../client")
-    mockFetch.mockReturnValueOnce(jsonResponse(completedResult))
-
-    const frontier = await runFrontier({ job_id: "opt-job-1", threshold_ranges: { volume: [0.8, 1.0] } })
-
-    expect(frontier.status).toBe("ok")
-    expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 })

@@ -27,7 +27,6 @@ from haute.assistant._ops import OpValidationError, apply_ops, parse_ops
 from haute.errors import HauteError
 from haute.execution import execute_lazy_graph
 from haute.executor import (
-    ENFORCE_CONTRACTS,
     _build_node_fn,
     _compile_preamble,
     _pipeline_dir,
@@ -147,7 +146,7 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
             preserve_node_ids={node},
             preamble_ns=preamble_ns or None,
             source=graph.active_source,
-            enforce_contracts=ENFORCE_CONTRACTS,
+            enforce_contracts=True,
         )
         output = lazy_outputs[node]
         if isinstance(output, dict):

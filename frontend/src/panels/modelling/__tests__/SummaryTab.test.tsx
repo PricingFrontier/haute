@@ -10,7 +10,7 @@ describe("SummaryTab", () => {
     const result = makeTrainResult({
       model_path: "/models/test.cbm",
       train_rows: 8000,
-      test_rows: 2000,
+      validation_rows: 2000,
     })
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
     expect(screen.getByText("/models/test.cbm")).toBeInTheDocument()
@@ -73,7 +73,7 @@ describe("SummaryTab", () => {
   })
 
   it("shows holdout rows when present", () => {
-    const result = makeTrainResult({ holdout_rows: 500, test_rows: 2000 })
+    const result = makeTrainResult({ holdout_rows: 500, validation_rows: 2000 })
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
     expect(screen.getByText("Holdout rows")).toBeInTheDocument()
     expect(screen.getByText("500")).toBeInTheDocument()

@@ -319,7 +319,7 @@ def test_breakpoint_banding_trace_shows_boundary_match(tmp_path):
     step = _step_by_id(result, "banding")
 
     assert step.node_detail is not None
-    assert step.node_detail["selected_band"] == "adult"
+    assert step.node_detail["matched_band"] == "adult"
     assert step.node_detail["rule_index"] == 1
     assert step.calculation is not None
     assert step.calculation["input_values"] == {"driver_age": 30}

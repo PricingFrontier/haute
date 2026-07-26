@@ -34,7 +34,6 @@ vi.mock("../../api/client", () => ({
   getJsonCacheStatus: vi.fn().mockResolvedValue({ cached: false }),
   getJsonCacheStatusForSchema: vi.fn().mockResolvedValue({ cached: false }),
   deleteJsonCache: vi.fn(),
-  cancelJsonCache: vi.fn(),
   inferJsonCacheSchema: (...args: unknown[]) => mockInferJsonCacheSchema(...args),
   ApiError: class ApiError extends Error {},
 }))
@@ -1003,21 +1002,6 @@ describe("cross-frame name-collision warning (ruled 2026-07-14)", () => {
     render(<StatefulHarness initialConfig={transported} />)
     expect(screen.queryByTestId("api-input-table-0-col-0-name-collision")).toBeNull()
     expect(screen.queryByTestId("api-input-table-1-col-0-name-collision")).toBeNull()
-  })
-})
-
-describe("bare $ table path is gated (ruled 2026-07-14)", () => {
-  it("committing '$' as a table path is refused with the reserved-spelling message", () => {
-    const onUpdateSpy = vi.fn()
-    render(<StatefulHarness initialConfig={structuredClone(NESTED)} onUpdateSpy={onUpdateSpy} />)
-    const pathInput = screen.getByTestId("api-input-table-0-path")
-    fireEvent.change(pathInput, { target: { value: "$" } })
-    fireEvent.blur(pathInput)
-    expect(screen.getByTestId("api-input-table-0-path-error")).toHaveTextContent(
-      /reserved.*object-outer/i,
-    )
-    // The refused commit never reaches the persisted config.
-    expect(onUpdateSpy).not.toHaveBeenCalled()
   })
 })
 

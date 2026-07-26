@@ -27,12 +27,11 @@
  * `frontend/src/utils/hoverHandlers.ts` — they only centralise the
  * identical mutation, they don't remove the hazard.
  *
- * Scope — exactly these seven files
+ * Scope — exactly these six files
  * -----------------------------------------------------
  *   frontend/src/panels/editors/_shared.tsx
  *   frontend/src/panels/editors/RatingStepEditor.tsx
  *   frontend/src/panels/editors/DataOutputEditor.tsx
- *   frontend/src/panels/editors/GroupedColumnsTab.tsx
  *   frontend/src/panels/editors/ConstantEditor.tsx
  *   frontend/src/panels/editors/DataInputEditor.tsx
  *   frontend/src/panels/editors/_DatabricksSelector.tsx
@@ -52,10 +51,6 @@
  *     ~L78-79    path input       focus-ring borderColor + boxShadow
  *     ~L88-89    Write button     opacity toggle on hover
  *
- *   GroupedColumnsTab.tsx       — 4 sites (2 pairs):
- *     ~L413-414  group-header row   background toggle
- *     ~L477-478  pattern row        background toggle
- *
  *   ConstantEditor.tsx          — 4 sites (2 pairs):
  *     ~L69-70    remove-row-X     color toggle
  *     ~L87-88    "Add value" btn  background toggle
@@ -66,9 +61,9 @@
  *   _DatabricksSelector.tsx     — 2 sites (1 pair):
  *     ~L76-77    warehouse input  focus-ring borderColor + boxShadow
  *
- *   Total: 26 style-mutation sites across 7 files.
+ *   Total: 22 style-mutation sites across 6 files.
  *
- * None of the seven files currently imports from
+ * None of the six files currently imports from
  * `utils/hoverHandlers.ts` — every hover is spelled inline.  The
  * hoverHandlers module is still pinned here because the dev fix
  * must not substitute one hazard (inline writes) for another
@@ -77,11 +72,11 @@
  *
  * What this test pins
  * -------------------
- *   1. For each of the 7 files, the AST contains zero
+ *   1. For each of the 6 files, the AST contains zero
  *      `*.currentTarget.style.*` member expressions — i.e. no code
  *      path writes to an element's inline style from an event
  *      handler.
- *   2. For each of the 7 files, no `ImportDeclaration` resolves to
+ *   2. For each of the 6 files, no `ImportDeclaration` resolves to
  *      `utils/hoverHandlers` (any relative spelling) and the
  *      identifiers `hoverHandlers` / `hoverBg` are not named in
  *      import specifiers.
@@ -131,12 +126,11 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_ROOT = path.resolve(HERE, "../..")
 const EDITORS_DIR = path.join(SRC_ROOT, "panels", "editors")
 
-/** The seven editor files in scope. */
+/** The editor files in scope. */
 const TARGET_FILES = [
   "_shared.tsx",
   "RatingStepEditor.tsx",
   "DataOutputEditor.tsx",
-  "GroupedColumnsTab.tsx",
   "ConstantEditor.tsx",
   "DataInputEditor.tsx",
   "_DatabricksSelector.tsx",

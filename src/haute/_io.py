@@ -483,9 +483,8 @@ def read_source(
     * ``.json`` maps to eager ``pl.read_json(...).lazy()``.
 
     Plain JSON has no Polars lazy scan path. Bounded-memory execution profiles
-    therefore reject it before eager parsing begins. Prefer ``read_json_flat``
-    or NDJSON for large JSON files where projection and row-limit pushdown
-    matter.
+    therefore reject it before eager parsing begins. Prefer NDJSON or Parquet
+    for large files where projection and row-limit pushdown matter.
 
     Raises:
         ValueError: If the file extension is not supported.

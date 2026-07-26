@@ -37,16 +37,10 @@ import PreviewPanelFrame from "./PreviewPanelFrame"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 
 // ─── Types (shared with OptimiserConfig) ─────────────────────────
-// ``SolveResult`` is an alias for the canonical API-boundary type so the
-// panel and the store agree on a single shape.  Add new fields to
-// ``OptimiserSolveResult`` in ``api/types.ts``, not here.
-
-export type SolveResult = OptimiserSolveResult
-
 export type { FrontierData }
 
 export type OptimiserPreviewData = {
-  result: SolveResult
+  result: OptimiserSolveResult
   jobId: string
   constraints: Record<string, Record<string, number>>
   nodeLabel: string
@@ -481,7 +475,7 @@ export default function OptimiserPreview({ data, nodeId, allNodes, edges }: Opti
 
 interface FrontierTabProps {
   frontier: FrontierData | null
-  result: SolveResult
+  result: OptimiserSolveResult
   constraints: Record<string, Record<string, number>>
   constraintNames: string[]
   selectedIdx: number | null
@@ -675,7 +669,7 @@ function ExportTab({
   actionMsg,
   resultDetail,
 }: {
-  result: SolveResult
+  result: OptimiserSolveResult
   onSave: () => void
   onLogMlflow: () => void
   onLoadResultDetail: () => void

@@ -51,7 +51,6 @@ describe("NodePanel lazy editor loading", () => {
       "./editors/ConstantEditor",
       "./editors/SubmodelEditor",
       "./editors/ColumnsTab",
-      "./editors/GroupedColumnsTab",
       "./ModellingConfig",
       "./OptimiserConfig",
     ]) {

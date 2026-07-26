@@ -82,7 +82,6 @@ vi.mock("../api/client", async () => {
     applyOptimiser: vi.fn(() => Promise.resolve({})),
     saveOptimiser: vi.fn(() => Promise.resolve({})),
     logOptimiserToMlflow: vi.fn(() => Promise.resolve({})),
-    runFrontier: vi.fn(() => Promise.resolve({})),
     selectFrontierPoint: vi.fn(() => Promise.resolve({})),
     // Explore
     runExplore: vi.fn(() => Promise.resolve({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })),
@@ -95,7 +94,6 @@ vi.mock("../api/client", async () => {
     getTables: vi.fn(() => Promise.resolve({ tables: [] })),
     // JSON cache
     buildJsonCache: vi.fn(() => Promise.resolve({})),
-    cancelJsonCache: vi.fn(() => Promise.resolve({ cancelled: false, data_path: "" })),
     getJsonCacheProgress: vi.fn(() => Promise.resolve({})),
     getJsonCacheStatus: vi.fn(() => Promise.resolve({})),
     getJsonCacheStatusForSchema: vi.fn(() => Promise.resolve({})),
@@ -404,7 +402,13 @@ beforeEach(() => {
   vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
   vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
   vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
-  vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({ mlflow_installed: false, backend: "", databricks_host: "" })
+  vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({
+    mlflow_installed: false,
+    mlflow_importable: false,
+    tracking_configured: false,
+    backend: "",
+    databricks_host: "",
+  })
   vi.mocked(api.listUtilityFiles).mockReset().mockResolvedValue({ files: [] })
   // Default to a healthy clone so the startup modal stays closed; tests that
   // need unset/divergent override with mockResolvedValue inside the test.
@@ -1165,10 +1169,10 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     await waitFor(() => {
       expect(useGraphStore.getState().edges).toHaveLength(0)
     })
-    // ...and a visible warning toast names the disconnection.
+    // ...and a visible warning toast reports the disconnection.
     await waitFor(() => {
       const toasts = useToastStore.getState().toasts
-      expect(toasts.some((t) => t.type === "warning" && /drivers/.test(t.text))).toBe(true)
+      expect(toasts.some((t) => t.type === "warning" && /source frame no longer exists/.test(t.text))).toBe(true)
     })
   })
 
@@ -1423,45 +1427,6 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
     await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
     expect(vi.mocked(api.savePipeline).mock.calls[0][0].graph.submodels).toEqual(graph.submodels)
-  })
-
-  it("preserves a stale named apiInput edge from load through warning render and save", async () => {
-    const graph = makeApiInputGraph()
-    const staleEdge = { ...graph.edges[0], id: "e_stale_frame", sourceHandle: "stale_quotes" }
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({ ...graph, edges: [staleEdge] })
-    render(<App />)
-    await waitForAppReady()
-
-    expect(useGraphStore.getState().edges).toEqual([
-      expect.objectContaining(staleEdge),
-    ])
-    fireEvent.click(await screen.findByTestId("node-Driver Cleanup"))
-    const chip = await screen.findByTestId("input-source-e_stale_frame")
-    expect(chip).toHaveAttribute("data-unresolved", "true")
-    expect(chip).toHaveTextContent("stale_quotes")
-    expect(chip).toHaveAccessibleName(/unresolved frame/i)
-
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
-    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
-    expect(vi.mocked(api.savePipeline).mock.calls[0][0].graph.edges).toEqual([
-      expect.objectContaining(staleEdge),
-    ])
-  })
-
-  it("prunes a persisted null-handle apiInput edge during initial reconciliation without undo noise", async () => {
-    const graph = makeApiInputGraph()
-    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
-      ...graph,
-      edges: [{ ...graph.edges[0], id: "e_portless", sourceHandle: null }],
-    })
-
-    render(<App />)
-    await waitForAppReady()
-
-    await waitFor(() => {
-      expect(useGraphStore.getState().edges).toEqual([])
-    })
-    expect(useGraphStore.getState().undoStack).toEqual([])
   })
 
   it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {

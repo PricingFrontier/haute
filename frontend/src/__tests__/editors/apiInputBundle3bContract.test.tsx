@@ -64,7 +64,6 @@ vi.mock("../../panels/LazyNodeEditors", () => ({
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
   ColumnsTab: () => <div data-testid="ColumnsTab" />,
-  GroupedColumnsTab: () => <div data-testid="GroupedColumnsTab" />,
   ModellingConfig: () => <div data-testid="ModellingConfig" />,
   OptimiserConfig: () => <div data-testid="OptimiserConfig" />,
 }))

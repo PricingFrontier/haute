@@ -4,11 +4,11 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, shape/extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
+| `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
 | `src/haute/_json_shred.py` | v2 per-frame JSON shred: single-pass record walk, buffer→parquet build, cache validity/load, schema inference from data. |
-| `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for JSON apiInput sources: path resolution, delete, save-time promotion, preview-cache fingerprint contribution. The v1 flattening codec that used to live here has been removed. |
+| `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for JSON apiInput sources: path resolution, delete, save-time promotion, preview-cache fingerprint contribution. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
-| `src/haute/_jsonpath.py` | The shared array-outer JSON path grammar: acceptance parsing, canonicality predicate, canonical writer. Used by both INPUT and OUTPUT path addressing. |
+| `src/haute/_jsonpath.py` | The shared canonical array-outer JSON path parser and writer used by both INPUT and OUTPUT path addressing. |
 | `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation and document assembly: GYO residue/cut planning, bag-natural joins, array-prefix nesting, pruning, and collected-frame rendering. |
 | `src/haute/_edge_join.py` | `edgeJoin` node config validation, Polars join-kwargs construction/execution, and the shared join column-demand-narrowing function used by both static projection and runtime narrowing. |
 
@@ -55,8 +55,8 @@ Submodel graph expansion and boundary rewiring are owned by
 **`_jsonpath.py`**
 
 - `_Seg` (`NamedTuple`) — `(name, is_array)`, one output-path segment.
-- `_ParsedPath` (frozen dataclass) — `raw`, `segments: tuple[_Seg, ...]`,
-  `root_array: bool`.
+- `_ParsedPath` (frozen dataclass) — `raw` and
+  `segments: tuple[_Seg, ...]`.
 - `_PathError` (`Protocol`) — the injected error constructor
   `(message, **context) -> Exception`; lets the neutral grammar core raise each
   caller's own `HauteError` subclass (`ApiInputSchemaError` on the INPUT side,
@@ -112,11 +112,6 @@ hard-keyword list) and treats duplicates case-insensitively to match B2,
 before commit. `parse_table_path`/`parse_column_path_full`/
 `parse_column_path` delegate grammar acceptance to `_jsonpath.py`; `make_table_path`
 delegates canonical rendering to the same writer.
-
-Bracket-name selectors such as `$[:]['drivers'][:]` are accepted and normalised
-by the parser; `make_table_path`/`make_output_path` emit the canonical dotted
-spelling, while validation does not require the input spelling itself to be
-canonical.
 
 > NOTE: `validate_v2_schema` does not runtime-check the declared `emit`,
 > `selected`, or `status` value types. `emit`/`selected` are consumed by
@@ -187,7 +182,7 @@ assembly path currently does not.
 3. Try `working/`, then `committed/`. Read each candidate manifest once. It must
    pass fingerprint/source validity; contain exactly one entry per emitting label;
    derive the expected filename from that label; and carry a strict size/SHA-256
-   signature. Missing, duplicate, malformed, or legacy unsigned entries invalidate
+   signature. Missing, duplicate, malformed, or unsigned entries invalidate
    the candidate. Each compressed parquet is then read exactly once; size and
    SHA-256 are verified over that exact payload, and the same bytes seed
    `scan_parquet(BytesIO(payload))`. `LazyFrame.collect_schema()` must expose the
@@ -213,19 +208,18 @@ assembly path currently does not.
 
 **Save-time cache promotion** — `mirror_cache_to_committed(data_path)`
 (`_json_flatten.py`):
-1. Wipe legacy flat-layout artifacts.
-2. No-op if this process has not built `working/` for this data file this session
+1. No-op if this process has not built `working/` for this data file this session
    (`_session_consulted_hashes`, populated only by a successful build-route call) —
    guards against promoting a stale on-disk `working/` left from a previous process.
-3. Under the shred's own build lock for `working/`: if `working/` is absent, ensure
+2. Under the shred's own build lock for `working/`: if `working/` is absent, ensure
    `committed/` is also absent (propagate deletion). If working metadata has a
    non-v2 mode, malformed fingerprint/source identity, or source signature that no
    longer matches `data_path`, or if its artifacts are unsigned, malformed, missing,
    or hash-mismatched, preserve committed state and return without promotion.
    Otherwise no-op only when both manifests agree on
    schema fingerprint, schema mode, source signature, and signed table summaries,
-   and both layers' actual parquet bytes match those signatures. A legacy unsigned
-   or damaged committed layer is therefore replaced from healthy working state via
+   and both layers' actual parquet bytes match those signatures. A damaged committed
+   layer is therefore replaced from healthy working state via
    `copytree` into a `.tmp` sibling. Before publish, the staged `meta.json` must equal
    the captured working manifest and every staged parquet must still match that
    manifest's signature; a concurrently changed/mixed copy is removed and committed
@@ -245,8 +239,7 @@ accommodation.
 > thread lock that serializes same-process builders (and a promotion against a build
 > of its working directory), but it does not lock readers or other processes. A hard
 > interruption after `live_dir` is renamed aside, or a failed restoration, can leave
-> `live_dir` absent with a UUID `.build-old-<uuid>` backup. The pre-swap cleanup only
-> removes the legacy fixed `<live>.build-old` directory, not UUID backups. Existing
+> `live_dir` absent with a UUID `.build-old-<uuid>` backup. Existing
 > tests exercise same-process build serialization, different-cache parallelism,
 > staging-write cleanup, transient rename retry, synchronous restoration after a
 > failed second rename, staged mirror mutation rejection, and already-returned
@@ -372,9 +365,8 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   `edgeJoin` config: wrong connected-input count/distinctness, unresolved or
   ambiguous base/join role, unsupported `how`, missing/conflicting join keys,
   mismatched key counts, non-string suffix, malformed `on`/`leftOn`/`rightOn`.
-- `ValueError` — used internally and locally by `_jsonpath.is_canonical`'s
-  ephemeral error-adapter (never escapes the function) and by the small config
-  validators in `_edge_join.py` for malformed non-graph-sourced inputs.
+- `ValueError` — used by the small config validators in `_edge_join.py` for
+  malformed non-graph-sourced inputs.
 - Grammar rejections in `_jsonpath.parse_path` / `parse_data_path` raise whatever
   the caller injected as `error` — `ApiInputSchemaError` from the INPUT side,
   `OutputMappingSchemaError` from the OUTPUT side — carrying the offending
@@ -397,9 +389,8 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
 - `tests/test_json_shred_properties.py` — Hypothesis property tests: exactly one
   root row per record, one scalar-array child row per element, order-independent
   inference (set-based type widening), full conservation accounting.
-- `tests/test_v2_codec_and_shred.py` — v2 shape recognition (`is_v2_shape`) and
-  layered per-port shred behaviour; positively asserts the deleted v1
-  `legacy_to_v2`/`v2_to_legacy` symbols no longer import.
+- `tests/test_v2_codec_and_shred.py` — canonical schema validation and layered
+  per-port shred behaviour.
 - `tests/test_v2_object_nesting_inference.py` — the 2026-06-17 object-nesting
   transparency ruling, end to end through inference/shred/grammar agreement.
 - `tests/test_scalar_array_and_inference.py` — scalar-array-as-its-own-child-table
@@ -445,15 +436,14 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
 
 Path grammar (`_jsonpath.py`):
 
-- `tests/test_jsonpath_canonical.py` — direct grammar unit coverage: the canonical
-  writer, the canonicality predicate, and the INPUT-mode `parse_data_path`
-  (`allow_root`, the `$value` reserved leaf). The OUTPUT-mode `parse_path` is
-  additionally exercised heavily and indirectly through the assembler's own test
-  suite.
+- `tests/test_jsonpath_canonical.py` — direct grammar unit coverage for the
+  canonical writer and INPUT-mode `parse_data_path` (`allow_root`, the `$value`
+  reserved leaf). The OUTPUT-mode `parse_path` is additionally exercised
+  through the assembler suite.
 
 V2 schema codec and OUTPUT shape:
 
-- `tests/test_v2_codec_and_shred.py`, `tests/test_v1_removal_contract.py`,
+- `tests/test_v2_codec_and_shred.py`,
   `tests/test_v2_object_nesting_inference.py`, and the JSON-cache integrity/
   error suites own v2 recognition, canonical parse/write behaviour, label/
   column/type/row-ID invariants, structured schema errors, and ancestor-column
@@ -467,7 +457,7 @@ V2 schema codec and OUTPUT shape:
 - `frontend/src/__tests__/editors/OutputEditor.test.tsx`,
   `frontend/src/__tests__/editors/OutputEditorPathTools.test.tsx`, and
   `frontend/src/__tests__/editors/jsonpath.test.ts` own the UI-adjacent mapping,
-  migration, conflict-display, CSV import/export, and canonical-path contracts;
+  conflict-display, CSV import/export, and canonical-path contracts;
   their production modules remain owned by the frontend editor spec.
 
 Known coverage gap: the direct/runtime assembler is not tested to enforce the
@@ -571,19 +561,27 @@ The corresponding high-level behaviour is
   row.
 - `_jsonpath.is_identifier_name` owns the ASCII identifier predicate used by
   the parser and inference. `_reject_unexpressible_key` uses it after its
-  sentinel/dot-specific diagnostics. `parse_path` rejects bracket-name
-  segments containing a dot before normalisation.
+  sentinel/dot-specific diagnostics. `parse_path` accepts only the canonical
+  dotted spelling.
 - Sidecar loading rejects duplicate keys. Raw JSON/NDJSON records are decoded
   once by the streaming record iterator and retain decoder-native duplicate-key
   handling; inference and build deliberately share that iterator rather than
   adding a second hot-path duplicate-key scan.
-- Per-table cache metadata records a `columns` name-to-dtype map.
-  `_aggregate_v2_tables` exposes each as `<label>.<column>`; a compatible
-  fallback reads the Parquet schema for an older valid metadata entry that
-  lacks the new map.
+- Per-table cache metadata records the canonical `columns` name-to-dtype map.
+  `_aggregate_v2_tables` exposes each as `<label>.<column>` directly from that
+  metadata; it does not infer columns by reading Parquet files when metadata is
+  incomplete.
 - `_BUILD_LOCKS` is a `WeakValueDictionary[str, threading.Lock]` protected by
   `_BUILD_LOCKS_GUARD`. Callers retain the returned lock while it is acquired.
 
 The existing `data_file_signature` argument remains the only intra-operation
 hash-reuse seam. Tests continue to prove that a separate operation recomputes
 SHA-256 and detects a same-size/same-mtime rewrite.
+
+## Approved change contract — canonical-only cache artifacts
+
+Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+JSON flattening and shredding create, validate, replace, and clean only their current cache
+layouts and staging names. They contain no discovery or deletion code for cache files,
+temporary directories, backups, or manifests emitted by an earlier Haute implementation.
+Migration-only cleanup tests are deleted; current transactional cleanup remains covered.

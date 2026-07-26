@@ -20,7 +20,7 @@ const DELETE_CELL_CLASS = `${CELL_CLASS} text-center`
 const MATCH_CELL_CLASS = `${CELL_CLASS} text-right`
 const BOXED_INPUT_CLASS = "w-full px-1 py-0.5 rounded text-[11px] font-mono focus:outline-none"
 const BOXED_LABEL_INPUT_CLASS = `${BOXED_INPUT_CLASS} font-semibold`
-const BOXED_CELL_STYLE = { background: "var(--bg-surface)", border: "1px solid var(--border)", color: "var(--text-primary)" }
+const BOXED_CELL_STYLE = { background: "var(--bg-panel)", border: "1px solid var(--border)", color: "var(--text-primary)" }
 const WARNING_BOUNDARY_STYLE = { ...BOXED_CELL_STYLE, background: "var(--warning-soft)", border: "1px solid var(--warning-border-emphasis)" }
 const DELETE_BUTTON_CLASS = "p-0.5 rounded transition-colors hover:text-[var(--danger)] focus-visible:text-[var(--danger)]"
 const ACTION_BUTTON_CLASS = "accent-hover-btn flex size-6 items-center justify-center rounded"
@@ -240,7 +240,7 @@ export function BreakpointGrid({
                         onPaste={(e) => handleCellPaste(e, i, 1)}
                         className={BOXED_LABEL_INPUT_CLASS}
                         style={{
-                          background: "var(--bg-surface)",
+                          background: "var(--bg-panel)",
                           border: "1px solid var(--border)",
                           color: accentColor,
                         }}

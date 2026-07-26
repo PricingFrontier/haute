@@ -21,8 +21,8 @@ from haute._cache import CacheConsumer, checked_cache_input_values
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
-from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_FLAVORS
-from haute._model_flavors import ModelFlavor as ModelFlavor
+from haute._model_flavors import _SUPPORTED_FLAVORS as _SUPPORTED_MODEL_FLAVORS
+from haute._model_flavors import ModelFlavor as _ModelFlavor
 from haute._types import _Frame
 from haute.errors import ConfigError
 from haute.errors import FeatureMismatchError as FeatureMismatchError
@@ -35,13 +35,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(component="model_scorer")
 
-# ``ModelFlavor`` / ``_SUPPORTED_FLAVORS`` are the single source of truth for
-# the scoring flavor domain and are imported (above) from
-# :mod:`haute._model_flavors` so this module and :mod:`haute._mlflow_io`
-# dispatch on the *same* object and can never drift.  Re-exported here (via the
-# ``import X as X`` form) so existing call sites keep importing them from
-# ``haute._model_scorer``.
-#
 # Unknown flavor → ConfigError at the scoring entry point (fail loudly: a
 # typo in the flavor string must not silently fall through to pyfunc).
 
@@ -500,7 +493,7 @@ def _declared_offset_column(scoring_model: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _model_offset_column(model: Any, flavor: ModelFlavor) -> str | None:
+def _model_offset_column(model: Any, flavor: _ModelFlavor) -> str | None:
     """Return the offset column a raw model was trained with, if any.
 
     Both native flavors are self-describing: CatBoost via the
@@ -562,12 +555,12 @@ def _catboost_baseline_pool(
 # signature input and the wrapped model applies it (there is no baseline haute
 # can re-inject into an opaque pyfunc).  CatBoost is the exception — its offset
 # is a numeric ``Pool`` baseline, never a design-matrix column.
-_OFFSET_PASSTHROUGH_FLAVORS: frozenset[ModelFlavor] = frozenset({"rustystats", "pyfunc"})
+_OFFSET_PASSTHROUGH_FLAVORS: frozenset[_ModelFlavor] = frozenset({"rustystats", "pyfunc"})
 
 
 def _offset_predict_features(
     features: list[str],
-    flavor: ModelFlavor,
+    flavor: _ModelFlavor,
     offset_column: str | None,
 ) -> list[str]:
     """Feature selection handed to ``_prepare_predict_frame``.
@@ -709,7 +702,7 @@ def _score_eager_unified(
     lf: pl.LazyFrame,
     features: list[str],
     cat_feature_names: frozenset[str],
-    flavor: ModelFlavor,
+    flavor: _ModelFlavor,
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
@@ -737,7 +730,6 @@ def _score_eager_unified(
     when ``predict_proba`` is available; otherwise only the point
     prediction is written.
     """
-    from haute._execution_context import ExecutionProfile
     from haute._mlflow_io import _prepare_predict_frame
     from haute._polars_utils import streaming_collect
 
@@ -763,10 +755,7 @@ def _score_eager_unified(
             context="model-score input projection",
         )
         collect_lf = lf.select(ordered)
-    frame = streaming_collect(
-        collect_lf,
-        profile=ExecutionProfile.PREVIEW_EAGER,
-    )
+    frame = streaming_collect(collect_lf)
     _validate_runtime_categorical_values(frame, categorical_levels or {})
     predict_features = _offset_predict_features(features, flavor, offset_column)
     x_data = _prepare_predict_frame(
@@ -868,7 +857,7 @@ def _score_batched_unified(
     lf: pl.LazyFrame,
     features: list[str],
     cat_feature_names: frozenset[str],
-    flavor: ModelFlavor,
+    flavor: _ModelFlavor,
     task: str,
     output_col: str,
     write_projection: ScoreWriteProjection | None = None,
@@ -991,17 +980,17 @@ def score_frame(
     ConfigError
         If *flavor* is not one of the supported dispatch targets.
     """
-    if flavor not in _SUPPORTED_FLAVORS:
+    if flavor not in _SUPPORTED_MODEL_FLAVORS:
         raise ConfigError(
             f"Unsupported scoring flavor: {flavor!r}. "
-            f"Expected one of: {sorted(_SUPPORTED_FLAVORS)}.",
+            f"Expected one of: {sorted(_SUPPORTED_MODEL_FLAVORS)}.",
             flavor=flavor,
-            supported=sorted(_SUPPORTED_FLAVORS),
+            supported=sorted(_SUPPORTED_MODEL_FLAVORS),
         )
     # Validated above: narrow the untrusted ``str`` boundary to the concrete
     # ``ModelFlavor`` domain so the internal dispatch helpers are statically
     # guaranteed a supported flavor (no unsound guess — the guard just raised).
-    flavor = cast(ModelFlavor, flavor)
+    flavor = cast(_ModelFlavor, flavor)
 
     if required_output_columns is not None:
         if write_projection is not None:
@@ -1129,7 +1118,6 @@ def _run_score_pipeline(
             # an order- or row-unstable upstream could diverge between the
             # two executions.  The downstream eager collect of this
             # DataFrame-backed plan re-runs no upstream compute.
-            from haute._execution_context import ExecutionProfile
             from haute._polars_utils import streaming_collect
 
             validation_lf = lf
@@ -1147,42 +1135,21 @@ def _run_score_pipeline(
                         context="live model-score categorical validation projection",
                     )
                 )
-            collected = streaming_collect(
-                validation_lf,
-                profile=ExecutionProfile.PREVIEW_EAGER,
-            )
+            collected = streaming_collect(validation_lf)
             _validate_runtime_categorical_values(collected, normalised_levels)
             eager_lf = collected.lazy()
-        # Preserve the offset-less call arity: pass the kwarg only when an
-        # offset is actually in play, so offset-less scoring (the common case)
-        # calls the delegate exactly as before — keeping in-place test doubles
-        # that patch ``_score_eager`` with the pre-offset signature working.
-        if resolved_offset is None:
-            result_lf = score_eager_(scoring_model, eager_lf, features, output_col, task)
-        else:
-            result_lf = score_eager_(
-                scoring_model,
-                eager_lf,
-                features,
-                output_col,
-                task,
-                offset_column=resolved_offset,
-            )
+        result_lf = score_eager_(
+            scoring_model,
+            eager_lf,
+            features,
+            output_col,
+            task,
+            offset_column=resolved_offset,
+        )
         result_lf = _project_scored_output(
             result_lf,
             write_projection,
             output_col=output_col,
-        )
-    elif resolved_offset is None:
-        result_lf = _score_batched_standalone(
-            scoring_model,
-            lf,
-            features,
-            output_col,
-            task,
-            write_projection=write_projection,
-            temporary_paths=temporary_paths,
-            categorical_levels=normalised_levels,
         )
     else:
         result_lf = _score_batched_standalone(
@@ -1420,9 +1387,8 @@ class ModelScorer:
         Accepts one or more upstream LazyFrames (first is the scoring input).
         Returns a LazyFrame with prediction column(s) appended.
 
-        Per MULTI_FRAME_PLAN §4b the executor binds incoming edges as
-        keyword arguments; this method accepts both forms so direct
-        callers in tests / deploy paths keep working.
+        Positional frames follow incoming-edge order; named frames are
+        reconstructed in the scorer's declared-source order.
         """
         categorical_levels = self._categorical_levels_for_score()
         offset_column = self._offset_column_for_score()
@@ -1598,7 +1564,7 @@ def _sink_to_temp(
 
 def _declared_empty_score_dtypes(
     *,
-    flavor: ModelFlavor,
+    flavor: _ModelFlavor,
     task: str,
     include_proba: bool,
 ) -> (

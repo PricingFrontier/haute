@@ -562,7 +562,7 @@ class TestLogExperiment:
                     algorithm="catboost",
                     task="regression",
                     train_rows=800,
-                    test_rows=200,
+                    validation_rows=200,
                     features=["x1"],
                     split_config={"strategy": "random"},
                 ),
@@ -751,7 +751,7 @@ class TestLogExperiment:
                     algorithm="catboost",
                     task="regression",
                     train_rows=800,
-                    test_rows=200,
+                    validation_rows=200,
                     features=["x1", "x2"],
                     best_iteration=5,
                 ),
@@ -863,7 +863,7 @@ class TestLogExperiment:
                     algorithm="catboost",
                     task="regression",
                     train_rows=800,
-                    test_rows=200,
+                    validation_rows=200,
                     features=["x1", "x2"],
                     best_iteration=42,
                 ),
@@ -871,7 +871,7 @@ class TestLogExperiment:
 
             logged_params = m_params.call_args[0][0]
             assert "train_rows" in logged_params
-            assert "test_rows" in logged_params
+            assert "validation_rows" in logged_params
             assert "n_features" in logged_params
             assert "best_iteration" in logged_params
             assert logged_params["train_rows"] == "800"

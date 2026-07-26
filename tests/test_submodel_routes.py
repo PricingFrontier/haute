@@ -366,43 +366,6 @@ def source() -> pl.LazyFrame:
         node = data["graph"]["nodes"][0]
         assert node["data"]["config"]["path"] == "rating-data.parquet"
 
-    def test_get_falls_back_to_project_root_module(
-        self,
-        client: TestClient,
-        tmp_path: Path,
-    ) -> None:
-        """Drill-down matches parser compatibility for root modules."""
-        _write_nested_project(tmp_path)
-        config_dir = tmp_path / "config" / "data_input"
-        config_dir.mkdir(parents=True)
-        (config_dir / "source.json").write_text(
-            '{"inputType":"file","format":"parquet","mode":"scan",'
-            '"cacheMode":"direct","path":"root-data.parquet","arguments":{}}'
-        )
-        modules_dir = tmp_path / "modules"
-        modules_dir.mkdir()
-        (modules_dir / "pricing.py").write_text(
-            """\
-import polars as pl
-import haute
-
-submodel = haute.Submodel("pricing")
-
-
-@submodel.data_input(config="config/data_input/source.json")
-def source() -> pl.LazyFrame:
-    return pl.scan_parquet("root-data.parquet")
-""",
-            encoding="utf-8",
-        )
-
-        resp = client.get("/api/submodel/pricing")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        node = data["graph"]["nodes"][0]
-        assert node["data"]["config"]["path"] == "root-data.parquet"
-
 
 # ---------------------------------------------------------------------------
 # POST /api/submodel/dissolve
@@ -539,32 +502,6 @@ class TestDissolveSubmodel:
         assert resp.status_code == 200
         assert not rating_module.exists()
         assert root_module.read_text() == "# root module\n"
-
-    def test_dissolve_deletes_legacy_project_root_module_when_no_local_module(
-        self,
-        client: TestClient,
-        tmp_path: Path,
-    ) -> None:
-        """Dissolve deletes the same legacy root module the parser loaded."""
-        _write_nested_project(tmp_path)
-        root_module = tmp_path / "modules" / "pricing.py"
-        root_module.parent.mkdir(parents=True)
-        root_module.write_text("# root module\n")
-
-        flat_graph = PipelineGraph(pipeline_name="main")
-
-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
-            with patch("haute.codegen.graph_to_code", return_value="# code\n"):
-                body = {
-                    "submodel_name": "pricing",
-                    "graph": _graph_with_submodel(),
-                    "source_file": "rating/main.py",
-                    "pipeline_name": "main",
-                }
-                resp = client.post("/api/submodel/dissolve", json=body)
-
-        assert resp.status_code == 200
-        assert not root_module.exists()
 
     def test_dissolve_sidecar_failure_rolls_back_main_file(
         self,

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from haute._parser_helpers import (
-    _build_node_config,
-    _dedent,
+from haute._ast_helpers import _dedent, _extract_preamble, _strip_docstring
+from haute._code_extraction import (
     _extract_external_user_code,
     _extract_model_score_user_code,
-    _extract_preamble,
     _extract_user_code,
-    _strip_docstring,
 )
+from haute._config_builder import _build_node_config
 
 # ---------------------------------------------------------------------------
 # _strip_docstring
@@ -117,59 +115,21 @@ class TestExtractUserCode:
 
 
 class TestExtractExternalUserCode:
-    def test_strips_import_and_with_block(self):
+    def test_strips_canonical_load_scaffold(self):
         body = (
             '    """doc"""\n'
-            "    import pickle\n"
-            '    with open("model.pkl", "rb") as _f:\n'
-            "        obj = pickle.load(_f)\n"
+            "    from haute.graph_utils import load_external_object_from_config\n"
+            "    obj = load_external_object_from_config(\n"
+            '        "config/load_file/model.json"\n'
+            "    )\n"
             "    df = df.with_columns(pred=pl.lit(obj.predict()))\n"
             "    return df"
         )
         result = _extract_external_user_code(body, ["df"])
-        assert "df = df.with_columns" in result
-        assert "import pickle" not in result
-        assert "with open" not in result
-        assert "return df" not in result
-
-    def test_strips_obj_assignment(self):
-        body = (
-            '    """doc"""\n'
-            "    import joblib\n"
-            '    obj = joblib.load("model.pkl")\n'
-            "    df = df.with_columns(score=pl.lit(42))\n"
-            "    return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert "score" in result
-        assert "joblib" not in result
-
-    def test_strips_load_external_object_boilerplate(self):
-        body = (
-            '    """doc"""\n'
-            "    from haute.graph_utils import load_external_object\n"
-            '    obj = load_external_object("model.cbm", "catboost", "regressor")\n'
-            "    df = df.with_columns(pred=pl.lit(obj.predict()))\n"
-            "    return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert "df = df.with_columns" in result
-        assert "load_external_object" not in result
-        assert "import" not in result
+        assert result == "df = df.with_columns(pred=pl.lit(obj.predict()))"
 
     def test_empty_body(self):
         assert _extract_external_user_code("", ["df"]) == ""
-
-    def test_only_boilerplate_returns_empty(self):
-        body = (
-            '    """doc"""\n'
-            "    import pickle\n"
-            '    with open("m.pkl", "rb") as f:\n'
-            "        obj = pickle.load(f)\n"
-            "    return df"
-        )
-        result = _extract_external_user_code(body, ["df"])
-        assert result == ""
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +143,8 @@ class TestExtractModelScoreUserCode:
         body = (
             '    """doc"""\n'
             "    from haute.graph_utils import score_from_config\n"
-            '    result = score_from_config(df, config="config/model_scoring/m.json")\n'
-            "    return result"
+            '    df = score_from_config(source, config="config/model_scoring/m.json")\n'
+            "    return df"
         )
         assert _extract_model_score_user_code(body) == ""
 
@@ -193,13 +153,13 @@ class TestExtractModelScoreUserCode:
         body = (
             '    """doc"""\n'
             "    from haute.graph_utils import score_from_config\n"
-            '    result = score_from_config(df, config="config/model_scoring/m.json")\n'
+            '    df = score_from_config(source, config="config/model_scoring/m.json")\n'
             '    df = df.with_columns(doubled=pl.col("prediction") * 2)\n'
-            "    return result"
+            "    return df"
         )
         result = _extract_model_score_user_code(body)
         assert "doubled" in result
-        assert "return result" not in result
+        assert "return df" not in result
 
     def test_empty_body(self):
         assert _extract_model_score_user_code("") == ""
@@ -208,17 +168,17 @@ class TestExtractModelScoreUserCode:
         """Multiple lines of user code are all extracted."""
         body = (
             "    from haute.graph_utils import score_from_config\n"
-            '    result = score_from_config(df, config="config/model_scoring/m.json")\n'
+            '    df = score_from_config(source, config="config/model_scoring/m.json")\n'
             "    x = 1\n"
             "    y = x + 2\n"
             "    df = df.with_columns(z=pl.lit(y))\n"
-            "    return result"
+            "    return df"
         )
         result = _extract_model_score_user_code(body)
         assert "x = 1" in result
         assert "y = x + 2" in result
         assert "z=pl.lit(y)" in result
-        assert "return result" not in result
+        assert "return df" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -330,33 +290,6 @@ class TestBuildNodeConfig:
             ["df"],
         )
         assert config == {}
-
-    def test_external_file(self):
-        config = _build_node_config(
-            "externalFile",
-            {"external": "model.pkl", "file_type": "pickle"},
-            "",
-            ["df"],
-        )
-        assert config["path"] == "model.pkl"
-        assert config["fileType"] == "pickle"
-
-    def test_external_file_catboost(self):
-        config = _build_node_config(
-            "externalFile",
-            {"external": "m.cbm", "file_type": "catboost", "model_class": "regressor"},
-            "",
-            ["df"],
-        )
-        assert config["fileType"] == "catboost"
-        assert config["modelClass"] == "regressor"
-
-    def test_output(self):
-        # v2: OUTPUT config (outputMapping) lives in the sidecar JSON loaded via
-        # config= before this builder runs, so the OUTPUT branch is a deliberate
-        # no-op — it no longer reads the legacy v1 `fields` decorator kwarg.
-        config = _build_node_config("output", {"fields": ["a", "b"]}, "", ["df"])
-        assert "fields" not in config
 
     def test_transform(self):
         body = '    """doc"""\n    return df'

@@ -74,7 +74,7 @@ describe("useBackgroundJobs — gap tests", () => {
         feature_importance: [],
         model_path: "/m.pkl",
         train_rows: 100,
-        test_rows: 20,
+        validation_rows: 20,
       }
 
       // Solve: running → completed

@@ -483,34 +483,6 @@ describe("API response guards", () => {
     })).toThrow(/references missing diagnostic/i)
   })
 
-  it("drops retired top-level step presentation fields", () => {
-    const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
-    const trace = fixture.trace as Record<string, unknown>
-    const steps = trace.steps as Array<Record<string, unknown>>
-    const parsed = parseTraceResponse({
-      ...fixture,
-      trace: {
-        ...trace,
-        steps: [{
-          ...steps[0],
-          execution_ms: 0,
-          taken_branch: "then",
-          taken_branch_index: 0,
-          null_explanation: "legacy",
-          expression_chain: [],
-          rename_info: {},
-        }],
-      },
-    })
-
-    expect(parsed.trace?.steps[0]).not.toHaveProperty("execution_ms")
-    expect(parsed.trace?.steps[0]).not.toHaveProperty("taken_branch")
-    expect(parsed.trace?.steps[0]).not.toHaveProperty("taken_branch_index")
-    expect(parsed.trace?.steps[0]).not.toHaveProperty("null_explanation")
-    expect(parsed.trace?.steps[0]).not.toHaveProperty("expression_chain")
-    expect(parsed.trace?.steps[0]).not.toHaveProperty("rename_info")
-  })
-
   it("parses trace correlation diagnostics", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("trace_response")
     const trace = fixture.trace as Record<string, unknown>
@@ -1425,18 +1397,6 @@ describe("API response guards", () => {
     ).toThrow(/tracking_configured/i)
   })
 
-  it("normalises legacy mlflow tracking_available payloads", () => {
-    const parsed = parseMlflowCheckResponse({
-      mlflow_installed: true,
-      tracking_available: false,
-      backend: "",
-      databricks_host: "",
-    })
-
-    expect(parsed.mlflow_importable).toBe(true)
-    expect(parsed.tracking_configured).toBe(false)
-  })
-
   it("rejects malformed utility write payloads", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("utility_write_response")
 
@@ -1493,8 +1453,6 @@ describe("API response guards", () => {
         {
           name: "origin",
           url: "git@example.com:x.git",
-          ahead: 0,
-          behind: 1,
           working: { status: "behind", ahead: 0, behind: 1 },
           ledger: { status: "diverged", ahead: 2, behind: 1 },
         },
