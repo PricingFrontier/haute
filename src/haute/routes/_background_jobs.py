@@ -26,7 +26,7 @@ from haute._worker_protocol import (
     run_worker_protocol,
 )
 from haute.routes._job_lifecycle import (
-    TERMINAL_REASON_TO_STATUS,
+    TERMINAL_REASONS,
     JobLifecycle,
     TerminalReason,
     require_job_status,
@@ -42,7 +42,6 @@ class BackgroundJobStoppedError(RuntimeError):
         super().__init__(f"Job {job_id!r} stopped with terminal reason {terminal_reason!r}")
         self.job_id = job_id
         self.terminal_reason = terminal_reason
-        self.status = terminal_reason
 
 
 @dataclass(slots=True)
@@ -320,7 +319,7 @@ class IsolatedJobSupervisor:
                     completed_fields=completed_fields,
                     completed_message=completed_message,
                 )
-                outcome = self._finish_outcome(outcome, on_finished)
+                outcome = self._finish_outcome(job_id, outcome, on_finished)
                 self._persist_terminal_outcome(
                     job_id,
                     to=outcome.terminal_reason,
@@ -350,7 +349,7 @@ class IsolatedJobSupervisor:
                 exc,
                 message_prefix="Failed to start isolated supervisor: ",
             )
-            outcome = self._finish_outcome(outcome, on_finished)
+            outcome = self._finish_outcome(job_id, outcome, on_finished)
             self._persist_terminal_outcome(
                 job_id,
                 to=outcome.terminal_reason,
@@ -391,6 +390,7 @@ class IsolatedJobSupervisor:
 
     @staticmethod
     def _finish_outcome(
+        job_id: str,
         outcome: _SupervisorOutcome,
         on_finished: Callable[[], None] | None,
     ) -> _SupervisorOutcome:
@@ -399,11 +399,14 @@ class IsolatedJobSupervisor:
         try:
             on_finished()
         except BaseException as exc:
-            if outcome.terminal_reason == "completed":
-                return _unexpected_supervisor_outcome(
-                    exc,
-                    message_prefix="Isolated supervisor cleanup failed: ",
-                )
+            logger.error(
+                "isolated_job_cleanup_failed",
+                job_id=job_id,
+                terminal_reason=outcome.terminal_reason,
+                error=str(exc),
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
             fields = dict(outcome.fields)
             fields.update(
                 {
@@ -449,22 +452,14 @@ class IsolatedJobSupervisor:
         current_reason = current.get("terminal_reason")
         if (
             not isinstance(current_reason, str)
-            or current_reason not in TERMINAL_REASON_TO_STATUS
-            or TERMINAL_REASON_TO_STATUS[cast(TerminalReason, current_reason)] != current_status
+            or current_reason not in TERMINAL_REASONS
+            or current_reason != current_status
         ):
             raise RuntimeError(f"Isolated job {job_id!r} has incoherent terminal status and reason")
 
 
 def _coerce_worker_terminal_reason(reason: str) -> TerminalReason:
-    if reason in {
-        "completed",
-        "superseded",
-        "timed_out",
-        "cancelled",
-        "memory_limited",
-        "contract_error",
-        "error",
-    }:
+    if reason in TERMINAL_REASONS:
         return cast(TerminalReason, reason)
     return "error"
 

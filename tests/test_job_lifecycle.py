@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import itertools
+import threading
+from typing import cast
 
 import pytest
+from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute.routes._background_jobs import CancellableJobRegistry
+from haute.routes._background_jobs import (
+    BackgroundJobStoppedError,
+    CancellableJobRegistry,
+    SingleFlightConflictError,
+    SingleFlightCoordinator,
+    SingleFlightHandle,
+)
 from haute.routes._job_lifecycle import (
-    TERMINAL_REASON_TO_STATUS,
     JobLifecycle,
     TerminalReason,
     bind_running_execution_metrics_publisher,
@@ -47,6 +55,23 @@ def test_lifecycle_transition_sets_terminal_metadata() -> None:
     assert job["error_code"] == "memory_limit"
     assert job["elapsed_seconds"] == 1.25
     assert job["ended_at"] == 123.0
+
+
+def test_lifecycle_rejects_invalid_terminal_reason_without_mutating_job() -> None:
+    store = JobStore()
+    lifecycle = JobLifecycle(store)
+    job_id = store.create_job({"status": "running", "progress": 0.25})
+    before = dict(store.require_job(job_id))
+
+    with pytest.raises(ValueError, match="Unsupported terminal reason.*bogus"):
+        lifecycle.transition(
+            job_id,
+            to=cast(TerminalReason, "bogus"),
+            fields={"progress": 1.0},
+            now=123.0,
+        )
+
+    assert store.require_job(job_id) == before
 
 
 def test_lifecycle_completed_status_is_immutable_to_error_races() -> None:
@@ -114,7 +139,7 @@ def test_lifecycle_stale_completed_cannot_overwrite_terminal_stop() -> None:
         assert lifecycle.transition(job_id, to="completed", now=2.0) is None
 
         job = store.require_job(job_id)
-        assert job["status"] == TERMINAL_REASON_TO_STATUS[reason]
+        assert job["status"] == reason
         assert job["terminal_reason"] == reason
         assert "completed_at" not in job
 
@@ -129,7 +154,7 @@ def test_lifecycle_reason_precedence_pairwise_races() -> None:
         assert lifecycle.transition(job_id, to=higher, now=2.0) is not None
 
         job = store.require_job(job_id)
-        assert job["status"] == TERMINAL_REASON_TO_STATUS[higher]
+        assert job["status"] == higher
         assert job["terminal_reason"] == higher
 
 
@@ -143,7 +168,7 @@ def test_lifecycle_lower_precedence_reason_cannot_overwrite_race_winner() -> Non
         assert lifecycle.transition(job_id, to=lower, now=2.0) is None
 
         job = store.require_job(job_id)
-        assert job["status"] == TERMINAL_REASON_TO_STATUS[higher]
+        assert job["status"] == higher
         assert job["terminal_reason"] == higher
 
 
@@ -215,6 +240,23 @@ def test_running_metrics_publisher_ignores_terminal_job() -> None:
     assert "execution_metrics" not in store.require_job(job_id)
 
 
+def test_running_metrics_publisher_propagates_missing_job() -> None:
+    store = JobStore()
+    context = ExecutionContext(
+        operation="training",
+        profile=ExecutionProfile.TRAINING_PREP,
+        job_id="missing",
+        memory_limit_bytes=100,
+        memory_baseline_bytes=100,
+        memory_sampler=lambda: 150,
+    )
+    bind_running_execution_metrics_publisher(store, "missing", context)
+
+    with pytest.raises(HTTPException, match="missing") as exc_info:
+        context.checkpoint(label="half", node_id="model")
+    assert exc_info.value.status_code == 404
+
+
 def test_cancellable_registry_records_registry_derived_stop_reason() -> None:
     registry = CancellableJobRegistry()
 
@@ -228,3 +270,125 @@ def test_cancellable_registry_records_registry_derived_stop_reason() -> None:
 
     assert registry.cancel("job-2", reason="timed_out") is True
     assert registry.cancellation_reason("job-2") == "timed_out"
+
+
+def test_background_job_stopped_error_has_one_canonical_reason() -> None:
+    error = BackgroundJobStoppedError("job-1", "cancelled")
+
+    assert error.job_id == "job-1"
+    assert error.terminal_reason == "cancelled"
+    assert not hasattr(error, "status")
+
+
+def test_singleflight_same_job_fans_in_idempotently_under_contention() -> None:
+    coordinator = SingleFlightCoordinator()
+    barrier = threading.Barrier(12)
+    handles: list[SingleFlightHandle] = []
+    failures: list[BaseException] = []
+    result_lock = threading.Lock()
+
+    def acquire() -> None:
+        barrier.wait()
+        try:
+            handle = coordinator.acquire("shared", job_id="job-1", kind="cache")
+        except BaseException as exc:
+            with result_lock:
+                failures.append(exc)
+        else:
+            with result_lock:
+                handles.append(handle)
+
+    threads = [threading.Thread(target=acquire) for _ in range(barrier.parties)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    assert (
+        handles
+        == [SingleFlightHandle(key="shared", job_id="job-1", kind="cache")] * barrier.parties
+    )
+    assert coordinator.active("shared") == handles[0]
+
+
+def test_singleflight_same_key_has_one_owner_and_releases_for_retry() -> None:
+    coordinator = SingleFlightCoordinator()
+    barrier = threading.Barrier(12)
+    handles: list[SingleFlightHandle] = []
+    failures: list[tuple[str, BaseException]] = []
+    result_lock = threading.Lock()
+
+    def acquire(index: int) -> None:
+        job_id = f"job-{index}"
+        barrier.wait()
+        try:
+            handle = coordinator.acquire("shared", job_id=job_id, kind="cache")
+        except BaseException as exc:
+            with result_lock:
+                failures.append((job_id, exc))
+        else:
+            with result_lock:
+                handles.append(handle)
+
+    threads = [threading.Thread(target=acquire, args=(index,)) for index in range(barrier.parties)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(handles) == 1
+    assert len(failures) == barrier.parties - 1
+    owner = handles[0]
+    for _job_id, failure in failures:
+        assert isinstance(failure, SingleFlightConflictError)
+        assert failure.key == "shared"
+        assert failure.active_job_id == owner.job_id
+        assert failure.active_kind == owner.kind
+
+    contender_job_id = failures[0][0]
+    coordinator.release("shared", job_id=contender_job_id)
+    assert coordinator.active("shared") == owner
+
+    coordinator.release("shared", job_id=owner.job_id)
+    retry = coordinator.acquire("shared", job_id=contender_job_id, kind="optimiser")
+    assert coordinator.active("shared") == retry
+
+
+def test_singleflight_different_keys_acquire_independently_under_contention() -> None:
+    coordinator = SingleFlightCoordinator()
+    barrier = threading.Barrier(12)
+    handles: list[SingleFlightHandle] = []
+    failures: list[BaseException] = []
+    result_lock = threading.Lock()
+
+    def acquire(index: int) -> None:
+        barrier.wait()
+        try:
+            handle = coordinator.acquire(
+                ("source", index),
+                job_id=f"job-{index}",
+                kind="cache",
+            )
+        except BaseException as exc:
+            with result_lock:
+                failures.append(exc)
+        else:
+            with result_lock:
+                handles.append(handle)
+
+    threads = [threading.Thread(target=acquire, args=(index,)) for index in range(barrier.parties)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    assert len(handles) == barrier.parties
+    for index in range(barrier.parties):
+        handle = coordinator.active(("source", index))
+        assert handle is not None
+        assert handle.job_id == f"job-{index}"

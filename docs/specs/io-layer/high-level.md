@@ -2,441 +2,110 @@
 
 ## Purpose
 
-Haute pipelines read tabular data from disk (CSV/JSON/NDJSON/Parquet and,
-through the newer format registry, a much wider polars surface) and write
-results back to disk. Every one of those boundaries needs the same set of
-guarantees regardless of which node type or code path triggers it: paths
-must be validated against traversal/URL injection, execution profiles that
-promise bounded memory must never be silently handed an unbounded read or a
-full in-memory collect, and a write must never leave a reader observing a
-half-written file. The io-layer is the shared foundation that gives every
-data-reading and data-writing node in Haute those guarantees in one place,
-instead of each node type re-implementing (and potentially getting wrong)
-its own version.
+The IO layer turns persisted Data Input and Data Output node configuration into
+validated Polars operations. It also owns provider-neutral, immutable input snapshots so
+database, Databricks, and selected file inputs can be built explicitly and then executed
+without contacting the source.
 
-It also owns the small set of cross-cutting filesystem concerns that don't
-belong to any one node type: resolving a user-facing relative path against
-either the project root or a pipeline's own directory, warning about
-case-ambiguous paths that will silently break when a checkout moves between
-case-sensitive and case-insensitive filesystems, and discovering which
-`.py` files in a project are pipeline entry points.
+The component keeps source acquisition separate from pipeline execution. Direct inputs
+remain lazy where Polars supports them; snapshot inputs publish a verified Parquet
+generation and execute only from that generation.
 
 ## Scope
 
 In scope:
-- Reading a configured flat-file data source (CSV/JSON/NDJSON/Parquet) into
-  a Polars `LazyFrame`, with column projection, column-existence validation,
-  declared-schema validation, and bounded-memory-profile enforcement.
-- The polars I/O format registry that maps a `dataInput`/`dataOutput` node
-  config to one concrete polars `read_*`/`scan_*`/`write_*`/`sink_*`
-  invocation, with its argument surface derived from an extracted interface
-  schema rather than hand-typed.
-- A struct/list/nested-capable dtype codec for schema declarations carried
-  in node configs as JSON.
-- Atomic file-write primitives (temp-file-then-rename) and a `Writer`
-  context manager built on them.
-- Streaming collect/sink helpers that give bounded-memory execution
-  profiles a typed, fail-loud contract instead of a silent broad collect.
-- Runtime path resolution for user-facing relative paths (project-root vs.
-  pipeline-directory candidates) and a case-ambiguity audit for paths that
-  will not survive a filesystem-sensitivity change.
-- Pipeline file discovery for the CLI and server (finding `.py` files that
-  define a `haute.Pipeline`).
-- Loading external non-tabular objects (JSON, joblib, pickle, CatBoost
-  models) with content-hash-keyed memoisation.
 
-Out of scope (owned elsewhere):
-- Fetching, caching, and reading back Databricks-backed tables — see
-  [databricks-io](../databricks-io/high-level.md), which depends on this
-  component's Parquet-metadata helper but owns its own cache lifecycle.
-- Deciding *which* execution profile applies to a running node, chunk
-  planning, and the graph executor that calls into this component's
-  readers/writers — see execution-engine.
-- The FastAPI HTTP layer, request/response schemas, and node-config
-  validation endpoints that sit in front of this component — see
-  server-api.
-- The restricted-deserialization primitives this component calls
-  (`safe_unpickle`, `safe_joblib_load`, `validate_project_path`) — see
-  sandbox-security, which owns their implementation; this component only
-  calls them from `load_external_object`.
-- Generated pipeline body code that calls
-  `read_polars_input_from_config`/`write_polars_output_from_config` — see
-  codegen for what generates those call sites.
+- the format and argument registry for canonical `dataInput` and `dataOutput` nodes;
+- API-input flat-file adapters and common Polars collect/sink helpers;
+- provider dispatch for file, lakehouse, inline, database, and Databricks inputs;
+- source-cache identity, build, publication, lease, quota, clear, and status behaviour;
+- bounded SQLite snapshot acquisition.
+
+The [Databricks IO component](../databricks-io/high-level.md) owns Databricks credential
+resolution, query validation, Arrow fetching, and Unity Catalog browsing. The
+[caching component](../caching/high-level.md) consumes the source-cache identity contract
+and owns execution/dataframe/JSON cache behaviour. HTTP job admission and responses belong
+to [server API](../server-api/high-level.md).
 
 ## Behaviour
 
-- `read_source` dispatches purely on file extension
-  (`.csv`/`.json`/`.jsonl`/`.parquet`); any other extension raises
-  `ValueError` before any file is opened.
-- Plain JSON has no polars lazy-scan entry point, so it is the one format
-  that is inherently eager: reading it for any execution profile other than
-  `preview_eager`/`deploy_live` raises `BoundedMemoryUnsupportedError`
-  before parsing begins.
-- CSV sources additionally require a full declared schema
-  (`schema_overrides`/`dtypes`/`column_dtypes`/`schema` in the source
-  config) for every column that will be read, for any execution profile
-  outside `preview_eager`/`deploy_live` — without declared dtypes, `scan_csv`
-  would infer types by reading the data itself, which those profiles forbid.
-- Every file-backed `dataInput` path handed to this component is rejected up front if it looks like a URL
-  (`scheme://...`) or contains a `..` path segment. `dataOutput` receives an
-  already-resolved filesystem target from the executor; the registry itself
-  checks only that its configured target is non-empty. The generated-code
-  wrapper resolves relative output paths against the pipeline directory.
-- The format registry (`FORMATS`) enumerates every polars I/O format Haute
-  exposes to `dataInput`/`dataOutput` nodes — CSV, JSON, NDJSON, Parquet,
-  Arrow IPC (file and stream), Avro, Excel, ODS, text lines, database (URI),
-  Delta Lake, Iceberg, and inline records — recording which of read/scan
-  and write/sink each supports, which third-party engine packages reading
-  or writing it needs, and which config keys belong to the node's own
-  fields (`path`, `table`, `uri`, `query`, `records`, …) rather than the
-  free-form `arguments` object.
-  > NOTE: unlike `read_source`, the registry never sniffs a file extension
-  > to choose a format — dispatch is always the explicit `format` config
-  > key. Extensions on `IoFormat` are advisory metadata for pickers/editors
-  > only.
-- The set of argument names a node config may put in `arguments` for a
-  given polars callable is derived from `_polars_io_arguments.json`, a
-  machine-extracted record of the installed polars' I/O function
-  signatures, minus a few excluded classes (private/underscore args,
-  remote-storage args, object-valued args, and — for `sink_*` — the
-  execution-owned `lazy`/`engine`/`optimizations` args). An unknown
-  argument name fails loudly, naming both the polars callable and the
-  argument names that are actually allowed.
-- Struct/List/Array/Decimal/Datetime/Duration/Enum/Categorical dtypes in a
-  node's schema declaration decode through a dedicated JSON grammar
-  (`_polars_dtypes.parse_dtype`) whose encoder (`dtype_to_spec`) produces a
-  canonical spec that decodes to the same dtype (aliases need not preserve
-  their original spelling), so a config editor can round-trip semantics.
-- The explicitly atomic write surfaces — `atomic_write_bytes`/`_text`, the
-  `Writer` context manager, and `_polars_utils.atomic_write` — stage to a
-  sibling temporary file and rename it onto the target. The
-  `streaming_sink`/`bounded_sink` family uses that staging
-  path when the target's parent already exists; if it does not, the helper
-  calls Polars on the target directly so the missing-parent error surfaces.
-  `_file_ops` gives concurrent writers unique temp names;
-  `_polars_utils.atomic_write` uses one fixed `.parquet.tmp` sibling and
-  therefore assumes a single writer per destination.
-  Direct registry calls (`write_polars_output`) invoke the selected Polars
-  `write_*`/`sink_*`
-  method on the caller-supplied path and do not add another atomic wrapper;
-  generated `write_polars_output_from_config` calls also create the target's
-  parent directories before that direct write.
-- Bounded-memory collection (`streaming_collect`, `bounded_collect_batches`,
-  `bounded_sink`) makes one native Polars streaming attempt and never widens
-  to a full in-memory collect. Native Polars failures propagate unchanged;
-  there is no compatibility classifier or eager-fallback API.
-- `resolve_runtime_file_path` reconciles a user-facing relative path (as
-  reported by a GUI file browser rooted at the project) against two
-  candidate roots — the project root and the owning pipeline's directory —
-  preferring whichever candidate exists on disk, and preferring the
-  project-root candidate when both exist or neither does (unless the
-  caller asks for pipeline-preference). Containment is enabled by default
-  and checked against canonical targets after symlink resolution. Existence
-  decisions also use canonical targets, while the returned absolute candidate
-  preserves the user's path-segment spelling.
-- `warn_if_case_ambiguous` logs — but never blocks — when a resolved path
-  has a case-equivalent sibling on disk, since Haute pins no Unicode/case
-  normalisation on user-supplied data paths: a config that resolves cleanly
-  on one filesystem's case sensitivity can silently resolve to a different
-  file (or fail to resolve at all) on another.
-- `discover_pipelines` finds pipeline entry points by literal substring
-  search for `"haute.Pipeline"` in `.py` file contents: it checks the path
-  configured in `haute.toml`'s `[project].pipeline` first, then also scans
-  root-level `*.py` files (excluding `__init__.py`/`setup.py`/`conftest.py`)
-  and de-duplicates the configured match.
-- `load_external_object` deserialises a model/JSON/pickle/joblib file and
-  memoises the result keyed by `(path, content_hash, file_type,
-  model_class)`, so repeated calls for an unchanged file skip re-parsing
-  entirely while a changed file (different digest) is never served stale.
+`dataInput` configurations select exactly one provider. File and lakehouse inputs may run
+directly or through a snapshot; inline records run directly only; database and Databricks
+inputs require snapshots. `dataOutput` configurations select a registered file,
+lakehouse, or database sink. Unknown fields, unsupported arguments, unavailable engines,
+ambiguous locators, and invalid mode/provider combinations fail before provider access.
+
+Raw database URIs are permitted only when credential-free. URI userinfo and recognised
+secret-bearing query parameters are rejected by one shared validator before a sidecar,
+cache identity, metadata document, or connector can receive the value. Named connection
+references may resolve credentials from the environment, but the resolved URI never
+enters cache identity or metadata. Provider diagnostics are scrubbed with the same
+credential-name policy plus resolved in-process secret values before logging.
+
+Snapshot identity includes source semantics: provider, canonical locator, validated query,
+format/mode, and source arguments that can affect returned rows or schema. Databricks
+`batch_size` is excluded because it changes fetch partitioning, not logical source data.
+`code` and `cacheMode` are also excluded because they are post-read execution choices.
+
+A snapshot build writes a unique staging directory, validates the Parquet artifact and
+metadata, admits it against byte/count quotas, atomically publishes an immutable generation,
+and then replaces the current pointer. Cancellation, timeout, connector failure, schema
+failure, or quota rejection leaves the previous current generation readable.
+
+Snapshot readers acquire an explicit generation lease. Within an execution request the
+lease lasts until execution cleanup. Outside an execution request the returned scan owns a
+lease token that is retained by every derived LazyFrame and released only after the scan
+plan is no longer reachable. Refresh and clear never delete a locally leased generation.
+
+Store startup never deletes a generation. It may reclaim a staging directory only when the
+newest filesystem activity beneath that directory is older than the configured stale-build
+threshold; recent or unreadable staging state is preserved. Unreclaimed staging bytes count
+against the store byte quota. Publication and leases are coordinated within one process,
+while published immutable generations may be read by another process.
+
+SQLite snapshots open an existing database in read-only URI mode and start a read
+transaction. One aggregate query determines every output column's observed SQLite storage
+classes before the data cursor emits a batch; declared table types are hints only for empty
+columns. Integer/real observations widen to a float, incompatible storage-class mixtures
+fail before artifact output, and one Arrow schema is applied to every data batch. Missing
+database files are rejected rather than created.
+
+Outputs overwrite existing targets when the registered Polars sink has overwrite
+semantics. Authoring-time publication of a new output sidecar is conflict-safe: an
+unexpected existing sidecar is reported as a conflict rather than silently replaced.
 
 ## Design rationale
 
-- **Bounded memory is enforced before parse, not after.** Every check that
-  a format/mode/schema combination is unsafe for a bounded-memory profile
-  runs before the underlying polars call executes, so a misconfigured node
-  fails fast with an actionable message (add dtypes, use NDJSON, cache to
-  Parquet first) instead of erroring deep inside a lazy query plan or, worse,
-  succeeding by quietly reading everything into memory.
-- **The argument surface is generated, not hand-typed.** Hand-maintaining
-  which polars keyword arguments a node config may set would drift
-  silently the moment polars changes a function signature. Deriving the
-  allow-list from an extracted schema and asserting that schema still
-  matches the installed polars (see
-  `tests/test_polars_io_interface_contracts.py`) turns a silent behaviour
-  change into a CI failure instead of a user-facing surprise.
-- **Chunkability and remote storage are opt-in exclusions, not
-  afterthoughts.** Nothing in the format registry registers with the
-  chunking machinery by default — a new format is not chunkable until
-  something explicitly says so. Remote-IO arguments
-  (`storage_options`, `credential_provider`, `retries`, `file_cache_ttl`)
-  are always excluded from what a node config can set, keeping the
-  local-path-only security posture uniform across every format rather than
-  something each format has to remember to enforce.
-- **Atomicity is an explicit primitive, not an implicit registry promise.**
-  File/config saves use a temp-then-rename boundary, as do profiled streaming
-  sinks when their target parent exists. The generic registry stays a faithful
-  adapter to Polars and writes to the exact resolved target it is given, so
-  callers that require atomic publication must supply a staged target or use
-  an atomic helper. Same-target concurrent Polars sinks additionally require
-  caller-side serialisation because their shared temp filename is not a
-  concurrent-writer protocol.
-- **Fail loud over silent fallback.** `_file_ops` writes never create parent
-  directories, and the profiled sink family deliberately takes its direct,
-  normally failing path when a parent is absent. `_polars_utils.atomic_write`
-  itself and generated registry-output wrappers do create parents as part of
-  their explicit contracts. Unsupported extensions and dtypes raise
-  immediately; a bounded collect that cannot stream propagates the native
-  Polars failure instead of transparently materialising a potentially huge
-  frame.
-- **No path normalisation, only warning.** Case-folding or Unicode-
-  normalising a user-supplied path would change which file a config
-  resolves to — a correctness risk larger than the portability problem it
-  would solve. Instead the case-ambiguity audit surfaces the risk as a
-  warning at access time and leaves the resolution behaviour untouched.
+The registry is the single capability source for validation, editor metadata, and Polars
+dispatch, preventing code generation from inventing a second format matrix. Snapshot
+generation directories and a tiny atomic pointer make refresh safe for concurrent readers.
+Strict identity validation prevents durable cache metadata becoming a credential leak.
+
+Parquet is the shared snapshot boundary because it is lazy-scannable, schema-bearing, and
+can be written in bounded batches. Publication computes SHA-256 and seeds a process-local
+verification memo. The first open of a generation not already in that memo rechecks SHA-256;
+later opens reuse the verification while `(mtime_ns, size, recorded digest)` is unchanged.
+Footer, schema, row count, and metadata checks still run on every open.
 
 ## Interactions
 
-- Depended on by [databricks-io](../databricks-io/high-level.md), which
-  reuses this component's `read_parquet_metadata` helper to build its
-  cache-info responses.
-- Depended on by execution-engine, which calls `read_source`/
-  `read_data_source`/`read_polars_input`/`write_polars_output` (and the
-  streaming collect/sink helpers) as the actual data-access boundary during
-  pipeline execution, and by the chunk-planning machinery via the format
-  registry's `bounded_read`/`needs_schema_when_bounded` flags.
-- Depended on by codegen: generated pipeline bodies call
-  `read_polars_input_from_config`/`write_polars_output_from_config`
-  against a sidecar JSON file the codegen step writes alongside the
-  generated pipeline module.
-- Depended on by server-api for config-time validation (`format_for_config`,
-  `validate_arguments`, `registry_capabilities`) and for resolving
-  file-browser-supplied paths (`resolve_runtime_file_path`).
-- Calls into sandbox-security's `validate_project_path`, `safe_unpickle`,
-  and `safe_joblib_load` from `load_external_object`, and into
-  `haute._mlflow_io._load_catboost_model` for CatBoost model loading — both
-  imported lazily to avoid hard dependencies.
-- Depended on by caching for the underlying atomic-write and streaming-sink
-  primitives that back cache-file writes.
+- [Databricks IO](../databricks-io/high-level.md) supplies bounded Arrow batches.
+- [Caching](../caching/high-level.md) defines checked identity inputs and consumes snapshot
+  generations alongside execution caches.
+- [Execution engine](../execution-engine/high-level.md) supplies profiles, cancellation,
+  stages, and lifecycle cleanup.
+- [Server API](../server-api/high-level.md) owns explicit snapshot build/status/cancel/clear
+  routes and conflict responses.
+- [Sandbox security](../sandbox-security/high-level.md) owns project-root path containment.
 
 ## Failure model
 
-- Unsupported file extensions, malformed source paths (URL-shaped or
-  containing `..`), and malformed projection-column arguments raise
-  `ValueError` immediately, before any file is opened.
-- Declared-schema mismatches (missing columns, dtype mismatch, unsupported
-  dtype name, malformed dtype spec) raise `SchemaMismatchError`, always
-  naming the source path and the specific column(s)/mismatch involved.
-- Any attempt to read/write in a way that a bounded-memory execution
-  profile cannot support (eager JSON, CSV without full declared dtypes, an
-  eager-only format in `scan` mode, a streaming sink Polars cannot honour)
-  raises `BoundedMemoryUnsupportedError`, always naming the format and
-  profile.
-- Format-registry config errors (unknown format, unsupported mode, unknown
-  argument name, missing required source/target field, a missing engine
-  package) raise `PolarsIoConfigError` (a `ValueError` subclass) with a
-  message naming the offending config key and, where relevant, the set of
-  valid alternatives.
-- File-write failures (permission errors, disk full, a Windows rename
-  blocked by a concurrent reader) propagate as the underlying `OSError`
-  subtype. `_file_ops`'s unique-temp primitives protect the target from torn
-  writes even with concurrent writers; `_polars_utils.atomic_write` protects
-  ordinary single-writer publication but does not make concurrent writes to
-  the same destination safe.
-- None of these errors are swallowed or converted into a default value —
-  every failure surfaces to the caller (executor, route handler, or CLI)
-  for it to report or convert into an HTTP status as appropriate.
+Configuration and credential-safety errors are loud `ValueError` subclasses before I/O.
+Unsupported bounded-memory operations fail rather than falling back to eager collection.
+Connector, cancellation, deadline, quota, and schema failures abort staging and preserve the
+previous pointer.
 
-## Polars backend contracts (0.6.0)
-
-Remaining I/O improvement work is tracked in the
-[I/O layer roadmap](../../roadmap/io-layer.md).
-
-- Streaming helpers have one canonical path: call the native streaming API once and propagate
-  any exception unchanged. They contain no version/signature compatibility table and expose no
-  broad/eager fallback switch.
-- Where Polars exposes supported byte and column counters, execution reports their measured values. A counter unavailable for a given operation is represented explicitly as unavailable, never as a guessed zero or estimate.
-- CSV recount changes are deferred behind an explicit benchmark and semantic-equivalence gate; no recount optimisation is part of this approved change.
-
-Non-goals: changing registry format coverage, introducing implicit eager fallbacks, or inventing counter values for operations that cannot report them. Required tests cover the single native streaming call, unchanged exception propagation, and each counter's present/unavailable state. Any future CSV recount proposal must first add representative correctness and performance benchmarks.
-
-## Approved change contract — 0.7.0 data I/O convergence
-
-Remaining data-I/O improvement work is tracked in the
-[I/O layer roadmap](../../roadmap/io-layer.md).
-This section specifies approved future behaviour; the present-tense sections above continue to
-describe the shipped implementation until the 0.7.0 release reconciles them.
-
-### Canonical node surface
-
-- `dataInput` becomes the only authored tabular-source node type and `dataOutput` the only
-  authored persistence node type. A graph may contain any number of either node. `apiInput`
-  remains the live request boundary and `output` remains JSON response assembly; neither is
-  merged with tabular data I/O.
-- `dataSource` and `dataSink` are removed outright from the node enum, decorator API, registry,
-  parser, code generator, sidecar-folder map, frontend palette/editor registry, assistant
-  catalogue, examples, and tests. This is a deliberate pre-1.0 hard cutover: there are no
-  aliases, deprecation shims, compatibility parsing, or migration utilities. Repository-owned
-  pipelines which contain either removed node are reset to a blank graph rather than converted.
-
-### Input providers, formats, and code
-
-- A `dataInput` first selects an input group: **File**, **Database**, **Lakehouse**,
-  **Databricks**, or **Inline**. Registry-backed groups then select a concrete format and
-  supported `scan`/`read` mode. Group membership, ordering, labels, modes, arguments, optional
-  engines, direct-batching support, and cache-build support all come from one backend capability
-  registry; the frontend never owns a parallel format list.
-- File formats cover the Polars-backed file surface. Database inputs configure a connection
-  reference plus query. Lakehouse inputs cover Delta Lake and Iceberg. Databricks retains its
-  dedicated warehouse/catalog/schema/table browser, optional validated query fragment, and
-  explicit fetch controls; it is an input provider, not a pretend Polars file format. Inline
-  records remain config-bounded and have no disk-cache lifecycle.
-- Every `dataInput` exposes the optional Polars editor retained from `dataSource`. Its code runs
-  after the direct source or Parquet snapshot is opened and before the frame is handed
-  downstream. Source snapshots contain source data, not the result of that user code, so editing
-  code never triggers a remote refetch.
-- A persisted config is a strict discriminated shape. `inputType` selects the active branch;
-  `format`/`mode`, locator/query fields, `arguments`, `cacheMode`, and `code` must be valid for
-  that branch. Switching groups is one atomic config replacement which removes inactive branch
-  keys; undo restores the previous config.
-
-### Direct, cached, and chunked reads
-
-- Chunkability is capability-driven, never inferred merely from a file extension or from a
-  callable returning `LazyFrame`. Each registry entry declares independently whether it supports
-  a direct bounded scan, a bounded snapshot build, an admitted-eager snapshot build, and reading
-  an existing snapshot. A missing declaration means unsupported.
-- Direct chunk execution uses the common bounded batch iterator only for formats whose committed
-  Polars-version contract and format-specific integration tests prove ordered bounded iteration.
-  CSV and Parquet retain their existing support; every other scanner-backed format (including
-  NDJSON, IPC, text lines, Delta Lake, and Iceberg) is enabled only when that same evidence exists.
-- Snapshot mode materialises one source generation as Parquet and thereafter gives every
-  provider the same projection-capable, chunk-readable runtime boundary. It does not make an
-  eager cache builder bounded: JSON, Excel, Avro, ODS, database drivers, or any other importer
-  must separately prove incremental bounded publication or be classified
-  `admitted_eager`/`unsupported`. An unsupported bounded request fails before parsing or network
-  access; it never broad-collects and then calls the result “chunked”.
-- Databricks and database inputs execute from an explicitly built snapshot and never contact the
-  remote system during ordinary preview, batch, CI, or deploy execution. Lakehouse and local-file
-  inputs use direct scans by default and may opt into a snapshot when the provider declares it.
-  Inline input always executes directly.
-- The optional Polars body participates in the same row-local proof used for ordinary `polars`
-  nodes. Proven row-local code may run per chunk. Global operations such as joins, sorting,
-  grouping, windows, whole-frame aggregation, or collection are never silently evaluated once
-  per chunk; they use a separately admitted lazy/materialised strategy or cause chunk planning to
-  fail with a typed explanation.
-
-### Source snapshots
-
-- Snapshot build, refresh, status, progress, clear, publication, and metadata are provided by the
-  shared caching component. A build writes a unique staged generation and atomically publishes it
-  only after the Parquet artifact and signed metadata are complete. Cancellation, timeout,
-  connector failure, schema failure, or an unprovable retry leaves the previous generation
-  readable and unchanged.
-- Cache identity includes the provider, normalised safe locator, table or path, complete query,
-  format, source-affecting arguments, schema declarations, and connection-reference identity.
-  It excludes secrets and post-input Polars code. Two queries against one table cannot collide,
-  fixing the current Databricks table-only identity.
-- Status distinguishes snapshot readiness from external freshness. It reports the identity,
-  generation, rows, columns/schema, bytes, build time, and provider revision/freshness token when
-  one is available. Absence of such a token is `unknown`, never guessed fresh from a timestamp.
-  Execution may use an explicitly selected ready snapshot whose freshness is unknown; it may not
-  use a missing, corrupt, identity-mismatched, or stale local-file snapshot.
-- Connection credentials and storage credentials are resolved from named environment/secret
-  references. Raw secret-bearing URIs, tokens, and credential objects are rejected from node
-  sidecars, capability payloads, cache identities, metadata, logs, and error responses.
-
-### Unified outputs
-
-- `dataOutput` uses the same backend-defined group labels and format catalogue as `dataInput`,
-  filtered by write capability. UI symmetry does not invent backend symmetry: input-only formats
-  such as inline records, or a format with no writer, are not offered as working outputs.
-  Databricks is absent from the output groups until a real writer with a specified publication
-  contract exists.
-- The output editor contains destination group, format, supported `sink`/`write` mode,
-  destination path/table fields, format-specific arguments, optional-engine diagnostics, and the
-  explicit **Write** action/status retained from `dataSink`. It has no Polars code editor.
-  Preview, trace, graph save, and ordinary node execution never write.
-- Native sink formats consume the lazy plan with bounded Polars sinks. Writer-only formats use
-  admitted materialisation and say so in capabilities and execution diagnostics. Local
-  single-file outputs always write to a unique sibling staging path and atomically replace the
-  destination. Transactional lakehouse/database writers use their commit boundary; a
-  non-transactional destination must declare that limitation and is never presented as atomic.
-  Overwrite, append, replace, and provider-supported upsert semantics are explicit rather than
-  inferred.
-
-### Failure, non-goals, and acceptance
-
-- Unknown groups/formats/modes, group/format mismatches, inactive-branch keys, missing cache
-  generations, cache identity mismatch, unsafe credentials, unsupported bounded reads/builds,
-  non-row-local chunk code, missing engines, and unsupported publication modes fail with typed,
-  actionable errors before side effects wherever possible.
-- This change does not add a Databricks output writer, remote object-store credentials, implicit
-  cache refresh, automatic network access during execution, a per-chunk interpretation of global
-  Polars code, or fake parity for formats Polars cannot write.
-- Acceptance requires registry-contract tests for every provider/format leg; direct versus
-  cached execution equivalence; boundedness tests for direct scan and cache build independently;
-  cache identity/query separation, atomic refresh and concurrent-reader tests; Polars-code
-  ordering and row-local rejection tests; output atomicity and explicit-write tests; and
-  end-to-end parse/save/reload tests containing only `dataInput`/`dataOutput`.
-
-## I/O authoring and publication guarantees
-
-The I/O layer implements the accepted parts of
-[IO-IO01, IO-IO05, IO-IO06, IO-IO08, IO-IO09, and IO-IO11](../../roadmap/io-layer.md).
-
-- File browsing defaults come from the installed, read-capable path-format
-  registry rather than a handwritten extension list. Matching is
-  case-insensitive; hidden entries and symlinks are not advertised; broken
-  entries are skipped; directory enumeration runs off the async event loop.
-  A selected format continues to pass its own capability extensions.
-- NDJSON input accepts the conventional `.jsonl` and `.ndjson` extensions. Unsupported
-  compound extensions are reported as the compound suffix with the complete
-  supported set, rather than mislabelling `x.csv.gz` as merely `.gz`.
-- Schema preview distinguishes safe, expected input failures from internal
-  failures. Missing files remain 404; unsupported extensions and decoder
-  failures return actionable, sanitised 400 details; unexpected exceptions
-  remain sanitised 500s with full server-side diagnostics.
-- A bounded CSV Data Input exposes its detected schema in the editor and can
-  copy the full ordered name-to-dtype mapping into `arguments.schema` while
-  preserving delimiter and other arguments. The editor visibly warns while
-  this required declaration is absent. Registry validation and execution
-  remain authoritative.
-- File Data Output publication is explicit about collisions. The HTTP action
-  defaults to `overwrite=false`; an existing destination returns a conflict
-  without executing the graph or changing the file. A confirmed retry with
-  `overwrite=true` may atomically replace it. A race that creates the target
-  between preflight and publication is still detected by a no-replace
-  publication primitive. Destination preview and write resolve against the
-  selected Haute project root rather than the process working directory.
-- Single-file output writes use a unique same-directory staging path, flush
-  and `fsync` the completed stage before publication, and sync the containing
-  directory where the platform exposes that operation. Failures before
-  publication leave an existing target unchanged and clean the stage.
-  Publication and directory-sync failures propagate; the target is always a
-  complete old or new artifact, never a partial file.
-- CSV encoding is UTF-8 without a BOM by default, matching Polars. A caller
-  requests Excel-oriented UTF-8 BOM output explicitly with
-  `arguments.include_bom=true`; both modes are round-trip tested with
-  non-ASCII data. Streaming row counts remain an exact format re-scan because
-  byte-newline counts are incorrect for quoted CSV fields. The re-scan uses
-  the output's header and dialect settings rather than scanner defaults.
-
-The current capability registry and capability-driven UI already satisfy the
-structural part of IO-IO12. No additional format is approved by this package:
-future formats still require an explicit use case, engine/capability metadata,
-validation, and supported/unsupported end-to-end tests.
-
-## Approved partitioned-Parquet execution boundary
-
-A direct File or Lakehouse `dataInput` using the Parquet scanner may point at a directory-backed
-dataset. Hive partition discovery is an explicit validated Polars argument, not a path-name guess
-owned by Haute. A partition predicate written in the input's Polars body participates in ordinary
-column-demand analysis; the predicate column is retained while unrelated payload columns are
-projected away. The resulting predicate and projection must be visible at the Parquet scan in the
-optimised lazy plan before any execution-engine checkpoint or materialisation.
-
-Haute does not enumerate and eagerly concatenate partition files, infer partition values itself,
-or promise pruning for opaque/global input code. Invalid directories, inconsistent partition
-schemas, or unsupported scanner arguments propagate as typed configuration/Polars failures.
-Regression tests use at least two partitions and an unrelated wide column, then prove both the
-selected file set and projected scan width.
+Malformed pointers, digest mismatches, metadata mismatches, invalid generation identifiers,
+or invalid Parquet footer/schema evidence raise `SourceCacheCorruptError`; callers do not
+silently rebuild or fall back. Transient operating-system access errors propagate as
+operating-system errors so operators can retry and are not told durable data is corrupt.

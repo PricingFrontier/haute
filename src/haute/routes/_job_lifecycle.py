@@ -13,13 +13,6 @@ from haute.routes._job_store import JobStore
 from haute.schemas import JobStatus
 
 RUNNING_STATUS = "running"
-COMPLETED_STATUS = "completed"
-CANCELLED_STATUS = "cancelled"
-SUPERSEDED_STATUS = "superseded"
-TIMED_OUT_STATUS = "timed_out"
-MEMORY_LIMITED_STATUS = "memory_limited"
-CONTRACT_ERROR_STATUS = "contract_error"
-ERROR_STATUS = "error"
 
 TerminalReason = Literal[
     "completed",
@@ -31,19 +24,18 @@ TerminalReason = Literal[
     "error",
 ]
 
-TERMINAL_REASON_TO_STATUS: Mapping[TerminalReason, str] = {
-    "completed": COMPLETED_STATUS,
-    "superseded": SUPERSEDED_STATUS,
-    "timed_out": TIMED_OUT_STATUS,
-    "cancelled": CANCELLED_STATUS,
-    "memory_limited": MEMORY_LIMITED_STATUS,
-    "contract_error": CONTRACT_ERROR_STATUS,
-    "error": ERROR_STATUS,
-}
-
-TERMINAL_STATUSES = frozenset(TERMINAL_REASON_TO_STATUS.values())
-JOB_STATUSES = frozenset({RUNNING_STATUS, *TERMINAL_STATUSES})
-NON_RUNNING_STATUSES = TERMINAL_STATUSES
+TERMINAL_REASONS: frozenset[TerminalReason] = frozenset(
+    {
+        "completed",
+        "superseded",
+        "timed_out",
+        "cancelled",
+        "memory_limited",
+        "contract_error",
+        "error",
+    }
+)
+JOB_STATUSES = frozenset({RUNNING_STATUS, *TERMINAL_REASONS})
 
 _TERMINAL_REASON_PRECEDENCE: Mapping[TerminalReason, int] = {
     "error": 10,
@@ -67,10 +59,7 @@ def bind_running_execution_metrics_publisher(
         context = context_ref()
         if context is None:
             return
-        try:
-            job = store.require_job(job_id)
-        except Exception:
-            return
+        job = store.require_job(job_id)
         status = require_job_status(job)
         if status != RUNNING_STATUS:
             return
@@ -122,13 +111,15 @@ class JobLifecycle:
         only direct terminal-status correction is completed-to-error for a
         result that failed publication validation.
         """
-        if expected_status not in {RUNNING_STATUS, COMPLETED_STATUS}:
+        if to not in TERMINAL_REASONS:
+            raise ValueError(f"Unsupported terminal reason: {to!r}")
+        if expected_status not in {RUNNING_STATUS, "completed"}:
             raise ValueError("Lifecycle transitions may expect only 'running' or 'completed'")
-        if expected_status == COMPLETED_STATUS and to != "error":
+        if expected_status == "completed" and to != "error":
             raise ValueError("A completed lifecycle record may only be corrected to 'error'")
         timestamp = time.time() if now is None else now
         update: dict[str, Any] = dict(fields or {})
-        update["status"] = TERMINAL_REASON_TO_STATUS[to]
+        update["status"] = to
         update["terminal_reason"] = to
         update["ended_at"] = timestamp
         if to == "completed":
@@ -155,7 +146,7 @@ class JobLifecycle:
                 result: dict[str, Any] | None = merged
             else:
                 old_reason = old.get("terminal_reason")
-                if not isinstance(old_reason, str) or old_reason not in TERMINAL_REASON_TO_STATUS:
+                if not isinstance(old_reason, str) or old_reason not in TERMINAL_REASONS:
                     return None
                 typed_old_reason = cast(TerminalReason, old_reason)
                 if typed_old_reason == "completed" or to == "completed":

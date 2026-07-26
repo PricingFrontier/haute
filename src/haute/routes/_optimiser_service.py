@@ -105,14 +105,7 @@ from haute.routes._contract_errors import (
 )
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
-    CANCELLED_STATUS,
-    COMPLETED_STATUS,
-    CONTRACT_ERROR_STATUS,
-    ERROR_STATUS,
-    MEMORY_LIMITED_STATUS,
-    SUPERSEDED_STATUS,
-    TERMINAL_REASON_TO_STATUS,
-    TIMED_OUT_STATUS,
+    TERMINAL_REASONS,
     JobLifecycle,
     TerminalReason,
     bind_running_execution_metrics_publisher,
@@ -197,17 +190,7 @@ _NULL_COUNT_ALIAS_PREFIX = "__haute_null_count_"
 _AUTO_RANGE_BUCKET_COLUMN = "__haute_frontier_auto_range_bucket"
 _FRONTIER_AUTO_RANGE_CANCELLED_STATUS = "cancelled"
 _FRONTIER_AUTO_RANGE_SUPERSEDED_STATUS = "superseded"
-_FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = frozenset(
-    {
-        COMPLETED_STATUS,
-        ERROR_STATUS,
-        CONTRACT_ERROR_STATUS,
-        MEMORY_LIMITED_STATUS,
-        TIMED_OUT_STATUS,
-        CANCELLED_STATUS,
-        SUPERSEDED_STATUS,
-    }
-)
+_FRONTIER_AUTO_RANGE_TERMINAL_STATUSES = TERMINAL_REASONS
 _NON_BLOCKING_RUNNING_JOB_TYPES = frozenset(
     {
         _ESTIMATE_JOB_TYPE,
@@ -446,7 +429,7 @@ def _memory_limit_job_update(
         "http_status_code": 507,
         "error_detail": payload,
         "execution_metrics": execution_context.metrics_payload(
-            status=MEMORY_LIMITED_STATUS,
+            status="memory_limited",
             terminal_reason="memory_limited",
         ),
     }
@@ -460,14 +443,13 @@ def _http_error_job_update(
     execution_context: ExecutionContext,
     terminal_reason: TerminalReason,
 ) -> dict[str, object]:
-    status = TERMINAL_REASON_TO_STATUS[terminal_reason]
     return {
         "message": str(detail),
         "elapsed_seconds": elapsed_seconds,
         "http_status_code": status_code,
         "error_detail": detail,
         "execution_metrics": execution_context.metrics_payload(
-            status=status,
+            status=terminal_reason,
             terminal_reason=terminal_reason,
         ),
     }
@@ -501,9 +483,9 @@ def _execution_stage(
 
 
 def _coerce_stopped_terminal_reason(reason: str) -> TerminalReason:
-    if reason in TERMINAL_REASON_TO_STATUS:
+    if reason in TERMINAL_REASONS:
         return cast(TerminalReason, reason)
-    return "cancelled" if reason == "cancelled" else "superseded"
+    return "superseded"
 
 
 _STREAMING_AUTO_RANGE_ALLOWED_NODE_TYPES = frozenset(
@@ -2910,7 +2892,7 @@ class OptimiserSolveService:
                     fields=(
                         {
                             "execution_metrics": execution_context.metrics_payload(
-                                status=TERMINAL_REASON_TO_STATUS[terminal_reason],
+                                status=terminal_reason,
                                 terminal_reason=terminal_reason,
                             )
                         }
@@ -2933,9 +2915,8 @@ class OptimiserSolveService:
                     "error_detail": exc.detail,
                 }
                 if execution_context is not None:
-                    payload_status = TERMINAL_REASON_TO_STATUS[http_terminal_reason]
                     error_update["execution_metrics"] = execution_context.metrics_payload(
-                        status=payload_status,
+                        status=http_terminal_reason,
                         terminal_reason=http_terminal_reason,
                     )
                 self._lifecycle.transition(
@@ -2974,7 +2955,7 @@ class OptimiserSolveService:
                 contract_fields["elapsed_seconds"] = elapsed_seconds
                 if execution_context is not None:
                     contract_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status=CONTRACT_ERROR_STATUS,
+                        status="contract_error",
                         terminal_reason="contract_error",
                     )
                 self._lifecycle.transition(
@@ -3000,7 +2981,7 @@ class OptimiserSolveService:
                 }
                 if execution_context is not None:
                     bounded_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status=CONTRACT_ERROR_STATUS,
+                        status="contract_error",
                         terminal_reason="contract_error",
                     )
                 self._lifecycle.transition(
@@ -3023,7 +3004,7 @@ class OptimiserSolveService:
                 error_fields: dict[str, Any] = {"elapsed_seconds": elapsed_seconds}
                 if execution_context is not None:
                     error_fields["execution_metrics"] = execution_context.metrics_payload(
-                        status=ERROR_STATUS,
+                        status="error",
                         terminal_reason="error",
                     )
                 self._lifecycle.transition(
@@ -3450,7 +3431,7 @@ class OptimiserSolveService:
             update.setdefault(
                 "execution_metrics",
                 execution_context.metrics_payload(
-                    status=TERMINAL_REASON_TO_STATUS[to],
+                    status=to,
                     terminal_reason=to,
                 ),
             )
@@ -3710,7 +3691,7 @@ class OptimiserSolveService:
             fields = contract_error_job_fields(exc)
             fields["elapsed_seconds"] = elapsed_seconds
             fields["execution_metrics"] = execution_context.metrics_payload(
-                status=CONTRACT_ERROR_STATUS,
+                status="contract_error",
                 terminal_reason="contract_error",
             )
             self._lifecycle.transition(job_id, to="contract_error", fields=fields)
@@ -4011,7 +3992,7 @@ class OptimiserSolveService:
             fields = contract_error_job_fields(exc)
             fields["elapsed_seconds"] = elapsed_seconds
             fields["execution_metrics"] = execution_context.metrics_payload(
-                status=CONTRACT_ERROR_STATUS,
+                status="contract_error",
                 terminal_reason="contract_error",
             )
             self._lifecycle.transition(job_id, to="contract_error", fields=fields)

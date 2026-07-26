@@ -211,6 +211,51 @@ def test_same_identity_build_requests_join_one_active_job(
     assert _wait_for_terminal(client, first.json()["job_id"])["status"] == "error"
 
 
+def test_provider_failure_message_is_logged_but_not_exposed(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import input_cache
+
+    logger = input_cache.logger
+    logged: list[dict[str, object]] = []
+
+    def capture_error(_event: str, **fields: object) -> None:
+        logged.append(fields)
+
+    monkeypatch.setattr(logger, "error", capture_error)
+    monkeypatch.setenv("DATABRICKS_TOKEN", "resolved-secret-token")
+    monkeypatch.setattr(
+        input_cache,
+        "build_input_snapshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "warehouse unavailable token='inline secret' "
+                "https://alice:password@workspace.example/query?sig=signed-value "
+                "resolved-secret-token"
+            )
+        ),
+    )
+
+    started = client.post(
+        "/api/input-cache/build",
+        json={"schema_version": 1, "config": _file_config()},
+    )
+    terminal = _wait_for_terminal(client, started.json()["job_id"])
+
+    assert terminal["message"] == "Input snapshot build failed."
+    assert len(logged) == 1
+    assert logged[0]["job_id"] == started.json()["job_id"]
+    assert logged[0]["error_type"] == "RuntimeError"
+    diagnostic = str(logged[0]["error"])
+    assert "warehouse unavailable" in diagnostic
+    assert "<redacted>" in diagnostic
+    assert "inline secret" not in diagnostic
+    assert "password" not in diagnostic
+    assert "signed-value" not in diagnostic
+    assert "resolved-secret-token" not in diagnostic
+
+
 def test_different_identities_can_build_concurrently(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
