@@ -15,7 +15,7 @@ The fix is to delegate to the stdlib: ``ast.parse(f"f({kwargs_str})")``
 then walk the resulting ``ast.Call.keywords`` list, evaluating each
 ``.value`` with ``ast.literal_eval``.  That gives booleans, floats,
 ints, None, tuples, lists and dicts back as real Python objects, and
-surfaces malformed input as a ``SyntaxError`` instead of silently
+surfaces malformed input as a domain ``ParseError`` instead of silently
 producing a wrong answer.
 
 Every test in this file exercises the public entry point
@@ -202,12 +202,12 @@ class TestInvalidSyntax:
         a wrong-but-plausible result.  With ``ast.parse`` the malformed
         input is detected and raised — loudly, as ``CLAUDE.md`` requires.
         """
-        with pytest.raises((SyntaxError, ValueError)):
+        with pytest.raises(ParseError, match="decorator kwargs could not be parsed"):
             _parse_decorator_kwargs_regex("@pipeline.polars(percent=50%)")
 
     def test_unbalanced_bracket_raises(self) -> None:
         """Truncated kwargs list must raise, not silently drop everything."""
-        with pytest.raises((SyntaxError, ValueError)):
+        with pytest.raises(ParseError, match="decorator kwargs could not be parsed"):
             _parse_decorator_kwargs_regex('@pipeline.polars(depends=["a",)')
 
     def test_bare_name_reference_not_a_literal(self) -> None:

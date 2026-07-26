@@ -725,9 +725,9 @@ def _parse_decorator_kwargs_regex(decorator_text: str) -> dict[str, Any]:
        chains, and ``**`` expansion fail loud.  Returning source text here
        would turn computed config into plain strings on the next save.
 
-    Malformed kwargs (e.g. ``percent=50%``) surface as ``SyntaxError`` /
-    ``ValueError`` rather than being silently truncated — a wrong-but-
-    plausible answer is strictly worse than a loud failure.
+    Malformed kwargs (e.g. ``percent=50%``) surface as ``ParseError`` rather
+    than being silently truncated — a wrong-but-plausible answer is strictly
+    worse than a loud failure.
     """
     if "(" not in decorator_text:
         return {}
