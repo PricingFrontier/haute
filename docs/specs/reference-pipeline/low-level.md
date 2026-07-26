@@ -41,7 +41,8 @@ repository's authoritative default pipeline.
 - **Output sidecar** in `rating/config/quote_response/Quote_Response_9.json`
   has `outputMapping` entries (`source_port`, `source_column`, `output_path`,
   `enabled`), `outputFormat`, and a contract object.
-- **Generated main pipeline** is a `haute.Pipeline` whose API-input callable returns
+- **Generated main pipeline** is a `haute.Pipeline` whose API-input decorator names
+  `config/quote_input/quotes.json` and its opaque contract. The callable returns
   `pl.LazyFrame | dict[str, pl.LazyFrame]`; this four-table sidecar produces the mapping form.
   Its output callable accepts four lazy-frame ports and returns a lazy frame.
 - **Generated submodel** is a `haute.Submodel` with `@submodel.polars` and
@@ -55,9 +56,9 @@ repository's authoritative default pipeline.
 
 ## Control flow
 
-1. Importing `rating/main.py` constructs `haute.Pipeline("my_pipeline")` and
-   registers the decorated `quotes` and `Quote_Response_9` functions, then
-   declares the four source-port connections.
+1. Parsing `rating/main.py` loads and validates both decorators' referenced sidecars. Importing
+   the file constructs `haute.Pipeline("my_pipeline")`, registers the decorated `quotes` and
+   `Quote_Response_9` functions, then declares the four source-port connections.
 2. Running `quotes()` passes `config/quote_input/quotes.json` and the resolved generated-script
    directory to `resolve_api_input_from_config()`. The shared helper validates the sidecar,
    resolves its data path within the project boundary, and calls `load_v2_api_source()` to yield

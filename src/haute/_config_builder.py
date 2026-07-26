@@ -346,6 +346,7 @@ def _resolve_node_config(
     base_dir: Path | None,
     func_name: str = "",
     explicit_node_type: NodeType | None = None,
+    edge_param_names: list[str] | None = None,
 ) -> tuple[NodeType, dict[str, Any]]:
     """Resolve node type and config from decorator kwargs.
 
@@ -355,6 +356,9 @@ def _resolve_node_config(
 
     The *explicit_node_type* is provided by the type-specific decorator
     (e.g. ``@pipeline.polars``) and is used directly as the node type.
+    *edge_param_names* narrows graph-bound configuration such as Live Switch
+    ``inputs`` to positional edge slots while *param_names* remains available
+    for function-body extraction.
 
     Returns ``(node_type, config_dict)``.
     """
@@ -404,6 +408,9 @@ def _resolve_node_config(
         raise _sidecar_required_error(node_type, func_name)
     else:
         config = _build_node_config(node_type, decorator_kwargs, body, param_names)
+
+    if node_type == NodeType.LIVE_SWITCH:
+        config["inputs"] = list(edge_param_names if edge_param_names is not None else param_names)
 
     if node_type in {NodeType.DATA_INPUT, NodeType.DATA_OUTPUT}:
         try:

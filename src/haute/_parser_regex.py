@@ -56,8 +56,7 @@ from haute.errors import ParseError
 
 _RE_DECORATOR_ANCHOR = re.compile(r"(?m)^@pipeline\.(\w+)\b")
 
-_RE_HAUTE_IMPORT = re.compile(r"(?m)^\s*import\s+haute(?:\s+as\s+(\w+))?\s*$")
-_RE_PIPELINE_IMPORT = re.compile(r"(?m)^\s*from\s+haute\s+import\s+Pipeline(?:\s+as\s+(\w+))?\s*$")
+_RE_IMPORT_LINE = re.compile(r"(?m)^[ \t]*(?:from|import)\b[^\r\n]*")
 _RE_PIPELINE_ASSIGNMENT = re.compile(r"(?m)^pipeline\s*=")
 
 # Anchor for pipeline.connect(...) call sites.  The negative lookbehind
@@ -430,13 +429,38 @@ def _line_end(source: str, idx: int) -> int:
     return len(source) if end == -1 else end
 
 
+def _recover_pipeline_import_aliases(source: str) -> tuple[set[str], set[str]]:
+    """Recover Haute module and Pipeline constructor aliases from valid import lines."""
+    module_aliases = {"haute"}
+    constructor_aliases: set[str] = set()
+    for match in _RE_IMPORT_LINE.finditer(source):
+        if not _position_is_code(source, match.start()):
+            continue
+        try:
+            import_tree = ast.parse(match.group(0).lstrip())
+        except SyntaxError:
+            continue
+        if len(import_tree.body) != 1:
+            continue
+        statement = import_tree.body[0]
+        if isinstance(statement, ast.Import):
+            module_aliases.update(
+                alias.asname or "haute" for alias in statement.names if alias.name == "haute"
+            )
+        elif (
+            isinstance(statement, ast.ImportFrom)
+            and statement.level == 0
+            and statement.module == "haute"
+        ):
+            constructor_aliases.update(
+                alias.asname or "Pipeline" for alias in statement.names if alias.name == "Pipeline"
+            )
+    return module_aliases, constructor_aliases
+
+
 def _recover_pipeline_meta(source: str) -> tuple[str, str]:
     """Recover alias-aware ``pipeline = Pipeline(...)`` fallback metadata."""
-    module_aliases = {"haute"}
-    module_aliases.update(match.group(1) or "haute" for match in _RE_HAUTE_IMPORT.finditer(source))
-    constructor_aliases = {
-        match.group(1) or "Pipeline" for match in _RE_PIPELINE_IMPORT.finditer(source)
-    }
+    module_aliases, constructor_aliases = _recover_pipeline_import_aliases(source)
     spellings = [*(rf"{re.escape(alias)}\.Pipeline" for alias in module_aliases)]
     spellings.extend(re.escape(alias) for alias in constructor_aliases)
     constructor_pattern = "|".join(sorted(spellings, key=len, reverse=True))
@@ -935,6 +959,7 @@ def fallback_parse(
             has_syntax_error = True
 
         body = block["body_text"] if not has_syntax_error else ""
+        config: dict[str, Any]
         if has_syntax_error:
             config = {
                 "_load_error": (
@@ -957,6 +982,8 @@ def fallback_parse(
                 body,
                 param_names,
             )
+        if not has_syntax_error and node_type == NodeType.LIVE_SWITCH:
+            config["inputs"] = list(block["edge_param_names"])
         if "contract" in decorator_kwargs:
             # Cross-check a drifted ``contract=`` annotation at parse time, the
             # same guard the healthy path runs — but only when a real config

@@ -901,7 +901,13 @@ x = {unclosed
         ("import_line", "constructor"),
         [
             ("import haute as ht", "ht.Pipeline"),
+            ("import haute as ht  # project API", "ht.Pipeline"),
             ("from haute import Pipeline as BuildPipeline", "BuildPipeline"),
+            ("from haute import Pipeline, Submodel", "Pipeline"),
+            (
+                "from haute import Pipeline as BuildPipeline, Submodel  # public API",
+                "BuildPipeline",
+            ),
         ],
     )
     def test_aliased_pipeline_metadata_survives_fallback(

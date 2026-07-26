@@ -50,10 +50,11 @@ Out of scope:
   one API-input node (`quotes`) and one output node (`Quote_Response_9`), then
   connects the four emitted input ports to the corresponding output function
   parameters.
-- The API-input code delegates to `resolve_api_input_from_config()` with the generated script
-  directory as its guarded base. The helper loads `config/quote_input/quotes.json`, validates its
-  v2 `tables` shape, resolves the sidecar's data path, and returns the emitted lazy-frame table
-  mapping.
+- The API-input decorator retains a relative `config=` reference that resolves to
+  `rating/config/quote_input/quotes.json`, plus `contract="opaque"`, so the parser can load and
+  cross-check the sidecar. Its body delegates to `resolve_api_input_from_config()` with the
+  generated script directory as its guarded base. The helper validates the v2 `tables` shape,
+  resolves the sidecar's data path, and returns the emitted lazy-frame table mapping.
   The sidecar declares four emitted tables: quotes, drivers, vehicles, and
   licenses.
 - The output node returns the `quotes` frame. Its response sidecar maps selected

@@ -55,8 +55,9 @@ references to the same resolved file, and call `_parser_submodels.merge_submodel
 the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
 component) → log `pipeline_parsed`.
 
-**`fallback_parse`** (`_parser_regex.py`): recover pipeline metadata via
-`_RE_PIPELINE_META_ANCHOR` + a balanced-paren scan (`_scan_call_end`) → find every
+**`fallback_parse`** (`_parser_regex.py`): recover alias-aware pipeline metadata by parsing each
+otherwise-valid import line independently (including comma-separated imports and trailing
+comments), then locating the matching constructor with a balanced-paren scan (`_scan_call_end`) → find every
 `@pipeline.<type>` block via `_RE_DECORATOR_ANCHOR`, recovering the full decorator argument list
 (`_recover_decorator_text`) and the function signature/body (`_find_decorated_def`,
 `_find_function_blocks`) even across multi-line signatures → parse each block's decorator kwargs
@@ -111,8 +112,10 @@ scans (dynamic alias resolved through the symbol table; then no-alias expression
 `_infer_auto_name`) if the direct alias scan finds nothing → convert the winning expression AST
 with `_ExprConverter`.
 
-**`evaluate_expression`** (`_expression_parser.py`): wrap bare dot-chain code (`.method(...)`) or a
-naked expression into a synthetic `df = (...)` statement so it parses as valid Python → merge
+**`evaluate_expression`** (`_expression_parser.py`): wrap bare dot-chain code (`.method(...)`),
+including snippets with leading indentation, or a naked expression into a synthetic `df = (...)`
+statement through the same wrapper used by `parse_expression_chain` so both APIs parse the same
+source shape → merge
 `preamble_ns` constants under `row_values` (column values win on key collision) → detect a window
 function via the substring `".over("` → `parse_expression` for the text/columns/type → for windows,
 `_add_window_partition_cols` regex-extracts `.over('col')` partition columns and
@@ -182,9 +185,10 @@ appended before the column that depends on it) → return the parsed expressions
   healthy AST parser) from an assignment/list/dict continuation like
   `disabled = [\npipeline.connect(...)\n]` (must stay rejected — it is not a top-level call).
 - **Preamble boundaries are alias-aware**: a valid module uses AST statement line spans to stop
-  before an aliased or multiline `Pipeline(...)` construction; the syntax fallback recognises
-  both `import haute as <alias>` and `from haute import Pipeline as <alias>` textually so it
-  preserves the same user preamble without capturing the constructor.
+  before an aliased or multiline `Pipeline(...)` construction; the syntax fallback parses
+  recoverable import lines independently, including comma-separated names and trailing comments,
+  so both `import haute as <alias>` and `from haute import Pipeline as <alias>` preserve the same
+  user preamble without capturing the constructor.
 - **Nested submodels capped at one level**: a submodel file's own
   `pipeline.submodel(...)` calls raise `ParseError` as a group; they are never recursed into or
   omitted from an otherwise healthy-looking graph.

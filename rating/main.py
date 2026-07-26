@@ -6,7 +6,7 @@ import haute
 pipeline = haute.Pipeline("my_pipeline", description='')
 
 
-@pipeline.api_input()
+@pipeline.api_input(config="config/quote_input/quotes.json", contract="opaque")
 def quotes() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
     """quotes node"""
     from pathlib import Path

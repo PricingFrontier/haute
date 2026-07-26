@@ -51,6 +51,15 @@ class TestChainSingleWithColumns:
         assert evaluated.expression_text == chain[0].expression_text
         assert evaluated.result_value == 6
 
+    def test_indented_dot_chain_uses_same_wrapping_as_evaluator(self):
+        code = '  .with_columns((pl.col("a") * 2).alias("y"))'
+        chain = parse_expression_chain(code, "y")
+        evaluated = evaluate_expression(code, "y", {"a": 3})
+        assert [item.expression_text for item in chain] == ["a * 2"]
+        assert evaluated.expression_type == "arithmetic"
+        assert evaluated.expression_text == chain[0].expression_text
+        assert evaluated.result_value == 6
+
 
 class TestChainMultipleWithColumnsDependency:
     def test_two_step_dependency(self):

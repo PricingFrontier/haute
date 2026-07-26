@@ -118,6 +118,7 @@ def _extract_decorated_nodes(
             base_dir,
             func_name=func_name,
             explicit_node_type=explicit_node_type,
+            edge_param_names=positional_param_names,
         )
 
         raw_nodes.append(

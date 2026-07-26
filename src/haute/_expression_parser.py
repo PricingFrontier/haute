@@ -1439,7 +1439,7 @@ def evaluate_expression(
 def _wrap_expression_code(code: str) -> str:
     """Make expression snippets parseable without corrupting assignments."""
     code_clean = code.lstrip("\ufeff")
-    if code_clean.startswith("."):
+    if code_clean.lstrip().startswith("."):
         return f"df = (df\n{code_clean})"
     first_line_prefix = code_clean.split("\n", 1)[0].split("(", 1)[0]
     if code_clean and not code_clean.startswith("df") and "=" not in first_line_prefix:
