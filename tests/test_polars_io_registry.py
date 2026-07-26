@@ -119,6 +119,11 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
         "postgresql://user:password@db.example/pricing",
         "postgresql://db.example/pricing?access_token=secret",
         "postgresql://db.example/pricing?PASSWORD=secret",
+        "postgresql://db.example/pricing?sig=secret",
+        "postgresql://db.example/pricing?x-amz-credential=secret",
+        "postgresql://db.example/pricing?authorization=secret",
+        "postgresql://db.example/pricing?AWS_ACCESS_KEY_ID=secret",
+        "postgresql://db.example/pricing?SharedAccessSignature=secret",
     ],
 )
 def test_database_config_rejects_inline_uri_credentials(uri: str) -> None:

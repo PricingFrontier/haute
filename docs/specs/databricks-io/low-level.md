@@ -70,9 +70,10 @@ or publish snapshots.
 `SystemExit`, and programming/type errors are never retried. Other fetch errors are retried
 within the fixed budget and the final provider exception propagates with its message.
 
-The input-cache worker logs `error_type` and `error` for provider failures; error text is
-not copied to public responses. Browsing endpoints preserve deliberate `HTTPException`
-responses and log unexpected SDK messages before returning a generic 500.
+The input-cache worker logs `error_type` and a shared credential-scrubbed `error` for
+provider failures; raw error text is not copied to public responses. Browsing endpoints
+preserve deliberate `HTTPException` responses and log unexpected SDK messages before
+returning a generic 500.
 
 ## Testing
 

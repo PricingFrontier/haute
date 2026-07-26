@@ -224,10 +224,17 @@ def test_provider_failure_message_is_logged_but_not_exposed(
         logged.append(fields)
 
     monkeypatch.setattr(logger, "error", capture_error)
+    monkeypatch.setenv("DATABRICKS_TOKEN", "resolved-secret-token")
     monkeypatch.setattr(
         input_cache,
         "build_input_snapshot",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("warehouse unavailable")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "warehouse unavailable token='inline secret' "
+                "https://alice:password@workspace.example/query?sig=signed-value "
+                "resolved-secret-token"
+            )
+        ),
     )
 
     started = client.post(
@@ -237,13 +244,16 @@ def test_provider_failure_message_is_logged_but_not_exposed(
     terminal = _wait_for_terminal(client, started.json()["job_id"])
 
     assert terminal["message"] == "Input snapshot build failed."
-    assert logged == [
-        {
-            "job_id": started.json()["job_id"],
-            "error_type": "RuntimeError",
-            "error": "warehouse unavailable",
-        }
-    ]
+    assert len(logged) == 1
+    assert logged[0]["job_id"] == started.json()["job_id"]
+    assert logged[0]["error_type"] == "RuntimeError"
+    diagnostic = str(logged[0]["error"])
+    assert "warehouse unavailable" in diagnostic
+    assert "<redacted>" in diagnostic
+    assert "inline secret" not in diagnostic
+    assert "password" not in diagnostic
+    assert "signed-value" not in diagnostic
+    assert "resolved-secret-token" not in diagnostic
 
 
 def test_different_identities_can_build_concurrently(

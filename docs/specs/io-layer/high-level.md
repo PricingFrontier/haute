@@ -39,7 +39,8 @@ Raw database URIs are permitted only when credential-free. URI userinfo and reco
 secret-bearing query parameters are rejected by one shared validator before a sidecar,
 cache identity, metadata document, or connector can receive the value. Named connection
 references may resolve credentials from the environment, but the resolved URI never
-enters cache identity or metadata.
+enters cache identity or metadata. Provider diagnostics are scrubbed with the same
+credential-name policy plus resolved in-process secret values before logging.
 
 Snapshot identity includes source semantics: provider, canonical locator, validated query,
 format/mode, and source arguments that can affect returned rows or schema. Databricks
@@ -56,16 +57,18 @@ lease lasts until execution cleanup. Outside an execution request the returned s
 lease token that is retained by every derived LazyFrame and released only after the scan
 plan is no longer reachable. Refresh and clear never delete a locally leased generation.
 
-Store startup is non-destructive: it does not infer that another process's staging
-directory or non-current generation is abandoned. Publication and leases are coordinated
-within one process. Cross-process processes may share already-published immutable
-generations, but destructive orphan reclamation requires an explicit maintenance operation;
-startup never performs it.
+Store startup never deletes a generation. It may reclaim a staging directory only when the
+newest filesystem activity beneath that directory is older than the configured stale-build
+threshold; recent or unreadable staging state is preserved. Unreclaimed staging bytes count
+against the store byte quota. Publication and leases are coordinated within one process,
+while published immutable generations may be read by another process.
 
-SQLite snapshots open an existing database in read-only URI mode, start a read transaction,
-derive one Arrow schema before writing, and apply that schema to every batch. Missing
-database files are rejected rather than created. Empty results retain declared column
-dtypes, and values that cannot be represented by the derived schema fail the build.
+SQLite snapshots open an existing database in read-only URI mode and start a read
+transaction. One aggregate query determines every output column's observed SQLite storage
+classes before the data cursor emits a batch; declared table types are hints only for empty
+columns. Integer/real observations widen to a float, incompatible storage-class mixtures
+fail before artifact output, and one Arrow schema is applied to every data batch. Missing
+database files are rejected rather than created.
 
 Outputs overwrite existing targets when the registered Polars sink has overwrite
 semantics. Authoring-time publication of a new output sidecar is conflict-safe: an
@@ -79,9 +82,10 @@ generation directories and a tiny atomic pointer make refresh safe for concurren
 Strict identity validation prevents durable cache metadata becoming a credential leak.
 
 Parquet is the shared snapshot boundary because it is lazy-scannable, schema-bearing, and
-can be written in bounded batches. Existing-generation integrity uses metadata, file size,
-and Parquet footer/schema checks on ordinary opens; full SHA-256 verification is performed
-at publication and retained for explicit integrity evidence, not recomputed on every lease.
+can be written in bounded batches. Publication computes SHA-256 and seeds a process-local
+verification memo. The first open of a generation not already in that memo rechecks SHA-256;
+later opens reuse the verification while `(mtime_ns, size, recorded digest)` is unchanged.
+Footer, schema, row count, and metadata checks still run on every open.
 
 ## Interactions
 
@@ -101,7 +105,7 @@ Unsupported bounded-memory operations fail rather than falling back to eager col
 Connector, cancellation, deadline, quota, and schema failures abort staging and preserve the
 previous pointer.
 
-Malformed pointers, metadata mismatches, invalid generation identifiers, or invalid Parquet
-footer/schema evidence raise `SourceCacheCorruptError`; callers do not silently rebuild or
-fall back. Transient operating-system access errors propagate as operating-system errors so
-operators can retry and are not told durable data is corrupt.
+Malformed pointers, digest mismatches, metadata mismatches, invalid generation identifiers,
+or invalid Parquet footer/schema evidence raise `SourceCacheCorruptError`; callers do not
+silently rebuild or fall back. Transient operating-system access errors propagate as
+operating-system errors so operators can retry and are not told durable data is corrupt.

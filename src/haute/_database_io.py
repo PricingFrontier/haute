@@ -15,9 +15,14 @@ from collections.abc import Iterator, Mapping
 from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.parse import unquote, urlsplit
 
 import pyarrow as pa
+
+from haute._credential_security import (
+    CredentialMaterialError,
+    validate_credential_free_uri,
+)
 
 if TYPE_CHECKING:
     from haute._source_cache import SourceCacheBuildContext
@@ -33,15 +38,6 @@ _FORBIDDEN_SQL_RE = re.compile(
     r"\b(?:ALTER|ATTACH|CREATE|DELETE|DETACH|DROP|EXEC|EXECUTE|GRANT|INSERT|"
     r"PRAGMA|REPLACE|REVOKE|TRUNCATE|UPDATE|VACUUM)\b",
     re.IGNORECASE,
-)
-_SECRET_QUERY_PARTS = (
-    "token",
-    "password",
-    "secret",
-    "credential",
-    "access_key",
-    "apikey",
-    "api_key",
 )
 _FROM_TABLE_RE = re.compile(
     r"\bFROM\s+(?P<table>(?:\"[^\"]+\"|`[^`]+`|\[[^\]]+\]|[A-Za-z_][\w.]*))",
@@ -64,18 +60,6 @@ def validate_read_query(query: str) -> str:
             f"Database query contains forbidden keyword {forbidden.group()!r}."
         )
     return stripped
-
-
-def validate_credential_free_uri(uri: str) -> str:
-    """Return *uri* when it contains no inline credential material."""
-    parsed = urlsplit(uri)
-    if parsed.username is not None or parsed.password is not None:
-        raise DatabaseConfigError("Database URI must not contain credentials.")
-    for raw_key, _value in parse_qsl(parsed.query, keep_blank_values=True):
-        key = raw_key.casefold().replace("-", "_")
-        if any(part in key for part in _SECRET_QUERY_PARTS):
-            raise DatabaseConfigError("Database URI must not contain credential query parameters.")
-    return uri
 
 
 def resolve_connection_uri(config: Mapping[str, Any]) -> str:
@@ -109,7 +93,11 @@ def resolve_sqlite_path(
     base_dir: str | Path | None = None,
 ) -> str:
     """Resolve a SQLite URI using SQLAlchemy's relative-path convention."""
-    parsed = urlsplit(validate_credential_free_uri(uri))
+    try:
+        safe_uri = validate_credential_free_uri(uri)
+    except CredentialMaterialError as exc:
+        raise DatabaseConfigError("Database URI must not contain credentials.") from exc
+    parsed = urlsplit(safe_uri)
     if parsed.scheme != "sqlite":
         raise DatabaseConfigError(
             f"Database snapshot scheme {parsed.scheme or '<missing>'!r} is unsupported; "
@@ -187,10 +175,15 @@ class DatabaseSnapshotBuilder:
         # Resolve and classify before the cache route creates a background job.
         # This opens no connector and ensures unsupported drivers fail as an
         # admission/capability error instead of an opaque asynchronous failure.
-        resolve_sqlite_path(
+        database_path = resolve_sqlite_path(
             resolve_connection_uri(self._config),
             base_dir=self._base_dir,
         )
+        if database_path == ":memory:":
+            raise DatabaseConfigError("SQLite snapshot sources must be existing on-disk databases.")
+        if not Path(database_path).is_file():
+            raise DatabaseConfigError("SQLite database does not exist.")
+        self._database_path = database_path
         raw_batch_size = (config.get("arguments") or {}).get("batch_size", 10_000)
         if isinstance(raw_batch_size, bool) or not isinstance(raw_batch_size, int):
             raise DatabaseConfigError("Database batch_size must be a positive integer.")
@@ -199,38 +192,33 @@ class DatabaseSnapshotBuilder:
         self._batch_size = raw_batch_size
 
     def build(self, context: SourceCacheBuildContext) -> Iterator[pa.RecordBatch]:
-        uri = resolve_connection_uri(self._config)
-        database_path = resolve_sqlite_path(uri, base_dir=self._base_dir)
-
         def batches() -> Iterator[pa.RecordBatch]:
             context.checkpoint()
-            if database_path == ":memory:":
-                raise DatabaseConfigError(
-                    "SQLite snapshot sources must be existing on-disk databases."
-                )
-            readonly_uri = f"{Path(database_path).as_uri()}?mode=ro"
-            with closing(sqlite3.connect(readonly_uri, uri=True)) as connection:
-                connection.execute("PRAGMA query_only = ON")
-                connection.execute("BEGIN")
-                with closing(connection.execute(self._query)) as cursor:
-                    description = cursor.description
-                    if description is None:
-                        raise DatabaseConfigError("Database query did not return a table.")
-                    columns = [str(item[0]) for item in description]
-                    schema = _sqlite_result_schema(connection, self._query, columns)
-                    yielded = False
-                    while True:
-                        context.checkpoint()
-                        rows = cursor.fetchmany(self._batch_size)
-                        if not rows:
-                            if not yielded:
-                                yield pa.RecordBatch.from_pylist([], schema=schema)
-                            break
-                        yielded = True
-                        yield pa.RecordBatch.from_pylist(
-                            [dict(zip(columns, row, strict=True)) for row in rows],
-                            schema=schema,
-                        )
+            readonly_uri = f"{Path(self._database_path).as_uri()}?mode=ro"
+            try:
+                with closing(sqlite3.connect(readonly_uri, uri=True)) as connection:
+                    connection.execute("PRAGMA query_only = ON")
+                    connection.execute("BEGIN")
+                    with closing(connection.execute(self._query)) as cursor:
+                        description = cursor.description
+                        if description is None:
+                            raise DatabaseConfigError("Database query did not return a table.")
+                        columns = [str(item[0]) for item in description]
+                        schema = _sqlite_result_schema(connection, self._query, columns)
+                        yielded = False
+                        while True:
+                            context.checkpoint()
+                            rows = cursor.fetchmany(self._batch_size)
+                            if not rows:
+                                if not yielded:
+                                    yield pa.RecordBatch.from_pylist([], schema=schema)
+                                break
+                            yielded = True
+                            yield _record_batch(rows, columns=columns, schema=schema)
+            except DatabaseConfigError:
+                raise
+            except sqlite3.Error as exc:
+                raise DatabaseConfigError("SQLite snapshot query failed.") from exc
 
         return batches()
 
@@ -252,13 +240,25 @@ def _sqlite_declared_type_to_arrow(declared_type: str) -> pa.DataType | None:
     return None
 
 
-def _sqlite_runtime_type_to_arrow(runtime_type: str) -> pa.DataType | None:
-    return {
-        "integer": pa.int64(),
-        "real": pa.float64(),
-        "text": pa.string(),
-        "blob": pa.binary(),
-    }.get(runtime_type.casefold())
+def _sqlite_runtime_types_to_arrow(
+    runtime_types: set[str],
+    *,
+    column: str,
+) -> pa.DataType | None:
+    observed = {runtime_type.casefold() for runtime_type in runtime_types} - {"null"}
+    if not observed:
+        return None
+    if observed <= {"integer"}:
+        return pa.int64()
+    if observed <= {"integer", "real"}:
+        return pa.float64()
+    if observed == {"text"}:
+        return pa.string()
+    if observed == {"blob"}:
+        return pa.binary()
+    raise DatabaseConfigError(
+        f"Database column {column!r} has incompatible SQLite storage classes: {sorted(observed)}."
+    )
 
 
 def _unquote_sqlite_identifier(identifier: str) -> str:
@@ -291,19 +291,43 @@ def _sqlite_result_schema(
             )
         }
 
+    storage_class_query = ", ".join(
+        f"group_concat(DISTINCT typeof({_quote_sqlite_identifier(column)}))" for column in columns
+    )
+    evidence = connection.execute(
+        f"SELECT {storage_class_query} FROM ({query}) AS _haute_source"
+    ).fetchone()
+    if evidence is None or len(evidence) != len(columns):
+        raise DatabaseConfigError("Database query did not return schema evidence.")
+
     fields: list[pa.Field] = []
-    for column in columns:
-        arrow_type = _sqlite_declared_type_to_arrow(declared.get(column.casefold(), ""))
+    for column, raw_runtime_types in zip(columns, evidence, strict=True):
+        runtime_types = (
+            set(str(raw_runtime_types).split(",")) if raw_runtime_types is not None else set()
+        )
+        arrow_type = _sqlite_runtime_types_to_arrow(runtime_types, column=column)
         if arrow_type is None:
-            quoted = _quote_sqlite_identifier(column)
-            probe = connection.execute(
-                f"SELECT typeof({quoted}) FROM ({query}) AS _haute_source "
-                f"WHERE {quoted} IS NOT NULL LIMIT 1"
-            ).fetchone()
-            arrow_type = _sqlite_runtime_type_to_arrow(str(probe[0])) if probe is not None else None
+            arrow_type = _sqlite_declared_type_to_arrow(declared.get(column.casefold(), ""))
         if arrow_type is None:
             raise DatabaseConfigError(
                 f"Database query cannot prove a stable Arrow type for column {column!r}."
             )
         fields.append(pa.field(column, arrow_type, nullable=True))
     return pa.schema(fields)
+
+
+def _record_batch(
+    rows: list[tuple[Any, ...]],
+    *,
+    columns: list[str],
+    schema: pa.Schema,
+) -> pa.RecordBatch:
+    try:
+        return pa.RecordBatch.from_pylist(
+            [dict(zip(columns, row, strict=True)) for row in rows],
+            schema=schema,
+        )
+    except (pa.ArrowInvalid, pa.ArrowTypeError, OverflowError, TypeError, ValueError) as exc:
+        raise DatabaseConfigError(
+            "Database result does not match its derived Arrow schema."
+        ) from exc

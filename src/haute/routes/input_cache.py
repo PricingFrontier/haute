@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
 
+from haute._credential_security import redact_sensitive_text
 from haute._env import float_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -83,6 +84,23 @@ def _max_concurrent_builds() -> int:
     if value < 1:
         raise RuntimeError("HAUTE_INPUT_CACHE_MAX_CONCURRENT_BUILDS must be positive")
     return value
+
+
+def _provider_error_diagnostic(
+    exc: Exception,
+    config: dict[str, Any],
+) -> str:
+    """Return a useful provider diagnostic without resolved credential material."""
+    secret_references = {"DATABRICKS_TOKEN"}
+    connection = config.get("connection")
+    if isinstance(connection, str):
+        secret_references.add(connection)
+    return redact_sensitive_text(
+        str(exc),
+        known_secrets=(
+            value for reference in secret_references if (value := os.environ.get(reference, ""))
+        ),
+    )
 
 
 def _project_root() -> Path:
@@ -417,7 +435,7 @@ def _run_build(
             "input_cache_build_failed",
             job_id=job_id,
             error_type=type(exc).__name__,
-            error=str(exc),
+            error=_provider_error_diagnostic(exc, config),
         )
         lifecycle.transition(
             job_id,

@@ -57,8 +57,8 @@ fail-closed because a partial cache is worse than a failed refresh.
 Missing optional packages or credentials fail clearly. Invalid table/query configuration
 fails before provider access. Cancellation/deadline checkpoints abort before execute or
 between batches. Connector failures retain their original exception as the cause and are
-logged with exception type and non-secret message; public build state remains a stable
-`build_failed` response.
+logged with exception type and a credential-scrubbed message; public build state remains a
+stable `build_failed` response.
 
 A retry whose consumed-row position disagrees with locally received rows raises
 `FetchIntegrityError`. Zero rows with no schema also raise `FetchIntegrityError`. No failure

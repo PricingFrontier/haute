@@ -254,13 +254,10 @@ def resolve_data_input(
                 release_lease()
                 raise
         else:
-            lease_token = _SnapshotLeaseToken(release_lease)
-
-            def retain_lease(batch: pl.DataFrame) -> pl.DataFrame:
-                lease_token.retain()
-                return batch
-
-            frame = frame.map_batches(retain_lease, streamable=True)
+            frame = frame.map_batches(
+                _SnapshotLeasePlan(release_lease),
+                streamable=True,
+            )
         return frame
 
     provider = validated["inputType"]
@@ -288,13 +285,19 @@ def resolve_data_input_from_config(
     return resolve_data_input(config, base_dir=base, profile=profile)
 
 
-class _SnapshotLeaseToken:
-    """Plan-captured token that releases a snapshot lease with the final plan."""
+class _SnapshotLeasePlan:
+    """Identity plan callback whose lifetime owns the fallback snapshot lease.
+
+    This fallback is used only outside an ``ExecutionContext``. LazyFrames do
+    not cross the worker protocol, so the module-level callable need not be
+    serialised; lease release remains intentionally tied to local plan GC.
+    """
 
     __slots__ = ("_finalizer", "__weakref__")
 
     def __init__(self, release: Callable[[], None]) -> None:
         self._finalizer = weakref.finalize(self, release)
 
-    def retain(self) -> None:
-        """Keep this token observable to the plan callback."""
+    def __call__(self, batch: pl.DataFrame) -> pl.DataFrame:
+        """Preserve the batch while keeping this lease owner in the plan."""
+        return batch

@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+from haute._database_io import DatabaseConfigError
 from haute._execution_context import ExecutionProfile
 from haute._input_providers import (
     build_input_snapshot,
@@ -196,10 +197,78 @@ def test_database_snapshot_rejects_missing_sqlite_without_creating_it(
         "query": "SELECT id FROM policies",
     }
 
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(DatabaseConfigError, match="does not exist"):
         build_input_snapshot(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
 
     assert not database.exists()
+
+
+def test_database_snapshot_uses_runtime_storage_class_for_datetime(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "datetime.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE events (occurred_at DATETIME)")
+        connection.executemany("INSERT INTO events VALUES (?)", [(1_700_000_000,), (None,)])
+        connection.commit()
+    config = {
+        "inputType": "database",
+        "format": "database",
+        "cacheMode": "snapshot",
+        "uri": f"sqlite:///{database.as_posix()}",
+        "query": "SELECT occurred_at FROM events",
+        "arguments": {"batch_size": 1},
+    }
+    store = SourceCacheStore(tmp_path)
+
+    build_input_snapshot(config, store=store, base_dir=tmp_path)
+
+    out = resolve_data_input(config, store=store, base_dir=tmp_path).collect()
+    assert out.schema == {"occurred_at": pl.Int64}
+    assert out["occurred_at"].to_list() == [1_700_000_000, None]
+
+
+def test_database_snapshot_rejects_incompatible_runtime_storage_classes_before_output(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "mixed-affinity.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE values_table (value INTEGER)")
+        connection.executemany("INSERT INTO values_table VALUES (?)", [(1,), ("not-an-int",)])
+        connection.commit()
+    config = {
+        "inputType": "database",
+        "format": "database",
+        "cacheMode": "snapshot",
+        "uri": f"sqlite:///{database.as_posix()}",
+        "query": "SELECT value FROM values_table",
+        "arguments": {"batch_size": 1},
+    }
+    store = SourceCacheStore(tmp_path)
+
+    with pytest.raises(DatabaseConfigError, match="incompatible SQLite storage classes"):
+        build_input_snapshot(config, store=store, base_dir=tmp_path)
+
+    assert store.status(source_cache_identity(config, base_dir=tmp_path)).state == "missing"
+
+
+def test_empty_database_expression_fails_with_typed_schema_error(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "empty-expression.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE values_table (value INTEGER)")
+        connection.commit()
+    config = {
+        "inputType": "database",
+        "format": "database",
+        "cacheMode": "snapshot",
+        "uri": f"sqlite:///{database.as_posix()}",
+        "query": "SELECT value + 1 AS next_value FROM values_table",
+    }
+
+    with pytest.raises(DatabaseConfigError, match="cannot prove a stable Arrow type"):
+        build_input_snapshot(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
 
 
 def test_raw_sqlite_uri_is_resolved_relative_to_pipeline_base(tmp_path: Path) -> None:

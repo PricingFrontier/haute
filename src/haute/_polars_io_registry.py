@@ -304,11 +304,14 @@ def _require_nonempty_string(config: Mapping[str, Any], field: str, *, subject: 
 
 
 def _validate_raw_uri(uri: str) -> None:
-    from haute._database_io import DatabaseConfigError, validate_credential_free_uri
+    from haute._credential_security import (
+        CredentialMaterialError,
+        validate_credential_free_uri,
+    )
 
     try:
         validate_credential_free_uri(uri)
-    except DatabaseConfigError as exc:
+    except CredentialMaterialError as exc:
         raise PolarsIoConfigError("Raw database 'uri' must not contain credentials.") from exc
 
 

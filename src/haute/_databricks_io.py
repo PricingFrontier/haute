@@ -93,7 +93,7 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
     if not token:
         missing.append("DATABRICKS_TOKEN")
     if not resolved_http_path:
-        missing.append("http_path on the Data Input node (or DATABRICKS_HTTP_PATH env var)")
+        missing.append("http_path on the Data Input node")
 
     if missing:
         raise DatabricksConfigError(

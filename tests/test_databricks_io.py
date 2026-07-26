@@ -41,6 +41,20 @@ def test_get_credentials_reports_missing_values(
         _get_credentials("/sql/warehouse")
 
 
+def test_get_credentials_does_not_advertise_removed_http_path_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "token")
+    monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/ignored")
+
+    with pytest.raises(DatabricksConfigError) as exc_info:
+        _get_credentials(None)
+
+    assert "DATABRICKS_HTTP_PATH" not in str(exc_info.value)
+    assert "http_path on the Data Input node" in str(exc_info.value)
+
+
 @pytest.mark.parametrize(
     "query", ["DELETE FROM x", "SELECT x;", "SELECT x -- comment", "SELECT x FROM y"]
 )
