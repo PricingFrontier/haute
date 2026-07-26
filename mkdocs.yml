@@ -55,12 +55,13 @@ extra_css:
   - stylesheets/extra.css
 
 # Internal engineering material lives under docs/ for repo convenience but is
-# not part of the public site: component specs, engineering roadmaps, and TRIP
-# changelogs.
+# not part of the public site: component specs, engineering roadmaps, TRIP
+# changelogs, and engineering review reports.
 exclude_docs: |
   specs/
   roadmap/
   trip/
+  opus-5-review.md
 
 dev_addr: 127.0.0.1:8001
 
