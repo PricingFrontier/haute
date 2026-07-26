@@ -58,7 +58,7 @@ vi.mock("../../stores/useUIStore.ts", () => {
 // Wave 7E: dirty tracking moved from useUIStore to useGraphStore.  The
 // hook only reads markSaved from it; stub a no-op mock.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { markSaved: vi.fn() }
+  const store = { nodes: [], edges: [], submodels: {}, preamble: "", markSaved: vi.fn() }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -96,8 +96,10 @@ function makeHookParams() {
   return {
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
+    setSubmodelsRaw: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
+    submodelsRef: { current: {} as Record<string, unknown> },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -143,6 +145,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             // Note: "doomed_42" is NOT in the new nodes list
             nodes: [{ id: "survivor_1", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
@@ -172,6 +175,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [
               { id: "keeper_1", position: { x: 10, y: 10 }, data: {} },
               { id: "other", position: { x: 20, y: 20 }, data: {} },
@@ -201,6 +205,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             // Missing "gone_b"
             nodes: [
               { id: "a", position: { x: 10, y: 10 }, data: {} },
@@ -229,6 +234,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [
               { id: "a", position: { x: 10, y: 10 }, data: {} },
               { id: "b", position: { x: 20, y: 20 }, data: {} },
@@ -261,6 +267,7 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "a", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
           },

@@ -68,6 +68,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
   const store = {
     nodes: [{ id: "previous", position: { x: 1, y: 1 }, data: {} }],
     edges: [{ id: "old-edge", source: "previous", target: "previous" }],
+    submodels: {},
     preamble: "old preamble",
     markSaved: vi.fn(),
   }
@@ -112,8 +113,10 @@ function makeHookParams() {
   return {
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
+    setSubmodelsRaw: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
+    submodelsRef: { current: {} as Record<string, unknown> },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -137,6 +140,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     vi.mocked(getLayoutedElements).mockReset().mockImplementation(async (n: unknown) => n as never)
     vi.mocked(useToastStore.getState().addToast).mockClear()
     useToastStore.getState().toasts.length = 0
+    useGraphStore.getState().submodels = {}
     // markSaved lives in the module-level store mock, so calls persist
     // across tests in this file; without a clear, the not.toHaveBeenCalled
     // assertion below is order-dependent under --sequence.shuffle.
@@ -170,6 +174,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
           },
@@ -197,6 +202,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
           },
@@ -229,6 +235,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [{ id: "e1", source: "n1", target: "n2" }],
           },
@@ -259,6 +266,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
           },
@@ -286,7 +294,11 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
 
   it("setter failure rolls back preamble and does not mark the failed graph saved", async () => {
     const params = makeHookParams()
+    const previousSubmodels = { old: { nodes: [], edges: [] } }
+    const incomingSubmodels = { fresh: { nodes: [], edges: [] } }
     params.preambleRef.current = "old preamble"
+    params.submodelsRef.current = previousSubmodels
+    useGraphStore.getState().submodels = previousSubmodels
     params.setPreamble.mockImplementationOnce(() => {
       throw new Error("preamble setter failed")
     })
@@ -299,6 +311,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: incomingSubmodels,
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
             preamble: "new preamble",
@@ -310,10 +323,40 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(params.setPreamble).toHaveBeenNthCalledWith(1, "new preamble")
     expect(params.setPreamble).toHaveBeenNthCalledWith(2, "old preamble")
     expect(params.preambleRef.current).toBe("old preamble")
+    expect(params.setSubmodelsRaw).toHaveBeenNthCalledWith(1, incomingSubmodels)
+    expect(params.setSubmodelsRaw).toHaveBeenNthCalledWith(2, previousSubmodels)
+    expect(params.submodelsRef.current).toBe(previousSubmodels)
     expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("WebSocket sync error"),
+    )
+  })
+
+  it("rejects graph_update frames that omit the persisted submodels map", async () => {
+    const params = makeHookParams()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [],
+          },
+        }),
+      }))
+    })
+
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("missing or invalid `submodels` map"),
     )
   })
 
@@ -336,6 +379,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "bad", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
           },
@@ -352,6 +396,7 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
         data: JSON.stringify({
           type: "graph_update",
           graph: {
+            submodels: {},
             nodes: [{ id: "good", position: { x: 10, y: 20 }, data: {} }],
             edges: [],
           },

@@ -12,6 +12,7 @@
  */
 import { useCallback } from "react"
 import { getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
+import { FAILED_JOB_STATUSES } from "../api/types"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import type { ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
 import useToastStore from "../stores/useToastStore"
@@ -26,15 +27,6 @@ const VISIBLE_PROGRESS_INTERVAL_MS = 1_000
 // Both are terminal; retrying would just burn the 24-hour max-lifetime window
 // for a resource that will never come back.
 const TERMINAL_MISSING_JOB_STATUSES = new Set([404, 410])
-const FAILED_JOB_STATUSES = new Set([
-  "error",
-  "cancelled",
-  "superseded",
-  "timed_out",
-  "memory_limited",
-  "contract_error",
-])
-
 function getMissingJobPollErrorMessage(error: unknown): string | undefined {
   if (!error || typeof error !== "object") return undefined
   const { status, detail, message } = error as {

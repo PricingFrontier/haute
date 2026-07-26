@@ -115,10 +115,15 @@ export default function RemotePushControl({
       // (offline, auth, server) stays a toast.
       if (err instanceof ApiError && err.status === 409) {
         const body = (err.body as { detail?: unknown } | undefined)?.detail
-        const parsed = parseGitPushRejection(body)
-        if (parsed) {
-          setRejection(parsed)
-          await load() // badges now reflect the freshly-known divergence
+        try {
+          const parsed = parseGitPushRejection(body)
+          if (parsed) {
+            setRejection(parsed)
+            await load() // badges now reflect the freshly-known divergence
+            return
+          }
+        } catch (parseError) {
+          addToast("error", `Push failed: ${gitErrorMessage(parseError, "malformed divergence response")}`)
           return
         }
       }

@@ -21,11 +21,21 @@ import {
   parseGitPushRejection,
   parseGitMilestoneFork,
   parseGitCreateWorkingBranchResponse,
+  parseGitGraphResponse,
   parseGitPrefs,
+  parseHauteSessionResponse,
+  parseJsonCacheDeleteResponse,
   parseJsonCacheBuildResponse,
   parseJsonCacheStatusResponse,
+  parseJsonCacheSchemaInferenceResponse,
+  parseFileListResponse,
+  parseMlflowExperiments,
   parseMlflowCheckResponse,
   parseMlflowLogResponse,
+  parseMlflowModels,
+  parseMlflowModelVersions,
+  parseMlflowRuns,
+  parseOutputAssembleDryRunResponse,
   parseOptimiserEstimateResponse,
   parseOptimiserStatusResponse,
   parsePreviewNodeResponse,
@@ -184,12 +194,14 @@ describe("parseExecutionStrategyDiagnostic", () => {
     expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ strategy, status }))?.status).toBe(status)
   })
 
-  it("makes malformed fields, caps, wrappers, and ordering unavailable", () => {
-    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({ reason_code: 3 }))).toBeNull()
-    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({
+  it("throws for malformed fields, caps, wrappers, and ordering in a matching version", () => {
+    expect(() => parseExecutionStrategyDiagnostic(
+      executionStrategyFixture({ reason_code: 3 }),
+    )).toThrow()
+    expect(() => parseExecutionStrategyDiagnostic(executionStrategyFixture({
       reasons: { state: "available", total_count: 33, items: Array.from({ length: 33 }, () => ({ reason_code: "r" })) },
-    }))).toBeNull()
-    expect(parseExecutionStrategyDiagnostic(executionStrategyFixture({
+    }))).toThrow()
+    expect(() => parseExecutionStrategyDiagnostic(executionStrategyFixture({
       boundaries: {
         state: "available",
         total_count: 2,
@@ -198,7 +210,7 @@ describe("parseExecutionStrategyDiagnostic", () => {
           { topological_rank: 0, node_id: "a", operator: "x", boundary_kind: "materialisation-boundary" },
         ],
       },
-    }))).toBeNull()
+    }))).toThrow()
   })
 
   it("accepts V1 additive fields and equal-primary duplicates but rejects higher versions", () => {
@@ -1553,8 +1565,19 @@ describe("API response guards", () => {
     expect(parseGitPushRejection({ status: "ok" })).toBeNull()
   })
 
-  it("returns null (not throw) for a malformed push-rejection body", () => {
-    expect(parseGitPushRejection({ status: "rejected_diverged" })).toBeNull()
+  it("throws for a malformed matching push-rejection body", () => {
+    expect(() => parseGitPushRejection({ status: "rejected_diverged" })).toThrow()
+    expect(() => parseGitPushRejection({
+      status: "rejected_diverged",
+      remote: "origin",
+      working: { status: "diverged", ahead: 1, behind: 2 },
+      ledger: null,
+      message: "Remote has work you don't.",
+      is_rewrite: "yes",
+    })).toThrow()
+  })
+
+  it("returns null for a non-object push-rejection discriminator", () => {
     expect(parseGitPushRejection(null)).toBeNull()
   })
 
@@ -1570,9 +1593,15 @@ describe("API response guards", () => {
     expect(parsed?.working.status).toBe("diverged")
   })
 
-  it("returns null for a milestone-fork body of the wrong status or malformed shape", () => {
+  it("returns null for a milestone-fork body of the wrong status", () => {
     expect(parseGitMilestoneFork({ status: "ok" })).toBeNull()
-    expect(parseGitMilestoneFork({ status: "would_fork", remote: "origin" })).toBeNull()
+  })
+
+  it("throws for a malformed matching milestone-fork body", () => {
+    expect(() => parseGitMilestoneFork({
+      status: "would_fork",
+      remote: "origin",
+    })).toThrow()
   })
 
   it("parses a create-working-branch response", () => {
@@ -1591,6 +1620,38 @@ describe("API response guards", () => {
   it("parses git prefs, defaulting skip_switch_confirm to false", () => {
     expect(parseGitPrefs({}).skip_switch_confirm).toBe(false)
     expect(parseGitPrefs({ skip_switch_confirm: true }).skip_switch_confirm).toBe(true)
+  })
+
+  it("parses shared client trust-boundary payloads", () => {
+    expect(parseHauteSessionResponse({ ok: true })).toEqual({ ok: true })
+    expect(parseOutputAssembleDryRunResponse({ status: "ok", document: [{ premium: 1 }], row_count: 1, error: null })).toMatchObject({ status: "ok", row_count: 1 })
+    expect(parseJsonCacheDeleteResponse({ cached: false, data_path: "cache/data.parquet" })).toEqual({ cached: false, data_path: "cache/data.parquet" })
+    expect(parseJsonCacheSchemaInferenceResponse({ tables: [{ name: "drivers" }] }).tables).toEqual([{ name: "drivers" }])
+    expect(parseMlflowExperiments([{ experiment_id: "1", name: "pricing" }])[0]?.name).toBe("pricing")
+    expect(parseMlflowRuns([{ run_id: "run-1", run_name: "baseline", metrics: { auc: 0.9 }, artifacts: ["model"] }])[0]?.metrics.auc).toBe(0.9)
+    expect(parseMlflowModels([{ name: "pricing", latest_versions: [{ version: "1", status: "READY", run_id: "run-1" }] }])[0]?.latest_versions).toHaveLength(1)
+    expect(parseMlflowModelVersions([{ version: "1", run_id: "run-1", status: "READY", description: "baseline" }])[0]?.description).toBe("baseline")
+    expect(parseFileListResponse({ items: [{ name: "data", path: "/data", type: "directory" }] }).items?.[0]?.type).toBe("directory")
+    expect(parseGitGraphResponse({
+      working_branch: "main",
+      order: ["main"],
+      branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "2026-01-01", version_label: null, parents: [] }] }],
+    }).branches[0]?.entries[0]?.parents).toEqual([])
+  })
+
+  it.each([
+    ["session boolean", () => parseHauteSessionResponse({ ok: "yes" })],
+    ["output document", () => parseOutputAssembleDryRunResponse({ status: "ok", document: {}, row_count: 1 })],
+    ["cache deletion path", () => parseJsonCacheDeleteResponse({ cached: true })],
+    ["inferred nested table", () => parseJsonCacheSchemaInferenceResponse({ tables: ["bad"] })],
+    ["experiment required name", () => parseMlflowExperiments([{ experiment_id: "1" }])],
+    ["run nested metric", () => parseMlflowRuns([{ run_id: "r", run_name: "n", metrics: { auc: "high" }, artifacts: [] }])],
+    ["model nested version", () => parseMlflowModels([{ name: "m", latest_versions: [{ version: "1", status: "READY" }] }])],
+    ["model version description", () => parseMlflowModelVersions([{ version: "1", run_id: "r", status: "READY" }])],
+    ["file item type", () => parseFileListResponse({ items: [{ name: "x", path: "/x", type: "link" }] })],
+    ["git graph nested parents", () => parseGitGraphResponse({ working_branch: null, order: [], branches: [{ name: "main", is_archived: false, is_current: true, tip_sha: "a", fork_point_sha: null, fork_of: null, fork_source_sha: null, fork_credit_sha: null, truncated: false, entries: [{ sha: "a", short_sha: "a", message: "init", timestamp: "today", version_label: null, parents: [1] }] }] })],
+  ])("rejects malformed shared client payload: %s", (_name, parse) => {
+    expect(parse).toThrow()
   })
 
 })

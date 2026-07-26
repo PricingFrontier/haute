@@ -29,7 +29,7 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import useUIStore from "../useUIStore"
 import useGraphStore from "../useGraphStore"
-import { selectIsDirty, serializeSnapshot } from "../../utils/graphSnapshot"
+import { selectIsDirty, serializeSnapshot as canonicalSerializeSnapshot } from "../../utils/graphSnapshot"
 import type { Node, Edge } from "@xyflow/react"
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,12 @@ function makeNode(id: string, data: Record<string, unknown> = {}): Node {
 
 function makeEdge(id: string, source: string, target: string): Edge {
   return { id, source, target } as Edge
+}
+
+// Most cases exercise one persisted dimension at a time; default the other
+// persisted submodel dimension to the canonical empty map.
+function serializeSnapshot(input: { nodes: readonly Node[]; edges: readonly Edge[]; preamble: string; submodels?: Record<string, unknown> }) {
+  return canonicalSerializeSnapshot({ ...input, submodels: input.submodels ?? {} })
 }
 
 /**
@@ -70,6 +76,7 @@ function resetStore() {
   useGraphStore.setState({
     nodes: [],
     edges: [],
+    submodels: {},
     preamble: "",
     lastSavedSnapshot: null,
     undoStack: [],
@@ -126,25 +133,30 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
   // -----------------------------------------------------------------------
   // serializeSnapshot — the canonical shape being compared
   //
-  // The saved snapshot encodes `{nodes, edges, preamble}`. Extra keys
-  // (preserved_blocks, submodels, etc.) are explicitly out of scope —
-  // changing a preserved block should not mark the graph dirty, because
-  // preserved blocks are round-tripped verbatim and aren't user-editable
-  // via the GUI.
+  // The saved snapshot encodes `{nodes, edges, preamble, submodels}`.
+  // Preserved blocks remain out of scope because they round-trip outside
+  // the graph store; nested submodel graphs are editable and persisted.
   // -----------------------------------------------------------------------
 
   describe("serializeSnapshot", () => {
-    it("encodes nodes, edges, and preamble", () => {
+    it("encodes nodes, edges, preamble, and submodels", () => {
       const snap = serializeSnapshot({
         nodes: [makeNode("a")],
         edges: [makeEdge("e1", "a", "b")],
         preamble: "import x",
+        submodels: { nested: { nodes: [], edges: [] } },
       })
       expect(typeof snap).toBe("string")
-      const parsed = JSON.parse(snap) as { nodes: unknown; edges: unknown; preamble: unknown }
+      const parsed = JSON.parse(snap) as {
+        nodes: unknown
+        edges: unknown
+        preamble: unknown
+        submodels: unknown
+      }
       expect(parsed.preamble).toBe("import x")
       expect(Array.isArray(parsed.nodes)).toBe(true)
       expect(Array.isArray(parsed.edges)).toBe(true)
+      expect(parsed.submodels).toEqual({ nested: { nodes: [], edges: [] } })
     })
 
     it("is deterministic for equal inputs (value-equality, not reference)", () => {
@@ -230,6 +242,16 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
       const snap2 = serializeSnapshot({ nodes, edges, preamble: "import numpy" })
       expect(snap1).not.toBe(snap2)
     })
+
+    it("differs when submodels change", () => {
+      const base = { nodes: [], edges: [], preamble: "" }
+      const snap1 = serializeSnapshot({ ...base, submodels: {} })
+      const snap2 = serializeSnapshot({
+        ...base,
+        submodels: { pricing: { nodes: [makeNode("nested")], edges: [] } },
+      })
+      expect(snap1).not.toBe(snap2)
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -243,8 +265,8 @@ describe("useUIStore — derived dirty flag (item #99)", () => {
   describe("selectIsDirty", () => {
     it("returns false for initial state with an empty graph (lastSavedSnapshot=null, current=empty)", () => {
       // Pinned choice: untouched + never-saved counts as NOT dirty.
-      // The rationale is that on fresh load the backend sends {nodes, edges,
-      // preamble}; an untouched empty workspace is treated as clean.
+      // The fresh canonical workspace has empty nodes, edges, preamble, and
+      // submodels; an untouched empty workspace is treated as clean.
       const empty = serializeSnapshot({ nodes: [], edges: [], preamble: "" })
       expect(selectIsDirty({ lastSavedSnapshot: null }, empty)).toBe(false)
     })

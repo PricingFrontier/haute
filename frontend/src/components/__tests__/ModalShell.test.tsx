@@ -72,6 +72,29 @@ describe("ModalShell", () => {
     expect(props.onClose).toHaveBeenCalledTimes(1)
   })
 
+  it("preserves focused child state across parent rerenders while using the latest callbacks", () => {
+    const firstClose = vi.fn()
+    const secondClose = vi.fn()
+    const { rerender } = render(
+      <ModalShell ariaLabel="Stable dialog" onClose={firstClose} extraCloseKeys={["?"]}>
+        <input aria-label="Editable value" />
+      </ModalShell>,
+    )
+    const input = screen.getByLabelText("Editable value")
+    input.focus()
+
+    rerender(
+      <ModalShell ariaLabel="Stable dialog" onClose={secondClose} extraCloseKeys={["!"]}>
+        <input aria-label="Editable value" />
+      </ModalShell>,
+    )
+
+    expect(document.activeElement).toBe(input)
+    fireEvent.keyDown(document, { key: "!" })
+    expect(firstClose).not.toHaveBeenCalled()
+    expect(secondClose).toHaveBeenCalledTimes(1)
+  })
+
   it("cleans up event listeners on unmount", () => {
     const { props, unmount } = renderShell()
     unmount()

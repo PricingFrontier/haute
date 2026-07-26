@@ -11,24 +11,36 @@
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
+| `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract consumed by the canvas. Its primary owner is `frontend-shared`; this component is the declared consumer. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a JSON API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying `graph_update`/`parse_error` frames (with dirty-blocking and rollback-on-failure), and session-expiry handling. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — the view-stack state machine, cross-boundary port-node/edge synthesis on drill-in, and the three submodel API calls. |
+| `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
+| `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
+| `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. |
 | `frontend/src/utils/buildGraph.ts` | `buildGraph` (backend payload shape) and `resolveGraphFromRefs` (parent-graph-takes-priority resolution used by preview/save/submodel calls). |
 | `frontend/src/utils/graphDiff.ts` | `diffPipelineNodes` — pure added/removed/changed/moved node diff between two graph versions, backing the comparison view. |
-| `frontend/src/utils/graphHelpers.ts` | `computeNextNodeId` and `normalizeEdges`. |
+| `frontend/src/utils/graphHelpers.ts` | `computeNextNodeId`, `normalizeEdges`, and `filterIncomingEdges`; validates endpoint/handle existence for layout while preserving the full normalised edge list for graph state and save. |
 | `frontend/src/utils/graphPerformance.ts` | `shouldUseLiteGraphEffects`/`GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT` (1000). |
 | `frontend/src/utils/makePreviewData.ts` | `makePreviewData` — `PreviewData` constructor with defaults. |
 | `frontend/src/utils/columnFingerprint.ts` | `columnFingerprint`/`columnsEqualByFingerprint` — collision-safe column-schema fingerprinting. |
 | `frontend/src/utils/activePreview.ts` | `previewForActiveNode` — filters preview data to the currently active node. |
 | `frontend/src/utils/validateConfigRefs.ts` | `validateConfigRefs`/`formatConfigRefWarnings` — flags `data_input`/`banding_source`/`instanceOf` config fields pointing at non-existent node ids (graph-level or submodel-internal). |
-| `frontend/src/utils/layout.ts` | `getLayoutedElements` — lazily-imported ELK layered layout plus `clusterSnap`/`alignPositions` coordinate snapping. |
+| `frontend/src/utils/layout.ts` | `getLayoutedElements` plus `nodeIdsNeedingLayout`/`mergeLayoutedNodePositions` for partial imported-graph layout; finite positions including the origin are authoritative. Also owns `clusterSnap`/`alignPositions` coordinate snapping. |
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including the input-name uniqueness rule (a candidate connection whose `edgeInputName` duplicates an existing input name on the target node is invalid, surfaced as a named toast at commit time) and the null-API-handle rejection (an apiInput connection with no source handle is invalid in every gesture direction, the validator-level twin of the zero-frame handle's `isConnectable` false under `ConnectionMode.Loose`). |
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
 | `frontend/src/utils/flowHandles.ts` | `DEFAULT_TARGET_HANDLE`/`normalizeDefaultTargetHandle` — collapses React Flow's synthetic default-target-handle id to `null`. |
-| `frontend/src/utils/nodeTypes.ts` | `NODE_TYPES`/`NODE_TYPE_META` and derived lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`Colors`/`Labels`, `PILL_TYPES`) — the single source of truth for node-type metadata. |
+| `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`Colors`/`Labels`, `PILL_TYPES`). |
+| `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity: eligible frame labels, downstream argument names, label validation, conservative rename migration, and orphan-handle pruning. |
+| `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and maps the rendered bottom join handle onto the canonical join role. |
+| `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers; candidate feedback and release-time insertion share the same validator. |
+| `frontend/src/utils/edgeJoinInsertionFeedback.ts` | Pure render-only Edge Join candidate decoration that preserves edge-array identity when inactive. |
+| `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings. |
+| `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from canonical metadata, shared by editable and read-only canvases. |
+| `frontend/src/utils/graphSnapshot.ts` | Four-field graph snapshot serialization/cloning and persisted canonicalisation; omits transient node/submodel metadata from fingerprints. |
+| `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by structural and panel-context fingerprint calculations. |
 | `frontend/src/components/ComparisonInspector.tsx` | Read-only comparison-view config panel: renders the real node editor `inert` for the available side(s), with a Historical/Current switcher. |
 | `frontend/src/components/ComparisonView.tsx` | The historical-vs-current comparison canvas pair: fetches the historical pipeline, diffs it, and renders two non-interactive `ReactFlow` instances (`ReadonlyCanvas`) with diff-ring highlighting, a draggable split, and orientation toggle. |
 | `frontend/src/components/EdgeJoinInsertionFeedback.tsx` | Renders the conditional polite live-region status for a compatible edge-join insertion candidate. |
@@ -36,45 +48,15 @@
 | `frontend/src/components/RenameDialog.tsx` | Node-rename modal with name-length and unsafe-character validation. |
 | `frontend/src/components/SubmodelDialog.tsx` | "Create submodel" name-entry modal. |
 
-Additional graph modules assigned to this component; the table which follows
-is the authoritative module map for their responsibilities:
-
-- `frontend/src/hooks/useGraphCanvasState.ts` — the React Flow adapter over
-  the store; translates `NodeChange[]`/`EdgeChange[]` deltas into
-  `setNodesRaw`/`pushSnapshot` calls.
-- `frontend/src/hooks/usePanelGraphContext.ts` — builds the
-  `PanelGraphContextSnapshot` (`{allNodes, edges, nodeById, getNode}`) that
-  `App.tsx` passes into `<GraphProvider>`, recomputed only when
-  `panelContextVersion` changes.
-- `frontend/src/utils/nodeTypeRegistry.ts` — the `NODE_TYPES` → component
-  registry shared with the read-only comparison canvas.
-- `frontend/src/types/node.ts` — `HauteNodeData`, `SubmodelNodeData`,
-  `SubmodelPortData`, and the `nodeData()`/`effectiveNodeType()` accessors
-  used throughout.
-- `frontend/src/utils/graphSnapshot.ts`, `frontend/src/utils/shallowNodeHash.ts`
-  — serialization and shallow-hashing helpers behind the store's
-  fingerprints.
-
-| File | Responsibility |
-| --- | --- |
-| `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
-| `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
-| `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. |
-| `frontend/src/utils/apiInputPorts.ts` | Mirrors backend api-input frame identity: `apiInputFrameLabels` is the single ordered eligible-frame-label list (no minimum count) that drives handles, body rows, and downstream input names alike; `edgeInputName` derives an edge's input/argument name (frame label verbatim for api-input edges, sanitised source label otherwise, submodel `out__` edges resolved to the child's sanitised label) in lockstep with the backend's `edge_input_name`; validates blank/duplicate/non-identifier/keyword labels (`apiInputLabelIssue`, mirroring backend invariant B4 exactly — ASCII identifier `/^[A-Za-z_][A-Za-z0-9_]*$/` plus the Python hard-keyword list — with duplicates compared case-insensitively to match backend B2's casefolded parquet-stem rule); migrates edges on a conservative in-place table rename, then prunes only genuinely orphaned handles while preserving input array identity on no-op. |
-| `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and maps the rendered bottom join handle onto the canonical join role. |
-| `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers: reject missing endpoints, self-joins, and cycles without mutation; split an existing edge or combine source gestures into a correctly configured join node and its role-bound edges. Candidate feedback and release-time insertion share the same validator. |
-| `frontend/src/utils/edgeJoinInsertionFeedback.ts` | Pure render-only Edge Join candidate decoration: preserves existing edge classes, adds the shared candidate class and accessible label only to the active edge, and preserves the edge-array identity when no candidate is active. |
-| `frontend/src/utils/edgeJoinValidation.ts` | Save-time edge-join graph validation and readable warnings; rejects incomplete, duplicate, or otherwise inconsistent role/edge representations before the backend receives them. |
-| `frontend/src/utils/nodeTypeRegistry.ts` | React Flow node-type registry built from the canonical metadata, shared by the editable and read-only comparison canvases. |
-| `frontend/src/utils/graphSnapshot.ts` | Snapshot serialization/cloning helpers which omit transient node data so undo/redo and persisted fingerprints describe graph state rather than preview/UI residue. |
-| `frontend/src/utils/shallowNodeHash.ts` | Stable shallow data hashing used by the graph store's structural and persisted fingerprint calculations. |
-| `frontend/src/types/node.ts` | Canonical React Flow node, `PipelineEdge` (including authored submodel boundary-port metadata), submodel-port, column, and status shapes plus `nodeData()`/`effectiveNodeType()` accessors used at the untyped React Flow boundary. |
-
 ## Key types and data structures
 
 - **`GraphSnapshot`** (`{ nodes: Node[]; edges: PipelineEdge[]; preamble: string;
   submodels: Record<string, unknown> }`,
   `useGraphStore.ts`) — the unit of undo/redo for a graph edit.
+- **`PIPELINE_NODE_TYPES` / `NodeTypeValue`** (`types/node.ts`, owned by
+  frontend-shared) — the 19 persisted node strings accepted by guards and
+  consumed by canvas metadata. It includes `dataInput`/`dataOutput` and no
+  historical Data Source/Data Sink aliases.
 - **`PipelineEdge`** (`types/node.ts`) — React Flow's `Edge` plus optional
   `sourcePort`/`targetPort`. Those fields retain an authored connect port while a submodel
   boundary temporarily consumes `sourceHandle`/`targetHandle`; API response types and outgoing
@@ -84,12 +66,13 @@ is the authoritative module map for their responsibilities:
   own async inverse. `HistoryEntry = GraphSnapshot | VcHistoryEntry`;
   `isVcEntry()` is the discriminant type guard.
 - **`GraphStore`** — the full state/action surface: state
-  (`nodes`, `edges`, `preamble`, `lastSavedSnapshot`, `undoStack`,
+  (`nodes`, `edges`, `preamble`, `submodels`, `lastSavedSnapshot`, `undoStack`,
   `redoStack`, `vcBusy`, `structuralVersion`/`structuralFingerprint`,
   `panelContextVersion`/`panelContextFingerprint`, `persistedFingerprint`,
   `savedPersistedFingerprint`, `dirty`); history-aware actions (`setNodes`,
-  `setEdges`, `setNodesAndEdges`, `setPreamble`); raw actions
-  (`setNodesRaw`, `setEdgesRaw`, `setPreambleRaw`); explicit history ops
+  `setEdges`, `setNodesAndEdges`, `setNodesAndEdgesAndSubmodels`,
+  `setPreamble`); raw actions
+  (`setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`); explicit history ops
   (`pushSnapshot`, `pushVcEntry`, `undo`, `redo`); `markSaved`; and pure
   selectors (`isDirty`, `canUndo`, `canRedo`).
 - **`HauteNodeData`** (`types/node.ts`) — base node data shape:
@@ -213,7 +196,8 @@ is the authoritative module map for their responsibilities:
    `nodes`/`edges`/`preamble`/`submodels` to the target snapshot,
    recompute all three fingerprints and `dirty` from it, and push the
    *current* (pre-undo) state onto the opposite stack via
-   `captureGraphSnapshot`.
+   `captureGraphSnapshot`. Every push to either stack goes through the same
+   `MAX_HISTORY` cap.
 9. **`markSaved(snapshot?)`.** Captures `lastSavedSnapshot` (defaults to the
    current state) and `savedPersistedFingerprint`, then recomputes `dirty`.
    This is the only place `savedPersistedFingerprint` is updated; it's
@@ -371,15 +355,25 @@ is the authoritative module map for their responsibilities:
     `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
     the handshake. On open, sends a `resync` message
     carrying the last-applied graph fingerprint for the current source file
-    (server skips replying if it already matches). On `graph_update`: source
-    file must match the currently open one (`isCurrentSourceFile`, tolerant
-    of absolute-vs-relative paths); if the store is `dirty`, the update is
-    blocked and a sync banner shown instead of applied. Otherwise it
-    computes a layout (only if the incoming nodes carry no non-zero
-    positions), sets a `graphRefreshingRef` guard (so React Flow's spurious
-    `onSelectionChange` during the swap doesn't clear the open panel),
-    applies via the raw setters, and calls `markSaved()`. A thrown error
-    during apply rolls back to the pre-update `nodes`/`edges`/`preamble`
+    (server skips replying if it already matches). Every accepted
+    `graph_update` or `parse_error` synchronously advances a generation; an
+    older update may not mutate graph/banner/dialog state after awaiting
+    layout. Source matching tolerates absolute-vs-relative spelling, but if
+    either side has an identity then both must resolve to the same file. If
+    the store is `dirty`, the update is blocked and a sync banner shown
+    instead of applied. Otherwise the incoming `submodels` value must be a
+    plain map, except that the backend's explicit `null` empty-collection
+    representation is normalised to `{}`; an omitted field still fails
+    loudly. Edges are normalised and partitioned by live endpoint/handle
+    validity; all remain in graph state/save, one bounded warning describes
+    rejected layout edges, and only the valid partition is given to ELK.
+    `nodeIdsNeedingLayout` selects missing/non-finite positions and
+    `mergeLayoutedNodePositions` copies ELK positions only to those ids, so
+    every finite coordinate including `{x: 0, y: 0}` is retained. A
+    `graphRefreshingRef` guard prevents React Flow's spurious
+    `onSelectionChange` during the swap from clearing the open panel.
+    Nodes, edges, submodels/ref, and preamble are applied through raw
+    setters before `markSaved()`. A thrown error rolls all four back
     (best-effort) before re-throwing into the outer catch, which toasts.
     Reconnection backs off exponentially (`INITIAL_BACKOFF_MS` doubling to
     `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50). A `1008` close with a
@@ -525,10 +519,15 @@ is the authoritative module map for their responsibilities:
   violate that node type's downstream invariants (Issue #35). An *absent*
   config payload (the empty-string default) legitimately becomes `{}`.
 - **The preview cache key is (node id, structural version, source, row
-  limit).** A hit on the first two but a mismatch on the join, but a
-  mismatch on source or row limit alone re-fetches even though the cached
-  data paints immediately in the meantime — never blocking the UI on a
+  limit).** The store lookup supplies node identity; freshness additionally
+  requires exact structural version, active source, and row limit. A cached
+  entry from the same source/row limit paints immediately, but any freshness
+  mismatch re-fetches in the background — never blocking the UI on a
   settings change.
+- **Data Output is a non-previewable sink.** Node selection opens its editor
+  but `previewOptionsForClick` never sends it through the generic preview
+  path, avoiding an ambiguous promise that a persistence boundary is always
+  side-effect-free.
 - **A JSON API-input without a `tables` array is not automatically
   previewed when selected.** `previewOptionsForClick` classifies that
   incomplete authoring state as unavailable for click-to-preview,
@@ -619,10 +618,13 @@ is the authoritative module map for their responsibilities:
   detail is preferred when present, else the exception's `message`, else a
   literal `"unknown error"`; every branch resolves `false` after toasting.
 - `useWebSocketSync` toasts on: WebSocket construction failure, unparsable
-  message JSON, and any exception raised while applying a `graph_update` —
-  the last case also attempts a best-effort rollback to the pre-update
-  snapshot (itself wrapped in a try/catch that swallows a rollback failure
-  so it never masks the original error in the toast). A `1008` close code
+  message JSON, an omitted or invalid non-object
+  `graph_update.graph.submodels` (explicit `null` means an empty map), and any
+  exception raised while applying a `graph_update` — the last case also
+  attempts a best-effort rollback of nodes, edges, submodels/ref, and
+  preamble to the pre-update snapshot (itself wrapped in a try/catch that
+  swallows a rollback failure so it never masks the original error in the
+  toast). A `1008` close code
   carrying a recognised session-expiry reason short-circuits reconnection
   and calls `notifyHauteSessionExpired` instead of toasting.
 - `useSubmodelNavigation`'s three async handlers each wrap their API call
@@ -646,7 +648,8 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     by render count that subscribing to one slice does not re-render on
     unrelated slice changes; undo/redo push/pop/no-op semantics for
     history-aware vs. raw actions; `MAX_HISTORY` eviction; `isDirty()` as a
-    pure, render-stable selector across save/edit/undo cycles; a regression
+    pure, render-stable selector across save/edit/undo cycles, including
+    submodel-only edits; regressions cap both undo and redo stacks; a regression
     block confirming `useUIStore` no longer exposes `dirty`/`setDirty` and
     doesn't duplicate graph-shaped state.
   - `useGraphStore.fieldEditUndo.test.tsx` — a whole inline field edit is
@@ -743,6 +746,12 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     subscription that feeds toolbar counts does not re-render the editor
     toolbar on solve/train progress ticks.
 - **Node/edge handlers — `frontend/src/hooks/__tests__/`:**
+  - `frontend/src/hooks/__tests__/useGraphCanvasState.test.ts` and
+    `frontend/src/hooks/__tests__/useGraphCanvasState.dragSimplification.test.ts`
+    — conversion of
+    React Flow node/edge changes into store mutations, exactly one history
+    snapshot at drag start, no mid-drag/selection-only history churn, and
+    structural/non-structural change separation.
   - `useNodeHandlers.test.ts` — delete-as-one-atomic-step (node + connected
     edges); selected-node preservation vs clearing on delete; duplicate
     (offset position, no-op for singleton/output types, no-op for a
@@ -772,7 +781,8 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     `graphRefreshingRef`-guarded deselection skip; node-click panel-open +
     preview fetch (including Optimiser debounce, modelling/explore
     preview, API-input-without-`tables[]` automatic-preview skip,
-    submodel-port preview skip, same-node re-click skip, rapid distinct
+    Data Output/output/submodel/submodel-port preview skip, same-node
+    re-click skip, rapid distinct
     selections); edge deletion; context menu singleton/submodel flags;
     drag-over/drop node creation from palette metadata.
   - `useEdgeHandlers` (same file) "edge-join failures and multi-port
@@ -849,17 +859,23 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     same-source re-set (no gratuitous invalidation); `refreshPreview`
     re-previews an upstream node whose stash was captured under a
     different source rather than treating it as already fresh.
-- **WebSocket sync — `frontend/src/hooks/__tests__/`:**
+- **WebSocket sync — both `frontend/src/__tests__/hooks/` and
+  `frontend/src/hooks/__tests__/`:**
+  - `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
+    `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` cover
+    connection, reconnect/resync, source identity, message generations,
+    partial layout, bounded invalid-edge warnings, binary/bad messages,
+    delayed fit, and the required submodels apply/ref-before-save contract.
   - `useWebSocketSync.panelState.test.ts` (#39) — `renameDialog`/
     `submodelDialog` referencing a node removed by a WS sync are cleared;
     left alone when the referenced node(s) survive; null dialogs stay
     null.
   - `useWebSocketSync.failLoudly.test.ts` (#37) — a `getLayoutedElements`
     throw restores `graphRefreshingRef` and toasts an error without
-    calling both raw setters with partial data; a setter failure rolls
-    back nodes/edges/preamble to the previous snapshot without marking the
-    failed graph saved; a subsequent `graph_update` after a failed one is
-    still handled cleanly.
+    calling all raw setters with partial data; a setter failure rolls back
+    nodes/edges/submodels/ref/preamble to the previous snapshot without
+    marking the failed graph saved; missing submodels fails loudly; a
+    subsequent `graph_update` after a failed one is still handled cleanly.
   - `useWebSocketSync.undoHistory.test.ts` (#8) — `graph_update` only ever
     calls the history-bypassing raw setters, never the history-aware ones,
     including under concurrent messages, so external sync never pollutes
@@ -914,7 +930,10 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     submodels present; no-submodels calls;
     malformed submodel metadata tolerated without crashing;
     `formatConfigRefWarnings` singular/plural/empty formatting.
-  - `layout.test.ts` — empty input; single-node non-zero position;
+  - `layout.test.ts` in both the colocated and root utility-test trees
+    — empty input; finite-position detection (including origin),
+    partial-layout merge that leaves established nodes fixed, overlap
+    avoidance, single-node non-zero position;
     distinct positions for connected nodes; data preserved through
     layout; a 3-node linear chain; cluster-snapping near-equal
     y-coordinates; disconnected nodes still positioned; zero-default when
@@ -927,7 +946,9 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     helpers.
   - `nodeTypes.test.ts` — every `NODE_TYPES` value present (exact count);
     `NODE_TYPE_META` completeness and 1:1 coverage; Explore's one-input
-    sink shape; Edge Join's compact centre-origin shape; label/name casing
+    sink shape; Data Input/Data Output source/sink and non-singleton
+    membership with strict branch-shaped defaults; Edge Join's compact
+    centre-origin shape; label/name casing
     convention; `SINGLETON_TYPES`/`SOURCE_ONLY_TYPES`/`SINK_ONLY_TYPES`
     membership and exact counts; `isSingletonType` true/false/undefined
     cases; `PALETTE_TYPES` validity, submodel/edgeJoin exclusion, explore
@@ -981,13 +1002,10 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
   historical issue/work-item numbers (#8, #31, #32, #33/#34, #35, #36,
   #37, #38, #39, #84, W0, W1.3, W1.4, Phase 2D-5), and benchmark-style
   assertions bounding the shallow-hash cost.
-- **Known gaps.** `hooks/useGraphCanvasState.ts`'s `onNodesChange`/
-  `onEdgesChange` drag-start-vs-mid-drag snapshot logic has no dedicated
-  unit test file; it is exercised only indirectly through
-  `App.integration.test.tsx` and the store-level tests it delegates to, so
-  a regression isolated to that adapter's push/no-push branching would
-  surface only as a broader integration-test failure, not a targeted one.
-  `utils/flowHandles.ts` has the same shape of gap — see above.
+- **Known gaps.** `utils/flowHandles.ts` has no dedicated test file; its
+  sentinel-collapsing contract is exercised indirectly by
+  `useEdgeHandlers.test.ts` and
+  `frontend/src/nodes/__tests__/PipelineNode.test.tsx`.
 - **`frontend/e2e/persistence/api-input-frame-alignment.spec.ts`** — the
   Playwright geometry evidence for the frame-row body: for one, two,
   three, and eight emitted frames, each frame row's bounding-box vertical
@@ -1020,62 +1038,3 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
   for column-relevant steps. All
   drag points are derived from live locator geometry and every assertion is
   an observable DOM, preview, trace, or persisted-pipeline outcome.
-
-## Approved change contract — 0.7.0 canonical data-I/O canvas nodes
-
-Remaining graph-canvas improvement work is tracked in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- Remove `DATA_SOURCE`/`DATA_SINK` from `utils/nodeTypes.ts`,
-  `utils/nodeTypeRegistry.ts`, `SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `PALETTE_TYPES`, icons,
-  labels, search metadata, `ReadOnlyNodeConfig.tsx`, and click/preview exclusions. Retain
-  `DATA_INPUT` in the source-only set and `DATA_OUTPUT` in the sink-only set; do not add either to
-  `SINGLETON_TYPES`.
-- Make the retained metadata defaults branch-shaped and consistent with the shared frontend
-  config types. `flowElements` copies that shape without adding inactive keys. A Data Output
-  click may request a safe pass-through preview; the explicit writer remains editor/API-owned.
-- Strict graph response guards reject removed node strings before `buildGraph`, WebSocket apply,
-  comparison construction, or store mutation. No fallback maps them to retained types.
-- Update exact-count/completeness, factory, handles, palette/search, click preview, graph
-  fingerprint, load/save, comparison, and WebSocket tests. Browser coverage creates multiple
-  retained I/O nodes and proves a rejected legacy payload leaves the prior/blank graph intact.
-
-## Approved change contract — canvas live-update reconciliation
-
-This contract implements AUD-C17 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- `hooks/useWebSocketSync.ts` uses a per-effect monotonically increasing message generation.
-  Every accepted `graph_update` and `parse_error` increments it synchronously. A graph update
-  captures its generation before awaiting layout and may mutate graph, fingerprints, banners, or
-  dialogs only if that generation is still current when the await completes.
-- Source matching normalises absolute/relative spellings as today, but succeeds with a missing
-  value only when *both* values are missing. If exactly one side is missing, or both resolve to
-  different files, the message is ignored without changing graph or error state. In `App`,
-  WebSocket sync remains disabled until the initial HTTP load has populated `sourceFileRef`, so
-  fail-closed comparison does not discard the ordinary startup graph.
-- A pure incoming-edge validator runs after node normalisation and before layout. It partitions
-  edges by whether both node ids exist and each non-null handle is one that the endpoint's current
-  node type/config renders. Default null handles remain valid only for endpoint directions that
-  render a default handle; API-input frame handles, Edge Join role handles, and submodel named
-  ports are checked exactly. The full normalised edge list is applied and retained for save; only
-  the valid partition is supplied to ELK. One warning contains the total rejected count, at most
-  three length-bounded id/reason details, and the omitted count.
-- A node has a real incoming position whenever both coordinates are finite. `{x: 0, y: 0}` is
-  never overloaded as an unset sentinel: the sidecar accepts and persists that coordinate, while
-  parser-created graphs already receive deterministic finite positions. ELK may calculate the
-  whole graph only when an incoming coordinate is missing/non-finite, and its coordinates are
-  copied only to those node ids. Candidate boxes that overlap preserved boxes are moved by a
-  deterministic grid step until clear; finite nodes are never moved to resolve the clash.
-- `hooks/__tests__/useWebSocketSync*.test.ts` owns the identity, generation, partial-layout, and
-  bounded-warning/preservation regressions. Pure endpoint/handle validation is covered beside the
-graph utilities so API Input, Edge Join, submodel, ordinary, missing-node, and stale-handle
-cases do not depend on React timing.
-
-## Approved change contract — canonical graph handles
-
-Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
-API Input edges use the current explicit frame-port handles and stable edge identity. Canvas and
-editor code do not recognise null/default historical handles or rebind edges as a migration from
-an earlier persisted graph shape. Current user-initiated frame renames remain one atomic graph
-edit, implemented without historical-handle branches.

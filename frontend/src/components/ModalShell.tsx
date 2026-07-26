@@ -33,6 +33,13 @@ export default function ModalShell({
 }: ModalShellProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const previousFocusRef = useRef<Element | null>(null)
+  const onCloseRef = useRef(onClose)
+  const extraCloseKeysRef = useRef(extraCloseKeys)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+    extraCloseKeysRef.current = extraCloseKeys
+  }, [onClose, extraCloseKeys])
 
   useEffect(() => {
     // Save the previously focused element and focus the dialog container
@@ -40,9 +47,13 @@ export default function ModalShell({
     containerRef.current?.focus()
 
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape" || (extraCloseKeys && extraCloseKeys.includes(e.key))) {
+      const currentExtraCloseKeys = extraCloseKeysRef.current
+      if (
+        e.key === "Escape"
+        || (currentExtraCloseKeys && currentExtraCloseKeys.includes(e.key))
+      ) {
         e.preventDefault()
-        onClose()
+        onCloseRef.current()
         return
       }
 
@@ -98,7 +109,7 @@ export default function ModalShell({
         previousFocusRef.current.focus()
       }
     }
-  }, [onClose, extraCloseKeys])
+  }, [])
 
   return (
     <div

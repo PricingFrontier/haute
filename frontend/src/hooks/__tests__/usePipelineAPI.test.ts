@@ -309,6 +309,30 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(false)
   })
 
+  it("handleSave includes the current submodel mirror in the payload", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    const params = makeParams()
+    const submodels = {
+      pricing: {
+        nodes: [makeNode("child")],
+        edges: [],
+      },
+    }
+
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    params.submodelsRef.current = submodels
+
+    await act(async () => {
+      await result.current.handleSave()
+    })
+
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      graph: expect.objectContaining({ submodels }),
+    }))
+  })
+
   it("preserves authored submodel boundary ports in the save payload", async () => {
     mockLoad.mockResolvedValue({ nodes: [], edges: [] })
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })

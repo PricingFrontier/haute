@@ -175,6 +175,25 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
   })
 
+  it("surfaces a malformed matching rejection instead of leaking a parser rejection", async () => {
+    mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
+    const malformed = { detail: { status: "rejected_diverged" } }
+    mockGitPush.mockRejectedValue(
+      new ApiError("HTTP 409 conflict", 409, JSON.stringify(malformed), malformed),
+    )
+    render(<RemotePushControl pendingSaveCount={0} />)
+    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("git-push-button"))
+
+    await waitFor(() =>
+      expect(mockAddToast).toHaveBeenCalledWith(
+        "error",
+        expect.stringContaining("parseGitPushRejection"),
+      ),
+    )
+    expect(screen.queryByTestId("git-push-rejected")).not.toBeInTheDocument()
+  })
+
   it("falls back to a plain push-failed toast when a 409 carries no detail body", async () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     mockGitPush.mockRejectedValue(new ApiError("HTTP 409 conflict", 409, "no body"))

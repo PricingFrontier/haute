@@ -5,9 +5,9 @@
     "nodes": [
       {
         "id": "child1",
-        "type": "custom",
+        "type": "polars",
         "position": { "x": 10, "y": 20 },
-        "data": { "label": "Child" }
+        "data": { "label": "Child", "nodeType": "polars" }
       }
     ],
     "edges": [],

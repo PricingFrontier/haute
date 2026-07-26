@@ -116,7 +116,6 @@ docs/specs/frontend-graph-canvas/low-level.md	ambiguous-repo-reference	buildGrap
 docs/specs/frontend-graph-canvas/low-level.md	ambiguous-repo-reference	layout.test.ts -> frontend/src/__tests__/utils/layout.test.ts, frontend/src/panels/gitgraph/__tests__/layout.test.ts, frontend/src/utils/__tests__/layout.test.ts
 docs/specs/frontend-graph-canvas/low-level.md	missing-module-map-symbol	Colors
 docs/specs/frontend-graph-canvas/low-level.md	missing-module-map-symbol	Labels
-docs/specs/frontend-graph-canvas/low-level.md	missing-module-map-symbol	edge_input_name
 docs/specs/frontend-graph-canvas/low-level.md	missing-test-reference	buildGraph.test.ts -> frontend/src/__tests__/utils/buildGraph.test.ts, frontend/src/utils/__tests__/buildGraph.test.ts
 docs/specs/frontend-graph-canvas/low-level.md	missing-test-reference	layout.test.ts -> frontend/src/__tests__/utils/layout.test.ts, frontend/src/panels/gitgraph/__tests__/layout.test.ts, frontend/src/utils/__tests__/layout.test.ts
 docs/specs/frontend-graph-canvas/low-level.md	non-root-relative-test-reference	App.backgroundJobsIsolation.test.tsx
@@ -176,9 +175,7 @@ docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/sr
 docs/specs/frontend-node-editors/low-level.md	missing-repo-reference	frontend/src/panels/editors/SinkEditor.tsx
 docs/specs/frontend-preview-explore/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/frontend-preview-explore/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
-docs/specs/frontend-shared/high-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/frontend-shared/low-level.md	ambiguous-repo-reference	formatValue.test.ts -> frontend/src/__tests__/utils/formatValue.test.ts, frontend/src/utils/__tests__/formatValue.test.ts
-docs/specs/frontend-shared/low-level.md	legacy-contract-section	Polars backend contracts (0.6.0)
 docs/specs/frontend-shared/low-level.md	missing-module-map-symbol	ApiInputEditor
 docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.ts
 docs/specs/frontend-shared/low-level.md	missing-test-reference	.gaps.test.tsx

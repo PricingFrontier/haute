@@ -196,6 +196,21 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
       expect(isPipelineResponse({ nodes: [], edges: {} })).toBe(false)
     })
 
+    it.each([
+      ["React Flow type", { type: "removedNodeType", data: {} }],
+      ["node data type", { data: { nodeType: "removedNodeType" } }],
+    ])("returns false for an unknown %s", async (_field, nodeFields) => {
+      const { isPipelineResponse } = await loadGuards()
+      expect(isPipelineResponse({
+        nodes: [{
+          id: "legacy",
+          position: { x: 0, y: 0 },
+          ...nodeFields,
+        }],
+        edges: [],
+      })).toBe(false)
+    })
+
     it("returns false when `preamble` is present but not a string", async () => {
       const { isPipelineResponse } = await loadGuards()
       expect(isPipelineResponse({ nodes: [], edges: [], preamble: 42 })).toBe(false)

@@ -868,15 +868,32 @@ export interface FrontierRange {
   max: number
 }
 
-export type JobStatus =
-  | "running"
-  | "completed"
-  | "error"
-  | "cancelled"
-  | "superseded"
-  | "timed_out"
-  | "memory_limited"
-  | "contract_error"
+export const JOB_STATUS_VALUES = [
+  "running",
+  "completed",
+  "error",
+  "cancelled",
+  "superseded",
+  "timed_out",
+  "memory_limited",
+  "contract_error",
+] as const
+
+export type JobStatus = typeof JOB_STATUS_VALUES[number]
+
+export const FAILED_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
+  "error",
+  "cancelled",
+  "superseded",
+  "timed_out",
+  "memory_limited",
+  "contract_error",
+])
+
+export const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set([
+  "completed",
+  ...FAILED_JOB_STATUSES,
+])
 
 export interface FrontierAutoRangeResponse {
   status: string
