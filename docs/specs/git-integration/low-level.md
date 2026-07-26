@@ -38,13 +38,14 @@ pattern; anything else is a working-branch candidate. `is_eligible_working_branc
 
 **Content-addressed cache keys**: every `@lru_cache`-decorated inner function
 (`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
-`_commit_parents_cached`, `_graph_log_cached`, `_tree_of_cached`, `_get_default_branch_cached`)
+`_commit_parents_cached`, `_graph_log_cached`, `_tree_of_cached`)
 takes `cwd_key: str` as its final argument — `str(cwd) if cwd else ""` — because a bare
 path string is the explicit cache discriminator and two repos/worktrees sharing one
 process must never share cache entries. (`Path` itself is hashable; string conversion is
 not a hashability workaround.) `_FULL_SHA_RE` / `_is_full_sha()` gates the cached
 path: only a full 40-hex SHA is guaranteed immutable; a ref name (branch, `HEAD`, a tag)
-falls through to an uncached live subprocess on every call.
+falls through to an uncached live subprocess on every call. `_get_default_branch` is also
+uncached because the selected remote and its symbolic `HEAD` are mutable ref-name state.
 
 **Per-clone state files** (`_git_state.py`), all siblings under `<project_root>/.haute/`:
 `state.json` (`{"workingBranch": str}`), `prefs.json` (flat dict, currently one key:
@@ -125,21 +126,31 @@ what else the user may have pre-staged) → returns the new SHA.
 Every public mutation entry point acquires the reentrant repository lock before its first
 precondition read and holds it through Git changes, clone-state writes, and any compensation.
 Nested calls such as `commit_milestone` → `commit_save` → `resolve_ledger` reuse the same
-lock. Read-only functions do not acquire the engine lock (individual clone-state reads may
-briefly synchronize with an atomic state replacement).
+lock. Pure Git history/object readers do not acquire the engine lock, but every clone-state
+reader in `_git_state.py` acquires it for the file read so it cannot overlap an atomic state
+transaction.
 
 **Milestone.** `commit_milestone(message, project_root, version_label, cwd, allow_fork)` →
 reads the recorded working branch from `_git_state.read_working_branch` → unless
 `allow_fork`, calls `divergence_state(working)` (local-refs-only, no fetch) and raises
-`GitMilestoneForkError` if the leg is `"behind"` or `"diverged"` → `merge_to_working`:
+`GitMilestoneForkError` if the leg is `"behind"` or `"diverged"` → before the merge,
+`_residual_tracked_changes` enumerates every modified path already tracked by Git and, when
+non-empty, records all of them in one final ledger save with the fixed message `"Updated
+tracked project files"`; untracked paths are deliberately excluded → `merge_to_working`
 validates the message (non-empty, no C0 control characters — a stray record-separator would
 corrupt the ledger-save parser's delimiter), runs `check_invariants` (see below) and raises
-`GitDomainError` on any violation, computes `merge_base(working_tip, ledger_tip)` and
-raises if it already equals the ledger tip ("no new saves"), then builds the merge purely
-via `commit-tree <ledger's tree> -p <working_tip> -p <ledger_tip> -m <message>` followed by
-a CAS `update-ref` — no checkout, no index, so the operation cannot conflict. An optional
-version-label tag is created afterward as `refs/tags/version/<label>`, rejecting a
-duplicate label.
+`GitDomainError` on any violation, computes `merge_base(working_tip, ledger_tip)` and raises
+if it already equals the ledger tip ("no new saves"), then requires
+`refs/tags/version/<label>` to satisfy Git's complete full-ref format (invalid labels are a
+user-facing `GitDomainError` rather than a raw plumbing failure), rejects any duplicate tag
+before mutation, and builds the merge purely via
+`commit-tree <ledger's tree> -p <working_tip> -p <ledger_tip> -m <message>`. Without a
+label, a CAS `update-ref` advances the working branch. With a label, `hash-object
+--literally -t tag` writes the fully Haute-constructed annotated-tag payload without
+invoking platform-dependent tag fsck, and one `update-ref --stdin` transaction
+atomically applies both the working-branch CAS and tag-ref creation — no checkout or index,
+and a label conflict or ref race leaves both refs unchanged. `_run_git` passes stdin as
+bytes so Windows cannot translate the transaction's required LF separators to CRLF.
 
 **`check_invariants(working, cwd)`** — the healthy-state check run at every milestone and
 exposed via `working_branch_status`. Pre-spawn (ledger doesn't exist yet) returns no
@@ -212,9 +223,11 @@ checkout. A failed ledger spawn, checkout, or state-file replacement restores al
 
 **Milestone metadata and commit context.** Log rows use NUL-delimited fields, so tabs in
 external commit subjects cannot shift the SHA/message/timestamp columns. Version labels are
-read once per request with `for-each-ref`. `commit_context` reads the milestone spine and
-the target's ancestor set in bounded batched commands, derives fold points from the already
-returned parent columns, and never launches one subprocess per milestone.
+read once per request with `for-each-ref`. The paginated milestone endpoint defaults to its
+newest 20 entries, while `commit_context` explicitly reads the complete first-parent
+milestone spine so commits older than that display window are still classified and anchored
+correctly. It reads the target's ancestor set in batched commands, derives fold points from
+the already returned parent columns, and never launches one subprocess per milestone.
 
 **Graph topology (`graph_topology`).** Reads every working pair's tip via one
 `for-each-ref` call (`_list_branches_with_tips`), then for each branch reads its full
@@ -297,8 +310,11 @@ After preflight, `_tag_collisions` still checks `version/*` labels (best-effort 
 rejection remains the backstop), then the pinned-SHA refspecs are submitted with `git push
 --atomic --follow-tags` and, only for bootstrap, the create-only default lease described
 above. No path supplies `--force`, a force refspec, or a lease that expects an existing
-object. The default, working, and optional ledger therefore all land or none lands during
-bootstrap; on an established remote the working/ledger pair remains atomic. Any bootstrap
+object. The push subprocess uses the prompt-proof remote environment and a hard
+`_PUSH_TIMEOUT_SECONDS` ceiling; `TimeoutExpired` and process-launch `OSError` are converted
+to sanitized `GitError` failures, after which the repository mutation lock is released. The
+default, working, and optional ledger therefore all land or none lands during bootstrap; on
+an established remote the working/ledger pair remains atomic. Any bootstrap
 rejection, including a different-SHA default winning the create-only race, follows a safe
 non-409 push-failure path and is never misreported as working/ledger divergence. On an
 established remote, a
@@ -324,16 +340,25 @@ Repeating a successful push is idempotent and reports `bootstrapped_default=fals
 remote advertises refs.
 
 **Fast-forward (`fast_forward_pair`).** Requires HEAD to currently be on the ledger (refuses
-mid-move/detached states) and a clean tracked tree. Force-fetches, then requires EVERY leg
-to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses outright (the
-user must reconcile via `branch_away` instead; this function never merges). The ledger
-(checked out) advances via `git merge --ff-only`; the working ref (not checked out)
-advances via a CAS `update-ref`. If the checked-out ledger advances but the working-ref CAS
-fails, the ledger and working tree reset to their captured tip. A failed reset is reported
-as `GitTransactionError`, never as a clean refusal or success.
+mid-move/detached states) and a clean tracked tree. Fetches and prunes the configured remote
+namespace, then aborts with `GitDomainError` if that required refresh times out, cannot
+launch, exits non-zero, or shows that either managed remote leg is missing; transport
+failure and a deleted working/ledger branch have distinct user-facing refusals. No cache
+wipe, merge, or ref update may run on stale or incomplete tracking refs. It then requires
+EVERY leg to be `"behind"` or already synced — any `"ahead"`/`"diverged"` leg refuses
+outright (the user must reconcile via `branch_away` instead; this function never merges).
+The ledger (checked out) advances via `git merge --ff-only`; the working ref (not checked
+out) advances via a CAS `update-ref`. If the checked-out ledger advances but the working-ref
+CAS fails, the ledger and working tree reset to their captured tip. A failed reset is
+reported as `GitTransactionError`, never as a clean refusal or success.
 
 **Branch away (`branch_away`).** The reconciliation path when a remote fork is detected.
-Renames the current pair to a unique dated aside name (`_unique_aside_name`), creates fresh
+It first fetches and prunes the configured remote namespace, aborting with `GitDomainError`
+on any transport/process failure before choosing an aside name or mutating refs. This
+authoritative snapshot lets an absent optional ledger remain a successful fetch while
+removing a deleted tracking ref; an absent working branch is then a distinct domain
+refusal. It renames the current pair to a unique dated aside name
+(`_unique_aside_name`), creates fresh
 `working`/`ledger` branches at the remote's tips, checks out the new ledger, and records the
 merge-base of the old and new working tips as the aside branch's fork point (for the branch
 manager's back-link). If the remote has no ledger (`X2`), the local ledger is respawned at
@@ -396,9 +421,9 @@ without replacing a successfully parsed response with a cleanup error.
   read/merge/write transactions cannot lose sibling updates.
 - **A slow / credential-walled remote** — routine readiness, branch, history, graph, and
   remote-list reads never perform network I/O. Every deliberate remote read disables terminal/SSH prompts
-  (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`) and is wrapped in
-  `subprocess.run(..., timeout=_FETCH_TIMEOUT_SECONDS)`, so a request thread cannot hang on
-  network I/O. Explicit Push inspection, expected-default fetch, Catch up, and Spin off a
+  (`GIT_TERMINAL_PROMPT=0`, SSH `BatchMode=yes`). Fetch/inspection subprocesses use
+  `_FETCH_TIMEOUT_SECONDS`; the publication subprocess uses `_PUSH_TIMEOUT_SECONDS`.
+  Explicit Push inspection/publication, expected-default fetch, Catch up, and Spin off a
   copy are strict: timeout, launch failure, non-zero exit, or unreadable output refuses the
   operation and must never be reclassified as a zero-ref remote or successful refresh.
 - **Remote baseline states at Push** — successful zero-object-ref advertisement is the sole
@@ -434,14 +459,18 @@ without replacing a successfully parsed response with a cleanup error.
 `_run_git` is the single subprocess chokepoint for anything expected to succeed; all text
 Git processes receive `LC_ALL=C`, `LANG=C`, and `LANGUAGE=C` in addition to UTF-8 decoding,
 so recognition of the small documented set of Git failure phrases is locale-independent.
+When `_run_git` supplies byte-mode stdin for an LF-delimited plumbing protocol, it
+replacement-decodes stdout/stderr as UTF-8 so malformed diagnostic bytes still reach the
+normal sanitized `GitError` path instead of escaping as `UnicodeDecodeError`.
 On a non-zero exit it logs `git_command_failed` (full stderr) and raises plain `GitError`
 (sanitize-by-default). `_run_git_ok` (returns `(bool, str)`) and `_run_git_rc` (returns
 `(int, str)`) do not raise merely for a non-zero git exit — used wherever that exit is an expected, meaningful
 outcome (e.g. `merge-base --is-ancestor` exiting 1 for "not an ancestor" vs. >1 for a
 genuinely unreadable object, which `_is_ancestor_cached` still raises on, to avoid
 memoizing a bad answer). None of these three general wrappers catches a subprocess-launch
-`OSError`; that propagates to the route's generic 500 handler. Deliberate remote helpers
-explicitly catch timeout/OS failures and convert required refresh failures to a Git error.
+`OSError`; that propagates to the route's generic 500 handler. Deliberate remote helpers,
+including the final push subprocess, explicitly catch timeout/OS failures and convert
+required refresh failures to a Git error.
 
 Push-time remote inspection is not a polling helper and never degrades. It logs unsafe raw
 stderr server-side, returns only hand-authored safe detail when a specific domain condition

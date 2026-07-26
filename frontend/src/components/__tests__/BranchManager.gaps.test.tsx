@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import BranchManager from "../BranchManager"
 import useGitStore from "../../stores/useGitStore"
+import useGraphStore from "../../stores/useGraphStore"
 
 const mockGetWorkingBranches = vi.fn()
 const mockSetWorkingBranch = vi.fn()
@@ -40,6 +41,7 @@ describe("BranchManager reload-on-state-change navigation", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null })
+    useGraphStore.setState({ dirty: false })
     mockGetWorkingBranches.mockResolvedValue({
       current: "demo",
       branches: [branch({ name: "demo", is_current: true })],
@@ -107,10 +109,38 @@ describe("BranchManager reload-on-state-change navigation", () => {
     await waitFor(() => expect(reloadSpy).toHaveBeenCalled())
   })
 
+  it("guards dirty canvas work before deleting the current branch", async () => {
+    useGraphStore.setState({ dirty: true })
+    render(<BranchManager />)
+    await waitFor(() => expect(screen.getByTestId("branch-manager-delete")).toBeInTheDocument())
+    fireEvent.click(screen.getByTestId("branch-manager-delete"))
+    fireEvent.click(await screen.findByTestId("branch-manager-confirm-delete"))
+
+    expect(await screen.findByTestId("git-navigation-confirm")).toBeInTheDocument()
+    expect(mockDelete).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("git-navigation-discard"))
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("demo", true))
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled())
+  })
+
   it("reloads after archiving the current (clean) branch", async () => {
     render(<BranchManager />)
     await waitFor(() => expect(screen.getByTestId("branch-manager-archive")).toBeInTheDocument())
     fireEvent.click(screen.getByTestId("branch-manager-archive")) // current branch, clean
+    await waitFor(() => expect(mockArchive).toHaveBeenCalledWith("demo"))
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled())
+  })
+
+  it("guards dirty canvas work before archiving the current branch", async () => {
+    useGraphStore.setState({ dirty: true })
+    render(<BranchManager />)
+    fireEvent.click(await screen.findByTestId("branch-manager-archive"))
+
+    expect(await screen.findByTestId("git-navigation-confirm")).toBeInTheDocument()
+    expect(mockArchive).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("git-navigation-discard"))
     await waitFor(() => expect(mockArchive).toHaveBeenCalledWith("demo"))
     await waitFor(() => expect(reloadSpy).toHaveBeenCalled())
   })

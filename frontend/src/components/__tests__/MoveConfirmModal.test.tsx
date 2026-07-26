@@ -55,6 +55,15 @@ describe("MoveConfirmModal", () => {
     expect(onConfirm).not.toHaveBeenCalled()
   })
 
+  it("does not close from Escape or the backdrop while a move is pending", () => {
+    const onClose = vi.fn()
+    render(<MoveConfirmModal onConfirm={vi.fn()} onClose={onClose} />)
+    fireEvent.click(screen.getByTestId("move-confirm"))
+    fireEvent.keyDown(document, { key: "Escape" })
+    fireEvent.click(screen.getByTestId("move-confirm-modal"))
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it("renders nothing when no move is pending", () => {
     useGitStore.setState({ moveTarget: null })
     const { container } = render(<MoveConfirmModal onConfirm={vi.fn()} onClose={vi.fn()} />)

@@ -117,14 +117,14 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
   const run = async (
     name: string,
     verb: string,
-    fn: () => Promise<void>,
-    opts: { reloadOnDone?: boolean } = {},
+    fn: () => Promise<boolean | void>,
+    opts: { reloadOnDone?: boolean; reloadWhen?: (result: boolean | void) => boolean } = {},
   ) => {
     setBusy(name)
     setActionError(null)
     try {
-      await fn()
-      if (opts.reloadOnDone) {
+      const result = await fn()
+      if (opts.reloadOnDone || opts.reloadWhen?.(result)) {
         reloadApp()
         return
       }
@@ -150,8 +150,8 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
       setNewBranch("")
       setConfirmMove(null)
       // A move switches you over; a parallel create leaves you put.
-      if (res.switched) reloadApp()
-    }, { reloadOnDone: false })
+      return res.switched
+    }, { reloadWhen: (switched) => switched === true })
 
   const onCreateClick = () => {
     const name = newBranch.trim()
@@ -197,18 +197,22 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
 
   // -- archive / delete / restore --------------------------------------------
   const onArchiveClick = (b: GitManagedBranch) => {
-    if (b.is_current && b.has_uncommitted_changes) {
-      setArchiveDirty(b) // needs a save first (S38)
-      return
+    const archive = () => {
+      if (b.has_uncommitted_changes) {
+        setArchiveDirty(b)
+        return
+      }
+      // Archiving the CURRENT branch moves you off it — that flow keeps the
+      // full reload (and records no history entry, since a reload clears the
+      // stacks anyway). Archiving any other branch is an in-app, undoable op.
+      void run(b.name, "archive", async () => {
+        const res = await gitArchiveBranch(b.name)
+        addToast("success", `Archived ${b.name}`)
+        if (!b.is_current) recordArchive(b.name, res.archived_as)
+      }, { reloadOnDone: b.is_current })
     }
-    // Archiving the CURRENT branch moves you off it — that flow keeps the
-    // full reload (and records no history entry, since a reload clears the
-    // stacks anyway). Archiving any other branch is an in-app, undoable op.
-    void run(b.name, "archive", async () => {
-      const res = await gitArchiveBranch(b.name)
-      addToast("success", `Archived ${b.name}`)
-      if (!b.is_current) recordArchive(b.name, res.archived_as)
-    }, { reloadOnDone: b.is_current })
+    if (b.is_current) guardNavigation(archive)
+    else archive()
   }
 
   const doDelete = (b: GitManagedBranch) =>
@@ -459,8 +463,9 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
               style={{ background: "var(--warning-soft, var(--accent-soft-faint))", border: "1px solid var(--warning-border)" }}
             >
               <span className="text-[12px]" style={{ color: "var(--text-primary)" }}>
-                <span className="font-mono">{archiveDirty.name}</span> has unsaved changes. Archiving keeps the branch
-                intact, so save first — your changes ride into the archive. Save in the toolbar, or commit a milestone now.
+                <span className="font-mono">{archiveDirty.name}</span> has uncommitted tracked
+                project changes. Create a milestone to capture them before archiving. In-memory
+                canvas edits are protected separately and never ride into an archive.
               </span>
               <div className="flex justify-end gap-2">
                 <button onClick={() => setArchiveDirty(null)} className="px-2.5 py-1 text-[12px] font-medium rounded-md" style={{ color: "var(--text-secondary)" }}>
@@ -498,7 +503,11 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                 </button>
                 <button
                   data-testid="branch-manager-confirm-delete"
-                  onClick={() => doDelete(confirmDelete)}
+                  onClick={() => {
+                    const branch = confirmDelete
+                    if (branch.is_current) guardNavigation(() => { void doDelete(branch) })
+                    else void doDelete(branch)
+                  }}
                   className="px-2.5 py-1 text-[12px] font-semibold rounded-md"
                   style={{ background: "var(--danger)", color: "var(--text-on-accent)" }}
                 >
@@ -697,10 +706,10 @@ function BranchRow({
           </button>
         </Tooltip>
       )}
-      {/* Archive: on the current branch it's "save and archive" when dirty;
+      {/* Archive: on the current branch it requires a milestone when dirty;
           archived branches can't be re-archived. */}
       {!b.is_archived && (
-        <Tooltip label={b.is_current && b.has_uncommitted_changes ? "Save and archive" : "Archive working branch"}>
+        <Tooltip label={b.is_current && b.has_uncommitted_changes ? "Commit changes before archiving" : "Archive working branch"}>
           <button
             data-testid="branch-manager-archive"
             onClick={onArchive}

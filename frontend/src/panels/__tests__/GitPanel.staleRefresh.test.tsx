@@ -91,6 +91,27 @@ describe("GitPanel stale refresh (generation guard)", () => {
 
   afterEach(cleanup)
 
+  it("peeking triggers one refresh without replaying active nonce effects", async () => {
+    useGitStore.setState({ historyNonce: 1, commitNonce: 1 })
+    mockGetMilestones.mockImplementation((_n: number, branch?: string | null) =>
+      Promise.resolve(branch === "pricing/nick/spur" ? spurMilestones : devMilestones),
+    )
+    mockGetPendingSaves.mockResolvedValue({ saves: [] })
+
+    render(<GitPanel onClose={vi.fn()} />)
+    // Mount refresh + the already-active history and commit nonces.
+    await waitFor(() => expect(mockGetMilestones).toHaveBeenCalledTimes(3))
+
+    act(() => useGitStore.getState().setPeekBranch("pricing/nick/spur"))
+
+    await waitFor(() =>
+      expect(mockGetMilestones).toHaveBeenCalledWith(50, "pricing/nick/spur"),
+    )
+    // Changing only the peek target must not replay the history/commit effects
+    // through a changed refresh callback identity.
+    expect(mockGetMilestones).toHaveBeenCalledTimes(4)
+  })
+
   it("an earlier slow refresh resolving after a later fast one does not overwrite the later branch's rows", async () => {
     // The initial refresh (working branch, viewBranch null) hangs; the peeked
     // branch's refresh resolves immediately.

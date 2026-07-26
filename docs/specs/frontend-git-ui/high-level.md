@@ -95,15 +95,20 @@ archived branches, with a "Create" / "Create & Move" split control. Peeking (vie
 another branch's history) never switches the working branch; switching, archiving,
 deleting, and restoring do, each behind role-appropriate confirmation (switch has a
 persistable "don't ask again"; delete always confirms and names what it discards;
-archiving the current branch while dirty redirects to "commit a milestone first" instead
-of proceeding). A switch or Create & Move that would replace a dirty in-memory graph always
-requires Cancel, Discard, or Save first; the persisted clean-switch preference never bypasses
-this dirty-work guard. Save first must complete successfully before the Git mutation starts.
+archiving the current branch with uncommitted tracked project changes redirects to "commit
+a milestone first" instead of proceeding). A switch or Create & Move that would replace a
+dirty in-memory graph always requires Cancel, Discard, or Save first; the persisted
+preference to skip clean switch confirmation never bypasses this dirty-work guard.
+Current-branch archive and delete
+use the same guard before their mutation/reload path, including when the branch also has
+saved work awaiting a milestone. Save first must complete successfully before the Git
+mutation starts.
 
 **Modals.** `WorkingBranchModal` gates first use (and any save attempted with no working
 branch set): choose among eligible branches or create one, optionally set git identity
-inline. `MilestoneCommitModal` records a message (required) and version label (optional)
-against the accumulated ledger saves; a 409 from the server surfaces a "committing now
+inline. `MilestoneCommitModal` records a message (required, at most 500 characters with
+visible validation when exceeded) and version label (optional) against the accumulated
+ledger saves; a 409 from the server surfaces a "committing now
 would fork the remote" warning with an explicit "commit anyway" override rather than a
 dead-end error. `DivergenceModal` appears when the recorded working branch and the actual
 HEAD disagree (the repo was moved outside Haute) and offers three resolutions: return to
@@ -114,7 +119,9 @@ branch manager. Detached HEAD is named as detached at its commit, never as a bra
 canvas has unsaved edits it forces an explicit choice between saving them onto the
 current branch first or discarding them, because a move is a real checkout that replaces
 the whole working canvas and in-memory-only edits — which never reached disk — would
-otherwise be lost silently.
+otherwise be lost silently. Once a move starts, its modal ignores Cancel, Escape, and
+backdrop dismissal until the asynchronous operation settles, preventing a second move from
+being opened over the first.
 
 **Remote push.** `RemotePushControl` requires a deliberate remote selection (no default
 push target unless exactly one remote exists), shows the working branch's and save-ledger's
@@ -122,6 +129,9 @@ last-known ahead/behind/diverged state per remote, and warns (overridably) befor
 out-of-version saves. Merely opening or refreshing the panel never fetches. Nothing remote
 is triggered by project initialization, server startup, working-branch creation, or a list
 request; Push, Catch up, and Spin off a copy are the deliberate freshness/network boundaries.
+An initial remote-listing failure is shown as an error, not as "No remotes configured"; a
+failed refresh retains the last good remote list and cannot hide an already-open push
+rejection modal.
 
 The Push tooltip says: "Push your branch and save history. If the remote is empty, Haute
 also publishes the default branch as your merge target." When that explicit push reports
@@ -253,9 +263,9 @@ are not the user's data, and **mutations**, which always surface an error.
   rather than nulling it (nulling would flip the whole list between rail and no-rail
   layouts on a transient blip).
 - **Remote listing** (`RemotePushControl`) degrades to an explicit "No remotes configured"
-  message rather than an empty, confusing dropdown. A cold-load failure naturally leaves
-  the list empty; a later refresh failure retains the last-good remotes so transient chrome
-  failure cannot erase an active divergence-recovery modal.
+  message after a successful empty response rather than an empty, confusing dropdown. A
+  cold-load failure is shown separately; a later refresh failure retains the last-good
+  remotes so transient chrome failure cannot erase an active divergence-recovery modal.
 - **Milestone-save expansion** (`toggleExpand`) shows an error toast and rolls the row
   back to collapsed on failure, rather than leaving a permanent "loading" placeholder.
 - **Mutations** (create/switch/archive/delete/restore branch, commit milestone, move to
