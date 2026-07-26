@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from haute._logging import get_logger
 
@@ -28,6 +28,7 @@ _MAX_STREAMABILITY_EVIDENCE = 32
 _MAX_TELEMETRY_ATTRIBUTES = 32
 _MAX_TELEMETRY_STRING_LENGTH = 128
 _MEMORY_PRESSURE_THRESHOLDS: tuple[float, ...] = (0.50, 0.75, 0.90)
+_RSS_SAMPLE_UNSET = object()
 _TERMINAL_NON_STATES = frozenset({"pending", "queued", "running"})
 _CURRENT_EXECUTION_CONTEXT: contextvars.ContextVar[ExecutionContext | None] = (
     contextvars.ContextVar("haute_current_execution_context", default=None)
@@ -144,30 +145,40 @@ class ExecutionMemoryLimitExceededError(MemoryError):
         self,
         operation: str,
         *,
-        rss_bytes: int,
+        rss_bytes: int | None,
         limit_bytes: int,
         job_id: str | None = None,
         baseline_rss_bytes: int | None = None,
         rss_limit_bytes: int | None = None,
         reason: str = "rss_exceeds_memory_limit",
     ) -> None:
-        if baseline_rss_bytes is None:
+        if reason == "memory_sampler_unavailable":
             detail = (
-                f"Execution {operation!r} exceeded its memory budget: "
-                f"{rss_bytes} bytes used > {limit_bytes} bytes allowed"
-            )
-        elif reason == "process_rss_limit_exceeded":
-            detail = (
-                f"Execution {operation!r} exceeded its process RSS cap: "
-                f"{rss_bytes} bytes used > {rss_limit_bytes} bytes allowed"
+                f"Execution {operation!r} could not enforce its memory budget "
+                "because the RSS sampler became unavailable"
             )
         else:
-            rss_growth_bytes = rss_bytes - baseline_rss_bytes
-            detail = (
-                f"Execution {operation!r} exceeded its memory growth budget: "
-                f"{rss_growth_bytes} bytes over admission baseline > "
-                f"{limit_bytes} bytes allowed"
-            )
+            if rss_bytes is None:
+                raise ValueError(
+                    "rss_bytes may be None only when reason is 'memory_sampler_unavailable'"
+                )
+            if baseline_rss_bytes is None:
+                detail = (
+                    f"Execution {operation!r} exceeded its memory budget: "
+                    f"{rss_bytes} bytes used > {limit_bytes} bytes allowed"
+                )
+            elif reason == "process_rss_limit_exceeded":
+                detail = (
+                    f"Execution {operation!r} exceeded its process RSS cap: "
+                    f"{rss_bytes} bytes used > {rss_limit_bytes} bytes allowed"
+                )
+            else:
+                rss_growth_bytes = rss_bytes - baseline_rss_bytes
+                detail = (
+                    f"Execution {operation!r} exceeded its memory growth budget: "
+                    f"{rss_growth_bytes} bytes over admission baseline > "
+                    f"{limit_bytes} bytes allowed"
+                )
         if job_id:
             detail = f"{detail} (job_id={job_id!r})"
         super().__init__(detail)
@@ -965,7 +976,7 @@ class ExecutionContext:
         self._record_checkpoint()
         rss_bytes = (
             self.memory_sampler()
-            if self.memory_limit_bytes is not None or self._active_stage_stack()
+            if self._effective_rss_limit_bytes() is not None or self._active_stage_stack()
             else None
         )
         if rss_bytes is not None:
@@ -1362,13 +1373,31 @@ class ExecutionContext:
         for stage in self._active_stage_stack():
             stage.n_checkpoints += 1
 
-    def _check_memory_budget(self, *, rss_bytes: int | None = None) -> None:
+    def _check_memory_budget(
+        self,
+        *,
+        rss_bytes: int | None | object = _RSS_SAMPLE_UNSET,
+    ) -> None:
         effective_limit = self._effective_rss_limit_bytes()
         if effective_limit is None:
             return
-        sampled = self.memory_sampler() if rss_bytes is None else rss_bytes
+        sampled = (
+            self.memory_sampler() if rss_bytes is _RSS_SAMPLE_UNSET else cast(int | None, rss_bytes)
+        )
         if sampled is None:
-            return
+            raise ExecutionMemoryLimitExceededError(
+                self.operation,
+                job_id=self.job_id,
+                rss_bytes=None,
+                limit_bytes=(
+                    self.memory_limit_bytes
+                    if self.memory_limit_bytes is not None
+                    else effective_limit
+                ),
+                baseline_rss_bytes=self.memory_baseline_bytes,
+                rss_limit_bytes=effective_limit,
+                reason="memory_sampler_unavailable",
+            )
         if sampled > effective_limit:
             reason = self._memory_limit_reason(
                 sampled=sampled,

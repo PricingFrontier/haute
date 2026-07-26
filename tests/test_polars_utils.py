@@ -15,10 +15,13 @@ from haute._execution_context import (
     ExecutionProfile,
 )
 from haute._polars_utils import (
+    BOUNDED_MEMORY_EXEMPT_PROFILES,
     _malloc_trim,
     atomic_write,
     bounded_collect_batches,
     bounded_sink,
+    is_bounded_execution_profile,
+    normalise_execution_profile,
     read_parquet_metadata,
     streaming_collect,
     temporary_streaming_chunk_size,
@@ -27,6 +30,18 @@ from haute._polars_utils import (
 # ---------------------------------------------------------------------------
 # Happy-path tests
 # ---------------------------------------------------------------------------
+
+
+def test_bounded_profile_policy_has_one_shared_classification() -> None:
+    assert BOUNDED_MEMORY_EXEMPT_PROFILES == {
+        ExecutionProfile.PREVIEW_EAGER,
+        ExecutionProfile.DEPLOY_LIVE,
+    }
+    assert normalise_execution_profile("lazy_sink") is ExecutionProfile.LAZY_SINK
+    assert is_bounded_execution_profile(ExecutionProfile.LAZY_SINK)
+    assert not is_bounded_execution_profile(ExecutionProfile.PREVIEW_EAGER)
+    assert not is_bounded_execution_profile(ExecutionProfile.DEPLOY_LIVE)
+    assert not is_bounded_execution_profile(None)
 
 
 def test_streaming_collect_uses_polars_streaming_engine() -> None:

@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -217,6 +218,216 @@ class TestJobStoreTTL:
         assert store.get_job(job_id) is None
         assert cleaned == [str(artifact_path)]
         assert not artifact_dir.exists()
+
+    def test_artifact_cleanup_runs_after_evicted_job_state_is_detached(self) -> None:
+        timers: list[object] = []
+        store = JobStore(
+            ttl_seconds=1,
+            heavy_object_ttl_seconds=100,
+            heavy_object_timer_factory=_manual_timer_factory(timers),
+        )
+        kind = "test_job_store_cleanup_outside_write_lock"
+        cleanup_started = threading.Event()
+        concurrent_access_finished = threading.Event()
+        cleanup_observations: list[tuple[bool, bool, bool]] = []
+        job_id = ""
+
+        def cleaner(_handle: dict) -> None:
+            cleanup_started.set()
+            cleanup_observations.append(
+                (
+                    job_id not in store.jobs,
+                    job_id not in store._heavy_object_timers,
+                    concurrent_access_finished.wait(timeout=5),
+                )
+            )
+
+        register_artifact_cleaner(kind, cleaner)
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "solver": object(),
+                "artifact_handles": {
+                    "result": {
+                        "kind": kind,
+                        "version": 1,
+                        "path": "unused",
+                    }
+                },
+            }
+        )
+        assert len(timers) == 1
+
+        eviction = threading.Thread(target=store.get_job, args=(job_id,))
+        eviction.start()
+        assert cleanup_started.wait(timeout=1)
+
+        def access_store() -> None:
+            store.create_job({"status": "running"})
+            concurrent_access_finished.set()
+
+        concurrent_access = threading.Thread(target=access_store)
+        concurrent_access.start()
+        eviction.join(timeout=6)
+        concurrent_access.join(timeout=6)
+
+        assert not eviction.is_alive()
+        assert not concurrent_access.is_alive()
+        assert cleanup_observations == [(True, True, True)]
+        assert timers[0].cancelled is True
+
+    def test_nested_store_operation_defers_cleanup_until_outer_lock_releases(self) -> None:
+        store = _job_store_without_cleanup_threads(ttl_seconds=1)
+        kind = "test_job_store_nested_cleanup_outside_write_lock"
+        cleanup_started = threading.Event()
+        concurrent_access_finished = threading.Event()
+        cleanup_observations: list[bool] = []
+        results: list[bool] = []
+
+        def cleaner(_handle: dict) -> None:
+            cleanup_started.set()
+            cleanup_observations.append(concurrent_access_finished.wait(timeout=5))
+
+        register_artifact_cleaner(kind, cleaner)
+        store.create_job({"status": "running"})
+        stale_id = store.create_job(
+            {
+                "status": "completed",
+                "artifact_handles": {
+                    "result": {
+                        "kind": kind,
+                        "version": 1,
+                        "path": "unused",
+                    }
+                },
+            }
+        )
+
+        def nested_predicate(_job: dict[str, Any]) -> bool:
+            store.jobs[stale_id]["created_at"] = time.time() - 10
+            assert store.get_job(stale_id) is None
+            return True
+
+        outer_operation = threading.Thread(
+            target=lambda: results.append(store.has_job_matching(nested_predicate))
+        )
+        outer_operation.start()
+        assert cleanup_started.wait(timeout=5)
+
+        def access_store() -> None:
+            store.create_job({"status": "running"})
+            concurrent_access_finished.set()
+
+        concurrent_access = threading.Thread(target=access_store)
+        concurrent_access.start()
+        outer_operation.join(timeout=7)
+        concurrent_access.join(timeout=7)
+
+        assert not outer_operation.is_alive()
+        assert not concurrent_access.is_alive()
+        assert results == [True]
+        assert cleanup_observations == [True]
+
+    @pytest.mark.parametrize("operation", ["matching_predicate", "create", "touch"])
+    def test_detached_artifacts_are_cleaned_when_post_eviction_work_raises(
+        self,
+        operation: str,
+    ) -> None:
+        store = _job_store_without_cleanup_threads(ttl_seconds=1)
+        kind = f"test_job_store_cleanup_after_{operation}_failure"
+        cleaned: list[str] = []
+
+        def cleaner(handle: dict) -> None:
+            cleaned.append(handle["path"])
+
+        register_artifact_cleaner(kind, cleaner)
+        if operation == "touch":
+            target_id = store.create_job(
+                {
+                    "status": "completed",
+                    "payload": object(),
+                    "completed_at": "invalid",
+                }
+            )
+        else:
+            target_id = store.create_job({"status": "running"})
+        stale_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "artifact_handles": {
+                    "result": {
+                        "kind": kind,
+                        "version": 1,
+                        "path": operation,
+                    }
+                },
+            }
+        )
+
+        if operation == "matching_predicate":
+
+            def raise_from_predicate(_job: dict[str, Any]) -> bool:
+                raise RuntimeError("predicate failed")
+
+            with pytest.raises(RuntimeError, match="predicate failed"):
+                store.has_job_matching(raise_from_predicate)
+        elif operation == "create":
+            with pytest.raises(TypeError):
+                store.create_job(cast(dict[str, Any], None))
+        else:
+            with pytest.raises(ValueError):
+                store.touch_heavy_objects(target_id, required_keys=("payload",))
+
+        assert stale_id not in store.jobs
+        assert cleaned == [operation]
+
+    def test_detached_artifacts_are_cleaned_if_timer_cancellation_raises(self) -> None:
+        class FailingCancelTimer:
+            def __init__(self, _delay: float, callback) -> None:
+                self.callback = callback
+                self.daemon = False
+
+            def start(self) -> None:
+                return None
+
+            def cancel(self) -> None:
+                raise RuntimeError("timer cancellation failed")
+
+        store = JobStore(
+            ttl_seconds=1,
+            heavy_object_ttl_seconds=100,
+            heavy_object_timer_factory=FailingCancelTimer,
+        )
+        kind = "test_job_store_cleanup_after_timer_cancel_failure"
+        cleaned: list[str] = []
+
+        def cleaner(handle: dict) -> None:
+            cleaned.append(handle["path"])
+
+        register_artifact_cleaner(kind, cleaner)
+        job_id = store.create_job(
+            {
+                "status": "completed",
+                "created_at": time.time() - 10,
+                "solver": object(),
+                "artifact_handles": {
+                    "result": {
+                        "kind": kind,
+                        "version": 1,
+                        "path": "result",
+                    }
+                },
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="timer cancellation failed"):
+            store.get_job(job_id)
+
+        assert job_id not in store.jobs
+        assert job_id not in store._heavy_object_timers
+        assert cleaned == ["result"]
 
     def test_distinct_equal_artifact_cleaners_are_rejected(self) -> None:
         kind = "test_job_store_equal_cleaner_identity"

@@ -5,17 +5,19 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_submodel_graph.py` | Shared helpers: build a `SUBMODEL` placeholder node, classify cross-boundary edges into input/output ports, rewire edges to/from a placeholder. Used by both the parser's hierarchical merge and the GUI create-submodel operation. |
-| `src/haute/_submodel_paths.py` | Resolve a submodel file reference (`modules/<name>.py`) relative to the active pipeline directory and return that directory as its config base. |
-| `src/haute/_flatten.py` | Dissolve one named submodel or every submodel into a flat graph: inline stored child nodes/internal edges, consume boundary handles, restore edge-join target roles, deduplicate edges, and retain metadata for untargeted submodels. |
+| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base. |
+| `src/haute/_flatten.py` | Dissolve one named submodel or every submodel into a flat graph: validate and consume boundary handles, inline stored child nodes/internal edges, restore authored and edge-join ports, regenerate port-complete edge ids, merge child preamble/preserved blocks, deduplicate exact edges, and retain metadata for untargeted submodels. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
-| `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): `POST /create`, `GET /{name}`, `POST /dissolve`. Wires validation, the pure transform, and the shared save transaction together; owns all file I/O and HTTP error mapping. |
+| `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): `POST /create`, `GET /{name}`, `POST /dissolve`. Resolves authoritative read paths, maps domain/path failures to HTTP responses, and delegates every write/delete to the shared save transaction. |
 
 Related but external to this component:
 - `src/haute/_parser_submodels.py` (expression-parsing) — parses
   `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
   `src/haute/_submodel_graph.py`'s same three helpers to build the hierarchical view at
-  parse time. It rejects nested references and duplicate declared submodel names before invoking
-  the graph helpers, so this component never receives a deliberately truncated hierarchy.
+  parse time. Parsed child graphs retain their declared description,
+  preamble, and column-zero preserved blocks. It rejects nested references
+  and duplicate declared submodel names before invoking the graph helpers, so
+  this component never receives a deliberately truncated hierarchy.
 - `src/haute/routes/_save_pipeline.py::SavePipelineService` (server-api) —
   provides `save_graph_transactionally`, reused by both create and dissolve.
 
@@ -28,8 +30,9 @@ Related but external to this component:
 - `PipelineGraph.submodels: dict[str, Any] | None` (`_types.py`) — keyed by
   submodel name, each entry shaped `{"file": str, "childNodeIds": list[str],
   "inputPorts": list[str], "outputPorts": list[str], "graph": dict}` where
-  `"graph"` is the submodel's own internal `nodes`/`edges`/`submodel_name`/
-  `submodel_description`/`source_file`.
+  `"graph"` is the submodel's own canonical `PipelineGraph` dump:
+  `nodes`, `edges`, `pipeline_name`, `pipeline_description`, `preamble`,
+  `preserved_blocks`, and `source_file`.
 - `NodeType.SUBMODEL = "submodel"` / `NodeType.SUBMODEL_PORT = "submodelPort"`
   (`_types.py`) — the placeholder node's type; `SUBMODEL_PORT` is used only by
   the drill-down GUI view, not produced by anything in this component.
@@ -91,16 +94,20 @@ identity through hierarchical merge and flattening.
 
 ### `resolve_submodel_reference(rel_path, *, pipeline_dir, project_root)`
 
-1. `resolved_root = project_root.resolve()`; `active_dir = (pipeline_dir or
+1. Normalise path separators and reject an empty or NUL-containing reference,
+   or any explicit `..` traversal component, with
+   `MalformedSubmodelPathError`.
+2. `resolved_root = project_root.resolve()`; `active_dir = (pipeline_dir or
    project_root).resolve()`.
-2. Build `submodel_path = (active_dir / rel_path).resolve()`.
-3. If `submodel_path` is not below `resolved_root`, raise `ValueError`.
-4. Return `(submodel_path, active_dir)`.
+3. Build `submodel_path = (active_dir / rel_path).resolve()`.
+4. If `submodel_path` is not below `resolved_root`, raise
+   `SubmodelPathOutsideProjectError`.
+5. Return `(submodel_path, active_dir)`.
 
 `resolve_submodel_by_name(name, *, pipeline_dir, project_root)` is a thin
-wrapper calling the above with `rel_path=f"modules/{name}.py"`. This is the
-same convention `_parser_submodels.py` uses for `pipeline.submodel()` imports,
-so drill-down and the actually-loaded pipeline never disagree.
+wrapper that first rejects empty, NUL-containing, slash-containing, or
+backslash-containing route names with `MalformedSubmodelPathError`, then calls
+the reference resolver with `rel_path=f"modules/{name}.py"`.
 
 ### `flatten_graph(graph, target_name=None)`
 
@@ -108,24 +115,24 @@ so drill-down and the actually-loaded pipeline never disagree.
    it with the metadata keys; if there is no match, also return the original object.
 2. Ask `build_edge_join_boundary_target_roles` for any target-port roles that must be restored on
    inbound edges to child edge-join nodes.
-3. Copy the parent node/edge lists, remove placeholders for the selected names, and append each
-   selected submodel's stored child nodes/internal edges. Dict entries are Pydantic-validated;
-   existing `GraphNode`/`GraphEdge` objects are reused.
-4. For each edge, when its source is a selected placeholder and `sourceHandle` is non-empty, set
-   the source to `sourceHandle.removeprefix("out__")`, restore `sourceHandle` from `sourcePort`,
-   and regenerate the id.
-   Apply the analogous `targetHandle.removeprefix("in__")` rewrite on selected placeholder
-   targets, restoring `targetPort` first or a target role from step 2 when no authored target
-   port was present.
-5. Drop any edge that still references a selected placeholder (notably a boundary edge with a
-   missing handle), then deduplicate by rendered endpoint/handles plus any `sourcePort`/
-   `targetPort` still hidden behind an unflattened boundary, preserving first occurrence.
-6. Return `graph.model_copy(...)`, removing flattened metadata entries and setting `submodels=None`
-   when none remain. Untargeted placeholders/metadata remain intact.
-
-The flattener does not validate the expected prefix or child membership: any non-empty malformed
-handle is consumed verbatim after `removeprefix`, and no explicit exception is raised. Codegen has
-the stricter prefix/membership validation gate.
+3. Pydantic-validate each selected embedded graph, index its child ids, copy
+   the parent node/edge lists, remove selected placeholders, and append child
+   nodes/internal edges.
+4. For every edge incident to a selected placeholder, require the appropriate
+   non-empty `out__<child_id>` or `in__<child_id>` handle and verify that the
+   child exists in that embedded graph. A mismatch raises `ParseError` with
+   edge/submodel/known-child context before rewiring continues.
+5. Replace each valid placeholder endpoint with the child id, restore the
+   authored `sourceHandle`/`targetHandle` from hidden `sourcePort`/
+   `targetPort` (or the edge-join role from step 2), clear the consumed hidden
+   field, and regenerate the id with `_edge_id` over endpoints, rendered
+   handles, and any hidden ports belonging to an untargeted boundary.
+6. Deduplicate only exact six-field edge identities, preserving first
+   occurrence. Merge selected child preambles into the root preamble with a
+   blank-line separator and append selected child preserved blocks.
+7. Return `graph.model_copy(...)`, removing flattened metadata entries and
+   setting `submodels=None` when none remain. Untargeted
+   placeholders/metadata remain intact.
 
 ### `create_submodel_graph(graph, node_ids, name)`
 
@@ -148,9 +155,10 @@ the stricter prefix/membership validation gate.
    `external_edges` (neither endpoint inside).
 6. `classify_ports` on canonical `cross_edges` →
    `input_ports`, `output_ports`.
-7. Build the submodel's internal graph dict: `{"nodes": [child node dumps],
-   "edges": [internal edge dumps], "submodel_name": sm_name,
-   "submodel_description": "", "source_file": sm_file}`.
+7. Build the submodel's canonical internal graph dict: `{"nodes": [child node
+   dumps], "edges": [internal edge dumps], "pipeline_name": sm_name,
+   "pipeline_description": "", "preamble": "", "preserved_blocks": [],
+   "source_file": sm_file}`.
 8. `build_submodel_placeholder(...)` → `sm_node`; `rewire_edges(cross_edges,
    sm_node.id, child_node_ids)` → `rewired_cross`.
 9. Assemble the new parent graph: `nodes = parent_nodes + [sm_node]`, `edges =
@@ -163,46 +171,45 @@ the stricter prefix/membership validation gate.
 ### `POST /api/submodel/create` (`create_submodel`)
 
 Acquires `save_lock`, runs the body in a threadpool:
-1. `SavePipelineService._validate_unique_sanitized_names(body.graph)` — fails
-   loud on name collisions in the *pre-transform* graph.
-2. Compute `sm_filename = f"{_sanitize_func_name(body.name)}.py"`; if
+1. Compute `sm_filename = f"{_sanitize_func_name(body.name)}.py"`; if
    `is_windows_reserved_filename(sm_filename)`, raise `HTTPException(400,
    <specific message>)` before touching `create_submodel_graph` at all.
-3. Call `create_submodel_graph(body.graph, body.node_ids, body.name)`; a
+2. Call `create_submodel_graph(body.graph, body.node_ids, body.name)`; a
    `ValueError` here is logged (`submodel_create_invalid`, with name and
    node count, `exc_info=True`) and re-raised as `HTTPException(400,
    _INTERNAL_ERROR_DETAIL)` — the specific validation message is never sent
    to the client.
-4. Require `body.source_file` truthy, else `HTTPException(400, ...)`.
-5. `SavePipelineService(project_root=Path.cwd(),
+3. Require `body.source_file` truthy, else `HTTPException(400, ...)`.
+4. `SavePipelineService(project_root=Path.cwd(),
    pipeline_root=pipeline_dir()).save_graph_transactionally(graph=result.graph,
    name=body.pipeline_name, description=body.pipeline_description or "",
    preamble=body.preamble, source_file=body.source_file)` — this is where
-   `graph_to_code_multi` actually runs and both the parent `.py` and the new
-   `modules/<name>.py` are written, under the save transaction's allowlist and
-   rollback contract (see server-api).
-6. Return `CreateSubmodelResponse(status="ok", submodel_file=result.sm_file,
+   sanitized-name uniqueness is validated, `graph_to_code_multi` runs, and
+   both the parent `.py` and new `modules/<name>.py` are written under the
+   save transaction's allowlist and rollback contract (see server-api).
+5. Return `CreateSubmodelResponse(status="ok", submodel_file=result.sm_file,
    parent_file=body.source_file, graph=result.graph)`.
 
 ### `GET /api/submodel/{name}` (`get_submodel` → `_get_submodel_blocking`)
 
 Acquires `save_lock`, runs in a threadpool:
-1. `project_root = Path.cwd()`; `active_pipeline_dir = pipeline_dir()`;
-   `resolve_submodel_by_name(name, ...)` → `(sm_path, config_base)`.
-2. Re-resolve `project_root` and check `sm_path.is_relative_to(project_root)`
-   → `HTTPException(403)` if not (see high-level spec's NOTE — this branch is
-   unreachable given step 1's guarantees and the single-path-segment `{name}`
-   constraint).
-3. `sm_path.is_file()` → else `HTTPException(404, f"Submodel '{name}' not
+1. Validate `name` before pipeline discovery; map
+   `MalformedSubmodelPathError` to `400`.
+2. Iterate `discover_pipelines()` in configured-first order. Parse each
+   pipeline inside a per-file `try`: a parse failure is logged as
+   `submodel_parent_parse_failed` and skipped. When a parsed pipeline's
+   `submodels` metadata contains `name`, resolve that entry's recorded
+   `"file"` relative to the pipeline file's parent.
+3. If no discovered pipeline records the name, use the
+   `modules/<name>.py` convention relative to `pipeline_dir()`.
+   `SubmodelPathOutsideProjectError` maps to `403`.
+4. `sm_path.is_file()` → else `HTTPException(404, f"Submodel '{name}' not
    found")`.
-4. `parse_submodel_file(sm_path, _base_dir=config_base)` → `sm_graph`.
-5. `load_sidecar_positions(sm_path)` → apply any stored `(x, y)` position
-   onto matching node ids via `model_copy`. `sm_graph.nodes` is rebuilt via
-   `model_copy` whenever the submodel has at least one node (i.e.
-   unconditionally, given the 2-node minimum) — the `if updated_nodes:`
-   guard only skips the rebuild for a degenerate empty node list, not for
-   "no sidecar positions found".
-6. Return `SubmodelGraphResponse(status="ok", submodel_name=
+5. `parse_submodel_file(sm_path, _base_dir=config_base)` → `sm_graph`.
+6. `_apply_sidecar_positions(sm_graph, sm_path)` loads sidecar positions and
+   applies each matching `(x, y)` via per-node `model_copy`. Parsed nodes
+   without a sidecar entry retain their parser-provided position.
+7. Return `SubmodelGraphResponse(status="ok", submodel_name=
    sm_graph.pipeline_name or name, graph=sm_graph)`.
 
 ### `POST /api/submodel/dissolve` (`dissolve_submodel`)
@@ -210,19 +217,25 @@ Acquires `save_lock`, runs in a threadpool:
 Acquires `save_lock`, runs the body in a threadpool:
 1. Look up `body.submodel_name` in `body.graph.submodels or {}` → `404` if
    absent.
-2. `sm_file = submodels[sm_name].get("file", "")`.
-3. `flatten_graph(body.graph, target_name=sm_name)` → `flat` — only the
-   targeted submodel is dissolved, any other submodels in the graph are left
-   as placeholders.
-4. `SavePipelineService._validate_unique_sanitized_names(flat)` — validated
-   **post**-inline, since inlining can itself introduce a name collision with
-   an existing parent node.
-5. Require `body.source_file` truthy, else `HTTPException(400, ...)`.
-6. `SavePipelineService(...).save_graph_transactionally(graph=flat, ...,
-   delete_module_files=[sm_file] if sm_file else ())` — the submodel `.py`
-   file is deleted as part of the same transaction that rewrites the parent
-   file; see server-api for the rollback contract if the delete fails after
-   the rewrite (or vice versa).
+2. Require `body.source_file`, validate that its resolved path remains inside
+   the project before reading the child module, and require a non-empty string
+   `"file"` in the selected metadata. Malformed values return `400`; an
+   escaping parent source path returns `403`.
+3. Resolve the recorded file relative to `pipeline_dir()`, mapping typed
+   malformed/outside-project path errors to `400`/`403`, and return `404` if
+   the file is absent.
+4. `parse_submodel_file(sm_path, _base_dir=config_base)`, apply its sidecar
+   positions through `_apply_sidecar_positions`, and replace only the
+   selected metadata entry's `"graph"` with that authoritative disk graph.
+   Copy `body.preamble` onto the parent graph before flattening.
+5. `flatten_graph(authoritative_graph, target_name=sm_name)` → `flat`. A
+   stale boundary referencing a child no longer present on disk raises
+   `ParseError`; any other submodels remain placeholders. Child preamble and
+   preserved blocks are now part of `flat`.
+6. `SavePipelineService(...).save_graph_transactionally(graph=flat,
+   preamble=flat.preamble, ..., delete_module_files=[sm_file])` validates the
+   final graph, rewrites the parent, and deletes the authoritative child
+   through the same transaction.
 7. Return `DissolveSubmodelResponse(status="ok", graph=flat)`.
 
 ## Edge cases and invariants
@@ -238,23 +251,24 @@ Acquires `save_lock`, runs the body in a threadpool:
 - **A child node can be both an input port and an output port** if it has
   both an inbound and an outbound cross-boundary edge (`classify_ports`
   appends to both lists independently).
-- **Cross-submodel edge rewiring is order-independent for handle
-  preservation but not for edge identity.** `rewire_edges` is called once per
+- **Cross-submodel edge rewiring is order-independent for handles and edge
+  identity.** `rewire_edges` is called once per
   submodel being processed; a `child-of-A → child-of-B` edge is rewired twice
   across two separate `rewire_edges` calls (once when A is processed, once
   when B is), and each pass must not clobber the opposite side's
   already-set handle to `None` — this is why `sourceHandle`/`targetHandle`
   are explicitly *preserved from the input edge*, not always cleared, on the
-  side that isn't being rewired in that pass.
+  side that isn't being rewired in that pass. Boundary ids include both
+  authored ports, and targeted flatten regenerates ids from every visible and
+  still-hidden port, so one-sided flattening cannot collapse distinct edges.
 - **Flatten is identity-preserving on no-op calls.** With no submodel metadata, an empty metadata
   dict, or a `target_name` absent from the metadata, `flatten_graph` returns the exact input object
   (`is`, not merely equality).
-- **Flatten is permissive on malformed boundary handles.** It gates on the endpoint being a
-  selected placeholder and the relevant handle being truthy, but does not check `in__`/`out__` or
-  that the derived id belongs to the submodel. A wrong-prefix handle becomes an endpoint id
-  verbatim; a missing handle leaves the placeholder reference in place and that edge is silently
-  discarded. Internal and rewired edges are then deduplicated by rendered endpoint/handle fields
-  plus any still-hidden authored ports.
+- **Flatten rejects malformed boundary handles before dropping anything.**
+  The handle must use `in__`/`out__`, name a child in the selected embedded
+  graph, and be present whenever an endpoint is a selected placeholder.
+  Violations raise contextual `ParseError`; exact six-field edges alone are
+  deduplicated after valid rewiring.
 - **Inbound edge-join roles survive flattening.** An `in__<child>` boundary targeting an
   edge-join child recovers the base/join `targetHandle` through
   `build_edge_join_boundary_target_roles`; ordinary inbound boundaries clear the synthetic handle
@@ -265,13 +279,10 @@ Acquires `save_lock`, runs the body in a threadpool:
   every OS at create time (not just Windows), so a pipeline saved on
   Linux/macOS cannot mint a submodel that becomes unloadable on a Windows
   checkout.
-- **`get_submodel` re-applies sidecar positions per-node, not per-graph** —
-  each node is individually `model_copy`'d only if its id has a stored
-  position (nodes with no sidecar entry keep whatever position the parser
-  produced), but the resulting node list is then always reassigned onto
-  `sm_graph` via one outer `model_copy` as long as the submodel has any
-  nodes at all; there is no optimisation that skips the outer rebuild when
-  `positions` is empty.
+- **Drill-down and dissolve share `_apply_sidecar_positions`.** Each matching
+  node is individually `model_copy`'d; nodes without an entry keep their
+  parser-provided position. Dissolve therefore combines authoritative source
+  structure with authoritative canvas layout before flattening.
 
 ## Error handling
 
@@ -282,19 +293,20 @@ Acquires `save_lock`, runs the body in a threadpool:
 | Missing `source_file` on create or dissolve | `HTTPException(400, "source_file is required...")` | `create_submodel` / `dissolve_submodel`. |
 | Dissolve target not in `graph.submodels` | `HTTPException(404, f"Submodel '{sm_name}' not found in graph")` | `dissolve_submodel`. |
 | Drill-down target `.py` file missing | `HTTPException(404, f"Submodel '{name}' not found")` | `_get_submodel_blocking`. |
-| Drill-down path escapes project root | `HTTPException(403, ...)` | `_get_submodel_blocking` — see the NOTE in the high-level spec; not reachable via this route in practice. |
-| `resolve_submodel_reference` candidate path escapes project root | `ValueError` | `_submodel_paths.py` — propagates uncaught from `_get_submodel_blocking` if ever reached (no route-level catch); reachable only from callers that pass a `rel_path` containing path separators, which this route's single-segment `{name}` parameter cannot produce. |
-| Malformed/missing boundary handle passed directly to `flatten_graph` | No dedicated exception | Wrong-prefix non-empty handles are consumed as endpoint ids; edges still naming a removed placeholder are dropped. Codegen validates persisted graphs more strictly. |
-| Any write step in the underlying save transaction fails (config write, sidecar write, module delete) | Rolled back by `SavePipelineService`, re-raised | Surfaces as `HTTPException(500, ...)` from `save_graph_transactionally`; see [server-api](../server-api/high-level.md) low-level spec for the transaction/rollback mechanics. |
+| Empty/NUL-containing reference, explicit `..` reference component, or route name containing `/` or `\` | `MalformedSubmodelPathError` → `HTTPException(400)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
+| Recorded reference resolves outside project root | `SubmodelPathOutsideProjectError` → `HTTPException(403)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
+| Malformed/missing boundary handle or unknown child passed to `flatten_graph` | `ParseError` with edge/submodel context | `_flatten._boundary_child_id`; dissolve stops before save/delete. |
+| Any write step in the underlying save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | Surfaces as `HTTPException(500, ...)`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
 
 ## Testing
 
 Tests live in `tests/test_submodel_graph.py`, `tests/test_submodel_ops.py`,
-`tests/test_submodel_routes.py`, and `tests/test_submodel_outport_invariant.py`,
-plus `tests/test_flatten.py`, with related parser coverage in
-`tests/test_parser_submodels.py` for the neighbouring expression-parsing component.
+`tests/test_submodel_routes.py`, `tests/test_submodel_outport_invariant.py`,
+`tests/test_submodel.py`, `tests/test_flatten.py`, and
+`tests/test_flattening_dedup.py`, with related parser coverage in
+`tests/test_parser_submodels.py`.
 
-- `test_submodel_graph.py` — pure unit tests of the three
+- `tests/test_submodel_graph.py` — pure unit tests of the three
   `_submodel_graph.py` functions in isolation: placeholder construction
   (id/type/config shape, description passthrough including special
   characters, empty ports, empty child list); `classify_ports` (basic
@@ -304,10 +316,11 @@ plus `tests/test_flatten.py`, with related parser coverage in
   rewire, mixed edge sets, deterministic edge ids, multiple inbound/outbound
   edges to/from the same child, and the cross-submodel two-pass handle
   preservation case).
-- `test_submodel_ops.py` — unit tests of `create_submodel_graph` against
+- `tests/test_submodel_ops.py` — unit tests of `create_submodel_graph` against
   hand-built graphs (via `tests/conftest.py::make_graph`): basic extraction,
   edge rewiring for both inbound and outbound boundaries, submodel metadata
-  population (`childNodeIds`, ports, internal `graph` dict), preservation of
+  population (canonical child name/description, preamble, preserved blocks,
+  `childNodeIds`, ports, and internal `graph` dict), preservation of
   pre-existing submodel entries when adding a new one, name sanitisation
   (`_sanitize_func_name`, case-preserving), the too-few-nodes and
   empty-selection `ValueError`s (including the nonexistent-id and
@@ -316,25 +329,21 @@ plus `tests/test_flatten.py`, with related parser coverage in
   no-cross-edges case, and all three nesting-rejection shapes (two submodel
   nodes selected, one submodel node selected, one submodel node mixed with a
   regular node).
-- `test_submodel_routes.py` — full FastAPI `TestClient` coverage of all three
+- `tests/test_submodel_routes.py` — full FastAPI `TestClient` coverage of all three
   endpoints against an isolated `tmp_path` cwd, with `create_submodel_graph`
-  and `codegen.graph_to_code_multi`/`graph_to_code` mocked to isolate the
-  route/transaction layer from the graph-transform and codegen layers:
-  invalid node ids and too-few-nodes → `400`; happy-path create including
-  `pipeline_description` forwarding to codegen; the same output-path
-  allowlist and rollback-on-disallowed-path behaviour the manual save
-  endpoint has (`test_create_rejects_unallowlisted_codegen_path_and_rolls_back`);
-  writing modules/configs beside a configured nested pipeline root rather
-  than the project root; drill-down not-found, dotted/traversal-looking names
-  resolving safely to a plain `404` rather than an error, and configured-root
-  module resolution matching the parser; dissolve not-found, missing `source_file`, happy path
-  (including `pipeline_description` forwarding), submodel file deletion,
-  configured-root deletion targeting, and two explicit
+  and selected codegen calls mocked where the test isolates the
+  route/transaction layer: invalid selections → `400`; create metadata
+  forwarding; output allowlisting and rollback; nested pipeline roots;
+  drill-down through a recorded custom child path; broken sibling pipelines
+  skipped during lookup; malformed encoded backslashes → `400`;
+  configured-root fallback; dissolve not-found and missing-source failures;
+  authoritative reparse of the child file with sidecar positions preserved;
+  submodel deletion; configured-root deletion targeting; and two explicit
   rollback tests (`test_dissolve_sidecar_failure_rolls_back_main_file`,
   `test_dissolve_delete_failure_rolls_back_main_file`) that force a mid-
   transaction failure and assert the parent file's original content and the
   submodel file's existence are both restored.
-- `test_submodel_outport_invariant.py` — a single named contract test file
+- `tests/test_submodel_outport_invariant.py` — a single named contract test file
   (not organised by function, but by invariant) pinning that the `out__`
   boundary handle produced by `rewire_edges` is the exact inverse of what
   `flatten_graph` strips, and that codegen's disambiguation between a true
@@ -344,18 +353,21 @@ plus `tests/test_flatten.py`, with related parser coverage in
   exists specifically because the individual legs (production, flatten,
   codegen) are each covered piecemeal in their own component's test file, and
   none of those files alone pins the full produce → consume round trip.
-- `test_flatten.py` — direct unit coverage for identity returns, flatten-all and targeted
-  flattening, child node/edge dict-vs-model forms, internal-edge preservation, boundary rewiring
-  and handle clearing, silent drop of a still-placeholder edge, edge deduplication, empty/missing
-  child graph metadata, and preservation of unrelated `PipelineGraph` metadata.
+- `tests/test_submodel.py` — public flatten/codegen integration, including
+  per-child source generation, child preamble and preserved-block round trips,
+  compilable parent output, parsing, and request/response model contracts.
+- `tests/test_flatten.py` — direct unit coverage for identity returns,
+  flatten-all and targeted flattening, child node/edge dict-vs-model forms,
+  internal-edge preservation, strict boundary-handle and child-id validation,
+  port-complete rewritten edge ids, edge deduplication, empty/missing child
+  graph metadata, and selected-child metadata merging.
+- `tests/test_flattening_dedup.py` — parity between parser-driven flattening
+  and the shared `flatten_graph` implementation, including single-node,
+  multi-node, chained, nested, and hierarchical-then-flat cases.
+- `tests/test_parser_submodels.py` — expression parsing, recursive loading,
+  canonical child metadata, cross-boundary port reconstruction, and
+  hierarchical/flat parser behaviour.
 
-Known coverage gap: `tests/test_flatten.py` pins silent dropping for a missing handle, but does not
-directly pin the wrong-prefix non-empty `removeprefix` case or an unknown derived child id. The
-adjacent `src/haute/_parser_submodels.py` remains owned and covered by expression-parsing.
-
-## Approved change contract — canonical-only submodel identity
-
-Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
-submodel paths, boundary-edge identifiers, and sidecar lookup keys use only their current
-project-relative, port-aware representations. There is no fallback to a project-root path, bare
-sanitised sidecar key, unported edge tuple, or historical edge id.
+Canonical-only identities are pinned throughout these suites: submodel paths
+are project-relative, boundary edge ids include port identity, and recorded
+sidecar paths take precedence over convention-based lookup.

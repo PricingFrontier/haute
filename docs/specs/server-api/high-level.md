@@ -6,7 +6,7 @@ Haute's frontend is a React Flow canvas; this component is the FastAPI applicati
 backs it. It owns the app shell (lifespan, middleware, static SPA serving), the live
 code-to-canvas sync channel (file watcher + WebSocket), the request/response contract every
 route in the product speaks (Pydantic schemas, the typed error hierarchy, the sanitized-error
-convention), and the two largest route families itself: pipeline CRUD/preview/trace/sink and
+convention), and the two largest route families itself: pipeline CRUD/preview/trace/output and
 file/schema browsing. Every other route module (Databricks, Explore, MLflow, modelling,
 optimiser, submodel, git, JSON cache) is included into the same `FastAPI` app but owned by
 its own component; this one is the substrate they all sit on.
@@ -37,7 +37,8 @@ In scope:
   pipeline-name→path index, self-write tracking (watcher feedback-loop prevention), the
   WebSocket client registry and broadcast fan-out, and the on-disk sidecar (`.haute.json`)
   format.
-- The pipeline routes (`haute.routes.pipeline`): list/get/save/preview/trace/sink, their
+- The pipeline routes (`haute.routes.pipeline`): list/get/save/preview/trace/output-write
+  and output-destination preview, their
   request-supersession and concurrency-limiting behaviour, and the transactional save
   service (`haute.routes._save_pipeline`).
 - The file-browsing and schema-inspection routes (`haute.routes.files`), the utility-script
@@ -45,7 +46,7 @@ In scope:
   (`haute.routes.output_assemble`), which consumes the shared assembler.
 
 Out of scope (owned by neighbouring components, included as routers but not described here):
-- Pipeline execution itself — `execute_graph`, `execute_trace`, `execute_sink`, admission
+- Pipeline execution itself — `execute_graph`, `execute_trace`, `write_data_output`, admission
   control, memory budgets — see [execution-engine](../execution-engine/high-level.md). This
   component only validates the HTTP boundary and translates execution exceptions to status
   codes.
@@ -105,6 +106,9 @@ that cookie; an absent Origin is allowed only with a valid existing cookie.
 `OPTIONS` still requires a trusted Origin but bypasses the token check. WebSocket
 handshakes always require an explicit matching Origin plus cookie credential and close
 with code 1008 on rejection. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` bypasses only session auth.
+An inbound `x-request-id` is retained only when it is a 1–64 character ASCII token matching
+`[A-Za-z0-9][A-Za-z0-9._:-]*`; missing or invalid values are replaced with a generated ID.
+Rejected values are logged only by bounded reason and numeric length, never by their bytes.
 
 **Live sync.** A pricing analyst can edit a pipeline's `.py` file directly in an IDE while
 the canvas is open. A background watcher (debounced 300ms) detects the change, re-parses
@@ -117,32 +121,50 @@ fingerprint already matches (no redundant payload). Edits the server itself make
 `/api/pipeline/save`) are tagged as self-writes so they never round-trip back through the watcher
 as a phantom external edit. A change to a `modules/*.py` file re-parses only the pipelines
 that import it; a change to a `config/*.json` file re-parses every discovered pipeline (a
-config change can affect any pipeline that reads it).
+config change can affect any pipeline that reads it). Direct pipeline `.py` additions,
+modifications, and deletions invalidate the name→path index; module/config-only batches do
+not. Startup priming, watcher invalidation, and successful save invalidation are the index's
+lifecycle mutation points. The module-dependency index scans under its own build lock and
+publishes only when the pipeline-index generation it observed is still current, so
+invalidation does not block on the AST scan and an in-flight rebuild cannot overwrite it. A
+failed debounced batch is retried at most three times with exponential backoff; after that
+the watcher isolates each change once, processes healthy entries, and logs and drops only
+the still-failing entries instead of poisoning future batches or creating an unbounded retry
+chain.
 
-**Pipeline CRUD, preview, trace, sink.** `GET /api/pipelines` lists every discovered pipeline
-with parse status; `GET /api/pipeline` / `GET /api/pipeline/{name}` return one graph.
+**Pipeline CRUD, preview, trace, and output publication.** `GET /api/pipelines` lists every
+discovered pipeline with parse status; `GET /api/pipeline` returns an empty graph only when
+no pipeline file exists, and returns 422 with the first parse diagnostic when files exist but
+none can be parsed. `GET /api/pipeline/{name}` returns the named graph.
 `POST /api/pipeline/save` is the single write path for a pipeline's `.py` source, its
 per-node config JSON sidecars, and its `.haute.json` position sidecar — described in detail
 below. `POST /api/pipeline/preview` runs the graph up to one node and returns its schema,
 sample rows, and per-node timing/memory; `POST /api/pipeline/trace` follows one row's values
 through every node it passed through and returns typed correlation omissions plus generation
 provenance; `POST /api/pipeline/write-output` explicitly materialises a
-`dataOutput` node. Preview and trace are keyed on (graph fingerprint, source, node,
+`dataOutput` node, with `overwrite=false` by default. A pre-existing destination returns
+409 before graph execution; `POST /api/pipeline/output-destination` runs the same safe
+destination resolution without executing the graph or touching the target. Preview and
+trace are keyed on (graph fingerprint, source, node,
 row/column selectors): a newer request for the *same* key supersedes the older request's
 response and waits for its active slot to clear, so same-key workers never overlap. Preview
 also requests cooperative cancellation of the active worker; trace has no route-level
 cancellation token, so a newer trace must wait for the older trace thread to finish before it
 can start. A *different* key runs independently, bounded by a small per-operation concurrency
 semaphore. All three long-running endpoints enforce a response timeout
-(`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s). Preview and sink
+(`HAUTE_{PREVIEW,TRACE,SINK}_TIMEOUT`, default 120s/120s/300s; the historical internal
+`SINK` setting governs output-write). Preview and output-write
 cooperatively cancel their execution token/context on timeout; trace's already-started thread
 finishes in the background. Preview/trace retain their supersession key and concurrency
-permit until that thread really finishes, despite having returned 504. Preview and sink use
+permit until that thread really finishes, despite having returned 504. Preview and output-write use
 memory admission control at this route boundary; trace does not create an admission context
-here.
+here. A timeout that carries a still-running background task takes precedence over a newer
+supersession generation, so it remains a 504 and retains both the key and execution context
+until the worker exits.
 
-**File browsing and schema inspection.** `GET /api/files` lists a directory (extension-
-filtered) for the file picker. `GET /api/schema` reads a data file's column schema, a 5-row
+**File browsing and schema inspection.** `GET /api/files` lists a directory for the file
+picker; when its `extensions` query is omitted, the effective readable extensions come from
+the installed I/O registry. `GET /api/schema` reads a data file's column schema, a 5-row
 preview, and (for parquet) an exact row count or (for JSONL) an estimated one, without
 loading the whole file. `GET /api/io-capabilities` exposes provider groups, the Polars I/O
 format registry (read/write capability, modes, accepted arguments, missing optional engines),
@@ -162,7 +184,21 @@ validates the mapping shape independently of any data, swaps it into the target 
 in-memory config (never touching disk), runs the graph up to that node, and returns the
 rendered document. The assembly algorithm itself (schema-determined cyclic-core detection,
 surgical cut, prefix-nested serialisation) lives in `_output_assembler.py` and is shared with
-the deploy-time render path.
+the deploy-time render path. Admission refusal uses the same structured 507 payload as the
+other execution routes. Ordinary success and failure release the admission context in
+`finally`; a 504 defers release to the still-running background task.
+
+**Execution diagnostics and public contract errors.** Execution-consuming endpoints expose
+the bounded version-1 strategy diagnostic DTO: canonical, capped collections describe
+boundaries, reasons, and provenance without frames, plans, or user data. The shared
+public-error adapter is a closed set mapped to synchronous HTTP 422 and background-job
+`contract_error`: `ApiInputSchemaError`, `PreambleError`, `ContractResolutionError`,
+`ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`,
+`TraceCorrelationUnsupportedError`, `RatingExtremaUndefinedError`,
+`RatingFactorMissingError`, `RatingFactorDtypeContractError`,
+`LiveSwitchScenarioError`, and `OutputNestingKeyError`. Every payload preserves the
+exception's stable code and named safe fields; malformed or unsupported diagnostic versions
+become diagnostic-unavailable rather than a fabricated success.
 
 ## Design rationale
 
@@ -219,7 +255,7 @@ the deploy-time render path.
 ## Interactions
 
 - **[execution-engine](../execution-engine/high-level.md)** — `routes/pipeline.py` and
-  `routes/output_assemble.py` call `execute_graph`, `execute_trace`, `execute_sink`, and the
+  `routes/output_assemble.py` call `execute_graph`, `execute_trace`, `write_data_output`, and the
   execution-admission/context APIs directly; the routes consume the shared registry/contract
   dispatch and canonical `_types.py` graph models used by the executor.
 - **[background-jobs](../background-jobs/high-level.md)** — job-status response shapes
@@ -268,8 +304,9 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   surface: save-time `ConfigError` → 400; output dry-run `ConfigError` /
   `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
   config/contract failures are embedded in `NodeResult.error` so the canvas can show them
-  in-situ rather than as a banner. `ApiInputSchemaError` → a direct 422 JSON body with a
-  `type` discriminator, and `OutputMappingSchemaError` → FastAPI's
+  in-situ rather than as a banner. JSON-cache `ApiInputSchemaError` uses a direct 422 body
+  with a `type` discriminator, while preview/write execution uses the stable public-contract
+  payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.
 - **Everything else** — any exception not explicitly mapped — is normally caught at the
   route level, logged server-side, and returned as `{"detail": "Operation failed. Check the
@@ -278,11 +315,13 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   `{"detail": "Internal server error"}`. Neither exposes a traceback; outer trusted-host
   and session middleware rejections bypass request-ID middleware entirely.
 - **Resource limits** surface as their own status codes rather than a generic 500:
-  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 for preview/sink
-  (OUTPUT dry-run maps admission refusal to 503); a superseded request →
+  `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` → 507 for preview,
+  output-write, and OUTPUT dry-run; a superseded request →
   `SupersededRequestError` → 409; a timed-out blocking operation → 504. Worker threads are
-  never forcibly killed: preview/sink request cooperative cancellation, while trace and
-  OUTPUT dry-run drain the late result/error after returning.
+  never forcibly killed: preview/output-write request cooperative cancellation, while trace and
+  OUTPUT dry-run drain the late result/error after returning. A timeout carrying a background
+  task is never masked by supersession, and OUTPUT dry-run releases its execution context
+  only after that task completes.
 - **Path-safety violations** (`validate_safe_path`, the save-time output-path allowlist,
   runtime-input-path validation) return 400 for malformed input (null bytes, empty codegen
   paths, traversal segments) and 403 for a resolved path that escapes its allowed root —
@@ -300,8 +339,10 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   misbehaving downstream consumer.
 - **The file watcher is crash-resilient**: an unexpected exception in the watch loop is
   logged and the loop restarts after a short delay (`_watcher_forever`); a failure inside one
-  debounced flush requeues that batch and reschedules rather than dropping the pending
-  changes.
+  debounced flush retries the same batch at most three times with exponential backoff. After
+  the retry cap it isolates the batch into single-change attempts, processes healthy changes,
+  and logs and drops each still-failing event. A later event for that path is eligible again;
+  no poisoned batch is retained and no unbounded retry chain is scheduled.
 - **WebSocket sends never block the broadcaster indefinitely**: each client send has a hard
   1-second timeout; a stalled client is force-closed and dropped from the client set rather
   than stalling the fan-out to every other connected canvas.
@@ -311,140 +352,3 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
 > `haute.toml` or an unreadable one raises `ConfigError` rather than falling back — the
 > asymmetry is deliberate (a missing key is a fresh-project state; a decode failure would
 > silently misroute every subsequent save/load to the wrong directory if swallowed).
-
-## Polars backend contracts (0.6.0)
-
-Execution-consuming endpoints will expose the execution engine's bounded, typed strategy
-diagnostic DTO. The producer emits integer `schema_version=1`; required fields are `status`,
-`strategy`, `profile`, `boundedness` (`bounded|unbounded|unknown`), `reason_code`,
-`detail_state` (`available|unavailable|truncated`), and the three bounded collection fields
-`boundaries`, `reasons`, and `provenance`. Blocking/remediation, cost, metric, and provenance
-item details are otherwise optional. The payload never contains frames, user data, or plans,
-and human messages/remediation are capped at 512 characters.
-
-Every bounded collection has exactly the wrapper
-`{state: available|unavailable|truncated, total_count: int|null, items: [...]}`. An `available`
-wrapper has `total_count == len(items)`; a `truncated` wrapper has
-`total_count > len(items)`; and an `unavailable` wrapper has `total_count=null` and no items.
-Counts are non-negative. Boundary and reason item arrays are capped at 32 entries and provenance
-at 128. The producer canonical-sorts the complete collection before truncating it. A consumer
-receiving an over-cap collection or a wrapper whose state/count/items disagree treats the entire
-strategy diagnostic as malformed and exposes diagnostic unavailable; client-side truncation is
-not permitted. Top-level `detail_state` is the worst of the three wrapper states, ordered
-`truncated` > `unavailable` > `available`; a disagreement is malformed.
-
-Boundary entries require `topological_rank`, `node_id`, `operator`, and `boundary_kind` and sort
-by that tuple. Ranks come from the graph's canonical topological sort, which breaks every ready-
-node tie by lexical `node_id`. Reason entries require `reason_code` and sort by
-`(topological_rank or max, node_id or '', reason_code, operator or '')`. Provenance entries
-require `column` and `origin_kind` and sort by
-`(column, origin_kind, source_node_id or '', source_column or '')`. String ordering is ascending
-Unicode code-point order. After the primary tuple, the producer uses the server's canonical JSON
-serialisation as an internal final tie-break so truncation is deterministic; byte-identical
-duplicates are retained. That tie-break is not a wire-order rule: consumers validate only that
-primary tuples are nondecreasing and accept any relative order within an equal-primary group.
-
-The version-1 mapping is authoritative: internal `projected` and `schema-all-except` map to
-API `projected`; `full-width-admitted-eager` to `admitted_eager`;
-`unprojected-streaming-boundary` and `materialisation-boundary` to `boundary`; `unsupported`
-to `rejected`; and `not-planned` to `not_planned`. Consumers accept version 1 and ignore
-unknown additive fields only within it. Missing or malformed required fields, unknown
-version-1 enum values, and unsupported higher versions become an explicit diagnostic-
-unavailable result, never a fabricated successful status.
-
-Group-by version 1 is either returned as `materialisation-boundary` after the active profile
-allows full materialisation and RAM admission succeeds, or fails before execution with
-`GroupByExecutionUnsupportedError(BoundedMemoryUnsupportedError)`. The public failure carries
-`node_id`, `operator`, `profile`, `reason_code`, `remediation`, and nullable
-`estimated_peak_bytes` and `headroom_bytes`. It is never ordinary checked execution or an
-unprojected streaming boundary.
-
-The shared route and background-job mapper maps these public errors to HTTP 422 and terminal
-`contract_error`, respectively: `PreambleError(ExecutionError)`,
-`ContractResolutionError(ExecutionError)`, `ChunkMemoryRiskError(BoundedMemoryUnsupportedError)`,
-`GroupByExecutionUnsupportedError`,
-`TraceCorrelationUnsupportedError(ExecutionError)`,
-`RatingExtremaUndefinedError(ExecutionError)`,
-`RatingFactorMissingError(SchemaMismatchError)`,
-`LiveSwitchScenarioError(ExecutionError)`, and
-`OutputNestingKeyError(OutputMappingSchemaError)`. Each response carries the exception's
-stable code and named fields. `TraceCorrelationUnsupportedError` uses stable code
-`trace_correlation_unsupported` and fields `node_id`, `key_columns`, `dtypes`, and `reason_code`;
-the two arrays preserve the engine's correlation-key order, correspond positionally, and contain
-at most 16 items each. This is an intentional pre-1.0 change in 0.6 from unsafe silent
-fallback to typed failure; release and migration notes are required, with no compatibility
-shim for the unsafe behaviour. The DTO reports decisions; the execution engine owns how they
-are made. Remaining server API improvement work is tracked in the
-[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
-
-## Approved change contract — 0.7.0 data I/O API
-
-Remaining server API improvement work is tracked in the
-[background jobs and API roadmap](../../roadmap/background-jobs-api.md).
-
-- `GET /api/io-capabilities` replaces the flat format endpoint with a versioned, runtime-guarded
-  description of ordered input/output groups, providers, formats, fields, modes, arguments,
-  engines, direct batching, snapshot-build boundedness, output execution class, and publication
-  modes. The server derives it from the canonical registry; unsupported direction legs are
-  explicit, not inferred by the client.
-- A shared input-cache API owns Build/Refresh, job progress/status/cancel, snapshot status, and
-  Clear for every cache-capable `dataInput`. Build is an asynchronous job with a stable id and
-  cooperative cancellation, not a request thread allowed to continue invisibly after a 504.
-  Same-identity builds join one single flight; different identities may run under bounded global
-  concurrency. Responses separate local readiness, external freshness, build boundedness, and
-  typed failure.
-- `POST /api/pipeline/write-output` replaces the sink-named route and accepts only
-  `dataOutput`. It executes the unsaved graph supplied by the editor under normal admission,
-  cancellation, path, credential, and publication validation and returns measured/unavailable
-  row count plus destination and publication outcome. Preview, trace, load, and save never call
-  it implicitly.
-- Databricks retains only browsing endpoints under `/api/databricks`; its fetch/cache routes move
-  to the shared cache API. The old `/api/formats`, `/api/pipeline/sink`, and provider-specific
-  cache endpoints are removed without compatibility aliases.
-- Capability, cache, and write responses never expose resolved credentials, raw connector
-  errors, absolute paths outside approved user-facing scope, or background tracebacks. Typed
-  configuration/capability/cache/publication errors have stable codes and safe fields; unexpected
-  failures retain the common sanitised envelope.
-
-Acceptance includes schema/guard parity, capability ordering and completeness, secret redaction,
-cache single-flight/cancel/progress/status races, no orphaned job after timeout, cache corruption
-and identity mismatch, explicit output-write admission/cancellation/atomicity, and route absence
-for every removed endpoint.
-
-## I/O diagnostics and overwrite choice
-
-The server API implements the HTTP portion of
-[IO-IO01, IO-IO05, and IO-IO09](../../roadmap/io-layer.md).
-
-`GET /api/files` omits its extension default from the HTTP schema and derives
-the effective list from installed read capabilities. Its blocking enumeration
-runs in the server thread pool and never advertises symlink entries.
-
-`GET /api/schema` exposes only allow-listed, actionable user failures:
-missing file (404), unsupported extension (400), and a known file decoder
-failure (400 with a static format-specific remediation). Arbitrary
-`ValueError`, OS, and unexpected runtime text remains private in structured
-logs and returns the existing sanitised envelope.
-
-`POST /api/pipeline/write-output` accepts `overwrite: bool = false`.
-An existing file destination returns HTTP 409 with a safe detail naming the
-user-facing resolved destination. No graph execution or write starts on that
-preflight conflict. A true retry authorises replacement; false remains
-collision-safe at the final publication race.
-
-Destination preview and write share one validated request preparation path and
-resolve local targets against the selected Haute project root, independently of
-the server process working directory.
-
-Request/response model, OpenAPI, route, sanitisation, and frontend client
-contract tests cover both overwrite values and the 409 path.
-
-## Approved change contract — bounded request correlation
-
-An inbound `x-request-id` is retained only when it is a 1–64 character ASCII
-token matching `[A-Za-z0-9][A-Za-z0-9._:-]*`. Missing or invalid values are
-replaced with a server-generated identifier before structured context is bound.
-The rejection log records only a bounded reason and numeric input length, never
-the rejected bytes. Consequently oversized values and control characters cannot
-reach logs, error bodies, or response headers, while a valid caller identifier
-still correlates the response.

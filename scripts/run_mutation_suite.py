@@ -499,7 +499,7 @@ def _print_result_summary(results: list[dict[str, object]]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cosmic Ray session (SQLite) primitives for sharding + parallel execution.
+# Cosmic Ray session (SQLite) primitives for sharding across CI runners.
 #
 # A session created by `cosmic-ray init` is a SQLite database with three tables:
 #   work_items(job_id PK)
@@ -514,8 +514,8 @@ def _print_result_summary(results: list[dict[str, object]]) -> None:
 # covering slices, exec each slice independently, then union the per-slice
 # work_results back onto the full session. Because every mutant runs the
 # identical test-command with the identical timeout regardless of which shard or
-# worker executes it, the recombined survival count is *exactly* the unsharded
-# survival count. The parallelism only changes wall-clock, never the outcome.
+# runner executes it, the recombined survival count is *exactly* the unsharded
+# survival count. Cross-runner parallelism changes wall-clock, never the outcome.
 # ---------------------------------------------------------------------------
 
 
@@ -583,16 +583,8 @@ def _slice_session(
     src: Path,
     dst: Path,
     keep_job_ids: Iterable[str],
-    *,
-    rebase_root: Path | None = None,
 ) -> None:
-    """Copy `src` to `dst`, retaining only `keep_job_ids` (and their rows).
-
-    When `rebase_root` is given, every mutated module path is rewritten from
-    REPO_ROOT to `rebase_root`, so an isolated parallel worker mutates its own
-    private copy of the source tree instead of the shared checkout (in-place
-    mutation of one shared file by concurrent workers would otherwise race).
-    """
+    """Copy `src` to `dst`, retaining only `keep_job_ids` and their rows."""
     keep = list(dict.fromkeys(keep_job_ids))
     shutil.copyfile(src, dst)
     conn = _sqlite_connect(dst)
@@ -603,17 +595,6 @@ def _slice_session(
         for table in ("work_results", "mutation_specs", "work_items"):
             conn.execute(f"DELETE FROM {table} WHERE job_id NOT IN (SELECT job_id FROM _keep)")
         conn.execute("DROP TABLE _keep")
-        if rebase_root is not None:
-            distinct_paths = conn.execute(
-                "SELECT DISTINCT module_path FROM mutation_specs"
-            ).fetchall()
-            for (old_path,) in distinct_paths:
-                rel = Path(old_path).resolve().relative_to(REPO_ROOT)
-                new_path = str(rebase_root / rel)
-                conn.execute(
-                    "UPDATE mutation_specs SET module_path = ? WHERE module_path = ?",
-                    (new_path, old_path),
-                )
         conn.commit()
     finally:
         conn.close()
@@ -860,12 +841,12 @@ def _run_target(
 #               canonical work order), size its shard count from the pending
 #               mutant count, and emit a matrix of (target, shard) jobs.
 #   exec-shard  N parallel matrix jobs: each slices its disjoint mutant shard
-#               from the shared init session and execs it (with in-job parallel
-#               workers), producing a per-shard result session.
+#               from the shared init session and executes mutants serially,
+#               producing a per-shard result session.
 #   merge       one gate job: union every shard's results back onto the init
 #               session per target and check total survival vs the threshold.
 #
-# Splitting execution across shards and workers never changes the recorded
+# Splitting execution across isolated runner shards never changes the recorded
 # outcome of any mutant, so the merged survival equals the unsharded survival.
 # ---------------------------------------------------------------------------
 

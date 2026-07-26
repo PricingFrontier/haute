@@ -164,9 +164,10 @@ returns to the triggering element on close) — used by `KeyboardShortcuts`
 and by every git dialog. `Tooltip` is a zero-delay, self-clamping hover
 label that repositions to avoid clipping the viewport edge. `ContextMenu` is
 the right-click node menu with roving-tabindex arrow-key navigation.
-`Toolbar` is the app's top chrome: source selector, row-limit/chunk-size
-inputs, undo/redo, timing/memory breakdowns, save (with a "save & commit"
-split-button). `NodeSearch` is the Ctrl+K command palette, windowed to
+`Toolbar` is the app's top chrome: it displays the package-derived browser
+version alongside the source selector, row-limit/chunk-size inputs, undo/redo,
+timing/memory breakdowns, and save (with a "save & commit" split-button).
+`NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part
 of the initial browser bundle. `BreadcrumbBar` shows the pipeline →

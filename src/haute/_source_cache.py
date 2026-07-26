@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import os
 import shutil
 import threading
@@ -14,11 +15,11 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
-from urllib.parse import urlsplit
 
 import polars as pl
 
 from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
+from haute._credential_security import is_credential_name, validate_credential_free_uri
 from haute._file_ops import atomic_write_text
 from haute._polars_utils import bounded_sink
 
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
 BuildClass = Literal["bounded", "admitted_eager", "unsupported"]
 CacheState = Literal["missing", "building", "ready", "corrupt", "failed"]
 CacheFreshness = Literal["fresh", "stale", "unknown"]
+_VerifiedGeneration = tuple[str, str, int, int, str]
+_DEFAULT_STAGING_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 
 
 class SourceCacheError(RuntimeError):
@@ -48,14 +51,12 @@ class SourceCacheQuotaExceededError(SourceCacheError):
 
 def _reject_secrets(value: object) -> None:
     """Reject identity material that could disclose credentials on disk."""
-    secret_parts = ("token", "password", "secret", "credential", "access_key", "apikey", "api_key")
     if isinstance(value, Mapping):
         for key, child in value.items():
             if not isinstance(key, str):
                 raise TypeError("source-cache descriptor keys must be strings")
-            lowered = key.casefold().replace("-", "_")
-            is_reference = lowered.endswith("_ref")
-            if any(part in lowered for part in secret_parts) and not is_reference:
+            is_reference = key.casefold().replace("-", "_").endswith("_ref")
+            if is_credential_name(key) and not is_reference:
                 raise ValueError(
                     "source-cache identity must not contain secret or credential material"
                 )
@@ -64,11 +65,13 @@ def _reject_secrets(value: object) -> None:
         for child in value:
             _reject_secrets(child)
     elif isinstance(value, str):
-        parsed = urlsplit(value)
-        if parsed.scheme and (parsed.username is not None or parsed.password is not None):
-            raise ValueError(
-                "source-cache identity must not contain secret or credential URI userinfo"
-            )
+        if "://" in value:
+            try:
+                validate_credential_free_uri(value)
+            except ValueError as exc:
+                raise ValueError(
+                    "source-cache identity must not contain secret or credential URI material"
+                ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +229,7 @@ class _SourceCacheCoordination:
     lock: threading.RLock = field(default_factory=threading.RLock)
     identity_locks: dict[str, threading.RLock] = field(default_factory=dict)
     leases: dict[tuple[str, str], int] = field(default_factory=dict)
+    verified_generations: set[_VerifiedGeneration] = field(default_factory=set)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,9 +265,8 @@ def _validate_generation_id(value: object) -> str:
 class SourceCacheStore:
     """Own immutable source snapshots rooted at ``root/.haute_cache/inputs``."""
 
-    _startup_cleanup_lock = threading.Lock()
-    _startup_cleaned_roots: set[Path] = set()
     _coordination_lock = threading.Lock()
+    _staging_cleanup_lock = threading.Lock()
     _coordination_by_root: dict[Path, _SourceCacheCoordination] = {}
 
     def __init__(
@@ -308,6 +311,19 @@ class SourceCacheStore:
         ):
             raise ValueError("source-cache max_generations must be a positive integer")
         self.max_generations = max_generations
+        raw_staging_max_age = os.environ.get(
+            "HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS",
+            str(_DEFAULT_STAGING_MAX_AGE_SECONDS),
+        )
+        try:
+            staging_max_age_seconds = float(raw_staging_max_age)
+        except ValueError as exc:
+            raise RuntimeError(
+                "HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS must be positive"
+            ) from exc
+        if not math.isfinite(staging_max_age_seconds) or staging_max_age_seconds <= 0:
+            raise RuntimeError("HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS must be positive")
+        self.staging_max_age_seconds = staging_max_age_seconds
         coordination_key = self.inputs_root.resolve()
         with self._coordination_lock:
             coordination = self._coordination_by_root.setdefault(
@@ -317,38 +333,41 @@ class SourceCacheStore:
         self._lock = coordination.lock
         self._identity_locks = coordination.identity_locks
         self._leases = coordination.leases
-        self._cleanup_startup_orphans_once()
+        self._verified_generations = coordination.verified_generations
+        self._cleanup_stale_staging()
 
-    def _cleanup_startup_orphans_once(self) -> None:
-        root_key = self.inputs_root.resolve()
-        with self._startup_cleanup_lock:
-            if root_key in self._startup_cleaned_roots:
+    @staticmethod
+    def _tree_latest_activity(path: Path) -> float | None:
+        try:
+            latest = path.lstat().st_mtime
+            for root, directories, files in os.walk(path, followlinks=False):
+                root_path = Path(root)
+                directories[:] = [
+                    name for name in directories if not (root_path / name).is_symlink()
+                ]
+                for name in (*directories, *files):
+                    latest = max(latest, (root_path / name).lstat().st_mtime)
+            return latest
+        except OSError:
+            return None
+
+    def _cleanup_stale_staging(self) -> None:
+        with self._staging_cleanup_lock:
+            staging_paths = list(self.inputs_root.glob("*/.staging-*"))
+            if not staging_paths:
                 return
-            for identity_dir in self.inputs_root.iterdir():
-                if not identity_dir.is_dir():
+            cutoff = time.time() - self.staging_max_age_seconds
+            for staging in staging_paths:
+                if not staging.is_dir() or staging.is_symlink():
                     continue
-                for staging in identity_dir.glob(".staging-*"):
-                    if staging.is_dir():
-                        shutil.rmtree(staging)
-                pointer_path = identity_dir / "current.json"
-                current: str | None = None
-                if pointer_path.is_file():
-                    try:
-                        payload = json.loads(pointer_path.read_text(encoding="utf-8"))
-                        candidate = payload.get("generation_id")
-                        if isinstance(candidate, str) and candidate:
-                            current = candidate
-                    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                        # A corrupt pointer is preserved for normal typed validation;
-                        # no generation can be proven orphaned in that state.
-                        continue
-                generations_dir = identity_dir / "generations"
-                if not generations_dir.is_dir():
+                latest_activity = self._tree_latest_activity(staging)
+                if latest_activity is None or latest_activity >= cutoff:
                     continue
-                for generation in generations_dir.iterdir():
-                    if generation.is_dir() and generation.name != current:
-                        shutil.rmtree(generation)
-            self._startup_cleaned_roots.add(root_key)
+                try:
+                    shutil.rmtree(staging)
+                except OSError:
+                    # A racing or unreadable directory is not proven abandoned.
+                    continue
 
     def identity_path(self, identity: SourceCacheIdentity) -> Path:
         return self.inputs_root / identity.digest
@@ -397,13 +416,15 @@ class SourceCacheStore:
                 profile=raw["profile"],
                 build_class=raw["build_class"],
             )
+            data_stat = data_path.stat()
             if (
                 metadata.identity_digest != identity.digest
                 or metadata.identity != identity.payload
                 or metadata.schema_version != identity.schema_version
                 or metadata.generation_id != generation_id
-                or metadata.size_bytes != data_path.stat().st_size
-                or metadata.data_sha256 != _sha256_file(data_path)
+                or metadata.size_bytes != data_stat.st_size
+                or not isinstance(metadata.data_sha256, str)
+                or len(metadata.data_sha256) != 64
                 or isinstance(metadata.row_count, bool)
                 or not isinstance(metadata.row_count, int)
                 or metadata.row_count < 0
@@ -415,6 +436,20 @@ class SourceCacheStore:
                 or not isinstance(metadata.created_at, (int, float))
             ):
                 raise ValueError("metadata does not match snapshot")
+            verification_key = (
+                identity.digest,
+                generation_id,
+                data_stat.st_mtime_ns,
+                data_stat.st_size,
+                metadata.data_sha256,
+            )
+            with self._lock:
+                verified = verification_key in self._verified_generations
+            if not verified:
+                if _sha256_file(data_path) != metadata.data_sha256:
+                    raise ValueError("snapshot digest does not match metadata")
+                with self._lock:
+                    self._verified_generations.add(verification_key)
             # Read the footer/schema before exposing scan_parquet; corrupt data never falls back.
             import pyarrow.parquet as pq
 
@@ -427,6 +462,10 @@ class SourceCacheStore:
                 or {name: str(dtype) for name, dtype in polars_schema.items()} != metadata.columns
             ):
                 raise ValueError("metadata schema or row count does not match snapshot")
+        except FileNotFoundError as exc:
+            raise SourceCacheCorruptError("source-cache generation is corrupt") from exc
+        except OSError:
+            raise
         except Exception as exc:
             # Polars/PyArrow use implementation-specific exception types.
             if isinstance(exc, SourceCacheCorruptError):
@@ -484,6 +523,30 @@ class SourceCacheStore:
                 continue
         return total
 
+    def _staging_bytes(self, *, exclude: Path | None = None) -> int:
+        total = 0
+        for staging in self.inputs_root.glob("*/.staging-*"):
+            if (
+                not staging.is_dir()
+                or staging.is_symlink()
+                or (exclude is not None and staging == exclude)
+            ):
+                continue
+            for root, directories, files in os.walk(staging, followlinks=False):
+                root_path = Path(root)
+                directories[:] = [
+                    name for name in directories if not (root_path / name).is_symlink()
+                ]
+                for name in files:
+                    path = root_path / name
+                    if path.is_symlink():
+                        continue
+                    try:
+                        total += path.stat().st_size
+                    except FileNotFoundError:
+                        continue
+        return total
+
     def _generation_count(self) -> int:
         return sum(1 for _ in self.inputs_root.glob("*/generations/*/data.parquet"))
 
@@ -537,8 +600,9 @@ class SourceCacheStore:
         identity: SourceCacheIdentity,
         *,
         new_size_bytes: int,
+        staging_path: Path,
     ) -> None:
-        current_size = self._generation_bytes()
+        current_size = self._generation_bytes() + self._staging_bytes(exclude=staging_path)
         current_count = self._generation_count()
         reclaimable = 0
         reclaimable_count = 0
@@ -600,6 +664,10 @@ class SourceCacheStore:
 
             for _candidate_lock, candidate in acquired:
                 candidate.pointer_path.unlink(missing_ok=True)
+                self._forget_verified(
+                    candidate.identity_digest,
+                    candidate.generation_id,
+                )
                 shutil.rmtree(candidate.generation_dir)
         finally:
             for candidate_lock, _candidate in reversed(acquired):
@@ -677,9 +745,20 @@ class SourceCacheStore:
                     self._admit_publication_within_quota(
                         identity,
                         new_size_bytes=metadata.size_bytes,
+                        staging_path=staging,
                     )
                     final_dir = generations_dir / generation_id
                     staging.replace(final_dir)
+                    published_stat = (final_dir / "data.parquet").stat()
+                    self._verified_generations.add(
+                        (
+                            identity.digest,
+                            generation_id,
+                            published_stat.st_mtime_ns,
+                            published_stat.st_size,
+                            data_sha256,
+                        )
+                    )
                     generation = self._metadata_from_path(identity, generation_id)
                     context.checkpoint()
                     atomic_write_text(
@@ -694,6 +773,7 @@ class SourceCacheStore:
             except BaseException:
                 shutil.rmtree(staging, ignore_errors=True)
                 if final_dir is not None and not published:
+                    self._forget_verified(identity.digest, generation_id)
                     shutil.rmtree(final_dir, ignore_errors=True)
                 raise
 
@@ -728,7 +808,17 @@ class SourceCacheStore:
             with self._lock:
                 leased = self._leases.get((identity.digest, candidate.name), 0)
             if not leased:
+                self._forget_verified(identity.digest, candidate.name)
                 shutil.rmtree(candidate)
+
+    def _forget_verified(self, identity_digest: str, generation_id: str) -> None:
+        with self._lock:
+            stale = {
+                key
+                for key in self._verified_generations
+                if key[:2] == (identity_digest, generation_id)
+            }
+            self._verified_generations.difference_update(stale)
 
     def clear(self, identity: SourceCacheIdentity) -> None:
         with self._identity_lock(identity):
