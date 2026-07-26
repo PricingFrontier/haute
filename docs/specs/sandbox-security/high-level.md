@@ -34,13 +34,17 @@ In scope:
 - Restricted unpickling for both raw pickle files and joblib archives
   (`safe_unpickle`, `safe_joblib_load`), and the project-root path containment check
   used before touching any such file (`validate_project_path`).
+- Canonical runtime-path normalization and symlink-aware containment for eager/lazy
+  execution (`_path_resolution.py`), including the context-local execution root.
 - Local-session protection for the FastAPI/WebSocket server (`_local_security.py`):
   the per-process session token, trusted-Origin/trusted-Host checks, and the
   middleware/dependency wiring that enforces them.
-- Lazy, fail-soft environment-variable parsing for the request timeouts and selected
-  chunk/history limits migrated to `_env.py`. Other components retain separately
-  documented parsers (for example execution admission and cache byte budgets); the
-  helper is not a universal environment-policy layer.
+- Shared fail-fast numeric environment-variable parsing through `_env.py` for the
+  migrated request timeout, chunk/history, execution-admission/reserve, and
+  preview/trace cache-budget callers. Each caller controls resolution timing: some
+  accessors read lazily, while cache-budget constants resolve at module import. A few
+  component-owned parsers remain separately documented; the helper is not a universal
+  environment-policy layer.
 - The shared `.gitignore` guard-entry list and the idempotent writer
   (`_gitignore_guard.py`) that keeps two independent call sites from drifting.
 
@@ -78,7 +82,8 @@ Out of scope (owned elsewhere, linked where relevant):
   dunders, frame/traceback/generator-frame attribute access, calls to reflection
   builtins (`getattr`, `type`, `vars`, `super`, …), `import`/`from import` (unless
   explicitly permitted), `class`/`async def` definitions, `global`/`nonlocal`, and
-  `__builtins__[...]` subscripting. `.format()`/`.format_map()`/`.vformat()` calls
+  `__builtins__[...]` subscripting. `.format()`/`.format_map()`/`.vformat()`/
+  `.get_field()`/`.format_field()` calls
   are additionally restricted to a single statically-vettable string-literal
   template (with a narrow, name-shadow-aware carve-out for polars' own
   `pl.format(...)` builder), because runtime-assembled templates can smuggle dunder
@@ -99,6 +104,20 @@ Out of scope (owned elsewhere, linked where relevant):
   not recursively AST-validated and execute in their normal module namespaces.
   These paths therefore have full import privileges (`os`, `subprocess`, …); they
   are treated as first-party project code, unlike per-node transform text.
+- **Preamble exports are filtered before node code receives them.** Preamble
+  execution itself retains the import privilege above, but
+  `executor._is_dangerous_preamble_binding` removes exported top-level values whose
+  module root is `os`, `sys`, `subprocess`, `shutil`, `signal`, `ctypes`, or
+  `importlib` before the namespace becomes node-code globals. This is a direct-binding
+  handoff filter, not recursive inspection of containers or closures and not a claim
+  that preamble execution is sandboxed from those modules.
+- **Unified data I/O does not fork the code sandbox.** Optional `dataInput` code runs
+  exactly once through `_exec_user_code` after provider resolution;
+  `DataOutputConfig` rejects executable code. Direct locators, source-cache
+  digest/generation paths, final output destinations, and unique staging siblings
+  are each independently contained and rechecked before publication. Resolved
+  credentials, provider/cache objects, and leases never enter user globals, persisted
+  cache metadata, or user-visible failure text.
 - **Validation results are cached per `(code, allow_imports)` pair** in a bounded
   LRU (`_validation_cache`, capped at 1024 entries) so a long-lived server
   previewing/tracing the same node repeatedly does not re-parse identical code.
@@ -113,8 +132,9 @@ Out of scope (owned elsewhere, linked where relevant):
   `safe_unpickle`/`safe_joblib_load` must first resolve inside the project root
   (`validate_project_path`) — a case-insensitive-filesystem-safe containment check,
   not a raw string-prefix check.
-- **Local API/WebSocket access is gated by loopback Host, exact Origin, and an
-  HttpOnly session cookie.** Host middleware rejects non-loopback authorities and
+- **Local API/WebSocket access is gated by configured loopback Host, exact Origin,
+  and an HttpOnly session cookie.** Host middleware rejects authorities outside its
+  validated allowlist and
   every forwarded/proxy header on HTTP and WebSocket scopes. The browser establishes
   its per-process credential only through `POST /api/session/bootstrap`, which
   requires an explicit HTTP(S) Origin with the same scheme, normalized loopback host,
@@ -125,11 +145,24 @@ Out of scope (owned elsewhere, linked where relevant):
   Query-string token transport is unsupported. `OPTIONS` skips only the token check,
   never Origin/Host checks. `HAUTE_DISABLE_LOCAL_SESSION_AUTH` remains an explicit
   local development escape hatch; the loopback/forwarded-header gate remains active.
-- **Knobs routed through `_env.py` are read live from `os.environ` at call time.**
-  A malformed value logs a warning and degrades to the supplied default (`None` for
-  `optional_int_env`). This contract covers the named request timeout/chunk/history
-  accessor call sites, not every numeric environment variable in Haute; admission
-  limits and cache-size constants deliberately have their own semantics.
+  `HAUTE_TRUSTED_HOSTS` is a comma-separated list of normalized loopback authorities;
+  entries may pin an exact port. The FastAPI app snapshots it when middleware is
+  installed, invalid/non-loopback entries raise `ValueError`, and `haute serve`
+  replaces any stale value with the canonical loopback hosts plus its validated
+  loopback bind host before starting the server. This preserves the localhost
+  Vite-proxy path for custom loopback binds without retaining a wildcard. It is
+  therefore never a remote-access switch or a live per-request knob.
+- **The local session token is credential-only data.** It never appears in served
+  HTML or JavaScript, URLs/query strings, access-log fields, rejection reasons,
+  response/error bodies, or exception text. Browser bootstrap and reconnect move it
+  only through the HttpOnly cookie; users are never asked to copy it.
+- **Knobs routed through `_env.py` share one fail-fast parse policy.** An unset value
+  uses the supplied default (`None` for `optional_int_env`); an explicitly configured
+  value must be finite and positive or raises `RuntimeError`. Lazy accessor-backed
+  request timeout/chunk/history/admission settings read the environment at call time;
+  preview/trace cache-size constants use the same parser at module import and are
+  therefore fixed for that module instance. A few component-owned parsers remain
+  outside this shared policy.
 - **`.gitignore` guard entries are idempotent and additive**: re-running the guard
   writer never duplicates an entry and never removes user-authored bytes. Existing
   content is decoded with replacement only for membership checks; missing entries are
@@ -205,11 +238,11 @@ Out of scope (owned elsewhere, linked where relevant):
   before `accept()`-ing a connection.
 - Depended on by `haute init` (project scaffolding, via `cli/_init_cmd.py`) and by
   `_git.py`'s unborn-repo commit seed for `ensure_gitignore_guards`.
-- Supplies numeric parsing helpers to callers across
-  `routes/pipeline.py`, `routes/json_cache.py`, `routes/output_assemble.py`,
-  `routes/databricks.py`, `routes/_optimiser_service.py`, and
-  `routes/_train_service.py` — this component owns the parsing helpers, not the
-  knobs' meanings, which belong to their respective owning components.
+- Supplies numeric parsing helpers to `executor.py`, `trace.py`,
+  `_execution_admission.py`, `assistant/_loop.py`, and the route callers
+  `pipeline.py`, `json_cache.py`, `output_assemble.py`, `input_cache.py`,
+  `_optimiser_service.py`, and `_train_service.py`. This component owns the parsing
+  helpers, not the knobs' meanings, which belong to their respective components.
 
 ## Failure model
 
@@ -240,70 +273,10 @@ Out of scope (owned elsewhere, linked where relevant):
   `LocalTrustedHostMiddleware`, and WebSocket rejections close with code `1008`
   and a reason string before `accept()` is ever called — an unauthenticated peer
   never reaches the socket's message loop.
-- **Malformed values passed through `_env.py` degrade to a default with a logged
-  warning** (`float_env`/`int_env`/`optional_int_env`) rather than raising — this
-  is the one deliberate exception to "fail loudly" in this component, justified
-  because a bad *tuning* value (not a security gate) should not take down server
-  startup or an in-flight request; the warning still makes the drift observable in
-  logs.
-- **The joblib monkey-patch restore is unconditional.** `safe_joblib_load` restores
-  `NumpyUnpickler.find_class` in a `finally` block, so a raised
-  `pickle.UnpicklingError` (or any other exception) during a load never leaves the
-  process-wide patch installed for subsequent unrelated `joblib.load()` calls.
-
-## Approved change contract — 0.7.0 unified data-I/O security
-
-Remaining sandbox and security improvement work is tracked in the
-[security and supply-chain roadmap](../../roadmap/security-supply-chain.md).
-
-- Optional `dataInput` Polars code uses the existing validated `_exec_user_code` path after its
-  direct source or snapshot is opened. It receives `df` and the ordinary restricted Polars
-  namespace; provider clients, cache-store objects, connection resolvers, credentials, and
-  filesystem handles are never injected. `dataOutput` has no executable code field.
-- Direct local input paths, source-cache roots/artifacts, and local output destinations remain
-  project-contained through `validate_project_path` at their owning request/execution
-  boundaries. A cache identity or generation id is not accepted as an arbitrary path.
-- Named connection/secret resolution is owned by the I/O providers, but the sandbox boundary
-  requires resolved values never to enter user-code globals, exceptions returned to code, or
-  persisted node/cache metadata.
-
-Acceptance reuses the unsafe-code corpus for `dataInput`, proves output code is rejected before
-execution, covers traversal/symlink/null-byte cases on direct and staged paths, and scans
-user-visible failures/namespaces for resolved secrets.
-
-## Approved change contract — local-only supply-chain hardening
-
-Haute's editor is a locally served UI, not a hosted application. The security
-boundary therefore assumes a browser and backend on the same machine and does
-not provide a reverse-proxy, forwarded-host, LAN, or public-hosting mode.
-
-- Every local filesystem path consumed by direct eager or lazy execution is
-  resolved and checked at the execution boundary, even when no HTTP route was
-  involved. Relative paths, absolute paths, mixed separators, and symlinks must
-  resolve within the execution project root. An explicitly selected pipeline
-  outside the current directory establishes its own parent as that root; it
-  does not grant access to sibling directories. That re-rooting is available
-  only to direct, operator-controlled execution: an HTTP graph body cannot
-  redefine the active project root, and a source path spelled inside the active
-  root but resolving outside through a symlink is rejected. Named provider
-  connections and their non-filesystem identifiers remain the explicit
-  external-resource mechanism and are not reinterpreted as local paths.
-- `haute serve` accepts loopback bind targets only. Forwarded/proxy headers and
-  non-loopback Host values fail closed for HTTP and WebSocket scopes.
-- The built SPA and Vite client contain no session token. A browser first calls
-  `POST /api/session/bootstrap`; only an explicit trusted Origin whose authority
-  matches the request Host may bootstrap. The response establishes the
-  per-process token in an HttpOnly, SameSite=Strict cookie with no-store cache
-  policy. Absent-Origin requests never bootstrap.
-- Protected API requests require either a trusted Origin or an already valid
-  session cookie, plus that valid cookie credential. WebSockets always require
-  an explicit trusted Origin and a valid session cookie before `accept()`. WebSocket
-  query-string token transport is unsupported.
-- The token must not occur in served HTML or JavaScript, URLs, access-log
-  fields, rejection reasons, error bodies, or exception responses. A normal
-  local browser bootstrap and reconnect refresh the cookie without asking the
-  user to copy a secret.
-- The pickle/joblib boundary remains an exact `(module, qualname)` allowlist.
-  Callable gadget globals and near-prefix module names stay rejected, while
-  each supported model class is proven by a real serialized round trip before
-  a new allowlist entry is accepted.
+- **Invalid values passed through `_env.py` fail loudly.** Unset variables retain
+  their documented defaults, but malformed, non-finite, zero, and negative explicit
+  values raise `RuntimeError`; `optional_int_env` returns `None` only when absent.
+- **Restricted joblib loading never patches process-wide state.**
+  `safe_joblib_load` instantiates a private `NumpyUnpickler` subclass whose
+  `find_class` applies the shared allowlist, so unrelated `joblib.load()` calls
+  cannot observe a temporary class mutation.

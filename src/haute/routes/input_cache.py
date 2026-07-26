@@ -69,7 +69,7 @@ _active_builds = 0
 
 def _build_timeout() -> float:
     """Return the cooperative snapshot-build deadline in seconds."""
-    return max(0.001, float_env("HAUTE_BUILD_TIMEOUT", 1800.0))
+    return float_env("HAUTE_BUILD_TIMEOUT", 1800.0)
 
 
 def _max_concurrent_builds() -> int:

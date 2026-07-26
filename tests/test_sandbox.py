@@ -97,6 +97,10 @@ class TestSafeGlobals:
             "open",
             "input",
             "memoryview",
+            "exit",
+            "quit",
+            "help",
+            "super",
         }
         builtins_ns = ns.get("__builtins__", ns)
         if isinstance(builtins_ns, dict):
@@ -104,6 +108,13 @@ class TestSafeGlobals:
         else:
             present = {b for b in blocked if hasattr(builtins_ns, b)}
         assert present == set(), f"Dangerous builtins present: {present}"
+
+    @pytest.mark.parametrize("builtin_name", ["exit", "quit", "help", "super"])
+    def test_ast_blocked_builtin_cannot_be_called_through_alias(self, builtin_name: str):
+        """Runtime restrictions must hold even when AST call-name checks are bypassed."""
+        ns = safe_globals()
+        with pytest.raises(NameError, match=builtin_name):
+            exec(f"alias = {builtin_name}\nalias()", ns, {})
 
 
 class TestValidateProjectPath:
@@ -682,20 +693,10 @@ class TestPickleAllowlistDotAnchoring:
 
 
 class TestJoblibMonkeyPatchThreadSafety:
-    """Gap 2: safe_joblib_load replaces NumpyUnpickler.find_class at the
-    class level.  Two concurrent calls can race.
-
-    Production failure: Thread A starts safe_joblib_load, patches find_class.
-    Thread B starts safe_joblib_load, patches find_class again.  Thread A
-    finishes and restores the *wrong* original (Thread B's patched version).
-    Thread B finishes and restores the true original, but Thread A's restore
-    was already corrupted.  Or worse — during the race window, one thread
-    runs with no restriction at all.
-    """
+    """Concurrent restricted loads are isolated from process-wide joblib state."""
 
     def test_concurrent_safe_joblib_load_no_crash(self, tmp_path: Path):
-        """Two threads loading safe joblib files concurrently should not
-        corrupt find_class or crash."""
+        """Two threads can load safe files without shared-class mutation."""
         import threading
 
         import joblib
@@ -728,13 +729,7 @@ class TestJoblibMonkeyPatchThreadSafety:
         assert results[1]["idx"] == 1
 
     def test_find_class_restored_after_concurrent_loads(self, tmp_path: Path):
-        """After concurrent safe_joblib_load calls, the original find_class
-        must be fully restored on NumpyUnpickler.
-
-        F208 fix: the genuine ``find_class`` is captured *inside* the joblib
-        lock, so a concurrent loader can never have its restricted shim
-        mistaken for the original and leaked as the permanent restore target.
-        """
+        """Concurrent calls never change ``NumpyUnpickler.find_class``."""
         import threading
 
         import joblib
@@ -760,28 +755,42 @@ class TestJoblibMonkeyPatchThreadSafety:
         for t in threads:
             t.join(timeout=10)
 
-        # After all threads finish, find_class must be the original
         assert NumpyUnpickler.find_class is original_find_class, (
-            "find_class was not properly restored after concurrent loads — "
-            "the monkey-patching is not thread-safe"
+            "safe_joblib_load mutated process-wide NumpyUnpickler.find_class"
         )
 
-    def test_original_find_class_captured_under_lock_deterministic(
+    def test_safe_load_never_mutates_process_wide_find_class(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ):
-        """Deterministic pin: ``safe_joblib_load`` captures the *currently
-        installed* ``find_class`` (inside ``_joblib_lock``) and restores exactly
-        that, rather than a hardcoded original.
+        """Unrelated joblib callers must never observe a temporary security shim."""
+        import joblib
+        import numpy as np
+        from joblib.numpy_pickle import NumpyUnpickler
 
-        We install a distinct sentinel ``find_class`` (delegating to the real
-        one so loads still succeed), run two serialized loads, and assert the
-        sentinel — the value present at call time — is what gets restored each
-        time.  Capturing outside the lock (the F208 bug) would race a concurrent
-        loader's shim; this proves the captured value is whatever was installed
-        when the load began, restored intact.
-        """
+        set_project_root(tmp_path)
+        original_find_class = NumpyUnpickler.find_class
+        observed: list[object] = []
+
+        class WatchingUnpickler(NumpyUnpickler):
+            def load(self):
+                observed.append(WatchingUnpickler.find_class)
+                return super().load()
+
+        monkeypatch.setattr("joblib.numpy_pickle.NumpyUnpickler", WatchingUnpickler)
+        artifact = tmp_path / "data.joblib"
+        joblib.dump(np.arange(5), artifact)
+
+        np.testing.assert_array_equal(safe_joblib_load(artifact), np.arange(5))
+        assert observed == [original_find_class]
+
+    def test_restricted_subclass_delegates_to_current_base_find_class(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """The private subclass composes with the installed base implementation."""
         import joblib
         import numpy as np
         from joblib.numpy_pickle import NumpyUnpickler
@@ -801,12 +810,25 @@ class TestJoblibMonkeyPatchThreadSafety:
             assert NumpyUnpickler.find_class is _sentinel_find_class
             result = safe_joblib_load(str(f))
             np.testing.assert_array_equal(result, np.arange(5))
-            # The value present when the load began (the sentinel) is restored —
-            # not the module-import-time original, not the restricted shim.
             assert NumpyUnpickler.find_class is _sentinel_find_class, (
-                "safe_joblib_load did not restore the find_class captured at "
-                "call time — capture/restore is not lock-consistent"
+                "safe_joblib_load mutated the installed base find_class"
             )
+
+    def test_incompatible_joblib_private_api_fails_loudly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """An installed but incompatible joblib must not masquerade as absent."""
+        import joblib
+
+        set_project_root(tmp_path)
+        artifact = tmp_path / "data.joblib"
+        joblib.dump({"value": 1}, artifact)
+        monkeypatch.delattr(joblib.numpy_pickle, "_validate_fileobject_and_memmap")
+
+        with pytest.raises(RuntimeError, match="joblib is incompatible"):
+            safe_joblib_load(artifact)
 
 
 class TestLambdaAllowedInSandbox:
@@ -2084,6 +2106,18 @@ class TestFormatStringDunderTraversal:
         with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
             validate_user_code('x = "{0[__class__]}".format(d)')
 
+    def test_nested_format_spec_does_not_hide_dunder_traversal(self):
+        """A nested width field must not terminate inspection of the outer field."""
+        code = "leaked = '{0.__globals__[SECRET]:{width}}'.format(fn, width=1)"
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
+    def test_dunder_traversal_inside_nested_format_spec_blocked(self):
+        """Nested format specs are replacement-field grammars in their own right."""
+        code = "leaked = '{0:{width.__globals__[SECRET]}}'.format(value, width=fn)"
+        with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
+            validate_user_code(code)
+
     def test_format_map_traversal_blocked(self):
         with pytest.raises(UnsafeCodeError, match="[Ff]ormat"):
             validate_user_code('x = "{a.__globals__}".format_map(m)')
@@ -2161,6 +2195,12 @@ class TestFormatStringDunderTraversal:
     def test_named_field_not_blocked(self):
         """A bare named field (no ``.``/``[`` traversal) is harmless."""
         validate_user_code('msg = "{name}".format(name=x)')
+
+    def test_benign_nested_format_spec_allowed(self):
+        """Legitimate dynamic width and precision fields remain available."""
+        validate_user_code(
+            'msg = "{value:{width}.{precision}f}".format(value=x, width=8, precision=2)'
+        )
 
 
 class TestNewlyBlockedDunders:

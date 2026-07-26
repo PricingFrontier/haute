@@ -45,7 +45,7 @@ In scope:
   (`haute.routes.output_assemble`), which consumes the shared assembler.
 
 Out of scope (owned by neighbouring components, included as routers but not described here):
-- Pipeline execution itself — `execute_graph`, `execute_trace`, `execute_sink`, admission
+- Pipeline execution itself — `execute_graph`, `execute_trace`, `write_data_output`, admission
   control, memory budgets — see [execution-engine](../execution-engine/high-level.md). This
   component only validates the HTTP boundary and translates execution exceptions to status
   codes.
@@ -219,7 +219,7 @@ the deploy-time render path.
 ## Interactions
 
 - **[execution-engine](../execution-engine/high-level.md)** — `routes/pipeline.py` and
-  `routes/output_assemble.py` call `execute_graph`, `execute_trace`, `execute_sink`, and the
+  `routes/output_assemble.py` call `execute_graph`, `execute_trace`, `write_data_output`, and the
   execution-admission/context APIs directly; the routes consume the shared registry/contract
   dispatch and canonical `_types.py` graph models used by the executor.
 - **[background-jobs](../background-jobs/high-level.md)** — job-status response shapes

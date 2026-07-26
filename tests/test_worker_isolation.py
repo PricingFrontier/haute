@@ -13,8 +13,11 @@ from haute._worker_isolation import (
     IsolatedWorkerCrashedError,
     IsolatedWorkerMemoryLimitUnsupportedError,
     IsolatedWorkerRemoteError,
+    IsolatedWorkerStartError,
     IsolatedWorkerStoppedError,
+    IsolatedWorkerTerminationError,
     IsolatedWorkerTimeoutError,
+    _terminate_process,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
@@ -37,6 +40,10 @@ from haute.routes._job_store import JobStore
 
 def _return_payload(left: int, right: int) -> dict[str, int]:
     return {"sum": left + right, "pid": os.getpid()}
+
+
+def _return_large_payload(size: int) -> bytes:
+    return b"x" * size
 
 
 def _raise_value_error(message: str) -> None:
@@ -62,6 +69,143 @@ def test_isolated_worker_returns_picklable_value() -> None:
 
     assert result["sum"] == 5
     assert result["pid"] != os.getpid()
+
+
+def test_isolated_worker_drains_large_result_before_joining_child() -> None:
+    result = run_isolated_worker(
+        _return_large_payload,
+        8 * 1024 * 1024,
+        config=IsolatedWorkerConfig(timeout_seconds=5),
+    )
+
+    assert len(result) == 8 * 1024 * 1024
+    assert result[:1] == b"x"
+
+
+def test_unexpected_parent_failure_terminates_child_and_runs_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    class FakeProcess:
+        exitcode = None
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.alive = True
+            self.terminated = False
+
+        def start(self) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.alive = False
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    class FakeContext:
+        process: FakeProcess | None = None
+
+        def Queue(self, maxsize: int) -> FakeQueue:  # noqa: N802 - multiprocessing API
+            return FakeQueue()
+
+        def Process(self, **kwargs: object) -> FakeProcess:  # noqa: N802 - multiprocessing API
+            self.process = FakeProcess(**kwargs)
+            return self.process
+
+    context = FakeContext()
+    cleaned: list[str] = []
+    monkeypatch.setattr("haute._worker_isolation.mp.get_context", lambda _method: context)
+    monkeypatch.setattr(
+        "haute._worker_isolation._wait_for_worker",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("parent polling failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="parent polling failed"):
+        run_isolated_worker(
+            _return_payload,
+            1,
+            2,
+            config=IsolatedWorkerConfig(cleanup_callbacks=(lambda: cleaned.append("done"),)),
+        )
+
+    assert context.process is not None
+    assert context.process.terminated
+    assert not context.process.is_alive()
+    assert cleaned == ["done"]
+
+
+def test_start_failure_preserves_typed_error_and_runs_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        def close(self) -> None:
+            pass
+
+        def join_thread(self) -> None:
+            pass
+
+    class UnstartedProcess:
+        exitcode = None
+
+        def start(self) -> None:
+            raise OSError("spawn unavailable")
+
+        def is_alive(self) -> bool:
+            raise AssertionError("unstarted process has no child state")
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+    class FakeContext:
+        def Queue(self, maxsize: int) -> FakeQueue:  # noqa: N802 - multiprocessing API
+            return FakeQueue()
+
+        def Process(self, **kwargs: object) -> UnstartedProcess:  # noqa: N802
+            return UnstartedProcess()
+
+    cleaned: list[str] = []
+    monkeypatch.setattr(
+        "haute._worker_isolation.mp.get_context",
+        lambda _method: FakeContext(),
+    )
+
+    with pytest.raises(IsolatedWorkerStartError, match="spawn unavailable"):
+        run_isolated_worker(
+            _return_payload,
+            1,
+            2,
+            config=IsolatedWorkerConfig(cleanup_callbacks=(lambda: cleaned.append("done"),)),
+        )
+
+    assert cleaned == ["done"]
+
+
+def test_terminate_process_fails_loudly_when_child_survives_kill() -> None:
+    class StuckProcess:
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def join(self, timeout: float | None = None) -> None:
+            pass
+
+        def is_alive(self) -> bool:
+            return True
+
+    with pytest.raises(IsolatedWorkerTerminationError):
+        _terminate_process(StuckProcess())  # type: ignore[arg-type]
 
 
 def test_isolated_worker_reports_remote_exception() -> None:
@@ -469,7 +613,7 @@ def test_protocol_supervisor_preserves_declared_failure_fields_and_cleanup(
     assert "temporary input could not be removed" in job["cleanup_error"]
 
 
-def test_protocol_supervisor_cleanup_failure_converts_success_to_error(tmp_path) -> None:
+def test_protocol_supervisor_cleanup_failure_preserves_committed_success(tmp_path) -> None:
     store = JobStore()
     job_id = store.create_job({"status": "running"})
 
@@ -484,12 +628,14 @@ def test_protocol_supervisor_cleanup_failure_converts_success_to_error(tmp_path)
         artifact_root=tmp_path,
         artifact_kinds=frozenset(),
         max_artifact_size_bytes=0,
+        completed_fields=lambda _result: {"published_path": "models/fitted.joblib"},
         on_finished=lambda: (_ for _ in ()).throw(OSError("cleanup failed")),
     )
     thread.join_and_raise(timeout=10)
 
     job = store.require_job(job_id)
-    assert job["status"] == "error"
-    assert job["terminal_reason"] == "error"
-    assert job["supervisor_error_class"] == "OSError"
-    assert "cleanup failed" in job["message"]
+    assert job["status"] == "completed"
+    assert job["terminal_reason"] == "completed"
+    assert job["published_path"] == "models/fitted.joblib"
+    assert job["cleanup_error_class"] == "OSError"
+    assert "cleanup failed" in job["cleanup_error"]
