@@ -514,8 +514,8 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     # static scanner intentionally cannot infer taint through those helpers;
     # the runtime sandbox census verifies that they remain under tmp_path.
     "tests/test_apiinput_multi_port_runtime.py": 1,
-    "tests/test_json_cache_coverage_uplift.py": 9,
-    "tests/test_json_cache_integrity.py": 6,
+    "tests/test_json_cache_coverage_uplift.py": 8,
+    "tests/test_json_cache_integrity.py": 5,
     "tests/test_json_shred_mut_stragglers.py": 1,
     "tests/test_load_v2_api_source.py": 10,
     # 2 pre-existing + 2 cache-key-contract tests writing through
@@ -527,7 +527,6 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     "tests/test_optimiser_routes.py": 2,
     "tests/test_optimiser_service_coverage.py": 2,
     "tests/test_polars_utils.py": 1,
-    "tests/test_runtime_input_cache_invalidation.py": 1,
     "tests/test_server.py": 1,
     "tests/test_submodel_routes.py": 3,
 }

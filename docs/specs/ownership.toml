@@ -17,6 +17,12 @@ consumers = ["frontend-assistant-ui"]
 reason = "The application shell hosts the canvas and wires in the assistant panel."
 
 [[shared_file]]
+path = "frontend/src/api/types.ts"
+primary = "frontend-shared"
+consumers = ["optimiser"]
+reason = "Shared UI owns the canonical API contracts extended by optimiser responses."
+
+[[shared_file]]
 path = "frontend/src/components/Toolbar.tsx"
 primary = "frontend-shared"
 consumers = ["frontend-assistant-ui"]

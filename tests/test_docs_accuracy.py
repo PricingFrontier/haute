@@ -287,6 +287,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             "AUD-QUALITY-03",
             "AUD-RATING-01",
             "RATING-PERF-01",
+            "ROAD-CANON-01",
         }
     ) - retired_or_folded_packages
     assert set(package_owners) == expected_packages, (

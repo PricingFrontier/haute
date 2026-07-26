@@ -46,11 +46,13 @@ _OUTPUT_MAPPING = [
         "source_port": "src",
         "source_column": "customer_id",
         "output_path": "$[:].customer_id",
+        "enabled": True,
     },
     {
         "source_port": "src",
         "source_column": "premium",
         "output_path": "$[:].premium",
+        "enabled": True,
     },
 ]
 

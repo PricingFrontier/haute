@@ -496,6 +496,7 @@ class TestOptimiserRoutesSafeDetail:
             "status": "completed",
             "solve_result": mock_solve_result,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post("/api/optimiser/apply", json={"job_id": "test_apply_err"})
         assert resp.status_code == 500
@@ -515,6 +516,7 @@ class TestOptimiserRoutesSafeDetail:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         status = run_frontier_and_wait(
             client,
@@ -547,6 +549,7 @@ class TestOptimiserRoutesSafeDetail:
             "solver": MagicMock(),
             "config": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         with patch(
             "pathlib.Path.write_bytes",
@@ -575,6 +578,7 @@ class TestOptimiserRoutesSafeDetail:
             "config": {},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         with patch.dict("sys.modules", {"mlflow": MagicMock()}):
             with patch(
@@ -610,6 +614,7 @@ class TestModellingRoutesSafeDetail:
             "config": {},
             "node_label": "model",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         try:
             with patch(
@@ -948,6 +953,7 @@ class TestMlflowMissingStatusInconsistency:
                 "config": {},
                 "node_label": "opt",
                 "created_at": time.time(),
+                "completed_at": time.time(),
             }
             with patch.dict("sys.modules", {"mlflow": None}):
                 resp = client.post(
@@ -1219,6 +1225,7 @@ class TestSensitiveInfoLeakage:
                 "config": {},
                 "node_label": "opt",
                 "created_at": time.time(),
+                "completed_at": time.time(),
             }
             with patch.dict("sys.modules", {"mlflow": MagicMock()}):
                 with patch(
@@ -1275,6 +1282,7 @@ class TestSensitiveInfoLeakage:
             "config": {},
             "node_label": "model",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         try:
             with patch(

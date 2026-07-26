@@ -23,7 +23,7 @@ from haute._cache import canonical_json
 from haute._contracts import _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY
 from haute._execution_admission import create_admitted_execution_context
 from haute._execution_context import ExecutionContext, ExecutionProfile
-from haute._graph_utils import upstream_node_ids
+from haute._graph_utils import edge_input_name, upstream_node_ids
 from haute._hashing import content_hash_bytes
 from haute._io import load_external_object
 from haute._logging import get_logger
@@ -676,6 +676,12 @@ def _score_graph_lazy(
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
     node_by_id = {node.id: node for node in graph.nodes}
     parents_of = graph.parents_of
+    for edge in graph.edges:
+        if edge.source not in relevant_node_ids or edge.target not in relevant_node_ids:
+            continue
+        source_node = node_by_id.get(edge.source)
+        if source_node is not None and source_node.data.nodeType == NodeType.API_INPUT:
+            edge_input_name(edge, source_node)
     for node in graph.nodes:
         if node.id in relevant_node_ids:
             # Strategy planning now precedes function construction. Preserve

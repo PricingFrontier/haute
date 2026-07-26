@@ -14,15 +14,30 @@ pipeline = haute.Pipeline("test_pipeline", description="Test fixture pipeline")
 
 
 @pipeline.api_input(config="config/quote_input/quotes.json")
-def quotes() -> pl.LazyFrame:
+def quotes() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
     """API input source."""
-    return pl.read_json("tests/fixtures/data/api_input.json").lazy()
+    from pathlib import Path
+
+    from haute.graph_utils import resolve_api_input_from_config
+
+    return resolve_api_input_from_config(
+        "config/quote_input/quotes.json",
+        base_dir=Path(__file__).resolve().parent,
+    )
 
 
 @pipeline.data_input(config="config/data_input/batch_quotes.json")
 def batch_quotes() -> pl.LazyFrame:
     """Batch data source."""
-    return pl.scan_parquet("tests/fixtures/data/policies.parquet")
+    from pathlib import Path
+
+    from haute.graph_utils import resolve_data_input_from_config
+
+    df = resolve_data_input_from_config(
+        "config/data_input/batch_quotes.json",
+        base_dir=Path(__file__).resolve().parent,
+    )
+    return df
 
 
 @pipeline.live_switch(config="config/source_switch/policies.json")
@@ -42,9 +57,14 @@ def area_lookup(policies: pl.LazyFrame) -> pl.LazyFrame:
     The parser strips the import + load_external_object call from the
     code body — only the lines that use ``obj`` are kept.
     """
-    from haute.graph_utils import load_external_object
+    from pathlib import Path
 
-    obj = load_external_object("tests/fixtures/data/area_factors.json", "json")
+    from haute.graph_utils import load_external_object_from_config
+
+    obj = load_external_object_from_config(
+        "config/load_file/area_lookup.json",
+        base_dir=Path(__file__).resolve().parent,
+    )
     df = policies.with_columns(
         area_factor=pl.col("Area").replace_strict(obj, default=1.0),
     )

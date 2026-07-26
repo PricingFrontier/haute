@@ -105,7 +105,6 @@ class TestMissFailsLoudByDefault:
         with pytest.raises(RatingTableMissError) as excinfo:
             out.collect()
         message = str(excinfo.value)
-        assert "Age Factor" in message
         assert "age_factor" in message
         assert "26-39" in message
         assert re.search(r"\b1 of 2 row", message)
@@ -137,7 +136,7 @@ class TestMissFailsLoudByDefault:
             ]
         }
         lf = pl.DataFrame({"band": ["A", "B"]}).lazy()
-        with pytest.raises(RatingTableMissError, match="'T'"):
+        with pytest.raises(RatingTableMissError, match="'out'"):
             apply_rating_step_from_config(lf, config).collect()
 
     def test_add_operation_miss_raises(self) -> None:
@@ -285,7 +284,7 @@ class TestOptInNeutral:
         assert len(miss_logs) == 1
         log = miss_logs[0]
         assert log["log_level"] == "warning"
-        assert log["table"] == "Age Factor"
+        assert log["table"] == "age_factor"
         assert log["output_column"] == "age_factor"
         assert log["miss_count"] == 1
         assert {"age_band": "26-39"} in log["missing_keys"]
@@ -355,7 +354,7 @@ class TestOptInNeutral:
             apply_rating_step_from_config(_renamed_band_frame(), config).collect()
 
     def test_on_missing_round_trips_through_sidecar(self) -> None:
-        """The opt-in key must survive compact -> JSON -> expand unchanged."""
+        """The opt-in key must survive canonical normalisation and JSON round-trip."""
         config = _age_region_config(onMissing="neutral")
         compacted = normalise_rating_step_config(config)
         rehydrated = normalise_rating_step_config(json.loads(json.dumps(compacted)))
@@ -380,7 +379,7 @@ class TestApplyRatingTableMissGuard:
             "entries": [{"k": "a", "value": 1.0}],
         }
         lf = pl.DataFrame({"k": ["a", "b"]}).lazy()
-        with pytest.raises(RatingTableMissError, match="Direct"):
+        with pytest.raises(RatingTableMissError, match="'out'"):
             _apply_rating_table(lf, table).collect()
 
     def test_direct_call_neutral_keeps_null(self) -> None:

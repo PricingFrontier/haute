@@ -1094,6 +1094,7 @@ class TestStatusRoute:
                 "frontier": frontier_data,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.get("/api/optimiser/solve/status/capped_frontier_status")
@@ -2176,7 +2177,11 @@ class TestEstimateRoute:
         assert (
             store.atomic_update(
                 started.job_id,
-                {"status": "completed", "progress": 1.0},
+                {
+                    "status": "completed",
+                    "progress": 1.0,
+                    "completed_at": time.time(),
+                },
                 expected_status="running",
             )
             is None
@@ -4210,10 +4215,17 @@ class TestEstimateRoute:
             "margin": {"min": 70.0, "max": 220.0},
         }
         diagnostics = status["execution_metrics"]["execution_strategy"]
-        assert diagnostics["strategy_summary"]["profile"] == "auto_range"
-        assert diagnostics["strategy_summary"]["opaque_boundary_count"] == 0
-        assert diagnostics["edge_reasons"]["left->joined"]["rule"] == "runtime_inferred_streaming"
-        assert diagnostics["edge_reasons"]["right->joined"]["rule"] == "runtime_inferred_streaming"
+        assert diagnostics["schema_version"] == 1
+        assert diagnostics["profile"] == "auto_range"
+        assert diagnostics["status"] == "projected"
+        assert diagnostics["boundedness"] == "bounded"
+        assert diagnostics["boundaries"]["total_count"] == 0
+        reason_edges = {
+            (item["parent_node_id"], item["node_id"], item["reason_code"])
+            for item in diagnostics["reasons"]["items"]
+        }
+        assert ("left", "joined", "runtime_inferred_streaming") in reason_edges
+        assert ("right", "joined", "runtime_inferred_streaming") in reason_edges
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_frontier_auto_range_rejects_null_quote_id_in_chunked_estimator(
@@ -4958,6 +4970,7 @@ def _make_ratebook_frontier_materialisation_job(clean_job_store, job_id: str):
         },
         "artifact_handles": {},
         "created_at": time.time(),
+        "completed_at": time.time(),
     }
     return mock_solver, mock_grid, factor_contexts
 
@@ -5455,6 +5468,7 @@ class TestFrontierRoute:
             "factor_columns_valid": [["region"]],
             "config": {"mode": "ratebook"},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -5503,6 +5517,7 @@ class TestFrontierRoute:
                 },
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -5562,6 +5577,7 @@ class TestFrontierRoute:
             "solver": solver,
             "quote_grid": quote_grid,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -5593,6 +5609,7 @@ class TestFrontierRoute:
                 "frontier_ranges": {"volume": {"min": 0.8}},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -5611,6 +5628,7 @@ class TestFrontierRoute:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -5640,6 +5658,7 @@ class TestFrontierRoute:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         # length-1: should fail validation with the canonical wording.
@@ -5688,6 +5707,7 @@ class TestFrontierRoute:
                 "constraints": {f"c{i}": {"min": 0.0} for i in range(6)},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         # 100 ** 6 = 10**12 grid points — well past anything reasonable.
@@ -5729,6 +5749,7 @@ class TestFrontierRoute:
                 "constraints": {"volume": {"min": 0.9}},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -6066,6 +6087,7 @@ class TestOptimiserMlflowLog:
             "solver": None,
             "solve_result": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/mlflow/log",
@@ -6088,6 +6110,7 @@ class TestOptimiserMlflowLog:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         with patch.dict("sys.modules", {"mlflow": None}):
@@ -6218,6 +6241,7 @@ class TestJobStateGuards:
             "status": "completed",
             "solve_result": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post("/api/optimiser/apply", json={"job_id": "no_sr"})
         assert resp.status_code == 400
@@ -6245,6 +6269,7 @@ class TestJobStateGuards:
             "solver": None,
             "quote_grid": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier",
@@ -6278,6 +6303,7 @@ class TestJobStateGuards:
             "solve_result": None,
             "solver": None,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/save",
@@ -7531,6 +7557,7 @@ class TestFrontierSelect:
             },
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -7562,6 +7589,7 @@ class TestFrontierSelect:
             },
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -7626,6 +7654,7 @@ class TestFrontierSelect:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -7683,6 +7712,7 @@ class TestFrontierSelect:
             "frontier_data": None,
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -7897,6 +7927,7 @@ class TestFrontierSelect:
             },
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         with (
@@ -8760,6 +8791,7 @@ class TestSolveStatusEdgeCases:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.get("/api/optimiser/solve/status/done_frontier")
         assert resp.status_code == 200
@@ -8793,6 +8825,7 @@ class TestApplyLambdasUnit:
             "status": "completed",
             "solve_result": mock_solve_result,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_unit"})
         assert resp.status_code == 200
@@ -8825,6 +8858,7 @@ class TestApplyLambdasUnit:
             "status": "completed",
             "solve_result": mock_solve_result,
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_capped"})
@@ -8860,6 +8894,7 @@ class TestApplyLambdasUnit:
             },
             "artifact_handles": {"apply_result": handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_handle"})
@@ -8905,6 +8940,7 @@ class TestApplyLambdasUnit:
             },
             "artifact_handles": {"apply_result": handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_terminal"})
@@ -8944,6 +8980,7 @@ class TestApplyLambdasUnit:
             },
             "artifact_handles": {"apply_result": handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_missing_handle"})
@@ -8972,6 +9009,7 @@ class TestApplyLambdasUnit:
             ),
             "result": {"total_objective": 42.0, "constraints": {"volume": 1.0}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_no_dataframe"})
@@ -8997,6 +9035,7 @@ class TestApplyLambdasUnit:
             ),
             "result": {"total_objective": 100.0},
             "created_at": time.time() - _DEFAULT_HEAVY_OBJECT_TTL_SECONDS - 1,
+            "completed_at": time.time() - _DEFAULT_HEAVY_OBJECT_TTL_SECONDS - 1,
         }
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_expired"})
@@ -9137,6 +9176,7 @@ class TestRunFrontierUnit:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         data = _frontier_result(
             client,
@@ -9213,6 +9253,7 @@ class TestRunFrontierUnit:
             "selected_frontier_point": 0,
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -9302,6 +9343,7 @@ class TestRunFrontierUnit:
                 "frontier_apply_result:0": stale_frontier_handle,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -9414,6 +9456,7 @@ class TestRunFrontierUnit:
             "selected_frontier_point": 0,
             "artifact_handles": {"apply_result": base_apply_handle},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         _frontier_result(
@@ -9445,6 +9488,7 @@ class TestRunFrontierUnit:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -9491,6 +9535,7 @@ class TestRunFrontierUnit:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -9546,6 +9591,7 @@ class TestSaveResultUnit:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         resp = client.post(
@@ -9584,6 +9630,7 @@ class TestSaveResultUnit:
             },
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
@@ -9692,6 +9739,7 @@ class TestSelectFrontierPointIdempotent:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -9726,6 +9774,7 @@ class TestSelectFrontierPointIdempotent:
                 "selected_frontier_point": 2,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
             "heavy_objects_cleared_at": time.time(),
         }
 
@@ -9784,6 +9833,7 @@ class TestSelectFrontierPointIdempotent:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -9845,6 +9895,7 @@ class TestSelectFrontierPointIdempotent:
                 "constraint_names": ["volume"],
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.post(
@@ -9900,6 +9951,7 @@ class TestSelectFrontierPointResolve:
             },
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         return mock_solver
 
@@ -10301,6 +10353,7 @@ class TestSelectFrontierPointResolve:
             },
             "result": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -10332,6 +10385,7 @@ class TestSelectFrontierPointResolve:
                 "baseline_constraints": {"volume": 0.85},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -10365,6 +10419,7 @@ class TestSelectFrontierPointResolve:
                 "baseline_constraints": {"volume": 0.85},
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.post(
             "/api/optimiser/frontier/select",
@@ -10543,6 +10598,7 @@ class TestMlflowLogExtended:
             },
             "node_label": "my_opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         if frontier_data is not None:
             job["frontier_data"] = frontier_data
@@ -10735,6 +10791,7 @@ class TestMlflowLogExtended:
             "config": {"mode": "online", "objective": "income", "constraints": {}},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         mock_mlflow = self._make_mlflow_mock()
 
@@ -10818,6 +10875,7 @@ class TestSolveStatusTimeout:
                     "converged": True,
                 },
                 "created_at": time.time(),
+                "completed_at": time.time(),
             }
             return clean_job_store.jobs["tout_race"]
 
@@ -10922,6 +10980,7 @@ class TestSolveStatusTimeout:
                 "converged": True,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         resp = client.get("/api/optimiser/solve/status/done_past_timeout")
@@ -10948,6 +11007,7 @@ class TestSolveStatusTimeout:
                 "converged": True,
             },
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         resp = client.get("/api/optimiser/solve/status/no_front")
         data = resp.json()
@@ -13131,6 +13191,7 @@ class TestApplyException:
             "status": "completed",
             "solve_result": FailingResult(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         with patch("haute.routes.optimiser.logger.error") as log_error:
             resp = client.post("/api/optimiser/apply", json={"job_id": "apply_err"})
@@ -13157,6 +13218,7 @@ class TestFrontierException:
             "solver": mock_solver,
             "quote_grid": MagicMock(),
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         with patch("haute.routes.optimiser.logger.error") as log_error:
             resp = client.post(
@@ -13243,6 +13305,7 @@ class TestSaveExceptionPaths:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
@@ -13285,6 +13348,7 @@ class TestSaveExceptionPaths:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         set_project_root(tmp_path)
         out_path = str(tmp_path / "out.json")
@@ -13342,6 +13406,7 @@ class TestSaveArtifactGate:
             "config": config or {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
     @pytest.mark.parametrize(
@@ -13560,6 +13625,7 @@ class TestMlflowLogExceptionPath:
             "config": {"mode": "online"},
             "node_label": "opt",
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
         mock_mlflow = MagicMock()
         with (
@@ -14616,6 +14682,7 @@ class TestOptimiserMutationBoundaries:
             },
             "artifact_handles": {},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(
@@ -14665,6 +14732,7 @@ class TestOptimiserMutationBoundaries:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         # Equal min/max is the pin case — must be accepted.
@@ -14709,6 +14777,7 @@ class TestOptimiserMutationBoundaries:
             "quote_grid": MagicMock(),
             "config": {"mode": "online", "constraints": {"volume": {"min": 0.9}}},
             "created_at": time.time(),
+            "completed_at": time.time(),
         }
 
         data = _frontier_result(

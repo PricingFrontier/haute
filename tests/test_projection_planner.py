@@ -644,7 +644,9 @@ def test_execution_facade_attaches_projection_strategy_to_context():
     projection = plan_execution_strategy(request, execution_context=context)
 
     assert context.projection_plan is projection
-    diagnostics = context.projection_plan.diagnostics_payload()
+    diagnostics = context.projection_plan.projection_plan.diagnostics_payload(
+        profile=context.projection_plan.profile
+    )
     assert diagnostics["strategy_summary"]["profile"] == "lazy_sink"
 
 
@@ -2411,10 +2413,13 @@ def test_model_score_required_output_columns_uses_explicit_downstream_demand_onl
         )
         is None
     )
-    assert model_score_required_output_columns(
-        {"code": "df = df", "selected_columns": ["quote_id"]},
-        {"prediction"},
-    ) == frozenset({"prediction"})
+    assert (
+        model_score_required_output_columns(
+            {"code": "df = df", "selected_columns": ["quote_id"]},
+            {"prediction"},
+        )
+        is None
+    )
     assert model_score_required_output_columns(
         {"code": "df = df", "selected_columns": ["quote_id"]},
         {"prediction"},

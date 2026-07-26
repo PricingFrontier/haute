@@ -1506,6 +1506,35 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
+  it("onConnectEnd rejects a third edgeJoin input when malformed persisted edges occupy no role", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "join1", data: { label: "Edge Join 1", nodeType: NODE_TYPES.EDGE_JOIN, config: {} } } as unknown as Node,
+    ]
+    // A hand-edited graph can contain target handles outside the canonical
+    // base/join pair. It must not bypass the two-input invariant.
+    params.graphRef.current.edges = [
+      { id: "e-a-join", source: "a", target: "join1", sourceHandle: null, targetHandle: "other-a" } as Edge,
+      { id: "e-b-join", source: "b", target: "join1", sourceHandle: null, targetHandle: "other-b" } as Edge,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "c", to: "join1", toHandleId: "join" }),
+      )
+    })
+
+    expect(params.setEdges).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.pushSnapshot).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: "error", text: "Edge join nodes accept exactly two inputs" }),
+    ])
+  })
+
   it("onConnectEnd seeds role config on an edgeJoin node that has no config object", () => {
     const params = makeParams()
     params.graphRef.current.nodes = [

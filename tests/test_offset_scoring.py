@@ -440,14 +440,17 @@ class TestOffsetInSignatureAndContract:
             target_type="Int64",
             task="regression",
         )
-        # Hash pinned from the pre-offset contract format.
+        # Canonical contracts include explicit empty categorical-level and
+        # offset fields, so the hash covers the complete current schema.
         payload = {
             "features": ["age", "region"],
             "feature_types": {"age": "Int64", "region": "String"},
             "categorical_features": ["region"],
+            "categorical_levels": {},
             "target_name": "ClaimCount",
             "target_type": "Int64",
             "task": "regression",
+            "offset_column": None,
         }
         import hashlib
         import json

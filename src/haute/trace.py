@@ -758,6 +758,11 @@ def _resolve_preview_snapshot(
     """
     if preview is None:
         return None
+    # A snapshot dict also exposes ``get``; recognise the concrete snapshot
+    # shape before duck-typing the reader protocol so it is not mistaken for
+    # a keyed cache reader and queried with the fingerprint.
+    if isinstance(preview, dict):
+        return preview, preview_fps[0] if preview_fps else ""
     # Duck-type the reader protocol. ``isinstance(..., PreviewReader)`` would
     # also work since the Protocol is ``@runtime_checkable``, but
     # ``hasattr`` is explicit about what we actually call.
@@ -773,8 +778,6 @@ def _resolve_preview_snapshot(
                 )
             return result, preview_fp
         return None
-    if isinstance(preview, dict):
-        return preview, preview_fps[0] if preview_fps else ""
     raise TypeError(
         "execute_trace(preview=...) expects a PreviewReader, a snapshot dict, or None; "
         f"got {type(preview).__name__}"

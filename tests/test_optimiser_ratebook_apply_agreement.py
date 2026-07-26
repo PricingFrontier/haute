@@ -457,7 +457,7 @@ class TestRealSolverEndToEnd:
         assert out["optimised_factor"].to_list() == [pytest.approx(composite_value * 1.0)]
         miss_logs = [log for log in logs if log["event"] == MISS_EVENT]
         assert len(miss_logs) == 1
-        assert miss_logs[0]["table"] == "region"
+        assert miss_logs[0]["table"] == "region_optimised_factor"
         assert miss_logs[0]["miss_count"] == 1
         assert miss_logs[0]["missing_keys"] == [{"region": "east"}]
 

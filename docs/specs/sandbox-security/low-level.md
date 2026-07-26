@@ -67,7 +67,7 @@
   `TrustedHostMiddleware` does not handle `[::1]:port` forms).
 - **`LocalSessionMiddleware(BaseHTTPMiddleware)`** — exposes one credential-free
   path, `POST /api/session/bootstrap`, only to an explicit matching Origin; every
-  other `/api/*` request requires a cookie/header credential plus a trusted Origin
+  other `/api/*` request requires the session cookie plus a trusted Origin
   or an already-valid credential for absent-Origin non-browser calls.
 - **`GITIGNORE_GUARD_ENTRIES: tuple[str, ...]`** (`_gitignore_guard.py`) — the
   ordered, fixed set of paths every project's `.gitignore` must contain:

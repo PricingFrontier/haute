@@ -645,7 +645,9 @@ def test_bounded_lazy_execution_runtime_projects_simple_contract_free_join() -> 
         "right_value": [2],
     }
     assert context.projection_plan is not None
-    diagnostics = context.projection_plan.diagnostics_payload()
+    diagnostics = context.projection_plan.projection_plan.diagnostics_payload(
+        profile=context.projection_plan.profile
+    )
     assert diagnostics is not None
     assert diagnostics["edge_reasons"]["left->joined"]["rule"] == ("runtime_inferred_streaming")
     assert diagnostics["edge_reasons"]["right->joined"]["rule"] == ("runtime_inferred_streaming")

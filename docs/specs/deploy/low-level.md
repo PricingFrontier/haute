@@ -177,7 +177,10 @@ directory before re-raising.
    the node's internal deploy-contract inputs before strategy planning. Projection and
    boundary checks therefore describe the artifact actually served and never contact
    the original MLflow run or registry merely to resolve a remapped model's columns.
-   A bundled feature contract remains authoritative when present.
+   A bundled feature contract remains authoritative when present. Before live-input
+   interception, every relevant `apiInput` edge is also validated through the shared
+   edge-name resolver, so direct `DataFrame` injection cannot bypass the required
+   frame `sourceHandle`.
 2. Build a `NodeBuildHooks(before_build=_intercept)` wrapper around the shared
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
    returns_frame)` tuple — or `None` to fall through to the base builder — for six node

@@ -314,10 +314,12 @@ class TestLoadRejectsMalformed:
             "features": c.features,
             "feature_types": c.feature_types,
             "categorical_features": c.categorical_features,
+            "categorical_levels": c.categorical_levels,
             "target_name": c.target_name,
             "target_type": c.target_type,
             "task": c.task,
             "contract_hash": c.contract_hash,
+            "offset_column": c.offset_column,
         }
 
     def test_load_rejects_missing_required_field(self, tmp_path: Path) -> None:

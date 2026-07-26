@@ -41,7 +41,7 @@ satisfied by TestClient:
   BARE (no ``with``), so the lifespan/watcher never start — the repo convention.
 
 Auth: ``tests/conftest.py`` autouse-patches ``TestClient.__init__`` to inject the
-local-session token header, so any in-process TestClient is transparently
+local-session cookie, so any in-process TestClient is transparently
 authenticated. (A subprocess would NOT inherit this — another reason to stay
 in-process.)
 

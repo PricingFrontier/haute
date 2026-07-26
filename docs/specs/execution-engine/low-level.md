@@ -103,6 +103,12 @@ from scratch. `_eager_execute()` compiles the preamble (`_compile_preamble`, tol
 of failure — the error is attached only to nodes whose builder actually consumes the
 preamble namespace) and delegates to `_execute_eager_core()`.
 
+A valid multi-frame target with no `port_label` has no canonical flat frame to
+preview. Its `NodeResult` is therefore `status="ok"` with empty flat `columns` and
+`preview`, while `frame_columns` carries every labelled frame schema. Supplying
+`port_label` selects exactly that frame for the flat preview; unknown labels fail
+clearly and never fall back to an arbitrary first frame.
+
 Before fingerprinting or building functions,
 `canonical_dataframe_execution_graph()` resolves every local runtime input field
 with `enforce_project_root=True`. `_execute_eager_core` and `_execute_lazy` are

@@ -636,7 +636,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
                         "run_id": "run-123",
                         "task": "regression",
                         "output_column": "prediction",
-                        "code": "df = df",
+                        "code": "",
                     },
                 ),
             ),

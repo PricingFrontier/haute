@@ -112,7 +112,11 @@ class TestEndToEnd:
         results = execute_graph(graph)
         for nid, result in results.items():
             assert result.status == "ok", f"Node {nid!r} failed: {result.error}"
-            assert result.row_count > 0
+
+        # Non-preview ancestors report schema without forcing collection, and
+        # an unselected multi-frame source has no canonical flat row count.
+        # The materialised output is the row-bearing end-to-end oracle.
+        assert results["output"].row_count > 0
 
         output_row = results["output"].preview[0]
         assert output_row["area_factor"] == pytest.approx(1.1)
@@ -471,8 +475,8 @@ class TestAllNodeTypesRoundtrip:
                             "factors": ["region"],
                             "outputColumn": "region_factor",
                             "entries": [
-                                {"region": "A", "region_factor": 1.0},
-                                {"region": "B", "region_factor": 1.5},
+                                {"region": "A", "value": 1.0},
+                                {"region": "B", "value": 1.5},
                             ],
                         }
                     ],

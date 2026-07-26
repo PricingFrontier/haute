@@ -464,7 +464,7 @@ class TestExecutorRatebook:
         miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
         assert len(miss_logs) == 1
         assert miss_logs[0]["log_level"] == "warning"
-        assert miss_logs[0]["table"] == "region"
+        assert miss_logs[0]["table"] == "region_optimised_factor"
         assert miss_logs[0]["output_column"] == "region_optimised_factor"
         assert miss_logs[0]["miss_count"] == 1
         assert miss_logs[0]["missing_keys"] == [{"region": "Edinburgh"}]
@@ -538,7 +538,7 @@ class TestExecutorRatebook:
         assert result["age_band_optimised_factor"][0] == pytest.approx(1.0)
         assert result["optimised_factor"][0] == pytest.approx(1.05)
         miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
-        assert [log["table"] for log in miss_logs] == ["age_band"]
+        assert [log["table"] for log in miss_logs] == ["age_band_optimised_factor"]
 
     def test_ratebook_empty_factor_tables(self, write_artifact):
         artifact = _make_ratebook_artifact()
@@ -801,7 +801,7 @@ class TestExecutorRatebookComposite:
         assert result["channel:age_band_optimised_factor"][0] == pytest.approx(1.0)
         miss_logs = [log for log in logs if log["event"] == "rating_table_lookup_misses"]
         assert len(miss_logs) == 1
-        assert miss_logs[0]["table"] == "channel:age_band"
+        assert miss_logs[0]["table"] == "channel:age_band_optimised_factor"
         assert miss_logs[0]["missing_keys"] == [{"channel": "phone", "age_band": "26-40"}]
 
     def test_composite_numeric_component_column_matches(self):

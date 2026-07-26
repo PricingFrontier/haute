@@ -448,20 +448,23 @@ def _statement_end_index(lines: list[str], start_idx: int) -> int:
 def _source_load_boilerplate_end_index(cleaned: list[str]) -> int:
     """Return the first line index after generated source-load boilerplate."""
     idx = 0
+    saw_load = False
     while idx < len(cleaned):
         stripped = cleaned[idx].strip()
+        if not stripped:
+            idx += 1
+            continue
         if stripped.startswith(("from ", "import ")):
             idx += 1
             continue
         if _is_source_load_statement_start(stripped):
             idx = _statement_end_index(cleaned, idx)
-            continue
+            saw_load = True
         break
-    # When no generated source-load statement was seen, the body carries no
-    # source-load boilerplate, so ``idx`` already points at the first user
-    # statement. Advancing past it here silently dropped the user's first
-    # statement — return ``idx`` so all authored code is preserved.
-    return idx
+    # Imports and blank lines before the canonical load are generated scaffold
+    # only when that load is actually present. Without it, preserve the whole
+    # authored body instead of dropping a user's leading imports.
+    return idx if saw_load else 0
 
 
 def _match_source(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:

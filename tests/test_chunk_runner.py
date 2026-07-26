@@ -794,7 +794,7 @@ def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None
                             "banding",
                             {"factors": [{"column": "premium", "outputColumn": "premium_band"}]},
                         ),
-                        _node("join", "polars", {"code": "return left.join(right, on='id')"}),
+                        _node("join", "polars", {"code": "df = left.join(right, on='id')"}),
                         _node("out", "output", make_output_config(["quote_id"])),
                     ],
                     "edges": [

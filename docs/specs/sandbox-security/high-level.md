@@ -295,9 +295,9 @@ not provide a reverse-proxy, forwarded-host, LAN, or public-hosting mode.
   matches the request Host may bootstrap. The response establishes the
   per-process token in an HttpOnly, SameSite=Strict cookie with no-store cache
   policy. Absent-Origin requests never bootstrap.
-- Protected API requests require both a trusted Origin or an already valid
-  token and a valid header/cookie token. WebSockets always require an explicit
-  trusted Origin and a valid header/cookie token before `accept()`. WebSocket
+- Protected API requests require either a trusted Origin or an already valid
+  session cookie, plus that valid cookie credential. WebSockets always require
+  an explicit trusted Origin and a valid session cookie before `accept()`. WebSocket
   query-string token transport is unsupported.
 - The token must not occur in served HTML or JavaScript, URLs, access-log
   fields, rejection reasons, error bodies, or exception responses. A normal

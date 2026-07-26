@@ -11,8 +11,9 @@ Proves the end-user install path end to end, on the OS it runs on:
 3. ``haute init`` in an empty scratch directory outside the repo.
 4. ``haute serve`` headless from the scratch project root; the server must
    fall back to the packaged static frontend (no dev frontend present).
-5. Drive the canonical file-listing endpoint (AGENTS ``/api/files`` recipe)
-   with the local session token, and confirm auth rejects tokenless calls.
+5. Bootstrap the canonical local-session cookie, drive the file-listing
+   endpoint (AGENTS ``/api/files`` recipe), and confirm auth rejects
+   pre-bootstrap calls.
 6. Terminate the server and require a clean exit.
 
 Stdlib-only; shells out to ``uv`` (and transitively ``npm`` for the frontend
@@ -23,6 +24,7 @@ build). Run directly (``python scripts/init_smoke.py``) or via
 from __future__ import annotations
 
 import argparse
+import http.cookiejar
 import json
 import os
 import secrets
@@ -53,7 +55,11 @@ SHUTDOWN_MARKER_TIMEOUT_SECONDS = 10
 # Loopback requests must never route via a proxy: urllib's default opener
 # honours HTTP(S)_PROXY env vars and, on macOS, the system proxy config —
 # either would break the smoke (and leak the session token) on proxied hosts.
-_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_COOKIE_JAR = http.cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPCookieProcessor(_COOKIE_JAR),
+)
 
 # Uvicorn shuts down gracefully on the signal, then re-raises it so the
 # process reports termination-by-signal (unix convention). A clean stop is
@@ -108,13 +114,26 @@ def _venv_bin(venv_dir: Path, name: str) -> Path:
     return venv_dir / "bin" / name
 
 
-def _http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
-    request = urllib.request.Request(url, headers=headers or {})  # noqa: S310 (loopback only)
+def _http_request(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    request = urllib.request.Request(  # noqa: S310 (loopback only)
+        url,
+        headers=headers or {},
+        method=method,
+    )
     try:
         with _OPENER.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         return error.code, error.read()
+
+
+def _http_get(url: str, headers: dict[str, str] | None = None) -> tuple[int, bytes]:
+    return _http_request(url, headers=headers)
 
 
 def _build_wheel(dist_dir: Path) -> Path:
@@ -183,7 +202,7 @@ def _wait_until_ready(base_url: str, server: subprocess.Popen[bytes]) -> None:
     raise SmokeError(f"server not ready after {SERVER_READY_TIMEOUT_SECONDS}s ({last_error})")
 
 
-def _check_endpoints(base_url: str, token: str) -> None:
+def _check_endpoints(base_url: str) -> None:
     status, body = _http_get(base_url + "/")
     if status != 200 or b"<!doctype html" not in body.lower():
         raise SmokeError(f"GET / did not serve the packaged index.html (HTTP {status})")
@@ -195,7 +214,16 @@ def _check_endpoints(base_url: str, token: str) -> None:
         raise SmokeError(f"tokenless /api/files should be rejected, got HTTP {status}")
     _log(f"session auth active (tokenless request rejected with {status})")
 
-    status, body = _http_get(files_url, headers={"x-haute-session-token": token})
+    status, body = _http_request(
+        base_url + "/api/session/bootstrap",
+        method="POST",
+        headers={"Origin": base_url},
+    )
+    if status != 200:
+        raise SmokeError(f"session bootstrap failed: HTTP {status}: {body[:200]!r}")
+    _log("local session cookie bootstrapped")
+
+    status, body = _http_get(files_url)
     if status != 200:
         raise SmokeError(f"authed /api/files failed: HTTP {status}: {body[:200]!r}")
     names = [item.get("name") for item in json.loads(body).get("items", [])]
@@ -355,7 +383,7 @@ def main() -> int:
         server, log_file = _start_server(haute_exe, project_dir, port, token, log_path)
         try:
             _wait_until_ready(base_url, server)
-            _check_endpoints(base_url, token)
+            _check_endpoints(base_url)
             _stop_server(server, log_path)
         except Exception:
             _kill_server_tree(server)

@@ -1303,12 +1303,6 @@ def execute_graph(
                 )
                 continue
             df = eager_outputs.get(nid)
-            # Multi-frame emit (commit 4): an apiInput with 2+ emit-true
-            # tables stores ``dict[port_name, DataFrame]`` in
-            # eager_outputs. For preview-display purposes, use the first
-            # frame as a representative — a richer per-frame view
-            # belongs in the apiInput editor's preview (commit 5+).
-            #
             # Per-frame column schema for multi-frame producers, keyed by
             # the emit-table label (the ``sourceHandle`` / port a downstream
             # edge binds to). Read from the executor's name+dtype schema
@@ -1323,7 +1317,8 @@ def execute_graph(
                 for (fc_nid, port_label), schema in frame_cols.items()
                 if fc_nid == nid
             }
-            if isinstance(df, dict):
+            is_multi_frame_output = isinstance(df, dict)
+            if is_multi_frame_output:
                 # Only a labelled target frame has a flat preview. Ancestor
                 # multi-frame schemas remain available through frame_columns.
                 if nid == target_node_id and port_label is not None:
@@ -1340,7 +1335,9 @@ def execute_graph(
                 # flat ``columns``, mirroring the materialised multi-frame
                 # target). Either one being present means we have real schema
                 # to surface, not a genuine failure.
-                if (columns or frame_columns) and nid not in preview_node_ids:
+                if (columns or frame_columns) and (
+                    nid not in preview_node_ids or is_multi_frame_output
+                ):
                     results[nid] = NodeResult(
                         status="ok",
                         column_count=len(columns),

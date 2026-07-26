@@ -4964,7 +4964,16 @@ class TestBugB4PrunerUsesOriginalEdges:
                 "nodes": [
                     _node("shared"),
                     _node("live_src"),
-                    _node("switch", "liveSwitch", {"inputs": ["live_src", "shared"]}),
+                    _node(
+                        "switch",
+                        "liveSwitch",
+                        {
+                            "input_scenario_map": {
+                                "live_src": "live",
+                                "shared": "test_batch",
+                            }
+                        },
+                    ),
                     _node("transform"),
                     _node("output", "output"),
                 ],
