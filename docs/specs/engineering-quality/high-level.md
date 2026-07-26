@@ -57,11 +57,27 @@ Out of scope:
 - Frontend commands use TypeScript build-mode type checking, ESLint, Vitest,
   critical coverage validation, and Playwright. Browser E2E serialises workers,
   retries only in CI, and starts the repository's E2E server with readiness
-  checking.
+  checking. Vitest's blocking global coverage floors are 80% statements, 75%
+  branches, 80% functions, and 80% lines, followed by the configured
+  source-specific critical-coverage ratchet. ESLint treats useless assignments,
+  discarded caught-error context, unsafe hook refs, and state updates in effects
+  as errors; two pre-existing file/rule pairs remain visible as narrow config
+  exceptions until their owning changes land.
+- The project-isolated Chromium canvas-assurance module owns the high-risk
+  Banding-to-Rating and optimiser/MLflow-boundary journeys, keyboard operation,
+  and reviewed screenshots at 1440×900 and 1024×768. Firefox remains a smoke
+  compatibility project rather than a visual oracle. User-reported canvas
+  defects receive the smallest regression at the owning tier before a fix.
 - Scheduled dependency and frontend-order lanes are deliberately non-PR
   monitoring checks: on eligible failures they create or update a labelled
   GitHub issue carrying diagnostic/reproduction context. Mutation and
   performance workflows likewise operate through maintained scripts/artifacts.
+- Python performance reports use schema 3, recording deterministic workload and
+  profile descriptors, environment versions, independent resource counters,
+  explicit unavailable values, and a checked wall-time partition. The CI-small
+  Polars join-plus-training scenario exercises every supported execution profile;
+  1m/10m variants remain opt-in and no hardware-specific throughput threshold is
+  a normal CI gate.
 - Internal improvement work is self-contained in one flat component catalogue:
   `docs/roadmap/README.md` plus one `docs/roadmap/<component>.md` file per
   component. Each package records its problem, implementation direction,
@@ -81,6 +97,9 @@ Out of scope:
 - Locked dependencies prove the committed environment; the scheduled unlocked
   resolve lane separately exposes breakage from a later dependency release
   within published version caps. These answer different questions.
+- npm meta-findings use the affected package plus a stable transitive-advisory
+  identity. A lockfile topology change must not invalidate a reviewed acceptance;
+  a different package or concrete GHSA identity still does.
 - Mutation targets are deliberately curated and sharded across isolated CI
   runners, avoiding an unbounded or environment-racy mutation gate while
   retaining threshold enforcement for selected high-value code.
@@ -122,80 +141,6 @@ Out of scope:
 - E2E failures retain Playwright trace/screenshots/video according to its
   configuration. Benchmark/performance failures retain their workflow artifacts
   when the job reaches the upload step.
-
-## Polars backend contracts (0.6.0)
-
-Residual delivery work is tracked in the
-[engineering-quality roadmap](../../roadmap/engineering-quality.md) and
-[execution-engine roadmap](../../roadmap/execution-engine.md).
-The assurance suite will add a deterministic CI-small semantic join-plus-training fixture and
-opt-in 1m/10m variants through the existing performance harness. It will assert output equivalence,
-strategy selection, source-width handling, absence of unintended full collection, and budgeted
-rejection. The 10m case is never default CI, and no hardware-specific numeric performance gate is
-introduced until stable baselines exist.
-
-## Approved change contract — risk-based frontend canvas evidence
-
-This contract implements ROAD-UI-04 and ROAD-UI-05 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- **Current limitation.** The full browser lane is authoritative and retains failure artifacts,
-  but canvas journey variants, screenshot ownership, supported viewport intent, and the policy for
-  converting user-reported UI bugs into regression evidence are implicit.
-- **Target behaviour.** Fast helper/component tests own configuration-shape and warning branches;
-  one project-isolated Chromium browser module owns cross-node persistence, optimiser/MLflow
-  boundaries, keyboard operation, and stable element screenshots. Desktop is 1440×900 and the
-  supported narrow viewport is 1024×768. Firefox remains a smoke-compatibility project, not a
-  visual oracle.
-- **CI boundary.** These tests run in the existing authoritative pull-request browser job; no
-  additional lane is introduced without measured runtime evidence. Existing Playwright report,
-  trace, screenshot, and video uploads are the failure artifacts and remain owned by that job.
-  Visual baselines are reviewed source artifacts, not regenerated automatically in CI.
-- **Accessibility boundary.** Selected high-risk canvas journeys assert semantic names, visible
-  focus, and keyboard completion. No general accessibility scanner or whole-product conformance
-  claim is introduced until a separate baseline maps scanner rules to component owners and an
-  actionable failure policy.
-- **Regression policy and acceptance.** A user-reported canvas bug first receives the smallest
-  failing regression at the owning tier; the shape matrix is updated when the bug exposes a
-  missing variant. CI documentation names every new test owner, tier, artifact, and failure owner,
-  and the unchanged full browser command collects the new evidence.
-
-## Approved reproducible execution-evidence contract
-
-The Python performance report is a comparison artifact, not just a pass/fail wrapper. Its next
-schema records the exact workload scale and profile set, input rows/bytes/schema widths, package
-and platform versions, independent peak RSS, execution counters and unavailable states,
-temporary-disk evidence, admission state, response-payload size, and the command/budgets already
-recorded today. Per-test evidence remains available so a top-level summary can be traced back to
-the scenario that produced it.
-
-Wall time is partitioned into reported pytest phase time and runner overhead; their sum equals the
-recorded total within a fixed numerical tolerance. Missing product counters are JSON `null`, never
-zero. A deterministic CI-small smoke executes the same semantic graph across the supported
-execution profiles and reports the complete profile set. Larger 1m/10m scenarios remain opt-in and
-no hardware-specific throughput threshold is added by this contract.
-
-## Approved change contract — dependency advisory policy
-
-The committed Python environment and frontend lockfile are audited in the
-scheduled dependency workflow and whenever the audit inputs change.
-
-- Python uses a pinned `pip-audit` release against the locked project
-  environment. Because the scanner does not provide a stable severity for every
-  advisory source, every reported Python advisory is blocking unless explicitly
-  accepted; this is intentionally stricter than a high/critical-only threshold.
-- Frontend audit evaluates the full locked tree, including build/test
-  dependencies, and blocks reachable `high` or `critical` findings. Haute ships
-  a pre-built UI, so build dependencies are part of the supply-chain surface
-  even though they are not browser runtime dependencies.
-- A temporary acceptance is data, not a command-line suppression: it must name
-  the ecosystem, advisory and package, owner, exposure, compensating control,
-  approval date, and review deadline. Expired, malformed, duplicate, unused, or
-  package-mismatched acceptances fail the policy check.
-- Scanner execution failures and malformed/incomplete reports fail closed.
-  The scheduled workflow keeps its existing issue-alarm behavior so a newly
-  published advisory becomes visible without relying on an unrelated source
-  change.
-- Dependency upgrades must retain the nearest backend, frontend, package, and
-  browser compatibility evidence for the surface they affect. The repository
-  does not claim advisory closure until both locked reports pass this policy.
+- The single mutation gate runs after its dependencies even when planning or a
+  required shard fails. It fails explicitly when no valid plan/result set exists,
+  so a failed planner cannot turn the required gate into a skipped check.

@@ -20,13 +20,10 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
-      // ESLint 10-compatible presets enable these rules by default. Keep them
-      // visible but non-blocking during the supply-chain upgrade; promoting
-      // them to errors requires a separate state/effect and error refactor.
-      'no-useless-assignment': 'warn',
-      'preserve-caught-error': 'warn',
-      'react-hooks/refs': 'warn',
-      'react-hooks/set-state-in-effect': 'warn',
+      'no-useless-assignment': 'error',
+      'preserve-caught-error': 'error',
+      'react-hooks/refs': 'error',
+      'react-hooks/set-state-in-effect': 'error',
       // Honour the leading-underscore "intentionally unused" convention
       // for both function args (e.g. `(_key) => ...` callbacks that
       // satisfy a typed interface but ignore the value) and locals
@@ -39,6 +36,20 @@ export default defineConfig([
           caughtErrorsIgnorePattern: '^_',
         },
       ],
+    },
+  },
+  // Exact file/rule debt that predates the blocking severities. New instances
+  // elsewhere fail lint; remove each override with its owning-stream fix.
+  {
+    files: ['e2e/persistence/api-input-v2-native.spec.ts'],
+    rules: {
+      'no-useless-assignment': 'warn',
+    },
+  },
+  {
+    files: ['src/types/guards.ts'],
+    rules: {
+      'preserve-caught-error': 'warn',
     },
   },
 ])

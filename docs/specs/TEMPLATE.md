@@ -76,11 +76,17 @@ the key scenarios covered, and known coverage gaps.
   non-goals, failure and compatibility semantics, and executable acceptance evidence; link to the
   implementation plan. Never write the future behaviour into the ordinary present-tense sections
   before it ships. The implementation/release change must reconcile the approved contract into
-  the normal sections and remove the temporary section.
+  the normal sections and remove the temporary section. The historical
+  `## Polars backend contracts (<version>)` class is legacy temporary-contract debt: do not add
+  new sections with that heading, and fold and remove every existing section under the same rule.
 - Reference source with an exact repository-root-relative path such as `src/haute/parser.py`, and
   functions as `haute.parser.parse_pipeline_file()`. Do not use an ambiguous basename when a path
   is available. Do not paste long code excerpts; the spec must survive refactors that keep
-  behaviour.
+  behaviour. A `path::symbol` reference must resolve to that symbol in the named file.
+- Every file named in `## Testing` resolves unambiguously in the repository. Frontend unit and
+  browser references are additionally repository-root-relative and start with `frontend/`; a
+  frontend basename or path relative only to `frontend/src/` is invalid even when it happens to
+  be unique today.
 - Every maintained backend and frontend runtime file must appear in at least one low-level module
   map. Build, CI, developer-tooling, and reference-project artifacts are subject to the same rule;
   generated and historical material must instead be explicitly classified by the owning spec and
@@ -88,6 +94,8 @@ the key scenarios covered, and known coverage gaps.
 - A file normally has one **primary owner**: its component documents the file's behaviour. A
   second component may name it only to describe a real direct interaction; then it is a consumer
   and the exact primary/consumer set must be recorded in [ownership.toml](ownership.toml).
+  Explicit ownership claims in prose follow the same ledger discipline even when only the primary
+  component names the file in its Module map.
 - Cross-link related components with relative links. From a component document the target is
   `../caching/high-level.md`; see [caching](caching/high-level.md) for a live link from this file.
 - British or American spelling both fine; match the terminology used in the code
@@ -95,3 +103,21 @@ the key scenarios covered, and known coverage gaps.
 - In high-level.md, prefer component-level language over file paths, but citing a module
   filename to ground a behavioural claim is acceptable; detailed per-file responsibilities
   belong in low-level.md's Module map.
+
+## Version semantics
+
+`pyproject.toml` is the single product/package release version. The installed
+`haute.__version__` and FastAPI/OpenAPI `app.version` derive from that package metadata; they are
+not independent API generations. A version embedded in a temporary contract heading records the
+planned change cohort only. It neither changes nor predicts the shipped product version, and the
+heading disappears when the contract is folded into the present-tense specification.
+
+## Accuracy ratchet
+
+`tests/test_docs_accuracy.py` validates repository paths and globs across complete spec documents,
+`path::symbol` targets, Module-map responsibility symbols, exact required headings, Testing
+references and backend-test coverage, relative-link anchors, roadmap `Evidence:` paths, shared
+ownership claims, and temporary-contract retirement. Known debt lives in
+`tests/docs_accuracy_baseline.txt` as one sorted TSV line per document/rule/detail. Delete the one
+line when a violation is fixed. Adding or changing a line is a reviewed expansion of known debt,
+not an automatic fallback.

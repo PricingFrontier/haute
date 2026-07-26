@@ -8,16 +8,16 @@
 | `AGENTS.md` | Records repository-local engineering and review instructions for contributors and coding agents; it is guidance, not executable build or test configuration. |
 | `CLAUDE.md` | Directs Claude-compatible coding agents to the repository's authoritative `AGENTS.md` engineering instructions without duplicating policy. |
 | `.gitignore` | Excludes generated builds, virtual environments, caches, local pipeline output/data, tool state, and other non-source artifacts from normal version-control discovery. |
-| `docs/specs/ownership.toml` | Machine-checked ledger for files deliberately named by multiple component Module maps; records the single primary owner and all consumer components. |
+| `docs/specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
 | `.github/workflows/ci.yml` | Defines PR/main CI jobs: canary, install/package smoke, dependency floors, static/type checks, coverage shards/gate, compatibility/probe, performance, optional dependencies, platform, mutation-config, frontend, and browser E2E lanes. Branch protection, outside this repository workflow file, determines which checks are required for merge. |
 | `.github/workflows/dependencies.yml` | Runs the scheduled/manual fresh unlocked-resolve monitor plus the locked Python/frontend advisory gate on schedule, manual dispatch, main lock-policy changes, and relevant PRs; retains failed reports and raises/updates dependency-watch issues on eligible monitoring failures. |
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. |
-| `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, merges results, enforces target thresholds, and uploads mutation artifacts. |
+| `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and always runs the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
 | `frontend/package.json` | Defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
-| `frontend/eslint.config.js` | Defines browser TypeScript/React ESLint rules, ignores generated reports, and preserves underscore-prefixed intentionally-unused names. |
-| `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, coverage reporting, and source/test selection. |
+| `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules, two explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
+| `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, source/test selection, coverage reporting, and blocking 80/75/80/80 global thresholds. |
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
 | `frontend/e2e/core-flows.spec.ts` | Playwright coverage for core browser flows. |
 | `frontend/e2e/canvas-assurance.spec.ts` | Deterministic Chromium coverage and visual baselines for mixed Banding-to-Rating persistence and optimiser result/apply/MLflow-boundary journeys. |
@@ -40,7 +40,7 @@
 | `frontend/scripts/check-critical-coverage.mjs` | Reads Vitest coverage summary and enforces `frontend/package.json` critical entries. |
 | `frontend/scripts/check-ui-dependencies.mjs` | Audits UI dependency constraints used by the frontend bundle check. |
 | `scripts/check_critical_coverage.py` | Enforces configured backend per-file statement/branch coverage floors from coverage JSON. |
-| `scripts/check_dependency_audit.py` | Stdlib-only fail-closed advisory-policy orchestrator/parser: exports the exact locked Python graph, runs pinned `pip-audit` and full-tree `npm audit`, validates report schemas, and subtracts only current exact accepted-risk entries. |
+| `scripts/check_dependency_audit.py` | Stdlib-only fail-closed advisory-policy orchestrator/parser: exports the exact locked Python graph, runs pinned `pip-audit` and full-tree `npm audit`, validates report schemas, gives npm meta-findings a topology-independent transitive identity, and subtracts only current exact accepted-risk entries. |
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
@@ -68,6 +68,7 @@
 | `tests/` | Active Python unit, integration, property, regression, contract, E2E-support, and repository-hygiene test corpus. |
 | `tests/fixtures/` | Checked-in input, golden, expected-contract, UI-contract, and data fixtures consumed by active tests. |
 | `tests/performance/` | `perf`-marked benchmark-style tests excluded from ordinary pytest and run by the performance harness, including the rating miss-guard evidence matrix (`test_rating_miss_guard_perf.py`). |
+| `tests/docs_accuracy_baseline.txt` | Sorted one-line TSV ratchet of current per-document accuracy violations; resolved entries are deleted and additions require explicit review. |
 | `frontend/src/__tests__/` | Frontend application-level unit, contract, regression, adversarial, and bundle/coverage gate tests. |
 | `frontend/src/api/__tests__/` | Frontend API-client test group. |
 | `frontend/src/components/__tests__/` and `frontend/src/components/form/__tests__/` | Frontend reusable-component and form-control test groups. |
@@ -89,10 +90,23 @@
   is `.cache/coverage/backend.json`.
 - **Frontend critical-coverage entry** in `frontend/package.json` has a source
   glob-like `pattern` and thresholds for statements, branches, functions, and
-  lines; the summary artifact is `coverage/coverage-summary.json`.
+  lines; the summary artifact is `coverage/coverage-summary.json`. This sits
+  after Vitest's global floors of 80% statements, 75% branches, 80% functions,
+  and 80% lines.
+- **Documentation violation** is the ordered
+  `document<TAB>rule<TAB>detail` record emitted by
+  `tests/test_docs_accuracy.py`. The committed
+  `tests/docs_accuracy_baseline.txt` contains every accepted current record
+  exactly once in sorted order.
 - **Mutation target** in `mutation/targets.json` selects a Cosmic Ray config,
   witness test command, and survivor budget. `scripts/run_mutation_suite.py`
   turns targets into a plan/shard/merge data flow.
+- **Performance report schema 3** contains top-level `environment`, `workload`,
+  `resources`, and `wall_time` records plus per-test bounded evidence.
+  Unavailable numeric counters are JSON `null`; reported pytest phase time plus
+  runner overhead must equal total time within the recorded tolerance. The
+  deterministic CI-small Polars scenario records every `ExecutionProfile`,
+  while 1m/10m inputs remain opt-in.
 - **Playwright configuration** uses a single worker and `fullyParallel: false`;
   Chromium is the normal project and Firefox is restricted to `@smoke` tests.
   CI retries twice, recording traces on first retry and screenshots/video on
@@ -145,14 +159,16 @@
    User-triggered surfaces such as the Ctrl+K `NodeSearch` palette remain
    dynamically imported so their implementation is excluded from that initial
    chunk. Canvas-assurance screenshots retain the shared 2% pixel-difference
-   ceiling; mixed-Banding, rebuilt-Rating, and both selected-optimiser viewport
-   assertions select reviewed Linux-specific baselines in Linux CI only when repeated
-   captures prove that system-font and native-control rasterisation differs
-   stably from the default developer baseline, rather than weakening the
-   assertion for every platform.
+   ceiling. The narrow mixed-Banding and rebuilt-Rating captures and both
+   selected-optimiser captures select reviewed Linux-specific baselines in
+   Linux CI; the two desktop Banding/Rating captures deliberately keep the
+   default developer baseline. Platform-specific baselines are added only when
+   repeated captures prove stable system-font or native-control differences.
 6. Mutation CI calls `scripts/run_mutation_suite.py --phase plan`, executes
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
-   to enforce total survivor budgets. Scheduled performance calls
+   to enforce total survivor budgets. The merge job uses `always()` semantics
+   and fails explicitly when planning or a required shard was unsuccessful.
+   Scheduled performance calls
    `scripts/run_perf_suite.py`; scheduled dependency/shuffle workflows use their
    own commands and issue-alarm paths.
 7. The locked advisory job exports all locked Python groups/extras without the
@@ -160,8 +176,10 @@
    tree (including dev/build dependencies) with `npm audit --ignore-scripts`,
    parses both JSON reports, and evaluates `security/accepted-risks.toml`.
    Every Python finding and every npm high/critical finding blocks unless its
-   exact current identity is accepted. Scanner/export/report-schema errors fail
-   closed; failed reports are uploaded for triage.
+   exact current identity is accepted. Concrete npm advisories use GHSA/source
+   identity; meta-findings use the affected package plus `npm:transitive`, not
+   the dependency path recorded by the current lockfile. Scanner/export/report-
+   schema errors fail closed; failed reports are uploaded for triage.
 
 ## Edge cases and invariants
 
@@ -176,6 +194,10 @@
   a time per runner. Separate CI runners provide the shard parallelism while
   serial execution avoids concurrent in-place mutation races; merge expects
   every selected mutant to contribute exactly once.
+- A component roadmap contains active/deferred/decision/reverify work only.
+  Delivered packages are removed once present-tense specs and ordinary tests
+  own their outcome; the index's `Start with` cell names an existing active
+  package or `—`.
 - Mutation thresholds measure observable behaviour. Syntax-only mutants in
   postponed annotations and keyword-only call markers are explicitly excluded
   with `# pragma: no mutate`; executable expressions and branch decisions must
@@ -200,6 +222,9 @@
 - Ruff, mypy, pytest, coverage, npm, Playwright, Cosmic Ray, and maintained
   scripts use non-zero exits to fail their calling hook/job; CI does not turn
   a failed required command into a passing substitute.
+- The mutation gate is scheduled after failed dependencies and emits a direct
+  failure before checkout/setup when planning failed or selected shards did
+  not complete, preserving one authoritative pass/fail check.
 - Pytest's strict settings fail unknown markers/configuration and unexpected
   xpasses. `pytest-timeout` arguments in CI stop overlong tests rather than
   leaving a job indefinitely running.
@@ -237,12 +262,15 @@
   reload, exact named API-input `sourceHandle`, and an Edge Join retained and
   highlighted in a downstream trace. Private React state is not an oracle.
 - `tests/test_check_critical_coverage.py`, `tests/test_mutation_suite_runner.py`,
-  `tests/test_run_perf_suite.py`, `tests/test_perf_suite_script.py`,
+  `tests/test_mutation_sharding.py`, `tests/test_run_perf_suite.py`,
+  `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
-  and `tests/test_docs_accuracy.py` cover important assurance tooling and
-  repository-policy contracts. The documentation-accuracy checks also validate
-  the flat component-roadmap inventory, required package shape, unique package
-  ownership, local links, and absence of superseded review/plan Markdown.
+  `tests/test_infrastructure_contracts.py`, and `tests/test_docs_accuracy.py`
+  cover important assurance tooling and repository-policy contracts. The
+  documentation-accuracy checks validate complete-document repository paths,
+  `path::symbol` and Module-map responsibility symbols, exact headings,
+  Testing references and backend-test indexing, link anchors, roadmap evidence,
+  ownership claims, temporary-contract retirement, and the one-line ratchet.
 - `tests/test_dependency_audit.py` covers clean/blocking reports, npm
   high/critical and transitive identities, valid/expired/malformed/duplicate/
   unused acceptances, malformed fail-closed reports, and live-command return-code
@@ -250,79 +278,3 @@
 - `mutation/` is tested as configuration/orchestration through its active
   script/tests and CI workflow. `docs/roadmap/`, `repro/`, and generated
   artifacts are intentionally not claimed as a current test suite.
-
-## Polars backend contracts (0.6.0)
-
-Residual delivery work is tracked in the
-[engineering-quality roadmap](../../roadmap/engineering-quality.md) and
-[execution-engine roadmap](../../roadmap/execution-engine.md).
-The existing performance-harness inputs will gain a deterministic CI-small semantic join-plus-
-training fixture and explicitly selected 1m and 10m variants. The fixture suite asserts exact
-output semantics, chosen strategy, source-width propagation, no unintended full collect, and
-budgeted rejection. Only the CI-small fixture belongs in ordinary CI; 1m/10m cases remain opt-in
-performance-harness work. Baselines are recorded as artifacts first: numeric throughput, latency
-or memory thresholds may not gate hardware-diverse CI until reproducible baselines are established.
-
-## Approved change contract — risk-based frontend canvas evidence
-
-This contract implements ROAD-UI-04 and ROAD-UI-05 in the
-[frontend canvas roadmap](../../roadmap/frontend-canvas.md).
-
-- `frontend/e2e/canvas-assurance.spec.ts` is owned by the frontend canvas/browser test group and
-  runs in the ordinary `npm run test:e2e` Chromium project. It uses
-  `frontend/e2e/projectIsolation.ts` and the deterministic project generated by
-  `scripts/run_frontend_e2e_server.py`; private React state, fixed sleeps, live external services,
-  and hard-coded canvas coordinates are not evidence.
-- The Playwright fixture server uses E2E-only frontend, backend, and readiness ports and passes the
-  exact backend origin to Vite's API/WebSocket proxy. `HAUTE_E2E_FRONTEND_PORT`,
-  `HAUTE_E2E_BACKEND_PORT`, and `HAUTE_E2E_READINESS_PORT` may select other isolated ports;
-  malformed values and bind collisions fail the run. Playwright derives its base and readiness
-  URLs from the same values. The harness never treats unrelated listeners on normal development
-  ports as its fixture.
-- The module's cross-node tests prove Banding→Rating rebuild/edit/save/reload and
-  optimiser→frontier→selected point→local apply/MLflow-boundary identity. Assertions target
-  persisted sidecars, named controls, API request/response ids, and visible results.
-- Element screenshots cover mixed Banding, rebuilt three-factor Rating, and a selected optimiser
-  result at 1440×900 and 1024×768. Each committed baseline name contains its state and viewport.
-  Animations are disabled; dimensions and a bounded rendering tolerance are explicit at the
-  assertion. Transient notifications and active text selections are cleared before capture.
-  Chromium uses the reviewed default developer baseline except where a capture has a separately
-  reviewed Linux baseline backed by byte-stable CI retries. Every platform-specific path retains
-  the same rendering tolerance; Firefox remains restricted to `@smoke`.
-- The keyboard scenario moves focus to the named rebuild/action controls, asserts focus, activates
-  via Enter or Space, edits through labelled inputs, saves via the documented shortcut, and checks
-  the resulting persisted state. This plus semantic role/name assertions is the current automated
-  accessibility boundary; adding an axe-like scanner requires a separately specified baseline,
-  rule-owner map, and failure policy.
-- New unit/component tests remain with their owning source groups. The canvas shape matrix in
-  `frontend-node-editors/low-level.md` records each variant, fixture, and tier so browser coverage
-  does not duplicate helper branches.
-- `.github/workflows/ci.yml` continues to run `npm run test:e2e` as the authoritative browser job
-  and upload `frontend/playwright-report` plus `frontend/test-results` under `if: always()`. A
-  canvas failure is owned by the frontend canvas/browser group; no second lane or artifact path is
-  added. Runtime is measured from that job before any future lane split.
-- For each user-reported canvas defect: add the smallest failing test first, classify the omitted
-  shape in the matrix when applicable, implement the fix, then run the owning test and nearest
-  affected suite. Full browser CI remains the cross-stack compatibility gate.
-
-### Performance report schema 3
-
-- `scripts/run_perf_suite.py` emits `schema_version=3`.
-- Top-level `environment` records the Python and platform versions plus installed Haute, Polars,
-  and pytest package versions; an unavailable distribution version is explicit `null`.
-- Top-level `workload` contains deterministic scenario names/scales, the sorted execution-profile
-  set, and per-test input/schema descriptors supplied through `haute_perf_evidence`.
-- Top-level `resources` contains independent RSS, aggregate input/output bytes, collect/checkpoint/
-  chunk counts, temporary-disk peak bytes, admission states, and payload bytes. Every unavailable
-  numeric counter is present as `null`.
-- Top-level `wall_time` contains `total_seconds`, `reported_phase_seconds`,
-  `runner_overhead_seconds`, and `partition_tolerance_seconds`; the first two partition fields sum
-  to total within the tolerance or report construction fails.
-- The existing `tests` records retain their full bounded evidence maps. Evidence values must be
-  JSON-safe; malformed evidence fails the performance lane rather than being stringified.
-- `tests/performance/test_polars_scale_scenario.py` records the complete resource descriptor for
-  the generated join/training scenario. A CI-small cross-profile case uses a fixed graph and fixed
-  data and records every `ExecutionProfile` without multiplying the 1m/10m input generation.
-
-`tests/test_run_perf_suite.py` and `tests/test_perf_suite_script.py` pin schema completeness,
-explicit `null` values, deterministic profile ordering, and exact wall-time partitioning.

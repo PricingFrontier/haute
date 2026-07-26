@@ -12,6 +12,7 @@ end-to-end equivalence on a real target is proven separately by running
 
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from pathlib import Path
 
@@ -146,22 +147,20 @@ def test_slice_keeps_only_requested_job_ids(tmp_path: Path) -> None:
     assert _all_job_ids(src) == sorted(job_ids)
 
 
-def test_slice_rebase_root_rewrites_module_path(tmp_path: Path) -> None:
-    src = tmp_path / "full.sqlite"
-    _create_session(src, ["job-0", "job-1"])
-    worker_root = tmp_path / "worker-0"
-    dst = tmp_path / "slice.sqlite"
-    _slice_session(src, dst, ["job-0"], rebase_root=worker_root)
+def test_slice_session_has_no_dead_rebase_parameter() -> None:
+    assert list(inspect.signature(_slice_session).parameters) == [
+        "src",
+        "dst",
+        "keep_job_ids",
+    ]
 
-    conn = sqlite3.connect(str(dst))
-    try:
-        paths = {
-            row[0] for row in conn.execute("SELECT module_path FROM mutation_specs").fetchall()
-        }
-    finally:
-        conn.close()
-    rel = Path(MODULE_PATH).relative_to(REPO_ROOT)
-    assert paths == {str(worker_root / rel)}
+
+def test_mutation_gate_runs_and_fails_when_plan_fails() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
+
+    assert "if: ${{ always() && !cancelled() }}" in workflow
+    assert "if: ${{ needs.plan.result != 'success' }}" in workflow
+    assert "Mutation planning failed; the gate cannot be evaluated." in workflow
 
 
 # --- union / round-trip equivalence ---------------------------------------

@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
+from haute import __version__
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._local_security import (
@@ -410,7 +411,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await reaper_task
 
 
-app = FastAPI(title="Haute", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="Haute", version=__version__, lifespan=_lifespan)
 _TRUSTED_LOCAL_HOSTS = ["localhost", "127.0.0.1", "::1"]
 
 

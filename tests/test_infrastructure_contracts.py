@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 from typing import Any, get_args, get_origin
 
@@ -98,6 +99,16 @@ class TestGraphFingerprintCanonicalisation:
 
 
 class TestApiRouteContracts:
+    def test_openapi_and_installed_package_versions_match_pyproject(self) -> None:
+        from haute import __version__
+        from haute.server import app
+
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        with pyproject_path.open("rb") as pyproject_file:
+            product_version = tomllib.load(pyproject_file)["project"]["version"]
+
+        assert app.version == __version__ == product_version
+
     def test_all_api_routes_declare_pydantic_response_models(self) -> None:
         from haute.server import app
 

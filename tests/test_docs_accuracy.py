@@ -8,10 +8,13 @@ named the wrong secrets. These tests make that class of drift fail CI.
 
 from __future__ import annotations
 
+import ast
+import fnmatch
 import re
 import subprocess
 import tomllib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
@@ -77,6 +80,9 @@ _REPOSITORY_PATH_PREFIXES = (
     "rating/",
     "scripts/",
     "src/",
+    "tests/",
+    "security/",
+    "repro/",
 )
 _REQUIRED_HIGH_LEVEL_HEADINGS = (
     "## Purpose",
@@ -127,6 +133,27 @@ _REQUIRED_PACKAGE_FIELDS = (
     "**Acceptance:**",
     "**Dependencies:**",
     "**Evidence:**",
+)
+_DOCS_ACCURACY_BASELINE = ROOT / "tests" / "docs_accuracy_baseline.txt"
+_TEMPORARY_CONTRACT_PREFIXES = (
+    "Approved change contract",
+    "Approved reproducible execution-evidence contract",
+    "Polars backend contracts",
+)
+_LEGACY_CONTRACT_PREFIX = "Polars backend contracts"
+_FUTURE_ACTION = re.compile(
+    r"\b(?:add|create|introduce|move|moves|moved)\b(?:\s+to)?",
+    flags=re.IGNORECASE,
+)
+_TARGET_LABEL = re.compile(r"\bTarget behavio(?:u)?r\b", flags=re.IGNORECASE)
+_TEST_PATH = re.compile(r"(?:^|/)(?:test_[^/]+[.]py|[^/]+[.](?:test|spec)[.](?:ts|tsx))$")
+_DELIVERED_ROADMAP_STATE = re.compile(
+    r"\|\s*(?:Complete(?:d)?|Implemented|Verified|Audited|Delivered)\b",
+    flags=re.IGNORECASE,
+)
+_TRACKED_WORK_POINTER = re.compile(
+    r"\b(?:remaining|completed)\b.{0,240}\b(?:work|improvements?|packages?)\b",
+    flags=re.IGNORECASE | re.DOTALL,
 )
 
 DATABRICKS_SECRET_DOCS = [
@@ -210,17 +237,44 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
     assert tuple(sorted(component_files)) == _EXPECTED_COMPONENT_ROADMAPS
 
     index = ROADMAP_INDEX.read_text(encoding="utf-8")
+    start_with: dict[str, str] = {}
+    for line in index.splitlines():
+        match = re.match(
+            r"^\|\s*\[[^\]]+\]\(([^)#]+)[^)]*\)\s*\|.*\|\s*([^|]+?)\s*\|$",
+            line,
+        )
+        if match:
+            start_with[Path(match.group(1)).stem] = match.group(2).strip().strip("`")
+
     package_owners: dict[str, str] = {}
     for component, path in component_files.items():
         text = path.read_text(encoding="utf-8")
+        headings = _h2_sections(text)
         for heading in _REQUIRED_COMPONENT_ROADMAP_HEADINGS:
-            assert heading in text, f"{path.relative_to(ROOT)} is missing {heading}"
+            assert heading[3:] in headings, f"{path.relative_to(ROOT)} is missing {heading}"
         assert f"({component}.md)" in index
 
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
+        priorities = headings["Priorities"]
+        delivered_rows = [
+            row
+            for row in _module_map_rows(priorities)
+            if len(row) >= 2 and _DELIVERED_ROADMAP_STATE.match(f"| {row[1]}")
+        ]
+        assert not delivered_rows, (
+            f"{path.relative_to(ROOT)} retains delivered package priorities: {delivered_rows}"
+        )
         if not package_ids:
             assert "There are no active" in text, (
                 f"{path.relative_to(ROOT)} has no work packages without declaring that state"
+            )
+            assert start_with.get(component) == "—", (
+                f"{component} has no active package, so its Start with cell must be —"
+            )
+        else:
+            assert start_with.get(component) in package_ids, (
+                f"{component} Start with must name an active package; "
+                f"got {start_with.get(component)!r}, expected one of {package_ids}"
             )
         for package_id in package_ids:
             assert package_id not in package_owners, (
@@ -242,63 +296,6 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             assert (path.parent / local_target).resolve().exists(), (
                 f"{path.relative_to(ROOT)} links to missing {local_target}"
             )
-
-    retired_or_folded_packages = {
-        "AUD-C02",
-        "AUD-C03",
-        "AUD-C04",
-        "AUD-C09",
-        "AUD-C11",
-        "AUD-C13",
-        "AUD-C18",
-        "AUD-CACHE-01",
-        "AUD-SEC-01",
-        "AUD-SEC-02",
-        "AUD-TRACE-01",
-        "CACHE-PERF-01",
-        "ROAD-EXEC-01",
-        "ROAD-EXEC-02",
-        "ROAD-EXEC-03",
-        "ROAD-EXEC-04",
-        "ROAD-EXEC-05",
-        "ROAD-EDGE-01",
-        "ROAD-EDGE-02",
-        "ROAD-EDGE-03",
-    }
-    expected_packages = (
-        {f"AUD-C{number:02d}" for number in range(1, 21)}
-        | {f"EDA-E{number:02d}" for number in range(1, 14)}
-        | {f"GIT-G{number:02d}" for number in range(1, 17)}
-        | {f"IO-IO{number:02d}" for number in range(1, 13)}
-        | {f"MOD-M{number:02d}" for number in range(1, 10)}
-        | {f"OPT-P{number:02d}" for number in range(1, 11)}
-        | {f"ROAD-WORKER-{number:02d}" for number in range(1, 6)}
-        | {f"ROAD-EXEC-{number:02d}" for number in range(1, 6)}
-        | {f"ROAD-TEST-{number:02d}" for number in range(1, 6)}
-        | {f"ROAD-UI-{number:02d}" for number in range(1, 6)}
-        | {
-            "ASSIST-01",
-            "ASSIST-02",
-            "AUD-DEPLOY-01",
-            "AUD-DEPLOY-02",
-            "AUD-PIPE-01",
-            "AUD-QUALITY-01",
-            "AUD-QUALITY-02",
-            "AUD-QUALITY-03",
-            "AUD-RATING-01",
-            "RATING-PERF-01",
-            "ROAD-CANON-01",
-        }
-    ) - retired_or_folded_packages
-    assert set(package_owners) == expected_packages, (
-        "component roadmaps and the expected consolidated package set differ: "
-        f"missing={sorted(expected_packages - set(package_owners))}, "
-        f"unexpected={sorted(set(package_owners) - expected_packages)}"
-    )
-    assert retired_or_folded_packages.isdisjoint(package_owners), (
-        "implemented or folded packages must not remain as separate roadmap work: "
-        f"{sorted(retired_or_folded_packages & set(package_owners))}"
-    )
 
     for retired_root in (
         ROOT / "docs" / "fable-Review",
@@ -430,6 +427,474 @@ def _tracked_repo_files() -> frozenset[Path]:
     return frozenset(ROOT / relative for relative in result.stdout.split("\0") if relative)
 
 
+@dataclass(frozen=True, order=True)
+class DocViolation:
+    """A stable, reviewable documentation-contract failure."""
+
+    document: str
+    rule: str
+    detail: str
+
+    def tsv(self) -> str:
+        return "\t".join((self.document, self.rule, self.detail))
+
+
+def _without_fences(text: str) -> str:
+    return _MARKDOWN_FENCE.sub("", text)
+
+
+def _h2_sections(text: str) -> dict[str, str]:
+    """Extract exact level-two headings (not substring matches)."""
+    headings = list(re.finditer(r"^##(?!#)\s+(.+?)\s*$", text, flags=re.MULTILINE))
+    return {
+        match.group(1): text[
+            match.end() : (headings[index + 1].start() if index + 1 < len(headings) else len(text))
+        ]
+        for index, match in enumerate(headings)
+    }
+
+
+def _repo_files(root: Path) -> set[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return {root / item for item in result.stdout.split("\0") if item}
+    except (OSError, subprocess.CalledProcessError):
+        return {path for path in root.rglob("*") if path.is_file()}
+
+
+def _strip_path_suffix(reference: str) -> tuple[str, str | None]:
+    value = reference.strip().replace("\\", "/")
+    if value.startswith("./"):
+        value = value[2:]
+    path, separator, symbol = value.partition("::")
+    path = re.sub(r":\d+(?:-\d+)?$", "", path)
+    path = path.split("#", maxsplit=1)[0]
+    return path.rstrip("/"), symbol if separator else None
+
+
+def _is_placeholder(reference: str) -> bool:
+    return any(marker in reference for marker in ("<", ">", "{", "}"))
+
+
+def _looks_like_repo_reference(value: str, root_files: set[str]) -> bool:
+    path, symbol = _strip_path_suffix(value)
+    if not path or path.startswith("/") or _is_placeholder(path) or re.search(r"\s", path):
+        return False
+    return (
+        path in root_files
+        or path.startswith(_REPOSITORY_PATH_PREFIXES)
+        or any(item.endswith(f"/{path}") for item in root_files)
+        or (
+            symbol is not None
+            and bool(re.search(r"[.](?:css|js|json|md|mjs|py|toml|ts|tsx|yml|yaml)$", path))
+        )
+    )
+
+
+def _repo_reference_candidates(
+    reference: str, root: Path, files: set[Path]
+) -> tuple[tuple[Path, ...], str | None]:
+    path, symbol = _strip_path_suffix(reference)
+    if not path or path.startswith("/") or _is_placeholder(path):
+        return (), symbol
+    if any(character in path for character in "*?["):
+        repo_paths = files | {
+            parent
+            for item in files
+            for parent in item.parents
+            if parent != root and parent.is_relative_to(root)
+        }
+        candidates = {
+            item
+            for item in repo_paths
+            if fnmatch.fnmatch(item.relative_to(root).as_posix(), path)
+            or ("/" not in path and fnmatch.fnmatch(item.name, path))
+        }
+    else:
+        exact = root / path
+        if exact.exists():
+            candidates = {exact}
+        else:
+            suffix = f"/{path}"
+            candidates = {
+                item
+                for item in files
+                if item.name == path or item.as_posix().replace("\\", "/").endswith(suffix)
+            }
+            if not candidates:
+                candidates = {
+                    parent
+                    for item in files
+                    for parent in item.parents
+                    if parent != root
+                    and parent.is_relative_to(root)
+                    and (
+                        parent.relative_to(root).as_posix() == path
+                        or parent.relative_to(root).as_posix().endswith(suffix)
+                    )
+                }
+    return tuple(sorted(candidates)), symbol
+
+
+@cache
+def _python_symbol_names(path: Path) -> frozenset[str]:
+    if path.suffix == ".py":
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return frozenset()
+        names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                names.update(
+                    alias.asname or alias.name for alias in node.names if alias.name != "*"
+                )
+        names.update(node.arg for node in ast.walk(tree) if isinstance(node, ast.arg))
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            names.update(target.id for target in targets if isinstance(target, ast.Name))
+        return frozenset(names)
+    return frozenset()
+
+
+def _file_has_symbol(path: Path, symbol: str) -> bool:
+    if not symbol or not path.is_file():
+        return bool(not symbol)
+    normalised = symbol.replace("::", ".").removesuffix("()")
+    name = normalised.split(".")[-1]
+    if path.suffix == ".py":
+        names = _python_symbol_names(path)
+        if normalised in names or name in names:
+            return True
+        if "." not in normalised:
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return bool(
+            re.search(
+                rf"(?<![\w$]){re.escape(normalised)}(?![\w$])",
+                text,
+            )
+        )
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return bool(re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", text))
+
+
+def _reference_violation(
+    document: str, reference: str, root: Path, files: set[Path]
+) -> DocViolation | None:
+    candidates, symbol = _repo_reference_candidates(reference, root, files)
+    has_glob = any(character in _strip_path_suffix(reference)[0] for character in "*?[")
+    if not candidates:
+        return DocViolation(document, "missing-repo-reference", reference)
+    if len(candidates) > 1 and not has_glob:
+        matches = ", ".join(path.relative_to(root).as_posix() for path in candidates)
+        return DocViolation(document, "ambiguous-repo-reference", f"{reference} -> {matches}")
+    if symbol and (len(candidates) != 1 or not _file_has_symbol(candidates[0], symbol)):
+        return DocViolation(document, "missing-symbol", reference)
+    return None
+
+
+def _slug(heading: str) -> str:
+    plain = re.sub(r"[`*_~]", "", heading).strip().casefold()
+    plain = re.sub(r"[^\w\s-]", "", plain)
+    return re.sub(r"\s", "-", plain)
+
+
+def _is_bare_symbol(value: str) -> bool:
+    candidate = value.removesuffix("()")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", candidate):
+        return False
+    if re.search(r"[.](?:css|js|json|md|mjs|py|toml|ts|tsx|yml|yaml)$", candidate):
+        return False
+    return "_" in candidate or "." in candidate or candidate[:1].isupper() or value.endswith("()")
+
+
+def _module_map_rows(section: str) -> list[list[str]]:
+    return [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in section.splitlines()
+        if line.lstrip().startswith("|") and "---" not in line
+    ]
+
+
+def _is_test_reference(value: str) -> bool:
+    path, _ = _strip_path_suffix(value)
+    if re.search(r"\s", path):
+        return False
+    return bool(_TEST_PATH.search(path)) or "/__tests__/" in f"/{path}" or path.startswith("tests/")
+
+
+def _is_frontend_test_reference(reference: str, candidates: tuple[Path, ...], root: Path) -> bool:
+    path, _ = _strip_path_suffix(reference)
+    return (
+        path.startswith("frontend/")
+        or bool(re.search(r"[.](?:test|spec)[.](?:ts|tsx)$", path))
+        or any(candidate.is_relative_to(root / "frontend") for candidate in candidates)
+    )
+
+
+def _contract_sections(sections: Mapping[str, str]) -> list[tuple[str, str]]:
+    return [
+        (heading, body)
+        for heading, body in sections.items()
+        if heading.startswith(_TEMPORARY_CONTRACT_PREFIXES)
+    ]
+
+
+def _route_exists(route: str, source_text: str) -> bool:
+    return bool(route.startswith("/") and route in source_text)
+
+
+def _roadmap_evidence_blocks(text: str) -> list[str]:
+    return re.findall(
+        r"(?ms)^\*\*Evidence:\*\*\s*(.*?)(?=^\s*$|^###\s|\Z)",
+        text,
+    )
+
+
+def _docs_violations(root: Path = ROOT, specs_root: Path | None = None) -> list[DocViolation]:
+    specs_root = specs_root or root / "docs" / "specs"
+    files = _repo_files(root)
+    file_names = {item.relative_to(root).as_posix() for item in files}
+    violations: set[DocViolation] = set()
+    referenced_tests: set[str] = set()
+    roadmap_root = root / "docs" / "roadmap"
+    source_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in files
+        if path.is_file()
+        and path.suffix in {".py", ".ts", ".tsx"}
+        and path.relative_to(root).as_posix().startswith(("src/", "frontend/src/"))
+    )
+
+    for document in sorted(specs_root.rglob("*.md")):
+        relative = document.relative_to(root).as_posix()
+        text = _without_fences(document.read_text(encoding="utf-8"))
+        sections = _h2_sections(text)
+        expected = (
+            _REQUIRED_LOW_LEVEL_HEADINGS
+            if document.name == "low-level.md"
+            else _REQUIRED_HIGH_LEVEL_HEADINGS
+            if document.name == "high-level.md"
+            else ()
+        )
+        for heading in expected:
+            if heading[3:] not in sections:
+                violations.add(DocViolation(relative, "missing-required-heading", heading))
+
+        for reference in _MARKDOWN_CODE_SPAN.findall(text):
+            if not _looks_like_repo_reference(reference, file_names):
+                continue
+            violation = _reference_violation(relative, reference, root, files)
+            if violation:
+                violations.add(violation)
+
+        for target in _MARKDOWN_LINK.findall(text):
+            target = target.strip()
+            if target.startswith(("http://", "https://", "mailto:")):
+                continue
+            target_path, hash_mark, anchor = target.partition("#")
+            linked = document if not target_path else (document.parent / target_path).resolve()
+            if not linked.exists():
+                violations.add(DocViolation(relative, "broken-link", target))
+            elif hash_mark and linked.is_file():
+                slugs = {
+                    _slug(match.group(1))
+                    for match in re.finditer(
+                        r"^#{1,6}\s+(.+?)\s*$",
+                        linked.read_text(encoding="utf-8"),
+                        re.MULTILINE,
+                    )
+                }
+                if anchor not in slugs:
+                    violations.add(DocViolation(relative, "broken-link-anchor", target))
+
+        for paragraph in re.split(r"\n\s*\n", text):
+            if not _TRACKED_WORK_POINTER.search(paragraph):
+                continue
+            for target in _MARKDOWN_LINK.findall(paragraph):
+                target_path = target.partition("#")[0]
+                if not target_path:
+                    continue
+                linked = (document.parent / target_path).resolve()
+                if not linked.is_file() or linked.parent != roadmap_root:
+                    continue
+                linked_text = linked.read_text(encoding="utf-8")
+                if "There are no active" in linked_text and not _COMPONENT_PACKAGE_HEADING.search(
+                    linked_text
+                ):
+                    violations.add(DocViolation(relative, "empty-roadmap-pointer", target))
+
+        for heading, contract in _contract_sections(sections):
+            if heading.startswith(_LEGACY_CONTRACT_PREFIX):
+                violations.add(DocViolation(relative, "legacy-contract-section", heading))
+            for sentence in re.split(r"(?<=[.!?])\s+|\n(?=\s*[-*])", contract):
+                refs = [
+                    item
+                    for item in _MARKDOWN_CODE_SPAN.findall(sentence)
+                    if _looks_like_repo_reference(item, file_names)
+                ]
+                existing_refs = [
+                    item
+                    for item in refs
+                    if _reference_violation(relative, item, root, files) is None
+                ]
+                if existing_refs and _FUTURE_ACTION.search(sentence):
+                    violations.add(
+                        DocViolation(
+                            relative,
+                            "shipped-contract-action",
+                            f"{heading}: {', '.join(existing_refs)}",
+                        )
+                    )
+            for target_block in re.split(r"\n\s*\n|(?=^\s*[-*]\s)", contract, flags=re.MULTILINE):
+                if not _TARGET_LABEL.search(target_block):
+                    continue
+                refs = [
+                    item
+                    for item in _MARKDOWN_CODE_SPAN.findall(target_block)
+                    if _looks_like_repo_reference(item, file_names)
+                ]
+                routes = [
+                    item
+                    for item in _MARKDOWN_CODE_SPAN.findall(target_block)
+                    if item.startswith("/") and not item.startswith("//")
+                ]
+                if (
+                    (refs or routes)
+                    and all(
+                        _reference_violation(relative, item, root, files) is None for item in refs
+                    )
+                    and all(_route_exists(route, source_text) for route in routes)
+                ):
+                    detail = ", ".join([*refs, *routes])
+                    violations.add(
+                        DocViolation(
+                            relative,
+                            "contract-target-present",
+                            f"{heading}: {detail}",
+                        )
+                    )
+
+        if document.name == "low-level.md":
+            module_map = sections.get("Module map", "")
+            for row in _module_map_rows(module_map):
+                if len(row) < 2 or row[0].casefold() == "file":
+                    continue
+                path_references = _MARKDOWN_CODE_SPAN.findall(row[0])
+                paths = [
+                    candidates[0]
+                    for reference in path_references
+                    if len(candidates := _repo_reference_candidates(reference, root, files)[0]) == 1
+                ]
+                for cell in row[1:]:
+                    for symbol in _MARKDOWN_CODE_SPAN.findall(cell):
+                        if (
+                            _is_bare_symbol(symbol)
+                            and paths
+                            and not any(_file_has_symbol(path, symbol) for path in paths)
+                        ):
+                            violations.add(
+                                DocViolation(relative, "missing-module-map-symbol", symbol)
+                            )
+
+            testing = sections.get("Testing", "")
+            for reference in _MARKDOWN_CODE_SPAN.findall(testing):
+                if not _is_test_reference(reference):
+                    continue
+                path, _ = _strip_path_suffix(reference)
+                candidates, _ = _repo_reference_candidates(reference, root, files)
+                if _is_frontend_test_reference(reference, candidates, root) and not path.startswith(
+                    "frontend/"
+                ):
+                    violations.add(
+                        DocViolation(
+                            relative,
+                            "non-root-relative-test-reference",
+                            reference,
+                        )
+                    )
+                violation = _reference_violation(relative, reference, root, files)
+                referenced_tests.update(
+                    candidate.relative_to(root).as_posix()
+                    for candidate in candidates
+                    if candidate.is_file()
+                )
+                if violation:
+                    rule = (
+                        "missing-test-symbol"
+                        if violation.rule == "missing-symbol"
+                        else "missing-test-reference"
+                    )
+                    violations.add(DocViolation(relative, rule, violation.detail))
+
+    for test in files:
+        rel = test.relative_to(root).as_posix()
+        if re.fullmatch(r"tests(?:/.+)?/test_[^/]+\.py", rel) and rel not in referenced_tests:
+            violations.add(
+                DocViolation(
+                    rel,
+                    "unreferenced-test",
+                    "not named in any low-level Testing section",
+                )
+            )
+
+    for document in sorted(roadmap_root.glob("*.md")):
+        relative = document.relative_to(root).as_posix()
+        text = _without_fences(document.read_text(encoding="utf-8"))
+        for evidence in _roadmap_evidence_blocks(text):
+            for reference in _MARKDOWN_CODE_SPAN.findall(evidence):
+                if not _looks_like_repo_reference(reference, file_names):
+                    continue
+                violation = _reference_violation(relative, reference, root, files)
+                if violation:
+                    violations.add(
+                        DocViolation(
+                            relative,
+                            f"roadmap-evidence-{violation.rule}",
+                            violation.detail,
+                        )
+                    )
+    return sorted(violations)
+
+
+def _read_baseline(path: Path) -> set[DocViolation]:
+    entries: list[DocViolation] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        assert len(fields) == 3, f"{path}:{line_number} must contain exactly three TSV fields"
+        entries.append(DocViolation(*fields))
+    assert entries == sorted(set(entries)), (
+        f"{path.relative_to(ROOT)} entries must be sorted and unique for deterministic review"
+    )
+    return set(entries)
+
+
 def _explicit_documented_repo_paths() -> set[str]:
     references = _low_level_spec_references()
     root_files = {
@@ -558,10 +1023,15 @@ def test_specs_readme_node_type_count_matches_enum() -> None:
 
 def test_specs_readme_node_type_table_lists_every_enum_value() -> None:
     text = SPECS_README.read_text(encoding="utf-8")
-    for node_type in NodeType:
-        assert f"`{node_type.value}`" in text, (
-            f"docs/specs/README.md node-type table is missing `{node_type.value}`"
-        )
+    section = _h2_sections(text).get("Where is each node type specced?", "")
+    assert section, "docs/specs/README.md lacks the node-type table section"
+    values = {
+        match.group(1)
+        for row in _module_map_rows(section)
+        if row
+        for match in _MARKDOWN_CODE_SPAN.finditer(row[0])
+    }
+    assert values == {node_type.value for node_type in NodeType}
 
 
 def test_low_level_specs_reference_every_backend_source_file() -> None:
@@ -637,6 +1107,11 @@ def test_shared_module_map_files_have_one_primary_owner_and_complete_ledger() ->
         assert isinstance(consumers, list) and all(isinstance(item, str) for item in consumers), (
             f"{path} needs a string consumers list"
         )
+        assert (ROOT / path).is_file(), f"{path} must name an existing repository file"
+        assert (SPECS_ROOT / primary).is_dir(), f"{path} primary {primary!r} is not a component"
+        assert all((SPECS_ROOT / consumer).is_dir() for consumer in consumers), (
+            f"{path} names an unknown consumer component"
+        )
         assert consumers == sorted(set(consumers)), (
             f"{path} consumers must be unique and sorted for deterministic review"
         )
@@ -651,10 +1126,9 @@ def test_shared_module_map_files_have_one_primary_owner_and_complete_ledger() ->
     assert list(records_by_path) == sorted(records_by_path), (
         "ownership.toml records must be sorted by path for deterministic review"
     )
-    assert set(records_by_path) == set(shared_files), (
-        "ownership.toml must declare every and only tracked file shared by multiple Module maps. "
-        f"Missing: {sorted(set(shared_files) - set(records_by_path))}; "
-        f"stale: {sorted(set(records_by_path) - set(shared_files))}"
+    assert set(shared_files) <= set(records_by_path), (
+        "ownership.toml must declare every tracked file shared by multiple Module maps. "
+        f"Missing: {sorted(set(shared_files) - set(records_by_path))}"
     )
     for path, components in shared_files.items():
         record = records_by_path[path]
@@ -665,6 +1139,52 @@ def test_shared_module_map_files_have_one_primary_owner_and_complete_ledger() ->
             f"{path} consumers must be exactly the other mapped components; "
             f"expected {sorted(components - {primary})}, got {sorted(consumers)}"
         )
+    # An explicitly ledgered extra shared file is valid only when it is mapped by
+    # its primary and all consumers name that exact path somewhere in their specs.
+    for path, record in records_by_path.items():
+        if path in shared_files:
+            continue
+        primary = record["primary"]
+        consumers = record["consumers"]
+        assert path in component_references.get(primary, set()), (
+            f"{path} is not module-mapped by {primary}"
+        )
+        for consumer in consumers:
+            consumer_spec = SPECS_ROOT / consumer
+            mentioned = any(
+                path == _normalise_doc_reference(item)
+                for doc in consumer_spec.glob("*.md")
+                for item in _MARKDOWN_CODE_SPAN.findall(
+                    _without_fences(doc.read_text(encoding="utf-8"))
+                )
+            )
+            assert mentioned, f"{path} consumer {consumer} does not reference the exact path"
+
+    for document in sorted(SPECS_ROOT.glob("*/*.md")):
+        component = document.parent.name
+        sections = _h2_sections(_without_fences(document.read_text(encoding="utf-8")))
+        prose = "\n\n".join(body for heading, body in sections.items() if heading != "Module map")
+        paragraphs = re.split(
+            r"\n\s*\n",
+            prose,
+        )
+        for paragraph in paragraphs:
+            if "primary owner" not in paragraph.casefold():
+                continue
+            for reference in _MARKDOWN_CODE_SPAN.findall(paragraph):
+                path = _normalise_doc_reference(reference)
+                if not (ROOT / path).is_file():
+                    continue
+                record = records_by_path.get(path)
+                assert record is not None, (
+                    f"{document.relative_to(ROOT).as_posix()} claims primary ownership of "
+                    f"{path} outside its Module map without an ownership.toml record"
+                )
+                claimants = {record["primary"], *record["consumers"]}
+                assert component in claimants, (
+                    f"{document.relative_to(ROOT).as_posix()} claims ownership of {path} "
+                    "but is absent from its ownership.toml record"
+                )
 
 
 def test_every_spec_component_has_required_documents_and_readme_entry() -> None:
@@ -712,8 +1232,8 @@ def test_every_spec_document_follows_the_required_structure() -> None:
             ("low-level.md", _REQUIRED_LOW_LEVEL_HEADINGS),
         ):
             document = component / name
-            text = document.read_text(encoding="utf-8")
-            missing = [heading for heading in headings if heading not in text]
+            present = _h2_sections(document.read_text(encoding="utf-8"))
+            missing = [heading for heading in headings if heading[3:] not in present]
             if missing:
                 failures.append(f"{document.relative_to(ROOT).as_posix()}: {', '.join(missing)}")
 
@@ -779,3 +1299,161 @@ def test_deployment_docs_use_scaffolded_pipeline_path() -> None:
                 f'{doc.name} shows pipeline = "{shown}" but haute init '
                 f'scaffolds pipeline = "{real_path}"'
             )
+
+
+def test_docs_accuracy_ratchet() -> None:
+    baseline = _read_baseline(_DOCS_ACCURACY_BASELINE)
+    actual = set(_docs_violations())
+    added, resolved = sorted(actual - baseline), sorted(baseline - actual)
+    assert not added and not resolved, (
+        "Documentation accuracy ratchet changed.\n"
+        + (
+            "Added violations:\n- " + "\n- ".join(item.tsv() for item in added) + "\n"
+            if added
+            else ""
+        )
+        + (
+            "Resolved baseline entries (delete these one-line TSV entries):\n- "
+            + "\n- ".join(item.tsv() for item in resolved)
+            if resolved
+            else ""
+        )
+    )
+
+
+def _seed_spec(root: Path, low_level: str) -> Path:
+    spec = root / "docs/specs/example"
+    spec.mkdir(parents=True)
+    (root / "tests").mkdir(exist_ok=True)
+    (root / "tests/test_ok.py").write_text("def test_ok(): pass\n", encoding="utf-8")
+    (spec / "low-level.md").write_text(low_level, encoding="utf-8")
+    return root / "docs/specs"
+
+
+def test_docs_guard_seeded_s3_regressions(tmp_path: Path) -> None:
+    # The fixture seeds each claim class from the review's S3 table.
+    specs = _seed_spec(
+        tmp_path,
+        """## Module map
+| File | Responsibility |
+| --- | --- |
+| `src/missing.py` | `missing_symbol` |
+| `src/existing.py` | `also_missing_symbol` |
+## Key types and data structures
+None.
+## Control flow
+Prose `src/prose_missing.py`.
+## Edge cases and invariants
+None.
+## Error handling notes
+This substring must not satisfy the required heading.
+## Testing
+`tests/test_ok.py::test_missing`
+## Approved change contract
+Add `src/existing.py`.
+""",
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/existing.py").write_text("x = 1\n", encoding="utf-8")
+    document = tmp_path / "docs/specs/example/low-level.md"
+    text = document.read_text(encoding="utf-8") + "\n[bad](#missing-anchor)\n"
+    document.write_text(text, encoding="utf-8")
+    violations = set(_docs_violations(tmp_path, specs))
+    relative = "docs/specs/example/low-level.md"
+    expected = {
+        DocViolation(relative, "missing-repo-reference", "src/missing.py"),
+        DocViolation(relative, "missing-module-map-symbol", "also_missing_symbol"),
+        DocViolation(relative, "missing-test-symbol", "tests/test_ok.py::test_missing"),
+        DocViolation(relative, "missing-repo-reference", "src/prose_missing.py"),
+        DocViolation(relative, "broken-link-anchor", "#missing-anchor"),
+        DocViolation(relative, "missing-required-heading", "## Error handling"),
+        DocViolation(
+            relative,
+            "shipped-contract-action",
+            "Approved change contract: src/existing.py",
+        ),
+    }
+    assert expected <= violations
+
+
+def test_docs_guard_retires_contract_when_named_target_is_present(tmp_path: Path) -> None:
+    component = tmp_path / "docs" / "specs" / "example"
+    source = tmp_path / "src" / "ready.py"
+    component.mkdir(parents=True)
+    source.parent.mkdir()
+    source.write_text("def ready() -> None:\n    pass\n", encoding="utf-8")
+    (component / "high-level.md").write_text(
+        "\n".join(
+            [
+                "## Purpose",
+                "Example.",
+                "## Scope",
+                "Example.",
+                "## Behaviour",
+                "Example.",
+                "## Design rationale",
+                "Example.",
+                "## Interactions",
+                "Example.",
+                "## Failure model",
+                "Example.",
+                "## Approved change contract — ready target",
+                "- **Target behaviour.** Call `src/ready.py::ready`.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert DocViolation(
+        "docs/specs/example/high-level.md",
+        "contract-target-present",
+        "Approved change contract — ready target: src/ready.py::ready",
+    ) in _docs_violations(tmp_path, tmp_path / "docs" / "specs")
+
+
+def test_docs_guard_rejects_remaining_work_pointer_to_empty_roadmap(
+    tmp_path: Path,
+) -> None:
+    component = tmp_path / "docs" / "specs" / "example"
+    roadmap = tmp_path / "docs" / "roadmap"
+    component.mkdir(parents=True)
+    roadmap.mkdir(parents=True)
+    (component / "high-level.md").write_text(
+        "\n".join(
+            [
+                "## Purpose",
+                "Example.",
+                "## Scope",
+                "Example.",
+                "## Behaviour",
+                "Example.",
+                "## Design rationale",
+                "Example.",
+                "## Interactions",
+                "Example.",
+                "## Failure model",
+                "Remaining improvement work is tracked in the",
+                "[example roadmap](../../roadmap/example.md).",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (roadmap / "example.md").write_text(
+        "\n".join(
+            [
+                "## Scope",
+                "Example.",
+                "## Priorities",
+                "There are no active example improvement packages.",
+                "## Planned improvements",
+                "There are no active example improvement packages.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert DocViolation(
+        "docs/specs/example/high-level.md",
+        "empty-roadmap-pointer",
+        "../../roadmap/example.md",
+    ) in _docs_violations(tmp_path, tmp_path / "docs" / "specs")

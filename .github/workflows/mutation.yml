@@ -66,9 +66,8 @@ jobs:
           retention-days: 7
 
   # 2) One matrix job per (target, shard): slice this shard's disjoint mutant
-  #    subset from the shared init session and execute it with in-job parallel
-  #    workers (one isolated source copy per worker, so concurrent in-place
-  #    mutation cannot race). Each shard is a small fraction of the mutants, so
+  #    subset from the shared init session and execute it serially in the real
+  #    checkout. Each shard is a small fraction of the mutants, so
   #    it finishes well under the wall-clock and runs under low load — which is
   #    what keeps the baseline per-mutant timeout robust.
   shard:
@@ -130,10 +129,22 @@ jobs:
   #    Named `mutation` so it remains the single pass/fail gate check.
   mutation:
     needs: [plan, shard]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Require a successful mutation plan
+        if: ${{ needs.plan.result != 'success' }}
+        run: |
+          echo "::error::Mutation planning failed; the gate cannot be evaluated."
+          exit 1
+
+      - name: Require successful mutation shards
+        if: ${{ needs.plan.result == 'success' && needs.plan.outputs.any == 'true' && needs.shard.result != 'success' }}
+        run: |
+          echo "::error::One or more mutation shards failed; the gate cannot be evaluated."
+          exit 1
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

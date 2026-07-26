@@ -80,9 +80,11 @@ def test_npm_low_ignored_high_blocked_and_ghsa_identity(tmp_path):
 
 def test_npm_transitive_meta_finding(tmp_path):
     report = npm_report({"parent": {"severity": "critical", "via": ["child", "other"]}})
-    assert audit.parse_npm_report(report) == {
-        audit.Finding("npm", "parent", "npm:transitive:child|other")
-    }
+    assert audit.parse_npm_report(report) == {audit.Finding("npm", "parent", "npm:transitive")}
+    changed_dependency_path = npm_report(
+        {"parent": {"severity": "critical", "via": ["replacement", "other"]}}
+    )
+    assert audit.parse_npm_report(changed_dependency_path) == audit.parse_npm_report(report)
 
 
 def test_valid_acceptance_passes(tmp_path):

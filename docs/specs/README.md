@@ -17,7 +17,15 @@ compatibility decision, and acceptance evidence. That section must distinguish t
 behaviour from the approved target and link to its implementation plan. It is not a claim that
 the change has shipped. When implementation lands, the release step folds the approved contract
 into the normal present-tense sections, removes the temporary section, and verifies that code,
-tests, and specification agree.
+tests, and specification agree. The historical `## Polars backend contracts (<version>)`
+heading is legacy temporary-contract debt: no new section may use it, and existing sections follow
+the same fold-and-remove rule.
+
+`tests/test_docs_accuracy.py` enforces paths, symbols, headings, links and anchors, Testing
+references, roadmap evidence, ownership claims, and temporary-contract retirement. Existing
+violations are explicit one-line entries in `tests/docs_accuracy_baseline.txt`; a component deletes
+its line when reconciled, while any new line is a reviewed ratchet change rather than a silent
+fallback.
 
 ## Approved change contract — prerelease canonical-only formats
 
@@ -108,9 +116,11 @@ The component specs cover maintained behaviour, not just the importable runtime:
   sidecar remain loud, and no dedicated test suite maintains it as an end-to-end compatibility
   fixture.
 - A file may be named in several module maps only when one component is its **primary owner** and
-  the others are consumers documenting their direct interaction. The complete, machine-checked
-  set is [ownership.toml](ownership.toml); new shared files must be added there rather than
-  silently acquiring multiple owners.
+  the others are consumers documenting their direct interaction. An explicit cross-component
+  ownership claim in prose is subject to the same discipline even when only the primary component
+  module-maps the file. The complete, machine-checked set is
+  [ownership.toml](ownership.toml); new shared files and prose ownership claims must be added there
+  rather than silently acquiring multiple owners.
 
 Current delivery intent lives in the flat [engineering roadmap](../roadmap/README.md): the index
 links to one self-contained, non-normative improvement file per component. Roadmaps do not replace
@@ -128,6 +138,8 @@ every node type: its generated-code template (`_gen_*`) is specced in
 [codegen](codegen/high-level.md), and its config-editor UI in
 [frontend-node-editors](frontend-node-editors/high-level.md). The table below covers all
 19 node types and gives the components owning each node's core behaviour beyond those two.
+The canonical set uses `dataInput` for all supported tabular sources and `dataOutput` for
+tabular persistence; the removed `dataSource` and `dataSink` types have no compatibility path.
 
 | Node type | Core behaviour specced in |
 |---|---|
@@ -196,14 +208,3 @@ every node type: its generated-code template (`_gen_*`) is specced in
 | [build-and-distribution](build-and-distribution/high-level.md) | Python package metadata and Hatch hook, frontend production build, bundled static assets, dependency locks, typed-package marker, and MkDocs publication |
 | [engineering-quality](engineering-quality/high-level.md) | CI workflows, pre-commit/lint/type/test gates, critical coverage, mutation/performance suites, browser E2E, developer scripts, and non-normative engineering evidence |
 | [reference-pipeline](reference-pipeline/high-level.md) | The checked-in non-runnable `rating/` layout/example snapshot: generated graph code, available sidecars, utilities, and model artefacts, with missing referenced data/sidecar and no dedicated end-to-end tests |
-
-## Approved change contract — 0.7.0 data I/O node convergence
-
-The approved target is specified in the
-[I/O layer](io-layer/high-level.md#approved-change-contract-070-data-io-convergence). Remaining
-data-I/O improvement work is tracked in the [I/O layer roadmap](../roadmap/io-layer.md).
-The canonical node set has 19 types: `dataInput` owns all file, database,
-lakehouse, Databricks, and inline tabular sources; `dataOutput` owns all supported tabular
-persistence. `dataSource` and `dataSink` are removed with no compatibility path. This is
-node-type convergence, not graph cardinality: pipelines may contain multiple data inputs and
-outputs.
