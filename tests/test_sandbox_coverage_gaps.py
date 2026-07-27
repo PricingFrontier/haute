@@ -5,8 +5,8 @@ The existing ``test_sandbox.py`` suite exercises the *blocked* paths of
 exhaustively, but the *accept* arms are only lightly hit.  This file pins
 down the RCE-prevention boundary from the allow side:
 
-- the single-element prefix match accept (``module.startswith(prefix)``)
-- the two-element exact ``module == / name ==`` match accept
+- an exact class allowlist accept
+- an exact scaffolding-global allowlist accept
 - the joblib-variant accept (delegating to the original ``find_class``)
 - the ``ImportError`` fallback to ``safe_unpickle`` when joblib is absent
 
@@ -36,25 +36,18 @@ from haute._sandbox import (
 
 
 class TestRestrictedUnpicklerAcceptArms:
-    """Directly exercise the accept branches of find_class (lines 390, 392)."""
+    """Directly exercise both exact-allowlist accept branches."""
 
-    def test_single_element_prefix_match_accepts(self):
-        """A module matching a 1-element prefix (numpy) is resolved.
-
-        Hits the ``len(prefix) == 1 and module.startswith(...)`` accept arm.
-        """
+    def test_exact_class_allowlist_accepts(self):
+        """An exact ``(module, qualname)`` class entry is resolved."""
         import numpy as np
 
         unpickler = _RestrictedUnpickler(io.BytesIO(b""))
-        # numpy.ndarray's module starts with "numpy" → accepted.
         resolved = unpickler.find_class("numpy", "dtype")
         assert resolved is np.dtype
 
-    def test_two_element_exact_match_accepts(self):
-        """builtins.dict matches the exact 2-tuple (builtins, dict) entry.
-
-        Hits the ``len(prefix) == 2 and module == ... and name == ...`` arm.
-        """
+    def test_exact_global_allowlist_accepts(self):
+        """``builtins.dict`` matches its exact scaffolding-global entry."""
         unpickler = _RestrictedUnpickler(io.BytesIO(b""))
         resolved = unpickler.find_class("builtins", "dict")
         assert resolved is dict

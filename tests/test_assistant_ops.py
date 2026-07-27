@@ -1,6 +1,6 @@
 """Tests for the assistant graph-edit ops engine (``haute.assistant._ops``).
 
-Spec: docs/specs/assistant/low-level.md — Key types (``GraphEditOp``) and
+Spec: specs/assistant/low-level.md — Key types (``GraphEditOp``) and
 Edge cases.  The engine is a pure graph→graph function: ``parse_ops``
 validates wire-shaped op dicts, ``apply_ops`` applies them in order
 against a copy of the graph and returns the new graph.  Any validation

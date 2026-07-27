@@ -1,5 +1,5 @@
 /**
- * Right-panel mutual exclusivity (docs/specs/frontend-assistant-ui &
+ * Right-panel mutual exclusivity (specs/frontend-assistant-ui &
  * frontend-shared): utility / imports / git / assistant are exclusive BY
  * CONSTRUCTION — every setter clears the other three, so the App cascade
  * can never render two panels.

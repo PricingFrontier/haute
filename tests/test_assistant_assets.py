@@ -1,6 +1,6 @@
 """Tests for the assistant knowledge assets (``haute.assistant._assets``).
 
-Spec: docs/specs/assistant/low-level.md — `_assets.py` / `assets/` rows and
+Spec: specs/assistant/low-level.md — `_assets.py` / `assets/` rows and
 § Testing: the authoring guide must load non-empty from the installed
 package; every packaged exemplar must parse cleanly through the real
 parser (the drift guard — a stale exemplar fails CI exactly like a stale
@@ -50,7 +50,7 @@ class TestAuthoringGuide:
 
     def test_guide_relies_on_the_packaged_catalog_not_repo_only_docs(self):
         guide = authoring_guide()
-        assert "docs/specs/README.md" not in guide
+        assert "specs/README.md" not in guide
         assert "node catalog" in guide.lower()
 
 

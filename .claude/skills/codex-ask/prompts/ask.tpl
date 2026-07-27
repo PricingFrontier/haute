@@ -4,7 +4,7 @@ task to execute.
 
 Topic label: `{{TARGET}}`
 
-Ground your answer in the actual repository: read any files you need (`docs/specs/README.md`
+Ground your answer in the actual repository: read any files you need (`specs/README.md`
 indexes the per-component architecture specs; `CLAUDE.md` has project conventions). Be direct and specific. Disagree where warranted — the
 whole point of asking you is that you may see what the requester missed. Distinguish clearly
 between what you verified in the repo and what you are inferring.

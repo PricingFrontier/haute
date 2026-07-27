@@ -3,7 +3,7 @@ and focus on what actually breaks, not what theoretically could.
 
 The change is identified as `{{TARGET}}`.
 
-If `{{TARGET}}` resolves to an existing file, treat it as the **design/context document**: read it, evaluate the diff against it. If not a path (e.g. a free-form label), skip "Plan conformance" and review against the patterns in the relevant `docs/specs/` component specs plus the stated intent in the additional-context block below.
+If `{{TARGET}}` resolves to an existing file, treat it as the **design/context document**: read it, evaluate the diff against it. If not a path (e.g. a free-form label), skip "Plan conformance" and review against the patterns in the relevant `specs/` component specs plus the stated intent in the additional-context block below.
 
 To see the change set:
   git status -s
@@ -14,7 +14,7 @@ If `git diff HEAD` returns nothing (already committed), use `git diff @{u}...HEA
 ## Prerequisites — read first
 
 1. `CLAUDE.md` — project conventions (fail-loud philosophy, TDD, quality bar).
-2. `docs/specs/README.md` — component spec index; then the `docs/specs/<component>/` specs for the components the diff touches — **including the spec deltas in this change set**, which carry the intended design (high-level.md: behaviour and failure model; low-level.md: exact implementation details).
+2. `specs/README.md` — component spec index; then the `specs/<component>/` specs for the components the diff touches — **including the spec deltas in this change set**, which carry the intended design (high-level.md: behaviour and failure model; low-level.md: exact implementation details).
 3. `.claude/skills/codex-code-review/checklist.md` — single source of truth for the review checklist, severity classification, and approval gate.
 4. Design/context file `{{TARGET}}` if it's a path.
 

@@ -1,4 +1,4 @@
-The plan at `{{TARGET}}` and/or its spec deltas have been updated since your previous review. Re-read the plan and re-run `git diff HEAD -- docs/specs/` for the current design, then produce an incremental review:
+The plan at `{{TARGET}}` and/or its spec deltas have been updated since your previous review. Re-read the plan and re-run `git diff HEAD -- specs/` for the current design, then produce an incremental review:
 
   1. Confirm whether each of your prior findings is now addressed. Quote the prior finding briefly, then state addressed / not addressed / partially addressed with the line numbers that resolved (or didn't).
   2. Flag any **new** issues introduced by the edits.

@@ -1,6 +1,6 @@
 """Tests for the assistant HTTP surface (``haute.routes.assistant``).
 
-Spec: docs/specs/assistant/low-level.md — Control flow (Status / Session
+Spec: specs/assistant/low-level.md — Control flow (Status / Session
 create / Message turn) and Error handling.  Routes are thin: readiness and
 sessions come from ``haute.assistant``; the turn streams as SSE.
 

@@ -22,6 +22,7 @@ describe("canonical data IO node types", () => {
   it("keeps only the canonical singleton types", () => {
     expect(isSingletonType("apiInput")).toBe(true)
     expect(isSingletonType("output")).toBe(true)
+    expect(isSingletonType("liveSwitch")).toBe(true)
     expect(isSingletonType("dataInput")).toBe(false)
   })
 })

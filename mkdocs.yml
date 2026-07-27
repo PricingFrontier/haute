@@ -54,15 +54,10 @@ extra:
 extra_css:
   - stylesheets/extra.css
 
-# Internal engineering material lives under docs/ for repo convenience but is
-# not part of the public site: component specs, engineering roadmaps, TRIP
-# changelogs, and engineering review reports.
+# Internal engineering reference notes remain in the repository but are not
+# part of the public site. Component specs and engineering roadmaps live in
+# root-level specs/, outside the site source tree.
 exclude_docs: |
-  specs/
-  roadmap/
-  trip/
-  opus-5-review.md
-  opus-5-*.md
   CI_MIRROR.md
   COMMIT_STANDARDS.md
   PERFORMANCE_CHECKS.md
