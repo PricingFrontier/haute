@@ -587,26 +587,6 @@ class TestBugB13B14ChunkSizeRestore:
         assert result.status == "ok"
         assert pl.Config.state().get("POLARS_STREAMING_CHUNK_SIZE") == "75000"
 
-    @pytest.mark.skip(reason="Superseded by behavioral chunk-size restoration tests.")
-    def test_chunk_size_restore_does_not_pass_zero(self) -> None:
-        """Polars streaming chunk size restore must not call set_streaming_chunk_size(0).
-
-        Polars rejects 0 with ``ValueError: number of rows per chunk must be >= 1``.
-        When the previous chunk size was None (Polars auto-default), the restore
-        must be skipped — there is no API to "unset" the streaming chunk size.
-        """
-        import inspect
-
-        from haute import executor
-
-        source = inspect.getsource(executor.write_data_output)
-        # The old buggy pattern passed 0 when _prev_chunk_size was None:
-        #   set_streaming_chunk_size(int(x) if x is not None else 0)
-        # This raises ValueError. The fix guards the restore with an if check.
-        assert "else 0" not in source, (
-            "Chunk size restore must not fall back to 0 — Polars rejects it"
-        )
-
 
 # ---------------------------------------------------------------------------
 # B16: validate_deploy not called in programmatic path

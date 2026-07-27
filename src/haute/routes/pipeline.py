@@ -359,20 +359,30 @@ async def list_pipelines() -> list[PipelineSummary]:
     files = discover_pipelines()
     cwd = Path.cwd()
 
+    def _wire_file(f: Path) -> str:
+        try:
+            return str(f.relative_to(cwd))
+        except ValueError:
+            return f.name
+
     async def _parse_one(f: Path) -> PipelineSummary:
         try:
             graph = await asyncio.to_thread(parse_pipeline_file, f)
             return PipelineSummary(
                 name=graph.pipeline_name or f.stem,
                 description=graph.pipeline_description or "",
-                file=str(f.relative_to(cwd)),
+                file=_wire_file(f),
                 node_count=len(graph.nodes),
             )
+        except ParseError as e:
+            # Hand-authored parser messages are the path-safe client contract.
+            return PipelineSummary(name=f.stem, file=_wire_file(f), error=str(e))
         except Exception as e:
+            logger.warning("pipeline_list_parse_failed", file=f.name, error=str(e))
             return PipelineSummary(
                 name=f.stem,
-                file=str(f),
-                error=str(e),
+                file=_wire_file(f),
+                error="Failed to parse pipeline. Check the server logs for details.",
             )
 
     return list(await asyncio.gather(*[_parse_one(f) for f in files]))

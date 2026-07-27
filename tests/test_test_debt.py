@@ -14,9 +14,7 @@ import json
 import re
 import sys
 import textwrap
-import tomllib
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).parent
@@ -35,14 +33,9 @@ _MARK_DEBT_TARGETS = {
 }
 _DEBT_TARGETS = _CALL_DEBT_TARGETS | _MARK_DEBT_TARGETS
 
-_TEST_HEALTH_POLICY_PATH = TESTS_DIR / "test-health-policy.toml"
 _TEST_HEALTH_SUMMARY_PATH = TESTS_DIR / "test-health-summary.md"
 _MUTATION_TARGETS_PATH = REPO_ROOT / "mutation" / "targets.json"
-_POLICY_SECTIONS = {
-    "backend_marker_debt": frozenset({"owner", "review_by"}),
-    "frontend_marker_debt": frozenset({"owner", "review_by"}),
-    "playwright_ci_retries": frozenset({"owner", "review_by", "ci_budget"}),
-}
+_PLAYWRIGHT_CI_RETRY_BUDGET = 2
 
 # Exact debt-site fingerprints as of the test-suite review. The fingerprint uses
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
@@ -129,20 +122,13 @@ _EXPECTED_DEBT_IDS = {
     # only fires on POSIX (Windows chmod differs); the test is skipped
     # on win32 by design. See TestPermissionDenied.
     "716bebf07ce4f9f3",
-    "efaa6262fa369b7b",
     "531fb2f9161337c8",
-    "b1a877eb33f7ed72",
-    "b014f75c351f71e8",
-    "923dd77d913747c1",
-    "ecfff38c87946544",
-    "24665ee51c5161bd",
     # (test_windows_reserved_names_produce_paths's win32 skipif retired: the
     # test is now an all-platform predicate check, so its debt entry is gone.)
     "d23a55b468b6e518",
     "5efdb01a5c96e2ef",
     "bdc246f0c4c5f76e",
     "e7555cb715103f36",
-    "fa170fc37d031be4",
     "b8ed76e2d8a5a137",
     "c87e80ef52f08568",
     "50a51dcce3b28cae",
@@ -173,18 +159,15 @@ _EXPECTED_DEBT_IDS = {
     "6881417aa251afb7",
     "fb0e81ff682c42ba",
     "de69a025e2015f76",
-    "967836b4341f4a4a",
     "c846306558bad02c",
     "9ca93c4280b5017c",
     "bfd8943e3c6770ee",
-    "06ed3efefb4ae119",
     "a6bc71691f1fd1db",
     "f68efc20cf708633",
     "68865fbae69e1d1c",
     "24327ebd107b8ae0",
     "2a634b625baa4350",
     "aec15b8d084c0f9f",
-    "87cf9927840facbd",
     "36389904372edffb",
     "40f0104677c0d566",
     "454198ff8535ff31",
@@ -956,47 +939,13 @@ def _format_frontend_site(site: _FrontendDebtSite) -> str:
     return f"{site.id} {site.path.as_posix()}:{site.line} {site.callee} source={site.source!r}"
 
 
-def _load_test_health_policy(path: Path = _TEST_HEALTH_POLICY_PATH) -> dict[str, dict[str, object]]:
-    try:
-        payload = tomllib.loads(path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"Invalid test-health policy TOML: {exc}") from exc
-    if not isinstance(payload, dict) or set(payload) != {"schema_version", *_POLICY_SECTIONS}:
-        raise ValueError(
-            "Test-health policy must contain exactly schema_version and policy sections"
-        )
-    if payload["schema_version"] != 1:
-        raise ValueError("Test-health policy must use schema_version 1")
-    policy: dict[str, dict[str, object]] = {}
-    for section, expected_keys in _POLICY_SECTIONS.items():
-        raw = payload[section]
-        if not isinstance(raw, dict) or set(raw) != expected_keys:
-            raise ValueError(f"Test-health policy section {section} has invalid fields")
-        owner = raw["owner"]
-        review_by = raw["review_by"]
-        if not isinstance(owner, str) or not owner.strip():
-            raise ValueError(f"Test-health policy section {section} requires a non-empty owner")
-        if not isinstance(review_by, date):
-            raise ValueError(f"Test-health policy section {section} review_by must be a TOML date")
-        if review_by < date.today():
-            raise ValueError(f"Test-health policy section {section} review_by has expired")
-        normalized = {"owner": owner, "review_by": review_by}
-        if section == "playwright_ci_retries":
-            budget = raw["ci_budget"]
-            if isinstance(budget, bool) or not isinstance(budget, int) or budget != 2:
-                raise ValueError("Test-health policy Playwright ci_budget must be exactly 2")
-            normalized["ci_budget"] = budget
-        policy[section] = normalized
-    return policy
-
-
 def _load_summary_mutation_targets() -> list[dict[str, object]]:
     try:
         payload = json.loads(_MUTATION_TARGETS_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid mutation target JSON: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != 2:
-        raise ValueError("Mutation targets must use schema_version 2")
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise ValueError("Mutation targets must use schema_version 1")
     targets = payload.get("targets")
     if not isinstance(targets, list):
         raise ValueError("Mutation targets must define targets as a list")
@@ -1004,35 +953,18 @@ def _load_summary_mutation_targets() -> list[dict[str, object]]:
     for raw in targets:
         if not isinstance(raw, dict):
             raise ValueError("Mutation target must be an object")
-        name, owner, review_by, rate = (
-            raw.get("name"),
-            raw.get("owner"),
-            raw.get("review_by"),
-            raw.get("max_survival_rate"),
-        )
-        if not isinstance(name, str) or not name or not isinstance(owner, str) or not owner.strip():
-            raise ValueError("Mutation target requires non-empty name and owner")
+        name, rate = raw.get("name"), raw.get("max_survival_rate")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Mutation target requires a non-empty name")
         if isinstance(rate, bool) or not isinstance(rate, int | float) or not 0 <= rate <= 100:
             raise ValueError(f"Mutation target {name} has invalid max_survival_rate")
-        if not isinstance(review_by, str):
-            raise ValueError(f"Mutation target {name} requires ISO review_by")
-        try:
-            review_date = date.fromisoformat(review_by)
-        except ValueError as exc:
-            raise ValueError(f"Mutation target {name} has invalid review_by") from exc
-        if review_date < date.today():
-            raise ValueError(f"Mutation target {name} review_by has expired")
-        result.append({"name": name, "owner": owner, "review_by": review_date, "rate": float(rate)})
+        result.append({"name": name, "rate": float(rate)})
     return sorted(result, key=lambda target: str(target["name"]))
 
 
 def _test_health_summary() -> str:
-    policy = _load_test_health_policy()
     backend = _scan_debt_sites()
     frontend = _scan_frontend_debt_sites()
-    backend_policy = policy["backend_marker_debt"]
-    frontend_policy = policy["frontend_marker_debt"]
-    playwright_policy = policy["playwright_ci_retries"]
     rows = [
         (
             "Backend skip/skipif",
@@ -1040,32 +972,27 @@ def _test_health_summary() -> str:
                 site.kind in {"pytest.skip", "pytest.mark.skip", "pytest.mark.skipif"}
                 for site in backend
             ),
-            backend_policy,
             "Backend AST scanner",
         ),
         (
             "Backend importorskip",
             sum(site.kind == "pytest.importorskip" for site in backend),
-            backend_policy,
             "Backend AST scanner",
         ),
         (
             "Backend xfail",
             sum(site.kind in {"pytest.xfail", "pytest.mark.xfail"} for site in backend),
-            backend_policy,
             "Backend AST scanner",
         ),
         (
             "Backend flaky",
             sum(site.kind == "pytest.mark.flaky" for site in backend),
-            backend_policy,
             "Backend AST scanner (zero-budget fingerprint ratchet)",
         ),
-        ("Frontend marker debt", len(frontend), frontend_policy, "Frontend source scanner"),
+        ("Frontend marker debt", len(frontend), "Frontend source scanner"),
         (
             "Playwright CI retries",
-            int(playwright_policy["ci_budget"]),
-            playwright_policy,
+            _PLAYWRIGHT_CI_RETRY_BUDGET,
             "frontend/playwright.config.ts: process.env.CI ? 2 : 0",
         ),
     ]
@@ -1073,22 +1000,20 @@ def _test_health_summary() -> str:
         "# Test Health Summary",
         "",
         (
-            "Generated deterministically from the live test-debt scanners, test-health policy, and "
+            "Generated deterministically from the live test-debt scanners and "
             "mutation targets. Regenerate with `uv run python tests/test_test_debt.py "
             "--write-summary`."
         ),
         "",
-        "| Signal | Count / max survivor rate | Owner | Review by | Enforcement/source |",
-        "| --- | ---: | --- | --- | --- |",
+        "| Signal | Count / max survivor rate | Enforcement/source |",
+        "| --- | ---: | --- |",
     ]
-    for signal, value, row_policy, source in rows:
-        owner = row_policy["owner"]
-        review_by = row_policy["review_by"]
-        lines.append(f"| {signal} | {value} | {owner} | {review_by.isoformat()} | {source} |")
+    for signal, value, source in rows:
+        lines.append(f"| {signal} | {value} | {source} |")
     for target in _load_summary_mutation_targets():
         lines.append(
-            f"| Mutation `{target['name']}` | {target['rate']:.2f}% | {target['owner']} | "
-            f"{target['review_by'].isoformat()} | mutation/targets.json max_survival_rate |"
+            f"| Mutation `{target['name']}` | {target['rate']:.2f}% | "
+            "mutation/targets.json max_survival_rate |"
         )
     return "\n".join(lines) + "\n"
 
@@ -1150,34 +1075,9 @@ def test_non_strict_xfails_are_explicitly_budgeted() -> None:
     assert non_strict_or_ambiguous_xfails == _EXPECTED_NON_STRICT_XFAIL_IDS
 
 
-def test_skip_xfail_debt_budget_has_not_gone_stale() -> None:
-    _load_test_health_policy()
-
-
-def test_test_health_policy_rejects_malformed_or_expired_entries(tmp_path: Path) -> None:
-    valid = _TEST_HEALTH_POLICY_PATH.read_text(encoding="utf-8")
-    cases = (
-        ("extra", valid + "\n[unexpected]\nowner = 'nope'\n"),
-        ("empty-owner", valid.replace('owner = "engineering-quality"', 'owner = ""')),
-        ("expired", valid.replace("2026-10-25", "2020-01-01", 1)),
-        ("retry", valid.replace("ci_budget = 2", "ci_budget = 1")),
-    )
-    for name, content in cases:
-        path = tmp_path / f"{name}.toml"
-        path.write_text(content, encoding="utf-8")
-        try:
-            _load_test_health_policy(path)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("expected malformed policy to fail closed")
-
-
-def test_playwright_ci_retry_budget_matches_policy() -> None:
-    policy = _load_test_health_policy()
+def test_playwright_ci_retry_budget_is_pinned() -> None:
     source = (REPO_ROOT / "frontend" / "playwright.config.ts").read_text(encoding="utf-8")
-    assert "retries: process.env.CI ? 2 : 0," in source
-    assert policy["playwright_ci_retries"]["ci_budget"] == 2
+    assert f"retries: process.env.CI ? {_PLAYWRIGHT_CI_RETRY_BUDGET} : 0," in source
 
 
 def test_test_health_summary_matches_regeneration() -> None:

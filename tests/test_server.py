@@ -2407,6 +2407,7 @@ class TestListPipelinesParseError:
         from unittest.mock import patch
 
         monkeypatch.chdir(pipeline_dir)
+        from haute.errors import ParseError
         from haute.routes._helpers import invalidate_pipeline_index
 
         invalidate_pipeline_index()
@@ -2418,7 +2419,7 @@ class TestListPipelinesParseError:
         def _patch_parse(f, **kw):
             if "test_pipeline" in str(f):
                 return original_parse(f, **kw)
-            raise RuntimeError("Simulated parse failure")
+            raise ParseError("Simulated parse failure")
 
         from haute import parser
         from haute.routes import pipeline as pipeline_routes

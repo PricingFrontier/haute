@@ -1101,11 +1101,6 @@ class TestSensitiveInfoLeakage:
 
     # -- Cases that need special setup (not easily parametrizable) --
 
-    @pytest.mark.xfail(
-        reason="Known gap: list_pipelines passes raw str(e) into PipelineSummary.error "
-        "(pipeline.py line 64). Absolute paths from parse exceptions leak to the client.",
-        strict=True,
-    )
     def test_list_pipelines_parse_error_no_absolute_path(
         self,
         client: TestClient,
@@ -1132,10 +1127,16 @@ class TestSensitiveInfoLeakage:
         ):
             resp = c.get("/api/pipelines")
         assert resp.status_code == 200
-        for item in resp.json():
+        items = resp.json()
+        assert any(item.get("error") for item in items)
+        for item in items:
             if item.get("error"):
                 assert str(tmp_path) not in item["error"], (
                     f"Absolute path leaked in pipeline list error: {item['error']}"
+                )
+                assert "Check the server logs" in item["error"]
+                assert str(tmp_path) not in item["file"], (
+                    f"Absolute path leaked in pipeline list file field: {item['file']}"
                 )
 
     def test_trace_deep_exception_no_traceback_frames(

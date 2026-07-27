@@ -18,15 +18,16 @@ There are no active engineering-quality roadmap packages.
 
 ## Delivered outcomes
 
-- `ROAD-TEST-05` defines cumulative regression and fixture-provenance rules,
-  assigns owners and review dates to backend, frontend, browser, and mutation
-  health policy, and generates one deterministic actionable summary. The
-  ratchet rejects unreasoned or unowned skips/xfails/flakes, an excessive
-  Playwright retry budget, expired mutation ownership, survivor-budget drift,
-  and summary drift. `tests/test_test_debt.py`,
-  `tests/test-health-policy.toml`, `tests/test-health-summary.md`,
-  `mutation/targets.json`, and `scripts/run_mutation_suite.py` are the
-  maintained contract.
+- `ROAD-TEST-05` defines cumulative regression and fixture-provenance rules
+  and generates one deterministic actionable summary. The ratchet rejects
+  unreasoned skips/xfails/flakes, an excessive Playwright retry budget,
+  survivor-budget drift, and summary drift. `tests/test_test_debt.py`,
+  `tests/test-health-summary.md`, `mutation/targets.json`, and
+  `scripts/run_mutation_suite.py` are the maintained contract. The
+  owner/review-date calendar gate originally delivered with this package was
+  removed on 2026-07-27: the one-off review it deferred was performed instead
+  (stale guards deleted, the `list_pipelines` path-leak xfail fixed), and
+  ongoing review is event-driven through the fingerprint ratchet.
 - The stale JSON-cache approved-change note is now the present-tense canonical
   contract, and assistant tool messages no longer infer a missing `is_error`
   field from historical content shape. Together with the component-owned
