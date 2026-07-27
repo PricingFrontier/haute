@@ -1,6 +1,6 @@
 """Tests for the assistant node catalog (``haute.assistant._catalog``).
 
-Spec: docs/specs/assistant/low-level.md — `_catalog.py` row and § Testing:
+Spec: specs/assistant/low-level.md — `_catalog.py` row and § Testing:
 completeness against ``NodeType`` (the ``validate_registry_complete``
 pattern applied to the catalog) and agreement of every mechanical fact
 with the canonical registries — the catalog must never become a second

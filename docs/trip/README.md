@@ -5,9 +5,9 @@ spec-first Plan → Implement → Release workflow.
 
 - `changelog/` contains per-release notes and the rolling changelog table.
 - Current delivery intent lives in the flat
-  [component roadmap](../roadmap/README.md).
+  [component roadmap](../../specs/roadmap/README.md).
 - Maintained behaviour lives in the
-  [component specifications](../specs/README.md).
+  [component specifications](../../specs/README.md).
 
 Separate implementation-plan and code-review Markdown is not retained here
 after release. Any unfinished, reverified improvement is condensed into its

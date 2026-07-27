@@ -1,7 +1,7 @@
 """Tests for the assistant agent loop (``haute.assistant._loop``) and session
 retention.
 
-Spec: docs/specs/assistant/low-level.md — Control flow (Message turn) and Edge
+Spec: specs/assistant/low-level.md — Control flow (Message turn) and Edge
 cases.  ``run_turn`` is an async generator of typed stream events; the tests
 consume it with a scripted fake provider and an injected tool executor, so no
 SDK, filesystem, or save service is involved.

@@ -1,6 +1,6 @@
 """Tests for assistant configuration and readiness (``haute.assistant._config``).
 
-Spec: docs/specs/assistant/low-level.md — Key types (``AssistantConfig`` /
+Spec: specs/assistant/low-level.md — Key types (``AssistantConfig`` /
 ``AssistantReadiness``) and Control flow (Status): the readiness matrix names
 exactly one missing piece; the output-token budget is strict (unset defaults,
 malformed fails readiness — never warn-and-default); the mutation gate maps

@@ -1,7 +1,7 @@
 /**
  * Tests for the assistant chat store (src/stores/useAssistantStore.ts).
  *
- * Spec: docs/specs/frontend-assistant-ui/low-level.md — Key types, Control
+ * Spec: specs/frontend-assistant-ui/low-level.md — Key types, Control
  * flow (Send/Stop/New chat), Edge cases, Error handling, Testing.
  * Authored test-first: the store is implemented to make these pass.
  *

@@ -29,17 +29,17 @@ ROOT = Path(__file__).resolve().parents[1]
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy.md"
 EDGE_JOIN_GUIDE = ROOT / "docs" / "building-models" / "nodes" / "edge-join.md"
-EDGE_JOIN_RUNTIME_SPEC = ROOT / "docs" / "specs" / "json-shredding" / "low-level.md"
-EDGE_JOIN_EDITOR_SPEC = ROOT / "docs" / "specs" / "frontend-node-editors" / "low-level.md"
-SPECS_README = ROOT / "docs" / "specs" / "README.md"
-PIPELINE_CONFIG_SPEC = ROOT / "docs" / "specs" / "pipeline-config" / "low-level.md"
+EDGE_JOIN_RUNTIME_SPEC = ROOT / "specs" / "json-shredding" / "low-level.md"
+EDGE_JOIN_EDITOR_SPEC = ROOT / "specs" / "frontend-node-editors" / "low-level.md"
+SPECS_README = ROOT / "specs" / "README.md"
+PIPELINE_CONFIG_SPEC = ROOT / "specs" / "pipeline-config" / "low-level.md"
 DEPLOYMENT_DOCS = sorted((ROOT / "docs" / "deployment").rglob("*.md"))
-LOW_LEVEL_SPECS = tuple(sorted((ROOT / "docs" / "specs").rglob("low-level.md")))
+LOW_LEVEL_SPECS = tuple(sorted((ROOT / "specs").rglob("low-level.md")))
 BACKEND_SOURCE_ROOT = ROOT / "src" / "haute"
 FRONTEND_SOURCE_ROOT = ROOT / "frontend" / "src"
-SPECS_ROOT = ROOT / "docs" / "specs"
+SPECS_ROOT = ROOT / "specs"
 SPECS_OWNERSHIP = SPECS_ROOT / "ownership.toml"
-ROADMAP_ROOT = ROOT / "docs" / "roadmap"
+ROADMAP_ROOT = ROOT / "specs" / "roadmap"
 ROADMAP_INDEX = ROADMAP_ROOT / "README.md"
 
 _MARKDOWN_CODE_SPAN = re.compile(r"(?<!`)`([^`\r\n]+)`(?!`)")
@@ -91,6 +91,7 @@ _REPOSITORY_PATH_PREFIXES = (
     "mutation/",
     "rating/",
     "scripts/",
+    "specs/",
     "src/",
     "tests/",
     "security/",
@@ -237,13 +238,11 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
         0
     ]
 
-    for internal_dir in ("specs/", "roadmap/", "trip/"):
-        assert f"  {internal_dir}\n" in exclude_block
+    assert "  trip/\n" in exclude_block
     for internal_file in (
         "CI_MIRROR.md",
         "COMMIT_STANDARDS.md",
         "PERFORMANCE_CHECKS.md",
-        "opus-5-*.md",
     ):
         assert f"  {internal_file}\n" in exclude_block
     assert "\n  - Roadmap:" not in config
@@ -355,7 +354,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
     for retired_root in (
         ROOT / "docs" / "fable-Review",
         ROOT / "docs" / "review",
-        ROOT / "docs" / "roadmap" / "components",
+        ROOT / "specs" / "roadmap" / "components",
         ROOT / "docs" / "trip" / "code-review",
         ROOT / "docs" / "trip" / "plans",
     ):
@@ -379,7 +378,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
             continue
         relative = path.relative_to(ROOT)
         relative_posix = relative.as_posix()
-        if relative_posix.startswith("docs/roadmap/"):
+        if relative_posix.startswith("specs/roadmap/"):
             continue
         name = path.name.casefold()
         if (
@@ -390,7 +389,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         ):
             stray_planning_markdown.append(relative_posix)
     assert not stray_planning_markdown, (
-        "review/roadmap/remediation-plan Markdown must live only in docs/roadmap: "
+        "review/roadmap/remediation-plan Markdown must live only in specs/roadmap: "
         f"{sorted(stray_planning_markdown)}"
     )
 
@@ -865,16 +864,18 @@ def _docs_violations(
     *,
     repo_files: set[Path] | None = None,
 ) -> list[DocViolation]:
-    specs_root = specs_root or root / "docs" / "specs"
+    specs_root = specs_root or root / "specs"
     files = _repo_files(root) if repo_files is None else set(repo_files)
     inventory = RepoInventory.build(root, files)
     file_names = set(inventory.file_names)
     file_suffixes = set(inventory.files_by_suffix)
     violations: set[DocViolation] = set()
     referenced_tests: set[str] = set()
-    roadmap_root = root / "docs" / "roadmap"
+    roadmap_root = root / "specs" / "roadmap"
 
     for document in sorted(specs_root.rglob("*.md")):
+        if roadmap_root in document.parents:
+            continue
         relative = document.relative_to(root).as_posix()
         text = _without_fences(document.read_text(encoding="utf-8"))
         sections = _h2_sections(text)
@@ -1260,7 +1261,7 @@ def test_shared_file_component_parser_preserves_component_multiplicity() -> None
 def test_specs_readme_node_type_count_matches_enum() -> None:
     text = SPECS_README.read_text(encoding="utf-8")
     counts = re.findall(r"covers all\s+(\d+) node types", text)
-    assert counts, "docs/specs/README.md no longer states the node-type count"
+    assert counts, "specs/README.md no longer states the node-type count"
     for count in counts:
         assert int(count) == len(NodeType)
 
@@ -1268,7 +1269,7 @@ def test_specs_readme_node_type_count_matches_enum() -> None:
 def test_specs_readme_node_type_table_lists_every_enum_value() -> None:
     text = SPECS_README.read_text(encoding="utf-8")
     section = _h2_sections(text).get("Where is each node type specced?", "")
-    assert section, "docs/specs/README.md lacks the node-type table section"
+    assert section, "specs/README.md lacks the node-type table section"
     values = {
         match.group(1)
         for row in _module_map_rows(section)
@@ -1282,7 +1283,7 @@ def test_low_level_specs_reference_every_backend_source_file() -> None:
     sources = _backend_production_sources()
     uncovered = _unreferenced_sources(sources)
     assert not uncovered, (
-        "Every behavioral backend source must be explicitly named in a docs/specs "
+        "Every behavioral backend source must be explicitly named in a specs "
         "low-level.md Module map inline-code entry. Uncovered sources:\n- " + "\n- ".join(uncovered)
     )
 
@@ -1296,7 +1297,7 @@ def test_low_level_specs_reference_every_frontend_source_file() -> None:
     )
     uncovered = _unreferenced_sources(sources)
     assert not uncovered, (
-        "Every production frontend source must be explicitly named in a docs/specs "
+        "Every production frontend source must be explicitly named in a specs "
         "low-level.md Module map inline-code entry. Uncovered sources:\n- " + "\n- ".join(uncovered)
     )
 
@@ -1310,7 +1311,7 @@ def test_low_level_specs_reference_every_repository_operational_source() -> None
     ]
     assert not uncovered, (
         "Every maintained build, CI, tooling, browser-E2E, mutation, and reference-pipeline "
-        "artifact must be explicitly named by its exact repo path in a docs/specs low-level.md "
+        "artifact must be explicitly named by its exact repo path in a specs low-level.md "
         "Module map entry. Uncovered sources:\n- " + "\n- ".join(uncovered)
     )
 
@@ -1440,9 +1441,11 @@ def test_shared_module_map_files_have_one_primary_owner_and_complete_ledger() ->
 def test_every_spec_component_has_required_documents_and_readme_entry() -> None:
     readme = SPECS_README.read_text(encoding="utf-8")
     components = sorted(
-        path for path in SPECS_ROOT.iterdir() if path.is_dir() and not path.name.startswith(".")
+        path
+        for path in SPECS_ROOT.iterdir()
+        if path.is_dir() and not path.name.startswith(".") and path.name != "roadmap"
     )
-    assert components, "docs/specs contains no component directories"
+    assert components, "specs contains no component directories"
 
     missing_documents: list[str] = []
     missing_readme_entries: list[str] = []
@@ -1458,7 +1461,7 @@ def test_every_spec_component_has_required_documents_and_readme_entry() -> None:
         missing_documents
     )
     assert not missing_readme_entries, (
-        "docs/specs/README.md is missing component-index entries:\n- "
+        "specs/README.md is missing component-index entries:\n- "
         + "\n- ".join(missing_readme_entries)
     )
 
@@ -1475,7 +1478,9 @@ def test_every_explicit_module_map_repo_path_exists() -> None:
 def test_every_spec_document_follows_the_required_structure() -> None:
     failures: list[str] = []
     for component in sorted(
-        path for path in SPECS_ROOT.iterdir() if path.is_dir() and not path.name.startswith(".")
+        path
+        for path in SPECS_ROOT.iterdir()
+        if path.is_dir() and not path.name.startswith(".") and path.name != "roadmap"
     ):
         for name, headings in (
             ("high-level.md", _REQUIRED_HIGH_LEVEL_HEADINGS),
@@ -1501,7 +1506,7 @@ def test_every_relative_spec_link_resolves() -> None:
             if not (document.parent / target).resolve().exists():
                 broken.append(f"{document.relative_to(ROOT).as_posix()} -> {raw_target}")
 
-    assert not broken, "Broken relative links in docs/specs:\n- " + "\n- ".join(broken)
+    assert not broken, "Broken relative links in specs:\n- " + "\n- ".join(broken)
 
 
 def test_pipeline_config_spec_sidecar_count_matches_mapping() -> None:
@@ -1603,12 +1608,12 @@ def test_documented_python_test_counts_match_source() -> None:
 
 
 def _seed_spec(root: Path, low_level: str) -> Path:
-    spec = root / "docs/specs/example"
+    spec = root / "specs/example"
     spec.mkdir(parents=True)
     (root / "tests").mkdir(exist_ok=True)
     (root / "tests/test_ok.py").write_text("def test_ok(): pass\n", encoding="utf-8")
     (spec / "low-level.md").write_text(low_level, encoding="utf-8")
-    return root / "docs/specs"
+    return root / "specs"
 
 
 def _fixture_repo_files(root: Path) -> set[Path]:
@@ -1616,7 +1621,7 @@ def _fixture_repo_files(root: Path) -> set[Path]:
 
 
 def _seed_high_level_contract(root: Path, heading: str, *contract_lines: str) -> Path:
-    component = root / "docs" / "specs" / "example"
+    component = root / "specs" / "example"
     component.mkdir(parents=True)
     (component / "high-level.md").write_text(
         "\n".join(
@@ -1639,7 +1644,7 @@ def _seed_high_level_contract(root: Path, heading: str, *contract_lines: str) ->
         ),
         encoding="utf-8",
     )
-    return root / "docs" / "specs"
+    return root / "specs"
 
 
 def test_repo_files_fails_loudly_when_git_inventory_fails(
@@ -1717,11 +1722,11 @@ Add `src/existing.py::x`.
     )
     (tmp_path / "src").mkdir()
     (tmp_path / "src/existing.py").write_text("x = 1\n", encoding="utf-8")
-    document = tmp_path / "docs/specs/example/low-level.md"
+    document = tmp_path / "specs/example/low-level.md"
     text = document.read_text(encoding="utf-8") + "\n[bad](#missing-anchor)\n"
     document.write_text(text, encoding="utf-8")
     violations = set(_docs_violations(tmp_path, specs, repo_files=_fixture_repo_files(tmp_path)))
-    relative = "docs/specs/example/low-level.md"
+    relative = "specs/example/low-level.md"
     expected = {
         DocViolation(relative, "missing-repo-reference", "src/missing.py"),
         DocViolation(relative, "missing-module-map-symbol", "also_missing_symbol"),
@@ -1757,7 +1762,7 @@ def test_docs_guard_does_not_treat_existing_target_file_as_delivery(tmp_path: Pa
     )
 
     assert DocViolation(
-        "docs/specs/example/high-level.md",
+        "specs/example/high-level.md",
         "contract-target-present",
         "Approved change contract — pending edit: src/existing.py",
     ) not in _docs_violations(
@@ -1778,7 +1783,7 @@ def test_docs_guard_retires_contract_when_named_target_is_present(tmp_path: Path
     )
 
     assert DocViolation(
-        "docs/specs/example/high-level.md",
+        "specs/example/high-level.md",
         "contract-target-present",
         "Approved change contract — ready target: src/ready.py::ready",
     ) in _docs_violations(
@@ -1805,7 +1810,7 @@ def test_docs_guard_retires_contract_when_acceptance_test_symbol_is_present(
     )
 
     assert DocViolation(
-        "docs/specs/example/high-level.md",
+        "specs/example/high-level.md",
         "contract-target-present",
         "Approved change contract — tested target: tests/test_ready.py::test_ready",
     ) in _docs_violations(
@@ -1818,8 +1823,8 @@ def test_docs_guard_retires_contract_when_acceptance_test_symbol_is_present(
 def test_docs_guard_rejects_remaining_work_pointer_to_empty_roadmap(
     tmp_path: Path,
 ) -> None:
-    component = tmp_path / "docs" / "specs" / "example"
-    roadmap = tmp_path / "docs" / "roadmap"
+    component = tmp_path / "specs" / "example"
+    roadmap = tmp_path / "specs" / "roadmap"
     component.mkdir(parents=True)
     roadmap.mkdir(parents=True)
     (component / "high-level.md").write_text(
@@ -1837,7 +1842,7 @@ def test_docs_guard_rejects_remaining_work_pointer_to_empty_roadmap(
                 "Example.",
                 "## Failure model",
                 "Remaining improvement work is tracked in the",
-                "[example roadmap](../../roadmap/example.md).",
+                "[example roadmap](../roadmap/example.md).",
             ]
         ),
         encoding="utf-8",
@@ -1857,11 +1862,11 @@ def test_docs_guard_rejects_remaining_work_pointer_to_empty_roadmap(
     )
 
     assert DocViolation(
-        "docs/specs/example/high-level.md",
+        "specs/example/high-level.md",
         "empty-roadmap-pointer",
-        "../../roadmap/example.md",
+        "../roadmap/example.md",
     ) in _docs_violations(
         tmp_path,
-        tmp_path / "docs" / "specs",
+        tmp_path / "specs",
         repo_files=_fixture_repo_files(tmp_path),
     )

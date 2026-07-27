@@ -1,6 +1,6 @@
 """End-to-end assistant integration: fake provider, real everything else.
 
-Spec: docs/specs/assistant/low-level.md § Testing (integration).  A scripted
+Spec: specs/assistant/low-level.md § Testing (integration).  A scripted
 provider drives ``run_turn`` against a real tmp project; the mutation flows
 through the real ops engine, the real transactional save service (codegen on
 disk), the real re-parse, and the real event bus.  Only two seams are faked:

@@ -1,7 +1,7 @@
 """Tests for the assistant read tools (``haute.assistant._tools``), chiefly
 ``get_node_schema``.
 
-Spec: docs/specs/assistant/low-level.md — Control flow step 5 and Edge cases.
+Spec: specs/assistant/low-level.md — Control flow step 5 and Edge cases.
 ``get_node_schema(source_file, node)`` parses the saved pipeline, validates
 the target id against the ORIGINAL hierarchical graph (submodel placeholder
 or submodel-internal id → boundary error; nowhere → unknown-node error),

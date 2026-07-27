@@ -1,7 +1,7 @@
 /**
  * Tests for the assistant split endpoint module (src/api/assistant.ts).
  *
- * Spec: docs/specs/frontend-assistant-ui/low-level.md — api/assistant.ts row,
+ * Spec: specs/frontend-assistant-ui/low-level.md — api/assistant.ts row,
  * Key types, and Edge cases (SSE framing).  Authored test-first: the module
  * is implemented to make these pass.
  *

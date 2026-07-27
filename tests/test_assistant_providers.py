@@ -1,6 +1,6 @@
 """Tests for the assistant provider adapters (``haute.assistant._providers``).
 
-Spec: docs/specs/assistant/low-level.md — Key types (``ProviderEvent``) and
+Spec: specs/assistant/low-level.md — Key types (``ProviderEvent``) and
 Control flow § Provider adapters.  Each adapter normalises its SDK's
 streaming events into the internal ``ProviderEvent`` union and maps SDK
 failures to ``AssistantProviderError``; the loop never sees SDK types.

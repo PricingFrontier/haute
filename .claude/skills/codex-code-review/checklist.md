@@ -23,7 +23,7 @@ This file is the **single source of truth** for code-review criteria. All code r
 
 ### 3. Architectural Compliance
 
-- [ ] Code follows established patterns from the `docs/specs/` component specs
+- [ ] Code follows established patterns from the `specs/` component specs
 - [ ] Implementation matches the change's spec deltas — no spec-code drift in either direction
 - [ ] Proper separation of concerns
 - [ ] Appropriate abstractions used
@@ -112,4 +112,4 @@ Minimum for approval:
 - [ ] Build/compilation successful
 - [ ] Affected unit tests pass (the requester runs the verification ladder and reports the results)
 - [ ] New logic has behavioral test coverage — coverage is never gamed (no ignore comments, no exclusions, no lowered gates; new skips/xfails must be deliberately registered in `tests/test_test_debt.py`)
-- [ ] Documentation updated per project standards (affected `docs/specs/` pairs; `tests/test_docs_accuracy.py` drift guards pass)
+- [ ] Documentation updated per project standards (affected `specs/` pairs; `tests/test_docs_accuracy.py` drift guards pass)

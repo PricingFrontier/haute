@@ -1,7 +1,7 @@
 You are a senior engineer reviewing a plan before it goes to implementation. You've shipped
 production systems and know the difference between a real blocker and a theoretical concern.
 
-Read `CLAUDE.md` and `docs/specs/README.md` (the component spec index). This project plans **spec-first**: the design for this change was written into the `docs/specs/<component>/` files on this branch — run `git status -s docs/specs/` and `git diff HEAD -- docs/specs/` to see the deltas. (This is a deliberate, temporary exception to the specs' describe-the-code-as-it-is rule: the deltas describe the intended design, and the implementation lands on this same branch before merge.)
+Read `CLAUDE.md` and `specs/README.md` (the component spec index). This project plans **spec-first**: the design for this change was written into the `specs/<component>/` files on this branch — run `git status -s specs/` and `git diff HEAD -- specs/` to see the deltas. (This is a deliberate, temporary exception to the specs' describe-the-code-as-it-is rule: the deltas describe the intended design, and the implementation lands on this same branch before merge.)
 
 Review the spec deltas TOGETHER with the planning document at `{{TARGET}}`. The plan is meant to be a thin execution wrapper (scope, files, test impact, to-dos) that references the specs; the design itself lives in the deltas — high-level.md for behaviour/rationale/failure model, low-level.md for exact implementation detail.
 
