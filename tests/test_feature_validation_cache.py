@@ -464,6 +464,33 @@ class TestValidationCacheCascadeEviction:
         ms._clear_feature_validation_cache()
         assert len(ms._feature_validation_cache) == 0
 
+    def test_cascade_callbacks_run_after_model_cache_lock_is_released(self) -> None:
+        """Cascades must be able to re-enter safely without holding the LRU lock."""
+        import haute._model_scorer as ms
+        from haute._mlflow_io import _ModelCacheWithCascade
+
+        cache = _ModelCacheWithCascade(max_size=1)
+        first = _make_scoring_model(["first"])
+        second = _make_scoring_model(["second"])
+        observed: list[bool] = []
+
+        def targeted_callback(_model) -> None:
+            observed.append(cache._lock._is_owned())
+
+        def blanket_callback() -> None:
+            observed.append(cache._lock._is_owned())
+
+        with (
+            patch.object(ms, "_invalidate_feature_validation_cache_for", targeted_callback),
+            patch.object(ms, "_clear_feature_validation_cache", blanket_callback),
+        ):
+            cache.put(("first",), first)
+            cache.put(("second",), second)  # capacity eviction
+            cache.evict_matching(lambda key: key == ("second",))
+            cache.clear()
+
+        assert observed == [False, False, False]
+
     def test_targeted_invalidation_drops_only_matching_entries(self) -> None:
         """``_invalidate_feature_validation_cache_for(model)`` scopes to one model."""
         import haute._model_scorer as ms

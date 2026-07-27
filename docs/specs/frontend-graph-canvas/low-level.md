@@ -32,7 +32,7 @@
 | `frontend/src/utils/connectionValidation.ts` | `isPipelineConnectionValid` — the graph-level `isValidConnection` React Flow validator, including the input-name uniqueness rule (a candidate connection whose `edgeInputName` duplicates an existing input name on the target node is invalid, surfaced as a named toast at commit time) and the null-API-handle rejection (an apiInput connection with no source handle is invalid in every gesture direction, the validator-level twin of the zero-frame handle's `isConnectable` false under `ConnectionMode.Loose`). |
 | `frontend/src/utils/flowElements.ts` | `appNode`/`appEdge`/`nodeLabel`/`edgeId`/`deselectNodes`/`selectOnlyNode` — node/edge factories and id/selection helpers. |
 | `frontend/src/utils/flowHandles.ts` | `DEFAULT_TARGET_HANDLE`/`normalizeDefaultTargetHandle` — collapses React Flow's synthetic default-target-handle id to `null`. |
-| `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`Colors`/`Labels`, `PILL_TYPES`). |
+| `frontend/src/utils/nodeTypes.ts` | Canvas metadata derived from shared `types/node.ts::PIPELINE_NODE_TYPES`: `NODE_TYPE_META` and lookups (`SOURCE_ONLY_TYPES`, `SINK_ONLY_TYPES`, `SINGLETON_TYPES`, `PALETTE_TYPES`, `nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`, `PILL_TYPES`). |
 | `frontend/src/utils/apiInputPorts.ts` | Mirrors backend API-input frame identity: eligible frame labels, downstream argument names, label validation, conservative rename migration, and orphan-handle pruning. |
 | `frontend/src/utils/edgeJoinRoles.ts` | Defines edge-join base/join handle roles and maps the rendered bottom join handle onto the canonical join role. |
 | `frontend/src/utils/edgeJoinGraph.ts` | Pure edge-join candidate validation and insertion/rewrite helpers; candidate feedback and release-time insertion share the same validator. |
@@ -643,10 +643,24 @@
 
 ## Testing
 
-The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/apiInputPorts.test.ts`, `edgeJoinGraph.test.ts`, and `edgeJoinValidation.test.ts`: they cover raw-label frame eligibility, blank/duplicate/non-identifier/keyword label rejection (mirroring backend invariant B4's ASCII rule — valid Unicode identifiers like `café` are rejected too), frame-label derivation (`apiInputFrameLabels` across zero/one/many eligible frames, invalid labels, and unselected-column tables), edge input-name derivation (`edgeInputName` for api-input frame edges verbatim, sanitised source labels for ordinary nodes, submodel `out__` edges resolving to the child's sanitised label, and per-target duplicate detection), rename-before-prune migration, identity-preserving no-ops, edge-join insertion/role normalisation, and invalid saved graph diagnostics. These sit alongside the hook/store suites below because their contracts are exercised again through the editor and save paths.
+The pure connection/frame helpers are defended by
+`frontend/src/utils/__tests__/apiInputPorts.test.ts`,
+`frontend/src/utils/__tests__/edgeJoinGraph.test.ts`, and
+`frontend/src/utils/__tests__/edgeJoinValidation.test.ts`: they cover raw-label
+frame eligibility, blank/duplicate/non-identifier/keyword label rejection
+(mirroring backend invariant B4's ASCII rule — valid Unicode identifiers like
+`café` are rejected too), frame-label derivation (`apiInputFrameLabels` across
+zero/one/many eligible frames, invalid labels, and unselected-column tables),
+edge input-name derivation (`edgeInputName` for api-input frame edges verbatim,
+sanitised source labels for ordinary nodes, submodel `out__` edges resolving to
+the child's sanitised label, and per-target duplicate detection),
+rename-before-prune migration, identity-preserving no-ops, edge-join
+insertion/role normalisation, and invalid saved graph diagnostics. These sit
+alongside the hook/store suites below because their contracts are exercised
+again through the editor and save paths.
 
 - **Store — `frontend/src/stores/__tests__/`:**
-  - `useGraphStore.consolidation.test.ts` — store shape and required
+  - `frontend/src/stores/__tests__/useGraphStore.consolidation.test.ts` — store shape and required
     action surface; a "selector isolation (reviewer gate)" block asserting
     by render count that subscribing to one slice does not re-render on
     unrelated slice changes; undo/redo push/pop/no-op semantics for
@@ -655,11 +669,11 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     submodel-only edits; regressions cap both undo and redo stacks; a regression
     block confirming `useUIStore` no longer exposes `dirty`/`setDirty` and
     doesn't duplicate graph-shaped state.
-  - `useGraphStore.fieldEditUndo.test.tsx` — a whole inline field edit is
+  - `frontend/src/stores/__tests__/useGraphStore.fieldEditUndo.test.tsx` — a whole inline field edit is
     one undo step regardless of edit size; a no-op edit pushes nothing; a
     guard test documents what the pre-fix per-keystroke wiring would have
     done.
-  - `useGraphStore.structuralVersion.test.ts` — the full bump/no-bump
+  - `frontend/src/stores/__tests__/useGraphStore.structuralVersion.test.ts` — the full bump/no-bump
     matrix: position/selection/preview-only node changes never bump
     `structuralVersion`; preview-only changes bump `panelContextVersion`
     but not `structuralVersion`; underscore-prefixed metadata stays out of
@@ -667,22 +681,22 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     hashes; Explore overview-card config is ignored while Explore
     data-prep code still flips the hash; add/remove/rewire/reconfigure and
     preamble edits do bump `structuralVersion`.
-  - `useGraphStore.undoAtomicity.test.ts` — single- and multi-node delete
+  - `frontend/src/stores/__tests__/useGraphStore.undoAtomicity.test.ts` — single- and multi-node delete
     (mixing connected/unconnected nodes), pure-edge delete, and paste are
     each exactly one undo entry regardless of selection size; redo replays
     the combined gesture in one step; a store-level contract test asserts
     `setNodesAndEdges` pushes exactly one snapshot per call.
-  - `useGraphStore.vcHistory.test.ts` — `pushVcEntry` appends and clears
+  - `frontend/src/stores/__tests__/useGraphStore.vcHistory.test.ts` — `pushVcEntry` appends and clears
     redo; `MAX_HISTORY` eviction applies to VC entries too; VC undo/redo
     lock history (`vcBusy`) while the async leg runs; a failed leg restores
     the entry to its original stack for retry; VC entries interleaved with
     graph snapshots undo/redo in the correct order.
 - **Context — `frontend/src/panels/__tests__/`:**
-  - `useGraph.gaps.test.ts` — throws a clear `GraphProvider`-naming error
+  - `frontend/src/panels/__tests__/useGraph.gaps.test.ts` — throws a clear `GraphProvider`-naming error
     outside a provider; returns the exact supplied value inside one; an
     empty-graph provider is distinct from no provider; the context sentinel
     is a real, usable `React.Context`.
-  - `NodePanel.graphContext.test.tsx` — DOM-level regression that
+  - `frontend/src/panels/__tests__/NodePanel.graphContext.test.tsx` — DOM-level regression that
     `NodePanel` and nested editors (`DataOutputEditor`, `ModellingConfig`,
     `OptimiserConfig`) consume the graph purely via `useGraph()`, including
     a structural assertion that `DataOutputEditor`'s prop type no longer declares
@@ -720,7 +734,7 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     handle; row-mounted full-detail handles carry the same ids as the
     medium/compact rendering (zoom-invariant id set).
 - **App / integration — `frontend/src/__tests__/`:**
-  - `App.integration.test.tsx` — mount and initial load sequencing (no
+  - `frontend/src/__tests__/App.integration.test.tsx` — mount and initial load sequencing (no
     WebSocket sync while the initial load is pending); empty-pipeline
     rendering; loading a 3-node graph and selecting an Explore node to
     preview its post-code dataframe; drag-and-drop node creation from the
@@ -731,21 +745,21 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     in one undo entry; W1.4: a blanked port label never reaches the graph;
     editing a non-port field never prunes a valid edge); panel
     open/close mutual exclusivity (Utility/Imports/Git/branch indicator).
-  - `App.connectionMode.test.ts` — `ConnectionMode.Loose` is enabled and a
+  - `frontend/src/__tests__/App.connectionMode.test.ts` — `ConnectionMode.Loose` is enabled and a
     graph-level `isValidConnection` validator is wired to `<ReactFlow>`.
-  - `App.findCast.test.tsx` — regression #38 (a `lastSelectedId` pointing
+  - `frontend/src/__tests__/App.findCast.test.tsx` — regression #38 (a `lastSelectedId` pointing
     at a deleted node resolves to `null`, never `undefined`, and the panel
     shows its empty state rather than a broken reference); `GraphProvider`
     array identity stability across position-only re-renders vs. refresh on
     a `structuralVersion` bump; the `graph-effects-lite` canvas class
     activates only once node/edge count crosses the shared threshold.
-  - `App.shallowHash.test.ts` — unit and benchmark coverage for
+  - `frontend/src/__tests__/App.shallowHash.test.ts` — unit and benchmark coverage for
     `shallowNodeDataHash`/`graphFingerprintShallow`, the primitives behind
     `structuralFingerprint`: input-identity invariants (result-only fields
     don't flip the hash), input-key sensitivity (every structural field
     does), and benchmark assertions that the shallow hash stays bounded
     relative to a full-stringify baseline.
-  - `App.backgroundJobsIsolation.test.tsx` — the background-job store
+  - `frontend/src/__tests__/App.backgroundJobsIsolation.test.tsx` — the background-job store
     subscription that feeds toolbar counts does not re-render the editor
     toolbar on solve/train progress ticks.
 - **Node/edge handlers — `frontend/src/hooks/__tests__/`:**
@@ -755,23 +769,23 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     React Flow node/edge changes into store mutations, exactly one history
     snapshot at drag start, no mid-drag/selection-only history churn, and
     structural/non-structural change separation.
-  - `useNodeHandlers.test.ts` — delete-as-one-atomic-step (node + connected
+  - `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` — delete-as-one-atomic-step (node + connected
     edges); selected-node preservation vs clearing on delete; duplicate
     (offset position, no-op for singleton/output types, no-op for a
     missing node); create-instance (`config.instanceOf`, toast);
     auto-layout (applies + toasts, exposes pending state, ignores
     overlapping clicks, resets pending state after a layout failure,
     no-ops on an empty graph).
-  - `useNodeHandlers.gaps.test.ts` — `handleRenameNode` (opens dialog with
+  - `frontend/src/hooks/__tests__/useNodeHandlers.gaps.test.ts` — `handleRenameNode` (opens dialog with
     correct id/label, no-ops for a missing node, coerces a non-string
     label); `lastSelectedNodeRef` clearing scoped to the deleted node only;
     `renameDialog`/`submodelDialog` cleared only when they reference the
     deleted node, including a null-dialog no-op case.
-  - `useNodeHandlers.deferCleanup.test.ts` (#32) — `setNodes` commits
+  - `frontend/src/hooks/__tests__/useNodeHandlers.deferCleanup.test.ts` (#32) — `setNodes` commits
     synchronously before `clearNode`; `clearNode` is deferred past the
     current microtask; multiple rapid deletes each defer their own
     `clearNode` independently (no missed nodes).
-  - `useEdgeHandlers.test.ts` (largest suite) — `onConnect` is a no-op
+  - `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` (largest suite) — `onConnect` is a no-op
     (commit happens in `onConnectEnd`); source→target and target→source
     edge creation; self-loop and duplicate-edge rejection; submodel
     targetHandle preservation; `maxInputs` blocking (including a
@@ -810,12 +824,12 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     Library: a compatible candidate exposes one named polite status and the
     derived edge receives the candidate class; clearing or invalidating the
     candidate removes both semantic and visual feedback.
-  - `useEdgeHandlers.dragJson.test.ts` (#35) — malformed drag-config JSON
+  - `frontend/src/hooks/__tests__/useEdgeHandlers.dragJson.test.ts` (#35) — malformed drag-config JSON
     produces a visible error and never silently creates an empty-config
     node; well-formed JSON, the empty-string default, and non-object JSON
     (bare array/string) are each exercised explicitly.
 - **Pipeline API — `frontend/src/hooks/__tests__/`:**
-  - `usePipelineAPI.test.ts` — initial load (cold-start retry policy,
+  - `frontend/src/hooks/__tests__/usePipelineAPI.test.ts` — initial load (cold-start retry policy,
     unmount abort, AbortError suppression, nullable-metadata tolerance,
     load-failure toast); save (success toast, dirty-during-in-flight-save
     survives, stale-response never overwrites a newer saved baseline,
@@ -825,17 +839,17 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     capping for wide cached schemas; client-side preview timeout surfaced
     in panel and toast; `nodeIdCounter` seeded from max numeric suffix
     (not `nodes.length`).
-  - `usePipelineAPI.gaps.test.ts` — preview error/abort/supersession
+  - `frontend/src/hooks/__tests__/usePipelineAPI.gaps.test.ts` — preview error/abort/supersession
     distinctions; concurrent saves complete independently (no dedup) and a
     second save's failure doesn't corrupt the first's saved snapshot;
     preview caching (fresh-cache skip, custom debounce, structuralVersion/
     source/rowLimit staleness triggers a refetch); terminal-state
     guarantee after a mid-flight structuralVersion bump; debounce/abort
     interplay between `cancelPreview` and a new `fetchPreview`.
-  - `usePipelineAPI.abortStale.test.ts` (#31) — switching the selected
+  - `frontend/src/hooks/__tests__/usePipelineAPI.abortStale.test.ts` (#31) — switching the selected
     node while a preview is aborted clears the prior node's preview data
     and the aborted fetch never re-paints onto the new node's panel.
-  - `usePipelineAPI.propagation.test.ts` (Phase 2D-5, largest cascade
+  - `frontend/src/hooks/__tests__/usePipelineAPI.propagation.test.ts` (Phase 2D-5, largest cascade
     suite) — linear-order cascading; source/rowLimit captured at cascade
     start surviving a mid-flight store flip; halting at an unchanged
     downstream node; no duplicate downstream work from an overlapping
@@ -844,16 +858,16 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     warnings; diamond-shaped dedup (shared child previews once, waits for
     the slower branch); no-op when the previewed node has no downstream
     edges; one downstream rejection does not abort sibling previews.
-  - `usePipelineAPI.previewLifecycle.test.ts` (W0) — a preview response or
+  - `frontend/src/hooks/__tests__/usePipelineAPI.previewLifecycle.test.ts` (W0) — a preview response or
     failure arriving after a mid-flight structuralVersion bump still
     reaches a terminal panel state; a node deleted mid-flight is never
     resurrected into the panel or cache.
-  - `usePipelineAPI.refPattern.test.ts` (#33/#34) — a single
+  - `frontend/src/hooks/__tests__/usePipelineAPI.refPattern.test.ts` (#33/#34) — a single
     `activeSource` snapshot spans a fetch and its downstream cascade;
     `handleSave` reads `activeSource` at invocation time, not a stale
     closure; a `rowLimit` change mid-fetch does not affect the
     already-running preview.
-  - `columnStashSourceIdentity.test.ts` (key-contract pin) — a captured
+  - `frontend/src/hooks/__tests__/columnStashSourceIdentity.test.ts` (key-contract pin) — a captured
     stash is stamped with the source the preview ran under; switching the
     active source invalidates a stash tagged with a different source
     (clearing `_columns`/`_availableColumns`/`_schemaWarnings`/
@@ -869,29 +883,29 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     connection, reconnect/resync, source identity, message generations,
     partial layout, bounded invalid-edge warnings, binary/bad messages,
     delayed fit, and the required submodels apply/ref-before-save contract.
-  - `useWebSocketSync.panelState.test.ts` (#39) — `renameDialog`/
+  - `frontend/src/hooks/__tests__/useWebSocketSync.panelState.test.ts` (#39) — `renameDialog`/
     `submodelDialog` referencing a node removed by a WS sync are cleared;
     left alone when the referenced node(s) survive; null dialogs stay
     null.
-  - `useWebSocketSync.failLoudly.test.ts` (#37) — a `getLayoutedElements`
+  - `frontend/src/hooks/__tests__/useWebSocketSync.failLoudly.test.ts` (#37) — a `getLayoutedElements`
     throw restores `graphRefreshingRef` and toasts an error without
     calling all raw setters with partial data; a setter failure rolls back
     nodes/edges/submodels/ref/preamble to the previous snapshot without
     marking the failed graph saved; missing submodels fails loudly; a
     subsequent `graph_update` after a failed one is still handled cleanly.
-  - `useWebSocketSync.undoHistory.test.ts` (#8) — `graph_update` only ever
+  - `frontend/src/hooks/__tests__/useWebSocketSync.undoHistory.test.ts` (#8) — `graph_update` only ever
     calls the history-bypassing raw setters, never the history-aware ones,
     including under concurrent messages, so external sync never pollutes
     undo/redo.
 - **Submodel navigation — `frontend/src/hooks/__tests__/`:**
-  - `useSubmodelNavigation.test.ts` — initial pipeline-level view stack;
+  - `frontend/src/hooks/__tests__/useSubmodelNavigation.test.ts` — initial pipeline-level view stack;
     create (API call + node update, error toast on failure); drill-in
     (loads submodel, pushes view stack, updates the source-file ref, error
     toast on failure); breadcrumb navigate (restores saved nodes at the
     target depth, restores/clears the parent source file, no-ops when the
     target depth isn't strictly above the top); dissolve (API call + node
     update, error toast on failure).
-  - `useSubmodelNavigation.gaps.test.ts` — input-port node+edge synthesis
+  - `frontend/src/hooks/__tests__/useSubmodelNavigation.gaps.test.ts` — input-port node+edge synthesis
     from a parent cross-boundary edge; label fallback to source id when
     `targetHandle` is missing and the child is absent; output-port
     synthesis; output edges skipped when their child isn't part of the
@@ -899,32 +913,32 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     when breadcrumb-navigating to depth 0; drill-in no-ops when the API
     returns no graph.
 - **Utils — `frontend/src/utils/__tests__/`:**
-  - `buildGraph.test.ts` — payload serialisation (zeroed position,
+  - `frontend/src/utils/__tests__/buildGraph.test.ts` — payload serialisation (zeroed position,
     `type`/`data.nodeType` fallback precedence, submodels/preamble
     pass-through and their `undefined` default); `resolveGraphFromRefs`
     (parent-graph priority, fallback to `graphRef`, `preambleRef` always
     wins regardless of which graph is active).
-  - `graphDiff.test.ts` — added/removed/changed classification; moved-only
+  - `frontend/src/utils/__tests__/graphDiff.test.ts` — added/removed/changed classification; moved-only
     vs changed mutual exclusivity; derived `contract` key ignored (and
     still detects a genuine change alongside an added `contract`); config
     key-order canonicalisation; a combined add+remove+change scenario.
-  - `graphHelpers.test.ts` — `computeNextNodeId` (empty array, single/
+  - `frontend/src/utils/__tests__/graphHelpers.test.ts` — `computeNextNodeId` (empty array, single/
     multiple suffixes, non-numeric-suffix nodes ignored, single- and
     multi-digit and zero suffixes); `normalizeEdges` (empty input, type/
     animated normalisation, authored `sourcePort`/`targetPort` and other
     fields preserved, no source-array mutation, multiple edges).
-  - `graphPerformance.test.ts` — below/at-threshold behaviour for the
+  - `frontend/src/utils/__tests__/graphPerformance.test.ts` — below/at-threshold behaviour for the
     shared lite-effects size limit.
-  - `makePreviewData.test.ts` — defaults, overrides, nodeId/nodeLabel
+  - `frontend/src/utils/__tests__/makePreviewData.test.ts` — defaults, overrides, nodeId/nodeLabel
     preserved under overrides, loading status.
-  - `columnFingerprint.test.ts` — equivalent-schema equality; sensitivity
+  - `frontend/src/utils/__tests__/columnFingerprint.test.ts` — equivalent-schema equality; sensitivity
     to order/name/dtype changes; undefined/empty/non-empty distinctness;
     collision-safety against separator-like characters embedded in names
     or dtypes.
-  - `activePreview.test.ts` — matching-node passthrough; stale
+  - `frontend/src/utils/__tests__/activePreview.test.ts` — matching-node passthrough; stale
     previously-selected-node data hidden; null when there's no active node
     or preview.
-  - `validateConfigRefs.test.ts` — clean graphs; valid `data_input`
+  - `frontend/src/utils/__tests__/validateConfigRefs.test.ts` — clean graphs; valid `data_input`
     reference; stale `data_input`/`banding_source`/`instanceOf` detection;
     multi-node broken-ref aggregation; empty-string and non-string refs
     ignored; submodel-exported target resolution from canonical nested
@@ -933,7 +947,9 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     submodels present; no-submodels calls;
     malformed submodel metadata tolerated without crashing;
     `formatConfigRefWarnings` singular/plural/empty formatting.
-  - `layout.test.ts` in both the colocated and root utility-test trees
+  - `frontend/src/utils/__tests__/layout.test.ts` and
+    `frontend/src/__tests__/utils/layout.test.ts` in the colocated and root
+    utility-test trees
     — empty input; finite-position detection (including origin),
     partial-layout merge that leaves established nodes fixed, overlap
     avoidance, single-node non-zero position;
@@ -941,13 +957,13 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     layout; a 3-node linear chain; cluster-snapping near-equal
     y-coordinates; disconnected nodes still positioned; zero-default when
     ELK omits coordinates; fan-out nodes sharing a snapped x coordinate.
-  - `connectionValidation.test.ts` — edge-join output-to-default-input
+  - `frontend/src/utils/__tests__/connectionValidation.test.ts` — edge-join output-to-default-input
     allowed; self-loops rejected; incomplete connections rejected.
-  - `flowElements.test.ts` — node creation from type metadata defaults;
+  - `frontend/src/utils/__tests__/flowElements.test.ts` — node creation from type metadata defaults;
     metadata-name-based label generation; deterministic edge ids and
     normalised handle fields; non-mutating deselect/select-only-node
     helpers.
-  - `nodeTypes.test.ts` — every `NODE_TYPES` value present (exact count);
+  - `frontend/src/utils/__tests__/nodeTypes.test.ts` — every `NODE_TYPES` value present (exact count);
     `NODE_TYPE_META` completeness and 1:1 coverage; Explore's one-input
     sink shape; Data Input/Data Output source/sink and non-singleton
     membership with strict branch-shaped defaults; Edge Join's compact
@@ -956,15 +972,16 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     membership and exact counts; `isSingletonType` true/false/undefined
     cases; `PALETTE_TYPES` validity, submodel/edgeJoin exclusion, explore
     inclusion and ordering, no duplicates; every derived lookup
-    (`nodeTypeIcons`/`Colors`/`Labels`) covers every node type.
+    (`nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`) covers every node type.
   - **Gap:** `flowHandles.ts` has no dedicated test file — its one
     function, `normalizeDefaultTargetHandle`, is exercised only
-    indirectly through `useEdgeHandlers.test.ts`'s handle-normalisation
-    cases and `nodes/__tests__/PipelineNode.test.tsx`'s handle-rendering
+    indirectly through `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts`'s
+    handle-normalisation cases and
+    `frontend/src/nodes/__tests__/PipelineNode.test.tsx`'s handle-rendering
     cases, so a regression isolated to the sentinel-collapsing logic
     itself would surface only as a broader failure in one of those suites.
 - **Components — `frontend/src/components/__tests__/`:**
-  - `ComparisonView.test.tsx` — loading-then-both-canvases sequencing;
+  - `frontend/src/components/__tests__/ComparisonView.test.tsx` — loading-then-both-canvases sequencing;
     floating chip label/sha and bail-out; removed/changed ringed on the
     left, added/changed on the right; moved-only nodes marked on both
     canvases; right-button pan enabled (mirrors the main canvas); pane
@@ -977,28 +994,28 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
     inspect payload; counterpart highlighting across both canvases; the
     live editor's `selected`/`dragging` UI state never leaks onto a
     comparison canvas.
-  - `ComparisonInspector.test.tsx` — label + status badge; the real editor
+  - `frontend/src/components/__tests__/ComparisonInspector.test.tsx` — label + status badge; the real editor
     rendered `inert` with the current-side config by default; the
     Historical/Current switcher for a node present on both sides; the
     absent side greyed out (not hidden) for an added or a removed node,
     each falling back to showing the side that does exist; `onClose` wired
     to the panel header.
-  - `RenameDialog.test.tsx` — title; accessible dialog role/label;
+  - `frontend/src/components/__tests__/RenameDialog.test.tsx` — title; accessible dialog role/label;
     default-value population; auto-focus on mount; cancel via button,
     backdrop click, and Escape (with in-dialog clicks NOT closing it);
     trimmed-value submission on both button and Enter; empty and
     whitespace-only submissions rejected.
-  - `RenameDialog.validation.test.tsx` (#36) — empty/whitespace/
+  - `frontend/src/components/__tests__/RenameDialog.validation.test.tsx` (#36) — empty/whitespace/
     over-200-char rejection and exactly-200-char acceptance; newline and
     backtick rejection (would corrupt code-gen/markdown); control-character
     rejection; spaces/dashes/underscores/digits/mixed-case and non-ASCII
     unicode letters accepted; the input is a controlled value reflecting
     every keystroke; submission trims leading/trailing whitespace.
-  - `SubmodelDialog.test.tsx` — node-count text; cancel via button and
+  - `frontend/src/components/__tests__/SubmodelDialog.test.tsx` — node-count text; cancel via button and
     backdrop click; empty-name submission rejected; trimmed-name
     submission calls `onSubmit`; Escape closes and is cleaned up on
     unmount; non-Escape keys are inert.
-  - `PolarsIcon.test.tsx` — default-prop SVG rendering; custom size/color.
+  - `frontend/src/components/__tests__/PolarsIcon.test.tsx` — default-prop SVG rendering; custom size/color.
 - **Strategy.** Predominantly unit and React Testing Library component
   tests, with a deliberate render-count "reviewer gate" for the store's
   selector-isolation contract, several regression tests named after
@@ -1007,7 +1024,7 @@ The pure connection/frame helpers are defended by `frontend/src/utils/__tests__/
   assertions bounding the shallow-hash cost.
 - **Known gaps.** `utils/flowHandles.ts` has no dedicated test file; its
   sentinel-collapsing contract is exercised indirectly by
-  `useEdgeHandlers.test.ts` and
+  `frontend/src/hooks/__tests__/useEdgeHandlers.test.ts` and
   `frontend/src/nodes/__tests__/PipelineNode.test.tsx`.
 - **`frontend/e2e/persistence/api-input-frame-alignment.spec.ts`** — the
   Playwright geometry evidence for the frame-row body: for one, two,

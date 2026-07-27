@@ -1417,46 +1417,6 @@ class ModelScorer:
             offset_column=offset_column,
         )
 
-    # ------------------------------------------------------------------
-    # Scoring strategies
-    # ------------------------------------------------------------------
-
-    def _score_eager(
-        self,
-        scoring_model: Any,
-        lf: pl.LazyFrame,
-        features: list[str],
-    ) -> pl.LazyFrame:
-        """Collect and score in-memory -- delegates to shared helper."""
-        from haute._mlflow_io import _score_eager as score_eager_
-
-        return score_eager_(scoring_model, lf, features, self.output_col, self.task)
-
-    def _score_batched(
-        self,
-        scoring_model: Any,
-        lf: pl.LazyFrame,
-        features: list[str],
-    ) -> pl.LazyFrame:
-        """Sink -> batch score -> lazy scan -- low-memory path.
-
-        Thin delegate onto :func:`_score_batched_standalone`, which in
-        turn delegates onto :func:`score_frame` with ``batch=True``.
-        """
-        return _score_batched_standalone(
-            scoring_model,
-            lf,
-            features,
-            self.output_col,
-            self.task,
-            write_projection=_normalise_score_write_projection(
-                None if self.code else self.required_output_columns,
-                output_col=self.output_col,
-                task=self.task,
-            ),
-            categorical_levels=self._categorical_levels_for_score(),
-        )
-
 
 # ----------------------------------------------------------------------
 # score_from_config — thin delegation target for codegen

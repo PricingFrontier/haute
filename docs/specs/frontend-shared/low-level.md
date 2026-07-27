@@ -325,27 +325,32 @@ focus nor leaves stale callbacks.
 
 ## Testing
 
-Tests are split between colocated `__tests__/` folders next to each source
-file and a parallel `frontend/src/__tests__/{hooks,components,stores,utils}`
+- `tests/test_frontend_backend_contract.py` covers frontend/backend contract parity.
+- `tests/test_sanitize_parity_fixture.py` covers sanitization parity fixtures.
+
+Tests are split between colocated `frontend/src/**/__tests__/` folders next to each source
+file and a parallel `frontend/src/__tests__/`
 tree that adds gap-coverage and adversarial cases; both trees run under the
 same Vitest config.
 
-- **API client** (`api/__tests__/client.test.ts`,
-  `client.retry.test.ts`, `client.contract.test.ts`): unit tests cover
-  retry/backoff/abort semantics directly; `client.contract.test.ts` covers
-  concrete endpoint families with shared fixtures from
-  `testSupport/uiContractFixtures.ts` plus explicit request/response
+- **API client** (`frontend/src/api/__tests__/client.test.ts`,
+  `frontend/src/api/__tests__/client.retry.test.ts`, `frontend/src/api/__tests__/client.contract.test.ts`): unit tests cover
+  retry/backoff/abort semantics directly; the contract suite covers concrete
+  endpoint families with shared fixtures from
+  `frontend/src/testSupport/uiContractFixtures.ts` plus explicit request/response
   matrices for the remaining trust-boundary endpoints. Generic transport,
   raw-stream, and caller-generic JSON helpers are tested at their transport
   boundary rather than pretending to know a concrete response schema.
-- **`api/dispersion.ts`** (`api/__tests__/dispersion.test.ts`):
+- **`frontend/src/api/dispersion.ts`**
+  (`frontend/src/api/__tests__/dispersion.test.ts`):
   `estimateGlmDispersion` request
   shape (including the `source` default and the 600s timeout matching
   `/train`), `runDispersionEstimate`'s poll-to-completion and
   poll-to-terminal-failure paths, abort mid-poll rejecting with
   `DOMException("AbortError")` after awaiting `cancelDispersion`,
   and a completed-without-value rejection.
-- **`types/guards.ts`** (`types/__tests__/guards.contract.test.ts`):
+- **`frontend/src/types/guards.ts`**
+  (`frontend/src/types/__tests__/guards.contract.test.ts`):
   contract tests exercising the parse functions against both valid and
   malformed payloads, asserting the exact thrown-error shape for the
   malformed cases.
@@ -357,67 +362,96 @@ same Vitest config.
   `frontend/src/__tests__/stores/useNodeResultsStore.renderPurity.test.tsx`
   pins render-safe derived getters;
   `frontend/src/__tests__/stores/previewCache.test.ts` covers preview cache
-  identity. The colocated `hooks/__tests__/useJobPolling.dedup.test.ts` and
-  `useJobPolling.progressThrottle.test.ts` cover the polling flow that writes
+  identity. The colocated `frontend/src/hooks/__tests__/useJobPolling.dedup.test.ts` and
+  `frontend/src/hooks/__tests__/useJobPolling.progressThrottle.test.ts` cover the polling flow that writes
   those stores.
-  `hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts` additionally
+  `frontend/src/hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts` additionally
   drives the store directly (not through a hook) for its second
   describe block, pinning that `completeSolveJob`/`completeTrainJob` stamp
   the in-flight job's `source`/`structuralVersion` onto the cached result.
-- **`useSettingsStore`** (`stores/__tests__/useSettingsStore.addSource.test.ts`):
+- **`useSettingsStore`** (`frontend/src/stores/__tests__/useSettingsStore.addSource.test.ts`):
   covers the sanitize-then-dedup `addSource` path (asserting the
   discriminated `{ok, reason, key}` result for the empty and duplicate
   rejection cases, not just that state is unchanged) and the "reset to
   live if active source removed" behaviour.
-- **`useToastStore`** (`stores/__tests__/useToastStore.test.ts`,
-  `useToastStore.dedup.test.ts`): dedup-by-`(type,text)`, cap-at-10, and
+- **`useToastStore`** (`frontend/src/stores/__tests__/useToastStore.test.ts`,
+  `frontend/src/stores/__tests__/useToastStore.dedup.test.ts`): dedup-by-`(type,text)`, cap-at-10, and
   the counter-not-advancing-on-suppression invariant.
-- **`useUIStore`** (`stores/__tests__/useUIStore.test.ts`,
-  `useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
+- **`useUIStore`** (`frontend/src/stores/__tests__/useUIStore.test.ts`,
+  `frontend/src/stores/__tests__/useUIStore.dirty.derived.test.ts`): modal-mutual-exclusion (opening
   utility/imports/git closes the other two) and per-node selection-map
   helpers.
-- **Chrome components**: `components/__tests__/ErrorBoundary.test.tsx`
-  (root-level, under `__tests__/components/`), `ModalShell.test.tsx` +
-  `ModalShell.focusTrap.test.tsx` (focus trap and restore-on-close in
-  particular), `Toast.test.tsx`, `Tooltip.test.tsx`, `ContextMenu.test.tsx`,
-  `NodeSearch.test.tsx`, `Toolbar.test.tsx` (including the package-derived
+- **Chrome components**: `frontend/src/__tests__/components/ErrorBoundary.test.tsx`
+  (root-level, under `frontend/src/__tests__/components/`),
+  `frontend/src/components/__tests__/ModalShell.test.tsx` and
+  `frontend/src/components/__tests__/ModalShell.focusTrap.test.tsx` (focus trap and
+  restore-on-close in particular),
+  `frontend/src/components/__tests__/Toast.test.tsx`,
+  `frontend/src/components/__tests__/Tooltip.test.tsx`,
+  `frontend/src/components/__tests__/ContextMenu.test.tsx`,
+  `frontend/src/components/__tests__/NodeSearch.test.tsx`,
+  `frontend/src/components/__tests__/Toolbar.test.tsx` (including the package-derived
   browser-version display),
-  `Toolbar.addSource.test.tsx` (the add-source form's rejection UI:
+  `frontend/src/components/__tests__/Toolbar.addSource.test.tsx` (the add-source form's rejection UI:
   empty-name and duplicate-name error text, `aria-invalid`/
   `aria-describedby` wiring, the error clearing on next keystroke and on
   successful submission),
-  `ImportsPanel.test.tsx`, `BreadcrumbBar.test.tsx` (root-level),
-  `KeyboardShortcuts.test.tsx` (root-level),
-  `BackgroundJobPolling.renderIsolation.test.tsx` (asserts the component
+  `frontend/src/panels/__tests__/ImportsPanel.test.tsx`,
+  `frontend/src/__tests__/components/BreadcrumbBar.test.tsx` (root-level),
+  `frontend/src/__tests__/components/KeyboardShortcuts.test.tsx` (root-level),
+  `frontend/src/components/__tests__/BackgroundJobPolling.renderIsolation.test.tsx`
+  (asserts the component
   itself never re-renders its own subtree — it exists purely to host the
   hook's side effects).
-- **Generic hooks**: `useClickOutside.test.ts` + `.gaps.test.tsx`,
-  `useDragResize.test.ts`, `useJobPolling.test.ts` (root-level, generic
+- **Generic hooks**: `frontend/src/__tests__/hooks/useClickOutside.test.ts` + `frontend/src/__tests__/hooks/useClickOutside.gaps.test.tsx`,
+  `frontend/src/__tests__/hooks/useDragResize.test.ts`, `frontend/src/__tests__/hooks/useJobPolling.test.ts` (root-level, generic
   poller mechanics) plus the colocated dedup/progress-throttle variants,
-  `useBackgroundJobs.test.ts` + `.gaps.test.ts` (root-level, orchestration
-  wiring), `useWebSocketSync.test.ts` + `.gaps.test.ts` (root-level — note
+  `frontend/src/__tests__/hooks/useBackgroundJobs.test.ts` + `frontend/src/__tests__/hooks/useBackgroundJobs.gaps.test.ts` (root-level, orchestration
+  wiring), `frontend/src/__tests__/hooks/useWebSocketSync.test.ts` and
+  `frontend/src/__tests__/hooks/useWebSocketSync.gaps.test.ts` (root-level — note
   `useWebSocketSync` itself is a graph-canvas hook, but its session-expiry
-  interaction with `api/client.ts`'s `HAUTE_SESSION_EXPIRED_EVENT` is
+  interaction with `frontend/src/api/client.ts`'s
+  `HAUTE_SESSION_EXPIRED_EVENT` is
   exercised here since that event is this component's contract),
-  `useStaleConfigEstimate.sourceKey.test.ts` (the `context.source`/
+  `frontend/src/hooks/__tests__/useStaleConfigEstimate.sourceKey.test.ts`
+  (the `context.source`/
   `context.structuralVersion` half of the staleness key: a source or
   structural-version-only change re-triggers the estimate even with an
   unchanged `configHash`, a cached result missing either field reads as
   stale, and the effect's dependency array re-fires on `context.source`/
   `context.structuralVersion` changes alone).
-- **Generic utils**: `utils/__tests__/formatTime.test.ts`,
-  `formatValue.test.ts`, `color.test.ts`, `sanitizeName.test.ts` +
-  `sanitizeParity.diff.test.ts` (the latter checks the frontend sanitizer
+- **Generic utils**: `frontend/src/utils/__tests__/formatTime.test.ts`,
+  `frontend/src/utils/__tests__/formatValue.test.ts`,
+  `frontend/src/utils/__tests__/color.test.ts`,
+  `frontend/src/utils/__tests__/sanitizeName.test.ts` and
+  `frontend/src/utils/__tests__/sanitizeParity.diff.test.ts` (the latter checks the frontend sanitizer
   stays byte-for-byte in parity with the backend's `_sanitize_func_name`
-  via a shared fixture, `sanitizeParity.fixture.json`), plus root-level
-  `__tests__/utils/formatBytes.test.ts` and `dtypeColors.test.ts`.
+  via `frontend/src/utils/__tests__/sanitizeParity.fixture.json`), plus root-level
+  `frontend/src/__tests__/utils/formatBytes.test.ts` and
+  `frontend/src/__tests__/utils/dtypeColors.test.ts`.
 
-Additional leaf coverage: `components/__tests__/ToggleButtonGroup.test.tsx` covers click and Arrow/Home/End radio-group selection/focus behaviour; `components/form/__tests__/CommittedTextField.test.tsx`, `__tests__/components/form/ConfigCheckbox.test.tsx`, and `__tests__/components/form/EditorLabel.test.tsx` cover commit boundaries, no-op blur, external-value draft reset, and form-label/control semantics. `utils/__tests__/chartHelpers.test.ts` and `formatTrace.test.ts` respectively pin numeric ticks/formatting and trace substitutions/non-finite display. `NodeTypeIcon.tsx`, `components/form/index.ts`, `index.css`, and `mlflowOptimiser.ts` currently have no dedicated test file; the icon/form/CSS files are simple presentation or re-export surfaces, while the optimiser classifier is an uncovered pure helper.
+Additional leaf coverage:
+`frontend/src/components/__tests__/ToggleButtonGroup.test.tsx` covers click and
+Arrow/Home/End radio-group selection/focus behaviour;
+`frontend/src/components/form/__tests__/CommittedTextField.test.tsx`,
+`frontend/src/__tests__/components/form/ConfigCheckbox.test.tsx`, and
+`frontend/src/__tests__/components/form/EditorLabel.test.tsx` cover commit boundaries,
+no-op blur, external-value draft reset, and form-label/control semantics.
+`frontend/src/utils/__tests__/chartHelpers.test.ts` and
+`frontend/src/utils/__tests__/formatTrace.test.ts` respectively pin numeric
+ticks/formatting and trace substitutions/non-finite display.
+`frontend/src/components/NodeTypeIcon.tsx`,
+`frontend/src/components/form/index.ts`, `frontend/src/index.css`, and
+`frontend/src/utils/mlflowOptimiser.ts` currently have no dedicated test file; the
+icon/form/CSS files are simple presentation or re-export surfaces, while the optimiser
+classifier is an uncovered pure helper.
 
-Known gaps: `Toolbar.tsx`'s inline timing/memory formatting helpers
+Known gaps: `frontend/src/components/Toolbar.tsx`'s inline timing/memory formatting helpers
 (`formatTiming`/`formatMemory`, distinct from and not delegating to
-`utils/formatTime.ts`/`formatBytes.ts`) have no dedicated unit test, only
-indirect coverage via `Toolbar.test.tsx`; `theme/colors.ts` has no test (it
+`frontend/src/utils/formatTime.ts`/`frontend/src/utils/formatBytes.ts`) have no dedicated
+unit test, only
+indirect coverage via `frontend/src/components/__tests__/Toolbar.test.tsx`;
+`frontend/src/theme/colors.ts` has no test (it
 is a constants file with no logic to verify beyond TypeScript's own
 type-checking).
 

@@ -33,10 +33,12 @@
   cache's live keys before/after the base `put()` to detect evictions and
   calls `haute._model_scorer._invalidate_feature_validation_cache_for`
   for each evicted model (imported lazily to avoid a module cycle).
-  `clear` cascades into `_model_scorer._clear_feature_validation_cache`.
-  `evict_matching(predicate)` delegates to `LRUCache.evict_where` and
-  cascades *outside* the base cache's lock (the evicted values are
-  returned by `evict_where` precisely so the cascade can run lock-free).
+  `clear` cascades into `_model_scorer._clear_feature_validation_cache`;
+  `evict_matching(predicate)` delegates to `LRUCache.evict_where`.
+  All three methods collect or remove model-cache state while holding the
+  base cache lock, release it, and only then invoke the feature-validation
+  cascade. No callback into the dependent cache runs under the model-cache
+  lock.
 - **`ModelFlavor`** / **`_SUPPORTED_FLAVORS`** (`_model_flavors.py`) —
   see Module map. `_model_flavors.py` is their only import surface;
   scoring and loading modules consume private local aliases.
@@ -139,9 +141,10 @@
 
 1. Mark the run "active" (`_disk_cache_run_in_use`) so eviction skips it
    for the duration.
-2. Compute the safe cache path (`_artifact_cache_path`: sha256-digest of
-   `artifact_path` as the directory name, extension-preserving file
-   name, validated to resolve under the cache root).
+2. Resolve the cwd-relative cache root once through `_disk_cache_root()`
+   (`Path.cwd() / ".cache" / "models"`), then compute the safe cache path
+   (`_artifact_cache_path`: sha256-digest of `artifact_path` as the directory
+   name, extension-preserving file name, validated to resolve under that root).
 3. If the file already exists, return it (cache hit, no lock needed for
    the existence check itself).
 4. Otherwise acquire the per-artifact lock, re-check existence (another
@@ -255,6 +258,11 @@ the uncached validator run. **Errors are never cached** — a
 untouched so a later call against the same (fixed) schema re-validates
 rather than replaying a stale exception.
 
+For live/eager value-domain validation, `_run_score_pipeline` derives the
+materialised validation frame from the union of model features, categorical
+columns, offset requirements, and the write projection. Unrelated wide-frame
+columns are not collected merely to validate categorical levels.
+
 ### Explanation — `explain_catboost_prediction` /
 `explain_rustystats_glm_prediction` (`_model_explainability.py`)
 
@@ -300,6 +308,9 @@ endpoint.
   (`_validate_disk_cache_run_id`, `_validate_artifact_path`) before any
   path is constructed, rejecting path separators, `.`/`..` segments, and
   null bytes.
+- **Every disk-cache caller resolves its root through `_disk_cache_root()`**.
+  Artifact resolution, blanket/targeted clear, and the native-model fast path
+  therefore cannot drift to different cwd-derived locations.
 - **`_artifact_cache_path` asserts the computed path stays under the
   resolved cache root** as defence-in-depth beyond the string-level
   validation above.
@@ -397,7 +408,11 @@ plain `RuntimeError`, not a `HauteError` subclass.
 
 ## Testing
 
-Tests live across twelve primary files. Strategy is unit-level with `mlflow`,
+- `tests/test_offset_scoring.py` covers offset scoring.
+- `tests/test_scoring_path_unified.py` covers unified scoring paths.
+- `tests/test_scoring_prep_perf.py` covers scoring-preparation performance.
+
+Tests live across fourteen primary files. Strategy is unit-level with `mlflow`,
 `catboost`, and `rustystats` either mocked or exercised against small
 real artifacts fixture-built in `tmp_path`; there is no test that talks
 to a live MLflow tracking server.
@@ -516,6 +531,11 @@ to a live MLflow tracking server.
   contracts and stale selected-column sets in the lazy batch path (the
   latter two lean into execution-engine territory but exercise this
   component's projection code directly).
+- **`tests/test_feature_validation_cache.py`** — feature-validation LRU and
+  last-entry semantics, targeted/full invalidation, model-cache cascade
+  behavior, and callback lock boundaries.
+- **`tests/test_model_cache_observability.py`** — structured model-cache
+  hit/miss events, counter concurrency, and blanket-clear reset semantics.
 
 `score_from_config` is also exercised indirectly by
 `tests/test_model_score_codegen.py` and
@@ -523,15 +543,6 @@ to a live MLflow tracking server.
 codegen and execution-engine components respectively and are not detailed
 here.
 
-Known coverage gaps: none flagged with `xfail` or an explicit gap marker
-in this component's own test files at the time of writing.
-
-## Polars backend contracts (0.6.0)
-
-Remaining model-registry improvement work is tracked in the
-[modelling roadmap](../../roadmap/modelling.md).
-
-- In deploy-live/eager scoring, derive the categorical-validation input from the union of categorical feature columns, model-required features, offset handling, and write-projection necessities. Validate against that projected frame rather than the complete input frame.
-- Do not add an array-contiguity conversion until its dedicated benchmark exceeds the agreed threshold and its regression tests demonstrate identical feature order, values, null treatment, and output dtypes.
-
-Tests must pin zero-row schemas for every flavor/task/probability combination that metadata supports, forbid a predict call in those cases, assert failure when metadata cannot establish a schema, prove wide live frames materialise only required validation columns, and gate any contiguity change on both benchmark evidence and semantic parity.
+Known coverage gaps: none. Empty-batch schema behavior, minimal live
+categorical-validation projection, and the absence of an unbenchmarked
+contiguity conversion all have direct regression coverage.

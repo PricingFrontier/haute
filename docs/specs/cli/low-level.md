@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/cli/__init__.py` | Builds the `click.Group` (`cli`), registers all nine subcommands, exposes `--version`. |
+| `src/haute/cli/__init__.py` | Builds the Click command group (`cli`), registers all nine subcommands, exposes `--version`. |
 | `src/haute/cli/_helpers.py` | Cross-command utilities: `resolve_model_name`, `_open_browser`, `_node_env`, `_npm`, `_find_frontend_dir`, the `TransportInfo`/`resolve_transport` transport-dispatch helper, and the shared `ENDPOINT_SUFFIX_HELP` string. |
 | `src/haute/cli/_init_cmd.py` | `haute init` — project scaffolding: `InitConfig`, `handle_init`, TOML-aware `pyproject.toml` dependency injection, CI-provider file generation/pruning. |
 | `src/haute/cli/_run.py` | `haute run` — `RunConfig`, `handle_run`, parses + executes a pipeline and prints per-node results. |
@@ -35,10 +35,10 @@ Every command uses a plain mutable `@dataclass` as a configuration value bag con
   from this plus `haute.toml`.
 - `SmokeConfig(endpoint_suffix: str | None)` — `_smoke.py`.
 - `StatusConfig(model_name, version_only)` — `_status.py`.
-- `ImpactConfig(endpoint_suffix, sample, batch_size)` — `_impact.py`.
+- `ImpactConfig(endpoint_suffix, sample, batch_size)` — `src/haute/cli/_impact.py`.
 
 Other notable types:
-- `TransportInfo` (`_helpers.py`) — `__slots__`-based result of `resolve_transport(config)`. Fields:
+- `TransportInfo` (`src/haute/cli/_helpers.py`) — `__slots__`-based result of `resolve_transport(config)`. Fields:
   `kind` (`"databricks" | "http" | "unsupported"`), `staging_url`, `prod_url`. `smoke` and `impact`
   both switch on `.kind` to pick a backend.
 - `_Closable` (`_serve.py`) — a `typing.Protocol` describing the socket-like object the TCP
@@ -197,7 +197,7 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 - **`status --version-only`** distinguishes "no version" from a genuine version `0` by raising
   instead of printing — printing `0` unconditionally would be indistinguishable from a real version
   number to a scripted caller checking stdout.
-- **`subprocess` imported but unused at runtime in `_helpers.py`.** The module-level `import
+- **`subprocess` imported but unused at runtime in `src/haute/cli/_helpers.py`.** The module-level `import
   subprocess  # noqa: F401` exists solely so tests can patch `subprocess.call`/`subprocess.Popen` and
   assert they are never invoked from this module (`_open_browser` uses `webbrowser` exclusively) —
   documented in a comment referencing "codebase-review #79".
@@ -230,6 +230,8 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   the server. This does not substitute data or hide a server failure.
 
 ## Testing
+
+- `tests/test_starter_pipeline_e2e.py` covers starter-pipeline CLI end-to-end behaviour.
 
 Tests live under `tests/` as a flat set of `test_cli_*.py` files (plus `test_cli.py` and
 `test_cli_no_shadow.py`), using `click.testing.CliRunner` for end-to-end command invocation and

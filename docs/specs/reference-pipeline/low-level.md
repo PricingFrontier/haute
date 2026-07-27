@@ -6,10 +6,10 @@
 |---|---|
 | `rating/__init__.py` | Marks the reference project directory as a Python package, matching the layout scaffolded by `haute init`. |
 | `rating/main.haute.json` | Stores the main pipeline canvas positions, available source list, and active source selection. |
-| `rating/main.py` | Generated `my_pipeline` graph: v2 JSON API input, output node, and four named port connections. |
+| `rating/main.py` | Generated `pipeline` graph object for the my-pipeline example: v2 JSON API input, output node, and four named port connections. |
 | `rating/config/quote_input/quotes.json` | V2 API-input sidecar defining emitted quotes/drivers/vehicles/licenses tables, JSONPath columns, inferred statuses, and opaque contract. |
 | `rating/config/quote_response/Quote_Response_9.json` | Output sidecar defining JSON output mappings for columns from each input port and an empty input/output contract declaration. |
-| `rating/modules/model_stuff.py` | Generated `model_stuff` submodel with Polars transforms, a scenario-expander transform, and its internal graph connections. |
+| `rating/modules/model_stuff.py` | Generated `submodel` graph object for the model-stuff example, with Polars transforms, a scenario-expander transform, and its internal graph connections. |
 | `rating/utility/__init__.py` | Marks the project utility package and supplies its module documentation. |
 | `rating/utility/features.py` | Project-authored Polars date/interval, postcode, dotted-column cleanup, and predicate-based column selection helpers. |
 | `rating/models/conversion.rsglm` | Checked-in project GLM model artifact. |
@@ -18,9 +18,9 @@
 
 The map deliberately lists only tracked reference files. This is a
 non-runnable layout/example snapshot, not an executable compatibility fixture:
-`rating/data/quotes/nest_example.json`, the generated main pipeline's
+rating/data/quotes/nest_example.json, the generated main pipeline's
 project-relative quote-data input, and
-`rating/config/expander/premium.json`, the generated submodel's sidecar, are
+rating/config/expander/premium.json, the generated submodel's sidecar, are
 missing from the tracked tree. Local output directories, additional local model
 files, and Python bytecode may also exist in a working directory but are not
 part of this checked-in reference-pipeline specification.
@@ -42,7 +42,7 @@ repository's authoritative default pipeline.
   has `outputMapping` entries (`source_port`, `source_column`, `output_path`,
   `enabled`), `outputFormat`, and a contract object.
 - **Generated main pipeline** is a `haute.Pipeline` whose API-input decorator names
-  `config/quote_input/quotes.json` and its opaque contract. The callable returns
+  the relative path "config/quote_input/quotes.json" and its opaque contract. The callable returns
   `pl.LazyFrame | dict[str, pl.LazyFrame]`; this four-table sidecar produces the mapping form.
   Its output callable accepts four lazy-frame ports and returns a lazy frame.
 - **Generated submodel** is a `haute.Submodel` with `@submodel.polars` and
@@ -59,7 +59,7 @@ repository's authoritative default pipeline.
 1. Parsing `rating/main.py` loads and validates both decorators' referenced sidecars. Importing
    the file constructs `haute.Pipeline("my_pipeline")`, registers the decorated `quotes` and
    `Quote_Response_9` functions, then declares the four source-port connections.
-2. Running `quotes()` passes `config/quote_input/quotes.json` and the resolved generated-script
+2. Running `quotes()` passes the relative path "config/quote_input/quotes.json" and the resolved generated-script
    directory to `resolve_api_input_from_config()`. The shared helper validates the sidecar,
    resolves its data path within the project boundary, and calls `load_v2_api_source()` to yield
    the multi-table lazy input. The missing data path fails at the loader's filesystem metadata
@@ -92,9 +92,9 @@ repository's authoritative default pipeline.
   `.`; otherwise it returns the input lazy frame. `cols_matching()` preserves
   incoming column order because it filters the supplied list directly.
 - The reference is non-runnable from the checked-in tree: it has no tracked
-  `rating/data/quotes/nest_example.json` at the generated main pipeline's
+  rating/data/quotes/nest_example.json at the generated main pipeline's
   expected project-relative location and no tracked
-  `rating/config/expander/premium.json` sidecar named by the submodel decorator.
+  rating/config/expander/premium.json sidecar named by the submodel decorator.
   This is a property of the snapshot, not a claim that a maintainer's local
   project cannot supply either file.
 - `.rsglm` contents are opaque to this component. Their filenames do not imply

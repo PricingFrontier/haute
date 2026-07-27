@@ -14,6 +14,7 @@ from haute._mlflow_io import (
     ScoringModel,
     _append_classification_proba,
     _artifact_cache_path,
+    _disk_cache_root,
     _find_artifact_by_extension,
     _find_cbm_artifact,
     _find_model_artifact,
@@ -1658,6 +1659,11 @@ class TestClearModelCache:
 
 class TestLoadMlflowModelFastCache:
     """Tests for the fast-path cache check in load_mlflow_model."""
+
+    def test_disk_cache_root_is_relative_to_current_working_directory(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        assert _disk_cache_root() == tmp_path / ".cache" / "models"
 
     def test_fast_path_cache_hit_for_run_with_artifact(self, tmp_path, monkeypatch):
         """source_type=run with artifact_path hits fast-path cache."""

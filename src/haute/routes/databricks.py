@@ -1,4 +1,4 @@
-"""Databricks Unity Catalog and data fetching endpoints."""
+"""Read-only Databricks Unity Catalog browsing endpoints."""
 
 from __future__ import annotations
 

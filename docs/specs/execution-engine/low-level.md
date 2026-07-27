@@ -5,21 +5,21 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
-| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers, and directly owns strategy-planner entry points, runtime-input fingerprints, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
+| `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, `PREVIEW_EXECUTION_SEMANTICS_VERSION`, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
 | `src/haute/_path_resolution.py` | Canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
-| `src/haute/_execute_lazy.py` | The shared execution core: `_build_funcs` (per-node callable construction, shared by eager and lazy), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), `_execute_eager_core`/`EagerResult` (eager materialisation with contract checks), strict/non-strict `ContractResolution`, column-contract assertion helpers, multi-frame (`dict[label, Frame]`) source routing (`_pick_source_frame`). Graph preparation is consumed directly through `projection.prepare_graph` and its `PreparedGraph` value. |
+| `src/haute/_execute_lazy.py` | The shared execution core: `_build_funcs` (per-node callable construction, shared by eager and lazy), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), `_execute_eager_core`/`EagerResult` (eager materialisation with contract checks), strict/non-strict `ContractResolution`, column-contract assertion helpers, multi-frame (`dict[label, Frame]`) source routing (`_pick_source_frame`). Graph preparation is consumed directly through `src/haute/projection.py::prepare_graph` and its prepared-plan value. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
 | `src/haute/projection.py` | Shared execution-strategy planner: backward column demand, strict-profile decisions, fan-in edge demands, materialisation/opaque boundaries, source-scan projection, and bounded strategy diagnostics. |
 | `src/haute/_execution_context.py` | `ExecutionContext`, `ExecutionProfile`, `ExecutionCancellationToken`, `ExecutionMetricsRecorder`, deterministic request-local fault points, bounded opt-in terminal telemetry, cancellation-latency evidence, cleanup precedence, and RSS-sampling/memory-pressure-event machinery. Contexts created directly may be unbudgeted; admitted contexts carry the resolved limits. |
 | `src/haute/_execution_admission.py` | Resolves an `ExecutionBudget` per `ExecutionProfile` (fixed default / explicit env override / adaptive fraction of available RAM), performs pre-flight admission (`create_admitted_execution_context`), and tracks a process-wide in-flight reservation for "heavy" profiles. |
-| `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and `OUTPUT` response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
+| `src/haute/_node_apply.py` | Config-driven implementations of `liveSwitch` input selection, `scenarioExpander` row expansion, `optimiserApply` artifact dispatch, and output response-document assembly (`assemble_output_from_config`) — the single code path both the canvas executor (via `_builders.py`) and codegen-generated `.py` files call. |
 | `src/haute/_builders.py` | Registers every per-`NodeType` runtime builder and column-contract callback in `NODE_REGISTRY`; owns runtime closures shared by eager, lazy, chunked, and deploy execution, including online/ratebook optimiser-apply artifact dispatch consumed by the optimiser component. |
 | `src/haute/_node_builder.py` | `NodeBuildHooks` and `wrap_builder`, the interception seam used by deploy scoring while preserving the canonical runtime builders. |
 | `src/haute/_topo.py` | `topo_sort_ids` (graphlib-backed topological sort with a custom multi-cycle reporter), `ancestors` (BFS over reversed edges). |
 | `src/haute/graph_utils.py` | Canonical outward re-export facade for graph models, execution helpers, topo helpers, and IO helpers used by generated pipeline code and application modules. Low-level engine modules import canonical graph models from `_types.py` and pure helpers from `_graph_utils.py` directly; importing back through this heavyweight facade would re-enter `_execute_lazy.py` and create an execution/RAM-estimation cycle. |
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
-| `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional `RLIMIT_AS` cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
+| `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
 | `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 
@@ -109,13 +109,18 @@
 
 ## Control flow
 
-**Preview (`executor.execute_graph`).** Computes a graph fingerprint (from
-the canonical dataframe graph input fingerprint plus row limit, source,
-contract-enforcement flag, and preview-projection cache suffix. The input
-fingerprint includes file-backed input and JSON-cache state so out-of-band data
-changes invalidate the right entries).
-Looks up `_preview_cache` (an `LRUCache`, one entry per unique graph+config
-combination). On a full hit, serves cached `eager_outputs`/`errors`/`timings` directly.
+**Preview (`executor.execute_graph`).** Calls
+`execution.preview_lineage_cache_key()`, which prepares the selected target lineage and
+passes a `LineageCacheKeyRequest` to `_cache.lineage_cache_key()`. The versioned payload
+includes `PREVIEW_EXECUTION_SEMANTICS_VERSION`, target/source/port selection, requested
+and initial columns, row limit, selected live-switch path, runtime-input evidence, and a
+contract fingerprint over enforcement plus target-only/full materialisation scope.
+File-backed input and JSON-cache changes therefore invalidate the selected lineage
+without unrelated graph state changing the key. There is no separate preview-projection
+cache suffix.
+
+The resulting key addresses `_preview_cache` (an `LRUCache`, one entry per unique
+lineage request). On a full hit, cached `eager_outputs`/`errors`/`timings` are served directly.
 On a partial hit (same graph, new target needs more materialised nodes), calls
 `_eager_execute()` for only the newly-needed portion and merges into the cached entry
 — fresh outputs win over stale cached ones for any overlapping node id, and a node
@@ -514,6 +519,18 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   typed-error surface external callers are expected to catch by type.
 
 ## Testing
+
+- `tests/performance/test_polars_scale_scenario.py` covers Polars scale scenarios.
+- `tests/test_bounded_collect_contracts.py` covers bounded-collect contracts.
+- `tests/test_builder_edge_cases.py` covers builder edge cases.
+- `tests/test_column_renames.py` covers column renames.
+- `tests/test_compute_needed_columns.py` covers needed-column computation.
+- `tests/test_data_input_chunking.py` covers data-input chunking.
+- `tests/test_extract_column_refs.py` covers column-reference extraction.
+- `tests/test_graph_input_identity.py` covers graph input identity.
+- `tests/test_polars_backend_strategy_contract.py` covers Polars backend strategy contracts.
+- `tests/test_scenario_propagation.py` covers scenario propagation.
+- `tests/test_streaming_collect_contract.py` covers streaming collect contracts.
 
 Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 

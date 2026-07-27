@@ -98,7 +98,11 @@ and tested by the [IO layer](../io-layer/low-level.md).
 
 ## Edge cases and invariants
 
-- Canonical JSON rejects non-finite floats and produces stable ordering/encoding.
+- `canonical_json()` is the sole encoder for JSON-shaped transient digest and
+  cache-key material. The one deliberate exception is the persisted modelling
+  feature-contract hash: its historical compact sort-keyed JSON plus SHA-256
+  encoding remains byte-stable so previously published `contract_hash` values
+  continue to verify.
 - Every logical cache input is present exactly once; unknown fields fail.
 - LRU oversized rejection retains a previous same-key entry.
 - Stat-gated caches never exceed `max_entries` after a completed insertion.
@@ -122,6 +126,8 @@ JSON-cache routes preserve structured schema/parse/path errors, return 504 on re
 timeout, and log unexpected errors before a generic 500.
 
 ## Testing
+
+- `tests/test_runtime_input_cache_invalidation.py` covers cache invalidation when runtime inputs change.
 
 - `tests/test_cache_identity_contract.py`, `tests/test_cache_fingerprint_injectivity.py`,
   `tests/test_caching_correctness.py`, `tests/test_cache_unification.py`,

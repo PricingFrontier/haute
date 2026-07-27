@@ -124,6 +124,10 @@ target-version = "py311"
 # Root-level generated/demo pipelines are arbitrary user code; keep repo lint
 # focused on the package, tests, docs tooling, and scripts.
 extend-exclude = [
+    ".codex-pytest-*",
+    ".ops-pytest-temp/",
+    ".providers-pytest-temp/",
+    ".pytest-tmp*/",
     "modules/",
     "rating/",
     "outputs/",

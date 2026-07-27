@@ -147,7 +147,7 @@ paths described above, not deploy or scoring successes.
 
 Exceptions are handled with narrow, explicit catches rather than blanket `except Exception` used as
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,
-`_is_http_not_found` in `_impact.py`) exist specifically so that only the exact "not found" shape is
+`_is_http_not_found` in `src/haute/cli/_impact.py`) exist specifically so that only the exact "not found" shape is
 swallowed and reclassified — everything else re-raises. Where `except Exception` does appear (e.g.
 around `resolve_config`, `deploy_resolved`, script execution in `train`), it is used to convert an
 internal exception into a formatted CLI error message and `SystemExit(1)`, not to continue past the

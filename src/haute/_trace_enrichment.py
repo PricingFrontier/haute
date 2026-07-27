@@ -27,7 +27,6 @@ from __future__ import annotations
 import ast
 import copy
 import dataclasses
-import json
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -36,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from haute._banding_config import normalise_banding_factors
+from haute._cache import canonical_json
 from haute._expression_parser import (
     evaluate_expression,
     parse_expression,
@@ -63,12 +63,7 @@ _EnrichmentMemoKey = tuple[object, ...]
 
 def _enrichment_value_identity(value: Any) -> str:
     """Return a deterministic request-local identity for concern inputs."""
-    return json.dumps(
-        to_json_safe(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return canonical_json(to_json_safe(value))
 
 
 def _enrichment_frame_identity(

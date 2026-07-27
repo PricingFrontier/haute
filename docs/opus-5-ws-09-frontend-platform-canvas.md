@@ -1,7 +1,7 @@
 # WS-09 — Frontend platform & graph canvas
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-09 · Status: delivered in PR #145.
 
 **Branch:** `opus5/ws-09-frontend-platform-canvas`
 

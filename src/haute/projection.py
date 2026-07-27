@@ -2824,8 +2824,12 @@ def compute_prepared_plan(
         seed = seeded_required.get(node_id, set())
         if not children:
             if node.data.nodeType == NodeType.OUTPUT:
+                # Keep the projection contract aligned with output assembly:
+                # incomplete editor rows do not demand a blank source column.
+                from haute._output_assembler import is_active_mapping_entry
+
                 mapping = node.data.config.get("outputMapping") or []
-                source_cols = {e["source_column"] for e in mapping if e.get("enabled", True)}
+                source_cols = {e["source_column"] for e in mapping if is_active_mapping_entry(e)}
                 needed[node_id] = source_cols or None
                 node_reasons[node_id] = ProjectionReason(
                     rule="terminal_output",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -26,6 +28,66 @@ from haute._dataframe_execution_cache import dataframe_execution_cache_key
 from haute._execution_context import ExecutionProfile
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.execution import dataframe_graph_input_fingerprint
+
+
+def test_json_digest_encoders_use_canonical_json_except_persisted_feature_contract() -> None:
+    """Raw ``json.dumps`` may not feed a digest for transient cache identity."""
+    source_root = Path(__file__).parents[1] / "src" / "haute"
+    violations: list[str] = []
+
+    def is_json_dumps(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "dumps"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in {"json", "_json"}
+        )
+
+    def is_digest_call(call: ast.Call) -> bool:
+        if isinstance(call.func, ast.Name):
+            return call.func.id == "content_hash_bytes"
+        return isinstance(call.func, ast.Attribute) and call.func.attr in {
+            "sha256",
+            "sha224",
+            "sha384",
+            "sha512",
+            "blake2b",
+        }
+
+    for path in source_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for function in (node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)):
+            dumped_names = {
+                target.id
+                for assignment in ast.walk(function)
+                if isinstance(assignment, ast.Assign)
+                and any(isinstance(target, ast.Name) for target in assignment.targets)
+                and isinstance(assignment.value, ast.Call)
+                and is_json_dumps(assignment.value)
+                for target in assignment.targets
+                if isinstance(target, ast.Name)
+            }
+            has_raw_digest = any(
+                is_digest_call(call)
+                and (
+                    any(is_json_dumps(child) for child in ast.walk(call))
+                    or any(
+                        isinstance(child, ast.Name) and child.id in dumped_names
+                        for child in ast.walk(call)
+                    )
+                )
+                for call in ast.walk(function)
+                if isinstance(call, ast.Call)
+            )
+            relative = path.relative_to(source_root).as_posix()
+            if has_raw_digest and (relative, function.name) != (
+                "modelling/_feature_contract.py",
+                "_hash_payload",
+            ):
+                violations.append(f"{relative}:{function.name}")
+
+    assert violations == []
 
 
 def _node(

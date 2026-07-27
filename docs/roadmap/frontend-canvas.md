@@ -54,7 +54,7 @@ shared visual, keyboard, and accessibility evidence.
 
 **Dependencies:** Feature owners retain specialised workflow coverage.
 
-**Evidence:** `frontend/src/types/banding.ts`; `frontend/src/panels/editors/BandingEditor.tsx`; `frontend/src/panels/editors/RatingStepEditor.tsx`; `frontend/src/utils/__tests__/banding.test.ts`; `frontend/src/panels/editors/banding/__tests__/BandingRulesGrid.test.tsx`.
+**Evidence:** `frontend/src/types/banding.ts`; `frontend/src/panels/editors/BandingEditor.tsx`; `frontend/src/panels/editors/RatingStepEditor.tsx`; `frontend/src/__tests__/utils/banding.test.ts`; `frontend/src/panels/editors/banding/__tests__/BandingRulesGrid.test.tsx`.
 
 ### ROAD-UI-02 — Deterministic cross-node browser journeys
 
@@ -78,7 +78,7 @@ shared visual, keyboard, and accessibility evidence.
 
 **Dependencies:** ROAD-UI-01 shape fixtures; ROAD-UI-02 adds browser proof after component stability.
 
-**Evidence:** `frontend/src/types/banding.ts`; `frontend/src/utils/banding.ts`; `frontend/src/panels/editors/RatingStepEditor.tsx`; `frontend/src/utils/__tests__/banding.test.ts`; `frontend/src/panels/__tests__/NodePanel.test.tsx`.
+**Evidence:** `frontend/src/types/banding.ts`; `frontend/src/utils/banding.ts`; `frontend/src/panels/editors/RatingStepEditor.tsx`; `frontend/src/__tests__/utils/banding.test.ts`; `frontend/src/panels/__tests__/NodePanel.test.tsx`.
 
 ### ROAD-UI-04 — Targeted visual and interaction assurance
 

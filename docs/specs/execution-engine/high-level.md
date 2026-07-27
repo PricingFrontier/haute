@@ -256,8 +256,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   builder implementations and interception seam registered behind those contracts.
 - [caching](../caching/high-level.md): the dataframe execution cache
   (`DataFrameExecutionCache`) that `_execute_lazy` seeds from and materialises into on
-  a cache miss; the graph-fingerprint helpers this component's preview cache and
-  `execution.py`'s fingerprint functions build on.
+  a cache miss, plus `_cache.lineage_cache_key()`, which
+  `execution.preview_lineage_cache_key()` uses with
+  `PREVIEW_EXECUTION_SEMANTICS_VERSION` and the complete selected-lineage payload as
+  the sole preview/trace cache identity.
 - [sandbox-security](../sandbox-security/high-level.md): `executor._compile_preamble`
   and node builders execute user-written preamble/transform code through the sandbox's
   restricted-globals `exec`.

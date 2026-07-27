@@ -5,13 +5,13 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/GitPanel.tsx` | The Git side panel: pending-save list, milestone list + expansion, graph-rail row wiring, all right-click context menus, the fork-naming dialog, `SaveRow`/`FileRow`/`ForkLinks`/`ViewVersionButton`/`MoveToVersionButton` sub-components. |
-| `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding `GitPanel`'s stale-while-revalidate hydration and unchanged-payload short-circuit. |
+| `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding the Git panel's stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
-| `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `layout.ts` types. |
+| `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
 | `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, and the refresh-triggering nonces (`historyNonce`, `commitNonce`, `selectLatestSaveNonce`, `selectSaveNonce`, `branchesExpandNonce`). |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It owns the in-flight/queued-refresh promises and publishes results into `useGitStore`, keeping branch-only client and de-duplication code out of the initial editor bundle. |
 | `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus ready branch name + last-save SHA buttons that open the panel and set its initial view/selection. |
-| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in `GitPanel`; owns its own confirm dialogs and row context menu. |
+| `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
 | `frontend/src/components/MilestoneCommitModal.tsx` | Save & commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
@@ -353,29 +353,29 @@ Tests live alongside the source: `frontend/src/panels/__tests__/`,
 `frontend/src/stores/__tests__/useGitStore.test.ts`. All are Vitest + React Testing
 Library component/unit tests (no e2e for this surface).
 
-- **`GitPanel.test.tsx`** — the primary behavioural suite: rendering, milestone
+- **`frontend/src/panels/__tests__/GitPanel.test.tsx`** — the primary behavioural suite: rendering, milestone
   expand/collapse, pending-save display, all four selection nonces, right-click menus
   (fork/view/move) in every row context (milestone / pending save / expanded save),
   peeking's effect on menu contents, the fork-creation dialog, the graph rail's dots/
   stubs/chips/magnifier, lane and dot context menus, in-app branch switching from the
   lane menu (including the dirty-canvas guard), and the peek in-flight mislabel guard.
-- **`GitPanel.gaps.test.tsx`** — targeted gap-fill: fork-with-switch page reload, fork
+- **`frontend/src/panels/__tests__/GitPanel.gaps.test.tsx`** — targeted gap-fill: fork-with-switch page reload, fork
   failure toast, fork-with-move submission, the view affordance opening a comparison,
   peeking's menu contents (a second angle on the same invariant as the main suite).
-- **`GitPanel.cache.test.tsx`** — the session-cache contract end to end: unchanged-payload
+- **`frontend/src/panels/__tests__/GitPanel.cache.test.tsx`** — the session-cache contract end to end: unchanged-payload
   short-circuit (no re-render), a changed payload applying, warm-remount hydration (both
   with and without a subsequent change), sha-cached milestone-save re-expansion never
   refetching, a late status resolution hydrating the cache the initial seed missed without
   clobbering rows a completed refresh already applied, and peeking an uncached branch
   clearing rows rather than carrying stale ones over.
-- **`GitPanel.staleRefresh.test.tsx`** — the generation guard specifically: an earlier
+- **`frontend/src/panels/__tests__/GitPanel.staleRefresh.test.tsx`** — the generation guard specifically: an earlier
   slow refresh resolving after a later fast one must not overwrite the later branch's
   rows or clear the newer refresh's loading state, and a peek refresh must not replay
   already-active nonce effects.
-- **`gitPanelCache.test.ts`** — unit tests on the cache module directly: serialization
+- **`frontend/src/panels/__tests__/gitPanelCache.test.ts`** — unit tests on the cache module directly: serialization
   round-tripping, per-branch LRU storage/eviction, milestone-save sha caching, the
   single-slot graph cache, and `clearGitPanelCaches`.
-- **`gitgraph/__tests__/layout.test.ts`** — the largest and most detailed suite in the
+- **`frontend/src/panels/gitgraph/__tests__/layout.test.ts`** — the largest and most detailed suite in the
   component, covering `computeGitGraphLayout` and `computeRailRuns` fixture-by-fixture:
   linear-spine lane/dot/stub placement and rail sizing; dotted-rail dash inheritance
   across expanded ranges, transitions, and placeholders; the sub-rail (fold-in/fold-out/
@@ -387,16 +387,16 @@ Library component/unit tests (no e2e for this surface).
   behaviour as saves expand/collapse; per-anchor-group slot reservation; archived-branch
   grouping and colour borrowing; magnifier placement rules; and degraded-input handling
   (unresolvable branch, unknown view branch, no entries, independent-root-as-overflow).
-- **`gitgraph/__tests__/GraphCell.test.tsx`** — narrowly scoped to `GraphRailOverlay`'s
+- **`frontend/src/panels/gitgraph/__tests__/GraphCell.test.tsx`** — narrowly scoped to `GraphRailOverlay`'s
   bottom-anchored dash-phase convention for dotted runs (both spine and siding kinds) vs.
   the top-anchored convention for solid runs.
-- **`stores/__tests__/useGitStore.test.ts`** — store unit tests: status load success/
+- **`frontend/src/stores/__tests__/useGitStore.test.ts`** — store unit tests: status load success/
   failure with retained actionable detail, concurrent readiness-request de-duplication,
   shared branch publication and request de-duplication, modal open/close and pending-
   action interaction (including the close-clears-pending-action regression), peek
   set/clear, each nonce incrementing exactly once per action, comparison and move-target
   toggling.
-- **`components/__tests__/BranchManager.test.tsx`** — listing (current/others/archived),
+- **`frontend/src/components/__tests__/BranchManager.test.tsx`** — listing (current/others/archived),
   peek-without-switch, create (with and without move, including the move confirm step),
   switch confirmation (including persisted "don't ask again") and its in-app (no-reload)
   behaviour plus the VC undo entry, dirty-navigation Cancel/Discard/Save-first behavior
@@ -405,16 +405,16 @@ Library component/unit tests (no e2e for this surface).
   uncommitted/unsaved indicator display, the persistent error banner, and the full row
   context-menu surface (open, per-state item visibility, each action's routing, backdrop
   dismiss).
-- **`components/__tests__/BranchManager.gaps.test.tsx`** — the `reloadOnDone` matrix:
+- **`frontend/src/components/__tests__/BranchManager.gaps.test.tsx`** — the `reloadOnDone` matrix:
   which mutations reload the page and which don't, keyed on `switched`/`is_current`, plus
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
-- **`components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
+- **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
   states, no-repository/unset/detached/invalid/divergent/ready rendering, both ready-state
   click targets' panel/store side effects, and the comparison-aware SHA-click behaviour.
-- **`components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor
+- **`frontend/src/components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor
   rendering, the non-milestone nearest-milestone→commit breadcrumb, and
   `ComparisonDelta`'s singular/plural count text.
-- **`components/__tests__/MoveConfirmModal.test.tsx`** — target-label rendering, clean-canvas
+- **`frontend/src/components/__tests__/MoveConfirmModal.test.tsx`** — target-label rendering, clean-canvas
   single-confirm calling `onConfirm(false)`, dirty-canvas save/discard button pair calling
   `onConfirm(true)`/`onConfirm(false)` respectively with the warning message shown, Cancel
   calling `onClose` without confirming, busy Escape/backdrop dismissal refusal, and
@@ -422,14 +422,14 @@ Library component/unit tests (no e2e for this surface).
 - **`frontend/src/__tests__/App.integration.test.tsx`** — the parent-owned move transaction rejects a
   failed `moveToVersion` request with an error toast and clears `moveTarget`, proving the
   busy-locked `MoveConfirmModal` cannot remain stranded after its promise settles.
-- **`components/__tests__/MilestoneCommitModal.test.tsx`** — submit gating on message
+- **`frontend/src/components/__tests__/MilestoneCommitModal.test.tsx`** — submit gating on message
   presence, visible validation above the 500-character maximum, successful commit
   with/without a version label, the 409 fork-warning → commit-anyway override flow, and
   backing out of that warning.
-- **`components/__tests__/WorkingBranchModal.test.tsx`** — eligible-branch listing plus
+- **`frontend/src/components/__tests__/WorkingBranchModal.test.tsx`** — eligible-branch listing plus
   create option, adopting an existing branch, creating a new one, submit gating, and the
   inline identity sub-form.
-- **`components/__tests__/RemotePushControl.test.tsx`** — no-remotes messaging, sole-
+- **`frontend/src/components/__tests__/RemotePushControl.test.tsx`** — no-remotes messaging, sole-
   remote auto-selection, multi-remote deliberate-selection requirement, the pending-save
   push confirm (both proceeding and cancelling), ahead/behind display in all states
   (synced / diverged / unknown-vs-never-pushed), ledger-status display (behind / forked /
@@ -439,23 +439,24 @@ Library component/unit tests (no e2e for this surface).
   the special bootstrap toast using a custom `default_branch`, the ordinary toast when
   `bootstrapped_default=false` (including an idempotent later push), post-push reload, and
   the guarantee that no push occurs merely from mount/startup/branch selection.
-- **`components/__tests__/RemotePushControl.gaps.test.tsx`** — error-message fidelity for
+- **`frontend/src/components/__tests__/RemotePushControl.gaps.test.tsx`** — error-message fidelity for
   catch-up and branch-away failures (`Error` vs. non-`Error` rejection), unparseable-409
   fallback to a plain toast (raw structured JSON is not rendered, while a human-readable
   detail is retained), remote-list failure distinct from an empty configuration, and
   last-good remotes plus parsed-rejection UI surviving a failed best-effort refresh without
   a false push/parser toast. It also covers the full
   behind/ahead/diverged×working/ledger catch-up-eligibility matrix.
-- **`api/__tests__/client.test.ts` and `types/__tests__/guards.contract.test.ts`** — the push
+- **`frontend/src/api/__tests__/client.test.ts` and
+  `frontend/src/types/__tests__/guards.contract.test.ts`** — the push
   client/guard contract requires `default_branch` and `bootstrapped_default`, preserves
   submitted `pushed_refs`, accepts both boolean values, and rejects missing or wrongly typed
   bootstrap metadata rather than inventing a default. The guard suite also accepts exactly
   the six working-branch readiness states, preserves detached `head_sha`, and rejects an
   unknown state.
-- **`components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
+- **`frontend/src/components/__tests__/DivergenceModal.test.tsx`** — recorded/current branch naming,
   each of the three resolution choices, and stay-here's disabled state when the current
   branch isn't eligible.
-- **`components/__tests__/DivergenceModal.gaps.test.tsx`** — error-toast surfacing on a
+- **`frontend/src/components/__tests__/DivergenceModal.gaps.test.tsx`** — error-toast surfacing on a
   rejected `setWorkingBranch` (both `Error` and non-`Error`), the busy/"Working…" disabled
   state, double-submit guarding, and null-status placeholder rendering.
 

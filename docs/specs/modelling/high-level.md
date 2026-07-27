@@ -67,8 +67,14 @@ Out of scope, owned elsewhere:
 - Starting training (`POST /api/modelling/train`) validates the config, estimates
   memory requirements, executes the upstream pipeline to materialise training data,
   and derives the exact feature choice from the materialised schema in the request
-  process. It then runs fit, evaluation, diagnostics, and model staging in a supervised
-  spawn child. The response includes a bounded, versioned diagnostic describing the
+  process. Materialisation consumes the execution facade's typed strategy result and
+  carries its deterministic inclusion/exclusion provenance into the modelling response;
+  modelling does not select a competing plan. It then runs fit, evaluation, diagnostics,
+  and model staging in a supervised
+  spawn child through a versioned plain-data protocol. Progress writes are non-blocking:
+  a full queue or the delivered-event budget drops progress rather than stalling fit,
+  reports the loss count on the next event/end marker, and retains only bounded history.
+  The response includes a bounded, versioned diagnostic describing the
   feature choice and why other columns were retained as metadata or excluded.
   A configuration that leaves no feature columns is rejected with HTTP 422 before a sink
   or trainer runs.
@@ -96,10 +102,11 @@ Out of scope, owned elsewhere:
   `theta` or Tweedie `var_power` by profile likelihood over the node's own training
   data, as a background job the client polls
   (`GET /api/modelling/dispersion/status/{job_id}`) and can cancel
-  (`POST /api/modelling/dispersion/cancel/{job_id}`); the resolved value is returned
-  for the user to accept into the node config, never written there automatically. Its
-  process supervisor enforces the timeout stamped at job creation; status polling is
-  not required to trigger that timeout.
+  (`POST /api/modelling/dispersion/cancel/{job_id}`); after that explicit estimate
+  action resolves, the UI writes the value into the visible editable node-config
+  field. The user can inspect or adjust that auto-filled value before their normal
+  save/publish action. Its process supervisor enforces the timeout stamped at job
+  creation; status polling is not required to trigger that timeout.
 
 Invariants that always hold:
 - Live training and script export always produce the same model for the same config —
@@ -155,9 +162,10 @@ the same `_resolve_glm_terms` helper `GLMAlgorithm.fit` uses, so the profiled de
 never allowed to drift from what training would actually fit) and maximises the fitted
 model's log-likelihood over the single dispersion parameter with a bounded 1-D search
 (`scipy.optimize.minimize_scalar`, ~20-30 IRLS fits; `theta` is searched in log-space
-since it is scale-like). The resulting value is returned to the client to review and
-accept — it is never written into the node config automatically, preserving the
-"no hidden defaults" invariant the gate itself enforces.
+since it is scale-like). The estimate is an explicit user action; when it resolves, the
+client auto-fills the visible editable config field so the user can inspect or adjust it
+before their normal save/publish action. This preserves the "no hidden defaults"
+invariant while avoiding a second accept control for a value the user just requested.
 
 The feature contract is a separate artifact (rather than relying on the model file's
 own metadata) because CatBoost and RustyStats models predict correctly only when fed
@@ -239,30 +247,13 @@ browser without a server or JS bundle.
   candidate converges raises, surfacing as the job's `contract_error`/`error` terminal
   state exactly like a training job's equivalent failure classes.
 
-## Polars backend contracts (0.6.0)
-
-Every pipeline materialisation, including initial eager previews, will use the universal
-execution-plan facade. Remaining modelling improvement work is tracked in the
-[modelling roadmap](../../roadmap/modelling.md).
-Its final feature include/exclude decision and deterministic provenance diagnostics
-accompany modelling validation and execution. Modelling does not reimplement planning
-or infer a competing feature set.
-
-## Approved change contract — 0.8.0 isolated fit and dispersion
-
-Training request validation, RAM estimation, graph execution, projection, and bounded Parquet
-materialisation keep their current synchronous HTTP behavior. Once that prepared artifact
-exists, fit/evaluation/diagnostics/model staging and GLM dispersion profiling execute in a
-spawn child through the shared worker protocol.
-
-The child receives plain configuration and paths, never the route's `JobStore`,
-`ExecutionContext`, callbacks, dataframes, or cancellation registry. Progress and iteration
-events reconstruct the existing status response in the parent; they are non-blocking,
-loss-accounted telemetry, so a slow observer or a training run beyond the delivered-event budget
-cannot stall or fail fitting. History remains capped. A model is visible at its configured final
-path only after the parent verifies its staged size/digest and publishes the model and per-model
-feature contract. Cancellation, timeout, memory-limit, child crash, malformed result, and
-pre-commit publication failure preserve truthful terminal state and remove prepared/staged
-files. A post-commit backup or staging cleanup error is logged without misreporting the already
-published model as failed. The existing response DTOs and immediate pre-launch validation errors
-do not change.
+- A child receives only plain configuration and paths, never the route's job store,
+  execution context, callbacks, dataframes, or cancellation registry. The parent remains
+  authoritative for cancellation, timeout, admission ownership, status, and public
+  error mapping.
+- A model becomes visible at its configured final path only after the parent validates
+  staged size/digest evidence and publishes the model plus per-model feature contract.
+  Cancellation, crash, malformed result, or pre-commit publication failure preserves the
+  prior pair and removes prepared/staged files. A post-commit backup or staging cleanup
+  error is logged without relabelling the already durable model as failed. Dispersion
+  publishes bounded scalar metadata and no artifact.

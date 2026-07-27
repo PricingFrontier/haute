@@ -1,7 +1,7 @@
 # WS-05 — Codegen & submodels
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-05 · Status: delivered in PR #139.
 
 **Branch:** `opus5/ws-05-codegen-submodels`
 

@@ -35,7 +35,8 @@ Submodel graph expansion and boundary rewiring are owned by
   residual per-frame fields used for same-level assembly.
 - An active mapping row is enabled and has non-blank `source_column` and
   `output_path` fields; incomplete editor rows are ignored consistently by
-  validation, contracts, and assembly.
+  validation, contracts, projection demand, and assembly. Every consumer uses
+  `is_active_mapping_entry` rather than duplicating a weaker enabled-only test.
 
 **`_json_shred.py`**
 
@@ -407,6 +408,9 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   carry the key are non-participants, not null-key orphans.
 
 ## Testing
+
+- `tests/test_apiinput_flat_output_dry_run.py` covers API-input flat-output dry runs.
+- `tests/test_output_nested_roundtrip.py` covers nested output round trips.
 
 Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
 

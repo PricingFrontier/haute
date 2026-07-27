@@ -27,7 +27,7 @@ workflows.
 
 **Dependencies:** None.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `tests/test_explore_service.py`; `docs/specs/explore-eda/high-level.md`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `tests/test_explore_routes.py`; `tests/test_explore_round_trip.py`; `docs/specs/explore-eda/high-level.md`.
 
 ### EDA-E02 — Truthful statistics
 **Why:** NaN, infinity, null distinctness, ties, and percentage rounding can misstate data quality.
@@ -38,7 +38,7 @@ workflows.
 
 **Dependencies:** EDA-E03 shares the collection path.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/schemas.py`; `frontend/src/panels/editors/explore`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/schemas.py`; `frontend/src/panels/explore`; `tests/test_explore_routes.py`.
 
 ### EDA-E03 — Bounded statistics collection
 **Why:** One unbounded aggregation can exceed memory limits and cannot be interrupted.
@@ -49,7 +49,7 @@ workflows.
 
 **Dependencies:** EDA-E01, EDA-E02.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/_execution_context.py`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/_execution_context.py`; `tests/test_explore_routes.py`.
 
 ### EDA-E04 — Stat-gated input fingerprint
 **Why:** Warm requests synchronously reread unchanged inputs merely to compute a cache key.
@@ -60,7 +60,7 @@ workflows.
 
 **Dependencies:** Caching policy.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/_fingerprint.py`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/execution.py::dataframe_graph_input_fingerprint`; `tests/test_explore_routes.py`.
 
 ### EDA-E05 — Binary value counts
 **Why:** Decoding every binary value is slow and one malformed value can poison analysis.
@@ -71,7 +71,7 @@ workflows.
 
 **Dependencies:** EDA-E03.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `tests/test_explore_routes.py`.
 
 ### EDA-E06 — Deliberate tabs
 **Why:** Empty clickable tabs imply capabilities that do not exist.
@@ -82,7 +82,7 @@ workflows.
 
 **Dependencies:** EDA-E09, EDA-E10, EDA-E12 may reintroduce tabs.
 
-**Evidence:** `frontend/src/panels/editors/explore`; `frontend/src/panels/editors/explore/*.test.tsx`.
+**Evidence:** `frontend/src/panels/explore`; `frontend/src/panels/explore/__tests__/*.test.tsx`.
 
 ### EDA-E07 — Panel state semantics
 **Why:** Stale, failed, superseded, multi-source, and default states currently mislead users.
@@ -93,7 +93,7 @@ workflows.
 
 **Dependencies:** Shared panel conventions.
 
-**Evidence:** `frontend/src/panels/editors/explore`; `frontend/src/stores`; `frontend/src/panels/editors/explore/*.test.tsx`.
+**Evidence:** `frontend/src/panels/explore`; `frontend/src/stores`; `frontend/src/panels/explore/__tests__/*.test.tsx`.
 
 ### EDA-E08 — Scalable accessible cards
 **Why:** Wide schemas make cards hard to browse and expose small accessibility gaps.
@@ -104,7 +104,7 @@ workflows.
 
 **Dependencies:** EDA-E07.
 
-**Evidence:** `frontend/src/panels/editors/explore`; `frontend/src/panels/editors/explore/*.test.tsx`.
+**Evidence:** `frontend/src/panels/explore`; `frontend/src/panels/explore/__tests__/*.test.tsx`.
 
 ### EDA-E09 — Distribution charts
 **Why:** Analysts need distributions without client-side raw-data processing.
@@ -115,7 +115,7 @@ workflows.
 
 **Dependencies:** EDA-E03, EDA-E06, EDA-E07.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/schemas.py`; `frontend/src/panels/editors/explore`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/schemas.py`; `frontend/src/panels/explore`; `tests/test_explore_routes.py`.
 
 ### EDA-E10 — Target relationships
 **Why:** A report needs bounded, target-aware signals for feature investigation.
@@ -126,7 +126,7 @@ workflows.
 
 **Dependencies:** EDA-E03, EDA-E06, EDA-E07.
 
-**Evidence:** `src/haute/routes/explore.py`; `src/haute/routes/_explore_service.py`; `frontend/src/panels/editors/explore`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/explore.py`; `src/haute/routes/_explore_service.py`; `frontend/src/panels/explore`; `tests/test_explore_routes.py`.
 
 ### EDA-E11 — Quality profile extensions
 **Why:** Current profiles omit useful tails, temporal/text cues, and key-quality signals.
@@ -137,7 +137,7 @@ workflows.
 
 **Dependencies:** EDA-E03.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/schemas.py`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/schemas.py`; `tests/test_explore_routes.py`.
 
 ### EDA-E12 — Export workflow
 **Why:** Existing table export utilities are not available from Explore results.
@@ -148,7 +148,7 @@ workflows.
 
 **Dependencies:** EDA-E06.
 
-**Evidence:** `frontend/src/panels/editors/shared/tableClipboard.ts`; `frontend/src/panels/editors/FrameTableActions.tsx`; `frontend/src/panels/editors/explore`.
+**Evidence:** `frontend/src/panels/editors/shared/tableClipboard.ts`; `frontend/src/panels/editors/FrameTableActions.tsx`; `frontend/src/panels/explore`.
 
 ### EDA-E13 — Cache and job robustness
 **Why:** Restarts, oversized artifacts, and long-lived service paths waste work or accumulate resources.
@@ -159,4 +159,4 @@ workflows.
 
 **Dependencies:** EDA-E03; caching and job lifecycle policy.
 
-**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/routes/_job_store.py`; `tests/test_explore_service.py`.
+**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/routes/_job_store.py`; `tests/test_explore_routes.py`.

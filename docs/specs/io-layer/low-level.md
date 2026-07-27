@@ -145,6 +145,14 @@ overwrite is an HTTP 409; registered data sinks keep their documented overwrite 
 
 ## Testing
 
+- `tests/test_apiinput_flat_nested_relative_path.py` covers flat API-input nested relative paths.
+- `tests/test_data_input_nested_relative_path.py` covers data-input nested relative paths.
+- `tests/test_data_io_config_contract.py` covers data I/O configuration contracts.
+- `tests/test_external_file_nested_relative_path.py` covers external-file nested relative paths.
+- `tests/test_pipeline_runtime_path_validation.py` covers runtime pipeline path validation.
+- `tests/test_read_user_text.py` covers user-text reading.
+- `tests/test_sink.py` covers sink behaviour.
+
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
   immutable generations, leases, corruption, quota, same-identity single flight,
   age-gated staging reclamation, quota-visible staging, digest memoization, non-destructive

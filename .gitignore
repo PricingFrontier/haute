@@ -272,8 +272,12 @@ WTW_RADAR_REPORT.md
 READ_AND_DESTROY.md
 PLANNED_WORK.md
 
-# Claude Code workspace
-.claude/
+# Claude Code workspace — everything ignored except the shared delegation
+# config: agent definitions and skills (their runtime state stays ignored)
+.claude/*
+!.claude/agents/
+!.claude/skills/
+.claude/skills/*/state/
 
 # Local agent/tooling artifacts
 .omc/

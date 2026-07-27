@@ -10,91 +10,90 @@ every critical/high "fixed" claim (94 re-checks). One finding the sweep dropped
 (`deploy-4`) was verified directly at root. Medium/low "fixed" verdicts carry one
 evidence-cited pass; every verdict below survived the adversarial pass.
 
+## Completion record (27-Jul-2026)
+
+Every non-deferred item in this plan is implemented. Each of the six deferred findings
+has an explicit retained decision and revisit trigger rather than an unrecorded action.
+The completed work includes all Wave A code changes and regressions, every Wave B
+specification correction, the complete Wave C documentation-reference cleanup, and
+delivery metadata for all 14 workstreams.
+
+The finished tree passed the repository's full verification ladder:
+
+- targeted regressions and affected suites: 563 tests passed, followed by 387 passed
+  and 1 skipped across the affected server, Explore, trace, and pipeline-route suites;
+- documentation gates: 31 accuracy tests passed and `mkdocs build --strict` succeeded;
+- static gates: Ruff checked and format-checked 591 files, and mypy reported no issues
+  across 175 source files;
+- quick preflight: all checks passed;
+- full preflight: 13,724 backend tests passed (46 skipped, 1 expected failure), aggregate
+  backend coverage was 91.90%, and all 30 critical Python coverage gates passed;
+- packaging and frontend gates: package build, TypeScript typecheck, ESLint (0 errors),
+  production build, bundle budget, and all 35 performance benchmarks passed; and
+- frontend coverage: 278 test files and 5,456 tests passed, with all 22 critical frontend
+  coverage gates passing.
+
 ## Verdict summary
 
 | Severity | Total | Fixed | Partial | Open | Deferred |
 |---|---:|---:|---:|---:|---:|
 | Critical | 3 | 3 | 0 | 0 | 0 |
-| High | 67 | 64 | 2 | 0 | 1 |
-| Medium | 200 | 193 | 3 | 2 | 2 |
-| Low | 191 | 177 | 0 | 11 | 3 |
-| **All** | **461** | **437** | **5** | **13** | **6** |
+| High | 67 | 66 | 0 | 0 | 1 |
+| Medium | 200 | 198 | 0 | 0 | 2 |
+| Low | 191 | 188 | 0 | 0 | 3 |
+| **All** | **461** | **455** | **0** | **0** | **6** |
 
-- **Partial** — part of the finding shipped; a concrete remainder is listed below.
-- **Open** — no fix and no recorded deferral (several survive only as ratchet-baseline rows).
+- **Partial** — none remain.
+- **Open** — none remain.
 - **Deferred** — an explicit recorded decision exists (spec `> NOTE:`, retention sentence,
   or PR-declared cross-stream deferral); actioned only if the decision changes.
 
-Every critical and every Wave-1 data-loss / Wave-2 security finding from the review is
-**fixed**. Both partial highs have only documentation remainders. The single most
-consequential code gap below is `json-shredding-4` (a planned cross-stream hunk that never
-landed).
+Every non-deferred finding is now **fixed**. The six deferred findings retain explicit
+decisions and revisit triggers in the authoritative register below.
 
 ---
 
-## Wave A — code correctness (one PR)
+## Wave A — code correctness (completed)
 
-### A1. `json-shredding-4` (M, partial) — blank OUTPUT mapping rows still reach projection
+### A1. `json-shredding-4` (M, resolved) — incomplete OUTPUT mappings are inactive
 
-The `_node_apply.py` consumer was fixed, but the coordinated WS-03/WS-04 hunk in
-projection was never landed. `src/haute/projection.py:2828` still filters with
-`e.get("enabled", True)`, so an enabled-but-incomplete editor row propagates `""` as an
-upstream column demand (the `missing=['']` failure class).
+`src/haute/projection.py::compute_prepared_plan` now uses the shared
+`is_active_mapping_entry` predicate for terminal OUTPUT mappings. The projection-planner
+regression proves an enabled incomplete editor row cannot introduce `""` into node or
+edge demands.
 
-- Replace the filter with `is_active_mapping_entry(e)` (local import from
-  `haute._output_assembler`, matching `src/haute/_node_apply.py:359`).
-- Regression test: terminal OUTPUT node with an enabled blank-`source_column` row yields a
-  projection demand without `""` and no `missing=['']` contract failure.
+### A2. `mlflow-model-registry-7` (L, resolved) — callbacks run outside the cache lock
 
-### A2. `mlflow-model-registry-7` (L, open) — cascade-under-lock asymmetry
+`_ModelCacheWithCascade.put`, `clear`, and `evict_matching` now mutate or collect state
+under the model-cache lock and invoke feature-validation callbacks only after releasing
+it. A regression observes the lock boundary for capacity eviction, predicate eviction,
+and clear.
 
-`_ModelCacheWithCascade.put` (`src/haute/_mlflow_io.py:160-175`) and `clear` (:177-182)
-run the feature-validation invalidation cascade **inside** `self._lock`, while
-`evict_matching` (:184-208) deliberately runs it outside to avoid deadlock.
+### A3. `mlflow-model-registry-8` (L, resolved) — one cwd-derived cache-root accessor
 
-- Collect evicted values under the lock; invoke the cascade after release, in all three
-  methods. Update `docs/specs/mlflow-model-registry/low-level.md:31-39` to state one rule.
+`_disk_cache_root()` is now the sole cwd-derived model-artifact cache-root accessor and is
+used by artifact resolution, clear, and the native-model fast path. Both MLflow registry
+specs document that invariant and the helper has direct cwd-relative coverage.
 
-### A3. `mlflow-model-registry-8` (L, open) — cwd-derived cache root computed at 3 sites
+### A4. `mlflow-model-registry-10` (L, resolved) — dead ModelScorer delegates removed
 
-`Path.cwd() / ".cache" / "models"` is derived independently at `_mlflow_io.py:732`, `:823`
-and `:1019`.
+The unused `ModelScorer._score_eager` and `_score_batched` delegates are deleted.
+Their tests now exercise `haute._mlflow_io._score_eager` and
+`_score_batched_standalone` directly.
 
-- Introduce one accessor (`_disk_cache_root()`), use it at all three sites; add a spec
-  sentence (high-level.md:95 area) that the root is cwd-resolved through that helper.
+### A5. `over-complication-9` (L, resolved) — digest identity is canonicalised
 
-### A4. `mlflow-model-registry-10` (L, open) — dead ModelScorer delegates
+Transient JSON-shaped digest identities now use `canonical_json`, including trace-row,
+graph-payload, Explore-report, and trace-enrichment identities. The persisted modelling
+feature-contract hash retains its historical byte encoding as an explicit compatibility
+exception in code and the caching spec. An AST regression rejects new raw
+`json.dumps`-to-digest call sites outside that exemption.
 
-`ModelScorer._score_eager` / `_score_batched` (`src/haute/_model_scorer.py:1424-1460`)
-have no production caller (production path calls `_run_score_pipeline`); only
-`tests/test_model_scorer.py:1342,:1363` exercise the bound methods.
+### A6. `modelling-3` (L, resolved) — dispersion auto-fill contract matches the UI
 
-- Delete both delegates and retarget those tests at the module-level helpers they wrap
-  (`haute._mlflow_io._score_eager`, `_score_batched_standalone`).
-
-### A5. `over-complication-9` (L, open) — two digest sites bypass `canonical_json`
-
-`_cache.py:935` declares `canonical_json` "THE canonical-JSON encoding for digest
-material", but `routes/pipeline.py:295-298` (`_trace_row_values_fingerprint`) and
-`modelling/_feature_contract.py:89-91` (`_hash_payload`) hash raw
-`json.dumps(sort_keys=True)`.
-
-- **Recommended split:** route the trace-row fingerprint (in-process cache key only)
-  through `canonical_json`; for the feature-contract hash, changing the encoder changes
-  persisted hash values — either migrate deliberately or add an explicit documented
-  exemption in `canonical_json`'s docstring and the caching spec. Add a regression test
-  that no digest call site outside `_cache.py` uses raw `json.dumps` for digest material.
-
-### A6. `modelling-3` (L, open) — dispersion estimate: spec says "never written
-automatically", UI writes it
-
-`GLMTargetConfig.tsx:88-95` auto-fills the estimate via `onUpdate` with no accept step;
-the spec (`docs/specs/modelling/high-level.md:99-100`) promises the opposite.
-
-- **Recommended:** rewrite the spec sentence to match the shipped auto-fill-into-editable-
-  field behaviour (option a). If the explicit accept step is actually wanted, instead hold
-  the estimate in local state behind an accept control plus a test (option b) — decide
-  before implementation.
+The modelling high-level spec now matches the shipped interaction: the explicit estimate
+action auto-fills the visible editable config field, which remains inspectable and
+adjustable before the normal save/publish action.
 
 **Wave A verification:** smallest failing regression test first per fix (AGENTS.md);
 `uv run pytest tests/test_v2_codec_and_shred.py tests/test_output_assembler.py
@@ -103,73 +102,58 @@ quick preflight; Codex code review before merge.
 
 ---
 
-## Wave B — spec truth (one PR, docs + docstrings only)
+## Wave B — spec truth (completed)
 
-### B1. `failure-model-1` (H, partial) — stale "data fetching" wording
+### B1. `failure-model-1` (H, resolved) — Databricks routes are documented as browse-only
 
-Spec rewrite complete; two docstrings remain: `src/haute/server.py:6` and
-`src/haute/routes/databricks.py:1` still say the browse-only Databricks routes do "data
-fetching". Reword to browsing-only.
+The server route map and Databricks route docstring now describe the endpoints as
+read-only Unity Catalog browsing, without implying data fetching.
 
-### B2. `seam-exec-1` (H, partial) — execution-engine spec still documents the superseded
-preview key
+### B2. `seam-exec-1` (H, resolved) — execution specs document the versioned lineage key
 
-Caching and tracing halves are folded; `docs/specs/execution-engine/` is untouched:
+Both execution-engine specs now describe
+`execution.preview_lineage_cache_key()` → `_cache.lineage_cache_key()`, the complete
+versioned selected-lineage payload, and
+`PREVIEW_EXECUTION_SEMANTICS_VERSION`. The obsolete preview-projection suffix wording is
+removed and the module map names the shipped key factory and version.
 
-- Rewrite low-level.md:112-116 (preview control flow) around
-  `execution.preview_lineage_cache_key()` → `_cache.lineage_cache_key()` with the shipped
-  payload; delete the non-existent "preview-projection cache suffix".
-- Add `preview_lineage_cache_key` + `PREVIEW_EXECUTION_SEMANTICS_VERSION` to the
-  `execution.py` module-map row (low-level.md:8).
-- Update high-level.md:259-266 ("graph-fingerprint helpers" → versioned lineage key).
+### B3. `contracts-a-11` (M, resolved) — overwrite refusal is in both failure models
 
-### B3. `contracts-a-11` (M, partial) — overwrite-refusal mapping absent from failure models
+The server error table now maps `DataOutputDestinationExistsError` from
+`POST /api/pipeline/write-output` to HTTP 409, and the I/O failure model documents the
+same fail-loud overwrite refusal.
 
-- Add a `DataOutputDestinationExistsError` → `POST /api/pipeline/write-output` → 409 row
-  to `docs/specs/server-api/low-level.md`'s Error handling table (:385-399).
-- Add one sentence to `docs/specs/io-layer/high-level.md` Failure model (:101-111).
+### B4. `deploy-10` (L, resolved) — container manifest paths match the runtime invariant
 
-### B4. `deploy-10` (L, open) — container manifest path contract contradicts spec
+The deploy specs now state that bundled source paths become
+`artifacts/<name>` manifest paths, resolve against image `WORKDIR /app`, and must change
+together with the generated Dockerfile's `COPY artifacts/ artifacts/` instruction.
 
-Code emits `artifacts/<name>` resolved by `WORKDIR /app`; the spec claims the container
-CWD is `/` and pipeline-relative paths were chosen to avoid exactly this.
+### B5. `contracts-d-8` + `modelling-4` (L, resolved) — shipped 0.8.0 contract folded
 
-- **Recommended:** document reality (option b): amend `docs/specs/deploy/high-level.md:175-179`,
-  low-level.md near :133 and the Edge-cases bullet at :242-247 to state manifest artefact
-  paths are container-relative, resolved against the image's `WORKDIR /app`, and that
-  `_container.py:111` + the Dockerfile `WORKDIR`/`COPY` form one invariant.
+The shipped isolated-fit/dispersion contract is folded into present-tense training
+control flow, progress transport, publication/rollback, dispersion, failure, and testing
+sections. Both 0.8.0 headings are removed; the genuinely pending canonical-only
+modelling-artifacts contract remains.
 
-### B5. `contracts-d-8` + `modelling-4` (L, open) — fold the shipped 0.8.0 contract
+### B6. `mlflow-model-registry-5` (L, resolved) — legacy Polars contract sections retired
 
-`## Approved change contract — 0.8.0 isolated fit and dispersion` survives at
-`docs/specs/modelling/high-level.md:251-269` and `low-level.md:561-590` while describing
-shipped code. Fold each bullet into the present-tense sections (training control flow,
-publication/rollback invariants, progress budget, dispersion rules, failure model) and
-delete both headings. Leave `— canonical-only modelling artifacts` (low-level.md:592)
-alone — that migration is genuinely pending.
+All six shipped Polars backend contract sections across MLflow registry, modelling, and
+optimiser high/low specs are folded into ordinary present-tense sections. The legacy
+headings and their baseline debt are gone.
 
-### B6. `mlflow-model-registry-5` (L, open) — retire the last `Polars backend contracts
-(0.6.0)` sections
+### B7. `mlflow-model-registry-11` (L, resolved) — model-cache tests cited
 
-Six legacy sections remain corpus-wide (mlflow-model-registry, modelling, optimiser ×
-high+low), all ratcheted at `tests/docs_accuracy_baseline.txt:195-200`. Fold the shipped
-bullets (e.g. metadata-derived empty-batch dtype, `src/haute/_model_scorer.py:1565-1591`)
-into ordinary sections, delete the headings, remove the six baseline rows.
+The MLflow registry Testing section cites
+`tests/test_model_cache_observability.py` and
+`tests/test_feature_validation_cache.py`, and its closing coverage statement reflects
+the direct regression evidence.
 
-### B7. `mlflow-model-registry-11` (L, open) — two uncited test files
+### B8. `testing-credibility-11` (L, resolved) — drifting hard-coded counts removed
 
-Add Testing entries in `docs/specs/mlflow-model-registry/low-level.md` for
-`tests/test_model_cache_observability.py` and `tests/test_feature_validation_cache.py`;
-re-derive the "Known coverage gaps: none" closing sentence.
-
-### B8. `testing-credibility-11` (L, open) — hard-coded test counts drifted again
-
-`docs/specs/modelling/low-level.md` (:491-528) and `docs/specs/pipeline-config/low-level.md`
-(:301,:306,:316) assert exact `(N tests)` counts that no longer match.
-
-- **Recommended:** drop the exact-count parentheticals entirely, and add a
-  `tests/test_docs_accuracy.py` guard that parses any surviving `` `test_*.py` (N tests) ``
-  claim and fails on divergence — so counts can never silently drift again.
+The stale exact-count parentheticals are removed. A documentation-accuracy test parses
+any future `` `test_*.py` (N tests) `` claim and compares it with the source-defined test
+functions so count drift cannot silently recur.
 
 **Wave B verification:** `uv run pytest tests/test_docs_accuracy.py -q` (baseline rows
 195-200 deleted in B6 must go green, not be re-added); `uv run mkdocs build --strict`;
@@ -177,11 +161,11 @@ quick preflight; Codex code review.
 
 ---
 
-## Wave C — docs-accuracy ratchet burn-down (one or two PRs, mechanical)
+## Wave C — docs-accuracy ratchet burn-down (completed)
 
-The WS-01 ratchet (`tests/docs_accuracy_baseline.txt`) still holds **281 accepted
-violations** (from 373 at commit). Two review findings are the finding-level view of this
-debt; the rest is pre-existing corpus hygiene the review's S3 systemic finding predicted:
+The WS-01 ratchet (`tests/docs_accuracy_baseline.txt`) started this pass with **281
+accepted violations** (from 373 at its original commit) and now holds **zero**. The
+historical starting distribution was:
 
 | Rule | Rows | Note |
 |---|---:|---|
@@ -198,19 +182,16 @@ Concentration by document: `frontend-graph-canvas/low-level.md` (56),
 `frontend-shared/low-level.md` (54), `frontend-git-ui/low-level.md` (23),
 `assistant/low-level.md` (21), remainder spread thin.
 
-- **C1. `testing-credibility-9` (M, open):** rewrite the
-  `docs/specs/frontend-shared/low-level.md` Testing section (~lines 370-425) so every
-  reference is a full root-relative `frontend/src/...` path — this alone clears ~30 rows
-  and disambiguates the `formatValue`/`formatBytes`/`ConfigCheckbox` basename class.
-- **C2. `testing-credibility-8` (M, open):** cite each of the ~71 unreferenced
-  `tests/test_*.py` files in its owning component's Testing section (or delete genuinely
-  dead test files), burning the 65 `unreferenced-test` rows.
-- **C3.** Sweep the remaining rows document-by-document (frontend-graph-canvas first),
-  deleting each baseline row with its fix. Suitable for cheap-tier batch execution with a
-  per-document diff review; the ratchet test itself enforces correctness.
+- **C1. `testing-credibility-9` (M, resolved):** the frontend-shared Testing section
+  uses full root-relative paths, including disambiguated duplicate basenames.
+- **C2. `testing-credibility-8` (M, resolved):** every previously unreferenced Python
+  test file is cited in an owning low-level Testing section.
+- **C3 (resolved):** all remaining ambiguous/missing references, module-map symbols,
+  roadmap evidence, legacy headings, and broken anchors were corrected
+  document-by-document. The accepted-debt baseline is intentionally empty.
 
-**Wave C verification:** `uv run pytest tests/test_docs_accuracy.py -q` after each
-document; baseline shrinks monotonically (no added rows); quick preflight at the end.
+**Wave C verification:** `uv run pytest tests/test_docs_accuracy.py -q` passes with 31
+tests and the live violation inventory at zero; `uv run mkdocs build --strict` passes.
 
 ---
 
@@ -232,24 +213,17 @@ extraction plan; execute it from the roadmap, not from this list.
 
 ## Housekeeping (no severity)
 
-- The 14 `docs/opus-5-ws-NN-*.md` files still read "Owner: unassigned · Status: not
-  started"; mark them delivered (with PR numbers) or delete them and let this file plus
-  the review stand.
+- All 14 `docs/opus-5-ws-NN-*.md` files are marked delivered with their actual merged
+  PR numbers: WS-01 #137, WS-02 #134, WS-03 #138, WS-04 #136, WS-05 #139,
+  WS-06 #135, WS-07 #140, WS-08 #142, WS-09 #145, WS-10 #146, WS-11 #144,
+  WS-12 #141, WS-13 #147, and WS-14 #143.
 - This file is already excluded from the public site by the `opus-5-*.md` glob in
   `mkdocs.yml` `exclude_docs`.
 
-## Suggested sequencing
+## Completed sequence
 
-1. **Wave A** (code, ~½ day) — one branch, regression-test-first per item; full preflight;
-   Codex code review. A1 is the only behaviour-visible fix; A5/A6 carry small decisions to
-   confirm at PR time (recommendations above).
-2. **Wave B** (docs, ~½ day) — one branch; strict MkDocs + docs-accuracy green; Codex
-   review of the folded contracts for fidelity to shipped behaviour.
-3. **Wave C** (ratchet, ~1–2 days elapsed, mechanical) — chunk by document; cheap-tier
-   batch execution is appropriate; the ratchet test is the gate. C1/C2 first (they close
-   the two open M findings), then C3.
-4. Deferred register: no work; keep the table in this file authoritative.
-
-Waves A and B are independent and can proceed in parallel worktrees; Wave C touches only
-specs/baseline and conflicts with nothing except B6's six baseline rows (land B first or
-coordinate that one hunk).
+1. [x] **Wave A** — code fixes and focused regressions.
+2. [x] **Wave B** — shipped behavior folded into present-tense specifications.
+3. [x] **Wave C** — documentation debt ratchet reduced monotonically to zero.
+4. [x] **Housekeeping** — all workstream records marked delivered.
+5. [x] **Deferred register** — retained unchanged as the authoritative decision record.

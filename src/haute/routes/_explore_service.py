@@ -8,7 +8,6 @@ with concise automatic overview summaries; the actual frame stays on disk.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ import polars as pl
 from fastapi import HTTPException
 
 import haute.execution as execution_facade
+from haute._cache import canonical_json
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -781,13 +781,9 @@ class ExploreService:
             "source": body.source,
             "version": EXPLORE_CACHE_VERSION,
         }
-        report_cache_key = "explore:v{version}:{digest}".format(
-            version=EXPLORE_CACHE_VERSION,
-            digest=content_hash_bytes(
-                json.dumps(
-                    report_payload, sort_keys=True, separators=(",", ":"), default=str
-                ).encode()
-            ),
+        report_cache_key = (
+            f"explore:v{EXPLORE_CACHE_VERSION}:"
+            f"{content_hash_bytes(canonical_json(report_payload).encode())}"
         )
         return ExploreCacheSpec(
             node_id=body.node_id,

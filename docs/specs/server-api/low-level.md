@@ -21,7 +21,7 @@
 | `src/haute/routes/_save_pipeline.py` | `SavePipelineService` — the transactional save orchestrator: singleton/name-collision/load-error validation, codegen invocation, config-file + sidecar writes, stale-config cleanup, and rollback. |
 | `src/haute/routes/_supersession.py` | `SupersessionCoordinator` / `_SupersessionState` — generation-counted "run latest, cancel/skip the rest" concurrency primitive used by preview and trace. |
 | `src/haute/routes/output_assemble.py` | `POST /api/output-assemble/dry-run` — validates an unsaved `outputMapping`, swaps it into the target node's in-memory config, executes up to that node, returns the rendered document. |
-| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching `contract_error` fields for background jobs. |
+| `src/haute/routes/_contract_errors.py` | Shared public-contract-error adapter: validates the closed public error set, emits stable payloads, maps synchronous failures to HTTP 422, and supplies the matching contract-error fields for background jobs. |
 | `src/haute/routes/_runtime_path_errors.py` | Closed HTTP mapping for runtime-path failures: malformed path → 400, project-root escape → 403, selected by concrete exception type rather than message text. |
 
 ## Key types and data structures
@@ -393,6 +393,7 @@ until the worker actually exits.
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
 | `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError` | preview, output write, output-assemble dry-run | 507 | Payload is `exc.to_payload()`, nested under `detail`, for every route. |
 | `BoundedMemoryUnsupportedError` | output write | 422 | Distinguishes "cannot stream safely" from a hard resource limit. |
+| `DataOutputDestinationExistsError` | `POST /api/pipeline/write-output` | 409 | `overwrite=false` refuses an existing file/table before publication and returns the destination in the detail. |
 | `SupersededRequestError` | preview, trace | 409 | Raised by `SupersessionCoordinator`; the worker never runs for a superseded generation. |
 | `BlockingWorkTimeoutError`, `TimeoutError` | preview, trace, output write, output-assemble | 504 | Worker threads are never killed. Preview/output write request cooperative cancellation; trace retains its supersession key/permit; OUTPUT dry-run defers context release until its late worker finishes. A background timeout is not masked by supersession. |
 | `HTTPException` (raised directly) | path validation, node lookup, syntax checks | 400 / 403 / 404 / 409 | `raise_node_not_found`, `raise_node_type_error`, `raise_pipeline_not_found`, `raise_validation_error` centralise the structured-log + raise pattern. |
@@ -439,6 +440,13 @@ remaining touched files — "recover most of the save" is preferred over "abort 
 entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
+
+- `tests/test_contract_error_adapter.py` covers contract-error adaptation.
+- `tests/test_error_detail_sanitization.py` covers error-detail sanitization.
+- `tests/test_error_response_shape.py` covers error-response shape.
+- `tests/test_pipeline_index_cache.py` covers pipeline-index caching.
+- `tests/test_pipeline_read_json_route.py` covers pipeline JSON read routes.
+- `tests/test_serialization_invariants.py` covers serialization invariants.
 
 Tests live under `tests/`, one file per module or per feature slice, using FastAPI's
 `TestClient` against a temporary project directory (a `haute.toml` + pipeline `.py` fixture)
