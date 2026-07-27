@@ -177,7 +177,8 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
    as valid-values-only.
 4. For each hashable column, `unique_ratio` is valid distinct count divided by valid row count
    (rows minus null and float-NaN counts), or `None` when there are no valid rows. A distinct
-   count above 50 sets `is_high_cardinality`. `_is_identifier_candidate` additionally requires
+   count above 50 sets `is_high_cardinality` only when the dtype base is text-like
+   (`_TEXT_DTYPE_BASES`). `_is_identifier_candidate` additionally requires
    at least two rows, no missing/NaN values, one distinct value per row, and an id/key/uuid/guid
    name shape.
 5. `row_count = int(aggregate_row["row_count"])`; `duplicate_row_count` is
@@ -211,8 +212,9 @@ condition appends at most one `ExploreDataQualityIssue` (so up to 7 issues total
    zero_count / (row_count - null_count) >= 0.95`, sorted by descending zero count; this issue is
    computed and referenced (via `zero_heavy_names`) before the constant-column issue is appended,
    even though it is appended last.
-6. **High-cardinality fields** — any column whose valid distinct count exceeds 50; detail lists
-   up to three names. This is a caution about bounded categorical display, not an error.
+6. **High-cardinality fields** — any text-like column whose valid distinct count exceeds 50;
+   detail lists up to three names. This is a caution about bounded categorical display, not an
+   error, so it never fires for numeric or temporal columns.
 7. **Duplicate rows** — when exact whole-row distinct counting is available and
    `duplicate_row_count > 0`; danger at a duplicate ratio of at least 50%, warning below it.
 

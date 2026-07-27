@@ -767,8 +767,9 @@ def test_build_frame_stats_profile_flag_boundaries(explore_execution_context) ->
 
     lf = pl.DataFrame(
         {
-            "at_limit": list(range(50)) + [0],
-            "above_limit": list(range(51)),
+            "at_limit": [f"v{i}" for i in range(50)] + ["v0"],
+            "above_limit": [f"v{i}" for i in range(51)],
+            "numeric_above_limit": list(range(51)),
             "policy_id": list(range(51)),
             "nullable_id": pl.Series(
                 "nullable_id",
@@ -783,6 +784,7 @@ def test_build_frame_stats_profile_flag_boundaries(explore_execution_context) ->
 
     assert by_name["at_limit"].is_high_cardinality is False
     assert by_name["above_limit"].is_high_cardinality is True
+    assert by_name["numeric_above_limit"].is_high_cardinality is False
     assert by_name["policy_id"].is_identifier_candidate is True
     assert by_name["nullable_id"].unique_ratio == 1
     assert by_name["nullable_id"].is_identifier_candidate is False
@@ -1204,7 +1206,7 @@ def test_build_frame_stats_includes_backend_overview_summary(
         "1 constant / single-value column",
         "1 numeric column with negatives",
         "1 mostly-zero numeric column",
-        "2 high-cardinality columns",
+        "1 high-cardinality column",
     ]
     assert summary.data_quality.issues[0].detail == "region worst at 25%"
     assert summary.data_quality.issue_count == 5

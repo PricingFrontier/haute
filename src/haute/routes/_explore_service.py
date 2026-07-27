@@ -679,8 +679,13 @@ def _build_frame_stats(
             if distinct_count is not None and valid_row_count > 0
             else None
         )
+        # Only text-like columns get bounded categorical display, so only they
+        # can outgrow it; numeric/temporal columns legitimately hold many
+        # distinct values and are never flagged.
         is_high_cardinality = (
-            distinct_count is not None and distinct_count > _CATEGORICAL_VALUE_COUNT_LIMIT
+            dtype.base_type() in _TEXT_DTYPE_BASES
+            and distinct_count is not None
+            and distinct_count > _CATEGORICAL_VALUE_COUNT_LIMIT
         )
         is_identifier_candidate = _is_identifier_candidate(
             name,

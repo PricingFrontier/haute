@@ -497,6 +497,33 @@ describe("Explore summary cards", () => {
     expect(downloadedFilename).toBe("explore-pricing_claims_v1-categorical-summary.csv")
   })
 
+  it("surfaces a download failure inline instead of rejecting unhandled", async () => {
+    vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
+      throw new Error("blob allocation failed")
+    })
+    render(
+      <CategoricalSummaryCard
+        report={makeReport({
+          source: "pricing/claims.v1",
+          overview_summary: {
+            data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
+            categorical_summary: [{ field: "region", distinct_count: 1, expandable: false, values_truncated: false, values: [] }],
+          },
+        })}
+      />,
+    )
+
+    ;(
+      await screen.findByRole("button", {
+        name: "Download Categorical Summary table as CSV",
+      })
+    ).click()
+
+    expect(
+      await screen.findByTestId("explore-categorical-summary-export-error"),
+    ).toHaveTextContent("blob allocation failed")
+  })
+
   it("keeps empty numeric and categorical export actions visible but disabled", async () => {
     render(
       <>

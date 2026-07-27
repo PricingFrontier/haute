@@ -75,8 +75,10 @@ Out of scope (owned elsewhere):
   valid. `distinct_count` counts only those valid values — the null and NaN buckets are excluded,
   so an all-NaN float column reports `distinct_count == 0`, not `1`.
 - Every hashable column also reports `unique_ratio` over valid (non-null/non-NaN) rows.
-  `is_high_cardinality` is true when valid distinct values exceed the bounded categorical
-  display limit of 50. `is_identifier_candidate` is the narrower, descriptive cue for a
+  `is_high_cardinality` is true only for a text-like column whose valid distinct values exceed
+  the bounded categorical display limit of 50 — the caution is about display truncation, which
+  only text-like columns get; numeric and temporal columns legitimately hold many distinct
+  values and are never flagged (ruled 2026-07-27). `is_identifier_candidate` is the narrower, descriptive cue for a
   non-empty, fully populated, all-unique column whose case-insensitive name is `id`, `key`,
   `uuid`, `guid`, starts with `id_`/`key_`, or ends with `_id`/`_key`; it is not a uniqueness
   guarantee for a group of columns. Text-like columns report min/mean/max character length

@@ -59,16 +59,20 @@ export default function ExploreTableActions({
   }, [flashAck, grid])
 
   const download = useCallback(async () => {
-    const { buildCsv, downloadTextFile } = await import(
-      "../editors/shared/tableClipboard"
-    )
-    const downloaded = downloadTextFile(
-      buildCsv([grid.headers, ...grid.rows]),
-      `${filename}.csv`,
-      "text/csv",
-    )
-    if (downloaded) flashAck("Downloaded")
-    else setError("Download is unavailable in this context.")
+    try {
+      const { buildCsv, downloadTextFile } = await import(
+        "../editors/shared/tableClipboard"
+      )
+      const downloaded = downloadTextFile(
+        buildCsv([grid.headers, ...grid.rows]),
+        `${filename}.csv`,
+        "text/csv",
+      )
+      if (downloaded) flashAck("Downloaded")
+      else setError("Download is unavailable in this context.")
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Download failed")
+    }
   }, [filename, flashAck, grid])
 
   const buttonClass =
