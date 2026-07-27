@@ -299,6 +299,21 @@ def test_absolute_raw_path_outside_root_is_rejected_by_default(tmp_path: Path) -
         resolve_runtime_file_path(outside, project_root=project_root)
 
 
+@pytest.mark.parametrize(
+    "raw_path",
+    ["C:/outside.json", r"C:\outside.json", "C:outside.json"],
+)
+def test_windows_drive_path_never_becomes_project_relative(
+    tmp_path: Path,
+    raw_path: str,
+) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    with pytest.raises(RuntimePathOutsideProjectError, match="outside the project root"):
+        resolve_runtime_file_path(raw_path, project_root=project_root)
+
+
 def test_absolute_raw_path_inside_root_allowed_when_enforced(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

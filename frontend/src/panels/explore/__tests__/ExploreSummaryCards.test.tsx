@@ -463,15 +463,21 @@ describe("Explore summary cards", () => {
 
   it("downloads categorical CSV using shared escaping", async () => {
     const blobs: Blob[] = []
+    let downloadedFilename = ""
     vi.spyOn(URL, "createObjectURL").mockImplementation((blob: Blob | MediaSource) => {
       blobs.push(blob as Blob)
       return "blob:explore"
     })
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {})
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {})
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloadedFilename = this.download
+    })
     render(
       <CategoricalSummaryCard
         report={makeReport({
+          source: "pricing/claims.v1",
           overview_summary: {
             data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
             categorical_summary: [{ field: 'region, "quoted"', distinct_count: 1, expandable: false, values_truncated: false, values: [] }],
@@ -488,6 +494,7 @@ describe("Explore summary cards", () => {
 
     await waitFor(() => expect(blobs).toHaveLength(1))
     expect(await blobs[0].text()).toContain('"region, ""quoted""",-,-,1')
+    expect(downloadedFilename).toBe("explore-pricing_claims_v1-categorical-summary.csv")
   })
 
   it("keeps empty numeric and categorical export actions visible but disabled", async () => {

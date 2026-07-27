@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeVar, cast
 
 from haute._sandbox import _get_project_root
@@ -147,7 +147,11 @@ def resolve_runtime_file_path(
     missing candidates; if both candidates exist, ``prefer`` decides.
     """
     root = _infer_project_root(project_root=project_root, source_file=source_file)
-    raw = Path(_normalise_path_text(raw_path))
+    normalised_path = _normalise_path_text(raw_path)
+    raw = Path(normalised_path)
+    windows_path = PureWindowsPath(normalised_path)
+    if windows_path.drive and not raw.is_absolute():
+        raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")
 
     if raw.is_absolute():
         spelling_preserved = Path(os.path.abspath(raw))

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Check, Copy, Download } from "lucide-react"
+import { sanitiseLabelForFilesystem } from "../../utils/apiInputPorts"
 import type { TableGrid } from "../editors/FrameTableActions"
 
 function clipboardWriteAvailable(): boolean {
@@ -9,11 +10,9 @@ function clipboardWriteAvailable(): boolean {
 }
 
 function exploreExportFilename(source: string, table: string): string {
-  const safeSource = source
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-  return `explore-${safeSource || "source"}-${table}`
+  const trimmedSource = source.trim()
+  const safeSource = trimmedSource ? sanitiseLabelForFilesystem(trimmedSource) : "source"
+  return `explore-${safeSource}-${table}`
 }
 
 export default function ExploreTableActions({
