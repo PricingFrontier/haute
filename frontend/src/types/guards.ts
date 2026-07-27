@@ -2406,7 +2406,7 @@ export function parseFileListResponse(value: unknown): { items?: FileListItem[] 
         name: expectString("parseFileListResponse", itemObj.name, `${field}.name`),
         path: expectString("parseFileListResponse", itemObj.path, `${field}.path`),
         type: expectStringLiteral("parseFileListResponse", itemObj.type, `${field}.type`, ["file", "directory"]),
-        ...(itemObj.size === undefined ? {} : { size: expectNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
+        ...(itemObj.size === undefined ? {} : { size: expectNullableNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
       }
     }),
   }

@@ -160,7 +160,7 @@ export default function ApiInputEditor({
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
   const showCacheButton =
-    !!currentPath && /\.(?:json|jsonl|ndjson)$/i.test(currentPath)
+    !!currentPath && /\.(?:json|jsonl|ndjson|xml)$/i.test(currentPath)
   const [fileExpanded, setFileExpanded] = useState(false)
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
@@ -719,7 +719,7 @@ export default function ApiInputEditor({
           >
             Preview Data
             <span className="ml-1.5 normal-case tracking-normal font-normal">
-              .json, .jsonl, or .ndjson
+              .json, .jsonl, .ndjson, or .xml
             </span>
           </label>
           {currentPath && (
@@ -760,7 +760,7 @@ export default function ApiInputEditor({
                   fetchForPath(path)
                   setFileExpanded(false)
                 }}
-                extensions=".json,.jsonl,.ndjson"
+                extensions=".json,.jsonl,.ndjson,.xml"
               />
             </div>
           )}

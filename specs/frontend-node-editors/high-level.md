@@ -32,6 +32,10 @@ backend API modules own validation and persistence.
   output frame blocks present the same names — there is no separate display identity anywhere.
 - Editors retain incomplete persisted rows when they can be repaired (notably API schema and
   output mappings); fresh inference data may be normalised separately from persisted data.
+- API Input preview browsing advertises and filters JSON, JSONL, NDJSON, and XML. Selecting any
+  of those structured formats fetches its schema preview, and all four expose the cache/infer
+  action. Directory rows remain navigable when the server reports a null size; only numeric file
+  sizes are rendered.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
   context. Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.

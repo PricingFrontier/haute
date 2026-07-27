@@ -12,6 +12,7 @@
  */
 import { create } from "zustand"
 import { checkMlflow } from "../api/client"
+import type { FileListItem } from "../api/types"
 import { sanitizeName } from "../utils/sanitizeName"
 
 export const MIN_STREAMING_CHUNK_SIZE = 1000
@@ -71,9 +72,9 @@ interface SettingsState {
   removeSource: (name: string) => void
 
   // File listing cache (keyed by "dir|extensions")
-  fileListCache: Record<string, { items: { name: string; path: string; type: "file" | "directory"; size?: number }[]; fetchedAt: number }>
-  setFileListCache: (key: string, items: { name: string; path: string; type: "file" | "directory"; size?: number }[]) => void
-  getFileListCache: (key: string) => { name: string; path: string; type: "file" | "directory"; size?: number }[] | null
+  fileListCache: Record<string, { items: FileListItem[]; fetchedAt: number }>
+  setFileListCache: (key: string, items: FileListItem[]) => void
+  getFileListCache: (key: string) => FileListItem[] | null
 }
 
 const useSettingsStore = create<SettingsState>()((set, get) => ({

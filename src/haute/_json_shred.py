@@ -39,6 +39,7 @@ import shutil
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice
@@ -415,6 +416,83 @@ def _rename_dir_with_retry(source: Path, target: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _xml_local_name(name: str) -> str:
+    """Strip an XML namespace while retaining the source element name."""
+    return name.rsplit("}", 1)[-1].split(":", 1)[-1]
+
+
+def _xml_element_value(element: ET.Element) -> Any:
+    """Convert an XML element into the object/list/scalar shape used by shredding."""
+    result: dict[str, Any] = {}
+
+    for raw_name, value in element.attrib.items():
+        name = _xml_local_name(raw_name)
+        if name in result:
+            raise ApiInputSchemaError(f"duplicate XML attribute name {name!r}")
+        result[name] = value
+
+    children = list(element)
+    if not children:
+        text = (element.text or "").strip()
+        if not result:
+            return text
+        if text:
+            if "value" in result:
+                raise ApiInputSchemaError(
+                    "XML element has both a 'value' attribute and text content"
+                )
+            result["value"] = text
+        return result
+
+    if (element.text or "").strip() or any((child.tail or "").strip() for child in children):
+        raise ApiInputSchemaError(
+            f"mixed text and child elements are not supported in XML element "
+            f"{_xml_local_name(element.tag)!r}"
+        )
+
+    grouped: dict[str, list[Any]] = {}
+    for child in children:
+        name = _xml_local_name(child.tag)
+        grouped.setdefault(name, []).append(_xml_element_value(child))
+
+    for name, values in grouped.items():
+        if name in result:
+            raise ApiInputSchemaError(f"XML attribute and child element share the name {name!r}")
+        result[name] = values[0] if len(values) == 1 else values
+    return result
+
+
+def _iter_xml_records(data_path: Path) -> Iterator[dict[str, Any]]:
+    """Yield records from a single XML document.
+
+    A container whose children all share one element name is treated like a
+    JSON root array. Otherwise the document root itself is one record.
+    """
+    raw = data_path.read_bytes()
+    upper = raw.upper()
+    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
+        raise ApiInputSchemaError("XML DTD and entity declarations are not supported")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise ApiInputSchemaError(f"Invalid XML in data file: {exc}") from exc
+
+    children = list(root)
+    if children:
+        child_names = {_xml_local_name(child.tag) for child in children}
+        if len(child_names) == 1:
+            converted = [_xml_element_value(child) for child in children]
+            if all(isinstance(value, dict) for value in converted):
+                yield from converted
+                return
+
+    value = _xml_element_value(root)
+    if isinstance(value, dict):
+        yield value
+    else:
+        yield {_xml_local_name(root.tag): value}
+
+
 def _iter_records(
     data_path: Path,
     *,  # pragma: no mutate
@@ -438,7 +516,11 @@ def _iter_records(
         if stats is not None:
             stats.count_record_skip()
 
-    if data_path.suffix.lower() in (".jsonl", ".ndjson"):
+    suffix = data_path.suffix.lower()
+    if suffix == ".xml":
+        yield from _iter_xml_records(data_path)
+        return
+    if suffix in (".jsonl", ".ndjson"):
         with data_path.open("r", encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
@@ -593,7 +675,7 @@ def _iter_records_for_inference(
     if sample_size is None or sample_size <= 0:
         yield from _iter_records(data_path)
         return
-    if data_path.suffix.lower() in (".jsonl", ".ndjson"):  # pragma: no mutate
+    if data_path.suffix.lower() in (".jsonl", ".ndjson", ".xml"):  # pragma: no mutate
         yield from islice(_iter_records(data_path), sample_size)
         return
     yield from _iter_sampled_json_array_records(data_path, sample_size)
@@ -1490,7 +1572,7 @@ def load_v2_api_source(
     - prefers a valid, readable, schema-matching ``working/`` parquet cache,
       then ``committed/`` (the deploy / fresh-server case).
     - when neither cache can serve the current schema and source signature,
-      shreds JSON/JSONL directly for this run without writing cache state.
+      shreds JSON, JSONL, or XML directly for this run without writing cache state.
     - 1+ emitting labels → a ``dict[port_label, LazyFrame]`` in schema order.
 
     Frame resolution uses the shared :func:`table_is_emitting` predicate, so

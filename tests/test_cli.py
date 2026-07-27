@@ -181,9 +181,9 @@ class TestInit:
         assert '"mypy' in pyproject_content
         assert '"pytest' in pyproject_content
 
-        # Root main.py is a valid pipeline-resolution entry point and must survive.
-        assert (tmp_path / "main.py").read_text() == "print('hello')\n"
-        assert "Preserved existing main.py" in result.output
+        # Haute uses rating/main.py, so the placeholder created by uv init is removed.
+        assert not (tmp_path / "main.py").exists()
+        assert "Removed root main.py" in result.output
 
         # Starter pipeline should be created in rating/
         py_content = (tmp_path / "rating" / "main.py").read_text()

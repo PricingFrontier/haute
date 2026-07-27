@@ -193,7 +193,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 
 | Node type | Core behaviour specced in |
 |---|---|
-| `apiInput` | [json-shredding](json-shredding/high-level.md) (v2 input codec and JSON→frames shredding); [caching](caching/high-level.md) owns the JSON-cache HTTP route |
+| `apiInput` | [json-shredding](json-shredding/high-level.md) (v2 input codec and JSON/JSONL/XML→frames shredding); [caching](caching/high-level.md) owns the structured-input cache HTTP route |
 | `dataInput` | [io-layer](io-layer/high-level.md) (file, database, lakehouse, Databricks, inline, cache lifecycle, chunking, and optional Polars transform); [databricks-io](databricks-io/high-level.md) for Databricks browsing |
 | `dataOutput` | [io-layer](io-layer/high-level.md) (registry-backed writers and explicit write action) |
 | `polars` | [execution-engine](execution-engine/high-level.md) (execution), [sandbox-security](sandbox-security/high-level.md) (user-code validation), [expression-parsing](expression-parsing/high-level.md) (trace formulae) |
@@ -216,7 +216,7 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | Component | Covers |
 |---|---|
 | [execution-engine](execution-engine/high-level.md) | Graph execution: executor, lazy evaluation, topological ordering, admission control, worker isolation, chunking |
-| [caching](caching/high-level.md) | Dataframe execution cache, fingerprint/stat-gated/LRU caches, hashing, JSON cache routes |
+| [caching](caching/high-level.md) | Dataframe execution cache, fingerprint/stat-gated/LRU caches, hashing, structured API-input cache routes |
 | [pipeline-config](pipeline-config/high-level.md) | Pipeline/graph configuration model, builders, validation, config IO, project scaffolding |
 | [codegen](codegen/high-level.md) | Python code generation from pipeline configs, code extraction, AST helpers |
 | [expression-parsing](expression-parsing/high-level.md) | Parsing user expressions and pipeline code into structured form |

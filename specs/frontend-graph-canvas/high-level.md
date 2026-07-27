@@ -177,7 +177,7 @@ Out of scope (owned by neighbouring components, linked where they exist):
   malformed payload never creates a node with an empty config.
   Clicking a node opens/updates the inspector panel and, unless the node
   type is non-previewable, a preview pane is about to render instead, or a
-  JSON API-input has not yet acquired its required `tables[]` schema,
+  structured API-input has not yet acquired its required `tables[]` schema,
   triggers a debounced preview fetch (a longer debounce for Optimiser
   nodes). Selecting that incomplete API-input still opens its editor and
   clears any prior node's preview, but does not issue a predictably failing

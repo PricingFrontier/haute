@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import stat
 import sys
 import tomllib
@@ -57,27 +56,22 @@ class TestInitCreatesProjectStructure:
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert (tmp_path / "data").is_dir()
 
-    def test_starter_data_input_path_is_pipeline_local_and_traversal_free(
+    def test_starter_has_no_node_specific_config_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["init"], catch_exceptions=False)
 
         assert result.exit_code == 0, result.output
-        config_path = tmp_path / "rating" / "config" / "data_input" / "raw_rows.json"
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        source_path = Path(config["path"])
+        assert not (tmp_path / "rating" / "config" / "data_input" / "raw_rows.json").exists()
+        assert not (tmp_path / "rating" / "config" / "quote_response" / "priced.json").exists()
 
-        assert source_path == Path("data/sample.parquet")
-        assert ".." not in source_path.parts
-        assert (tmp_path / "rating" / "data").is_dir()
-
-    def test_creates_prompts_directory(
+    def test_does_not_create_prompts_directory(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
         runner.invoke(cli, ["init"], catch_exceptions=False)
-        assert (tmp_path / "prompts").is_dir()
+        assert not (tmp_path / "prompts").exists()
 
     def test_creates_rating_directory(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -120,6 +114,11 @@ class TestInitCreatesProjectStructure:
         content = main_py.read_text()
         assert "haute.Pipeline" in content
         compile(content, "<test>", "exec")
+
+        from haute.parser import parse_pipeline_file
+
+        graph = parse_pipeline_file(main_py)
+        assert graph.nodes == []
 
     def test_creates_starter_utility_files(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -243,15 +242,14 @@ class TestInitCreatesProjectStructure:
         runner.invoke(cli, ["init"], catch_exceptions=False)
         assert not (tmp_path / ".git" / "hooks" / "pre-commit").exists()
 
-    def test_preserves_root_main_py_from_uv_init(
+    def test_removes_root_main_py_from_uv_init(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         monkeypatch.chdir(tmp_path)
-        original = "print('hello from uv init')\n"
-        (tmp_path / "main.py").write_text(original)
+        (tmp_path / "main.py").write_text("print('hello from uv init')\n")
         result = runner.invoke(cli, ["init", "--force"], catch_exceptions=False)
-        assert (tmp_path / "main.py").read_text() == original
-        assert "preserved existing main.py" in result.output.lower()
+        assert not (tmp_path / "main.py").exists()
+        assert "removed root main.py" in result.output.lower()
         assert (tmp_path / "rating" / "main.py").exists()
 
     def test_creates_pyproject_toml_if_missing(

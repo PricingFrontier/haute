@@ -48,7 +48,8 @@ An oversized dataframe artifact is rejected without evicting or unlinking an exi
 same-key entry. The newly produced oversized path is the caller's responsibility and is
 cleaned by the materialization wrapper.
 
-JSON-cache build selects and validates schema before checking data-file existence, so an
+Structured API-input cache build (implemented by the `json_cache` route module) accepts
+JSON, JSONL, NDJSON, and XML sources. It selects and validates schema before checking data-file existence, so an
 absent schema returns structured 422 before a missing-file 404. Builds expose progress,
 status, infer, build, and delete; there is no cancel endpoint because the underlying
 blocking shred is not cooperatively cancellable.

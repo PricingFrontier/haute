@@ -9,7 +9,7 @@
 | `src/haute/_lru_cache.py` | Thread-safe entry/TTL/byte bounded LRU with pinning. |
 | `src/haute/_dataframe_execution_cache.py` | Dataframe cache key, Parquet artifact LRU, materialization, validation, scan pins, and cleanup. |
 | `src/haute/_stat_gated_cache.py` | Bounded LRU, per-key single-flight cache gated by backing-file metadata. |
-| `src/haute/routes/json_cache.py` | JSON-cache infer/build/progress/status/delete HTTP surface. |
+| `src/haute/routes/json_cache.py` | Structured API-input (JSON/JSONL/NDJSON/XML) cache infer/build/progress/status/delete HTTP surface. |
 | `src/haute/_source_cache.py` | Cross-component dependency owned by [io-layer](../io-layer/low-level.md); IO-layer-owned source snapshot store consumed for canonical cache identity and immutable generations. |
 
 The shared `_source_cache.py` relationship is recorded in `specs/ownership.toml`; IO
@@ -109,10 +109,12 @@ The artifact root is a process-local temporary directory created by
 `src/haute/execution.py` and removed at interpreter exit. Startup housekeeping deliberately
 does not reap it; execution is the lifecycle owner.
 
-### JSON cache
+### Structured API-input cache
 
 1. Path containment is checked.
-2. Volatile or persisted schema is selected and validated.
+2. The source extension is routed through the structured decoder
+   (`.json`, `.jsonl`, `.ndjson`, or `.xml`), and volatile or persisted schema is
+   selected and validated.
 3. Missing schema returns 422; only then does a missing data file return 404.
 4. Blocking shred work runs with a response timeout and updates process-local progress.
 5. Successful builds mark the working cache consulted so save-time promotion can occur.
@@ -152,7 +154,7 @@ stat and loader exceptions and raises `RuntimeError` after two moving gates.
 `CacheArtifactTooLargeError` rejects the new artifact while retaining any previous same-key
 entry. `DataFrameExecutionCacheError` reports impossible identity/store-window states.
 
-JSON-cache routes preserve structured schema/parse/path errors, return 504 on response
+Structured-input cache routes preserve structured schema/parse/path errors, return 504 on response
 timeout, and log unexpected errors before a generic 500.
 
 ### Boundary failure ordering
@@ -171,7 +173,7 @@ timeout, and log unexpected errors before a generic 500.
    same-key entry, stores it under a store-window pin, and first-consumes that
    exact object without a second corruption pass. Replacement/clear may detach
    an artifact, but unlink waits for the final scan pin.
-4. JSON-cache routes perform path containment, then select/validate schema,
+4. Structured-input cache routes perform path containment, then select/validate schema,
    then check the data file, then start blocking shred work. Consequently
    missing schema is 422 even when the data path is absent; file absence is
    404 only after schema succeeds; response timeout is 504 without being

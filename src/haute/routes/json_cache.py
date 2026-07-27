@@ -1,4 +1,4 @@
-"""JSON cache endpoints — explicit parquet caching for JSON files.
+"""Structured-input cache endpoints for JSON, JSONL, and XML preview files.
 
 The route's only shape is **v2 per-port shred** (see ``haute._json_shred``):
 one parquet per emit-true ``tables[]`` entry, columns at that table's
@@ -336,7 +336,7 @@ def _aggregate_v2_status_response(
 
 @router.post("/build", response_model=JsonCacheBuildResponse)
 async def build_json_cache(body: JsonCacheBuildRequest) -> Any:
-    """Per-port shred of a JSON/JSONL file into one parquet per emit-true table.
+    """Per-port shred of a JSON, JSONL, or XML file into per-table parquet.
 
     Schema source: volatile_schema, else config_path's on-disk v2.
 
@@ -517,7 +517,7 @@ async def get_json_cache_status(
 
 @router.post("/infer", response_model=JsonCacheInferResponse)
 async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
-    """Sniff a v2 schema mapping from the records of a JSON/JSONL file.
+    """Sniff a v2 schema mapping from JSON, JSONL, or XML records.
 
     Drives the ApiInputEditor's *Infer Tables* button. Returns a
     v2-shaped ``tables: [...]`` array the editor stitches into the
@@ -553,7 +553,7 @@ async def infer_json_cache_schema(body: JsonCacheInferRequest) -> Any:
 
 @router.delete("", response_model=JsonCacheStatusResponse)
 async def delete_json_cache(path: str) -> JsonCacheStatusResponse:
-    """Delete the volatile (working/) cache layer for a JSON file.
+    """Delete the volatile (working/) cache layer for a structured input file.
 
     Dual-cache semantics: delete operates on the working/ layer only.
     The durable committed/ layer is untouched and remains the source of

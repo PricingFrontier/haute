@@ -5,8 +5,8 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/_api_input_schema.py` | V2 apiInput schema codec: `TypedDict` shapes, extension recognition, canonical table and column path semantics, filesystem label sanitisation, and fail-loud validation. |
-| `src/haute/_json_shred.py` | v2 per-frame JSON shred: single-pass record walk, buffer→parquet build, cache validity/load, schema inference from data. |
-| `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for JSON apiInput sources: process-CWD-rooted path resolution, delete, save-time promotion, and preview-cache fingerprint contribution. |
+| `src/haute/_json_shred.py` | v2 per-frame structured-input shred: JSON/JSONL/XML record decoding, single-pass record walk, buffer→parquet build, cache validity/load, schema inference from data. |
+| `src/haute/_json_flatten.py` | Dual-layer (`working/`/`committed/`) cache-directory infrastructure for structured apiInput sources: process-CWD-rooted path resolution, delete, save-time promotion, and preview-cache fingerprint contribution. |
 | `src/haute/_json_safe.py` | Recursively converts Python/pipeline values into JSON-safe representations for API responses and preview rows. |
 | `src/haute/_jsonpath.py` | The shared canonical array-outer JSON path parser and writer used by both INPUT and OUTPUT path addressing. |
 | `src/haute/_output_assembler.py` | V2 OUTPUT mapping validation and document assembly: GYO residue/cut planning, bag-natural joins, array-prefix nesting, pruning, and collected-frame rendering. |
@@ -57,6 +57,11 @@ Submodel graph expansion and boundary rewiring are owned by
   all route through it so they can never disagree about which parquets exist.
 - `_POLARS_TYPE_MAP` — the five v2 `ColumnType` tokens (`int`, `float`, `str`,
   `bool`, `date`) mapped to Polars `DataType` classes.
+- `_iter_xml_records(data_path)` — rejects DTD/entity declarations, parses one XML
+  document, strips element/attribute namespaces, maps attributes and child elements
+  to the common object/list/scalar record shape, and promotes repeated homogeneous
+  object children of the root to top-level records. Mixed content and field-name
+  collisions raise `ApiInputSchemaError`.
 
 **`_jsonpath.py`**
 
@@ -148,7 +153,7 @@ document frame with `infer_schema_length=None`. The assembled response is alread
 bounded and materialised, so complete-schema inference preserves late non-null nested
 fields without another upstream read.
 
-**Build a JSON cache** — `build_per_port_cache(data_path, v2_config, cache_dir)`:
+**Build a structured-input cache** — `build_per_port_cache(data_path, v2_config, cache_dir)`:
 1. `validate_v2_schema(v2_config)` up front.
 2. Acquire the per-cache-directory lock (`_build_lock_for`) and retain that lock
    strongly for the complete critical section.
@@ -271,10 +276,10 @@ concurrent reader can still observe an absent live path and reject that
 candidate; cross-process publishers and mid-swap process death are not covered.
 
 **Schema inference** — `infer_v2_schema_from_data(data_path, sample_size=None)`:
-1. `_iter_records_for_inference` — full scan, or (for JSONL/root-array files) a
-   bounded sample via `_iter_sampled_json_array_records`, which hand-parses just
-   enough of a root JSON array byte-by-byte to avoid materialising the whole file
-   for a sample.
+1. `_iter_records_for_inference` — full scan; a bounded `islice` for JSONL, NDJSON,
+   or XML; or, for a root JSON array, a bounded sample via
+   `_iter_sampled_json_array_records`, which hand-parses just enough of the array
+   byte-by-byte to avoid materialising the whole file for a sample.
 2. Recursive `_walk(value, level, obj_prefix)`: a nested dict stays at the same
    `level`, deepening `obj_prefix` (object folding); a nested list of objects
    descends to a new `level` keyed by the full `(key, is_array)` segment tuple; a
@@ -383,8 +388,10 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
   `validate_v2_schema`, including wrong-typed `emit`/`selected` and invalid
   `status` values with exact field paths), a dotted leaf crossing a non-empty array, a `$value`/real-
   column collision, a column value that doesn't match its declared type (including
-  the silent-coercion guards), and inference's unexpressible-key rejections. Always
-  carries `column=`/`table=` context.
+  the silent-coercion guards), inference's unexpressible-key rejections, invalid XML,
+  XML DTD/entity declarations, mixed XML content, and XML field-name collisions.
+  Schema/table errors carry their normal `column=`/`table=` context; XML decode errors
+  carry a direct safe message.
 - `RuntimeError` — raised by the shared file-shred path on a root conservation-
   assertion failure, and by `load_v2_api_source` for "no emitting tables" or "no
   selected columns on any emitting table". Missing/stale/corrupt/mismatched cache
@@ -430,6 +437,8 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   transparency ruling, end to end through inference/shred/grammar agreement.
 - `tests/test_scalar_array_and_inference.py` — scalar-array-as-its-own-child-table
   regression coverage, plus non-mocked exercise of `infer_v2_schema_from_data`.
+- `tests/test_xml_api_input.py` — XML record normalisation, inference, cache
+  build/load values, and fail-loud rejection of DTD/entity declarations.
 - `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:
   reserved-key rejection, `$value`/sibling-column rejection, empty-array type
   non-poisoning.

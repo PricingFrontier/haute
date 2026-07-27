@@ -161,22 +161,22 @@ class ApiInputV2Config(TypedDict, total=False):
     tables: list[TableV2]
 
 
-_JSON_API_INPUT_SUFFIXES = (".json", ".jsonl", ".ndjson")
+_STRUCTURED_API_INPUT_SUFFIXES = (".json", ".jsonl", ".ndjson", ".xml")
 
 
 def is_json_api_input_path(path: str) -> bool:
-    """Return whether *path* routes an apiInput through the JSON codec.
+    """Return whether *path* routes an apiInput through the structured codec.
 
     THE runtime dispatch predicate for apiInput sources — shared by the
     executor's source builder (``haute._builders._build_api_input``) and
     the preview/trace cache-key signature
     (``haute.execution._runtime_file_signature_paths``) so the two can
-    never disagree about which file an apiInput actually reads: JSON and
-    newline-delimited JSON (``.jsonl``/``.ndjson``) paths use a valid per-port
-    parquet cache when available and shred the source directly otherwise;
-    every other extension is read directly as a flat file.
+    never disagree about which file an apiInput actually reads: JSON,
+    newline-delimited JSON (``.jsonl``/``.ndjson``), and XML paths use a
+    valid per-port parquet cache when available and shred the source directly
+    otherwise; every other extension is read directly as a flat file.
     """
-    return path.lower().endswith(_JSON_API_INPUT_SUFFIXES)
+    return path.lower().endswith(_STRUCTURED_API_INPUT_SUFFIXES)
 
 
 # ---------------------------------------------------------------------------

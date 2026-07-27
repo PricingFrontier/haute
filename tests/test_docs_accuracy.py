@@ -1929,7 +1929,8 @@ def test_deployment_index_scaffold_trees_match_real_init(
     text = index.read_text(encoding="utf-8")
 
     assert _scaffold_trees_match(text, before_tree, _tree_listing(project))
-    assert (project / "main.py").read_text(encoding="utf-8") == "# sentinel root main.py\n"
+    assert not (project / "main.py").exists()
+    assert not (project / "prompts").exists()
 
 
 def test_deployment_index_starter_node_count_matches_real_scaffold(
@@ -1960,8 +1961,8 @@ def test_documented_haute_python_surfaces_import() -> None:
 
 def test_deployment_parity_helpers_detect_mutated_docs() -> None:
     index = (ROOT / "docs" / "deployment" / "index.md").read_text(encoding="utf-8")
-    drifted_tree = index.replace("  main.py\n  prompts/", "  missing.py\n  prompts/", 1)
-    stale_count = index.replace("**3 nodes**", "**999 nodes**", 1)
+    drifted_tree = index.replace("  haute.toml\n", "  haute.toml\n  missing.py\n", 1)
+    stale_count = index.replace("**0 nodes**", "**999 nodes**", 1)
     phantom_command = "haute teleport"
     phantom_surface = "```python\nfrom haute import PhantomSurface\n```"
 

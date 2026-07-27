@@ -348,6 +348,21 @@ class TestGetSchemaJsonl:
         assert body["row_count"] > 0
 
 
+class TestGetSchemaXml:
+    def test_xml_returns_schema(self, client: TestClient, work_dir: Path):
+        (work_dir / "quotes.xml").write_text(
+            "<quotes><quote><id>1</id></quote><quote><id>2</id></quote></quotes>",
+            encoding="utf-8",
+        )
+
+        resp = client.get("/api/schema", params={"path": "quotes.xml"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["row_count"] == 2
+        assert body["columns"] == [{"name": "id", "dtype": "String"}]
+
+
 class TestGetSchemaPathTraversal:
     def test_returns_403(self, client: TestClient, work_dir: Path):
         resp = client.get("/api/schema", params={"path": "../../etc/passwd"})
