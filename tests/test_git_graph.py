@@ -408,6 +408,7 @@ class TestTruncation:
         assert indie_a.entries[-1].sha == c["R"]
         assert indie_a.entries[-1].is_root is True
 
+    @pytest.mark.timeout(120)
     def test_deep_spine_truncates_at_default_limit(self, tmp_path: Path) -> None:
         repo = _init_repo(tmp_path)
         topo = seed_deep(repo)

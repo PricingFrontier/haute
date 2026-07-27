@@ -20,7 +20,7 @@
 
 ## Key types and data structures
 
-- **`DeployConfig`** (`_config.py`) — dataclass holding all user-provided settings:
+- **`DeployConfig`** (`src/haute/deploy/_config.py`) — dataclass holding all user-provided settings:
   `pipeline_file`, `model_name`, `project_dir`, `target` (default `"databricks"`),
   `endpoint_name`/`endpoint_suffix`, `output_fields`, `test_quotes_dir`, and one nested
   config per target family (`databricks`, `container`, `azure_container_apps`,
@@ -32,7 +32,7 @@
   `HAUTE_*` env-var overrides), `from_cli_args()` (no-TOML path, requires `pipeline_file`
   + `model_name`), or `override()` (returns a deep copy with non-`None` CLI kwargs
   applied — highest-priority layer).
-- **`ResolvedDeploy`** (`_config.py`) — the target-agnostic handoff object, created only
+- **`ResolvedDeploy`** (`src/haute/deploy/_config.py`) — the target-agnostic handoff object, created only
   by `resolve_config()`: `config`, `full_graph`, `pruned_graph`, `input_node_ids`,
   `output_node_id`, `artifacts` (`dict[str, Path]`), `input_schema`/`output_schema`
   (`dict[str, str]` of column name → Polars dtype string), `removed_node_ids`.
@@ -51,7 +51,7 @@
 - **`ContainerBuildResult`** (`_container.py`) — intermediate result of
   `build_and_push_image`: `image_tag`, `manifest_path`, `build_dir`, `model_name`,
   `model_version`.
-- **Impact dataclasses** (`_impact.py`) — `ColumnStats` (per-output-column change
+- **Impact dataclasses** (`src/haute/deploy/_impact.py`) — `ColumnStats` (per-output-column change
   statistics: mean/median/p5/p25/p75/p95 percent change, staging/prod means, total
   premium change), `SegmentRow` (per-categorical-value breakdown), `ImpactReport`
   (top-level result: row counts, `column_stats`, `segments`, `is_first_deploy` flag).
@@ -65,7 +65,7 @@
 
 ## Control flow
 
-**Resolution (`_config.py::resolve_config`)**
+**Resolution (`src/haute/deploy/_config.py::resolve_config`)**
 1. Re-validate base-image pinning (config may have been mutated after `__post_init__` via
    `.override()` or env overrides).
 2. Load `.env` (idempotent).
@@ -138,6 +138,11 @@ image + pinned core deps + auto-detected extra deps from artefact file extension
 an image tag (`<registry>/<model_name>:<git_sha>` or `<model_name>:<git_sha>`, falling
 back to `"local"` if not in a git repo), `docker build`, then `docker push` only if a
 registry is configured.
+
+The manifest paths are resolved by the generated runtime against the image's
+`WORKDIR /app`. `_container.py`'s `artifacts/<name>` remapping and the Dockerfile's
+`WORKDIR /app` plus `COPY artifacts/ artifacts/` must change together; neither side is
+an independently relocatable contract.
 
 **Generated container HTTP runtime (`_container.py::_generate_app_source`)**
 1. Startup loads `deploy_manifest.json`, reconstructs `PipelineGraph`, and resolves the
@@ -219,7 +224,7 @@ directory before re-raising.
    if collection itself raised, so cleanup failures during error unwinding are logged
    rather than masking the original exception.
 
-**Impact analysis (`_impact.py::build_report`)** — takes two prediction lists (Databricks
+**Impact analysis (`src/haute/deploy/_impact.py::build_report`)** — takes two prediction lists (Databricks
 SDK responses or HTTP `/quote` JSON, both normalised through
 `_normalise_http_prediction_payload` / `_unwrap_prediction_envelopes` to handle the
 `{rows, row_count, ...}` quote-envelope shape transparently), aligns both lists and the
@@ -246,6 +251,10 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   exists under the pipeline directory always wins over a same-named file elsewhere. Every
   returned path is absolute, so the manifest never bakes in a re-resolution-dependent
   pointer.
+- **Container manifest artefact paths are image-relative, not pipeline-relative**:
+  every bundled path is rewritten to `artifacts/<name>` and resolves against
+  `WORKDIR /app`; the generated Dockerfile copies the same build-context directory to
+  `/app/artifacts`.
 - **Base image pinning is validated twice**: once in `DeployConfig.__post_init__` (catches
   the common case at construction time) and again in `resolve_config()` (catches
   mutation via `.override()`, env overrides, or direct attribute writes after
@@ -325,8 +334,8 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 
 | Exception | Raised where | Propagates to |
 |---|---|---|
-| `haute.errors.DeployError` | `_config.py` (unpinned base image), `_bundler.py` (invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id` and the underlying provider/schema `error`) rendered into `str()`. |
-| `ValueError` | `_pruner.py` (missing/multiple output nodes or a configured `liveSwitch` input not connected to the graph), `_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
+| `haute.errors.DeployError` | `src/haute/deploy/_config.py` (unpinned base image), `_bundler.py` (invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id` and the underlying provider/schema `error`) rendered into `str()`. |
+| `ValueError` | `_pruner.py` (missing/multiple output nodes or a configured `liveSwitch` input not connected to the graph), `src/haute/deploy/_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `src/haute/deploy/_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
 | `RuntimeError` | `_container.py` (Docker unavailable/build/push failure, unpinned Dockerfile dependency), `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), `_mlflow.py` (Databricks host/token unset, unreachable, `run_id`-less registered model version) | Uncaught to caller; `_check_docker_available`'s message specifically redirects the operator to CI. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches` (live schema disagrees with bundled training contract on feature set, dtype, or categorical levels) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
@@ -389,7 +398,7 @@ what they cover:
   `TestScoreGraphModelScoreRemap` being the biggest), missing-output and bad-input
   error paths, temp-file cleanup, `.env` loading, `resolve_config` edge cases,
   `get_deploy_status`, MLflow signature/conda-env building, Databricks connectivity
-  checks, and (also in this file) the full `_impact.py` surface — batched scoring,
+  checks, and (also in this file) the full `src/haute/deploy/_impact.py` surface — batched scoring,
   `ColumnStats`/`SegmentRow`/report building, terminal/Markdown formatting — plus the
   `TestBugB4PrunerUsesOriginalEdges` and `TestBugB10LexicographicVersionComparison`
   regression classes.

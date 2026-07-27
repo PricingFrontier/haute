@@ -1,7 +1,7 @@
 # WS-06 — Pipeline config, expression parsing & reference pipeline
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-06 · Status: delivered in PR #135.
 
 **Branch:** `opus5/ws-06-config-parsing-reference`
 

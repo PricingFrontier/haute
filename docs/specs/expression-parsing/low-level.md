@@ -8,7 +8,7 @@
 | `src/haute/_parser_conservation.py` | Shared fail-loud acceptance gate for both parser paths. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_regex.py` | `fallback_parse` and its helpers: a regex-anchored + AST-fragment recovery parser used when `ast.parse` fails on the whole file. Locates `@pipeline.<type>` decorator blocks, `pipeline.connect()`/`pipeline.submodel()` call sites, and pipeline metadata textually, then re-parses each recovered fragment with real `ast` wherever possible. |
 | `src/haute/_parser_submodels.py` | `extract_submodel_calls` / `parse_submodel_source` / `merge_submodels`: resolves `pipeline.submodel("path")` references, parses each referenced submodel file into its own `PipelineGraph`, and merges child graphs into the parent (hierarchical placeholder or flattened). |
-| `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars `with_columns()` expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
+| `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
 
 ## Key types and data structures
 
@@ -259,6 +259,8 @@ appended before the column that depends on it) → return the parsed expressions
   behaviour rather than silently coercing or leaving the value unmapped.
 
 ## Testing
+
+- `tests/test_safety.py` covers expression safety and rejection of unsafe constructs.
 
 Tests live under `tests/`, split by concern:
 

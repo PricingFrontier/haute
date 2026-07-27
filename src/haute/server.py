@@ -3,7 +3,7 @@
 App factory, middleware, WebSocket sync, file watcher, and static serving.
 Route handlers live in ``haute.routes.*`` — see:
   - ``routes/pipeline.py``  — pipeline CRUD, run, preview, trace, sink
-  - ``routes/databricks.py``— Unity Catalog browsing, data fetching
+  - ``routes/databricks.py``— Unity Catalog browsing only
   - ``routes/files.py``     — file browsing, schema inspection
   - ``routes/submodel.py``  — submodel create, get, dissolve
 """
@@ -32,6 +32,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.routing import Route
 
 from haute import __version__
+from haute._cache import canonical_json
 from haute._event_bus import default_bus
 from haute._execution_context import configure_execution_telemetry
 from haute._local_security import (
@@ -239,12 +240,7 @@ async def _send_ws_parse_error(
 
 
 def _graph_payload_fingerprint(graph_payload: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        graph_payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
+    canonical = canonical_json(graph_payload)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

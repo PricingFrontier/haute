@@ -55,7 +55,7 @@ Out of scope (owned elsewhere):
   [modelling](../modelling/high-level.md).
 - `haute.toml` parsing mechanics beyond deploy's own schema section, and the `deploy`,
   `smoke`, `impact`, `status` CLI commands themselves (`src/haute/cli/_deploy.py`,
-  `_smoke.py`, `_impact.py`, and `_status.py`) — see
+  `_smoke.py`, `src/haute/cli/_impact.py`, and `_status.py`) — see
   [cli](../cli/high-level.md).
 - Optimiser ratebook artefact format and application logic — see
   [optimiser](../optimiser/high-level.md).
@@ -131,7 +131,7 @@ share the container build step (and push only when `container.registry` is confi
 but their service-update step is not yet implemented — `deploy()` then raises
 `NotImplementedError` naming the image tag.
 
-**Impact analysis.** `haute impact` (via `_impact.py`) scores a shared dataset through
+**Impact analysis.** `haute impact` (via `src/haute/deploy/_impact.py`) scores a shared dataset through
 both a staging and a production endpoint (Databricks serving or a container's `/quote`
 HTTP endpoint), computes per-column percent-change statistics and categorical-segment
 breakdowns, and renders a terminal or Markdown report. This is advisory, not a deploy
@@ -161,7 +161,7 @@ approving it.
   executes at runtime, however: project-local modules imported by that preamble are not
   collected by the bundler and must be installed/provided separately.
 - **Reproducible container builds.** `container.base_image` must be pinned to an explicit
-  patch version or a digest (`_config.py::_validate_base_image_pinning`) — floating tags
+  patch version or a digest (`src/haute/deploy/_config.py::_validate_base_image_pinning`) — floating tags
   like `python:3.11-slim` are rejected outright, because the image bytes tested today
   must be the image bytes served tomorrow. Dockerfile dependency versions
   (`haute`, `polars`, `fastapi`, `uvicorn`) are pinned to whatever is actually installed
@@ -172,11 +172,14 @@ approving it.
   of every bundled artefact's resolved path, `(mtime_ns, size)` gate, and content hash — so retraining a model in
   place under an unchanged `run_id`/`version="latest"` config still busts the cache
   instead of baking a stale `ModelSignature` into the manifest.
-- **Pipeline-relative paths win over CWD-relative.** `_bundler.py::_resolve_path`
-  deliberately prefers a path resolved against the pipeline file's directory over one
-  resolved against the process's working directory, because the deployed container's CWD
-  (`/`) has no relation to the developer's CWD at build time; baking in a CWD-relative
-  path silently breaks the container.
+- **Pipeline-relative source paths become container-relative manifest paths.**
+  `_bundler.py::_resolve_path` deliberately prefers a source path resolved against the
+  pipeline file's directory over one resolved against the developer process's working
+  directory. During container packaging, `_container.py` remaps each bundled artefact to
+  `artifacts/<name>`; the generated Dockerfile sets `WORKDIR /app` and copies the
+  artefacts beneath `/app/artifacts`, so runtime manifest resolution is intentionally
+  relative to `/app`. The remapping and Dockerfile `WORKDIR`/`COPY` instructions are one
+  invariant.
 - **Container-first, ML-platform-second.** This was a deliberate design decision: a
   container is just an API surface that any team already knows how to operate, needs
   no ML-platform lock-in or MLOps-specific knowledge, and runs anywhere (ECS,
@@ -227,7 +230,7 @@ approving it.
   retained non-JSON `apiInput` compatibility path. Both respect
   `ExecutionProfile.DEPLOY_BATCH` / `DEPLOY_LIVE` bounded-execution semantics.
 - **[cli](../cli/high-level.md)** — `src/haute/cli/_deploy.py`, `_smoke.py`,
-  `_impact.py`, and `_status.py` are the production CLI consumers of this
+  `src/haute/cli/_impact.py`, and `_status.py` are the production CLI consumers of this
   component's callable surface (`deploy_resolved()`, `resolve_config()`,
   `validate_deploy()`, `score_test_quotes()`, endpoint scorers/status, and the
   impact formatters). Deploy itself has no Click concerns; it exposes plain
@@ -295,5 +298,5 @@ most: a silent wrong answer here mis-prices real policies.
 - **Impact-analysis arithmetic** raises `ValueError` rather than producing a misleading
   percentage when predictions contain non-finite values, or when a percent-change or
   total-percent-change calculation would divide by a zero production baseline against a
-  non-zero staging value (`_impact.py::_raise_for_non_finite_predictions`,
+  non-zero staging value (`src/haute/deploy/_impact.py::_raise_for_non_finite_predictions`,
   `_zero_baseline_change_count`, `_total_percent_change`).

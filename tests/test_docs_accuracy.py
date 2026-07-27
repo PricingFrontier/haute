@@ -163,6 +163,9 @@ _ACCEPTANCE_LABEL = re.compile(
     flags=re.IGNORECASE | re.MULTILINE,
 )
 _TEST_PATH = re.compile(r"(?:^|/)(?:test_[^/]+[.]py|[^/]+[.](?:test|spec)[.](?:ts|tsx))$")
+_TEST_COUNT_CLAIM = re.compile(
+    r"`(?P<path>(?:tests/)?test_[^`\s]+[.]py)`\s+\((?P<count>\d+)\s+tests?\)"
+)
 _DELIVERED_ROADMAP_STATE = re.compile(
     r"^(?:Complete(?:d)?|Implemented|Verified|Audited|Delivered)\b",
     flags=re.IGNORECASE,
@@ -1566,6 +1569,37 @@ def test_docs_accuracy_ratchet() -> None:
             else ""
         )
     )
+
+
+def test_documented_python_test_counts_match_source() -> None:
+    """Any surviving exact count claim must match source-defined test functions."""
+    mismatches: list[str] = []
+    for document in sorted(SPECS_ROOT.rglob("*.md")):
+        text = _without_fences(document.read_text(encoding="utf-8"))
+        for claim in _TEST_COUNT_CLAIM.finditer(text):
+            reference = claim.group("path")
+            test_path = (
+                ROOT / reference if reference.startswith("tests/") else ROOT / "tests" / reference
+            )
+            if not test_path.is_file():
+                mismatches.append(
+                    f"{document.relative_to(ROOT).as_posix()}: {reference} does not exist"
+                )
+                continue
+            tree = ast.parse(test_path.read_text(encoding="utf-8"), filename=str(test_path))
+            actual = sum(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name.startswith("test_")
+                for node in ast.walk(tree)
+            )
+            expected = int(claim.group("count"))
+            if actual != expected:
+                mismatches.append(
+                    f"{document.relative_to(ROOT).as_posix()}: {reference} claims "
+                    f"{expected}, source defines {actual}"
+                )
+
+    assert not mismatches, "Stale exact test-count claims:\n- " + "\n- ".join(mismatches)
 
 
 def _seed_spec(root: Path, low_level: str) -> Path:

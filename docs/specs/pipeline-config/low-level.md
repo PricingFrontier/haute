@@ -5,9 +5,9 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/pipeline.py` | `Node` / `NodeRegistry` / `Pipeline` / `Submodel`: the decorator API, `connect()`, the standalone `run()`/`score()` executor, `to_graph()` (live-object → React-Flow dict). |
-| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (`edge_input_name`: frame labels for apiInput edges, sanitised source labels otherwise), the same strings `input_scenario_map` keys reference; keyword-only configuration parameters are excluded. |
+| `src/haute/_config_builder.py` | Per-node-type config dict construction from decorator kwargs + function body (`_build_node_config`); sidecar resolution and the parse-time `contract=` cross-check (`_resolve_node_config`). For Live Switch nodes, `config["inputs"]` records only positional edge parameters (frame labels for apiInput edges, sanitised source labels otherwise), the same strings referenced by the input-to-scenario mapping; keyword-only configuration parameters are excluded. |
 | `src/haute/_config_io.py` | Sidecar JSON path conventions (`NODE_TYPE_TO_FOLDER`), read/write helpers, `collect_node_configs` (graph → sidecar files), per-type validation/normalisation of canonical configs, and the Windows-reserved-filename guard. |
-| `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's `TypedDict`, and `warn_unrecognized_config_keys`. |
+| `src/haute/_config_validation.py` | `VALID_KEYS` registry derived from each node type's TypedDict definition, and `warn_unrecognized_config_keys`. |
 | `src/haute/_builders.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration consumes its `NODE_REGISTRY` registration contracts. |
 | `src/haute/_node_builder.py` | Cross-component dependency owned by [execution-engine](../execution-engine/low-level.md): pipeline configuration documents its builder-interception seam. |
 | `src/haute/_contracts.py` | Pipeline-config-owned `Contract`/`ColumnContract` model and registry-backed `get_column_contract()` lookup used by parse-time validation and execution. |
@@ -16,11 +16,11 @@
 | `src/haute/_graph_shape.py` | Topology-only invariants independent of any single node's config (`validate_graph_shape_contracts`, `validate_pipeline_graph_shape_contracts`), including submodel child graphs. |
 | `src/haute/_scaffold.py` | `haute init` template strings: `haute.toml`, `.env.example`, CI YAML for 3 providers × 7 deploy targets, starter pipeline/tests/utilities, pre-commit hook. |
 | `src/haute/_project.py` | Project-root discovery (`get_project_root`, `is_haute_project`) and pipeline-file resolution (`resolve_pipeline_file`, 4-tier fallback). |
-| `haute.toml` (repo root) | Concrete instance of the schema `_scaffold.haute_toml()` emits; `[project].pipeline` is read back by `_project._toml_configured_pipeline`. |
+| `haute.toml` (repo root) | Concrete instance of the schema emitted by `src/haute/_scaffold.py::haute_toml`; `[project].pipeline` is read back by `src/haute/_project.py::_toml_configured_pipeline`. |
 
 ## Key types and data structures
 
-- **`Node`** (dataclass, `pipeline.py`) — `name`, `description`, `fn`, `is_source`,
+- **`Node`** (dataclass, `src/haute/pipeline.py`) — `name`, `description`, `fn`, `is_source`,
   `config: dict`. Derived properties: `is_deploy_input` (config `_node_type == API_INPUT` or
   `api_input=True`), `is_live_switch`, `n_inputs`, `input_arity` (an `_InputArity` computed by
   inspecting `fn`'s signature — keyword-only params are config, not edges; positional params
@@ -94,7 +94,7 @@
 
 There are two independent ways to arrive at "a graph", and they use different heuristics:
 
-**1. Live Python object graph (`pipeline.py`).** A `Pipeline` instance is built directly by
+**1. Live Python object graph (`src/haute/pipeline.py`).** A `Pipeline` instance is built directly by
 decorator calls at import time. `Pipeline.run()`/`Pipeline.score(df)` topologically sort the
 in-memory `_edges`/`_nodes` via `haute.graph_utils.topo_sort_ids` (raising `CycleError` on a
 cycle). With no edges, `_topo_order` returns registration order; it does not create a chain.
@@ -167,7 +167,7 @@ template function is parameterised by `target`/`ci` and looks up per-target fact
 `TARGETS`/`_get_target` rather than branching on the target string directly, so adding a
 target means adding one registry entry, not touching every template function.
 The starter Data Input sidecar uses the traversal-free pipeline-relative path
-`data/sample.parquet`, and `handle_init` creates the matching `rating/data/` directory.
+`data/sample.parquet`, and `handle_init` creates the matching rating/data/ directory.
 It never writes a `..` segment that direct generated-function execution would reject.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
@@ -283,6 +283,10 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
 
 ## Testing
 
+- `tests/test_column_contracts_adoption.py` covers column-contract adoption.
+- `tests/test_registry_contracts.py` covers registry contracts.
+- `tests/test_sidecar_golden.py` covers sidecar golden fixtures.
+
 Tests live under `tests/`, predominantly as behavioural unit tests against the real decorator
 API and real JSON round-trips rather than mocks:
 
@@ -298,12 +302,12 @@ API and real JSON round-trips rather than mocks:
   rejected with missing keys, with unknown extra keys, and against a zero-port source — every
   rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
   for one- and many-frame apiInput sources.
-- **`test_config_io.py`** + **`test_config_io_gaps.py`** (~97 tests) — sidecar save/load
+- **`test_config_io.py`** + **`test_config_io_gaps.py`** — sidecar save/load
   round-trips, path conventions (`TestConfigPathForNode`), Windows-reserved-filename rejection
   (`TestIsWindowsReservedFilename`), `collect_node_configs` (including load-error protection
   and id remapping), banding compaction, rating canonical-row validation/emission,
   and preservation of the prior sidecar when validation fails.
-- **`test_config_validation.py`** (44 tests) — `VALID_KEYS` registry completeness
+- **`test_config_validation.py`** — `VALID_KEYS` registry completeness
   (`TestValidKeysRegistry`), `warn_unrecognized_config_keys` behaviour, and alignment between
   each type's decorator kwargs and the config keys `_build_node_config` actually produces
   (`TestBuildNodeConfigProducesValidKeys`, `TestConfigKeyTupleAlignment`).
@@ -313,7 +317,7 @@ API and real JSON round-trips rather than mocks:
   (`TestResolveNodeConfig`), and edge/GraphNode building (`TestBuildEdges`,
   `TestBuildRfNodes`), including deferred cross-boundary endpoints and fail-loud rejection of
   genuinely dangling connects.
-- **`test_graph_shape_contracts.py`** (14 tests) — Explore in/out-degree contracts
+- **`test_graph_shape_contracts.py`** — Explore in/out-degree contracts
   (`TestExploreGraphShape`), single-node and empty-graph edge cases, submodel boundary handle
   matching, and round-trip drift (`TestRoundTripDrift`).
 - **`test_scaffold.py`** — every CI provider × deploy target combination, YAML/TOML

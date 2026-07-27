@@ -1,7 +1,7 @@
 # WS-10 — Frontend node editors & config/preview panels
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-10 · Status: delivered in PR #146.
 
 **Branch:** `opus5/ws-10-frontend-editors-panels`
 

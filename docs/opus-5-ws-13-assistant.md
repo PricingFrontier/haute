@@ -1,7 +1,7 @@
 # WS-13 — Assistant (full stack)
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-13 · Status: delivered in PR #147.
 
 **Branch:** `opus5/ws-13-assistant`
 

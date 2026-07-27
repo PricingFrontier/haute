@@ -94,7 +94,9 @@ Out of scope (owned elsewhere):
   clear/eviction or a failed load deletes it and triggers the bounded retry.
   A disk cache under `.cache/models/<run_id>/...`
   holds the downloaded bytes for CatBoost and RustyStats artifacts (not
-  pyfunc, which relies on MLflow's own local artifact cache). Oldest-first
+  pyfunc, which relies on MLflow's own local artifact cache). The root is
+  resolved from the process cwd through the single `_disk_cache_root()` helper
+  used by resolution, clear, and fast-path lookup. Oldest-first
   eviction targets at most 50 inactive run directories. Under the active-runs
   guard, an eviction candidate is atomically renamed to a hidden tombstone;
   recursive deletion of that tombstone happens after the guard is released.
@@ -142,6 +144,14 @@ Out of scope (owned elsewhere):
   the output write are pruned to that set (plus the model's own features
   and any declared offset column), avoiding materialising columns nobody
   asked for.
+- Live categorical validation materialises only the union of model features,
+  categorical columns, offset handling, and write-projection necessities;
+  unrelated columns in a wide input are not collected for that check.
+- An empty scoring batch produces a typed empty result without scoring a
+  synthetic all-null row when the flavor exposes sufficient output metadata.
+  CatBoost classification derives hard-label dtype from `classes_`; where a
+  flavor requires a schema-shaped probe, probe failure propagates rather than
+  falling back to a guessed dtype.
 - For classification tasks, a `<output_col>_proba` column carries the
   binary positive-class probability when the model supports
   `predict_proba`; a model whose `predict_proba` returns more than two
@@ -212,6 +222,10 @@ Out of scope (owned elsewhere):
   load-order dependency on each other — can both import the *same*
   `ModelFlavor` object instead of each hand-maintaining a parallel
   spelling of `"catboost"` / `"pyfunc"` / `"rustystats"` that could drift.
+- **Array contiguity is benchmark-gated.** Model preparation does not add a
+  contiguity conversion unless dedicated performance evidence clears the
+  agreed threshold and regression tests prove identical feature order,
+  values, null treatment, and output dtypes.
 - **Explanation additivity is enforced, not assumed.** A SHAP or
   contribution breakdown that looks reasonable but doesn't actually sum
   to the model's real prediction is strictly worse than no explanation at
@@ -314,20 +328,12 @@ Out of scope (owned elsewhere):
 - Invalid disk-cache identity — an empty `run_id`, `.`, `..`, a null byte,
   a path separator, or an `artifact_path` that would resolve outside the cache root —
   raises `ValueError` before any filesystem I/O is attempted.
+- If model metadata or the flavor's valid schema-shaped probe cannot establish
+  an empty output dtype, empty scoring fails loudly; no task-based default or
+  synthetic all-null prediction is substituted.
 
 > NOTE: pyfunc models never populate the on-disk artifact cache under
 > `.cache/models/` — only CatBoost and RustyStats artifacts do. A pyfunc
 > model is instead re-resolved through MLflow's own `pyfunc.load_model`
 > path (which has its own, separate local caching behaviour) on every
 > cache-miss load.
-
-## Polars backend contracts (0.6.0)
-
-Remaining model-registry improvement work is tracked in the
-[modelling roadmap](../../roadmap/modelling.md).
-
-- A valid empty scoring batch produces typed empty prediction output without scoring a synthetic all-null row when model metadata can determine the output schema. If metadata is insufficient, the operation fails loudly rather than guessing a dtype or invoking a semantically invalid probe.
-- Live categorical validation projects only the model features and other columns required by validation/scoring; unrelated input columns are not materialised for that check.
-- Any array-contiguity optimisation in model preparation is benchmark-gated and must preserve values, null handling, dtype semantics, and model input ordering.
-
-Non-goals: altering model predictions, relaxing feature/categorical validation, or adding a broad fallback for unknown empty-output schemas. Required tests cover metadata-derived empty output for each supported flavor, the fail-loud insufficient-metadata path, minimal live-validation projection on wide frames, and semantic equivalence for any benchmark-approved contiguity optimisation.

@@ -112,7 +112,7 @@ performance, and modelling workflows remain trustworthy.
 
 **Dependencies:** MOD-M01, MOD-M02.
 
-**Evidence:** `src/haute/modelling`; `src/haute/codegen`; `tests/test_modelling.py`.
+**Evidence:** `src/haute/modelling`; `src/haute/modelling/_export.py`; `tests/test_modelling.py`.
 
 ### MOD-M09 — Capability levers
 **Why:** Monotonicity, metrics, imbalance, warm start, and passthrough need validated product decisions.

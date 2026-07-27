@@ -32,6 +32,54 @@ def test_projection_coverage_map_mentions_every_node_type() -> None:
     validate_projection_rule_coverage()
 
 
+def test_terminal_output_ignores_incomplete_enabled_mapping_rows() -> None:
+    """Incomplete editor rows must not demand a blank upstream column."""
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {"label": "source", "nodeType": "dataInput", "config": {}},
+                },
+                {
+                    "id": "out",
+                    "data": {
+                        "label": "out",
+                        "nodeType": "output",
+                        "config": {
+                            "outputMapping": [
+                                {
+                                    "enabled": True,
+                                    "source_column": "quote_id",
+                                    "output_path": "quote.id",
+                                },
+                                {
+                                    "enabled": True,
+                                    "source_column": "",
+                                    "output_path": "quote.unfinished",
+                                },
+                            ]
+                        },
+                    },
+                },
+            ],
+            "edges": [make_edge("source", "out").model_dump()],
+        }
+    )
+
+    projection = plan(
+        ProjectionRequest(
+            graph=graph,
+            target_node_id="out",
+            profile=ExecutionProfile.PREVIEW_EAGER,
+        )
+    )
+
+    assert projection.needed_by_node["out"] == {"quote_id"}
+    assert all("" not in demand for demand in projection.needed_by_node.values() if demand)
+    assert all("" not in demand for demand in projection.edge_demands.values() if demand)
+
+
 def test_projection_rule_coverage_is_immutable() -> None:
     coverage = projection_rule_coverage_by_node_type()
 

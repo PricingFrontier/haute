@@ -1,0 +1,2531 @@
+diff --git a/docs/specs/codegen/high-level.md b/docs/specs/codegen/high-level.md
+index bb21bd8b..392a5b9b 100644
+--- a/docs/specs/codegen/high-level.md
++++ b/docs/specs/codegen/high-level.md
+@@ -80,8 +80,8 @@ Out of scope (owned by neighbouring components):
+   deduplication). The same ordered graph therefore produces byte-identical output; codegen does
+   not canonicalise arbitrary input edge ordering.
+ - **One function per node**, named by sanitizing the node's label
+-  (`haute._graph_utils._sanitize_func_name`). Two distinct node labels that
+-  sanitize to the same identifier are a hard error at codegen time
++  (`haute._graph_utils._sanitize_func_name`). Any two node labels that
++  produce the same identifier, including exact duplicate labels, are a hard error at codegen time
+   (`_error_on_name_collisions`), checked globally across the root graph and
+   every submodel — not per file — because the flattened runtime graph is
+   keyed by the sanitized name across module boundaries.
+@@ -104,12 +104,34 @@ Out of scope (owned by neighbouring components):
+   with `out__<child_id>` / `in__<child_id>` handle conventions.
+   `graph_to_code` (single-file convenience wrapper) refuses to run on a
+   submodel graph rather than silently returning an arbitrary one of the
+-  files.
++  files. Each emitted submodel file carries that submodel's description,
++  preamble, and module-level preserved blocks, so hand-authored module support
++  code survives parse → save cycles.
+ - **Config-folder rewrite.** Node types with a declarative JSON sidecar
+   (`haute._config_io.has_config_folder`) get their decorator's inline kwargs
+   replaced with a single `config="config/<type>/<name>.json"` reference after
+   the type-specific body is generated. The config content itself is written
+-  separately by the config-io save path.
++  separately by the config-io save path. A config-backed type without a
++  registered decorator, or a builder result without a function definition,
++  is a `HauteError`; codegen never defaults to a generic decorator or silently
++  skips the rewrite.
++- **Canonical data I/O generation.** `dataInput` emits
++  `@pipeline.data_input(config="config/data_input/<name>.json")`, loads the
++  configured direct or snapshot-backed provider through the shared helper,
++  binds the result to `df`, runs optional user Polars code, then returns
++  `df`. `dataOutput` emits
++  `@pipeline.data_output(config="config/data_output/<name>.json")` with a
++  side-effect-free pass-through body: persistence happens only through the
++  explicit output-write execution surface, never on import or an ordinary
++  `Pipeline.run()`. Removed `dataSource`/`dataSink` forms are neither emitted
++  nor accepted as codegen node types.
++- **Retained sidecar inputs stay live.** API Input and External File bodies
++  contain only their sidecar path and call the shared config-driven loaders
++  with `Path(__file__).resolve().parent` as the pipeline-directory candidate.
++  They do not bake the sidecar's current data path, schema, file type, or
++  model class into source. A sidecar-only edit therefore changes the next
++  generated-function execution, and malformed sidecars raise the same
++  validation error as canvas execution.
+ - **Contract kwarg injection.** Every ordinary node gets a `contract=...` decorator kwarg
+   documenting its column-level input/output contract (or the string sentinel `"opaque"` when it
+   cannot be determined statically). An instance node with no explicit declared contract omits the
+@@ -122,12 +144,16 @@ Out of scope (owned by neighbouring components):
+   next save, `haute._code_extraction` strips exactly that boilerplate back
+   out before re-wrapping, so repeated edit/save cycles do not accumulate
+   duplicate scaffolding or lose the user's formatting/comments.
+-- **Preserved blocks.** Free-form text wrapped in
+-  `# haute:preserve-start` / `# haute:preserve-end` markers anywhere in a
+-  previously-saved file survives regeneration and is re-emitted after the
+-  `Pipeline(...)` construction and before generated node functions. The inner lines keep their
+-  order and indentation, but leading/trailing blank lines inside each block are stripped and the
+-  whole block is relocated; unmatched start markers are ignored.
++- **Preserved blocks.** Free-form module text wrapped by column-zero
++  `# haute:preserve-start` / `# haute:preserve-end` markers in a pipeline or
++  submodel file survives regeneration and is re-emitted after object
++  construction and before generated node functions. These completed spans
++  are excluded from preamble extraction, so repeated parse → generate cycles
++  reach a source fixpoint instead of duplicating the block. Indented markers
++  are owned by their enclosing function or construct and remain there; they
++  are not separately extracted or relocated to module scope. Leading/trailing
++  blank lines inside a completed module block are stripped, and unmatched
++  module-level starts are ignored.
+ - **Fails loudly, never emits a corrupt file.** Every code path that could
+   produce invalid Python — a missing codegen builder, an untokenizable
+   decorator, an unparseable emitted file — raises rather than degrading to a
+@@ -209,6 +235,9 @@ Out of scope (owned by neighbouring components):
+   are two halves of one round-trip contract; a change to how codegen wraps
+   user code generally requires a matching change to how extraction unwraps
+   it.
++- **Supplies canonical user-code text to** `haute.chunking`: chunk planning
++  reads the parsed `dataInput` code field and applies its own row-locality
++  proof to the same boilerplate-free text that codegen re-emits.
+ - **Depended on by** the save-pipeline route, which calls
+   `graph_to_code_multi` to produce a multi-file tree and `graph_to_code`
+   for graphs that produce one pipeline file.
+@@ -231,6 +260,9 @@ execution time on a mis-wired pipeline). Concretely:
+   defect (every `NodeType` must have both an exec and a codegen builder per
+   `NODE_REGISTRY` contract), never silently handled by falling back to a
+   generic transform template.
++- **Config-folder rewrite has no decorator mapping or no generated `def`** →
++  `HauteError` with the node id, label, and type. Codegen never substitutes
++  `@pipeline.polars` or leaves stale inline decorator arguments behind.
+ - **Decorator argument list cannot be tokenized, or has no matching close
+   paren, or no `@pipeline.*`/`@submodel.*` decorator was found at all** →
+   `HauteError` from `_matching_close_paren` / `_inject_contract_kwarg`,
+@@ -242,8 +274,8 @@ execution time on a mis-wired pipeline). Concretely:
+   emitted parent with different columns** → `ParseError` from
+   `_format_contract_source`; ambiguous data is never silently resolved by
+   "keep the last writer."
+-- **Node label collisions** (two distinct labels sanitizing to the same
+-  Python identifier, anywhere in the root graph or any submodel) →
++- **Node label collisions** (two labels sanitizing to the same Python
++  identifier, including exact duplicates, anywhere in the root graph or any submodel) →
+   `ParseError` enumerating every colliding bucket, from
+   `_error_on_name_collisions`.
+ - **Input-name collisions on one node** (two incoming edges deriving the same
+@@ -266,7 +298,10 @@ execution time on a mis-wired pipeline). Concretely:
+   `_assert_emitted_files_parse`, the final gate before a save is allowed to
+   land on disk. Includes the offending file, line, and message text so a bad
+   node-code block or a codegen bug is directly actionable; the save route
+-  wraps this in a transaction so no partial file tree is written.
++  wraps this in a transaction and attempts to restore every touched file.
++  Rollback is best-effort: a compensating filesystem operation can itself
++  fail, in which case that rollback failure is logged while the original
++  save error remains the client-visible failure.
+ - **Unparseable user-authored code passed into extraction** →
+   `_UserCodeParseError` (a `ParseError`/`ValueError` subclass) from
+   `haute._code_extraction._parse_user_code`, naming which extractor was
+@@ -275,49 +310,3 @@ execution time on a mis-wired pipeline). Concretely:
+   `RuntimeError` from `_gen_submodel_placeholder_unreachable`; this
+   indicates `graph_to_code_multi`'s root/child-node filtering has a bug,
+   since the placeholder should never be dispatched on.
+-
+-## Approved change contract — 0.7.0 data I/O code generation
+-
+-Remaining code-generation improvement work is tracked in the
+-[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
+-
+-- Codegen has exactly one tabular-input builder and one persistence-output builder:
+-  `dataInput` emits `@pipeline.data_input(config="config/data_input/<name>.json")`, opens the
+-  configured direct/cached provider through the shared generated-code helper, binds the result as
+-  `df`, executes the optional user Polars body, and returns `df`; `dataOutput` emits
+-  `@pipeline.data_output(config="config/data_output/<name>.json")` and a side-effect-free
+-  pass-through body for ordinary module execution.
+-- No `dataSource`/`dataSink` builder, decorator, template, extractor kind, or sidecar rewrite
+-  remains. Codegen accepts only the retained enum and never translates a removed graph node.
+-- Generated `dataInput` execution observes the same base-directory path anchoring, snapshot
+-  identity, cache-only remote execution, code ordering, and config validation as canvas
+-  execution. Generated `dataOutput` writes only when its explicit helper/endpoint is invoked;
+-  importing or running the generated pipeline does not persist data.
+-- Parse → graph → code → parse round trips preserve `inputType`/`outputType`, format/mode,
+-  source/destination fields, arguments, cache mode, connection references, and input code without
+-  inventing inactive fields.
+-
+-Acceptance executes generated direct and cached inputs with and without code, verifies offline
+-remote-cache use, exercises each output publication class explicitly, round-trips multiple
+-inputs/outputs and submodels, and asserts registry completeness/absence for the removed builders.
+-
+-## Retained input sidecar execution parity
+-
+-Generated code implements the code-generation half of
+-[IO-IO02](../../roadmap/io-layer.md) through shared config-driven loaders.
+-
+-`_gen_api_input` and `_gen_external_file` emit config-sidecar decorators and
+-delegate their runtime setup to shared helpers through `haute.graph_utils`.
+-Their bodies contain the sidecar path, not snapshots of the sidecar's path,
+-schema, file type, or model class. `Path(__file__).parent` supplies the
+-pipeline-directory candidate to the shared project/pipeline path-resolution
+-policy, and external-file user code still executes after `obj` is loaded.
+-
+-Generated API Input retains its flat-frame versus frame-bundle runtime
+-semantics, but the current sidecar decides which path is active at call time.
+-A hand edit that makes the sidecar malformed raises the same validation error
+-as canvas execution; code generation never silently falls back to the stale
+-decorator/body values.
+-
+-Executable-equivalence tests generate once, mutate only the sidecar, and run
+-again for JSON/flat API Input and External File, including malformed config.
+diff --git a/docs/specs/codegen/low-level.md b/docs/specs/codegen/low-level.md
+index b5dd58df..cd53ac69 100644
+--- a/docs/specs/codegen/low-level.md
++++ b/docs/specs/codegen/low-level.md
+@@ -5,7 +5,7 @@
+ | File | Responsibility |
+ |---|---|
+ | `src/haute/codegen.py` | Public orchestration API (`graph_to_code`, `graph_to_code_multi`); single-node dispatch (`_node_to_code`, `_generate_node_code`); instance-node handling; contract kwarg formatting/injection (`_format_contract_kwarg`, `_format_contract_source`, `_inject_contract_kwarg`, `_matching_close_paren`); pipeline/submodel file assembly (`_generate_pipeline_lines`); the final parse gate (`_assert_emitted_files_parse`). |
+-| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`, `_portable_path_expr`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator via `edge_input_name`, with a loud duplicate-name guard replacing the former `_dedup_param_names` suffixing), docstring sanitization (`_sanitize_description`), and per-type template strings (`_MODEL_SCORE`, `_BANDING_SINGLE`, `_SINK_PARQUET`, etc.). |
++| `src/haute/_codegen_builders.py` | One `_gen_*` builder per `NodeType`, registered into `haute._registry.NODE_REGISTRY` via `@_register_codegen`. String-safety helpers (`_safe_str`, `_safe_path`), shared field extraction (`_common_node_fields`, `_build_params` — parameters are the per-edge input names supplied by the orchestrator via `edge_input_name`, with a loud duplicate-name guard replacing the former `_dedup_param_names` suffixing), docstring sanitization (`_sanitize_description`), and per-type templates such as `_MODEL_SCORE`, `_BANDING_SINGLE`, and `_RETAINED_EXTERNAL`. |
+ | `src/haute/_code_extraction.py` | Reverse direction of `_codegen_builders`' body wrapping: strips generated boilerplate back out of a persisted function body so the user-facing code editor shows only what the user actually typed. Consolidated engine (`extract_user_code`) dispatches through `BOILERPLATE_MATCHERS`/`_FINALISERS` registries keyed by node "kind." |
+ | `src/haute/_ast_helpers.py` | Stateless AST/source utilities with no node/graph knowledge: literal evaluation (`_eval_ast_literal`), decorator introspection (`_get_decorator_kwargs`, `_is_pipeline_node_decorator`, `_get_decorator_node_type`), docstring/whitespace handling (`_strip_docstring`, `_dedent`), and whole-file extraction helpers (`_extract_function_bodies`, `_extract_connect_calls`, `_extract_meta`, `_extract_preamble`, `_extract_preserved_blocks`) shared with the parser. |
+ 
+@@ -23,13 +23,16 @@
+ 
+ ### `graph_to_code_multi` (the real entry point; `graph_to_code` wraps it)
+ 
+-1. Fall back to `graph.pipeline_description` when no explicit description is
+-   passed; default `submodels = graph.submodels or {}`.
++1. Fall back to `graph.pipeline_description` and `graph.preamble` when the
++   corresponding explicit value is empty; default
++   `submodels = graph.submodels or {}`.
+ 2. `validate_pipeline_graph_shape_contracts` — structural preflight (owned by
+    `haute._graph_shape`), run before any source is generated.
+-3. `_error_on_name_collisions` over every label in the root graph AND every
+-   submodel's node list — eager, so collisions are reported even when the
+-   no-submodel fast path would otherwise short-circuit.
++3. `_error_on_name_collisions` over every emitted logical node in the root
++   graph and every submodel — eager, so collisions are reported even when the
++   no-submodel fast path would otherwise short-circuit. Parent-list transport
++   copies whose id appears in a submodel's `childNodeIds` are counted only
++   through the authoritative embedded child graph.
+ 4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
+    each edge-join's two incoming edges in base-then-join order), topo-sort
+    nodes (`_topo_sort` via `haute._topo.topo_sort_ids`), build
+@@ -49,16 +52,19 @@
+    (raising `ParseError` on a malformed or unknown handle), validate
+    `out__<child_id>` edges leaving the placeholder the same way, build that
+    submodel's `connect_pairs`, and emit its file via
+-   `_generate_pipeline_lines(kind="submodel", obj_name="submodel", ...)`.
++   `_generate_pipeline_lines(kind="submodel", obj_name="submodel", ...)`,
++   passing the child graph's description, preamble, and preserved blocks.
+    Then assemble the main file: root nodes are those not inside any
+    submodel's `childNodeIds` and not a `submodel__<name>` placeholder;
+    `_resolve_submodel_endpoint` maps a placeholder-boundary edge to the
+    actual child node id on either side; `root_connect_pairs` forwards
+-   `source_port`/`target_port` only for non-boundary edges (a submodel's
+-   internal `out__<id>` handle is not a user-facing frame name — gated on
+-   the *source node being a placeholder*, not on the string prefix, so a
+-   legitimately-named `apiInput` table called `"out__claims"` isn't
+-   mistaken for a boundary marker); submodel import lines
++   ordinary `sourceHandle`/`targetHandle` values on non-boundary edges and
++   restores the authored `sourcePort`/`targetPort` values hidden behind a
++   submodel boundary. Synthetic `out__<id>` / `in__<id>` handles are never
++   emitted as user-facing ports. Boundary detection gates on the endpoint
++   node being a placeholder, not on the string prefix, so a legitimately
++   named `apiInput` table called `"out__claims"` is not mistaken for a
++   boundary marker; submodel import lines
+    (`pipeline.submodel(<path>)`) are appended; the main file is emitted with
+    `dedup_connects=True` (root-level connect pairs can be reached both via a
+    direct edge and via boundary resolution, so duplicates are collapsed by
+@@ -69,7 +75,7 @@
+ 
+ Builds the file as a list of lines: docstring header (name run through
+ `_sanitize_description` since it lands between the module docstring's triple
+-quotes) → standard imports → optional preamble (pipeline files only) →
++quotes) → standard imports → optional per-file preamble →
+ `Pipeline(...)`/`Submodel(...)` construction → any preserved blocks
+ (`_emit_preserved_blocks`, wrapped in `# haute:preserve-start/-end` markers)
+ → original nodes (via `node_to_code_fn`) → instance nodes (via
+@@ -79,11 +85,14 @@ submodel files) → submodel import lines → `pipeline.connect(...)`/
+ labels containing quotes/backslashes/non-ASCII survive; deduped when
+ `dedup_connects=True`).
+ 
+-Preserved-block extraction is intentionally structural rather than byte-for-byte: the shared
+-`haute._ast_helpers._extract_preserved_blocks` line scan removes marker lines and leading/trailing
+-blank lines inside each matched block, ignores an unmatched start marker, and returns blocks in
+-source order. `_generate_pipeline_lines` then relocates them after object construction and before
+-node functions, restoring fresh markers around each block.
++Preserved-block extraction is intentionally structural rather than byte-for-byte. The shared
++`haute._ast_helpers._extract_preserved_blocks` scan claims only completed column-zero marker
++pairs, removes marker lines and leading/trailing blank lines inside each block, ignores an
++unmatched start, and returns blocks in source order. `_extract_preamble` excludes those completed
++module spans, so the two stores are disjoint. Indented marker text remains in its enclosing
++function or construct and is not separately extracted. `_generate_pipeline_lines` emits each
++pipeline or submodel block once after object construction and before node functions, restoring
++fresh markers.
+ 
+ ### `_node_to_code` (per-node dispatch)
+ 
+@@ -96,15 +105,38 @@ node functions, restoring fresh markers around each block.
+    is missing.
+ 3. If `has_config_folder(node_type)` (from `haute._config_io`), locate the
+    first `\ndef ` in the generated code and replace everything before it
+-   with `@pipeline.<decorator>(config=<path>)`, logging (not raising) if no
+-   `def` was found — a defensive branch that should be unreachable given
+-   every builder emits a `def`.
++   with `@pipeline.<decorator>(config=<path>)`. The decorator lookup uses the
++   complete `NODE_TYPE_TO_DECORATOR` mapping; a missing mapping or missing
++   generated `def` raises `HauteError` with node context rather than silently
++   defaulting or skipping the rewrite.
+ 4. `_format_contract_kwarg` computes the `contract=...` kwarg text (or
+    `None` for instance nodes whose contract comes from the referenced
+    original node); if present, `_inject_contract_kwarg` splices it into the
+    decorator, with any `HauteError` enriched with `node_id`/`node_label`/
+    `node_type` before re-raising.
+ 
++### Canonical data I/O and retained sidecar builders
++
++- `_gen_data_input` emits the one retained tabular-input scaffold. It calls
++  `resolve_data_input_from_config` using the generated sidecar path and file
++  directory, assigns the returned lazy frame to `df`, appends optional user
++  code, and returns `df`. The `data_input` extraction matcher removes only
++  that generated load scaffold on the reverse parse.
++- `_gen_data_output` emits a config-sidecar decorator and an ordinary
++  pass-through body. It never writes during import or ordinary pipeline
++  execution; explicit publication belongs to the output-write runtime path.
++- `_gen_api_input` and `_gen_external_file` obtain their sidecar paths from
++  `config_path_for_node` and delegate to
++  `resolve_api_input_from_config` / `load_external_object_from_config` with
++  `Path(__file__).resolve().parent`. Their source contains no baked copy of
++  the sidecar's current data path, schema, file type, or model class.
++  External-file user code follows the generated object load.
++- Removed `dataSource`/`dataSink` enum values, decorators, templates, and
++  extractor aliases have no compatibility path. Round trips preserve the
++  retained I/O provider branch, format/mode, arguments, cache mode,
++  destination fields, connections, and user code without inventing inactive
++  fields.
++
+ ### `_inject_contract_kwarg` / `_matching_close_paren`
+ 
+ Operates on the ALREADY-GENERATED source text (not an AST), because the
+@@ -196,14 +228,18 @@ text between the parens is non-whitespace).
+ - **Windows-style paths in generated `path=` literals** — `_safe_path`
+   normalizes backslashes to forward slashes before escaping, so a pipeline
+   saved on Windows and read on Linux (or vice versa) still parses
+-  correctly; `_portable_path_expr` additionally resolves relative paths
+-  against `Path(__file__).parent` so a saved pipeline directory is
+-  relocatable.
++  correctly. Runtime helpers receive the generated file's resolved parent as
++  their base-directory candidate for relative sidecar paths.
+ - **External-file user imports directly after the generated load** —
+   `_match_external` is position-aware: imports BEFORE the generated
+   `load_external_object_from_config(...)` call are stripped as
+   boilerplate, imports AFTER it (or all imports, if there was no load at
+   all) are preserved as user code.
++- **One current generated scaffold per node type.** Extraction recognises
++  the current scaffold plus ordinary user code; it does not carry aliases for
++  retired generated chains or variable names. Rating-step codegen emits only
++  canonical table fields and `combined_outputs`, never retired table labels
++  or singular combined-output arguments.
+ - **Model-score / rating-step boilerplate call detection** —
+   `_outer_boilerplate_call_end_line` locates `score_from_config(...)` /
+   `apply_rating_step_from_config(...)` via an AST walk over a
+@@ -221,11 +257,12 @@ text between the parens is non-whitespace).
+ | Condition | Exception | Raised from |
+ |---|---|---|
+ | No codegen builder registered for a `NodeType` | `KeyError` | `codegen._generate_node_code` |
++| Config-backed node has no decorator mapping or its builder emitted no function definition | `HauteError` with node id/label/type | `codegen._node_to_code` |
+ | Decorator arg list untokenizable / no matching close paren / no decorator found | `HauteError` (context enriched with node id/label/type) | `codegen._matching_close_paren`, `codegen._inject_contract_kwarg`, re-raised in `codegen._node_to_code` |
+ | Contract computation hits `ConfigError` | `ConfigError` (propagated) | `codegen._format_contract_kwarg` |
+ | Contract computation hits a non-infra exception (`TypeError`, `KeyError`, `HauteError` incl. `ContractMismatchError`) | propagated unchanged | `codegen._format_contract_kwarg` |
+ | `inputs_by_parent` ambiguous key collision | `ParseError` | `codegen._format_contract_source` |
+-| Duplicate sanitized function names across root graph + submodels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
++| Duplicate sanitized function names across root graph + submodels, including exact duplicate labels | `ParseError` (all colliding buckets listed) | `codegen._error_on_name_collisions` |
+ | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
+ | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
+ | `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
+@@ -252,7 +289,7 @@ than one file per module:
+ 
+ - **`test_codegen.py`** — the largest suite; broad coverage of
+   `graph_to_code`/`graph_to_code_multi` across every node type, param
+-  building, portable-path resolution, live-switch/selected-columns/
++  building, path-literal safety, live-switch/selected-columns/
+   passthrough-vs-behavioural codegen, instance-node mapping (including
+   ambiguous/missing-target error cases), submodel pipeline replacement,
+   special-character labels, connect-call deduplication, contract-source
+@@ -267,7 +304,7 @@ than one file per module:
+   parameters.
+ - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
+   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
+-  `_gen_data_sink`) plus `TestCodegenExecValidation`, which executes
++  `_gen_data_input`, `_gen_data_output`) plus `TestCodegenExecValidation`, which executes
+   generated code to check that it is runnable, not just syntactically valid.
+ - **`test_codegen_injection.py`** — the triple-quote / brace / paren-inside-
+   string decorator-injection bug class specifically: sanitize-description
+@@ -343,55 +380,3 @@ writing a failing test before the fix.
+ > the live `Pipeline.run()` API. That API only records `pipeline.submodel(...)` paths, so runtime
+ > equivalence is intentionally established after static parse/flatten, not through live module
+ > registration.
+-
+-## Approved change contract — 0.7.0 data I/O code generation
+-
+-Remaining code-generation improvement work is tracked in the
+-[pipeline authoring roadmap](../../roadmap/pipeline-authoring.md).
+-
+-- Delete `_gen_data_source`, `_gen_data_sink`, `_SINK_CSV`, `_SINK_PARQUET`, legacy source/sink
+-  decorator templates, and their registrations from `src/haute/_codegen_builders.py`.
+-- Extend `_gen_data_input` so generated code loads the sidecar through the unified
+-  graph/provider helper, assigns its `LazyFrame` to `df`, inserts the sanitised user `code`, and
+-  returns `df`. Extend `_code_extraction.py` with one canonical `data_input` scaffold matcher;
+-  remove the legacy data-source alias after all retained call sites use it.
+-- Keep `_gen_data_output` a config-sidecar pass-through function. Explicit write execution uses
+-  the executor/registry rather than embedding a write in the generated body, preventing imports
+-  and `Pipeline.run()` from causing persistence.
+-- `NODE_REGISTRY` validation checks one exec/codegen pair for every retained `NodeType`; removed
+-  enum values cannot be dispatched. `collect_node_configs` writes only retained I/O folders.
+-- Builder, extraction, injection, split-module, executable-equivalence, property-round-trip, and
+-  parser fixtures are rewritten around the retained nodes. Add tests for cache-mode fields,
+-  branch-specific configs, code-before-return placement, path anchoring, multiple I/O nodes, and
+-  an exact search assertion that generated source never contains removed decorators.
+-
+-## Retained input sidecar execution parity
+-
+-- `_retained_api_input_template` takes a sidecar path and emits a call to
+-  `resolve_api_input_from_config(config_path, base_dir=Path(__file__).parent)`.
+-  It no longer emits `orjson` config loading, a portable baked data path, or a
+-  baked flat-file config literal.
+-- The retained-input resolver combines that concrete pipeline directory with
+-  the execution-scoped project root. Both generated and canvas execution use
+-  the same candidate order and enforce containment against that root, including
+-  when the selected pipeline is outside the process working directory.
+-- The source-code extractor recognises
+-  `resolve_data_input_from_config(...)` as generated load boilerplate, so a
+-  parse/save/reload cycle does not copy that call into the user's `code` field.
+-- `_gen_external_file` obtains its config path with `config_path_for_node` and
+-  emits `load_external_object_from_config`; `_RETAINED_EXTERNAL` does not
+-  interpolate `path`, `fileType`, or `modelClass` into the body.
+-- The `graph_utils` facade exports both helpers. Builder tests assert the
+-  absence of baked data paths and execute generated functions after
+-  sidecar-only edits.
+-
+-## Approved change contract — one generated source form
+-
+-Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+-code generation emits one current scaffold per node type and code extraction recognises that
+-scaffold plus ordinary user code only. Historical generated chains, aliases, variable names, and
+-multi-step loading scaffolds are not parsed or rewritten. Tests for those old generated forms are
+-deleted rather than converted into special failures.
+-
+-Rating-step code generation emits only canonical table fields and `combined_outputs`; it neither
+-reads nor writes retired table labels or singular combined-output arguments.
+diff --git a/docs/specs/submodels/high-level.md b/docs/specs/submodels/high-level.md
+index 00e8ac56..bd417ddc 100644
+--- a/docs/specs/submodels/high-level.md
++++ b/docs/specs/submodels/high-level.md
+@@ -64,14 +64,17 @@ Out of scope (owned elsewhere, linked where relevant):
+   parent file is rewritten to reference it, through the same save transaction
+   as a manual pipeline save.
+ - **Drill-down** (`GET /api/submodel/{name}`): returns the named submodel's
+-  internal graph, parsed fresh from its `.py` file, with any sidecar node
+-  positions applied. This is how the GUI renders the inside of a placeholder
+-  when the user opens it.
++  internal graph, parsed fresh from the path recorded by the active pipeline,
++  with any sidecar node positions applied. The `modules/<name>.py` convention
++  is used only when no discovered pipeline records the requested submodel.
++  This is how the GUI renders the inside of a placeholder when the user opens
++  it, including hand-authored references such as `lib/pricing.py`.
+ - **Dissolution** (`POST /api/submodel/dissolve`): the inverse of creation —
+-  the named submodel's placeholder is replaced by its child nodes and internal
+-  edges (via `flatten_graph`, scoped to just that one
+-  submodel), the parent file is rewritten, and the `modules/<name>.py` file is
+-  deleted.
++  the recorded submodel file is parsed again under the write lock, its
++  authoritative graph replaces the client's possibly stale metadata, and
++  only then is the placeholder replaced by child nodes/internal edges via
++  targeted `flatten_graph`. The parent file is rewritten and the recorded
++  child file is deleted through one save transaction.
+ - **Minimum size.** A submodel must contain at least 2 nodes after any
+   nonexistent or duplicate ids in the request are resolved against the actual
+   graph; fewer is rejected.
+@@ -86,23 +89,27 @@ Out of scope (owned elsewhere, linked where relevant):
+   though it is not a first-class GUI workflow.
+ - **Windows-reserved names are rejected up front.** A submodel name that would
+   produce a module filename matching a Windows reserved device name (`CON`,
+-  `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, any casing, any extension) is rejected
++  `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, any casing, any extension) is rejected
+   before any graph transformation runs, on every platform — so a pipeline
+   authored on Linux/macOS stays loadable on a Windows checkout.
+ - **Boundary handles are the single source of truth for "which side of the
+   boundary this edge attaches to."** `in__<child>` / `out__<child>` is the
+   spelling produced when a submodel is created (or reconstructed by the parser) and validated by
+-  codegen. On well-formed graphs, flattening strips that prefix, restores the child endpoint,
+-  clears the synthetic handle, and is the inverse of creation. A
++  both codegen and flattening. Flattening requires the correct prefix and a
++  child id present in the authoritative child graph; malformed boundaries
++  raise `ParseError` before any edge or file is removed. On valid graphs it
++  strips the prefix, restores the child endpoint and any authored port,
++  regenerates an id from all visible and still-hidden port metadata, and is
++  the inverse of creation. A
+   regular (non-submodel) edge whose handle *happens* to look like
+   `out__<something>` is never treated as a boundary handle by the consuming
+   side — only an edge whose source or target actually is a submodel
+   placeholder node is.
+-  > NOTE: `flatten_graph` itself checks only that the relevant handle is non-empty; it uses
+-  > `removeprefix`, so a malformed non-empty handle such as `wrong_child` is consumed as the child
+-  > id verbatim. A missing handle leaves the placeholder endpoint unchanged and the edge is then
+-  > silently dropped. Codegen validates prefixes and child membership before save, but the
+-  > standalone flattener is more permissive than the producer contract.
++- **Per-file module code survives both representations.** Parsed submodel
++  descriptions, preambles, and column-zero preserved blocks stay in the
++  child metadata and are re-emitted in that child file. When a submodel is
++  flattened for execution or dissolve, its preamble and preserved blocks are
++  merged into the parent graph so the inlined nodes retain their support code.
+ - **Writes are serialised.** Both create and dissolve acquire the same shared
+   write lock used by the manual pipeline save endpoint, so a submodel
+   operation can never interleave with a concurrent save or with another
+@@ -131,11 +138,11 @@ Out of scope (owned elsewhere, linked where relevant):
+   bespoke writer for submodel operations would be a second place those
+   invariants could drift out of sync.
+ - **Submodel path resolution deliberately mirrors the parser's own module
+-  lookup**, rather than inventing a second convention: `modules/<name>.py` is
+-  resolved relative to the active pipeline's directory. If drill-down
+-  (`GET /api/submodel/{name}`) resolved a different
+-  file than the parser would load for the same reference, the GUI and the
+-  actually-executed pipeline would show different things.
++  lookup**, rather than inventing a second convention: drill-down parses the
++  active pipeline and resolves the exact project-relative path stored in its
++  submodel metadata. `modules/<name>.py` remains a compatibility fallback
++  only when no discovered pipeline records the name. The GUI and the
++  actually executed pipeline therefore open the same file.
+ - **Nesting is disallowed by construction, not by convention.** Rejecting any
+   selection that includes a submodel placeholder keeps the placeholder model,
+   the `in__`/`out__` handle scheme, and the flatten pass single-level;
+@@ -147,12 +154,10 @@ Out of scope (owned elsewhere, linked where relevant):
+ - **Name-collision detection lives at save time, not in `haute lint`.**
+   Extending `haute lint` to warn about (and block on) node-name collisions
+   across submodels was proposed and never built — the CLI's lint command has
+-  no submodel-specific rules today. Collision checking is instead
+-  `SavePipelineService._validate_unique_sanitized_names`, run against the
+-  pre-transform graph on create and against the post-inline graph on dissolve
+-  (see the `create_submodel`/`dissolve_submodel` control flow in
+-  [Low-level](low-level.md) for both call sites), not a `haute lint` check a
+-  user can run independently of a submodel-mutating request.
++  no submodel-specific rules today. Collision checking is instead part of
++  `SavePipelineService.save`, after create or dissolve has produced the graph
++  that will actually be persisted. The routes do not duplicate that private
++  validation step, and there is no independent `haute lint` check for it.
+ 
+ ## Interactions
+ 
+@@ -200,23 +205,17 @@ Out of scope (owned elsewhere, linked where relevant):
+   metadata returns `404`.
+ - Drilling into a submodel whose `.py` file does not exist on disk returns
+   `404`.
++- A malformed route name or recorded reference (empty, NUL-containing, or a
++  `{name}` containing `/` or `\`) returns `400`; a reference resolving
++  outside the project returns `403`. These typed path failures are mapped
++  before filesystem access rather than escaping as an uncaught `ValueError`.
++- A missing, wrong-prefixed, or stale-child boundary handle raises
++  `ParseError` from `flatten_graph`. Dissolve stops before persisting the
++  parent or deleting the authoritative child file.
+ - Any failure partway through the underlying save transaction (config write,
+-  sidecar write, or the submodel file's own deletion on dissolve) rolls back
+-  every file already touched in that request and surfaces as `500` — no
+-  partial multi-file write is ever left on disk. See
++  sidecar write, or the submodel file's own deletion on dissolve) triggers a
++  best-effort rollback of every touched file and surfaces the original
++  failure as `500`. A compensating filesystem operation can itself fail; that
++  rollback failure is logged and may leave partial state. See
+   [server-api](../server-api/high-level.md) for the transaction's full
+   contract.
+-- `flatten_graph` has no dedicated malformed-boundary exception. Non-empty handles with the wrong
+-  prefix are consumed as ids, while boundary edges with no handle are dropped after they still
+-  reference a removed placeholder. This is silent standalone behaviour; codegen's stricter
+-  validation normally prevents such graphs from being persisted.
+-- > NOTE: `GET /api/submodel/{name}` contains a defensive
+-  > `sm_path.is_relative_to(project_root)` check that raises `403` if it
+-  > fails, but the path it checks was already produced by
+-  > `resolve_submodel_by_name`, which validates the same condition (and
+-  > raises `ValueError` instead) before ever returning a path. Because the
+-  > route's `{name}` parameter is a single path segment and cannot itself
+-  > contain `/`, the resulting `modules/{name}.py` reference cannot escape
+-  > the project root through this endpoint, so the `403` branch is
+-  > unreachable in practice — defensive redundancy rather than live
+-  > behaviour.
+diff --git a/docs/specs/submodels/low-level.md b/docs/specs/submodels/low-level.md
+index 4d87ea4b..e5d677d3 100644
+--- a/docs/specs/submodels/low-level.md
++++ b/docs/specs/submodels/low-level.md
+@@ -5,17 +5,19 @@
+ | File | Responsibility |
+ |---|---|
+ | `src/haute/_submodel_graph.py` | Shared helpers: build a `SUBMODEL` placeholder node, classify cross-boundary edges into input/output ports, rewire edges to/from a placeholder. Used by both the parser's hierarchical merge and the GUI create-submodel operation. |
+-| `src/haute/_submodel_paths.py` | Resolve a submodel file reference (`modules/<name>.py`) relative to the active pipeline directory and return that directory as its config base. |
+-| `src/haute/_flatten.py` | Dissolve one named submodel or every submodel into a flat graph: inline stored child nodes/internal edges, consume boundary handles, restore edge-join target roles, deduplicate edges, and retain metadata for untargeted submodels. |
++| `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base. |
++| `src/haute/_flatten.py` | Dissolve one named submodel or every submodel into a flat graph: validate and consume boundary handles, inline stored child nodes/internal edges, restore authored and edge-join ports, regenerate port-complete edge ids, merge child preamble/preserved blocks, deduplicate exact edges, and retain metadata for untargeted submodels. |
+ | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |
+-| `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): `POST /create`, `GET /{name}`, `POST /dissolve`. Wires validation, the pure transform, and the shared save transaction together; owns all file I/O and HTTP error mapping. |
++| `src/haute/routes/submodel.py` | FastAPI router (`/api/submodel/*`): `POST /create`, `GET /{name}`, `POST /dissolve`. Resolves authoritative read paths, maps domain/path failures to HTTP responses, and delegates every write/delete to the shared save transaction. |
+ 
+ Related but external to this component:
+ - `src/haute/_parser_submodels.py` (expression-parsing) — parses
+   `pipeline.submodel(...)` calls and submodel `.py` files, and calls into
+   `src/haute/_submodel_graph.py`'s same three helpers to build the hierarchical view at
+-  parse time. It rejects nested references and duplicate declared submodel names before invoking
+-  the graph helpers, so this component never receives a deliberately truncated hierarchy.
++  parse time. Parsed child graphs retain their declared description,
++  preamble, and column-zero preserved blocks. It rejects nested references
++  and duplicate declared submodel names before invoking the graph helpers, so
++  this component never receives a deliberately truncated hierarchy.
+ - `src/haute/routes/_save_pipeline.py::SavePipelineService` (server-api) —
+   provides `save_graph_transactionally`, reused by both create and dissolve.
+ 
+@@ -28,8 +30,9 @@ Related but external to this component:
+ - `PipelineGraph.submodels: dict[str, Any] | None` (`_types.py`) — keyed by
+   submodel name, each entry shaped `{"file": str, "childNodeIds": list[str],
+   "inputPorts": list[str], "outputPorts": list[str], "graph": dict}` where
+-  `"graph"` is the submodel's own internal `nodes`/`edges`/`submodel_name`/
+-  `submodel_description`/`source_file`.
++  `"graph"` is the submodel's own canonical `PipelineGraph` dump:
++  `nodes`, `edges`, `pipeline_name`, `pipeline_description`, `preamble`,
++  `preserved_blocks`, and `source_file`.
+ - `NodeType.SUBMODEL = "submodel"` / `NodeType.SUBMODEL_PORT = "submodelPort"`
+   (`_types.py`) — the placeholder node's type; `SUBMODEL_PORT` is used only by
+   the drill-down GUI view, not produced by anything in this component.
+@@ -91,16 +94,19 @@ identity through hierarchical merge and flattening.
+ 
+ ### `resolve_submodel_reference(rel_path, *, pipeline_dir, project_root)`
+ 
+-1. `resolved_root = project_root.resolve()`; `active_dir = (pipeline_dir or
++1. Reject an empty or NUL-containing reference with
++   `MalformedSubmodelPathError`.
++2. `resolved_root = project_root.resolve()`; `active_dir = (pipeline_dir or
+    project_root).resolve()`.
+-2. Build `submodel_path = (active_dir / rel_path).resolve()`.
+-3. If `submodel_path` is not below `resolved_root`, raise `ValueError`.
+-4. Return `(submodel_path, active_dir)`.
++3. Build `submodel_path = (active_dir / rel_path).resolve()`.
++4. If `submodel_path` is not below `resolved_root`, raise
++   `SubmodelPathOutsideProjectError`.
++5. Return `(submodel_path, active_dir)`.
+ 
+ `resolve_submodel_by_name(name, *, pipeline_dir, project_root)` is a thin
+-wrapper calling the above with `rel_path=f"modules/{name}.py"`. This is the
+-same convention `_parser_submodels.py` uses for `pipeline.submodel()` imports,
+-so drill-down and the actually-loaded pipeline never disagree.
++wrapper that first rejects empty, NUL-containing, slash-containing, or
++backslash-containing route names with `MalformedSubmodelPathError`, then calls
++the reference resolver with `rel_path=f"modules/{name}.py"`.
+ 
+ ### `flatten_graph(graph, target_name=None)`
+ 
+@@ -108,24 +114,24 @@ so drill-down and the actually-loaded pipeline never disagree.
+    it with the metadata keys; if there is no match, also return the original object.
+ 2. Ask `build_edge_join_boundary_target_roles` for any target-port roles that must be restored on
+    inbound edges to child edge-join nodes.
+-3. Copy the parent node/edge lists, remove placeholders for the selected names, and append each
+-   selected submodel's stored child nodes/internal edges. Dict entries are Pydantic-validated;
+-   existing `GraphNode`/`GraphEdge` objects are reused.
+-4. For each edge, when its source is a selected placeholder and `sourceHandle` is non-empty, set
+-   the source to `sourceHandle.removeprefix("out__")`, restore `sourceHandle` from `sourcePort`,
+-   and regenerate the id.
+-   Apply the analogous `targetHandle.removeprefix("in__")` rewrite on selected placeholder
+-   targets, restoring `targetPort` first or a target role from step 2 when no authored target
+-   port was present.
+-5. Drop any edge that still references a selected placeholder (notably a boundary edge with a
+-   missing handle), then deduplicate by rendered endpoint/handles plus any `sourcePort`/
+-   `targetPort` still hidden behind an unflattened boundary, preserving first occurrence.
+-6. Return `graph.model_copy(...)`, removing flattened metadata entries and setting `submodels=None`
+-   when none remain. Untargeted placeholders/metadata remain intact.
+-
+-The flattener does not validate the expected prefix or child membership: any non-empty malformed
+-handle is consumed verbatim after `removeprefix`, and no explicit exception is raised. Codegen has
+-the stricter prefix/membership validation gate.
++3. Pydantic-validate each selected embedded graph, index its child ids, copy
++   the parent node/edge lists, remove selected placeholders, and append child
++   nodes/internal edges.
++4. For every edge incident to a selected placeholder, require the appropriate
++   non-empty `out__<child_id>` or `in__<child_id>` handle and verify that the
++   child exists in that embedded graph. A mismatch raises `ParseError` with
++   edge/submodel/known-child context before rewiring continues.
++5. Replace each valid placeholder endpoint with the child id, restore the
++   authored `sourceHandle`/`targetHandle` from hidden `sourcePort`/
++   `targetPort` (or the edge-join role from step 2), clear the consumed hidden
++   field, and regenerate the id with `_edge_id` over endpoints, rendered
++   handles, and any hidden ports belonging to an untargeted boundary.
++6. Deduplicate only exact six-field edge identities, preserving first
++   occurrence. Merge selected child preambles into the root preamble with a
++   blank-line separator and append selected child preserved blocks.
++7. Return `graph.model_copy(...)`, removing flattened metadata entries and
++   setting `submodels=None` when none remain. Untargeted
++   placeholders/metadata remain intact.
+ 
+ ### `create_submodel_graph(graph, node_ids, name)`
+ 
+@@ -148,9 +154,10 @@ the stricter prefix/membership validation gate.
+    `external_edges` (neither endpoint inside).
+ 6. `classify_ports` on canonical `cross_edges` →
+    `input_ports`, `output_ports`.
+-7. Build the submodel's internal graph dict: `{"nodes": [child node dumps],
+-   "edges": [internal edge dumps], "submodel_name": sm_name,
+-   "submodel_description": "", "source_file": sm_file}`.
++7. Build the submodel's canonical internal graph dict: `{"nodes": [child node
++   dumps], "edges": [internal edge dumps], "pipeline_name": sm_name,
++   "pipeline_description": "", "preamble": "", "preserved_blocks": [],
++   "source_file": sm_file}`.
+ 8. `build_submodel_placeholder(...)` → `sm_node`; `rewire_edges(cross_edges,
+    sm_node.id, child_node_ids)` → `rewired_cross`.
+ 9. Assemble the new parent graph: `nodes = parent_nodes + [sm_node]`, `edges =
+@@ -163,46 +170,46 @@ the stricter prefix/membership validation gate.
+ ### `POST /api/submodel/create` (`create_submodel`)
+ 
+ Acquires `save_lock`, runs the body in a threadpool:
+-1. `SavePipelineService._validate_unique_sanitized_names(body.graph)` — fails
+-   loud on name collisions in the *pre-transform* graph.
+-2. Compute `sm_filename = f"{_sanitize_func_name(body.name)}.py"`; if
++1. Compute `sm_filename = f"{_sanitize_func_name(body.name)}.py"`; if
+    `is_windows_reserved_filename(sm_filename)`, raise `HTTPException(400,
+    <specific message>)` before touching `create_submodel_graph` at all.
+-3. Call `create_submodel_graph(body.graph, body.node_ids, body.name)`; a
++2. Call `create_submodel_graph(body.graph, body.node_ids, body.name)`; a
+    `ValueError` here is logged (`submodel_create_invalid`, with name and
+    node count, `exc_info=True`) and re-raised as `HTTPException(400,
+    _INTERNAL_ERROR_DETAIL)` — the specific validation message is never sent
+    to the client.
+-4. Require `body.source_file` truthy, else `HTTPException(400, ...)`.
+-5. `SavePipelineService(project_root=Path.cwd(),
++3. Require `body.source_file` truthy, else `HTTPException(400, ...)`.
++4. `SavePipelineService(project_root=Path.cwd(),
+    pipeline_root=pipeline_dir()).save_graph_transactionally(graph=result.graph,
+    name=body.pipeline_name, description=body.pipeline_description or "",
+    preamble=body.preamble, source_file=body.source_file)` — this is where
+-   `graph_to_code_multi` actually runs and both the parent `.py` and the new
+-   `modules/<name>.py` are written, under the save transaction's allowlist and
+-   rollback contract (see server-api).
+-6. Return `CreateSubmodelResponse(status="ok", submodel_file=result.sm_file,
++   sanitized-name uniqueness is validated, `graph_to_code_multi` runs, and
++   both the parent `.py` and new `modules/<name>.py` are written under the
++   save transaction's allowlist and rollback contract (see server-api).
++5. Return `CreateSubmodelResponse(status="ok", submodel_file=result.sm_file,
+    parent_file=body.source_file, graph=result.graph)`.
+ 
+ ### `GET /api/submodel/{name}` (`get_submodel` → `_get_submodel_blocking`)
+ 
+ Acquires `save_lock`, runs in a threadpool:
+-1. `project_root = Path.cwd()`; `active_pipeline_dir = pipeline_dir()`;
+-   `resolve_submodel_by_name(name, ...)` → `(sm_path, config_base)`.
+-2. Re-resolve `project_root` and check `sm_path.is_relative_to(project_root)`
+-   → `HTTPException(403)` if not (see high-level spec's NOTE — this branch is
+-   unreachable given step 1's guarantees and the single-path-segment `{name}`
+-   constraint).
+-3. `sm_path.is_file()` → else `HTTPException(404, f"Submodel '{name}' not
++1. Validate `name` before pipeline discovery; map
++   `MalformedSubmodelPathError` to `400`.
++2. Iterate `discover_pipelines()` in configured-first order. Parse each
++   pipeline and, when its `submodels` metadata contains `name`, resolve that
++   entry's recorded `"file"` relative to the pipeline file's parent.
++3. If no discovered pipeline records the name, use the
++   `modules/<name>.py` convention relative to `pipeline_dir()`.
++   `SubmodelPathOutsideProjectError` maps to `403`.
++4. `sm_path.is_file()` → else `HTTPException(404, f"Submodel '{name}' not
+    found")`.
+-4. `parse_submodel_file(sm_path, _base_dir=config_base)` → `sm_graph`.
+-5. `load_sidecar_positions(sm_path)` → apply any stored `(x, y)` position
++5. `parse_submodel_file(sm_path, _base_dir=config_base)` → `sm_graph`.
++6. `load_sidecar_positions(sm_path)` → apply any stored `(x, y)` position
+    onto matching node ids via `model_copy`. `sm_graph.nodes` is rebuilt via
+-   `model_copy` whenever the submodel has at least one node (i.e.
+-   unconditionally, given the 2-node minimum) — the `if updated_nodes:`
+-   guard only skips the rebuild for a degenerate empty node list, not for
+-   "no sidecar positions found".
+-6. Return `SubmodelGraphResponse(status="ok", submodel_name=
++   `model_copy` whenever the parsed submodel has at least one node; the
++   selection-created two-node minimum does not constrain hand-authored parsed
++   submodels. The `if updated_nodes:` guard skips only an empty node list,
++   not the "no sidecar positions found" case.
++7. Return `SubmodelGraphResponse(status="ok", submodel_name=
+    sm_graph.pipeline_name or name, graph=sm_graph)`.
+ 
+ ### `POST /api/submodel/dissolve` (`dissolve_submodel`)
+@@ -210,19 +217,22 @@ Acquires `save_lock`, runs in a threadpool:
+ Acquires `save_lock`, runs the body in a threadpool:
+ 1. Look up `body.submodel_name` in `body.graph.submodels or {}` → `404` if
+    absent.
+-2. `sm_file = submodels[sm_name].get("file", "")`.
+-3. `flatten_graph(body.graph, target_name=sm_name)` → `flat` — only the
+-   targeted submodel is dissolved, any other submodels in the graph are left
+-   as placeholders.
+-4. `SavePipelineService._validate_unique_sanitized_names(flat)` — validated
+-   **post**-inline, since inlining can itself introduce a name collision with
+-   an existing parent node.
+-5. Require `body.source_file` truthy, else `HTTPException(400, ...)`.
+-6. `SavePipelineService(...).save_graph_transactionally(graph=flat, ...,
+-   delete_module_files=[sm_file] if sm_file else ())` — the submodel `.py`
+-   file is deleted as part of the same transaction that rewrites the parent
+-   file; see server-api for the rollback contract if the delete fails after
+-   the rewrite (or vice versa).
++2. Require `body.source_file` and a non-empty string `"file"` in the selected
++   metadata; malformed values return `400`.
++3. Resolve the recorded file relative to `pipeline_dir()`, mapping typed
++   malformed/outside-project path errors to `400`/`403`, and return `404` if
++   the file is absent.
++4. `parse_submodel_file(sm_path, _base_dir=config_base)` and replace only the
++   selected metadata entry's `"graph"` with that authoritative disk graph.
++   Copy `body.preamble` onto the parent graph before flattening.
++5. `flatten_graph(authoritative_graph, target_name=sm_name)` → `flat`. A
++   stale boundary referencing a child no longer present on disk raises
++   `ParseError`; any other submodels remain placeholders. Child preamble and
++   preserved blocks are now part of `flat`.
++6. `SavePipelineService(...).save_graph_transactionally(graph=flat,
++   preamble=flat.preamble, ..., delete_module_files=[sm_file])` validates the
++   final graph, rewrites the parent, and deletes the authoritative child
++   through the same transaction.
+ 7. Return `DissolveSubmodelResponse(status="ok", graph=flat)`.
+ 
+ ## Edge cases and invariants
+@@ -238,23 +248,24 @@ Acquires `save_lock`, runs the body in a threadpool:
+ - **A child node can be both an input port and an output port** if it has
+   both an inbound and an outbound cross-boundary edge (`classify_ports`
+   appends to both lists independently).
+-- **Cross-submodel edge rewiring is order-independent for handle
+-  preservation but not for edge identity.** `rewire_edges` is called once per
++- **Cross-submodel edge rewiring is order-independent for handles and edge
++  identity.** `rewire_edges` is called once per
+   submodel being processed; a `child-of-A → child-of-B` edge is rewired twice
+   across two separate `rewire_edges` calls (once when A is processed, once
+   when B is), and each pass must not clobber the opposite side's
+   already-set handle to `None` — this is why `sourceHandle`/`targetHandle`
+   are explicitly *preserved from the input edge*, not always cleared, on the
+-  side that isn't being rewired in that pass.
++  side that isn't being rewired in that pass. Boundary ids include both
++  authored ports, and targeted flatten regenerates ids from every visible and
++  still-hidden port, so one-sided flattening cannot collapse distinct edges.
+ - **Flatten is identity-preserving on no-op calls.** With no submodel metadata, an empty metadata
+   dict, or a `target_name` absent from the metadata, `flatten_graph` returns the exact input object
+   (`is`, not merely equality).
+-- **Flatten is permissive on malformed boundary handles.** It gates on the endpoint being a
+-  selected placeholder and the relevant handle being truthy, but does not check `in__`/`out__` or
+-  that the derived id belongs to the submodel. A wrong-prefix handle becomes an endpoint id
+-  verbatim; a missing handle leaves the placeholder reference in place and that edge is silently
+-  discarded. Internal and rewired edges are then deduplicated by rendered endpoint/handle fields
+-  plus any still-hidden authored ports.
++- **Flatten rejects malformed boundary handles before dropping anything.**
++  The handle must use `in__`/`out__`, name a child in the selected embedded
++  graph, and be present whenever an endpoint is a selected placeholder.
++  Violations raise contextual `ParseError`; exact six-field edges alone are
++  deduplicated after valid rewiring.
+ - **Inbound edge-join roles survive flattening.** An `in__<child>` boundary targeting an
+   edge-join child recovers the base/join `targetHandle` through
+   `build_edge_join_boundary_target_roles`; ordinary inbound boundaries clear the synthetic handle
+@@ -282,19 +293,20 @@ Acquires `save_lock`, runs the body in a threadpool:
+ | Missing `source_file` on create or dissolve | `HTTPException(400, "source_file is required...")` | `create_submodel` / `dissolve_submodel`. |
+ | Dissolve target not in `graph.submodels` | `HTTPException(404, f"Submodel '{sm_name}' not found in graph")` | `dissolve_submodel`. |
+ | Drill-down target `.py` file missing | `HTTPException(404, f"Submodel '{name}' not found")` | `_get_submodel_blocking`. |
+-| Drill-down path escapes project root | `HTTPException(403, ...)` | `_get_submodel_blocking` — see the NOTE in the high-level spec; not reachable via this route in practice. |
+-| `resolve_submodel_reference` candidate path escapes project root | `ValueError` | `_submodel_paths.py` — propagates uncaught from `_get_submodel_blocking` if ever reached (no route-level catch); reachable only from callers that pass a `rel_path` containing path separators, which this route's single-segment `{name}` parameter cannot produce. |
+-| Malformed/missing boundary handle passed directly to `flatten_graph` | No dedicated exception | Wrong-prefix non-empty handles are consumed as endpoint ids; edges still naming a removed placeholder are dropped. Codegen validates persisted graphs more strictly. |
+-| Any write step in the underlying save transaction fails (config write, sidecar write, module delete) | Rolled back by `SavePipelineService`, re-raised | Surfaces as `HTTPException(500, ...)` from `save_graph_transactionally`; see [server-api](../server-api/high-level.md) low-level spec for the transaction/rollback mechanics. |
++| Empty/NUL-containing reference or route name containing `/` or `\` | `MalformedSubmodelPathError` → `HTTPException(400)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
++| Recorded reference resolves outside project root | `SubmodelPathOutsideProjectError` → `HTTPException(403)` | `_submodel_paths.py`, mapped by drill-down/dissolve. |
++| Malformed/missing boundary handle or unknown child passed to `flatten_graph` | `ParseError` with edge/submodel context | `_flatten._boundary_child_id`; dissolve stops before save/delete. |
++| Any write step in the underlying save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | Surfaces as `HTTPException(500, ...)`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
+ 
+ ## Testing
+ 
+ Tests live in `tests/test_submodel_graph.py`, `tests/test_submodel_ops.py`,
+-`tests/test_submodel_routes.py`, and `tests/test_submodel_outport_invariant.py`,
+-plus `tests/test_flatten.py`, with related parser coverage in
+-`tests/test_parser_submodels.py` for the neighbouring expression-parsing component.
++`tests/test_submodel_routes.py`, `tests/test_submodel_outport_invariant.py`,
++`tests/test_submodel.py`, `tests/test_flatten.py`, and
++`tests/test_flattening_dedup.py`, with related parser coverage in
++`tests/test_parser_submodels.py`.
+ 
+-- `test_submodel_graph.py` — pure unit tests of the three
++- `tests/test_submodel_graph.py` — pure unit tests of the three
+   `_submodel_graph.py` functions in isolation: placeholder construction
+   (id/type/config shape, description passthrough including special
+   characters, empty ports, empty child list); `classify_ports` (basic
+@@ -304,10 +316,11 @@ plus `tests/test_flatten.py`, with related parser coverage in
+   rewire, mixed edge sets, deterministic edge ids, multiple inbound/outbound
+   edges to/from the same child, and the cross-submodel two-pass handle
+   preservation case).
+-- `test_submodel_ops.py` — unit tests of `create_submodel_graph` against
++- `tests/test_submodel_ops.py` — unit tests of `create_submodel_graph` against
+   hand-built graphs (via `tests/conftest.py::make_graph`): basic extraction,
+   edge rewiring for both inbound and outbound boundaries, submodel metadata
+-  population (`childNodeIds`, ports, internal `graph` dict), preservation of
++  population (canonical child name/description, preamble, preserved blocks,
++  `childNodeIds`, ports, and internal `graph` dict), preservation of
+   pre-existing submodel entries when adding a new one, name sanitisation
+   (`_sanitize_func_name`, case-preserving), the too-few-nodes and
+   empty-selection `ValueError`s (including the nonexistent-id and
+@@ -316,25 +329,20 @@ plus `tests/test_flatten.py`, with related parser coverage in
+   no-cross-edges case, and all three nesting-rejection shapes (two submodel
+   nodes selected, one submodel node selected, one submodel node mixed with a
+   regular node).
+-- `test_submodel_routes.py` — full FastAPI `TestClient` coverage of all three
++- `tests/test_submodel_routes.py` — full FastAPI `TestClient` coverage of all three
+   endpoints against an isolated `tmp_path` cwd, with `create_submodel_graph`
+-  and `codegen.graph_to_code_multi`/`graph_to_code` mocked to isolate the
+-  route/transaction layer from the graph-transform and codegen layers:
+-  invalid node ids and too-few-nodes → `400`; happy-path create including
+-  `pipeline_description` forwarding to codegen; the same output-path
+-  allowlist and rollback-on-disallowed-path behaviour the manual save
+-  endpoint has (`test_create_rejects_unallowlisted_codegen_path_and_rolls_back`);
+-  writing modules/configs beside a configured nested pipeline root rather
+-  than the project root; drill-down not-found, dotted/traversal-looking names
+-  resolving safely to a plain `404` rather than an error, and configured-root
+-  module resolution matching the parser; dissolve not-found, missing `source_file`, happy path
+-  (including `pipeline_description` forwarding), submodel file deletion,
+-  configured-root deletion targeting, and two explicit
++  and selected codegen calls mocked where the test isolates the
++  route/transaction layer: invalid selections → `400`; create metadata
++  forwarding; output allowlisting and rollback; nested pipeline roots;
++  drill-down through a recorded custom child path; malformed encoded
++  backslashes → `400`; configured-root fallback; dissolve not-found and
++  missing-source failures; authoritative reparse of the child file from disk;
++  submodel deletion; configured-root deletion targeting; and two explicit
+   rollback tests (`test_dissolve_sidecar_failure_rolls_back_main_file`,
+   `test_dissolve_delete_failure_rolls_back_main_file`) that force a mid-
+   transaction failure and assert the parent file's original content and the
+   submodel file's existence are both restored.
+-- `test_submodel_outport_invariant.py` — a single named contract test file
++- `tests/test_submodel_outport_invariant.py` — a single named contract test file
+   (not organised by function, but by invariant) pinning that the `out__`
+   boundary handle produced by `rewire_edges` is the exact inverse of what
+   `flatten_graph` strips, and that codegen's disambiguation between a true
+@@ -344,18 +352,21 @@ plus `tests/test_flatten.py`, with related parser coverage in
+   exists specifically because the individual legs (production, flatten,
+   codegen) are each covered piecemeal in their own component's test file, and
+   none of those files alone pins the full produce → consume round trip.
+-- `test_flatten.py` — direct unit coverage for identity returns, flatten-all and targeted
+-  flattening, child node/edge dict-vs-model forms, internal-edge preservation, boundary rewiring
+-  and handle clearing, silent drop of a still-placeholder edge, edge deduplication, empty/missing
+-  child graph metadata, and preservation of unrelated `PipelineGraph` metadata.
+-
+-Known coverage gap: `tests/test_flatten.py` pins silent dropping for a missing handle, but does not
+-directly pin the wrong-prefix non-empty `removeprefix` case or an unknown derived child id. The
+-adjacent `src/haute/_parser_submodels.py` remains owned and covered by expression-parsing.
+-
+-## Approved change contract — canonical-only submodel identity
+-
+-Under [ROAD-CANON-01](../../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+-submodel paths, boundary-edge identifiers, and sidecar lookup keys use only their current
+-project-relative, port-aware representations. There is no fallback to a project-root path, bare
+-sanitised sidecar key, unported edge tuple, or historical edge id.
++- `tests/test_submodel.py` — public flatten/codegen integration, including
++  per-child source generation, child preamble and preserved-block round trips,
++  compilable parent output, parsing, and request/response model contracts.
++- `tests/test_flatten.py` — direct unit coverage for identity returns,
++  flatten-all and targeted flattening, child node/edge dict-vs-model forms,
++  internal-edge preservation, strict boundary-handle and child-id validation,
++  port-complete rewritten edge ids, edge deduplication, empty/missing child
++  graph metadata, and selected-child metadata merging.
++- `tests/test_flattening_dedup.py` — parity between parser-driven flattening
++  and the shared `flatten_graph` implementation, including single-node,
++  multi-node, chained, nested, and hierarchical-then-flat cases.
++- `tests/test_parser_submodels.py` — expression parsing, recursive loading,
++  canonical child metadata, cross-boundary port reconstruction, and
++  hierarchical/flat parser behaviour.
++
++Canonical-only identities are pinned throughout these suites: submodel paths
++are project-relative, boundary edge ids include port identity, and recorded
++sidecar paths take precedence over convention-based lookup.
+diff --git a/src/haute/_ast_helpers.py b/src/haute/_ast_helpers.py
+index 99040c1c..fe7134e9 100644
+--- a/src/haute/_ast_helpers.py
++++ b/src/haute/_ast_helpers.py
+@@ -480,14 +480,54 @@ def _extract_submodel_meta(tree: ast.Module) -> tuple[str, str]:
+ 
+ _RE_POLARS_IMPORT = re.compile(r"import\s+polars(?:\s+as\s+\w+)?\s*$")
+ _RE_HAUTE_IMPORT = re.compile(r"import\s+haute(?:\s+as\s+(\w+))?\s*$")
+-_RE_HAUTE_PIPELINE_IMPORT = re.compile(r"from\s+haute\s+import\s+Pipeline(?:\s+as\s+(\w+))?\s*$")
++_PRESERVE_START = "# haute:preserve-start"
++_PRESERVE_END = "# haute:preserve-end"
+ 
+ 
+-def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
++def _module_preserve_spans(lines: list[str]) -> list[tuple[int, int]]:
++    """Return completed, column-zero preserve spans as inclusive line indexes."""
++    spans: list[tuple[int, int]] = []
++    index = 0
++    while index < len(lines):
++        if lines[index].rstrip() != _PRESERVE_START:
++            index += 1
++            continue
++        end = index + 1
++        while end < len(lines) and lines[end].rstrip() != _PRESERVE_END:
++            end += 1
++        if end < len(lines):
++            spans.append((index, end))
++            index = end + 1
++        else:
++            index += 1
++    return spans
++
++
++def _slice_without_module_preserve_spans(
++    lines: list[str],
++    start: int,
++    stop: int,
++) -> list[str]:
++    """Slice source lines while excluding completed module preserve blocks."""
++    excluded = {
++        line_index
++        for span_start, span_end in _module_preserve_spans(lines)
++        for line_index in range(span_start, span_end + 1)
++    }
++    return [lines[index] for index in range(start, stop) if index not in excluded]
++
++
++def _extract_preamble_from_ast(
++    source: str,
++    tree: ast.Module,
++    *,
++    receiver: str,
++    constructor_name: str,
++) -> str:
+     """Extract a valid module's preamble from AST source boundaries."""
+     lines = source.splitlines()
+     haute_module_aliases: set[str] = {"haute"}
+-    pipeline_constructor_aliases: set[str] = set()
++    constructor_aliases: set[str] = set()
+     last_standard_line = 0
+ 
+     for statement in tree.body:
+@@ -504,9 +544,9 @@ def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
+         elif isinstance(statement, ast.ImportFrom) and statement.module == "haute":
+             imported_names = {alias.name for alias in statement.names}
+             for alias in statement.names:
+-                if alias.name == "Pipeline":
+-                    pipeline_constructor_aliases.add(alias.asname or alias.name)
+-            if imported_names and imported_names <= {"Pipeline"}:
++                if alias.name == constructor_name:
++                    constructor_aliases.add(alias.asname or alias.name)
++            if imported_names and imported_names <= {constructor_name}:
+                 last_standard_line = max(
+                     last_standard_line,
+                     statement.end_lineno or statement.lineno,
+@@ -515,50 +555,57 @@ def _extract_preamble_from_ast(source: str, tree: ast.Module) -> str:
+     if last_standard_line == 0:
+         return ""
+ 
+-    def is_pipeline_constructor(expr: ast.expr) -> bool:
++    def is_constructor(expr: ast.expr) -> bool:
+         if not isinstance(expr, ast.Call):
+             return False
+         func = expr.func
+         if isinstance(func, ast.Name):
+-            return func.id in pipeline_constructor_aliases
++            return func.id in constructor_aliases
+         return (
+             isinstance(func, ast.Attribute)
+-            and func.attr == "Pipeline"
++            and func.attr == constructor_name
+             and isinstance(func.value, ast.Name)
+             and func.value.id in haute_module_aliases
+         )
+ 
+-    pipeline_start_line = len(lines) + 1
++    generated_start_line = len(lines) + 1
++    is_node_decorator = (
++        _is_pipeline_node_decorator if receiver == "pipeline" else _is_submodel_node_decorator
++    )
+     for statement in tree.body:
+         value: ast.expr | None = None
+-        target_is_pipeline = False
++        target_is_receiver = False
+         if isinstance(statement, ast.Assign):
+-            target_is_pipeline = any(
+-                isinstance(target, ast.Name) and target.id == "pipeline"
++            target_is_receiver = any(
++                isinstance(target, ast.Name) and target.id == receiver
+                 for target in statement.targets
+             )
+             value = statement.value
+         elif isinstance(statement, ast.AnnAssign):
+-            target_is_pipeline = (
+-                isinstance(statement.target, ast.Name) and statement.target.id == "pipeline"
++            target_is_receiver = (
++                isinstance(statement.target, ast.Name) and statement.target.id == receiver
+             )
+             value = statement.value
+ 
+-        if target_is_pipeline and value is not None and is_pipeline_constructor(value):
+-            pipeline_start_line = min(pipeline_start_line, statement.lineno)
++        if target_is_receiver and value is not None and is_constructor(value):
++            generated_start_line = min(generated_start_line, statement.lineno)
+             continue
+ 
+         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+-            _is_pipeline_node_decorator(decorator) for decorator in statement.decorator_list
++            is_node_decorator(decorator) for decorator in statement.decorator_list
+         ):
+             decorator_lines = [
+                 decorator.lineno
+                 for decorator in statement.decorator_list
+-                if _is_pipeline_node_decorator(decorator)
++                if is_node_decorator(decorator)
+             ]
+-            pipeline_start_line = min(pipeline_start_line, *decorator_lines)
++            generated_start_line = min(generated_start_line, *decorator_lines)
+ 
+-    preamble_lines = lines[last_standard_line : pipeline_start_line - 1]
++    preamble_lines = _slice_without_module_preserve_spans(
++        lines,
++        last_standard_line,
++        generated_start_line - 1,
++    )
+     while preamble_lines and not preamble_lines[0].strip():
+         preamble_lines.pop(0)
+     while preamble_lines and not preamble_lines[-1].strip():
+@@ -566,21 +613,43 @@ def is_pipeline_constructor(expr: ast.expr) -> bool:
+     return "\n".join(preamble_lines)
+ 
+ 
+-def _extract_preamble(source: str, *, tree: ast.Module | None = None) -> str:
++def _extract_preamble(
++    source: str,
++    *,
++    tree: ast.Module | None = None,
++    receiver: str = "pipeline",
++    constructor_name: str = "Pipeline",
++) -> str:
+     """Extract user preamble with AST boundaries when the module is valid.
+ 
+     The regex fallback calls this on an invalid whole file, so a conservative
+     textual implementation remains available for that path.
+     """
++    if receiver not in {"pipeline", "submodel"}:
++        raise ValueError(f"Unsupported generated-code receiver: {receiver!r}")
+     if tree is None:
+         try:
+             tree = ast.parse(source)
+         except SyntaxError:
+-            return _extract_preamble_textual(source)
+-    return _extract_preamble_from_ast(source, tree)
++            return _extract_preamble_textual(
++                source,
++                receiver=receiver,
++                constructor_name=constructor_name,
++            )
++    return _extract_preamble_from_ast(
++        source,
++        tree,
++        receiver=receiver,
++        constructor_name=constructor_name,
++    )
+ 
+ 
+-def _extract_preamble_textual(source: str) -> str:
++def _extract_preamble_textual(
++    source: str,
++    *,
++    receiver: str,
++    constructor_name: str,
++) -> str:
+     """Extract user-defined preamble between standard imports and pipeline code.
+ 
+     The preamble is any code that appears after the standard imports
+@@ -597,18 +666,22 @@ def _extract_preamble_textual(source: str) -> str:
+     # Find the end of standard imports region, capturing either supported
+     # spelling of the Pipeline constructor.
+     last_standard_idx = -1
+-    pipeline_constructor = "haute.Pipeline"
++    constructor = f"haute.{constructor_name}"
+     for i, line in enumerate(lines):
+         stripped = line.strip()
+         haute_match = _RE_HAUTE_IMPORT.match(stripped)
+         if haute_match is not None:
+             haute_alias = haute_match.group(1) or "haute"
+-            pipeline_constructor = f"{haute_alias}.Pipeline"
++            constructor = f"{haute_alias}.{constructor_name}"
+             last_standard_idx = i
+             continue
+-        pipeline_import_match = _RE_HAUTE_PIPELINE_IMPORT.match(stripped)
+-        if pipeline_import_match is not None:
+-            pipeline_constructor = pipeline_import_match.group(1) or "Pipeline"
++        constructor_import_match = re.fullmatch(
++            rf"from\s+haute\s+import\s+{re.escape(constructor_name)}"
++            r"(?:\s+as\s+(\w+))?\s*",
++            stripped,
++        )
++        if constructor_import_match is not None:
++            constructor = constructor_import_match.group(1) or constructor_name
+             last_standard_idx = i
+             continue
+         if _RE_POLARS_IMPORT.match(stripped):
+@@ -618,24 +691,31 @@ def _extract_preamble_textual(source: str) -> str:
+         return ""
+ 
+     # Find the start of pipeline code (pipeline = ... or @pipeline.<type>)
+-    pipeline_start_idx = len(lines)
++    generated_start_idx = len(lines)
+     for i in range(last_standard_idx + 1, len(lines)):
+         stripped = lines[i].strip()
+-        starts_pipeline = stripped.startswith("pipeline =") or stripped.startswith("pipeline=")
+-        is_pipeline_def = starts_pipeline and pipeline_constructor in stripped
+-        if is_pipeline_def:
+-            pipeline_start_idx = i
++        starts_receiver = stripped.startswith(f"{receiver} =") or stripped.startswith(
++            f"{receiver}="
++        )
++        is_constructor = starts_receiver and constructor in stripped
++        if is_constructor:
++            generated_start_idx = i
+             break
+-        if stripped.startswith("@pipeline."):
+-            # Check if the decorator name after @pipeline. is a known type
+-            dot_rest = stripped[len("@pipeline.") :]
++        decorator_prefix = f"@{receiver}."
++        if stripped.startswith(decorator_prefix):
++            # Check if the decorator name after the receiver is a known type
++            dot_rest = stripped[len(decorator_prefix) :]
+             dec_name = dot_rest.split("(")[0].split()[0] if dot_rest else ""
+             if dec_name in DECORATOR_TO_NODE_TYPE:
+-                pipeline_start_idx = i
++                generated_start_idx = i
+                 break
+ 
+     # Extract lines between standard imports and pipeline code
+-    preamble_lines = lines[last_standard_idx + 1 : pipeline_start_idx]
++    preamble_lines = _slice_without_module_preserve_spans(
++        lines,
++        last_standard_idx + 1,
++        generated_start_idx,
++    )
+ 
+     # Strip leading/trailing blank lines
+     while preamble_lines and not preamble_lines[0].strip():
+@@ -651,26 +731,24 @@ def _extract_preamble_textual(source: str) -> str:
+ # ---------------------------------------------------------------------------
+ 
+ 
+-_PRESERVE_START = "# haute:preserve-start"
+-_PRESERVE_END = "# haute:preserve-end"
+-
+-
+ def _extract_preserved_blocks(source: str) -> list[str]:
+     """Extract code between ``# haute:preserve-start`` / ``# haute:preserve-end`` markers.
+ 
+-    Returns a list of strings, one per matched block, with the marker
+-    lines themselves stripped.  Blocks are returned in source order.
+-    Unmatched start markers (no corresponding end) are silently ignored.
++    Only column-zero marker pairs are module-owned preserved blocks. Indented
++    markers remain part of the decorated function or other owning construct,
++    preventing codegen from relocating them to column zero. Returns one
++    marker-free string per completed module block, in source order. Unmatched
++    starts are ignored.
+     """
+     blocks: list[str] = []
+     lines = source.splitlines()
+     i = 0
+     while i < len(lines):
+-        if lines[i].strip() == _PRESERVE_START:
++        if lines[i].rstrip() == _PRESERVE_START:
+             # Collect lines until the matching end marker
+             block_lines: list[str] = []
+             i += 1
+-            while i < len(lines) and lines[i].strip() != _PRESERVE_END:
++            while i < len(lines) and lines[i].rstrip() != _PRESERVE_END:
+                 block_lines.append(lines[i])
+                 i += 1
+             if i < len(lines):
+diff --git a/src/haute/_codegen_builders.py b/src/haute/_codegen_builders.py
+index 8e3684b2..b0274779 100644
+--- a/src/haute/_codegen_builders.py
++++ b/src/haute/_codegen_builders.py
+@@ -85,27 +85,6 @@ def _safe_path(value: str) -> str:
+     return _safe_str(value.replace("\\", "/"))
+ 
+ 
+-def _is_absolute_path(path: str) -> bool:
+-    """Check whether *path* looks absolute (Unix or Windows)."""
+-    normalized = path.replace("\\", "/")
+-    if normalized.startswith("/"):
+-        return True
+-    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
+-        return True
+-    return False
+-
+-
+-def _portable_path_expr(path: str) -> str:
+-    """Return a Python expression that resolves *path* relative to ``__file__``.
+-
+-    Absolute paths are left as-is (returned as a quoted string literal).
+-    Relative paths become ``Path(__file__).parent / "rel/path"``.
+-    """
+-    if _is_absolute_path(path):
+-        return _safe_path(path)
+-    return f"Path(__file__).parent / {_safe_path(path)}"
+-
+-
+ # ---------------------------------------------------------------------------
+ # Common helpers shared across builders.
+ # ---------------------------------------------------------------------------
+@@ -253,14 +232,14 @@ def {func_name}({params}) -> pl.LazyFrame:
+ 
+ def _retained_api_input_template(config_path: str) -> str:
+     """Emit an API input whose loader is entirely driven by its sidecar."""
+-    return '''\\
++    return f'''\
+ @pipeline.api_input()
+-def {func_name}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
+-    """{description}"""
++def {{func_name}}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
++    """{{description}}"""
+     from pathlib import Path
+     from haute.graph_utils import resolve_api_input_from_config
+     return resolve_api_input_from_config(
+-        {config_path_repr}, base_dir=Path(__file__).resolve().parent
++        {_safe_path(config_path)}, base_dir=Path(__file__).resolve().parent
+     )
+ '''
+ 
+@@ -422,7 +401,6 @@ def _gen_api_input(node: GraphNode, source_names: list[str]) -> str:
+     return template.format(
+         func_name=func_name,
+         description=description,
+-        config_path_repr=_safe_path(cfg_path),
+     )
+ 
+ 
+@@ -1037,8 +1015,6 @@ def _gen_submodel_placeholder_unreachable(
+     "_build_params",
+     "_common_node_fields",
+     "_first_source",
+-    "_is_absolute_path",
+-    "_portable_path_expr",
+     "_safe_path",
+     "_safe_str",
+     "_sanitize_description",
+diff --git a/src/haute/_flatten.py b/src/haute/_flatten.py
+index 702c8e9c..2abc0755 100644
+--- a/src/haute/_flatten.py
++++ b/src/haute/_flatten.py
+@@ -6,10 +6,55 @@
+ from haute._graph_utils import _edge_id
+ from haute._logging import get_logger
+ from haute._types import GraphEdge, GraphNode, PipelineGraph
++from haute.errors import ParseError
+ 
+ logger = get_logger(component="flatten")
+ 
+ 
++def _embedded_graph(sm_meta: dict) -> PipelineGraph:
++    raw_graph = sm_meta.get("graph", {})
++    if isinstance(raw_graph, PipelineGraph):
++        return raw_graph
++    return PipelineGraph.model_validate(raw_graph)
++
++
++def _boundary_child_id(
++    edge: GraphEdge,
++    *,
++    handle: str | None,
++    prefix: str,
++    endpoint: str,
++    submodel_name: str,
++    child_ids: set[str],
++) -> str:
++    """Resolve and validate one targeted submodel boundary handle."""
++    if not handle or not handle.startswith(prefix):
++        raise ParseError(
++            "Submodel boundary edge has a missing or malformed handle.",
++            edge_id=edge.id,
++            endpoint=endpoint,
++            handle=handle,
++            expected=f"{prefix}<child_id>",
++            submodel=submodel_name,
++            source=edge.source,
++            target=edge.target,
++        )
++    child_id = handle[len(prefix) :]
++    if not child_id or child_id not in child_ids:
++        raise ParseError(
++            "Submodel boundary edge references a child node that does not exist.",
++            edge_id=edge.id,
++            endpoint=endpoint,
++            handle=handle,
++            child_id=child_id,
++            submodel=submodel_name,
++            known_children=sorted(child_ids),
++            source=edge.source,
++            target=edge.target,
++        )
++    return child_id
++
++
+ def flatten_graph(
+     graph: PipelineGraph,
+     target_name: str | None = None,
+@@ -32,6 +77,11 @@ def flatten_graph(
+         submodels,
+         names_to_flatten,
+     )
++    embedded_graphs = {name: _embedded_graph(submodels[name]) for name in names_to_flatten}
++    child_ids_by_placeholder = {
++        f"submodel__{name}": {node.id for node in embedded_graph.nodes}
++        for name, embedded_graph in embedded_graphs.items()
++    }
+ 
+     nodes: list[GraphNode] = list(graph.nodes)
+     edges: list[GraphEdge] = list(graph.edges)
+@@ -41,14 +91,12 @@ def flatten_graph(
+     nodes = [n for n in nodes if n.id not in submodel_node_ids]
+ 
+     # Inline child nodes and internal edges from each targeted submodel
+-    for _sm_name, sm_meta in submodels.items():
+-        if _sm_name not in names_to_flatten:
++    for sm_name in submodels:
++        if sm_name not in names_to_flatten:
+             continue
+-        sm_graph = sm_meta.get("graph", {})
+-        for nd in sm_graph.get("nodes", []):
+-            nodes.append(GraphNode.model_validate(nd) if isinstance(nd, dict) else nd)
+-        for ed in sm_graph.get("edges", []):
+-            edges.append(GraphEdge.model_validate(ed) if isinstance(ed, dict) else ed)
++        embedded_graph = embedded_graphs[sm_name]
++        nodes.extend(embedded_graph.nodes)
++        edges.extend(embedded_graph.edges)
+ 
+     # Rewire boundary edges: submodel handles → actual child nodes
+     rewired: list[GraphEdge] = []
+@@ -56,39 +104,63 @@ def flatten_graph(
+         src = edge.source
+         tgt = edge.target
+         eid = edge.id
+-        sh = edge.sourceHandle or ""
+-        th = edge.targetHandle or ""
+         new_sh = edge.sourceHandle
+         new_th = edge.targetHandle
+         new_source_port = edge.sourcePort
+         new_target_port = edge.targetPort
+         boundary_rewired = False
+ 
+-        if src in submodel_node_ids and sh:
++        if src in submodel_node_ids:
+             # e.g. sourceHandle="out__frequency_model" → source="frequency_model"
+-            src = sh.removeprefix("out__")
+-            eid = f"e_{src}_{tgt}"
++            sm_name = src.removeprefix("submodel__")
++            src = _boundary_child_id(
++                edge,
++                handle=edge.sourceHandle,
++                prefix="out__",
++                endpoint="source",
++                submodel_name=sm_name,
++                child_ids=child_ids_by_placeholder[f"submodel__{sm_name}"],
++            )
+             new_sh = edge.sourcePort
+             new_source_port = None
+             boundary_rewired = True
+ 
+-        if tgt in submodel_node_ids and th:
++        if tgt in submodel_node_ids:
+             # e.g. targetHandle="in__frequency_model" → target="frequency_model"
+             original_tgt = tgt
+-            tgt = th.removeprefix("in__")
+-            eid = f"e_{src}_{tgt}"
++            sm_name = tgt.removeprefix("submodel__")
++            tgt = _boundary_child_id(
++                edge,
++                handle=edge.targetHandle,
++                prefix="in__",
++                endpoint="target",
++                submodel_name=sm_name,
++                child_ids=child_ids_by_placeholder[f"submodel__{sm_name}"],
++            )
+             new_th = edge.targetPort
+             if new_th is None:
+                 new_th = edge_join_boundary_target_roles.get((original_tgt, tgt, src))
+             new_target_port = None
+             boundary_rewired = True
+ 
+-        # Skip edges that still reference a submodel node (shouldn't happen)
++        # Refuse any edge that still references a targeted placeholder.
+         if src in submodel_node_ids or tgt in submodel_node_ids:
+-            continue
++            raise ParseError(
++                "Submodel boundary edge could not be flattened.",
++                edge_id=edge.id,
++                source=src,
++                target=tgt,
++            )
+ 
+-        if boundary_rewired and new_source_port is None and new_target_port is None:
+-            eid = _edge_id(src, tgt, new_sh, new_th)
++        if boundary_rewired:
++            eid = _edge_id(
++                src,
++                tgt,
++                new_sh,
++                new_th,
++                hidden_source_port=new_source_port,
++                hidden_target_port=new_target_port,
++            )
+ 
+         rewired.append(
+             GraphEdge(
+@@ -129,11 +201,30 @@ def flatten_graph(
+ 
+     logger.debug(
+         "graph_flattened",
+-        submodel_count=len(submodels),
++        submodel_count=len(names_to_flatten),
+         node_count=len(nodes),
+         edge_count=len(deduped),
+     )
+     remaining_submodels = {k: v for k, v in submodels.items() if k not in names_to_flatten} or None
++    merged_preamble = graph.preamble
++    merged_preserved_blocks = list(graph.preserved_blocks)
++    for sm_name in submodels:
++        if sm_name not in names_to_flatten:
++            continue
++        embedded_graph = embedded_graphs[sm_name]
++        child_preamble = embedded_graph.preamble
++        if child_preamble and child_preamble.strip():
++            if merged_preamble and merged_preamble.strip():
++                merged_preamble = f"{merged_preamble.rstrip()}\n\n{child_preamble.rstrip()}"
++            else:
++                merged_preamble = child_preamble.rstrip()
++        merged_preserved_blocks.extend(embedded_graph.preserved_blocks)
+     return graph.model_copy(
+-        update={"nodes": nodes, "edges": deduped, "submodels": remaining_submodels},
++        update={
++            "nodes": nodes,
++            "edges": deduped,
++            "preamble": merged_preamble,
++            "preserved_blocks": merged_preserved_blocks,
++            "submodels": remaining_submodels,
++        },
+     )
+diff --git a/src/haute/_graph_utils.py b/src/haute/_graph_utils.py
+index d8040a14..f51315e8 100644
+--- a/src/haute/_graph_utils.py
++++ b/src/haute/_graph_utils.py
+@@ -51,11 +51,33 @@ def _edge_id(
+     target: str,
+     source_port: str | None = None,
+     target_port: str | None = None,
++    *,
++    hidden_source_port: str | None = None,
++    hidden_target_port: str | None = None,
+ ) -> str:
+-    """Return a stable React Flow edge id for source/target/port metadata."""
+-    if source_port is None and target_port is None:
++    """Return a stable React Flow edge id for all persisted port metadata.
++
++    The common four-field form retains its historical IDs. Boundary edges can
++    additionally carry authored ports in ``sourcePort`` / ``targetPort`` while
++    ``sourceHandle`` / ``targetHandle`` hold synthetic submodel handles; those
++    hidden fields participate in the identity whenever present.
++    """
++    has_hidden_ports = hidden_source_port is not None or hidden_target_port is not None
++    if source_port is None and target_port is None and not has_hidden_ports:
+         return f"e_{source}_{target}"
+-    if target_port is None:
++    if has_hidden_ports:
++        payload = "\0".join(
++            (
++                source,
++                target,
++                source_port or "",
++                target_port or "",
++                hidden_source_port or "",
++                hidden_target_port or "",
++                "boundary",
++            )
++        ).encode()
++    elif target_port is None:
+         payload = "\0".join((source, target, source_port or "")).encode()
+     else:
+         payload = "\0".join((source, target, source_port or "", target_port)).encode()
+diff --git a/src/haute/_parser_submodels.py b/src/haute/_parser_submodels.py
+index ce95efb0..e46c3d5a 100644
+--- a/src/haute/_parser_submodels.py
++++ b/src/haute/_parser_submodels.py
+@@ -17,6 +17,8 @@
+ from haute._ast_helpers import (
+     _extract_connect_calls,
+     _extract_function_bodies,
++    _extract_preamble,
++    _extract_preserved_blocks,
+     _extract_submodel_meta,
+     _is_submodel_node_decorator,
+ )
+@@ -233,6 +235,13 @@ def parse_submodel_source(
+         edges=edges,
+         pipeline_name=submodel_name,
+         pipeline_description=submodel_desc,
++        preamble=_extract_preamble(
++            source,
++            tree=tree,
++            receiver="submodel",
++            constructor_name="Submodel",
++        ),
++        preserved_blocks=_extract_preserved_blocks(source),
+         source_file=source_file,
+     )
+     graph._parser_parameter_names = {
+diff --git a/src/haute/_submodel_paths.py b/src/haute/_submodel_paths.py
+index c83cf8be..de2eee4c 100644
+--- a/src/haute/_submodel_paths.py
++++ b/src/haute/_submodel_paths.py
+@@ -5,6 +5,26 @@
+ from pathlib import Path
+ 
+ 
++class SubmodelPathError(ValueError):
++    """Base class for user-authored submodel path failures."""
++
++
++class MalformedSubmodelPathError(SubmodelPathError):
++    """A route path segment cannot represent one submodel name."""
++
++
++class SubmodelPathOutsideProjectError(SubmodelPathError):
++    """A submodel reference resolves outside the project root."""
++
++
++def validate_submodel_name(name: str) -> None:
++    """Validate a route-level submodel name before any filesystem lookup."""
++    if not name or "\x00" in name or "/" in name or "\\" in name:
++        raise MalformedSubmodelPathError(
++            "Submodel name must be one non-empty path segment.",
++        )
++
++
+ def resolve_submodel_reference(
+     rel_path: str,
+     *,
+@@ -15,12 +35,18 @@ def resolve_submodel_reference(
+ 
+     References are relative to the active pipeline directory.
+     """
++    if not rel_path or "\x00" in rel_path:
++        raise MalformedSubmodelPathError(
++            "Submodel reference must be a non-empty filesystem path.",
++        )
+     resolved_root = project_root.resolve()
+     active_dir = (pipeline_dir or project_root).resolve()
+ 
+     submodel_path = (active_dir / rel_path).resolve()
+     if not submodel_path.is_relative_to(resolved_root):
+-        raise ValueError(f"Submodel path {rel_path!r} escapes project directory")
++        raise SubmodelPathOutsideProjectError(
++            f"Submodel path {rel_path!r} escapes project directory"
++        )
+     return submodel_path, active_dir
+ 
+ 
+@@ -31,6 +57,7 @@ def resolve_submodel_by_name(
+     project_root: Path,
+ ) -> tuple[Path, Path]:
+     """Resolve ``<name>.py`` relative to the active pipeline directory."""
++    validate_submodel_name(name)
+     return resolve_submodel_reference(
+         f"modules/{name}.py",
+         pipeline_dir=pipeline_dir,
+diff --git a/src/haute/codegen.py b/src/haute/codegen.py
+index 18d120ab..bc043818 100644
+--- a/src/haute/codegen.py
++++ b/src/haute/codegen.py
+@@ -394,11 +394,24 @@ def _node_to_code(
+         func_name = _sanitize_func_name(node.data.label)
+         cfg_path = config_path_for_node(node_type, func_name).as_posix()
+         try:
+-            dec_name = NODE_TYPE_TO_DECORATOR.get(node_type, "polars")
++            dec_name = NODE_TYPE_TO_DECORATOR[node_type]
++        except KeyError as exc:
++            raise HauteError(
++                "config-backed node has no registered decorator; this is a codegen bug",
++                node_id=node.id,
++                node_label=node.data.label,
++                node_type=str(node_type),
++            ) from exc
++        try:
+             def_idx = code.index("\ndef ")
+-            code = f"@pipeline.{dec_name}(config={_safe_path(cfg_path)})" + code[def_idx:]
+-        except ValueError:
+-            logger.warning("no_def_in_generated_code", node=node.data.label)
++        except ValueError as exc:
++            raise HauteError(
++                "config-backed node code has no function definition; this is a codegen bug",
++                node_id=node.id,
++                node_label=node.data.label,
++                node_type=str(node_type),
++            ) from exc
++        code = f"@pipeline.{dec_name}(config={_safe_path(cfg_path)})" + code[def_idx:]
+ 
+     contract_kwarg = _format_contract_kwarg(
+         node,
+@@ -568,13 +581,12 @@ def _error_on_name_collisions(labels: list[str]) -> None:
+         sanitized = _sanitize_func_name(label)
+         buckets.setdefault(sanitized, []).append(label)
+ 
+-    # Only flag *distinct* source labels colliding — two graph nodes
+-    # with the exact same label are a different (legal) case that the
+-    # executor handles elsewhere.
++    # Every emitted function name must be unique, including exact label
++    # duplicates: either form would shadow one node in generated Python.
+     collisions = {
+-        sanitized: sorted(set(originals))
++        sanitized: sorted(originals)
+         for sanitized, originals in buckets.items()
+-        if len(set(originals)) > 1
++        if len(originals) > 1
+     }
+     if not collisions:
+         return
+@@ -743,9 +755,13 @@ def _generate_pipeline_lines(
+             "",
+             "import polars as pl",
+             "import haute",
++        ]
++        if preamble.strip():
++            lines.append("")
++            lines.append(preamble.rstrip())
++        lines += [
+             "",
+-            "",
+-            f"{obj_name} = haute.Submodel({_safe_str(name)})",
++            f"{obj_name} = haute.Submodel({_safe_str(name)}, description={description!r})",
+             "",
+             "",
+         ]
+@@ -961,13 +977,24 @@ def graph_to_code_multi(
+     # Fall back to graph-level description when caller doesn't supply one
+     if not description and graph.pipeline_description:
+         description = graph.pipeline_description
++    if not preamble and graph.preamble:
++        preamble = graph.preamble
+     submodels = graph.submodels or {}
+     validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
+ 
+     # Detect colliding labels across the whole graph once, eagerly, so
+     # duplicate-function-name collisions are reported even when the
+     # file-generation path short-circuits.
+-    collision_labels: list[str] = [n.data.label for n in graph.nodes]
++    # Hierarchical payloads may retain a transport copy of each child in
++    # ``graph.nodes`` as well as the authoritative copy in the embedded
++    # submodel graph. Codegen assigns every ``childNodeIds`` entry to the
++    # child module, so do not count that same logical node twice here.
++    represented_child_ids = {
++        child_id for sm_meta in submodels.values() for child_id in sm_meta.get("childNodeIds", [])
++    }
++    collision_labels: list[str] = [
++        node.data.label for node in graph.nodes if node.id not in represented_child_ids
++    ]
+     for sm_meta in submodels.values():
+         for raw in sm_meta.get("graph", {}).get("nodes", []):
+             if isinstance(raw, dict):
+@@ -1193,14 +1220,17 @@ def graph_to_code_multi(
+         sm_lines = _generate_pipeline_lines(
+             kind="submodel",
+             name=sm_name,
+-            description="",
+-            preamble="",
++            description=sm_graph.get("pipeline_description")
++            or sm_graph.get("submodel_description")
++            or "",
++            preamble=sm_graph.get("preamble") or "",
+             sorted_nodes=sorted_sm_nodes,
+             id_to_func=sm_id_to_func,
+             node_sources=sm_node_sources,
+             connect_pairs=sm_connect_pairs,
+             node_source_func_names=sm_node_source_func_names,
+             node_source_ids=sm_node_source_ids,
++            preserved_blocks=sm_graph.get("preserved_blocks") or None,
+             node_to_code_fn=_submodel_node_to_code,
+             obj_name="submodel",
+         )
+diff --git a/src/haute/routes/_submodel_ops.py b/src/haute/routes/_submodel_ops.py
+index 564a38a4..65ea1195 100644
+--- a/src/haute/routes/_submodel_ops.py
++++ b/src/haute/routes/_submodel_ops.py
+@@ -70,8 +70,10 @@ def create_submodel_graph(
+     sm_graph = {
+         "nodes": [n.model_dump() for n in child_nodes],
+         "edges": [e.model_dump() for e in internal_edges],
+-        "submodel_name": sm_name,
+-        "submodel_description": "",
++        "pipeline_name": sm_name,
++        "pipeline_description": "",
++        "preamble": "",
++        "preserved_blocks": [],
+         "source_file": sm_file,
+     }
+ 
+diff --git a/src/haute/routes/submodel.py b/src/haute/routes/submodel.py
+index bff7ac7f..55ab08d2 100644
+--- a/src/haute/routes/submodel.py
++++ b/src/haute/routes/submodel.py
+@@ -8,9 +8,16 @@
+ from fastapi.concurrency import run_in_threadpool
+ 
+ from haute._logging import get_logger
+-from haute._submodel_paths import resolve_submodel_by_name
++from haute._submodel_paths import (
++    MalformedSubmodelPathError,
++    SubmodelPathOutsideProjectError,
++    resolve_submodel_by_name,
++    resolve_submodel_reference,
++    validate_submodel_name,
++)
+ from haute.routes._helpers import (
+     _INTERNAL_ERROR_DETAIL,
++    discover_pipelines,
+     load_sidecar_positions,
+     pipeline_dir,
+ )
+@@ -46,8 +53,6 @@ async def create_submodel(body: CreateSubmodelRequest) -> CreateSubmodelResponse
+     from haute.routes._submodel_ops import create_submodel_graph
+ 
+     def _run() -> CreateSubmodelResponse:
+-        SavePipelineService._validate_unique_sanitized_names(body.graph)
+-
+         # Reject reserved device names at creation, before the graph is
+         # transformed: a submodel named ``NUL`` would mint ``modules/NUL.py``,
+         # which names a device, not a file, on Windows (any casing, any
+@@ -123,17 +128,38 @@ async def get_submodel(name: str) -> SubmodelGraphResponse:
+ 
+ 
+ def _get_submodel_blocking(name: str) -> SubmodelGraphResponse:
+-    from haute.parser import parse_submodel_file
++    from haute.parser import parse_pipeline_file, parse_submodel_file
+ 
+     project_root = Path.cwd()
+-    active_pipeline_dir = pipeline_dir()
+-    sm_path, config_base = resolve_submodel_by_name(
+-        name,
+-        pipeline_dir=active_pipeline_dir,
+-        project_root=project_root,
+-    )
+-    project_root = project_root.resolve()
+-    if not sm_path.is_relative_to(project_root):
++    try:
++        validate_submodel_name(name)
++        resolved: tuple[Path, Path] | None = None
++        for pipeline_path in discover_pipelines():
++            parent_graph = parse_pipeline_file(pipeline_path)
++            sm_meta = (parent_graph.submodels or {}).get(name)
++            if sm_meta is None:
++                continue
++            recorded_path = sm_meta.get("file")
++            if not isinstance(recorded_path, str) or not recorded_path:
++                raise MalformedSubmodelPathError(
++                    "Active pipeline has no valid path for the requested submodel.",
++                )
++            resolved = resolve_submodel_reference(
++                recorded_path,
++                pipeline_dir=pipeline_path.resolve().parent,
++                project_root=project_root,
++            )
++            break
++        if resolved is None:
++            resolved = resolve_submodel_by_name(
++                name,
++                pipeline_dir=pipeline_dir(),
++                project_root=project_root,
++            )
++        sm_path, config_base = resolved
++    except MalformedSubmodelPathError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from None
++    except SubmodelPathOutsideProjectError:
+         raise HTTPException(status_code=403, detail="Cannot access paths outside the project root")
+     if not sm_path.is_file():
+         raise HTTPException(status_code=404, detail=f"Submodel '{name}' not found")
+@@ -174,6 +200,8 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
+     from haute.routes._helpers import save_lock
+ 
+     def _run() -> DissolveSubmodelResponse:
++        from haute.parser import parse_submodel_file
++
+         graph = body.graph
+         sm_name = body.submodel_name
+         submodels = graph.submodels or {}
+@@ -183,32 +211,60 @@ def _run() -> DissolveSubmodelResponse:
+                 status_code=404,
+                 detail=f"Submodel '{sm_name}' not found in graph",
+             )
+-
+-        # Flatten just the target submodel
+-        sm_meta = submodels[sm_name]
+-        sm_file = sm_meta.get("file", "")
+-
+-        # Remove the submodel from the graph metadata and flatten
+-        flat = flatten_graph(graph, target_name=sm_name)
+-
+-        # Validate name uniqueness on the flattened graph (post-inline)
+-        from haute.routes._save_pipeline import SavePipelineService
+-
+-        SavePipelineService._validate_unique_sanitized_names(flat)
+-
+-        cwd = Path.cwd()
+         if not body.source_file:
+             raise HTTPException(
+                 status_code=400,
+                 detail="source_file is required — the frontend must track"
+                 " and send the original pipeline file path",
+             )
++
++        # Resolve and parse the recorded file before trusting client metadata.
++        sm_meta = dict(submodels[sm_name])
++        sm_file = sm_meta.get("file", "")
++        if not isinstance(sm_file, str) or not sm_file:
++            raise HTTPException(
++                status_code=400,
++                detail="Submodel metadata has no valid source file path",
++            )
++
++        cwd = Path.cwd()
++        try:
++            sm_path, config_base = resolve_submodel_reference(
++                sm_file,
++                pipeline_dir=pipeline_dir(),
++                project_root=cwd,
++            )
++        except MalformedSubmodelPathError as exc:
++            raise HTTPException(status_code=400, detail=str(exc)) from None
++        except SubmodelPathOutsideProjectError:
++            raise HTTPException(
++                status_code=403,
++                detail="Cannot access paths outside the project root",
++            ) from None
++        if not sm_path.is_file():
++            raise HTTPException(status_code=404, detail=f"Submodel '{sm_name}' not found")
++
++        disk_graph = parse_submodel_file(sm_path, _base_dir=config_base)
++        sm_meta["graph"] = disk_graph.model_dump()
++        authoritative_submodels = dict(submodels)
++        authoritative_submodels[sm_name] = sm_meta
++        authoritative_graph = graph.model_copy(
++            update={
++                "submodels": authoritative_submodels,
++                "preamble": body.preamble,
++            }
++        )
++
++        # Flatten just the target submodel from its authoritative disk graph.
++        flat = flatten_graph(authoritative_graph, target_name=sm_name)
++        from haute.routes._save_pipeline import SavePipelineService
++
+         svc = SavePipelineService(project_root=cwd, pipeline_root=pipeline_dir())
+         svc.save_graph_transactionally(
+             graph=flat,
+             name=body.pipeline_name,
+             description=body.pipeline_description or "",
+-            preamble=body.preamble,
++            preamble=flat.preamble,
+             source_file=body.source_file,
+             delete_module_files=[sm_file] if sm_file else (),
+         )
+diff --git a/tests/test_codegen.py b/tests/test_codegen.py
+index 480d0614..96e788fd 100644
+--- a/tests/test_codegen.py
++++ b/tests/test_codegen.py
+@@ -11,8 +11,7 @@
+ from haute._codegen_builders import (
+     _build_extra_kwargs,
+     _build_params,
+-    _is_absolute_path,
+-    _portable_path_expr,
++    _retained_api_input_template,
+     _sanitize_description,
+     _wrap_user_code,
+ )
+@@ -114,45 +113,6 @@ def test_multiple_sources(self):
+         assert result == "a: pl.LazyFrame, b: pl.LazyFrame"
+ 
+ 
+-# ---------------------------------------------------------------------------
+-# _is_absolute_path / _portable_path_expr
+-# ---------------------------------------------------------------------------
+-
+-
+-class TestPortablePath:
+-    def test_unix_absolute(self):
+-        assert _is_absolute_path("/home/user/data.parquet") is True
+-
+-    def test_windows_absolute(self):
+-        assert _is_absolute_path("C:/Users/data.parquet") is True
+-
+-    def test_windows_backslash(self):
+-        assert _is_absolute_path("C:\\Users\\data.parquet") is True
+-
+-    def test_relative(self):
+-        assert _is_absolute_path("data/input.csv") is False
+-
+-    def test_empty(self):
+-        assert _is_absolute_path("") is False
+-
+-    def test_dot_relative(self):
+-        assert _is_absolute_path("../data/file.json") is False
+-
+-    def test_portable_relative_uses_file_parent(self):
+-        result = _portable_path_expr("data/input.parquet")
+-        assert "Path(__file__).parent" in result
+-        assert '"data/input.parquet"' in result
+-
+-    def test_portable_absolute_stays_raw(self):
+-        result = _portable_path_expr("/absolute/path.csv")
+-        assert "Path(__file__)" not in result
+-        assert '"/absolute/path.csv"' in result
+-
+-    def test_portable_empty_treated_as_relative(self):
+-        result = _portable_path_expr("")
+-        assert "Path(__file__).parent" in result
+-
+-
+ # ---------------------------------------------------------------------------
+ # _node_to_code
+ # ---------------------------------------------------------------------------
+@@ -1840,6 +1800,89 @@ def test_parquet_api_input(self):
+         assert "input.parquet" not in code
+         _compile_node_code(code)
+ 
++    def test_retained_api_input_code_has_no_escaped_path_artifact(self):
++        template = _retained_api_input_template("config/custom/quotes.json")
++        assert not template.startswith("\\")
++        assert '"config/custom/quotes.json"' in template
++
++
++class TestPreservedBlocksRoundTrip:
++    def test_module_block_is_not_preamble_and_reaches_source_fixpoint(self):
++        from haute.parser import parse_pipeline_source
++
++        source = """\
++import polars as pl
++import haute
++
++# haute:preserve-start
++VALUE = 7
++# haute:preserve-end
++
++pipeline = haute.Pipeline("main")
++
++@pipeline.polars
++def transform(df: pl.LazyFrame) -> pl.LazyFrame:
++    df = df.with_columns(pl.lit(1).alias("one"))
++    return df
++"""
++        first_graph = parse_pipeline_source(source)
++        assert "VALUE = 7" not in (first_graph.preamble or "")
++        assert first_graph.preserved_blocks == ["VALUE = 7"]
++
++        first_code = graph_to_code(first_graph)
++        assert first_code.count("VALUE = 7") == 1
++        second_code = graph_to_code(parse_pipeline_source(first_code))
++        assert second_code == first_code
++
++    def test_indented_preserve_marker_stays_in_decorated_node_code(self):
++        from haute.parser import parse_pipeline_source
++
++        source = """\
++import polars as pl
++import haute
++
++pipeline = haute.Pipeline("main")
++
++@pipeline.polars
++def transform(df: pl.LazyFrame) -> pl.LazyFrame:
++    # haute:preserve-start
++    marker = 1
++    # haute:preserve-end
++    return df
++"""
++        graph = parse_pipeline_source(source)
++        assert graph.preserved_blocks == []
++        code = graph_to_code(graph)
++        assert "    marker = 1" in code
++        compile(code, "<test>", "exec")
++
++    def test_identical_node_labels_raise_parse_error(self):
++        graph = _g(
++            {
++                "nodes": [
++                    {
++                        "id": "one",
++                        "data": {
++                            "label": "Duplicate",
++                            "nodeType": "polars",
++                            "config": {"code": "return df"},
++                        },
++                    },
++                    {
++                        "id": "two",
++                        "data": {
++                            "label": "Duplicate",
++                            "nodeType": "polars",
++                            "config": {"code": "return df"},
++                        },
++                    },
++                ],
++                "edges": [],
++            }
++        )
++        with pytest.raises(ParseError):
++            graph_to_code(graph)
++
+ 
+ # ---------------------------------------------------------------------------
+ # _make_passthrough_builder factory + all four passthrough node types
+diff --git a/tests/test_codegen_fail_loudly.py b/tests/test_codegen_fail_loudly.py
+index 784211ca..d28719ca 100644
+--- a/tests/test_codegen_fail_loudly.py
++++ b/tests/test_codegen_fail_loudly.py
+@@ -4,10 +4,7 @@
+ 
+ import pytest
+ 
+-from haute._codegen_builders import (
+-    _gen_submodel_placeholder_unreachable,
+-    _portable_path_expr,
+-)
++from haute._codegen_builders import _gen_submodel_placeholder_unreachable
+ from haute.codegen import (
+     _error_on_name_collisions,
+     _format_contract_kwarg,
+@@ -47,6 +44,62 @@ def Step(df: pl.LazyFrame) -> pl.LazyFrame:
+     _compile_node_code(injected)
+ 
+ 
++def test_config_backed_node_without_decorator_mapping_fails_loudly(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    import haute.codegen as codegen
++
++    node = _n(
++        {
++            "id": "configured",
++            "data": {"label": "Configured", "nodeType": "banding", "config": {}},
++        }
++    )
++    monkeypatch.setattr(codegen, "has_config_folder", lambda _node_type: True)
++    monkeypatch.setattr(
++        codegen,
++        "_generate_node_code",
++        lambda *_args, **_kwargs: (
++            "@pipeline.polars()\ndef Configured(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n"
++        ),
++    )
++    monkeypatch.setattr(codegen, "NODE_TYPE_TO_DECORATOR", {})
++
++    with pytest.raises(HauteError, match="no registered decorator") as exc_info:
++        codegen._node_to_code(node)
++
++    assert exc_info.value.context["node_id"] == "configured"
++
++
++def test_config_backed_builder_without_function_definition_fails_loudly(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    import haute.codegen as codegen
++
++    node = _n(
++        {
++            "id": "configured",
++            "data": {"label": "Configured", "nodeType": "banding", "config": {}},
++        }
++    )
++    monkeypatch.setattr(codegen, "has_config_folder", lambda _node_type: True)
++    monkeypatch.setattr(
++        codegen,
++        "_generate_node_code",
++        lambda *_args, **_kwargs: "@pipeline.polars()\nConfigured = object()\n",
++    )
++    monkeypatch.setattr(
++        codegen,
++        "NODE_TYPE_TO_DECORATOR",
++        {node.data.nodeType: "polars"},
++    )
++
++    with pytest.raises(HauteError, match="no function definition") as exc_info:
++        codegen._node_to_code(node)
++
++    assert exc_info.value.context["node_label"] == "Configured"
++
++
+ def test_format_contract_kwarg_preserves_inputs_by_parent() -> None:
+     node = _n(
+         {
+@@ -578,14 +631,6 @@ def test_submodel_placeholder_codegen_is_unreachable() -> None:
+         _gen_submodel_placeholder_unreachable(node, [])
+ 
+ 
+-def test_portable_path_expr_normalizes_windows_paths() -> None:
+-    assert _portable_path_expr(r"C:\models\score.cbm") == '"C:/models/score.cbm"'
+-    assert (
+-        _portable_path_expr(r"nested\data.parquet")
+-        == 'Path(__file__).parent / "nested/data.parquet"'
+-    )
+-
+-
+ def test_error_on_name_collisions_reports_all_buckets() -> None:
+     with pytest.raises(ParseError) as exc_info:
+         _error_on_name_collisions(["Rate Step", "Rate-Step", "Quoted Name", "Quoted-Name"])
+diff --git a/tests/test_flatten.py b/tests/test_flatten.py
+index 849d7946..650f5c0e 100644
+--- a/tests/test_flatten.py
++++ b/tests/test_flatten.py
+@@ -2,8 +2,11 @@
+ 
+ from __future__ import annotations
+ 
++import pytest
++
+ from haute._flatten import flatten_graph
+ from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
++from haute.errors import ParseError
+ 
+ # ---------------------------------------------------------------------------
+ # Helpers
+@@ -319,8 +322,8 @@ def test_target_handle_rewired(self) -> None:
+         rewired = [e for e in result.edges if e.source == "upstream" and e.target == "inner"]
+         assert rewired[0].targetHandle is None
+ 
+-    def test_edges_still_referencing_submodel_dropped(self) -> None:
+-        """Edges that still reference a submodel node after rewiring are dropped."""
++    def test_boundary_edge_without_handle_raises(self) -> None:
++        """A boundary edge cannot be silently discarded when its handle is absent."""
+         graph = PipelineGraph(
+             nodes=[
+                 _node("a"),
+@@ -340,9 +343,30 @@ def test_edges_still_referencing_submodel_dropped(self) -> None:
+                 }
+             },
+         )
+-        result = flatten_graph(graph)
+-        # Edge from submodel__sm to b without handles cannot be rewired
+-        assert len(result.edges) == 0
++        with pytest.raises(ParseError, match="handle"):
++            flatten_graph(graph)
++
++    @pytest.mark.parametrize("handle", ["wrong__inner", "out__missing"])
++    def test_invalid_boundary_handle_raises(self, handle: str) -> None:
++        graph = PipelineGraph(
++            nodes=[_node("submodel__sm"), _node("downstream")],
++            edges=[_edge("submodel__sm", "downstream", source_handle=handle)],
++            submodels={
++                "sm": {
++                    "graph": {
++                        "nodes": [
++                            {
++                                "id": "inner",
++                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
++                            }
++                        ],
++                        "edges": [],
++                    }
++                }
++            },
++        )
++        with pytest.raises(ParseError):
++            flatten_graph(graph)
+ 
+     def test_internal_submodel_edges_preserved(self) -> None:
+         """Internal edges within a submodel graph are added to the flat graph."""
+@@ -423,6 +447,46 @@ def test_duplicate_edges_deduplicated(self) -> None:
+         ]
+         assert len(matching) == 1
+ 
++    def test_targeted_flatten_keeps_distinct_port_metadata_and_ids(self) -> None:
++        graph = PipelineGraph(
++            nodes=[_node("source"), _node("submodel__sm")],
++            edges=[
++                GraphEdge(
++                    id="left",
++                    source="source",
++                    target="submodel__sm",
++                    targetHandle="in__inner",
++                    sourcePort="left",
++                ),
++                GraphEdge(
++                    id="right",
++                    source="source",
++                    target="submodel__sm",
++                    targetHandle="in__inner",
++                    sourcePort="right",
++                ),
++            ],
++            submodels={
++                "sm": {
++                    "graph": {
++                        "nodes": [
++                            {
++                                "id": "inner",
++                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
++                            }
++                        ],
++                        "edges": [],
++                    }
++                }
++            },
++        )
++        result = flatten_graph(graph, target_name="sm")
++        edges = [
++            edge for edge in result.edges if edge.source == "source" and edge.target == "inner"
++        ]
++        assert {edge.sourcePort for edge in edges} == {"left", "right"}
++        assert len({edge.id for edge in edges}) == 2
++
+ 
+ # ---------------------------------------------------------------------------
+ # Submodel with empty graph
+@@ -494,6 +558,27 @@ def test_other_fields_preserved(self) -> None:
+         assert result.sources == ["live", "test"]
+         assert result.active_source == "test"
+ 
++    def test_targeted_flatten_merges_submodel_preamble_and_preserved_blocks(self) -> None:
++        graph = PipelineGraph(
++            nodes=[_node("submodel__sm")],
++            edges=[],
++            preamble="ROOT = 1",
++            preserved_blocks=["ROOT_KEPT = 1"],
++            submodels={
++                "sm": {
++                    "graph": {
++                        "nodes": [],
++                        "edges": [],
++                        "preamble": "CHILD = 2",
++                        "preserved_blocks": ["CHILD_KEPT = 2"],
++                    }
++                }
++            },
++        )
++        result = flatten_graph(graph, target_name="sm")
++        assert result.preamble == "ROOT = 1\n\nCHILD = 2"
++        assert result.preserved_blocks == ["ROOT_KEPT = 1", "CHILD_KEPT = 2"]
++
+ 
+ # ---------------------------------------------------------------------------
+ # Child nodes as dicts vs GraphNode objects
+diff --git a/tests/test_parser_submodels.py b/tests/test_parser_submodels.py
+index 216677ec..8e40deb1 100644
+--- a/tests/test_parser_submodels.py
++++ b/tests/test_parser_submodels.py
+@@ -137,6 +137,26 @@ def test_source_file_stored(self) -> None:
+         graph = parse_submodel_source(_VALID_SUBMODEL, "modules/pricing.py")
+         assert graph.source_file == "modules/pricing.py"
+ 
++    def test_submodel_preamble_and_preserved_block_round_trip(self) -> None:
++        source = """\
++import polars as pl
++import haute
++
++HELPER = 1
++# haute:preserve-start
++KEPT = "yes"
++# haute:preserve-end
++
++submodel = haute.Submodel("pricing", description="Pricing submodel")
++
++@submodel.polars
++def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
++    return df
++"""
++        graph = parse_submodel_source(source, "modules/pricing.py")
++        assert graph.preamble == "HELPER = 1"
++        assert graph.preserved_blocks == ['KEPT = "yes"']
++
+     def test_syntax_error_raises_instead_of_returning_empty_graph(self) -> None:
+         bad_source = "def broken(:\n    pass\n"
+         with pytest.raises(ParseError, match="syntax errors") as exc_info:
+diff --git a/tests/test_submodel.py b/tests/test_submodel.py
+index 04f09eca..7d340711 100644
+--- a/tests/test_submodel.py
++++ b/tests/test_submodel.py
+@@ -223,6 +223,21 @@ def test_submodel_file_generated(self, submodel_graph):
+         compile(sm_code, "<submodel>", "exec")
+         assert "haute" in sm_code
+ 
++    def test_submodel_preamble_and_preserved_block_are_emitted_once(self, submodel_graph):
++        subgraph = submodel_graph.submodels["scoring"]["graph"]
++        subgraph.update(
++            {
++                "pipeline_description": "Score a policy",
++                "preamble": "HELPER = 1",
++                "preserved_blocks": ["KEPT = 2"],
++            }
++        )
++        files = graph_to_code_multi(submodel_graph, pipeline_name="main")
++        code = files["modules/scoring.py"]
++        assert "description='Score a policy'" in code
++        assert code.count("HELPER = 1") == 1
++        assert code.count("KEPT = 2") == 1
++
+     def test_main_file_compiles(self, submodel_graph):
+         """The main pipeline code should compile without errors."""
+         files = graph_to_code_multi(submodel_graph, pipeline_name="main")
+diff --git a/tests/test_submodel_ops.py b/tests/test_submodel_ops.py
+index 103fbbde..5966dd83 100644
+--- a/tests/test_submodel_ops.py
++++ b/tests/test_submodel_ops.py
+@@ -115,7 +115,7 @@ def test_submodels_metadata_populated(self):
+         assert meta["file"] == "modules/sub.py"
+         assert set(meta["childNodeIds"]) == {"t1", "t2"}
+         assert "t1" in meta["inputPorts"]
+-        assert meta["graph"]["submodel_name"] == "sub"
++        assert meta["graph"]["pipeline_name"] == "sub"
+ 
+     def test_preserves_existing_submodels(self):
+         """Existing submodel metadata is preserved when adding a new one."""
+@@ -333,7 +333,7 @@ def test_internal_graph_structure(self):
+         assert inner_edge_sources == {"t1"}
+         assert inner_edge_targets == {"t2"}
+ 
+-        assert sm_graph["submodel_name"] == "inner"
++        assert sm_graph["pipeline_name"] == "inner"
+         assert sm_graph["source_file"] == "modules/inner.py"
+ 
+     def test_no_cross_edges(self):
+diff --git a/tests/test_submodel_routes.py b/tests/test_submodel_routes.py
+index 4d35adbd..64662f40 100644
+--- a/tests/test_submodel_routes.py
++++ b/tests/test_submodel_routes.py
+@@ -366,6 +366,31 @@ def source() -> pl.LazyFrame:
+         node = data["graph"]["nodes"][0]
+         assert node["data"]["config"]["path"] == "rating-data.parquet"
+ 
++    def test_get_uses_path_recorded_by_active_pipeline(
++        self, client: TestClient, tmp_path: Path
++    ) -> None:
++        rating_root = _write_nested_project(tmp_path)
++        library = rating_root / "lib"
++        library.mkdir()
++        (library / "pricing.py").write_text(
++            'import polars as pl\nimport haute\nsubmodel = haute.Submodel("pricing")\n'
++            "@submodel.polars\ndef rate(df: pl.LazyFrame) -> pl.LazyFrame:\n    return df\n",
++            encoding="utf-8",
++        )
++        (rating_root / "main.py").write_text(
++            'import haute\npipeline = haute.Pipeline("main")\n'
++            'pipeline.submodel("lib/pricing.py")\n',
++            encoding="utf-8",
++        )
++        response = client.get("/api/submodel/pricing")
++        assert response.status_code == 200
++        source_file = response.json()["graph"]["source_file"].replace("\\", "/")
++        assert source_file.endswith("lib/pricing.py")
++
++    def test_encoded_backslash_traversal_is_bad_request(self, client: TestClient) -> None:
++        response = client.get("/api/submodel/%5C..%5Coutside")
++        assert response.status_code == 400
++
+ 
+ # ---------------------------------------------------------------------------
+ # POST /api/submodel/dissolve
+@@ -407,7 +432,7 @@ def test_successful_dissolve(self, client: TestClient, tmp_path: Path) -> None:
+ 
+         flat_graph = PipelineGraph(pipeline_name="main")
+ 
+-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
++        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
+             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
+                 body = {
+                     "submodel_name": "pricing",
+@@ -421,6 +446,66 @@ def test_successful_dissolve(self, client: TestClient, tmp_path: Path) -> None:
+         data = resp.json()
+         assert data["status"] == "ok"
+ 
++    def test_dissolve_reparses_disk_submodel_before_flattening(
++        self, client: TestClient, tmp_path: Path
++    ) -> None:
++        """The request graph is stale; the recorded module on disk is authoritative."""
++        modules_dir = tmp_path / "modules"
++        modules_dir.mkdir()
++        (modules_dir / "pricing.py").write_text("# valid disk module\n", encoding="utf-8")
++        (tmp_path / "pipeline.py").write_text("# parent\n", encoding="utf-8")
++        disk_graph = PipelineGraph(
++            pipeline_name="pricing",
++            preamble="DISK_HELPER = 1",
++            preserved_blocks=["DISK_KEPT = 2"],
++            nodes=[
++                {
++                    "id": "disk_child",
++                    "data": {
++                        "label": "disk_child",
++                        "nodeType": "polars",
++                        "config": {"code": "return df"},
++                    },
++                },
++                {
++                    "id": "disk_internal",
++                    "data": {
++                        "label": "disk_internal",
++                        "nodeType": "polars",
++                        "config": {"code": "return df"},
++                    },
++                },
++            ],
++            edges=[{"id": "disk_edge", "source": "disk_child", "target": "disk_internal"}],
++        )
++        flat_graph = PipelineGraph(
++            pipeline_name="main", nodes=disk_graph.nodes, edges=disk_graph.edges
++        )
++        with (
++            patch("haute.parser.parse_submodel_file", return_value=disk_graph) as parse_disk,
++            patch("haute.graph_utils.flatten_graph", return_value=flat_graph) as flatten,
++            patch("haute.codegen.graph_to_code", return_value="# regenerated\n"),
++        ):
++            response = client.post(
++                "/api/submodel/dissolve",
++                json={
++                    "submodel_name": "pricing",
++                    "graph": _graph_with_submodel(),
++                    "source_file": "pipeline.py",
++                    "pipeline_name": "main",
++                },
++            )
++        assert response.status_code == 200
++        parse_disk.assert_called_once()
++        flattened_graph = flatten.call_args.args[0]
++        disk_meta = flattened_graph.submodels["pricing"]["graph"]
++        assert {node["id"] for node in disk_meta["nodes"]} == {"disk_child", "disk_internal"}
++        assert [
++            {key: edge[key] for key in ("id", "source", "target")} for edge in disk_meta["edges"]
++        ] == [{"id": "disk_edge", "source": "disk_child", "target": "disk_internal"}]
++        assert disk_meta["preamble"] == "DISK_HELPER = 1"
++        assert disk_meta["preserved_blocks"] == ["DISK_KEPT = 2"]
++
+     def test_dissolve_passes_pipeline_description(self, client: TestClient, tmp_path: Path) -> None:
+         """pipeline_description should be forwarded to graph_to_code."""
+         modules_dir = tmp_path / "modules"
+@@ -433,7 +518,7 @@ def test_dissolve_passes_pipeline_description(self, client: TestClient, tmp_path
+ 
+         flat_graph = PipelineGraph(pipeline_name="main")
+ 
+-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
++        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
+             with patch("haute.codegen.graph_to_code", return_value="# code\n") as mock_codegen:
+                 body = {
+                     "submodel_name": "pricing",
+@@ -461,7 +546,7 @@ def test_dissolve_deletes_submodel_file(self, client: TestClient, tmp_path: Path
+ 
+         flat_graph = PipelineGraph(pipeline_name="main")
+ 
+-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
++        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
+             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
+                 body = {
+                     "submodel_name": "pricing",
+@@ -489,7 +574,7 @@ def test_dissolve_deletes_configured_pipeline_module(
+ 
+         flat_graph = PipelineGraph(pipeline_name="main")
+ 
+-        with patch("haute._flatten.flatten_graph", return_value=flat_graph):
++        with patch("haute.graph_utils.flatten_graph", return_value=flat_graph):
+             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
+                 body = {
+                     "submodel_name": "pricing",
+@@ -521,7 +606,7 @@ def test_dissolve_sidecar_failure_rolls_back_main_file(
+         flat_graph = PipelineGraph(pipeline_name="main")
+ 
+         with (
+-            patch("haute._flatten.flatten_graph", return_value=flat_graph),
++            patch("haute.graph_utils.flatten_graph", return_value=flat_graph),
+             patch("haute.codegen.graph_to_code", return_value="# regenerated main\n"),
+             patch("haute.routes._save_pipeline.save_sidecar", side_effect=OSError("disk full")),
+         ):
+@@ -564,7 +649,7 @@ def unlink_maybe_locked(self: Path, *args: object, **kwargs: object) -> None:
+             original_unlink(self, *args, **kwargs)
+ 
+         with (
+-            patch("haute._flatten.flatten_graph", return_value=flat_graph),
++            patch("haute.graph_utils.flatten_graph", return_value=flat_graph),
+             patch("haute.codegen.graph_to_code", return_value="# regenerated main\n"),
+             patch.object(path_type, "unlink", unlink_maybe_locked),
+         ):

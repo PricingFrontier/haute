@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/_submodel_graph.py` | Shared helpers: build a `SUBMODEL` placeholder node, classify cross-boundary edges into input/output ports, rewire edges to/from a placeholder. Used by both the parser's hierarchical merge and the GUI create-submodel operation. |
+| `src/haute/_submodel_graph.py` | Shared helpers: build a submodel placeholder node, classify cross-boundary edges into input/output ports, rewire edges to/from a placeholder. Used by both the parser's hierarchical merge and the GUI create-submodel operation. |
 | `src/haute/_submodel_paths.py` | Validate route-level names, resolve recorded submodel references relative to the active pipeline directory, enforce project containment, and return typed malformed/outside-project errors plus the directory used as config base. |
 | `src/haute/_flatten.py` | Dissolve one named submodel or every submodel into a flat graph: validate and consume boundary handles, inline stored child nodes/internal edges, restore authored and edge-join ports, regenerate port-complete edge ids, merge child preamble/preserved blocks, deduplicate exact edges, and retain metadata for untargeted submodels. |
 | `src/haute/routes/_submodel_ops.py` | Pure (no I/O) graph transform: extract selected nodes out of a `PipelineGraph` into a new submodel, producing the updated parent graph and submodel metadata. |

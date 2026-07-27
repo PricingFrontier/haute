@@ -167,19 +167,19 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, ...], "ScoringModel"]):
             # Any key that was live before but is gone now was evicted.
             after_keys = set(self._data)
             evicted_models = [v for k, v in before.items() if k not in after_keys]
-            if evicted_models:
-                from haute import _model_scorer as _ms
+        if evicted_models:
+            from haute import _model_scorer as _ms
 
-                for sm in evicted_models:
-                    _ms._invalidate_feature_validation_cache_for(sm)
-            return stored
+            for sm in evicted_models:
+                _ms._invalidate_feature_validation_cache_for(sm)
+        return stored
 
     def clear(self) -> None:
         with self._lock:
             super().clear()
-            from haute import _model_scorer as _ms
+        from haute import _model_scorer as _ms
 
-            _ms._clear_feature_validation_cache()
+        _ms._clear_feature_validation_cache()
 
     def evict_matching(
         self,
@@ -211,6 +211,11 @@ class _ModelCacheWithCascade(LRUCache[tuple[str, ...], "ScoringModel"]):
 _model_cache: _ModelCacheWithCascade = _ModelCacheWithCascade(
     max_size=_MODEL_CACHE_MAX_SIZE,
 )
+
+
+def _disk_cache_root() -> Path:
+    """Return the working-directory-local root for cached model artifacts."""
+    return Path.cwd() / ".cache" / "models"
 
 
 # ---------------------------------------------------------------------------
@@ -727,9 +732,8 @@ def _resolve_artifact_local_in_use(
     """Implementation for ``_resolve_artifact_local`` while eviction is guarded."""
     import shutil
     import tempfile
-    from pathlib import Path
 
-    cache_root = Path.cwd() / ".cache" / "models"
+    cache_root = _disk_cache_root()
     local_path = _artifact_cache_path(cache_root, run_id, artifact_path)
     cache_dir = local_path.parent
 
@@ -813,14 +817,13 @@ def clear_model_cache(run_id: str | None = None) -> int:
     pre-clear counts.
     """
     import shutil
-    from pathlib import Path
 
     # Validate run_id up front — do this before any other work so a bad
     # input fails loudly regardless of whether the disk cache exists.
     if run_id:
         _validate_disk_cache_run_id(run_id)
 
-    cache_root = Path.cwd() / ".cache" / "models"
+    cache_root = _disk_cache_root()
     removed = 0
     if cache_root.exists():
         if run_id:
@@ -1016,7 +1019,7 @@ def load_mlflow_model(
         else:
             with _disk_cache_run_in_use(run_id):
                 local_path = _artifact_cache_path(
-                    Path.cwd() / ".cache" / "models",
+                    _disk_cache_root(),
                     run_id,
                     artifact_path,
                 )

@@ -10,7 +10,7 @@
 | `.python-version` | Pins the checkout's selected Python interpreter version for version-manager tooling. |
 | `.gitattributes` | Enforces LF checkout normalisation, including byte-sensitive JSON test fixtures, so generated and golden-file inputs are stable across platforms. |
 | `uv.lock` | Locks the repository's Python dependency resolution used by the build, docs, and quality workflows. |
-| `hatch_build.py` | Defines `FrontendBuildHook`: validates or explicitly rebuilds embedded frontend assets, detects stale inputs, resolves npm, and turns failed build prerequisites/commands into `RuntimeError`. |
+| `hatch_build.py` | Defines `FrontendBuildHook`: validates or explicitly rebuilds embedded frontend assets, detects stale inputs, resolves npm, and turns failed build prerequisites/commands into runtime errors. |
 | `src/haute/__init__.py` | Defines the installed package's public import surface, which is the package root selected for wheel distribution. |
 | `src/haute/py.typed` | PEP 561 marker declaring that the installed `haute` package ships type information. |
 | `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build`), and build-time dependencies. |
@@ -124,6 +124,10 @@ package input validated by `hatch_build.py`, not hand-edited source.
   job is gated by `needs: build`, so it is not attempted after such an error.
 
 ## Testing
+
+- `tests/test_dependency_contracts.py` covers dependency contracts.
+- `tests/test_optional_dependency_extras.py` covers optional dependency extras.
+- `tests/test_optional_dependency_matrix.py` covers optional-dependency matrix combinations.
 
 - `tests/test_hatch_build.py` covers editable-build behavior, environment-value
   validation ordering, missing/incomplete static artifacts, unconditional

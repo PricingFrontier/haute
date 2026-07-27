@@ -440,10 +440,13 @@ the root itself are never removed.
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
 | `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
-| `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised to the awaiting route handler on response timeout; route code (`pipeline.py`, `json_cache.py`, `output_assemble.py`) catches it to build a 504 response. |
+| `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised to the awaiting route handler on response timeout; route code (`src/haute/routes/pipeline.py`, `json_cache.py`, `output_assemble.py`) catches it to build a 504 response. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 
 ## Testing
+
+- `tests/test_partial_failure.py` covers partial-failure handling.
+- `tests/test_state_transitions.py` covers background-job state transitions.
 
 - `tests/test_job_store.py` — the largest suite; unit-tests CRUD, TTL eviction
   (including exact-boundary and missing-`created_at` cases), artifact-handle cleanup

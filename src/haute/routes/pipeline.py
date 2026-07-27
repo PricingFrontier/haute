@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from haute._cache import GraphFingerprintMemo
+from haute._cache import GraphFingerprintMemo, canonical_json
 from haute._env import float_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
@@ -294,7 +294,7 @@ def _preview_supersession_key(
 def _trace_row_values_fingerprint(row_values: dict[str, Any] | None) -> str:
     if row_values is None:
         return ""
-    payload = json.dumps(row_values, sort_keys=True, separators=(",", ":"))
+    payload = canonical_json(row_values)
     return content_hash_bytes(payload.encode())
 
 

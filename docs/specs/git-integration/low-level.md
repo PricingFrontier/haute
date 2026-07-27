@@ -8,7 +8,7 @@
 | `src/haute/_git_lock.py` | Reentrant per-repository mutation-lock registry shared by the engine and clone-state helpers. Uses a bounded marker-aware identity cache, a stable project-path key across `git init`, a common-Git-directory key for linked worktrees, and weak lock values so idle repositories are evicted. It never invokes Git. |
 | `src/haute/_git_state.py` | Per-clone, untracked JSON state under `<project_root>/.haute/`: working-branch association (`state.json`), UI preferences (`prefs.json`), last-pushed SHAs (`pushed.json`), delete tombstones (`trash.json`). Fail-soft parsing plus lock-scoped atomic replace; no git subprocess calls. |
 | `src/haute/_gitignore_guard.py` | Shared `.gitignore` deny-list and append-only `ensure_gitignore_guards()` used both by project initialization and unborn-repository seeding; preserves tracked `*.haute.json` sidecars while excluding per-clone/cache/data/venv state. |
-| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single `_git` call; converts `_git`'s typed exceptions to HTTP responses via `_handle_git_error`. |
+| `src/haute/routes/git.py` | FastAPI router at `/api/git`. One `def` (sync) handler per endpoint, each a thin `try/except` around a single Git-domain call; converts the domain layer's typed exceptions to HTTP responses via `_handle_git_error`. |
 
 ## Key types and data structures
 

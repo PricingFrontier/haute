@@ -7,9 +7,9 @@
 | `src/haute/routes/optimiser.py` | FastAPI router (`/api/optimiser/*`). Owns request/response assembly, frontier-point summary derivation, artifact-payload building/validation for save and MLflow log, and the module-level `_store`/`_solve_service` singletons. |
 | `src/haute/routes/_optimiser_service.py` | `OptimiserSolveService` and its supporting free functions: pipeline execution, schema/value-contract validation, quote-grid construction, solver dispatch (online and ratebook), background frontier-auto-range estimation, ownership-marked apply/ratebook-factor artifact persistence and stale-startup reporting, and ratebook factor-table canonicalisation/serialisation. |
 | `src/haute/routes/_optimiser_limits.py` | Shared response-size and solver-compute budgets: `APPLY_PREVIEW_ROW_LIMIT`, `FRONTIER_POINT_LIMIT`, `FRONTIER_COMPUTE_LIMIT`, `enforce_frontier_compute_budget`, `limited_apply_preview_payload`, `limited_frontier_payload`. |
-| `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its `OPTIMISER_APPLY` online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
-| `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for the `OPTIMISER_APPLY` node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
-| `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked `OPTIMISER_APPLY` output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
+| `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
+| `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
+| `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked optimiser-apply output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
 | `src/haute/schemas.py` | Shared Pydantic contracts for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
 | `frontend/src/api/types.ts` | Canonical frontend optimiser response contracts, including `OptimiserSolveResult`; panels, stores, and tests import this type directly without panel-owned aliases. |
 
@@ -161,6 +161,12 @@ can still leave OS-temporary files behind.
    size from either explicit config or a byte-budget policy against the parquet's own metadata.
 8. Launches the actual solver thread (`_launch_background`), passing the built
    `QuoteGrid`, config, and (ratebook) the factors handle and factor-level order.
+
+`_execute_pipeline` passes the required-column seed to the execution facade, whose typed
+strategy result is attached to the admitted context and drives the same lazy execution and
+dataframe-cache request. Auto-range obtains its narrow plan through
+`_projection_plan_for_auto_range`; solve/estimate reuse the corresponding request-context
+plan rather than deriving a second optimiser-owned planning policy.
 
 Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
@@ -432,13 +438,13 @@ source_names, source_ids)` is the sole public entry point:
 (`_prepare_online_apply_frame`), constructs a `price_contour.ApplyOptimiser` with the artifact's
 lambdas/constraints/column names, and calls `applier.with_explainer_columns(df)` — the
 `price-contour` API documented in full in
-[`with_explainer_columns` contract](#with_explainer_columns-contract) below. It filters to the
+[`with_explainer_columns` contract](#withexplainercolumns-contract) below. It filters to the
 clicked quote's rows, asserts exactly one `selected` and exactly one `is_baseline` candidate, and
 checks the selected candidate's `scenario_value` against the actual output column (tolerant
 numeric match, see `_values_match`) before returning the full candidate ladder plus the
 selected/baseline rows.
 
-#### `with_explainer_columns` contract
+#### with_explainer_columns contract
 
 `price_contour.ApplyOptimiser.with_explainer_columns(df)` is the one piece of online-apply
 explainability this component deliberately does not reimplement — ratio-constraint linearisation
@@ -560,7 +566,7 @@ returned as a generic `status: "error"` payload.
   > NOTE: worth confirming with the team whether this split is intentional policy or an
   > inconsistency to fix.
 - **`decision_score`/`is_baseline` tie-breaking is fully owned by `price-contour`.** The
-  [`with_explainer_columns` contract](#with_explainer_columns-contract) requires it to match
+  [`with_explainer_columns` contract](#withexplainercolumns-contract) requires it to match
   `apply(df)`'s tie-breaking exactly, including which `scenario_value` is treated as baseline
   (`== 1.0` exactly, else nearest to `1.0`, else stable ordering) — this component never
   re-derives that rule, only consumes and reconciles the result.
@@ -620,6 +626,8 @@ returned as a generic `status: "error"` payload.
   never included in the client-facing detail string.
 
 ## Testing
+
+- `tests/test_optimiser_contracts.py` covers optimiser contract invariants.
 
 Tests live under `tests/` (unit/integration, `tests/performance/` for size/perf assertions), and
 share fixtures from `tests/optimiser_fixtures.py`. No dedicated property-based tests were found
@@ -731,14 +739,6 @@ price-contour-emitted level-label tie-breaking logic beyond the specific fixture
 `test_optimiser_ratebook_apply_agreement.py` and
 `test_optimiser_apply_trace_enrichment.py`; the dtype agreement matrix itself is exhaustive
 over the supported dtype families.
-
-## Polars backend contracts (0.6.0)
-
-The optimiser service boundary accepts the universal execution facade's single typed
-plan result for estimates, setup, solve, and auto-range. It forwards bounded diagnostics
-and final feature provenance unchanged to optimiser results and uses that same result
-for related admission decisions. Execution-engine defines the planner. Remaining optimiser
-improvement work is tracked in the [optimiser roadmap](../../roadmap/optimiser.md).
 
 ## Approved change contract — prerelease canonical frontier ranges
 

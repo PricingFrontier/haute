@@ -1,7 +1,7 @@
 # WS-03 — Execution engine, background jobs & sandbox
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-03 · Status: delivered in PR #138.
 
 **Branch:** `opus5/ws-03-execution-jobs-sandbox`
 

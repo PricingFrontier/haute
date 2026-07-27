@@ -1,7 +1,7 @@
 # WS-07 — Modelling & MLflow model registry
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-07 · Status: delivered in PR #140.
 
 **Branch:** `opus5/ws-07-modelling-registry`
 

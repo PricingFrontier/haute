@@ -8,7 +8,7 @@
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` profile-likelihood estimation; `_resolve_glm_terms()` term resolution. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare data, split, train, compute metrics, save artifacts, and optionally log to MLflow; also defines `TrainResult` and the intermediate stage types. |
-| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → `TrainingJob` kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`). |
+| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`). |
 | `src/haute/modelling/_split.py` | `SplitConfig`, `split_data`/`split_mask` for random/temporal/group strategies, and partition constants. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
@@ -146,6 +146,9 @@
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`), creates a same-filesystem
    staging root, and starts a daemon supervisor thread around a spawn child.
+   `TrainService` consumes the execution facade's typed projection result throughout
+   materialisation; its final feature inclusion/exclusion provenance is retained in the
+   job response rather than re-derived by a modelling-owned planner.
 3. In the child, `_run_training_process_job` reconstructs `TrainingJob` and a fresh
    bounded `ExecutionContext`, then runs fit/evaluation/diagnostics and stages the model
    plus per-model feature contract. It returns progress events and a validated result
@@ -342,6 +345,10 @@ native CatBoost flavor.
   dispersion phase runs in one spawn child supervised by one daemon parent thread;
   validated progress/iteration callbacks use the job store's `atomic_update`, so status
   polling from other threads/requests is race-free.
+- Child progress transport is non-blocking and capped at 10,000 delivered events.
+  Full-queue or over-budget updates are dropped, the loss count is reported on the next
+  delivered event/end marker, and parent drains are batch-bounded so timeout and
+  cancellation checks cannot be starved by a fast producer.
 - GPU CatBoost fits run on a nested worker thread
   (`_run_gpu_fit_with_metric_polling`, `_algorithms.py`) because CatBoost has no
   progress-callback support under GPU; the caller thread polls
@@ -485,35 +492,41 @@ native CatBoost flavor.
 
 ## Testing
 
-Tests live in the flat `tests/` directory (not mirroring the package layout) and total
-roughly 700+ test functions across about 30 files that exercise this component:
+- `tests/performance/test_training_scoring_wide_perf.py` covers wide training/scoring performance.
+- `tests/test_ave.py` covers AVE modelling behaviour.
+- `tests/test_gpu_fit_cancel.py` covers GPU fit cancellation.
+- `tests/test_mem_helpers.py` covers modelling memory helpers.
+- `tests/test_mlflow_log.py` covers MLflow logging.
+- `tests/test_mlflow_log_button_roundtrip.py` covers MLflow log-button round trips.
 
-- `test_modelling.py` (105 tests) — the broad unit-test base for `TrainingJob`,
+Tests live in the flat `tests/` directory rather than mirroring the package layout:
+
+- `test_modelling.py` — the broad unit-test base for `TrainingJob`,
   algorithms, metrics, and splits.
-- `test_modelling_routes.py` (123 tests) — HTTP-level integration tests for every route
+- `test_modelling_routes.py` — HTTP-level integration tests for every route
   in `routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
   status polling, completion payload) and `TestDispersionErrorPaths` (every 400
   validation branch, worker-side failure mapping, cancellation).
-- `test_modelling_export.py` (74 tests) — exhaustive coverage of
+- `test_modelling_export.py` — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules.
 - `test_train_config_builder.py` — unit tests for the config→kwargs builder,
   including regression coverage for the GLM-vs-CatBoost key-routing bugs it was written
   to prevent, and the Negative Binomial `theta` gate (unset fails loud, top-level
   `theta` passes, non-negbinomial families are unaffected, `theta` survives script
   export).
-- `test_metrics.py` (96 tests) and `test_metrics_gini_ties.py` (27 tests, labelled the
-  "C6 regression suite") — metric correctness and the tie-corrected Gini/Lorenz
+- `test_metrics.py` and `test_metrics_gini_ties.py` (the "C6 regression suite") —
+  metric correctness and the tie-corrected Gini/Lorenz
   row-order-independence guarantee.
-- `test_charts.py` (64 tests) and `test_model_card.py` (33 tests) — SVG chart and HTML
+- `test_charts.py` and `test_model_card.py` — SVG chart and HTML
   model-card generation.
-- `test_feature_contract.py` (44 tests) and `test_mlflow_signature.py` (32 tests) —
+- `test_feature_contract.py` and `test_mlflow_signature.py` —
   contract build/save/load/hash-verification and MLflow signature construction.
-- `test_modelling_train_score_contract.py` (14 tests) — explicit train↔score contract
+- `test_modelling_train_score_contract.py` — explicit train↔score contract
   regressions: feature/categorical order mismatch, MLflow signature round-trip,
   categorical type mismatch, GLM column selection preserving categorical metadata
   across save/load.
-- `test_rustystats_algorithm.py` (37 tests, skipped when RustyStats isn't installed)
-  and `test_glm_integration.py` (24 tests) — GLM fit/predict/save/diagnostics and
+- `test_rustystats_algorithm.py` (skipped when RustyStats isn't installed)
+  and `test_glm_integration.py` — GLM fit/predict/save/diagnostics and
   integration-gap regressions. `TestNegBinomialThetaThreading` pins that an unset
   `theta` really is RustyStats' silent-1.0 default and that a set `theta` reaches the
   fit; `TestEstimateGlmDispersion` validates the profile-likelihood search itself — the
@@ -522,10 +535,10 @@ roughly 700+ test functions across about 30 files that exercise this component:
   the `on_fit` cancellation hook, and the unknown-parameter/family-mismatch rejections;
   `TestBuildInteractionsEmptySlots` pins the unfilled-interaction-row fix described
   above.
-- `test_train_service_coverage.py` (40 tests) and
-  `test_train_service_helpers_coverage.py` (13 tests) — `TrainService` error/cleanup
+- `test_train_service_coverage.py` and
+  `test_train_service_helpers_coverage.py` — `TrainService` error/cleanup
   branches and its pure column-demand helper functions.
-- `test_algorithms_coverage.py` (103 tests) — targeted coverage of `_algorithms.py` /
+- `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
 - Narrow, remediation-pinned regression suites: `test_training_memory_safety.py`,
@@ -537,6 +550,10 @@ roughly 700+ test functions across about 30 files that exercise this component:
   `test_bundle6_trust_model_cleanup.py`, `test_catboost_training_demand.py`,
   `test_cli_train.py`, `test_model_explainability.py`, `test_train_param_routing.py`,
   and `test_modelling_export.py`.
+- `tests/test_training_worker_protocol.py` exercises the spawn-picklable training and
+  dispersion entrypoints, typed progress/results, manifest validation, and stable
+  terminal-reason mapping. Service tests inject a deterministic protocol runner rather
+  than relying on fork inheritance or patching child-process objects.
 
 Strategy is overwhelmingly unit/regression: fast, isolated tests per module, heavy use
 of `unittest.mock` to avoid exercising real CatBoost/RustyStats/MLflow where feasible,
@@ -549,45 +566,6 @@ isolation — split logic (random/temporal/group strategies and mask functions) 
 exercised indirectly through `test_modelling.py`,
 `test_training_null_target_fused_split.py`, and
 `test_training_split_streaming.py` rather than one focused suite.
-
-## Polars backend contracts (0.6.0)
-
-`TrainService` and estimate paths consume the execution facade's typed result rather
-than selecting collection strategy themselves. Their response and job diagnostics retain
-the final feature inclusion/exclusion and provenance supplied by that result; execution
-engine remains the sole owner of planning mechanics. Remaining modelling improvement work is
-tracked in the [modelling roadmap](../../roadmap/modelling.md).
-
-## Approved change contract — 0.8.0 isolated fit and dispersion
-
-- Add module-level, spawn-picklable `_run_training_process_job` and
-  `_run_dispersion_process_job` entrypoints. They reconstruct `TrainingJob` and a child
-  `ExecutionContext` from versioned plain requests.
-- `TrainService._launch_background` and `_launch_dispersion_background` delegate process
-  supervision to `IsolatedJobSupervisor`; parent callbacks only consume validated events and
-  manifests. Existing registries still own stop reasons and the parent admitted context still
-  owns its reservation until supervisor completion.
-- Training stages model and feature-contract files below a hidden parent-created directory in
-  the configured output filesystem. Completion validates both manifests and publishes with
-  same-filesystem replaces plus rollback. The staged response model path must name the model
-  manifest, the model stem must equal the requested training-job name, and the feature-contract
-  filename must be the canonical companion for that model stem. The response's `model_path` is
-  rewritten to the final path. MLflow logging consumes the staged model before publication; a
-  failed run never exposes a partial final model. Replacing the complete pair is the commit point:
-  rollback remains mandatory before it, while failure to delete old backups or the empty staging
-  root after it is logged and cannot downgrade the committed job.
-- Progress emission is non-blocking. The shared protocol drops updates when its queue is full or
-  its 10,000-delivered-event budget is exhausted, reports loss counts on the next event/end
-  marker, and continues fitting. Parent draining is batch-bounded so timeout and cancellation
-  checks are not starved by a fast producer.
-- Dispersion returns bounded scalar metadata and no artifact. Candidate-fit progress uses typed
-  events; the parent writes `param`, `value`, `llf`, and `n_fits` only on validated completion.
-- Child exceptions are translated to stable terminal reasons before transport:
-  public contract/`ValueError` to `contract_error`, execution memory to `memory_limited`,
-  execution cancellation to `cancelled`, and unexpected exceptions to `error`.
-- Tests use real spawn only for protocol/entrypoint contract cases. Service unit tests inject a
-  deterministic protocol runner rather than depending on fork inheritance or patching objects
-  inside a child.
 
 ## Approved change contract — canonical-only modelling artifacts
 

@@ -1,7 +1,7 @@
 # WS-12 — Git integration (full stack)
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: unassigned · Status: not started.
+`opus-5-review.md`. Owner: WS-12 · Status: delivered in PR #141.
 
 **Branch:** `opus5/ws-12-git`
 

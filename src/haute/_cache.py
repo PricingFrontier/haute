@@ -942,6 +942,9 @@ def canonical_json(value: Any) -> str:
     cache collisions and phantom invalidations are born — do not add a
     second one; import this.
 
+    The persisted feature-contract ``_hash_payload`` encoder is a deliberate
+    compatibility exception: its historic byte representation must not change.
+
     Canonical rules:
 
       * Mappings (any :class:`collections.abc.Mapping`) require string

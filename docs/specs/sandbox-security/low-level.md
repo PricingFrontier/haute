@@ -4,8 +4,8 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/_sandbox.py` | AST validation of user code (`validate_user_code`), restricted `exec()` globals (`safe_globals`), project-root path containment (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
-| `src/haute/_user_exec.py` | The single `exec()` call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
+| `src/haute/_sandbox.py` | AST validation of user code (`validate_user_code`), restricted execution globals (`safe_globals`), project-root path containment (`validate_project_path`), and the restricted pickle/joblib unpicklers (`safe_unpickle`, `safe_joblib_load`). |
+| `src/haute/_user_exec.py` | The single dynamic-execution call site for pipeline node code (`_exec_user_code`): namespace assembly, validation call, execution, and traceback line annotation. |
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
@@ -339,6 +339,8 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   denied, disk full) propagate uncaught.
 
 ## Testing
+
+- `tests/test_host_binding.py` covers host-binding sandbox security contracts.
 
 - `tests/test_sandbox.py` — the primary suite for `_sandbox.py`. `TestSafeGlobals`
   and `TestValidateUserCode` cover the happy-path/blocked-construct matrix for

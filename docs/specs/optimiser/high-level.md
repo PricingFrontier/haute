@@ -46,7 +46,7 @@ Out of scope:
   linearisation, ratebook coordinate descent) — these live in the external `price-contour`
   library, which this component treats as a black box with a documented contract (for the
   explainability surface specifically, see the
-  [`with_explainer_columns` contract](low-level.md#with_explainer_columns-contract) in the
+  [`with_explainer_columns` contract](low-level.md#withexplainercolumns-contract) in the
   low-level spec).
 - Background job storage, lifecycle transitions, cancellation registries, and artifact TTL
   eviction — see [background-jobs](../background-jobs/high-level.md).
@@ -74,6 +74,11 @@ single-flight key prevents a solve setup and a background auto-range setup from 
 for the same graph/node. A repeated background auto-range start with the same node id and graph
 fingerprint returns the active job id (request-only chunk-size differences are not part of that
 identity), while a conflicting operation receives HTTP 409.
+
+Estimate, solve setup, and auto-range pipeline materialisation all consume the execution
+facade's typed projection/strategy result for their request context. The same bounded
+strategy diagnostics and deterministic feature provenance feed execution and admission;
+the optimiser does not select a second planning policy behind the execution engine.
 
 Once a solve completes, its lambdas, objective/constraint totals, convergence status, and (for
 ratebook) factor tables are available as a job summary. From there a user can:
@@ -303,14 +308,6 @@ zero, or negative value fails loudly as a server configuration error; it never d
 > or corrupt artifact as a 500 ("Re-run the solve..."), even though a missing artifact caused by
 > user action (e.g. a stale handle after the job's TTL evicted it) is arguably a 400/404-shaped
 > problem rather than a server error. See [low-level.md](low-level.md#error-handling).
-
-## Polars backend contracts (0.6.0)
-
-Optimiser estimate, setup, solve, and auto-range flows will use one execution-plan
-result for a given graph and request context. Each exposes the same bounded strategy
-diagnostics and deterministic feature provenance, so admission estimates and execution
-cannot silently select divergent plans. Execution-engine owns planner internals. Remaining
-optimiser improvement work is tracked in the [optimiser roadmap](../../roadmap/optimiser.md).
 
 ## Approved change contract — prerelease canonical frontier ranges
 

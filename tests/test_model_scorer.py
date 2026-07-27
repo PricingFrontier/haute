@@ -1327,19 +1327,16 @@ class TestRegisterTempCleanup:
 
 
 class TestScoreBatchedStandalone:
-    @patch("haute._mlflow_io._score_eager")
-    @patch("haute._mlflow_io.load_mlflow_model")
-    def test_batched_standalone_creates_temp_and_cleans_input(self, mock_load, mock_eager):
-        """_score_batched method creates temp files and returns a LazyFrame."""
+    def test_batched_standalone_creates_temp_and_cleans_input(self):
+        """Standalone batch scorer creates temp files and returns a LazyFrame."""
         sm = _make_scoring_model(
             feature_names=["a", "b"],
             predictions=np.array([0.1, 0.2]),
         )
-        mock_load.return_value = sm
+        from haute._model_scorer import _score_batched_standalone
 
-        scorer = ModelScorer(source_type="run", run_id="abc", source="batch")
         lf = pl.DataFrame({"a": [1.0, 2.0], "b": [3.0, 4.0]}).lazy()
-        result = scorer._score_batched(sm, lf, ["a", "b"])
+        result = _score_batched_standalone(sm, lf, ["a", "b"], "prediction", "regression")
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
         assert "prediction" in collected.columns
@@ -1347,23 +1344,21 @@ class TestScoreBatchedStandalone:
 
 
 # ===========================================================================
-# ModelScorer._score_eager
+# _mlflow_io._score_eager
 # ===========================================================================
 
 
-class TestModelScorerScoreEager:
-    @patch("haute._mlflow_io._score_eager")
-    def test_score_eager_delegates(self, mock_eager):
-        """_score_eager delegates to the shared helper."""
-        sm = _make_scoring_model(feature_names=["a", "b"])
-        mock_eager.return_value = pl.DataFrame({"a": [1], "prediction": [0.5]}).lazy()
+class TestScoreEager:
+    def test_score_eager_returns_scored_lazy_frame(self):
+        """The shared eager scorer returns a lazy prediction frame."""
+        sm = _make_scoring_model(feature_names=["a", "b"], predictions=np.array([0.5]))
 
-        scorer = ModelScorer(source_type="run", run_id="abc", task="regression")
+        from haute._mlflow_io import _score_eager
+
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        result = scorer._score_eager(sm, lf, ["a", "b"])
+        result = _score_eager(sm, lf, ["a", "b"], "prediction", "regression")
 
-        mock_eager.assert_called_once_with(sm, lf, ["a", "b"], "prediction", "regression")
-        assert isinstance(result, pl.LazyFrame)
+        assert result.collect()["prediction"].to_list() == [0.5]
 
 
 # ===========================================================================

@@ -15,8 +15,8 @@ pipeline for commands that resolve the project default.
 
 It is not the Haute package's runtime implementation or a guaranteed runnable
 demonstration from a fresh clone. In particular, it is missing
-`rating/data/quotes/nest_example.json`, the quote JSON input referenced by the
-generated main pipeline, and `rating/config/expander/premium.json`, the
+rating/data/quotes/nest_example.json, the quote JSON input referenced by the
+generated main pipeline, and rating/config/expander/premium.json, the
 scenario-expander sidecar named by the generated submodel; neither is part of
 the tracked reference tree.
 
@@ -100,8 +100,8 @@ Out of scope:
 ## Failure model
 
 - The reference API-input function raises `FileNotFoundError` when
-  `rating/data/quotes/nest_example.json` is absent, before it can return a
-  frame. The generated submodel's `rating/config/expander/premium.json` is
+  rating/data/quotes/nest_example.json is absent, before it can return a
+  frame. The generated submodel's rating/config/expander/premium.json is
   likewise not a tracked reference artifact; no behaviour for a missing or
   locally supplied version is promised here.
 - A sidecar without a valid `tables` list fails through the shared API-input configuration

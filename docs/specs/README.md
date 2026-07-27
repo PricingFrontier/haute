@@ -97,7 +97,7 @@ This is node-type convergence, not graph cardinality: a pipeline may contain mul
 and outputs.
 
 Backend and frontend module-by-module layouts are not duplicated here — each component's
-`low-level.md` has an accurate, current module map; see the component tables below.
+low-level specification has an accurate, current module map; see the component tables below.
 
 ## Repository coverage contract
 

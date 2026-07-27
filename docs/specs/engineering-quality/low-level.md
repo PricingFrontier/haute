@@ -7,6 +7,7 @@
 | `pyproject.toml` | Configures Ruff, pytest, coverage, critical backend coverage thresholds, mypy, pinned development tools, and excludes non-product directories from the normal Ruff target. |
 | `AGENTS.md` | Records repository-local engineering and review instructions for contributors and coding agents; it is guidance, not executable build or test configuration. |
 | `CLAUDE.md` | Directs Claude-compatible coding agents to the repository's authoritative `AGENTS.md` engineering instructions without duplicating policy. |
+| `CUserspriciAppDataLocalTempclaudeC--Users-prici-haute9daf718f-4e77-45e0-851a-0e379f6253dascratchpadpr139.diff` | Preserved point-in-time PR #139 review scratch diff; historical evidence only, not a build, test, or runtime input. |
 | `.gitignore` | Excludes generated builds, virtual environments, caches, local pipeline output/data, tool state, and other non-source artifacts from normal version-control discovery. |
 | `docs/specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
@@ -214,9 +215,11 @@
 - Every component roadmap has `Scope`, `Priorities`, and `Planned improvements`
   sections. Every package supplies `Why`, `Plan`, `Acceptance`, `Dependencies`,
   and `Evidence`; a package appears in exactly one owning component.
-- The normal Ruff configuration excludes `rating/`, `modules/`, and `outputs/`;
-  that is a lint-target boundary, not evidence that these paths are shipped
-  runtime code.
+- The normal Ruff configuration excludes `rating/`, `modules/`, `outputs/`, and
+  generated pytest basetemp families (`.codex-pytest-*`, `.ops-pytest-temp`,
+  `.providers-pytest-temp`, `.pytest-tmp*`). The former are lint-target
+  boundaries; the latter may contain intentionally unreadable test fixtures and
+  are never source inputs.
 
 ## Error handling
 
@@ -244,6 +247,18 @@
   so the registry cannot accumulate silent debt.
 
 ## Testing
+
+- `tests/test_bug_regressions.py` covers bug regressions.
+- `tests/test_bugfixes.py` covers bugfix contracts.
+- `tests/test_coverage_gaps.py` covers identified coverage gaps.
+- `tests/test_decoupling_contracts.py` covers decoupling contracts.
+- `tests/test_dry_fixes.py` covers DRY fixes.
+- `tests/test_dry_refactors.py` covers DRY refactors.
+- `tests/test_performance_docs.py` covers performance documentation.
+- `tests/test_property.py` covers property-based contracts.
+- `tests/test_repository_hygiene.py` covers repository hygiene.
+- `tests/test_small_module_contracts.py` covers small-module contracts.
+- `tests/test_test_debt.py` covers test-debt tracking.
 
 - Active backend test groups live in `tests/`: unit, property-based,
   regression, API/contract, end-to-end, security/sandbox, and repository

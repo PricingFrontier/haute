@@ -1,7 +1,7 @@
 # WS-04 — Server API, routing & JSON output assembly
 
 Part of the Opus 5 review split (`opus-5-workstreams.md`). Evidence and fix guidance:
-`opus-5-review.md`. Owner: WS-04 · Status: complete; cross-stream deferrals recorded.
+`opus-5-review.md`. Owner: WS-04 · Status: delivered in PR #136; cross-stream deferrals recorded.
 
 **Branch:** `ws-04`
 

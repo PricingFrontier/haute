@@ -105,6 +105,10 @@ Unsupported bounded-memory operations fail rather than falling back to eager col
 Connector, cancellation, deadline, quota, and schema failures abort staging and preserve the
 previous pointer.
 
+When `overwrite=false`, an existing data-output destination raises
+`DataOutputDestinationExistsError`; the server maps that explicit refusal to HTTP 409 rather
+than treating it as an I/O failure or replacing the destination.
+
 Malformed pointers, digest mismatches, metadata mismatches, invalid generation identifiers,
 or invalid Parquet footer/schema evidence raise `SourceCacheCorruptError`; callers do not
 silently rebuild or fall back. Transient operating-system access errors propagate as
