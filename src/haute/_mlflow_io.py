@@ -1262,8 +1262,14 @@ def _prepare_predict_frame(
 
     if flavor == "pyfunc":
         # Named DataFrame per the model signature; mlflow's enforcement
-        # sees exactly the dtypes the pipeline produced.
-        return selected.to_pandas()
+        # sees exactly the dtypes the pipeline produced. MLflow's scalar
+        # ``datetime`` type is timezone-agnostic and rejects pandas'
+        # timezone-aware dtype, so preserve the instant canonically as UTC
+        # before removing the zone at this boundary.
+        pandas_frame = selected.to_pandas()
+        for column in pandas_frame.select_dtypes(include=["datetimetz"]).columns:
+            pandas_frame[column] = pandas_frame[column].dt.tz_convert("UTC").dt.tz_localize(None)
+        return pandas_frame
 
     numeric_cols = [c for c in features if c not in cat_feature_names]
     if numeric_cols:

@@ -258,6 +258,29 @@ class TestRatingStepExecutor:
         with pytest.raises(ValueError, match=r"tables\[0\]\.factors"):
             _build_node_fn(node)
 
+    @pytest.mark.parametrize(
+        "table",
+        [
+            {"factors": "band", "outputColumn": "out", "entries": []},
+            {"factors": ["band"], "outputColumn": "out", "entries": {}},
+            {"factors": [], "outputColumn": "out", "entries": [{"value": 1.0}]},
+        ],
+        ids=["non_list_factors", "non_list_entries", "empty_factors_with_entries"],
+    )
+    def test_malformed_collections_generated_executor_parity(self, table: dict) -> None:
+        """Generated runtime and executor construction reject the same bad table shape."""
+        from haute._rating import apply_rating_step_from_config
+
+        config = {"tables": [table]}
+        with pytest.raises(ValueError) as generated_error:
+            apply_rating_step_from_config(pl.DataFrame({"band": ["A"]}).lazy(), config)
+
+        node = _rating_node("malformed", [table])
+        with pytest.raises(ValueError) as executor_error:
+            _build_node_fn(node)
+
+        assert str(executor_error.value) == str(generated_error.value)
+
     def test_incomplete_table_not_registered_for_combined_output(self):
         """F082: an incomplete table is a passthrough (no output column), so it
         must NOT be registered for a combined output — otherwise the combine

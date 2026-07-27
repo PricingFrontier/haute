@@ -26,6 +26,7 @@ import json
 import os
 from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -350,6 +351,77 @@ class TestBundledPathsAreAbsolute:
                 f"from CWD {os.getcwd()!r}"
             )
             assert p.read_bytes() == real_file.read_bytes()
+
+
+class TestArtifactContainmentAndModelContracts:
+    @staticmethod
+    def _model_graph(config: dict) -> object:
+        return _g(
+            {"nodes": [{"id": "model", "data": {"nodeType": "modelScore", "config": config}}]}
+        )
+
+    @pytest.mark.parametrize(
+        "artifact_path",
+        [
+            "C:/absolute/model.cbm",
+            "/absolute/model.cbm",
+            "../model.cbm",
+            "models/../model.cbm",
+            ["model.cbm"],
+        ],
+    )
+    def test_model_artifact_identifier_is_rejected_before_download(
+        self, tmp_path: Path, artifact_path: object
+    ) -> None:
+        graph = self._model_graph(
+            {"sourceType": "run", "run_id": "run", "artifact_path": artifact_path}
+        )
+        with pytest.raises(DeployError, match="artifact_path"):
+            collect_artifacts(graph, [], tmp_path)
+
+    def test_explicit_feature_contract_wins_and_missing_fails(self, tmp_path: Path) -> None:
+        model = tmp_path / "model.cbm"
+        model.write_bytes(b"model")
+        adjacent = tmp_path / "feature_contract.json"
+        adjacent.write_text("adjacent")
+        explicit = tmp_path / "chosen.json"
+        explicit.write_text("explicit")
+        graph = self._model_graph(
+            {
+                "sourceType": "run",
+                "run_id": "run",
+                "artifact_path": "model.cbm",
+                "feature_contract_path": "chosen.json",
+            }
+        )
+        with patch("haute.deploy._bundler._download_model_artifact", return_value=model):
+            artifacts = collect_artifacts(graph, [], tmp_path)
+        assert artifacts["model__feature_contract.json"] == explicit
+
+        graph.nodes[0].data.config["feature_contract_path"] = "missing.json"
+        with pytest.raises(FileNotFoundError, match="feature contract"):
+            collect_artifacts(graph, [], tmp_path)
+
+    @pytest.mark.parametrize("raw_path", ["../outside.parquet", "C:/outside.parquet"])
+    def test_local_artifact_escape_is_rejected(self, tmp_path: Path, raw_path: str) -> None:
+        graph = _make_datasource_graph("static", raw_path)
+        with pytest.raises(DeployError, match="path"):
+            collect_artifacts(graph, [], tmp_path)
+
+    def test_symlinked_local_artifact_escape_is_rejected(self, tmp_path: Path) -> None:
+        project = tmp_path / "project"
+        project.mkdir()
+        outside = tmp_path / "outside.parquet"
+        pl.DataFrame({"x": [1]}).write_parquet(outside)
+        link = project / "linked.parquet"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlink creation is unavailable on this platform")
+
+        graph = _make_datasource_graph("static", "linked.parquet")
+        with pytest.raises(DeployError, match="outside.*project"):
+            collect_artifacts(graph, [], project, project_root=project)
 
 
 class TestSnapshotGenerationLease:

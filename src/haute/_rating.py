@@ -841,8 +841,16 @@ def _apply_rating_table(
     counted and logged at WARNING.  A usable ``defaultValue`` always
     fills misses with no error or warning.
     """
-    factors: list[str] = table.get("factors", []) or []
-    entries: list[dict[str, Any]] = table.get("entries", []) or []
+    raw_factors = table.get("factors")
+    raw_entries = table.get("entries")
+    factors = [] if raw_factors is None else raw_factors
+    entries = [] if raw_entries is None else raw_entries
+    if not isinstance(factors, list):
+        raise ValueError("rating table factors must be a list")
+    if not isinstance(entries, list):
+        raise ValueError("rating table entries must be a list")
+    if entries and not factors:
+        raise ValueError("rating table entries require a non-empty factors list")
     output_col: str = table.get("outputColumn", "")
     default_raw = table.get("defaultValue")
     on_missing = _normalise_on_missing(table.get("onMissing"))

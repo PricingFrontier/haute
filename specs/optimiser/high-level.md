@@ -271,6 +271,16 @@ state. Cancellation and timeout are terminal-state guards as well as user-visibl
 either transition, the worker checks the stop signal before any parent-job mutation and discards
 its late result.
 
+Unknown pipeline and grid-construction failures follow the accepted
+[OPT-D01 error-detail policy](error-detail-policy.md): both are internal 500
+outcomes with fixed client details and full server-side diagnostics. Explicit
+configuration/schema/domain validation remains an actionable 4xx. Solver
+failures are classified by their boundary: a typed input-adaptation failure is
+`contract_error`, an exception translated at the external solver boundary is
+an algorithm `error`, and an untyped orchestration/post-processing exception is
+an unexpected `error`; a bare `ValueError` is never treated as user data solely
+because of its Python type.
+
 Ratebook mode has no per-quote result dataframe, so the apply-preview and apply-trace
 affordances return an explicit 422 contract error naming the correct alternative (the factor
 tables on the result, or re-applying a saved artifact through an `OPTIMISER_APPLY` node) rather
@@ -279,9 +289,10 @@ some other way.
 
 An optimiser artifact is never written with a non-finite value or (for ratebook) a missing
 factor-table/dtype-contract section; the save/log request is rejected before the write, listing
-every offending path in the payload. Loading a previously saved artifact that is missing or
-corrupt raises a 500 with a "re-run the solve to regenerate it" message rather than leaking the
-underlying filesystem or parquet exception. Applying a structurally valid legacy ratebook
+every offending path in the payload. A valid server-owned handle whose artifact has been
+removed or expired returns 410 with a stable re-run message. An invalid server-owned handle or
+a present-but-corrupt artifact returns a sanitized 500; filesystem and parquet details remain
+server-side. Applying a structurally valid legacy ratebook
 artifact without `factor_dtypes`, or applying one to a changed factor dtype, raises
 `RatingFactorDtypeContractError` before lookup construction.
 
@@ -304,16 +315,13 @@ literal `quote_id` field.
 `HAUTE_SOLVER_TIMEOUT` is optional, but when present it must be a positive integer. A malformed,
 zero, or negative value fails loudly as a server configuration error; it never disables timeouts.
 
-> NOTE: [Tracked by OPT-D01](../roadmap/optimiser.md#opt-d01--generic-setup-error-detail-policy).
-> `_load_apply_result_artifact`/`_load_ratebook_factors_artifact` always report a missing
-> or corrupt artifact as a 500 ("Re-run the solve..."), even though a missing artifact caused by
-> user action (e.g. a stale handle after the job's TTL evicted it) is arguably a 400/404-shaped
-> problem rather than a server error. See [low-level.md](low-level.md#error-handling).
+The classification and disclosure rationale is recorded in the accepted
+[OPT-D01 error-detail policy](error-detail-policy.md).
 
 ## Approved change contract — prerelease canonical frontier ranges
 
 This contract implements
-[ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
+[prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats).
 Every configured constraint range is represented only by
 `frontier_ranges[constraint] = {"min": number, "max": number}`. There is no global-range reader,
 fallback, mirroring, or migration in the service or optimiser UI.

@@ -409,6 +409,8 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
     for ti, table in enumerate(tables):
         if not isinstance(table, dict):
             raise ApiInputSchemaError(f"v2 tables[{ti}] is not a dict")
+        if "emit" in table and type(table["emit"]) is not bool:
+            raise ApiInputSchemaError(f"v2 tables[{ti}].emit must be a bool")
         path = table.get("path")
         if not isinstance(path, str) or not path:
             raise ApiInputSchemaError(
@@ -471,6 +473,16 @@ def validate_v2_schema(config: dict[str, Any]) -> None:
                 raise ApiInputSchemaError(
                     f"v2 tables[{ti}].columns[{ci}] is not a dict",
                 )
+            if "selected" in col and type(col["selected"]) is not bool:
+                raise ApiInputSchemaError(
+                    f"v2 tables[{ti}].columns[{ci}].selected must be a bool",
+                )
+            if "status" in col:
+                status = col["status"]
+                if not isinstance(status, str) or status not in {"Confirmed", "Inferred"}:
+                    raise ApiInputSchemaError(
+                        f"v2 tables[{ti}].columns[{ci}].status must be Confirmed or Inferred",
+                    )
             cname = col.get("name")
             if not isinstance(cname, str) or not cname:
                 raise ApiInputSchemaError(

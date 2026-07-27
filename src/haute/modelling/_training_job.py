@@ -125,15 +125,21 @@ def _training_streaming_collect(
 def _polars_dtype_name(dtype: Any) -> str:
     """Canonical dtype name used by the MLflow signature and feature contract.
 
-    Collapses Polars' many integer/float variants to the four dtypes the
-    ``build_signature`` helper understands (``Int64``, ``Float64``,
-    ``String``, ``Boolean``).  Unknown dtypes return their str() form so
-    bugs are loud at contract-build time.
+    Collapses Polars' many integer/float variants to the scalar numeric/string
+    types ``build_signature`` understands, while preserving Date, full
+    parameterised Datetime, and other unknown descriptors for deliberate
+    validation at contract-build time.
     """
     if dtype == pl.Boolean:
         return "Boolean"
     if dtype in (pl.Utf8, pl.String, pl.Categorical):
         return "String"
+    if dtype == pl.Date:
+        return "Date"
+    if getattr(dtype, "base_type", lambda: None)() == pl.Datetime:
+        # Preserve Polars' full canonical descriptor, including time unit and
+        # zone, so the feature contract remains faithful at the MLflow boundary.
+        return str(dtype)
     if dtype.is_integer() if hasattr(dtype, "is_integer") else False:
         return "Int64"
     if dtype.is_float() if hasattr(dtype, "is_float") else False:
@@ -480,6 +486,8 @@ class TrainingJob:
                             "columns. Check that your factor names match column names in the "
                             "training data."
                         )
+
+            self._validate_monotone_constraints(prepared)
 
             _report("Splitting data", 0.15)
             split_result = self._split_data(
@@ -1471,6 +1479,55 @@ class TrainingJob:
                 cat_features.append(col)
 
         return features, cat_features
+
+    def _validate_monotone_constraints(self, prepared: _PreparedData) -> None:
+        """Validate monotone constraints against the final training features."""
+        constraints = self.monotone_constraints
+        if constraints is None or constraints == {}:
+            return
+        if type(constraints) is not dict:
+            raise ValueError("monotone_constraints must be a dict mapping feature names to -1 or 1")
+
+        invalid_names = sorted(
+            (key for key in constraints if not isinstance(key, str) or not key.strip()),
+            key=lambda key: (type(key).__name__, repr(key)),
+        )
+        if invalid_names:
+            raise ValueError(
+                "monotone_constraints keys must be non-empty strings; invalid keys: "
+                f"{invalid_names}"
+            )
+
+        invalid_directions = sorted(
+            key
+            for key, direction in constraints.items()
+            if type(direction) is not int or direction not in (-1, 1)
+        )
+        if invalid_directions:
+            raise ValueError(
+                "monotone_constraints values must be exact Python ints -1 or 1; "
+                f"invalid features: {invalid_directions}"
+            )
+
+        feature_set = set(prepared.features)
+        unknown_features = sorted(key for key in constraints if key not in feature_set)
+        if unknown_features:
+            raise ValueError(
+                "monotone_constraints may only reference final selected features; "
+                f"unknown features: {unknown_features}"
+            )
+
+        nonnumeric_features = sorted(
+            key
+            for key in constraints
+            if prepared.feature_dtypes.get(key) not in {"Int64", "Float64"}
+        )
+        if nonnumeric_features:
+            dtypes = {key: prepared.feature_dtypes.get(key) for key in nonnumeric_features}
+            raise ValueError(
+                "monotone_constraints require numeric Int64 or Float64 features; "
+                f"non-numeric features: {dtypes}"
+            )
 
     def _feature_dtypes_for_contract(self, features: list[str]) -> dict[str, str]:
         """Return a ``{feature: dtype_name}`` map for the contract/signature.

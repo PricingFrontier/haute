@@ -1709,6 +1709,9 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
     result: obj.result === undefined || obj.result === null ? null : parseTrainResponse(obj.result),
     warning: optionalNullableString("parseTrainStatusResponse", obj, "warning"),
     terminal_reason: optionalNullableString("parseTrainStatusResponse", obj, "terminal_reason"),
+    error_code: optionalNullableString("parseTrainStatusResponse", obj, "error_code"),
+    http_status_code: optionalNullableNumber("parseTrainStatusResponse", obj, "http_status_code"),
+    error_detail: obj.error_detail,
     execution_metrics: optionalExecutionMetrics("parseTrainStatusResponse", obj, "execution_metrics"),
     feature_selection: obj.feature_selection === undefined || obj.feature_selection === null
       ? null
@@ -1742,6 +1745,13 @@ function parseExploreColumnStat(value: unknown, field: string): ExploreColumnSta
     std_value: optionalNullableString(parser, obj, "std_value"),
     zero_count: optionalNullableNumber(parser, obj, "zero_count"),
     negative_count: optionalNullableNumber(parser, obj, "negative_count"),
+    unique_ratio: expectNullableNumber(parser, obj.unique_ratio, `${field}.unique_ratio`),
+    is_high_cardinality: expectBoolean(parser, obj.is_high_cardinality, `${field}.is_high_cardinality`),
+    is_identifier_candidate: expectBoolean(parser, obj.is_identifier_candidate, `${field}.is_identifier_candidate`),
+    text_min_length: expectNullableNumber(parser, obj.text_min_length, `${field}.text_min_length`),
+    text_mean_length: expectNullableNumber(parser, obj.text_mean_length, `${field}.text_mean_length`),
+    text_max_length: expectNullableNumber(parser, obj.text_max_length, `${field}.text_max_length`),
+    temporal_span: expectNullableString(parser, obj.temporal_span, `${field}.temporal_span`),
   }
 }
 
@@ -1767,6 +1777,8 @@ function parseExploreDataQualitySummary(
   return {
     issue_count: expectNumber(parser, obj.issue_count, `${field}.issue_count`),
     issues: parseArray(parser, obj.issues, `${field}.issues`, parseExploreDataQualityIssue),
+    duplicate_row_count: expectNullableNumber(parser, obj.duplicate_row_count, `${field}.duplicate_row_count`),
+    duplicate_ratio: expectNullableNumber(parser, obj.duplicate_ratio, `${field}.duplicate_ratio`),
   }
 }
 

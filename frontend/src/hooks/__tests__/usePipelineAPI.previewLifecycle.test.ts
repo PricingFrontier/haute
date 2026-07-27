@@ -156,6 +156,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    const requestStructuralVersion = useGraphStore.getState().structuralVersion
 
     act(() => { result.current.fetchPreview(applyNode, { debounceMs: 0 }) })
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(1))
@@ -193,7 +194,7 @@ describe("usePipelineAPI — preview lifecycle terminal states (W0)", () => {
     // preview sees a context mismatch and refetches in the background.
     const cached = useNodeResultsStore.getState().getPreview("browser_apply")
     expect(cached?.data.status).toBe("ok")
-    expect(cached?.structuralVersion).toBe(0)
+    expect(cached?.structuralVersion).toBe(requestStructuralVersion)
   })
 
   it("surfaces a preview failure that arrives after a mid-flight structuralVersion bump", async () => {

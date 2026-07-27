@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from haute._logging import get_logger
+from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+from haute.errors import DeployError
 from haute.graph_utils import NodeType, PipelineGraph
 
 logger = get_logger(component="deploy.bundler")
@@ -17,6 +19,7 @@ def collect_artifacts(
     input_node_ids: list[str],
     pipeline_dir: Path,
     *,
+    project_root: Path | None = None,
     resources: ExitStack | None = None,
     snapshot_provenance: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
@@ -42,6 +45,7 @@ def collect_artifacts(
         FileNotFoundError: If a referenced artifact file does not exist.
     """
     input_set = set(input_node_ids)
+    project_root = (project_root or pipeline_dir).resolve()
     artifacts: dict[str, Path] = {}
 
     for node in pruned_graph.nodes:
@@ -53,7 +57,7 @@ def collect_artifacts(
             raw_path = config.get("path", "")
             if not raw_path:
                 continue
-            abs_path = _resolve_path(raw_path, pipeline_dir)
+            abs_path = _resolve_path(raw_path, pipeline_dir, project_root, nid, "path")
             artifact_name = _artifact_name(nid, abs_path)
             _check_exists(abs_path, nid, "externalFile")
             artifacts[artifact_name] = abs_path
@@ -67,7 +71,7 @@ def collect_artifacts(
                 raise ValueError(
                     f"optimiserApply node {nid!r} with artifact_path must set sourceType='file'"
                 )
-            abs_path = _resolve_path(raw_path, pipeline_dir)
+            abs_path = _resolve_path(raw_path, pipeline_dir, project_root, nid, "artifact_path")
             artifact_name = _artifact_name(nid, abs_path)
             _check_exists(abs_path, nid, "optimiserApply")
             artifacts[artifact_name] = abs_path
@@ -76,6 +80,22 @@ def collect_artifacts(
             source_type = config.get("sourceType", "run")
             run_id = config.get("run_id", "")
             artifact_path = config.get("artifact_path", "")
+            explicit_contract = config.get("feature_contract_path")
+            if explicit_contract is not None:
+                if not isinstance(explicit_contract, str) or not explicit_contract:
+                    raise DeployError(
+                        f"Node {nid!r} field 'feature_contract_path' must be a non-empty string; "
+                        f"got {explicit_contract!r} ({type(explicit_contract).__name__}). "
+                        "Use an in-project feature-contract path.",
+                        node_id=nid,
+                        field="feature_contract_path",
+                        path=explicit_contract,
+                    )
+                contract_path = _resolve_path(
+                    explicit_contract, pipeline_dir, project_root, nid, "feature_contract_path"
+                )
+                _check_exists(contract_path, nid, "modelScore feature contract")
+                artifacts[f"{nid}__feature_contract.json"] = contract_path
 
             if source_type == "registered":
                 registered_model = config.get("registered_model", "")
@@ -92,8 +112,12 @@ def collect_artifacts(
                 )
             else:
                 # source_type == "run" (default)
-                if not run_id or not artifact_path:
+                if artifact_path not in (None, ""):
+                    _validate_mlflow_artifact_identifier(nid, artifact_path)
+                if not run_id or artifact_path in (None, ""):
                     continue
+
+            _validate_mlflow_artifact_identifier(nid, artifact_path)
 
             # Download from MLflow at deploy time so the artifact is
             # bundled into the container / MLflow model package.
@@ -113,13 +137,15 @@ def collect_artifacts(
             # staged into the MLflow download cache (or placed manually);
             # training itself writes per-model ``{name}.feature_contract.json``
             # files since W4b.9 and never populates this directory.
-            _bundle_feature_contract(nid, local_path, artifacts)
+            if explicit_contract is None:
+                _bundle_feature_contract(nid, local_path, artifacts)
 
         elif node_type == NodeType.DATA_INPUT and nid not in input_set:
             _collect_static_data_input(
                 nid,
                 config,
                 pipeline_dir,
+                project_root,
                 artifacts,
                 resources=resources,
                 snapshot_provenance=snapshot_provenance,
@@ -152,14 +178,14 @@ def _bundle_feature_contract(
             looked_at=str(contract_path),
         )
         return
-    artifact_name = _artifact_name(node_id, contract_path)
-    artifacts[artifact_name] = contract_path
+    artifacts[f"{node_id}__feature_contract.json"] = contract_path
 
 
 def _collect_static_data_input(
     node_id: str,
     config: dict,
     pipeline_dir: Path,
+    project_root: Path,
     artifacts: dict[str, Path],
     *,
     resources: ExitStack | None,
@@ -210,7 +236,7 @@ def _collect_static_data_input(
                 node_id=node_id,
             )
         raw_path = str(validated["path"])
-        abs_path = _resolve_path(raw_path, pipeline_dir)
+        abs_path = _resolve_path(raw_path, pipeline_dir, project_root, node_id, "path")
         _check_exists(abs_path, node_id, "dataInput (static)")
         _verify_static_input_schema(node_id, validated, pipeline_dir)
         artifacts[_artifact_name(node_id, abs_path)] = abs_path
@@ -263,7 +289,13 @@ def _verify_static_input_schema(
         ) from exc
 
 
-def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:
+def _resolve_path(
+    raw_path: str,
+    pipeline_dir: Path,
+    project_root: Path | None = None,
+    node_id: str | None = None,
+    field_name: str | None = None,
+) -> Path:
     """Resolve ``raw_path`` to an absolute path at bundle time.
 
     Resolution order:
@@ -283,13 +315,62 @@ def _resolve_path(raw_path: str, pipeline_dir: Path) -> Path:
     deterministic, re-resolution-free pointer into the bundle.  Missing
     files surface loudly via :func:`_check_exists`.
     """
-    p = Path(raw_path)
-    if p.is_absolute():
-        return p.resolve()
-    pipeline_abs = (pipeline_dir / p).resolve()
-    if pipeline_abs.exists():
-        return pipeline_abs
-    return pipeline_abs
+    root = (project_root or pipeline_dir).resolve()
+    if not isinstance(raw_path, str) or not raw_path:
+        raise DeployError(
+            f"Node {node_id!r} field {field_name!r} must be a non-empty local path string; "
+            f"got {raw_path!r} ({type(raw_path).__name__}). Use a path inside the project root.",
+            node_id=node_id,
+            field=field_name,
+            path=raw_path,
+        )
+    try:
+        return resolve_runtime_file_path(
+            raw_path,
+            pipeline_dir=pipeline_dir,
+            project_root=root,
+            prefer="pipeline",
+            enforce_project_root=True,
+        )
+    except RuntimePathError as exc:
+        raise DeployError(
+            f"Node {node_id!r} field {field_name!r} has invalid local deploy path "
+            f"{raw_path!r} ({type(exc).__name__}): {exc}. Use a path inside "
+            f"the project root {root}.",
+            node_id=node_id,
+            field=field_name,
+            path=raw_path,
+            project_root=str(root),
+        ) from exc
+
+
+def _validate_mlflow_artifact_identifier(node_id: str, artifact_path: str) -> None:
+    """Reject filesystem-shaped MLflow artifact identifiers before download."""
+    if not isinstance(artifact_path, str) or not artifact_path:
+        raise DeployError(
+            f"Node {node_id!r} field 'artifact_path' must be a non-empty MLflow artifact "
+            f"identifier string; got {artifact_path!r} ({type(artifact_path).__name__}). "
+            "Use a relative artifact name without '..' segments.",
+            node_id=node_id,
+            field="artifact_path",
+            artifact_path=artifact_path,
+        )
+    posix_parts = artifact_path.replace("\\", "/").split("/")
+    windows = PureWindowsPath(artifact_path)
+    if (
+        Path(artifact_path).is_absolute()
+        or PurePosixPath(artifact_path).is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or ".." in posix_parts
+    ):
+        raise DeployError(
+            f"modelScore node {node_id!r} has unsafe MLflow artifact identifier "
+            f"{artifact_path!r}. Use a relative artifact name without '..' segments.",
+            node_id=node_id,
+            field="artifact_path",
+            artifact_path=artifact_path,
+        )
 
 
 def _artifact_name(node_id: str, path: Path) -> str:

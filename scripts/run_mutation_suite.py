@@ -14,7 +14,7 @@ import sys
 import tomllib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,8 @@ class MutationTargetSpec:
     config_path: Path
     fail_over: float
     rationale: str
+    owner: str
+    review_by: date
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,8 @@ class MutationTarget:
     test_paths: tuple[Path, ...]
     fail_over: float
     rationale: str
+    owner: str
+    review_by: date
 
 
 @dataclass(frozen=True)
@@ -173,8 +177,8 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
     except json.JSONDecodeError as exc:
         raise SystemExit(f"Invalid JSON in {target_config}: {exc}") from exc
 
-    if payload.get("schema_version") != 1:
-        raise SystemExit(f"Mutation target config must use schema_version 1: {target_config}")
+    if payload.get("schema_version") != 2:
+        raise SystemExit(f"Mutation target config must use schema_version 2: {target_config}")
     raw_targets = payload.get("targets")
     if not isinstance(raw_targets, list) or not raw_targets:
         raise SystemExit(
@@ -190,6 +194,8 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
         config = raw_target.get("config")
         fail_over = raw_target.get("max_survival_rate")
         rationale = raw_target.get("rationale")
+        owner = raw_target.get("owner")
+        review_by = raw_target.get("review_by")
         if not isinstance(name, str) or not name:
             raise SystemExit(f"Mutation target entry {index} must define name: {target_config}")
         if not isinstance(config, str) or not config:
@@ -200,6 +206,22 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
             raise SystemExit(f"Mutation target {name} max_survival_rate must be between 0 and 100")
         if not isinstance(rationale, str) or not rationale:
             raise SystemExit(f"Mutation target {name} must define rationale: {target_config}")
+        if not isinstance(owner, str) or not owner.strip():
+            raise SystemExit(
+                f"Mutation target {name} must define a non-empty owner: {target_config}"
+            )
+        if not isinstance(review_by, str):
+            raise SystemExit(f"Mutation target {name} must define ISO review_by: {target_config}")
+        try:
+            review_date = date.fromisoformat(review_by)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Mutation target {name} review_by must be an ISO date: {target_config}"
+            ) from exc
+        if review_date < date.today():
+            raise SystemExit(
+                f"Mutation target {name} review_by has expired ({review_by}): {target_config}"
+            )
 
         config_path = _resolve_repo_path(config)
         if not config_path.exists():
@@ -210,6 +232,8 @@ def _load_target_specs(target_config: Path) -> list[MutationTargetSpec]:
                 config_path=config_path,
                 fail_over=float(fail_over),
                 rationale=rationale,
+                owner=owner,
+                review_by=review_date,
             )
         )
 
@@ -279,6 +303,8 @@ def _load_target(
         test_paths=_extract_test_paths(test_command),
         fail_over=fail_over,
         rationale=spec.rationale,
+        owner=spec.owner,
+        review_by=spec.review_by,
     )
 
 
@@ -356,6 +382,8 @@ def _target_summary(target: MutationTarget) -> dict[str, object]:
         "tests": [_relative_path(path) for path in target.test_paths],
         "fail_over": target.fail_over,
         "rationale": target.rationale,
+        "owner": target.owner,
+        "review_by": target.review_by.isoformat(),
     }
 
 
@@ -434,8 +462,8 @@ def _write_summary_markdown(summary: dict[str, object], path: Path) -> None:
         "",
         f"- Run id: `{summary['run_id']}`",
         "",
-        "| Target | Status | Survival | Threshold | Failures |",
-        "| --- | --- | ---: | ---: | --- |",
+        "| Target | Owner | Review by | Status | Survival | Threshold | Failures |",
+        "| --- | --- | --- | --- | ---: | ---: | --- |",
     ]
     for result in results:
         assert isinstance(result, dict)
@@ -447,7 +475,8 @@ def _write_summary_markdown(summary: dict[str, object], path: Path) -> None:
         fail_over_text = "n/a" if fail_over is None else f"{fail_over:.2f}%"
         failures_text = "<br>".join(str(item) for item in failures) or "-"
         lines.append(
-            f"| `{result['name']}` | {result['status']} | {survival_text} | "
+            f"| `{result['name']}` | {result.get('owner', 'n/a')} | "
+            f"{result.get('review_by', 'n/a')} | {result['status']} | {survival_text} | "
             f"{fail_over_text} | {failures_text} |"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -770,6 +799,9 @@ def _write_target_summary(
         "config": _relative_path(target.config_path),
         "status": "failed" if failures else "passed",
         "fail_over": target.fail_over,
+        "rationale": target.rationale,
+        "owner": target.owner,
+        "review_by": target.review_by.isoformat(),
         "survival_rate": survival_rate,
         "failures": failures,
         "stages": [stage.__dict__ for stage in stages],
@@ -902,6 +934,9 @@ def _phase_plan(
             "num_work_items": num_items,
             "num_pending": num_pending,
             "fail_over": target.fail_over,
+            "rationale": target.rationale,
+            "owner": target.owner,
+            "review_by": target.review_by.isoformat(),
         }
         _write_json(target_dir / "meta.json", meta)
         targets_plan.append(meta)

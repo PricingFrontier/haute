@@ -12,7 +12,7 @@
 | `src/haute/modelling/_split.py` | `SplitConfig`, `split_data`/`split_mask` for random/temporal/group strategies, and partition constants. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
-| `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation. |
+| `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
 | `src/haute/modelling/_charts.py` | Pure-SVG renderers used by model cards. |
 | `src/haute/modelling/_model_card.py` | `generate_model_card()` — self-contained HTML assembled for MLflow artifact logging; ordinary training does not persist it beside the model. |
 | `src/haute/modelling/_mlflow_log.py` | Tracking-backend resolution, `log_experiment()`, flavor-aware model/signature logging, diagnostics artifacts, and best-effort model-card logging. |
@@ -51,6 +51,11 @@
   `offset_column`. `CONTRACT_FILENAME = "feature_contract.json"`;
   per-model files are named via `_training_job.model_contract_filename(name)` →
   `"{name}.feature_contract.json"`.
+  `_training_job._polars_dtype_name` preserves `Date` and full
+  `Datetime(time_unit=..., time_zone=...)` descriptors. `_signature._map_dtype`
+  maps both temporal families to MLflow `DataType.datetime`; it recognises
+  `Decimal(...)` separately and raises the actionable unsupported-type error
+  rather than falling through to an unknown type or `double`.
 - **`TrainingJob`** (`_training_job.py`) — the orchestrator. Constructor stores
   `name`, `data` (path/DataFrame/LazyFrame), `target`, `weight`, `exclude`,
   `feature_columns`, `fold_column`, `id_columns`, `algorithm`, `task`, `params`,
@@ -67,6 +72,24 @@
   (`terms`, `all_factors`, `family`, `link`, `interactions`, `regularization`, `alpha`,
   `l1_ratio`, `intercept`, `var_power`, `theta`, `offset`); `build_train_params`
   projects those fields into the `TrainingJob.params` mapping consumed by RustyStats.
+- **`monotone_constraints`** — the selected MOD-M09 product lever is a mapping from
+  final selected feature name to the exact integer `-1` or `1` (Boolean and zero are
+  invalid). `_validate_monotone_constraints` runs after GLM term narrowing and before
+  `_split_data`; it requires a mapping with non-empty string keys, rejects names not in
+  the final feature list, and accepts only canonical numeric contract dtypes
+  (`Int64`/`Float64`). The resulting validated mapping is passed unchanged to
+  CatBoost's feature-index translation or RustyStats term monotonicity.
+- **CatBoost numeric array handoff** — `_build_pool` calls
+  `_prepare_predict_frame(..., flavor="catboost")`, which returns a multi-column
+  numeric Polars frame as a Fortran-contiguous `Float32` NumPy matrix and passes it
+  directly to `catboost.Pool`. The opt-in MOD-M05 benchmark compares that path with
+  the full candidate operation `Pool(numpy.ascontiguousarray(matrix))` over a
+  deterministic 100,000-row by 32-feature workload. It records median end-to-end
+  handoff time, matrix layout, source/copy bytes, exact feature equality, label
+  equivalence within `Float32` ingestion precision, and seeded prediction equivalence
+  at `rtol=atol=1e-12` with matching dtype. A C-layout conversion may enter
+  production only when it is at least 20% faster and does not introduce a
+  full-matrix peak allocation.
 - **`TrainResult`** (`_training_job.py`, dataclass) — the full public result: `metrics`,
   `feature_importance`, `model_path`, `train_rows`, `validation_rows`, `features`,
   `cat_features`, `holdout_rows`, `holdout_metrics`, `diagnostics_set`
@@ -130,12 +153,17 @@
    algorithm registered, GLM family/link validity or CatBoost loss validity via
    `resolve_loss_function`, then `training_objective_issue` for completeness); under
    `_start_lock`, reject if another job is already `"running"`
-   (`_check_no_concurrent_jobs`) and create the job record; `_compile_preamble`;
-   `_estimate_ram` (raises HTTP 422 on estimate failure); clamp the estimated row
-   limit against any user-supplied `row_limit`; `build_train_params` (the same builder
-   export uses); `_check_gpu_fallback` (VRAM feasibility check — see Edge cases);
+   (`_check_no_concurrent_jobs`), create the job record, and register its cancellation
+   token; start the owned preparation thread and return `TrainResponse(status="started",
+   job_id=...)` before long-running work begins.
+3. The preparation thread first verifies that the job is still running, then
+   `_compile_preamble`; `_estimate_ram` (records the equivalent HTTP 422 detail on
+   failure); clamp the estimated row limit against any user-supplied `row_limit`;
+   `build_train_params` (the same builder export uses); `_check_gpu_vram_before_launch` (VRAM
+   feasibility check — see Edge cases);
    compute required-column demand per node (`_training_required_columns_by_node`);
-   create an admitted `ExecutionContext` (RAM ceiling + cancellation token) via
+   create an admitted `ExecutionContext` with the already-registered cancellation token
+   (RAM ceiling + cancellation) via
    `create_admitted_execution_context`; `_execute_and_sink` runs the upstream pipeline
    lazily, derives and records the version-1 feature-selection diagnostic from the
    materialised schema, rejects HTTP 422/`contract_error` if target/metadata/exclusion
@@ -148,8 +176,11 @@
    staging root, and starts a daemon supervisor thread around a spawn child.
    `TrainService` consumes the execution facade's typed projection result throughout
    materialisation; its final feature inclusion/exclusion provenance is retained in the
-   job response rather than re-derived by a modelling-owned planner.
-3. In the child, `_run_training_process_job` reconstructs `TrainingJob` and a fresh
+   job response rather than re-derived by a modelling-owned planner. Preparation owns
+   registry/admission cleanup until child launch; after launch the child supervisor owns
+   it. Every preparation exception is consumed by the thread and persisted as a typed
+   terminal job rather than escaping as an unobserved thread failure.
+4. In the child, `_run_training_process_job` reconstructs `TrainingJob` and a fresh
    bounded `ExecutionContext`, then runs fit/evaluation/diagnostics and stages the model
    plus per-model feature contract. It returns progress events and a validated result
    manifest containing a bounded `TrainResponse` payload. In the parent, the supervisor
@@ -158,18 +189,25 @@
    `elapsed_seconds`. Publication and the transition share the job-store critical
    section: cancellation that wins first prevents publication, while publication
    that wins first prevents a late cancellation from relabelling the durable model.
+   On Windows only, access-denied/sharing-violation failures from `os.replace`
+   receive a short bounded retry. Exhaustion raises
+   `TrainingArtifactPublicationError` with the source, destination, and attempt
+   count; rollback restores the previous durable pair before that typed failure
+   escapes. Non-contention filesystem errors are never retried or reclassified.
    Typed child,
    protocol, crash, cancellation, timeout, cleanup, and unexpected supervisor failures
    map through `JobLifecycle`; parent cleanup always releases the cancellation registry
    and RAM admission and removes the prepared/staged temporary data.
-4. `GET /train/status/{job_id}` first compares a running job's `start_time` with its
+5. `GET /train/status/{job_id}` first compares a running job's `start_time` with its
    configured/default timeout; an overdue job requests child termination and atomically
    transitioned to `timed_out` before the response is assembled. It then returns
    progress/loss history/result. On the first read of a completed result,
    `_assert_json_finite` re-validates it and the outcome
    is cached on the job (`_result_finite_validated`) via `atomic_update` so later polls
    skip the recursive walk; a validation failure instead flips the job to `"error"`
-   with `result: None`.
+   with `result: None`. The response also carries `error_code`, `http_status_code`, and
+   structured `error_detail` for terminal preparation failures, including the actionable
+   GPU-VRAM 507 payload.
 
 ### `TrainingJob.run()` pipeline (used by live training and direct/test callers)
 
@@ -330,6 +368,20 @@ same signature and the native file is also logged at the run root for Haute's na
 discovery path. Thus both families carry a `ModelSignature`, but only CatBoost uses MLflow's
 native CatBoost flavor.
 
+`build_signature` classifies canonical Polars dtype descriptors structurally.
+`Date`, bare `Datetime`, and parameterised `Datetime` descriptors for every
+Polars-supported unit/time zone become MLflow `datetime`; unsupported or
+malformed lookalikes still raise. `Decimal` and `Decimal(...)` always raise
+before `mlflow.*.log_model` is called, naming the column dtype policy and the
+two explicit upstream cast choices. A real local-file-store pyfunc regression
+logs, reloads, and predicts with Date and parameterised Datetime inputs so
+MLflow schema enforcement—not only `_map_dtype`—is the compatibility oracle.
+Because MLflow's scalar signature does not retain a time zone and rejects
+timezone-aware pandas dtypes, the production pyfunc scoring boundary converts
+zoned temporal columns to UTC and then removes the zone before prediction.
+Naive temporal values are left unchanged; other flavors retain their existing
+input preparation.
+
 ### Concurrency / ordering guarantees
 
 - Only one job may be `"running"` in the process-wide training namespace; `_start_lock`
@@ -341,7 +393,8 @@ native CatBoost flavor.
   become completed.
 - Dispersion estimates share the single running slot and cancellation registry with training;
   their supervisor enforces the create-time timeout even without a status poll.
-- Pipeline materialisation runs synchronously in the route request. The heavy training or
+- Training pipeline preparation/materialisation runs in its owned preparation
+  thread after the route has returned a job handle. The heavy training or
   dispersion phase runs in one spawn child supervised by one daemon parent thread;
   validated progress/iteration callbacks use the job store's `atomic_update`, so status
   polling from other threads/requests is race-free.
@@ -429,11 +482,10 @@ native CatBoost flavor.
   — this is the mechanism that catches a NaN/Inf anywhere inside a large nested
   diagnostics payload before it reaches the wire.
 
-> NOTE: [Tracked by MOD-M07](../roadmap/modelling.md#mod-m07--workflow-ux).
-> `TrainService._check_gpu_fallback` is misleadingly named — despite
-> "fallback," it does **not** fall back to CPU automatically. It only checks VRAM
-> feasibility and raises HTTP 507 when insufficient; the user must manually switch
-> `task_type` to CPU (or reduce rows/features) and retry.
+`TrainService._check_gpu_vram_before_launch` only checks VRAM feasibility; it
+never falls back to CPU automatically. Insufficient VRAM becomes a terminal
+HTTP 507 job result instructing the user to select CPU (or reduce
+rows/features) and retry.
 
 ## Error handling
 
@@ -482,6 +534,11 @@ native CatBoost flavor.
   `try/except Exception: logger.warning(...)`, so a model-card bug never fails an
   otherwise-successful experiment log; `build_run_url` similarly catches and returns
   `None` with a debug log rather than failing the whole call.
+- **Unsupported MLflow Decimal signature** — `_signature._map_dtype` raises
+  `ValueError` before model logging, explains that MLflow 3.x has no exact
+  Decimal scalar, and directs the author to an explicit upstream `String` or
+  `Float64` cast. The original Decimal descriptor is named; no value is
+  inspected or coerced.
 - **Dispersion estimation** — `_validate_dispersion_config` raises `HTTPException(400)`
   for an unknown parameter, a non-GLM node, a family/link mismatch, a parameter/family
   pairing mismatch, a missing target, or any other incomplete training objective;
@@ -493,11 +550,17 @@ native CatBoost flavor.
 
 ## Testing
 
+- `tests/performance/test_catboost_contiguity_perf.py` records the MOD-M05
+  Fortran-versus-C CatBoost handoff evidence and enforces layout, allocation, and
+  result-equivalence facts; it is opt-in under the `perf` marker.
 - `tests/performance/test_training_scoring_wide_perf.py` covers wide training/scoring performance.
 - `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
 - `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
 - `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
 - `tests/test_mlflow_log.py` verifies tracking backend/experiment resolution, run URL construction, experiment/model-card/JSON logging, and tracking configuration.
+- `tests/test_mlflow_signature.py` verifies structural Date/Datetime mapping,
+  parameterised unit/time-zone coverage, Decimal rejection, signature
+  persistence, and a real local MLflow log/load/predict round trip.
 - `tests/test_mlflow_log_button_roundtrip.py` verifies CatBoost/GLM log-button round-trip construction and button payloads.
 
 Tests live in the flat `tests/` directory rather than mirroring the package layout:
@@ -570,7 +633,7 @@ exercised indirectly through `test_modelling.py`,
 
 ## Approved change contract — canonical-only modelling artifacts
 
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
 training reads and writes only the current run-scoped feature contract and artifact layout. It
 does not probe for, warn about, or interpret a historical shared contract path. Result and CLI
 field names describe their current meaning rather than retaining an obsolete name.

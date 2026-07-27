@@ -21,6 +21,9 @@ Submodel graph expansion and boundary rewiring are owned by
 
 - `ColumnV2`, `TableV2`, `ApiInputV2Config` are total-false `TypedDict`s for
   the wire/sidecar shape. `ColumnType` is exactly `int|float|str|bool|date`;
+  `ColumnStatus` is exactly `Confirmed|Inferred`; optional `emit` and
+  `selected` fields, when present, are exact booleans rather than truthy
+  lookalikes;
   `PathSeg` is `(key, is_array)` and only array segments increase relational
   depth.
 - `ApiInputSchemaError(HauteError)` is the single typed schema/path failure
@@ -88,8 +91,11 @@ Submodel graph expansion and boundary rewiring are owned by
 
 **V2 codec** — `validate_v2_schema(config)` first requires the `tables` list,
 then validates each table's label/path/columns, unique raw and sanitised
-labels, unique column names, supported column type/levels shapes, ancestor-or-own
-column paths, and `row_id_column`. Labels must additionally be ASCII-only
+labels, unique column names, supported column type/status/levels shapes,
+exact-boolean `emit`/`selected` values when present, ancestor-or-own column
+paths, and `row_id_column`. Scalar-shape failures name the exact
+`tables[i]...` field path and happen before any truthiness consumer.
+Labels must additionally be ASCII-only
 Python identifiers and not hard keywords — `label.isascii() and
 label.isidentifier() and not keyword.iskeyword(label)` (invariant B4): the
 label is consumed verbatim as the downstream parameter name by codegen and
@@ -116,11 +122,9 @@ before commit. `parse_table_path`/`parse_column_path_full`/
 `parse_column_path` delegate grammar acceptance to `_jsonpath.py`; `make_table_path`
 delegates canonical rendering to the same writer.
 
-> NOTE: [Tracked by IO-JSON-01](../roadmap/io-layer.md#io-json-01--closed-v2-json-input-schema).
-> `validate_v2_schema` does not runtime-check the declared `emit`,
-> `selected`, or `status` value types. `emit`/`selected` are consumed by
-> truthiness and `status` is UI metadata, despite their narrower `TypedDict`
-> annotations.
+`validate_v2_schema` checks declared `emit` and `selected` values as exact
+booleans and `status` as exactly `Confirmed|Inferred`, naming the field path
+before shredding can consume either value by truthiness.
 
 **OUTPUT mapping** — `assemble_output_from_mapping(frames, mapping)` groups active
 rows by source port after running `validate_v2_output_mapping`, selects/aliases source
@@ -376,7 +380,8 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 - `haute._api_input_schema.ApiInputSchemaError` — raised by `_json_shred.py` for
   every schema/data-shape problem: malformed v2 config passed to
   `_v2_fingerprint`/`shred_to_buffers`/`build_per_port_cache` (via
-  `validate_v2_schema`), a dotted leaf crossing a non-empty array, a `$value`/real-
+  `validate_v2_schema`, including wrong-typed `emit`/`selected` and invalid
+  `status` values with exact field paths), a dotted leaf crossing a non-empty array, a `$value`/real-
   column collision, a column value that doesn't match its declared type (including
   the silent-coercion guards), and inference's unexpressible-key rejections. Always
   carries `column=`/`table=` context.
@@ -505,10 +510,10 @@ Edge join (`_edge_join.py`):
 Projection planning and its `tests/test_projection_planner.py` coverage are owned
 by [execution-engine](../execution-engine/low-level.md).
 
-## Approved change contract — canonical-only cache artifacts
+## Canonical cache-artifact contract
 
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
-JSON flattening and shredding create, validate, replace, and clean only their current cache
-layouts and staging names. They contain no discovery or deletion code for cache files,
-temporary directories, backups, or manifests emitted by an earlier Haute implementation.
-Migration-only cleanup tests are deleted; current transactional cleanup remains covered.
+JSON flattening and shredding create, validate, replace, and clean only the
+current cache layouts and staging names. They contain no discovery or deletion
+code for cache files, temporary directories, backups, or manifests emitted by
+an earlier Haute implementation. Current transactional cleanup remains
+covered; there are no migration-only cleanup tests.

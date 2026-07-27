@@ -18,9 +18,23 @@ is implemented (import errors count as failures).
 
 from __future__ import annotations
 
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+import mlflow
+import pandas as pd
+import polars as pl
 import pytest
 from mlflow.models import ModelSignature  # re-exported canonically from mlflow.models
 from mlflow.types import DataType
+
+
+class _TemporalEchoModel(mlflow.pyfunc.PythonModel):
+    """Small real pyfunc model used to exercise MLflow schema enforcement."""
+
+    def predict(self, context: object, model_input: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame({"pred": [1.0] * len(model_input)})
+
 
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
@@ -662,3 +676,143 @@ class TestTargetTypeRespected:
         assert out_map["pred_label"] == DataType.string, (
             "String target must yield a string pred_label for classification"
         )
+
+
+# ---------------------------------------------------------------------------
+# 13. Temporal and Decimal contract boundary
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pl.Date,
+        pl.Datetime,
+        *[
+            pl.Datetime(time_unit, time_zone)
+            for time_unit in ("ns", "us", "ms")
+            for time_zone in (None, "UTC", "Europe/London")
+        ],
+    ],
+)
+def test_real_polars_temporal_dtypes_map_to_mlflow_datetime(dtype: object) -> None:
+    """Date and every canonical Polars Datetime form are preserved deliberately."""
+    from haute.modelling._signature import _map_dtype
+    from haute.modelling._training_job import _polars_dtype_name
+
+    dtype_name = _polars_dtype_name(dtype)
+    assert _map_dtype(dtype_name) == DataType.datetime
+
+
+@pytest.mark.parametrize(
+    "dtype_name",
+    [
+        "DatetimeGarbage",
+        "Datetime(time_unit='seconds', time_zone=None)",
+        "Datetime(time_unit='us', time_zone=UTC)",
+        "Datetime(time_unit='us', time_zone=None) trailing",
+    ],
+)
+def test_datetime_lookalikes_are_rejected(dtype_name: str) -> None:
+    from haute.modelling._signature import _map_dtype
+
+    with pytest.raises(ValueError, match="Unknown polars dtype"):
+        _map_dtype(dtype_name)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [pl.Decimal, pl.Decimal(precision=12, scale=3)],
+)
+def test_decimal_dtypes_are_rejected_with_explicit_cast_guidance(dtype: object) -> None:
+    from haute.modelling._signature import _map_dtype
+    from haute.modelling._training_job import _polars_dtype_name
+
+    dtype_name = _polars_dtype_name(dtype)
+    with pytest.raises(ValueError) as excinfo:
+        _map_dtype(dtype_name)
+
+    message = str(excinfo.value)
+    assert dtype_name in message
+    assert "MLflow 3.x" in message
+    assert "String" in message
+    assert "Float64" in message
+
+
+def test_temporal_signature_persists_through_mlflow_dict_roundtrip() -> None:
+    from haute.modelling._signature import build_signature
+
+    sig = build_signature(
+        features=["event_date", "event_time", "zoned_event_time"],
+        feature_types={
+            "event_date": "Date",
+            "event_time": "Datetime(time_unit='ns', time_zone=None)",
+            "zoned_event_time": "Datetime(time_unit='ms', time_zone='Europe/London')",
+        },
+        categorical_features=[],
+        target_name="loss",
+        target_type="Float64",
+    )
+
+    restored = ModelSignature.from_dict(sig.to_dict())
+    assert restored == sig
+    assert set(_input_type_map(restored).values()) == {DataType.datetime}
+
+
+def test_real_mlflow_pyfunc_roundtrip_enforces_temporal_signature(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signature built from production dtype descriptors survives log/load/predict."""
+    from haute._mlflow_io import _prepare_predict_frame
+    from haute.modelling._signature import build_signature
+    from haute.modelling._training_job import _polars_dtype_name
+
+    polars_frame = pl.DataFrame(
+        {
+            "event_date": [date(2025, 1, 2)],
+            "event_time": [datetime(2025, 1, 2, 3, 4, 5)],
+            "zoned_event_time": [datetime(2025, 7, 2, 3, 4, 5, tzinfo=ZoneInfo("Europe/London"))],
+        },
+        schema={
+            "event_date": pl.Date,
+            "event_time": pl.Datetime("us"),
+            "zoned_event_time": pl.Datetime("ms", "Europe/London"),
+        },
+    )
+    signature = build_signature(
+        features=list(polars_frame.columns),
+        feature_types={
+            name: _polars_dtype_name(dtype) for name, dtype in polars_frame.schema.items()
+        },
+        categorical_features=[],
+        target_name="loss",
+        target_type="Float64",
+    )
+    pandas_frame = _prepare_predict_frame(
+        polars_frame,
+        list(polars_frame.columns),
+        flavor="pyfunc",
+    )
+    assert not isinstance(pandas_frame["zoned_event_time"].dtype, pd.DatetimeTZDtype)
+    assert pandas_frame["zoned_event_time"].iloc[0] == pd.Timestamp("2025-07-02 02:04:05")
+    original_tracking_uri = mlflow.get_tracking_uri()
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    mlflow.set_tracking_uri(tmp_path.as_uri())
+    try:
+        mlflow.set_experiment("temporal-signature")
+        with mlflow.start_run() as run:
+            mlflow.pyfunc.log_model(
+                artifact_path="model",
+                python_model=_TemporalEchoModel(),
+                signature=signature,
+                pip_requirements=[],
+            )
+            model_uri = f"runs:/{run.info.run_id}/model"
+
+        model_info = mlflow.models.get_model_info(model_uri)
+        assert model_info.signature is not None
+        assert set(_input_type_map(model_info.signature).values()) == {DataType.datetime}
+        prediction = mlflow.pyfunc.load_model(model_uri).predict(pandas_frame)
+        assert prediction["pred"].tolist() == [1.0]
+    finally:
+        mlflow.set_tracking_uri(original_tracking_uri)

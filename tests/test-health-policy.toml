@@ -1,0 +1,14 @@
+schema_version = 1
+
+[backend_marker_debt]
+owner = "engineering-quality"
+review_by = 2026-10-25
+
+[frontend_marker_debt]
+owner = "frontend-shared"
+review_by = 2026-10-25
+
+[playwright_ci_retries]
+owner = "frontend-canvas"
+review_by = 2026-10-25
+ci_budget = 2

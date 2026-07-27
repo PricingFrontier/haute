@@ -12,7 +12,16 @@ implementation-detail gaps that those behaviour tests don't exercise:
 
 from __future__ import annotations
 
-from haute._event_bus import EventBus
+from haute._event_bus import EventBus, GraphUpdatePayload
+
+
+def test_graph_update_payload_declares_complete_wire_contract() -> None:
+    """Static publisher checks must cover every field sent to WebSocket clients."""
+    assert GraphUpdatePayload.__required_keys__ == {
+        "graph",
+        "graph_fingerprint",
+        "source_file",
+    }
 
 
 def test_unsubscribe_is_idempotent() -> None:

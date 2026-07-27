@@ -1594,10 +1594,10 @@ def _execute_eager_core(
             (preview behaviour).  If ``False``, raise immediately (trace).
         source: Active execution source (``"live"`` = eager scoring).
         enforce_contracts: If ``True`` (default), assert each node's
-            column contract at its input and output boundaries.  A
-            mismatch always raises ``ContractMismatchError`` regardless
-            of *swallow_errors* — the contract is an API-level claim
-            and a silent error would defeat the adoption effort.
+            column contract at its input and output boundaries. Contract and
+            schema mismatches always raise regardless of *swallow_errors* —
+            they are API-level claims and a silent error would defeat the
+            adoption effort.
         required_columns_by_node: Optional exact output-column demand for
             caller-consumed nodes.  Eager preview uses this to collect only
             the visible target columns while still reporting the full schema.
@@ -2202,8 +2202,8 @@ def _execute_eager_core(
                 memory_bytes[nid] = int(df.estimated_size("b"))
             else:
                 runtime_outputs[nid] = output_lf
-        except ContractMismatchError:
-            # Contract errors are API-level — raise even in swallow mode
+        except (ContractMismatchError, SchemaMismatchError):
+            # Contract and schema mismatches are API-level — raise even in swallow mode
             # so GUI users see the crisp error instead of a silent
             # per-node "failed" status card.
             raise

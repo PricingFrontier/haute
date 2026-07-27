@@ -770,6 +770,27 @@ describe("API response guards", () => {
     expect(parsed.train_loss.learn).toBe(0.1)
   })
 
+  it("preserves structured terminal training error detail", () => {
+    const detail = {
+      error_code: "gpu_vram_limit",
+      message: "Select CPU and retry.",
+      reason: "gpu_vram_limit_exceeded",
+    }
+    const parsed = parseTrainStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
+      status: "memory_limited",
+      result: null,
+      terminal_reason: "memory_limited",
+      error_code: "gpu_vram_limit",
+      http_status_code: 507,
+      error_detail: detail,
+    })
+
+    expect(parsed.error_code).toBe("gpu_vram_limit")
+    expect(parsed.http_status_code).toBe(507)
+    expect(parsed.error_detail).toEqual(detail)
+  })
+
   it("parses explore run and status responses as cache descriptors", () => {
     const run = parseExploreRunResponse(loadUiContractFixture("explore_run_response"))
     const status = parseExploreStatusResponse(loadUiContractFixture("explore_status_response"))
@@ -831,6 +852,13 @@ describe("API response guards", () => {
             std_value: "12.5",
             zero_count: 1,
             negative_count: 2,
+            unique_ratio: 0.42,
+            is_high_cardinality: false,
+            is_identifier_candidate: false,
+            text_min_length: null,
+            text_mean_length: null,
+            text_max_length: null,
+            temporal_span: null,
           },
         ]),
       )
@@ -860,6 +888,13 @@ describe("API response guards", () => {
             kind: "Text",
             null_count: 10,
             distinct_count: null,
+            unique_ratio: null,
+            is_high_cardinality: false,
+            is_identifier_candidate: false,
+            text_min_length: null,
+            text_mean_length: null,
+            text_max_length: null,
+            temporal_span: null,
           },
         ]),
       )

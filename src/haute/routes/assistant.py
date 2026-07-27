@@ -155,9 +155,7 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
     """Map a session's stored neutral history to rehydratable transcript entries.
 
     Tool entries reuse the same compact result summary the live stream shows;
-    the persisted message's ``is_error`` flag is authoritative. Legacy records
-    without that field infer it from the ``{"error": ...}` content shape while
-    decoding in ``_session``.
+    the persisted message's explicit ``is_error`` flag is authoritative.
     """
 
     entries: list[AssistantTranscriptEntry] = []
@@ -182,6 +180,18 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
                         is_error=is_error,
                     )
                 )
+                if not is_error and "graph_fingerprint" in content:
+                    graph_fingerprint = content["graph_fingerprint"]
+                    if not isinstance(graph_fingerprint, str):
+                        raise TypeError("tool graph_fingerprint must be a string")
+                    entries.append(
+                        AssistantTranscriptEntry(
+                            kind="tool",
+                            name="graph_updated",
+                            summary="Canvas updated",
+                            is_error=False,
+                        )
+                    )
     return entries
 
 
@@ -206,8 +216,8 @@ async def create_assistant_session(body: AssistantSessionRequest) -> AssistantSe
 
     source_file = _relative_source_file(path)
     if body.session_id is not None:
-        existing = session_store.lookup(body.session_id)
-        if existing is not None and existing.source_file == source_file:
+        existing = session_store.resume(body.session_id, source_file)
+        if existing is not None:
             return AssistantSessionResponse(
                 session_id=existing.id,
                 history=_transcript_entries(existing),

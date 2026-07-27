@@ -11,6 +11,7 @@ training job stuck in the wrong state, so these assert on job-store state too.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -20,7 +21,6 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import (
-    ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
@@ -126,7 +126,7 @@ class TestEstimateRamFailure:
 
 
 # ---------------------------------------------------------------------------
-# _check_gpu_fallback failure arm (lines 449-450)
+# _check_gpu_vram_before_launch failure arm
 # ---------------------------------------------------------------------------
 
 
@@ -144,7 +144,7 @@ class TestCheckGpuFallbackFailure:
             "haute.routes._train_service._check_gpu_vram",
             side_effect=RuntimeError("nvml exploded"),
         ):
-            result = service._check_gpu_fallback(
+            result = service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=100,
                 total_source_rows=200,
@@ -168,7 +168,7 @@ class TestCheckGpuFallbackFailure:
 
         train_params: dict[str, object] = {"task_type": "CPU"}
         with patch("haute.routes._train_service._check_gpu_vram") as mock_vram:
-            result = service._check_gpu_fallback(
+            result = service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=None,
                 total_source_rows=None,
@@ -406,11 +406,12 @@ class TestStartGlmMergeAndKeepColumns:
                 "_estimate_ram",
                 return_value=(None, None, 100, 3),
             ),
-            patch.object(service, "_check_gpu_fallback", return_value=None),
+            patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(service, "_execute_and_sink", side_effect=fake_execute_and_sink),
             patch.object(service, "_launch_background", side_effect=fake_launch),
         ):
             resp = service.start(body)
+            service._join_preparation(resp.job_id)
 
         assert resp.status == "started"
         created_job = next(iter(store.jobs.values()))
@@ -450,15 +451,16 @@ class TestStartGlmMergeAndKeepColumns:
         with (
             patch.object(service, "_compile_preamble", return_value=None),
             patch.object(service, "_estimate_ram", side_effect=inspect_created_job),
-            pytest.raises(RuntimeError, match="stop after create"),
         ):
-            service.start(body)
+            response = service.start(body)
+            service._join_preparation(response.job_id)
 
         assert isinstance(observed["start_time"], float)
         assert observed["timeout"] == 17
+        assert store.require_job(response.job_id)["status"] == "error"
 
-    def test_failure_during_execute_marks_job_error_and_reraises(self):
-        """An exception between job creation and launch must flip the job to error."""
+    def test_failure_during_execute_marks_background_job_error(self):
+        """A preparation exception is persisted instead of escaping its thread."""
         from haute.routes._job_store import JobStore
         from haute.schemas import TrainRequest
 
@@ -469,15 +471,15 @@ class TestStartGlmMergeAndKeepColumns:
         with (
             patch.object(service, "_compile_preamble", return_value=None),
             patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
-            patch.object(service, "_check_gpu_fallback", return_value=None),
+            patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(
                 service,
                 "_execute_and_sink",
                 side_effect=RuntimeError("sink failed"),
             ),
-            pytest.raises(RuntimeError, match="sink failed"),
         ):
-            service.start(body)
+            response = service.start(body)
+            service._join_preparation(response.job_id)
 
         # The single created job should be in error state, not left running.
         running = [j for j in store.jobs.values() if j["status"] == "running"]
@@ -958,9 +960,7 @@ class TestStartExecutionContextLifecycle:
         return TrainRequest(graph=graph, node_id="train")
 
     def test_memory_limit_during_execute_marks_memory_limited(self):
-        """An ExecutionMemoryLimitExceededError raised from _execute_and_sink is
-        caught by start()'s typed handler (533-541): job → memory_limited, 507,
-        and the created context's admission is released in the finally (588-589)."""
+        """A preparation memory limit becomes a structured terminal 507 job."""
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -989,25 +989,27 @@ class TestStartExecutionContextLifecycle:
         with (
             patch.object(service, "_compile_preamble", return_value=None),
             patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
-            patch.object(service, "_check_gpu_fallback", return_value=None),
+            patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
                 "haute.routes._train_service.create_admitted_execution_context",
                 return_value=ctx,
             ),
             patch("haute.routes._train_service.bind_running_execution_metrics_publisher"),
             patch.object(service, "_execute_and_sink", side_effect=fake_execute),
-            pytest.raises(HTTPException) as exc_info,
         ):
-            service.start(body)
+            response = service.start(body)
+            service._join_preparation(response.job_id)
 
-        assert exc_info.value.status_code == 507
         jobs = list(store.jobs.values())
         assert jobs and jobs[0]["status"] == "memory_limited"
+        assert jobs[0]["http_status_code"] == 507
+        assert jobs[0]["error_code"] == "memory_limit"
+        assert jobs[0]["error_detail"]["message"]
         # launch never started → finally released the admitted context.
         assert released == [True]
 
-    def test_cancel_during_materialisation_reaches_execution_token(self):
-        """Cancellation is registered before synchronous materialisation starts."""
+    def test_start_returns_handle_before_preparation_and_cancel_reaches_token(self):
+        """The returned handle can cancel preparation while its sink is blocked."""
         from haute.routes._job_store import JobStore
 
         store = JobStore()
@@ -1021,16 +1023,19 @@ class TestStartExecutionContextLifecycle:
             admission_release=lambda: released.append(True),
         )
 
-        def cancel_during_execute(*args, execution_context, **_kwargs):
-            job_id = args[3]
-            assert service.cancel(job_id)["status"] == "cancelled"
+        preparation_entered = threading.Event()
+        release_preparation = threading.Event()
+
+        def blocked_execute(*_args, execution_context, **_kwargs):
+            preparation_entered.set()
+            assert release_preparation.wait(timeout=5)
             execution_context.checkpoint(label="training_materialisation")
             raise AssertionError("cancelled materialisation continued")
 
         with (
             patch.object(service, "_compile_preamble", return_value=None),
             patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
-            patch.object(service, "_check_gpu_fallback", return_value=None),
+            patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch(
                 "haute.routes._train_service.create_admitted_execution_context",
                 return_value=ctx,
@@ -1039,15 +1044,43 @@ class TestStartExecutionContextLifecycle:
             patch.object(
                 service,
                 "_execute_and_sink",
-                side_effect=cancel_during_execute,
+                side_effect=blocked_execute,
             ),
-            pytest.raises(ExecutionCancelledError),
         ):
-            service.start(body)
+            response = service.start(body)
+            assert response.status == "started"
+            assert preparation_entered.wait(timeout=5)
+            assert store.require_job(response.job_id)["status"] == "running"
+            assert service.cancel(response.job_id)["status"] == "cancelled"
+            release_preparation.set()
+            service._join_preparation(response.job_id)
 
         jobs = list(store.jobs.values())
         assert jobs and jobs[0]["status"] == "cancelled"
         assert released == [True]
+
+    def test_preparation_thread_start_failure_is_terminal_and_releases_registry(self):
+        """A thread-launch failure cannot leave an uncancellable running job."""
+        from haute.routes._job_store import JobStore
+
+        store = JobStore()
+        service = TrainService(store)
+
+        with (
+            patch(
+                "haute.routes._train_service.threading.Thread.start",
+                side_effect=RuntimeError("thread unavailable"),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service.start(self._min_graph())
+
+        assert exc_info.value.status_code == 500
+        (job_id,) = store.jobs
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert "failed to start" in job["message"]
+        assert service._training_jobs.cancel(job_id) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1240,11 +1273,12 @@ class TestStartCategoricalLevelsMerge:
         with (
             patch.object(service, "_compile_preamble", return_value=None),
             patch.object(service, "_estimate_ram", return_value=(None, None, 100, 3)),
-            patch.object(service, "_check_gpu_fallback", return_value=None),
+            patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
             patch.object(service, "_execute_and_sink", return_value="/tmp/fake.parquet"),
             patch.object(service, "_launch_background", side_effect=fake_launch),
         ):
-            service.start(body)
+            response = service.start(body)
+            service._join_preparation(response.job_id)
 
         # The merged config still carries the declared levels (round-tripped
         # through the merge helper that line 430 installs).
@@ -1253,7 +1287,7 @@ class TestStartCategoricalLevelsMerge:
 
 
 # ---------------------------------------------------------------------------
-# _check_gpu_fallback — GPU task with a feasible VRAM check returns unchanged
+# _check_gpu_vram_before_launch — feasible GPU VRAM returns the prior warning
 # (the 768->794 short-circuit: vram_check.warning is falsy).
 # ---------------------------------------------------------------------------
 
@@ -1274,7 +1308,7 @@ class TestCheckGpuFallbackNoWarning:
             "haute.routes._train_service._check_gpu_vram",
             return_value=_VramCheck(estimated_mb=10.0, available_mb=100.0, warning=None),
         ):
-            result = service._check_gpu_fallback(
+            result = service._check_gpu_vram_before_launch(
                 train_params,
                 row_limit=50,
                 total_source_rows=100,

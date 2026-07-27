@@ -53,13 +53,18 @@ import { makeNode, makeEdge } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 
+type SetNodesRaw = ReturnType<typeof useGraphStore.getState>["setNodesRaw"]
+
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
+  const setNodesRaw = vi.fn<SetNodesRaw>(
+    (nodes) => useGraphStore.getState().setNodesRaw(nodes),
+  )
   return {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null },
     submodelsRef: { current: {} },
-    setNodesRaw: vi.fn(),
+    setNodesRaw,
     setEdgesRaw: vi.fn(),
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
@@ -69,17 +74,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
-}
-
-type SetNodesRaw = Parameters<typeof usePipelineAPI>[0]["setNodesRaw"]
-
-/** Apply every setNodesRaw call (value or updater) to a node array. */
-function applySetNodesCalls(setNodesRaw: SetNodesRaw, initial: Node[]): Node[] {
-  let nodes = initial
-  for (const [arg] of vi.mocked(setNodesRaw).mock.calls) {
-    nodes = typeof arg === "function" ? arg(nodes) : arg
-  }
-  return nodes
 }
 
 async function flushAsyncWork() {
@@ -150,7 +144,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     await flushAsyncWork()
     await waitFor(() => expect(result.current.previewBusy).toBe(false))
 
-    const nodes = applySetNodesCalls(params.setNodesRaw, [])
+    const nodes = useGraphStore.getState().nodes
     expect(nodes[0].data._columns).toEqual(LIVE_COLUMNS)
     expect(nodes[0].data._columnsSource).toBe("staging")
   })
@@ -167,7 +161,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
 
     act(() => { useSettingsStore.getState().setActiveSource("staging") })
 
-    const nodes = applySetNodesCalls(params.setNodesRaw, [])
+    const nodes = useGraphStore.getState().nodes
     expect(nodes[0].data._columns).toBeUndefined()
     expect(nodes[0].data._availableColumns).toBeUndefined()
     expect(nodes[0].data._schemaWarnings).toBeUndefined()
@@ -187,7 +181,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
 
     act(() => { useSettingsStore.getState().setActiveSource("staging") })
 
-    const nodes = applySetNodesCalls(params.setNodesRaw, [])
+    const nodes = useGraphStore.getState().nodes
     expect(nodes[0].data._columns).toEqual(LIVE_COLUMNS)
     expect(nodes[0].data._availableColumns).toEqual(LIVE_COLUMNS)
   })
@@ -204,7 +198,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
 
     act(() => { useSettingsStore.getState().setActiveSource("staging") })
 
-    const nodes = applySetNodesCalls(params.setNodesRaw, [])
+    const nodes = useGraphStore.getState().nodes
     expect(nodes[0].data._columns).toBeUndefined()
   })
 

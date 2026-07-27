@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, Play, XCircle } from "lucide-react"
 
 import { cancelExplore, runExplore } from "../api/client"
@@ -14,10 +14,11 @@ import ExecutionDiagnosticsSummary from "../components/ExecutionDiagnosticsSumma
 import DataPreview, { type PreviewData } from "./DataPreview"
 import type { SimpleEdge, SimpleNode } from "./editors"
 import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
-import ExploreOverviewPane from "./explore/ExploreOverviewPane"
 import PreviewPanelFrame from "./PreviewPanelFrame"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "./previewPanelLayout"
+
+const ExploreOverviewPane = lazy(() => import("./explore/ExploreOverviewPane"))
 
 type ExplorePreviewProps = {
   node: SimpleNode
@@ -92,6 +93,7 @@ export default function ExplorePreview({
   const status = currentExploreJob?.progress ?? currentCachedResult?.terminalStatus ?? null
   const isBusy = submitting || !!currentExploreJob
   const progress = status?.status === "completed" ? 1 : (status?.progress ?? (submitting ? 0.03 : 0))
+  const progressPercent = Math.min(Math.max(progress * 100, 0), 100)
   const activePane = rememberedPane === "overview" ? "overview" : "preview"
   const activePaneMeta = EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
   const statusSource = currentExploreJob?.source ?? activeSource
@@ -214,10 +216,18 @@ export default function ExplorePreview({
       data-testid="explore-preview-frame"
     >
       {isBusy && (
-        <div className="h-1 w-full shrink-0" style={{ background: "var(--accent-soft)" }}>
+        <div
+          role="progressbar"
+          aria-label="Explore run progress"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progressPercent}
+          className="h-1 w-full shrink-0"
+          style={{ background: "var(--accent-soft)" }}
+        >
           <div
             className="h-full transition-all duration-300"
-            style={{ width: `${Math.max(progress * 100, 2)}%`, background: NODE_GROUP_COLORS.explore }}
+            style={{ width: `${Math.max(progressPercent, 2)}%`, background: NODE_GROUP_COLORS.explore }}
           />
         </div>
       )}
@@ -254,7 +264,19 @@ export default function ExplorePreview({
               embedded
             />
           ) : (
-            <ExploreOverviewPane node={node} report={report} />
+            <Suspense
+              fallback={
+                <div
+                  role="status"
+                  className="flex flex-1 items-center justify-center text-xs"
+                  style={{ color: "var(--text-muted)" }}
+                >
+                  Loading overview…
+                </div>
+              }
+            >
+              <ExploreOverviewPane node={node} report={report} />
+            </Suspense>
           )}
         </div>
       </div>

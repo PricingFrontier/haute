@@ -197,20 +197,55 @@ describe("usePipelineAPI", () => {
     vi.restoreAllMocks()
   })
 
-  it("loads pipeline on mount and sets loading to false", async () => {
+  it("loads the complete pipeline atomically as the clean history baseline", async () => {
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [makeNode("stale")],
+      edges: [],
+      preamble: "import stale",
+      submodels: {
+        stale: { graph: { nodes: [makeNode("stale-child")], edges: [] } },
+      },
+    })
+    useGraphStore.getState().setNodes([makeNode("stale"), makeNode("stale-edit")])
     mockLoad.mockResolvedValue({
       nodes: [makeNode("n1")],
       edges: [],
       preamble: "import polars as pl",
       pipeline_name: "pricing",
+      submodels: {
+        pricing: { graph: { nodes: [makeNode("child")], edges: [] } },
+      },
     })
-    const params = makeParams()
+    const staleSubmodels = useGraphStore.getState().submodels
+    const params = makeParams({
+      preambleRef: { current: "import stale" },
+      submodelsRef: { current: staleSubmodels },
+    })
     const { result } = renderHook(() => usePipelineAPI(params))
     expect(result.current.loading).toBe(true)
     await waitFor(() => expect(result.current.loading).toBe(false))
-    expect(params.setNodesRaw).toHaveBeenCalled()
-    expect(params.setEdgesRaw).toHaveBeenCalled()
-    expect(params.setPreamble).toHaveBeenCalledWith("import polars as pl")
+    const state = useGraphStore.getState()
+    expect(state.nodes.map((node) => node.id)).toEqual(["n1"])
+    expect(state.edges).toEqual([])
+    expect(state.preamble).toBe("import polars as pl")
+    expect(state.submodels).toEqual({
+      pricing: { graph: { nodes: [makeNode("child")], edges: [] } },
+    })
+    expect(state.lastSavedSnapshot).toEqual({
+      nodes: [makeNode("n1")],
+      edges: [],
+      preamble: "import polars as pl",
+      submodels: {
+        pricing: { graph: { nodes: [makeNode("child")], edges: [] } },
+      },
+    })
+    expect(state.undoStack).toEqual([])
+    expect(state.redoStack).toEqual([])
+    expect(state.dirty).toBe(false)
+    expect(params.preambleRef.current).toBe("import polars as pl")
+    expect(params.submodelsRef.current).toEqual(state.submodels)
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setPreamble).not.toHaveBeenCalled()
   })
 
   it("uses the cold-start retry policy for the initial pipeline load", async () => {
@@ -286,12 +321,16 @@ describe("usePipelineAPI", () => {
 
     const toasts = useToastStore.getState().toasts
     expect(toasts.some((t) => t.type === "error" && t.text.includes("Failed to load pipeline"))).toBe(false)
-    expect(params.setNodesRaw).toHaveBeenCalledWith([])
-    expect(params.setEdgesRaw).toHaveBeenCalledWith([])
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setPreamble).not.toHaveBeenCalled()
+    expect(params.preambleRef.current).toBe("")
     expect(params.submodelsRef.current).toEqual({})
-    expect(setSubmodelsRaw).toHaveBeenCalledWith({})
+    expect(setSubmodelsRaw).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().preamble).toBe("")
     expect(useGraphStore.getState().submodels).toEqual({})
+    expect(useGraphStore.getState().dirty).toBe(false)
+    expect(useGraphStore.getState().undoStack).toEqual([])
+    expect(useGraphStore.getState().redoStack).toEqual([])
   })
 
   it("shows toast on load failure", async () => {
@@ -312,9 +351,9 @@ describe("usePipelineAPI", () => {
     // handleSave reads graphRef for the save payload and marks that
     // submitted snapshot as saved after the backend accepts it. Keep
     // graphRef and useGraphStore in sync so isDirty() reports false.
-    useGraphStore.setState({ nodes: [makeNode("n1")], edges: [], preamble: "" })
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
     await act(async () => {
       result.current.handleSave()
     })

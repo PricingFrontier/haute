@@ -11,21 +11,10 @@ workflows. Current behaviour is specified in
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| EDA-E08 | Active | P1 | Complete accessible progress semantics on Explore cards. |
-| EDA-E09–EDA-E12 | Active | P2 | Add bounded analysis, target insight, deeper profiles, and export. |
+| EDA-E09 | Planned | P2 | Add bounded server-binned distributions. |
+| EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
 
 ## Planned improvements
-
-### EDA-E08 — Scalable accessible cards
-**Why:** Wide schemas make cards hard to browse and expose small accessibility gaps.
-
-**Plan:** Add bounded card browsing with search/pagination and sticky headers; expose column count and semantic progress/table markup.
-
-**Acceptance:** Wide-schema and accessibility tests verify navigation, headers, progress roles, and snapshot counts.
-
-**Dependencies:** Delivered panel-state semantics (formerly EDA-E07).
-
-**Evidence:** `frontend/src/panels/explore`; `frontend/src/panels/explore/__tests__/*.test.tsx`.
 
 ### EDA-E09 — Distribution charts
 **Why:** Analysts need distributions without client-side raw-data processing.
@@ -41,38 +30,44 @@ workflows. Current behaviour is specified in
 ### EDA-E10 — Target relationships
 **Why:** A report needs bounded, target-aware signals for feature investigation.
 
-**Plan:** Add an on-demand cached analysis endpoint with explicit cache-miss behaviour, bounded numeric/categorical aggregations, and target/weight configuration.
+**Plan:** After EDA-E09 establishes the bounded distribution primitives, add
+one on-demand analysis job/cache surface with explicit cache-miss and
+cancellation behaviour. It owns bounded numeric/categorical target
+aggregations, target/weight configuration, and exact user-selected
+multi-column key uniqueness checks. Key analysis is not a second synchronous
+scan path or a base-report estimate.
 
-**Acceptance:** Tests cover cache miss, target validation, numeric and categorical results, bounded levels, and ranked UI rendering.
+**Acceptance:** Tests cover cache miss, cancellation/supersession, target and
+weight validation, numeric and categorical results, bounded levels, ranked UI
+rendering, exact single-/multi-column key counts, unhashable key rejection, and
+cache identity for the selected analysis and columns.
 
-**Dependencies:** Delivered bounded collection and tab/panel contracts (formerly EDA-E03, EDA-E06, EDA-E07).
+**Dependencies:** EDA-E09 plus delivered bounded collection, dataframe-cache,
+job-lifecycle, and tab/panel contracts (formerly EDA-E03, EDA-E06, EDA-E07,
+EDA-E13).
 
 **Evidence:** `src/haute/routes/explore.py`; `src/haute/routes/_explore_service.py`; `frontend/src/panels/explore`; `tests/test_explore_routes.py`.
 
-### EDA-E11 — Quality profile extensions
-**Why:** Current profiles omit useful tails, temporal/text cues, and key-quality signals.
-
-**Plan:** Add bounded quantiles, temporal and text summaries, ID/high-cardinality flags, duplicate counts, and on-demand key uniqueness checks.
-
-**Acceptance:** Each new signal has null, boundary, and representative-frame regression coverage.
-
-**Dependencies:** Delivered bounded collection (formerly EDA-E03).
-
-**Evidence:** `src/haute/routes/_explore_service.py`; `src/haute/schemas.py`; `tests/test_explore_routes.py`.
-
-### EDA-E12 — Export workflow
-**Why:** Existing table export utilities are not available from Explore results.
-
-**Plan:** Wire accessible copy and CSV export actions to supported cards using shared escaping and download utilities.
-
-**Acceptance:** Tests cover TSV/CSV quoting, headers, disabled/empty states, and keyboard-accessible actions.
-
-**Dependencies:** Delivered tab contract (formerly EDA-E06).
-
-**Evidence:** `frontend/src/panels/editors/shared/tableClipboard.ts`; `frontend/src/panels/editors/FrameTableActions.tsx`; `frontend/src/panels/explore`.
-
 ## Delivered outcomes
 
+- `EDA-E11` report schema v5 adds valid-value uniqueness ratios,
+  high-cardinality and conservative identifier-candidate cues, min/mean/max
+  text length, temporal span, and exact full-row duplicate count/ratio. These
+  remain in the existing single cancellable aggregate; an Object column makes
+  whole-row duplicates explicitly unknown rather than estimated. The Schema
+  card renders, searches, copies, and downloads the factual cues. Backend,
+  runtime-guard, and card regressions cover representative/null/boundary
+  behaviour. User-selected multi-column key analysis is deliberately folded
+  into EDA-E10's on-demand job/cache surface above, where its scan lifecycle
+  can be explicit.
+- Wide-schema search/pagination, sticky table headers, explicit column counts,
+  semantic tables, and a clamped named Explore progressbar complete `EDA-E08`.
+  `ExplorePreview.test.tsx` and the focused card suites pin the progress and
+  navigation semantics.
+- `EDA-E12` adds read-only native-button TSV copy and CSV download actions to
+  Schema, Numeric Summary, and Categorical Summary. The actions reuse the
+  shared serializers, disable on empty tables, use card-specific accessible
+  names, and export every filtered schema row independent of pagination.
 - Duration-safe value counts, truthful NaN/null statistics, one batched
   cancellable streaming collect with typed memory-limit outcomes, stat-gated
   input fingerprints, and lossy-decoded binary labels (`EDA-E01`–`EDA-E05`)
@@ -83,8 +78,8 @@ workflows. Current behaviour is specified in
   hide-stale-reports panel design that superseded `EDA-E07`'s labelled-stale
   plan are specified in
   [the frontend preview/explore specification](../frontend-preview-explore/high-level.md).
-- The quantile portion of `EDA-E11` (p25/median/mean/p75/std) already ships in
-  the numeric profile; only the remaining signals stay active above.
+- The quantile portion of `EDA-E11` (p25/median/mean/p75/std) remains part of
+  the numeric profile.
 - `EDA-E13` is covered generically by the shared dataframe execution cache and
   background-job lifecycle components, so no Explore-specific cache/job
   robustness work remains.

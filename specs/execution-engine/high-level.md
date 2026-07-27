@@ -48,6 +48,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   process with an optional address-space cap, timeout, and cooperative-stop support.
 - Metadata-based RAM pre-estimation for training (`_ram_estimate.py`) so a training run
   can downsample before it starts rather than OOM mid-fit.
+- Linux available-memory discovery clamps the host's reported availability to
+  observable container headroom: cgroup v2 `memory.max - memory.current`,
+  falling back to the v1 limit/usage pair when v2 is absent. An unlimited
+  cgroup leaves the host value unchanged; malformed or incomplete controller
+  state is reported and never turned into invented capacity.
 - Shared config-driven node-apply logic (`_node_apply.py`) for `liveSwitch`,
   `scenarioExpander`, `optimiserApply`, and `OUTPUT` response-document assembly —
   the one implementation both the canvas executor and codegen-generated `.py`
@@ -85,16 +90,18 @@ running heavy work in a child process the parent can kill on timeout or memory l
   (`ok`/`error`), row/column counts, a bounded JSON preview of rows, schema, and
   per-node timing/memory. Repeated calls against the *same* graph reuse previously
   materialised node outputs from an in-process cache; calls that need more of the
-  graph than is cached extend the cache rather than starting over. Node failures are
-  captured per-node (`status="error"`) rather than aborting the whole preview. Once
+  graph than is cached extend the cache rather than starting over. Ordinary
+  node-local failures are captured per-node (`status="error"`) rather than
+  aborting the whole preview. Once
   `_execute_eager_core` is running, every `HauteError` with a stable public
   `error_code`, cancellation, and memory-limit exhaustion is always raised. This includes
   `ContractResolutionError`,
   `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`, and
-  `LiveSwitchScenarioError`. `ContractMismatchError` has no public `error_code` but is
-  re-raised by its own explicit branch. An uncoded join-key dtype `SchemaMismatchError` is
-  currently captured as a node error on this swallow-errors path (but propagates
-  from lazy/fail-fast execution). Preamble compilation happens outside that core:
+  `LiveSwitchScenarioError`. `ContractMismatchError` and the base
+  `SchemaMismatchError` have no public `error_code`, so the eager core re-raises
+  both through one explicit mismatch branch. The preview HTTP adapter converts
+  either mismatch into the same in-situ `PreviewNodeResponse(status="error")`
+  instead of a generic 500. Preamble compilation happens outside that core:
   interactive preview attaches a `PreambleError` only to nodes that consume its
   namespace, while non-preview execution propagates it.
 - **Sink/batch execution** (`executor.write_data_output`, `execution.execute_lazy_graph`)
@@ -163,7 +170,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   paths, so a mismatch (missing column, wrong dtype on a join key) is detected at the
   offending node rather than as an opaque Polars error three nodes later. Missing
   columns use `ContractMismatchError`; join-key dtype disagreement uses
-  `SchemaMismatchError`, with the eager-preview reporting asymmetry noted above.
+  `SchemaMismatchError`. Both propagate identically through the eager core and
+  are adapted identically by the preview route.
 - **Contract resolution is fail-loud outside interactive preview.** Only
   `PREVIEW_EAGER` may turn classified configuration/I/O/model-boundary resolution
   failures into a diagnosed opaque contract. Every non-preview profile, and an
@@ -277,23 +285,23 @@ running heavy work in a child process the parent can kill on timeout or memory l
 
 ## Failure model
 
-- **Per-node failures during preview are swallowed and reported, not raised** —
+- **Ordinary per-node failures during preview are swallowed and reported** —
   `execute_graph` returns a `NodeResult(status="error", error=...)` for the failing
   node (and every downstream node that depended on it) so one bad node doesn't blank
   the whole canvas. Any `HauteError` that opts into the public contract with a stable
   `error_code`, plus cancellation and memory-limit exhaustion, propagates from the
   eager core even in swallow mode because these are API-level correctness/resource
-  signals. Interactive preamble compilation retains the node-local handling described
-  above. An uncoded
-  join-key dtype `SchemaMismatchError` does not share that exception clause today and
-  is returned as a node error.
+  signals. `ContractMismatchError` and `SchemaMismatchError` also propagate via
+  the explicit mismatch branch; the preview route then presents either one as
+  the target node's in-situ error response. Interactive preamble compilation
+  retains the node-local handling described above.
 - **Lazy (sink/batch/deploy) execution never swallows node failures** — any exception
   during plan construction or the final streaming collect propagates to the caller.
 - **Contract mismatches are typed at the offending node.** Missing/extra columns raise
   `ContractMismatchError`, carrying the column diff and node id. A simple inferred
-  join whose parent key dtypes differ raises `SchemaMismatchError`; it propagates on
-  lazy/fail-fast execution but is captured into a `NodeResult(status="error")` by
-  ordinary eager preview.
+  join whose parent key dtypes differ raises `SchemaMismatchError`; both errors
+  propagate on lazy/fail-fast and swallow-mode eager execution. The preview HTTP
+  boundary converts either into the same `NodeResult(status="error")` shape.
 - **Memory-budget exhaustion raises `ExecutionMemoryLimitExceededError`** (a
   `MemoryError` subclass) at the next checkpoint after RSS crosses the resolved
   budget. A sampler that becomes unavailable mid-run raises the same typed error with

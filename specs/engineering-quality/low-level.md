@@ -57,7 +57,7 @@
 | `scripts/spec_corpus_inventory.py` | Builds the exact working-tree specification inventory and content fingerprint, validates complete per-file review coverage, and derives component/governance/roadmap line and coverage totals for reproducible semantic-review claims. |
 | `scripts/setup-worktree.sh` | Sets up a development worktree. |
 | `mutation/README.md` | Documents the maintained mutation-testing workflow and constraints. |
-| `mutation/targets.json` | Declares selected mutation targets, witness suites, and survival budgets. |
+| `mutation/targets.json` | Declares selected mutation targets, witness suites, survival budgets, owning component, and non-expired review date. |
 | `mutation/cosmic-ray.executor.toml` | Cosmic Ray configuration for executor mutation coverage. |
 | `mutation/cosmic-ray.job-store.toml` | Cosmic Ray configuration for job-store mutation coverage. |
 | `mutation/cosmic-ray.json-cache.toml` | Cosmic Ray configuration for JSON-cache mutation coverage. |
@@ -69,6 +69,8 @@
 | `tests/` | Active Python unit, integration, property, regression, contract, E2E-support, and repository-hygiene test corpus. |
 | `tests/fixtures/` | Checked-in input, golden, expected-contract, UI-contract, and data fixtures consumed by active tests. |
 | `tests/performance/` | `perf`-marked benchmark-style tests excluded from ordinary pytest and run by the performance harness, including the rating miss-guard evidence matrix (`test_rating_miss_guard_perf.py`). |
+| `tests/test-health-policy.toml` | Aggregate owner, review-date, and Playwright CI-retry budget policy for backend/frontend test debt; individual debt sites remain fingerprinted by the scanner. |
+| `tests/test-health-summary.md` | Deterministic generated inventory of backend/frontend skip/xfail/flaky debt, browser retry budget, and owned mutation-survivor thresholds. Ordinary tests reject drift from the policy and live scanners. |
 | `tests/docs_accuracy_baseline.txt` | Sorted one-line TSV ratchet of current per-document accuracy violations; resolved entries are deleted and additions require explicit review. |
 | `frontend/src/__tests__/` | Frontend application-level unit, contract, regression, adversarial, and bundle/coverage gate tests. |
 | `frontend/src/api/__tests__/` | Frontend API-client test group. |
@@ -100,8 +102,16 @@
   `tests/docs_accuracy_baseline.txt` contains every accepted current record
   exactly once in sorted order.
 - **Mutation target** in `mutation/targets.json` selects a Cosmic Ray config,
-  witness test command, and survivor budget. `scripts/run_mutation_suite.py`
-  turns targets into a plan/shard/merge data flow.
+  witness test command, survivor budget, owning component, and review date.
+  `scripts/run_mutation_suite.py` rejects missing/expired ownership metadata and
+  carries it into plan and aggregate result artifacts.
+- **Test-health policy** in `tests/test-health-policy.toml` assigns a non-empty
+  component owner and non-expired review date to backend marker debt, frontend
+  marker debt, and the bounded Playwright CI retry allowance. The backend AST
+  scanner includes `pytest.mark.flaky` in its exact fingerprint budget (zero at
+  present). The generated Markdown groups live site counts by signal and lists
+  each mutation target separately, so a reviewer can act without reading the
+  scanner's implementation.
 - **Performance report schema 3** contains top-level `environment`, `workload`,
   `resources`, and `wall_time` records plus per-test bounded evidence.
   Unavailable numeric counters are JSON `null`; reported pytest phase time plus
@@ -169,7 +179,9 @@
    each isolated target/shard, downloads all artifacts, and calls `--phase merge`
    to enforce total survivor budgets. The merge job's `!cancelled()` status
    condition ensures dependency failures do not skip it, and it fails explicitly
-   when planning or a required shard was unsuccessful.
+   when planning or a required shard was unsuccessful. Plan and merge artifacts
+   retain target owner/review metadata beside the threshold and observed
+   survival rate.
    Scheduled performance calls
    `scripts/run_perf_suite.py`; scheduled dependency/shuffle workflows use their
    own commands and issue-alarm paths.
@@ -205,6 +217,12 @@
   with `# pragma: no mutate`; executable expressions and branch decisions must
   remain in scope and be killed by focused witnesses rather than hidden behind
   a pragma or a relaxed survivor budget.
+- A retained skip, xfail, expected failure, focused test, flaky marker, or
+  browser retry is debt even when it is justified. Exact-site fingerprints
+  prevent silent growth; aggregate policy gives the retained class an owner and
+  expiry without duplicating an owner on every optional-dependency skip.
+  Mutation survivors use per-target owners because each numerical/contract
+  boundary has a different component owner.
 - Frontend shuffled tests are a nightly monitor for within-file state leaks,
   not an ordinary PR requirement. A captured seed makes a failed ordering
   reproducible.
@@ -258,7 +276,11 @@
 - `tests/test_property.py` — Hypothesis properties for sanitisation, topology, path resolution, banding/rating, codegen/parser round-trips, fingerprints, config, validation, and cache invariants.
 - `tests/test_repository_hygiene.py` — repository artifact/path, dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.
 - `tests/test_small_module_contracts.py` — JSON-safe serialization, shared contracts, and package-init module contracts.
-- `tests/test_test_debt.py` — AST debt scanner budgets and explicit-reason contracts for backend/frontend skip/xfail/fixme markers.
+- `tests/test_test_debt.py` — AST debt scanner budgets and explicit-reason
+  contracts for backend/frontend skip/xfail/fixme markers, plus test-health
+  policy dates, the zero backend-flaky budget, the Playwright retry budget,
+  mutation ownership metadata, and exact regeneration of
+  `tests/test-health-summary.md`.
 
 - Active backend test groups live in `tests/`: unit, property-based,
   regression, API/contract, end-to-end, security/sandbox, and repository

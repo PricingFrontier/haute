@@ -66,6 +66,12 @@ backend API modules own validation and persistence.
   from stale preview/table levels; healthy factors remain usable. Rebuilding
   several factors constructs their full Cartesian table, and edited
   relativities survive save/reload.
+- The maintained Banding-to-Rating configuration-shape matrix names one
+  component owner, representative fixture, and smallest proving test tier for
+  continuous, categorical, breakpoint, mixed-factor, zero-level, malformed,
+  mixed-output, and persisted-table variants. Browser promotion is reserved
+  for cross-editor persistence/keyboard journeys rather than duplicating every
+  component shape.
 - Rating, Output, and API Input expose only their current persisted shapes:
   Rating uses `tables[].entries` plus `combinedOutputs`; Output uses
   `outputMapping` rows with all four required fields including `enabled`; API
@@ -80,6 +86,11 @@ commit timing, clipboard parsing, path handling, rendered input-source chips, an
 of persisted banding/rating data. Rating normalisation preserves optional factor-dtype
 descriptors and ordered entry rows so opening and saving a table cannot erase backend-owned
 lookup identity. Lazy dispatch keeps editor code out of the initial canvas load.
+Accessibility automation is deliberately risk-based: component tests enforce
+roles, names, descriptions, invalid state, and focus behaviour, while the
+stable cross-editor Playwright journey enforces keyboard completion and
+reviewed desktop/narrow visuals. Haute does not currently run a blanket DOM
+scanner or claim whole-application WCAG conformance.
 
 Display identity and executable identity are one identity. `InputSource.name` is the input's
 single name — the chip text, the code argument, and the key persisted contracts use (the

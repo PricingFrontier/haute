@@ -92,8 +92,10 @@ def expand_banding_config_from_sidecar(config: dict[str, Any]) -> dict[str, Any]
 def normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return banding factors in the canonical in-memory shape."""
     factors = config.get("factors")
-    if not isinstance(factors, list):
+    if factors is None:
         return []
+    if not isinstance(factors, list):
+        raise ValueError("banding factors must be a list")
 
     expanded_config = expand_banding_config_from_sidecar(config)
     expanded_factors = expanded_config["factors"]

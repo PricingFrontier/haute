@@ -64,14 +64,17 @@ Out of scope, owned elsewhere:
   CatBoost hyperparameters live in the node's `params` object and its Tweedie power is
   `variance_power`; GLM settings live at the node's top level and its Tweedie power is
   `var_power`.
-- Starting training (`POST /api/modelling/train`) validates the config, estimates
+- Starting training (`POST /api/modelling/train`) performs the cheap graph/config
+  validation synchronously, creates and registers the cancellable job, starts an owned
+  preparation thread, and returns `status="started"` plus the job ID before RAM
+  estimation or upstream materialisation begins. The preparation thread estimates
   memory requirements, executes the upstream pipeline to materialise training data,
-  and derives the exact feature choice from the materialised schema in the request
-  process. Materialisation consumes the execution facade's typed strategy result and
-  carries its deterministic inclusion/exclusion provenance into the modelling response;
-  modelling does not select a competing plan. It then runs fit, evaluation, diagnostics,
-  and model staging in a supervised
-  spawn child through a versioned plain-data protocol. Progress writes are non-blocking:
+  and derives the exact feature choice from the materialised schema. Materialisation
+  consumes the execution facade's typed strategy result and carries its deterministic
+  inclusion/exclusion provenance into the modelling status/result; modelling does not
+  select a competing plan. It then runs fit, evaluation, diagnostics, and model staging
+  in a supervised spawn child through a versioned plain-data protocol. Progress writes
+  are non-blocking:
   a full queue or the delivered-event budget drops progress rather than stalling fit,
   reports the loss count on the next event/end marker, and retains only bounded history.
   The response includes a bounded, versioned diagnostic describing the
@@ -82,10 +85,13 @@ Out of scope, owned elsewhere:
   one process-wide running slot shared by training and GLM dispersion estimation; a
   second request of either kind is rejected while the first is running.
 - The client polls for status (`GET /api/modelling/train/status/{job_id}`), receiving
-  progress, an incrementally-growing loss/iteration history, and — on completion — the
-  full result: metrics, feature importances, and every diagnostic chart's underlying
-  data. Polling also enforces the configured/default training timeout: an overdue
-  running job requests child termination and atomically transitions to `timed_out`.
+  preparation and fit progress, an incrementally-growing loss/iteration history, and —
+  on completion — the full result: metrics, feature importances, and every diagnostic
+  chart's underlying data. Terminal preparation failures retain their public
+  `error_code`, `http_status_code`, and structured `error_detail` on this status
+  response. Polling also enforces the configured/default training timeout: an overdue
+  running job requests preparation/child termination and atomically transitions to
+  `timed_out`.
 - `POST /api/modelling/estimate` returns a RAM/row-limit and (for GPU CatBoost) VRAM
   estimate without starting a job, so the UI can warn the user before they commit.
 - `POST /api/modelling/export` returns a standalone Python script that trains the
@@ -96,8 +102,10 @@ Out of scope, owned elsewhere:
   so the logged model's signature matches what was actually trained. Databricks
   registry publication uses the logged `runs:/…/model` URI and is best-effort:
   a registry error is logged without discarding the successful run.
-- `POST /api/modelling/train/cancel/{job_id}` marks an in-flight run cancelled and asks
-  its supervisor to terminate and join the child process.
+- `POST /api/modelling/train/cancel/{job_id}` is idempotent. If cancellation wins the
+  terminal race, it marks the run cancelled and trips the same token used by upstream
+  preparation and the spawned fit worker; if another terminal transition won first,
+  it returns that existing terminal job unchanged.
 - `POST /api/modelling/dispersion/estimate` estimates a GLM node's Negative Binomial
   `theta` or Tweedie `var_power` by profile likelihood over the node's own training
   data, as a background job the client polls
@@ -107,6 +115,14 @@ Out of scope, owned elsewhere:
   field. The user can inspect or adjust that auto-filled value before their normal
   save/publish action. Its process supervisor enforces the timeout stamped at job
   creation; status polling is not required to trigger that timeout.
+- Monotonicity is the one additional cross-algorithm capability lever exposed in
+  modelling-node configuration. `monotone_constraints` maps selected numeric feature
+  names to exactly `-1` (decreasing) or `1` (increasing); zero means absence and is
+  omitted by the editor. After the final CatBoost feature selection or GLM-term
+  narrowing is known, training rejects a non-object mapping, malformed names or
+  directions, constraints on absent/non-selected features, and constraints on
+  categorical, Boolean, temporal, or otherwise non-numeric features before splitting
+  or fitting.
 
 Invariants that always hold:
 - Live training and script export always produce the same model for the same config —
@@ -119,6 +135,14 @@ Invariants that always hold:
   feature order, dtypes, categorical domains, target, and offset column. Any drift
   detected later (train vs. score) raises rather than producing a plausible-looking
   wrong prediction.
+- MLflow signatures preserve temporal inputs deliberately: Polars `Date` and
+  every supported parameterised `Datetime` unit/time-zone form map to MLflow
+  `datetime`, survive signature persistence, and accept the corresponding
+  pandas frame produced by the scoring path after log/load. Polars `Decimal`
+  has no exact MLflow 3.x scalar type and is therefore rejected at signature
+  construction with an actionable instruction to cast upstream to `String`
+  (precision-preserving text) or explicitly to `Float64` (accepting precision
+  loss). It is never silently mapped to `double`.
 - Reported diagnostics always come from the most held-out partition available: holdout
   if present, else validation, else train.
 - A model trained with an offset column always has its offset effect included in
@@ -131,6 +155,14 @@ Invariants that always hold:
   all-except selection, and GLM terms produce the same version-1 feature-selection
   diagnostic shape in start/status results, including deterministic capped lists of
   selected features, retained metadata, and exclusions.
+- Numeric-only CatBoost input keeps Polars' native Fortran-contiguous `Float32`
+  matrix unless a repeatable handoff benchmark shows at least a 20% median
+  end-to-end `Pool` construction improvement without adding a full-matrix peak
+  allocation. The benchmark also has to prove identical feature order, values,
+  equivalent labels within CatBoost's `Float32` ingestion precision, seeded
+  predictions within `1e-12` absolute/relative tolerance, and the same prediction
+  dtype. A timing-only win cannot justify doubling the live feature-matrix
+  allocation at the training boundary.
 
 ## Design rationale
 
@@ -174,6 +206,33 @@ mismatch surfaces as a confusing internal error. The contract is content-hashed 
 hand-edited or corrupted file is caught, and it is written per-model
 (`{model_name}.feature_contract.json`) after a prior shared-file design let two models
 trained into the same output directory silently overwrite each other's contract.
+The contract retains Polars' full parameterised `Datetime(...)` descriptor; the
+MLflow signature boundary classifies that descriptor structurally rather than
+requiring one spelling per unit/time zone. Decimal remains representable in a
+local feature contract, but attempting to publish that contract as an MLflow
+signature fails before model logging because MLflow cannot express it exactly.
+
+The CatBoost numeric handoff is benchmark-gated because Polars currently exposes a
+Fortran-contiguous `Float32` NumPy matrix for a multi-column numeric frame while
+CatBoost accepts both Fortran- and C-contiguous matrices. Normalising that matrix
+unconditionally with `numpy.ascontiguousarray` is not a free layout hint: it creates
+another rows-by-features allocation at the point where training memory is already
+highest. The opt-in performance workload therefore measures the complete alternative
+(`ascontiguousarray` plus `Pool`) against the production handoff (`Pool` directly),
+records the source matrix and copy byte counts, and trains the same seeded model from
+both pools to establish result equivalence. The durable decision follows the
+20%-and-no-extra-allocation gate above; local timing evidence is diagnostic rather
+than a machine-specific production switch.
+
+The MOD-M09 product decision keeps monotonicity because both supported algorithms
+already have deterministic named-feature semantics and it is meaningful in pricing
+review. It does not add warm start (incompatible with isolated-child and atomic
+artifact ownership), class-imbalance controls (classification-only with no shared GLM
+meaning), arbitrary extra metric/passthrough editors (algorithm-specific validation
+would be bypassed), or feature-weight UI (RustyStats does not support it). Those are
+not hidden defaults or dormant controls; each would need a separate product contract
+and evidence before it can be exposed. Existing CatBoost `params` and the declared
+metric list remain their current advanced/configuration contracts.
 
 Diagnostics are computed by reading the chosen evaluation partition exactly once and
 reusing it for every chart — training data is often multi-GB, so re-reading per
@@ -216,11 +275,16 @@ browser without a server or JS bundle.
   invalid GLM family/link combination) are rejected before any pipeline execution or
   job record is created, as HTTP 400 with a message naming the exact missing/invalid
   setting.
-- Insufficient RAM or GPU VRAM surfaces as HTTP 507 with a structured payload; a GPU
-  job that would not fit is refused outright, not silently retried on CPU.
-- Pipeline-execution failures while materialising training data surface as HTTP 422
-  (missing required columns, bounded-streaming unsupported) or HTTP 500 (generic
-  failure), and the job record transitions to `contract_error`/`error` accordingly.
+- An admission failure discovered before a job handle can be returned surfaces as HTTP
+  507. RAM or GPU-VRAM failure discovered during background preparation transitions the
+  pollable job to `memory_limited` and preserves the equivalent structured 507 detail
+  on its status response. A GPU job that would not fit is refused outright: the message
+  asks the user to select CPU (or reduce the workload) and retry, and the server never
+  silently changes `task_type` or retries on CPU.
+- Pipeline-execution failures while materialising training data preserve the equivalent
+  HTTP classification (`http_status_code` 422 for missing required columns or
+  bounded-streaming unsupported; 500 for a generic failure) on the terminal status,
+  and the job transitions to `contract_error`/`error` accordingly.
 - Once a background training run has started, every terminal outcome (`completed`,
   `cancelled`, `timed_out`, `memory_limited`, `contract_error`, `error`) is reflected
   both in the job's status and, for HTTP-raised failures, in the response — the two are

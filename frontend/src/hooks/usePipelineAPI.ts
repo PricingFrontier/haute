@@ -243,7 +243,7 @@ function previewErrorDetail(err: unknown): string {
 export default function usePipelineAPI({
   selectedNode,
   graphRef, parentGraphRef, submodelsRef,
-  setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble,
+  setNodesRaw, setCurrentSourceFile,
   preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
@@ -297,21 +297,25 @@ export default function usePipelineAPI({
         const data = parsePipelineResponse(raw)
         const pipelineNodes = data.nodes
         const pipelineEdges = data.edges
-        setNodesRaw(pipelineNodes)
-        setEdgesRaw(normalizeEdges(pipelineEdges))
-        if (data.preamble != null) {
-          setPreamble(data.preamble)
-          preambleRef.current = data.preamble
-        }
+        const loadedPreamble = data.preamble ?? ""
+        const loadedSubmodels = data.submodels ?? {}
+        // Refs are request-facing mirrors read outside React render. Update
+        // them before publishing the atomic store transition so subscribers
+        // can never observe the new document with stale mirrors.
+        preambleRef.current = loadedPreamble
+        submodelsRef.current = loadedSubmodels
+        useGraphStore.getState().loadGraphSnapshot({
+          nodes: pipelineNodes,
+          edges: normalizeEdges(pipelineEdges),
+          preamble: loadedPreamble,
+          submodels: loadedSubmodels,
+        })
         if (data.pipeline_name) pipelineNameRef.current = data.pipeline_name
         if (data.pipeline_description != null) descriptionRef.current = data.pipeline_description
         if (data.source_file) {
           sourceFileRef.current = data.source_file
           setCurrentSourceFile?.(data.source_file)
         }
-        const loadedSubmodels = data.submodels ?? {}
-        submodelsRef.current = loadedSubmodels
-        setSubmodelsRaw?.(loadedSubmodels)
         // Populate source state from backend sidecar
         if (data.sources) {
           useSettingsStore.getState().setSources(data.sources)
@@ -320,12 +324,6 @@ export default function usePipelineAPI({
           useSettingsStore.getState().setActiveSource(data.active_source)
         }
         nodeIdCounterRef.current = computeNextNodeId(pipelineNodes)
-        // The loaded pipeline IS the on-disk state — mark it saved so
-        // isDirty returns false until the user edits something.  The
-        // preceding setNodesRaw / setEdgesRaw / setPreamble /
-        // setSubmodelsRaw have already written into useGraphStore, so
-        // markSaved captures the exact snapshot we just loaded.
-        useGraphStore.getState().markSaved()
         if (data.warning) addToast("warning", data.warning)
         setLoading(false)
       })
@@ -339,7 +337,7 @@ export default function usePipelineAPI({
       disposed = true
       controller.abort()
     }
-  }, [setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
+  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean }) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current

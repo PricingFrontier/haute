@@ -10,6 +10,7 @@ from haute._scaffold import (
     azure_devops_yml,
     env_example,
     github_ci_yml,
+    github_deploy_prod_yml,
     github_deploy_yml,
     gitlab_ci_yml,
     haute_toml,
@@ -571,6 +572,116 @@ class TestYamlStructure:
         assert "$(AWS_ACCESS_KEY_ID)" in result
         assert "$(SAGEMAKER_ROLE_ARN)" in result
         assert "$(DATABRICKS_RATING_HOST)" not in result
+
+
+def _target_secrets(target: str, formatter: str) -> dict[str, str]:
+    secrets = TARGETS[target]["secrets"]
+    assert isinstance(secrets, list)
+    return {secret: formatter.format(secret=secret) for secret in secrets}
+
+
+def _github_trigger(document: dict[object, object]) -> dict[str, object]:
+    trigger = document.get(True, document.get("on"))
+    assert isinstance(trigger, dict)
+    return trigger
+
+
+class TestCompleteYamlParity:
+    """Complete CI documents preserve their release flow and secret consumers."""
+
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_every_complete_generated_document_parses(self, target: str) -> None:
+        for document in (
+            github_ci_yml(),
+            github_deploy_yml(target),
+            github_deploy_prod_yml(target),
+            gitlab_ci_yml(target),
+            azure_devops_yml(target),
+        ):
+            assert isinstance(yaml.safe_load(document), dict)
+
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_github_release_structure_and_secret_consumers(self, target: str) -> None:
+        ci = yaml.safe_load(github_ci_yml())
+        assert isinstance(ci, dict)
+        assert _github_trigger(ci)["pull_request"] == {"branches": ["main"]}
+        assert set(ci["jobs"]) == {"lint", "typecheck", "test", "pipeline-validate"}
+
+        deploy = yaml.safe_load(github_deploy_yml(target))
+        assert isinstance(deploy, dict)
+        assert _github_trigger(deploy)["push"]["branches"] == ["main"]
+        assert "workflow_dispatch" in _github_trigger(deploy)
+        jobs = deploy["jobs"]
+        assert set(jobs) == {"validate", "deploy-staging", "smoke-test", "impact-analysis"}
+        expected = _target_secrets(target, "${{{{ secrets.{secret} }}}}")
+        for job_name, step_name in (
+            ("deploy-staging", "Deploy to staging"),
+            ("smoke-test", "Score test quotes against staging endpoint"),
+            ("impact-analysis", "Compare staging vs production predictions"),
+        ):
+            step = next(step for step in jobs[job_name]["steps"] if step.get("name") == step_name)
+            assert step["env"] == expected
+
+        production = yaml.safe_load(github_deploy_prod_yml(target))
+        assert isinstance(production, dict)
+        assert "workflow_dispatch" in _github_trigger(production)
+        production_step = next(
+            step
+            for step in production["jobs"]["deploy-production"]["steps"]
+            if step.get("name") == "Deploy to production"
+        )
+        assert production_step["env"] == expected
+
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_gitlab_release_structure_and_secret_consumers(self, target: str) -> None:
+        document = yaml.safe_load(gitlab_ci_yml(target))
+        assert isinstance(document, dict)
+        assert document["stages"] == [
+            "validate",
+            "deploy-staging",
+            "smoke-test",
+            "impact-analysis",
+            "deploy-production",
+        ]
+        expected = _target_secrets(target, "${secret}")
+        for job_name in ("deploy-staging", "smoke-test", "impact-analysis", "deploy-production"):
+            job = document[job_name]
+            assert job["variables"] == expected
+            assert job["rules"] == [{"if": "$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH"}]
+        assert document["deploy-production"]["when"] == "manual"
+
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_azure_release_structure_and_secret_consumers(self, target: str) -> None:
+        document = yaml.safe_load(azure_devops_yml(target))
+        assert isinstance(document, dict)
+        assert document["trigger"]["branches"]["include"] == ["main"]
+        assert document["pr"]["branches"]["include"] == ["main"]
+        stages = {stage["stage"]: stage for stage in document["stages"]}
+        assert set(stages) == {
+            "Validate",
+            "DeployStaging",
+            "SmokeTest",
+            "ImpactAnalysis",
+            "DeployProduction",
+        }
+        assert "refs/heads/main" in stages["DeployStaging"]["condition"]
+        assert stages["DeployProduction"]["jobs"][0]["environment"] == "production"
+        expected = _target_secrets(target, "$({secret})")
+        for stage_name, display_name in (
+            ("DeployStaging", "Deploy staging"),
+            ("SmokeTest", "Smoke test"),
+            ("ImpactAnalysis", "Impact analysis"),
+        ):
+            steps = stages[stage_name]["jobs"][0]["steps"]
+            step = next(step for step in steps if step.get("displayName") == display_name)
+            assert step["env"] == expected
+        production_steps = stages["DeployProduction"]["jobs"][0]["strategy"]["runOnce"]["deploy"][
+            "steps"
+        ]
+        production_step = next(
+            step for step in production_steps if step.get("displayName") == "Deploy production"
+        )
+        assert production_step["env"] == expected
 
 
 # ---------------------------------------------------------------------------

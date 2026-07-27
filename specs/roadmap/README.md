@@ -15,21 +15,21 @@ currently startable package.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | Session fidelity, authoring feedback, provider/model workflow | `ASSIST-01` |
+| [Assistant](assistant.md) | Session fidelity, authoring feedback, provider/model workflow | — |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | — |
-| [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
-| [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-CANON-01` |
-| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | `EXEC-01` |
-| [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E12` |
-| [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | `CANVAS-STATE-01` |
+| [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | — |
+| [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | — |
+| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | — |
+| [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E09` |
+| [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | — |
 | [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | — |
-| [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | `IO-JSON-01` |
-| [Modelling](modelling.md) | Training/scoring correctness, lifecycle, performance, capability | `MOD-M07` |
-| [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-D01` |
+| [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | — |
+| [Modelling](modelling.md) | Training/scoring correctness, lifecycle, performance, capability | `MOD-M04` |
+| [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 | [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | — |
-| [Rating](rating.md) | Key canonicalisation and persisted table round trips | `RATE-01` |
-| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | `SEC-ENV-01` |
+| [Rating](rating.md) | Key canonicalisation and persisted table round trips | — |
+| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | — |
 | [Tracing and explainability](tracing-explainability.md) | Evaluation fidelity, row correlation, waterfall honesty | — |
 
 ## Working protocol

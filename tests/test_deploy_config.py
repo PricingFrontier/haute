@@ -144,6 +144,19 @@ model_name = "simple"
         config = DeployConfig.from_toml(tmp_path / "haute.toml")
         assert config.pipeline_file == Path("configured.py")
 
+    @pytest.mark.parametrize("value", ["[]", '["premium", "age"]'])
+    def test_output_fields_toml_preserves_explicit_arrays(self, tmp_path: Path, value: str) -> None:
+        path = tmp_path / "haute.toml"
+        path.write_text(f'[project]\nname = "x"\n[deploy]\noutput_fields = {value}\n')
+        config = DeployConfig.from_toml(path)
+        assert config.output_fields == ([] if value == "[]" else ["premium", "age"])
+
+    def test_output_fields_toml_rejects_non_array(self, tmp_path: Path) -> None:
+        path = tmp_path / "haute.toml"
+        path.write_text('[project]\nname = "x"\n[deploy]\noutput_fields = "premium"\n')
+        with pytest.raises(ValueError, match="output_fields.*array"):
+            DeployConfig.from_toml(path)
+
 
 class TestEffectiveEndpointName:
     def test_no_suffix(self) -> None:

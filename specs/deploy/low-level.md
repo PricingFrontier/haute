@@ -80,9 +80,16 @@
    one apiInput mapped `quotes=live, drivers=batch` keep exactly the `quotes` edge —
    then `ancestors()` walks backward from the output node over the filtered edge set.
 6. `find_deploy_input_nodes(pruned_graph)` — nodes with `nodeType="apiInput"`. If none,
-   fall back to the single source node in the pruned graph (`ValueError` if zero or
-   multiple non-apiInput sources exist).
-7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir)` → `artifacts` dict.
+   accept a single `dataInput` source as the deliberate legacy live-input form.
+   Zero/multiple sources, or a sole `constant`/other unsupported source, fail with a
+   correction that names the node/type and asks for an API Input.
+7. `collect_artifacts(pruned_graph, deploy_inputs, pipeline_dir, project_root=...)` →
+   `artifacts` dict. The pipeline and every local runtime input are already canonicalised
+   and checked for project-root containment. Bundling repeats that check at the copy
+   boundary. Explicit `modelScore.feature_contract_path` files are copied under the
+   canonical `<node>__feature_contract.json` key and override an adjacent downloaded
+   contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
+   download.
    Every retained direct Data Input is validated through its canonical provider config,
    resolved with the `DEPLOY_BATCH` profile, schema-checked, and read for at most one row
    through the shared profiled `streaming_collect` helper before its source is admitted to
@@ -97,22 +104,24 @@
    eagerly) and
    `infer_output_schema()` (dry-run score up to one sample row through the pruned graph using
    the just-collected artefact paths, cached by graph+artefact-identity fingerprint).
+   Validate `output_fields` as a non-empty, duplicate-free list of non-empty strings
+   present in that full schema, then retain the projected schema in configured order.
 9. Assemble and return `ResolvedDeploy`.
-
-`output_fields` is not passed into either schema inference or quote validation. It is
-applied only by the deployed runtime, so those pre-deploy checks describe the unprojected
-output and do not catch missing selected columns.
 
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
 `resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
 source-ness, artefact existence, canonical Data Input direct/snapshot readiness, and non-empty input/output
-schemas), then — if `config.test_quotes_dir` is a directory — pre-checks every `*.json` file's rows
+schemas), rechecks the projected output-field invariant, then — if
+`config.test_quotes_dir` is configured — requires an existing directory containing at
+least one `*.json` file and pre-checks every quote's rows
 against the required input-schema columns (catching a missing column before scoring even
 starts, since a passthrough graph wouldn't otherwise surface it), then calls
-`score_test_quotes()` to actually score every file and collect per-file errors. All
+`score_test_quotes()` with `config.output_fields` to score the same projection served at
+runtime and collect per-file errors. All
 structural + test-quote errors are combined into one `DeployError` if any exist.
-A missing/non-directory quote path and a directory containing no `*.json` files both
-produce an empty quote result rather than a validation error.
+`score_test_quotes()` remains a result-producing helper and returns an empty list when
+called directly without a usable directory; `validate_deploy()` owns enforcement of the
+configured gate.
 
 **Dispatch (`src/haute/deploy/__init__.py`)**
 1. `deploy(config)`: `_validate_target(config.target)` (checked before resolution, so a
@@ -244,13 +253,13 @@ JSON have separate structured payloads. A body exactly at the configured limit i
 
 ## Edge cases and invariants
 
-- **Pipeline-relative path resolution wins over CWD** (`_bundler.py::_resolve_path`):
-  absolute paths are `.resolve()`d as-is; relative paths are resolved against
-  `pipeline_dir` and that resolution is always used (even if the file doesn't exist there
-  — existence is checked separately by `_check_exists`), specifically so a file that
-  exists under the pipeline directory always wins over a same-named file elsewhere. Every
-  returned path is absolute, so the manifest never bakes in a re-resolution-dependent
-  pointer.
+- **Pipeline-relative path resolution wins within the project**
+  (`_bundler.py::_resolve_path`): local paths use
+  `resolve_runtime_file_path(..., prefer="pipeline", enforce_project_root=True)`.
+  A pipeline-relative existing file wins over a project-root peer, while an absolute,
+  traversal, or symlink-resolved path outside the project raises `DeployError` before
+  copy/load. Every accepted path is absolute, so the manifest never bakes in a
+  re-resolution-dependent pointer.
 - **Container manifest artefact paths are image-relative, not pipeline-relative**:
   every bundled path is rewritten to `artifacts/<name>` and resolves against
   `WORKDIR /app`; the generated Dockerfile copies the same build-context directory to
@@ -325,20 +334,14 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   leases or retirement across OS processes, so a refresh from another process remains a
   known limitation rather than a guarantee made by deploy.
 
-> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
-> `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
-> `find_source_nodes` also recognises `dataInput` and `constant` node types as sources;
-> `resolve_config`'s fallback-to-single-source-node path is the only way a non-`apiInput`
-> source becomes a deploy input, and it only fires when there is exactly one such source.
-
 ## Error handling
 
 | Exception | Raised where | Propagates to |
 |---|---|---|
-| `haute.errors.DeployError` | `src/haute/deploy/_config.py` (unpinned base image), `_bundler.py` (invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id` and the underlying provider/schema `error`) rendered into `str()`. |
+| `haute.errors.DeployError` | `src/haute/deploy/_config.py` (unpinned base image, escaped pipeline, unsupported live source, invalid output projection), `_bundler.py` (escaped/malformed artefact path, invalid or unreadable retained Data Input), `_scorer.py` (unscoreable `modelScore`), `_validators.py` (aggregated validation failure), `_container.py` / `_mlflow.py` (expected target operational failure) | `deploy()` / `resolve_config()` callers; carries structured `context` kwargs (for example `node_id`, `field`, and the underlying provider/schema `error`) rendered into `str()`. The CLI formats this expected domain family concisely. |
 | `ValueError` | `_pruner.py` (missing/multiple output nodes or a configured `liveSwitch` input not connected to the graph), `src/haute/deploy/_config.py` (zero/ambiguous fallback source nodes, unknown TOML keys, missing `from_cli_args` required fields), `src/haute/deploy/__init__.py` (unknown target), `_scorer.py` (bad `output_fields` type, negative `row_count`), `src/haute/deploy/_impact.py` (non-finite predictions, zero-baseline change) | Caller of `resolve_config`/`deploy`/scoring functions; container `/quote` endpoint catches the `BoundedMemoryUnsupportedError` subclass specially (422) but a bare `ValueError` from scoring falls into the generic 500 handler. |
 | `FileNotFoundError` | `_bundler.py::_check_exists` (missing artefact on disk), `_bundler.py::_download_model_artifact` (MLflow download landed but file missing) | Propagates uncaught through `resolve_config()`. |
-| `RuntimeError` | `_container.py` (Docker unavailable/build/push failure, unpinned Dockerfile dependency), `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), `_mlflow.py` (Databricks host/token unset, unreachable, `run_id`-less registered model version) | Uncaught to caller; `_check_docker_available`'s message specifically redirects the operator to CI. |
+| `RuntimeError` | `_scorer.py` (`modelScore` contract matched but no model artefact — deliberately after the contract check), or an unexpected backend implementation defect | Uncaught to caller with its original type/traceback. Expected Docker, dependency-pinning, credential, connectivity, and backend-response failures use `DeployError` instead. |
 | `FeatureMismatchError` | `_scorer.py::_assert_runtime_contract_matches` (live schema disagrees with bundled training contract on feature set, dtype, or categorical levels) | Uncaught through scoring; surfaces in the container's generic 500 handler or the MLflow `pyfunc` boundary. |
 | `RequestBodyLimitError` / `RequestBodyHeaderError` / `RequestBodyParseError` | `_request_limits.py::read_limited_json_body` | Caught explicitly in the generated container `app.py`'s `/quote` handler → HTTP 413 / 400 / 422 with a structured `to_payload()` body. |
 | `ExecutionAdmissionError` / `ExecutionMemoryLimitExceededError` | Raised by the execution-engine's admission layer, invoked via `admit_deploy_execution` | Caught in `/quote` → HTTP 507. |
@@ -443,7 +446,7 @@ image, contacts a real registry/Databricks workspace, or verifies a cloud servic
 
 ## Canonical-only scoring inputs
 
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
 generated deployment pruning and scoring bind inputs exclusively through the current named input
 handle contract. There is no positional-first-input or bare-frame fallback. Deployment tests use
 the same canonical handles produced by current graph/code generation.

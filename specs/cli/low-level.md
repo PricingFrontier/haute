@@ -128,8 +128,12 @@ Applies CLI overrides (`pipeline_file`, `model_name`,
 `endpoint_suffix`) on top of the loaded config via `.override(**overrides)`. Then: `resolve_config`
 (parse/prune/collect artifacts/infer schemas) → `validate_deploy` (which already scores configured
 quotes as part of its aggregate gate) → `score_test_quotes` again for per-file timing/status output
-→ (return early if `--dry-run`) → `deploy_resolved`. Each stage prints a `✓`/`✗` progress line; any stage
-failure is caught, formatted, and turns into `SystemExit(1)`.
+→ (return early if `--dry-run`) → `deploy_resolved`. Each stage prints a `✓`/`✗`
+progress line. Resolution keeps its existing user-facing failure boundary;
+validation renders `DeployError`; target dispatch renders `DeployError`,
+`ImportError`, and `NotImplementedError`. An unexpected target-backend
+exception is deliberately not caught, preserving its original type and
+traceback.
 
 **`smoke`**: requires `haute.toml`; loads `DeployConfig`, applies an optional endpoint-suffix
 override, requires a non-empty `tests/quotes/*.json` set, then dispatches on
@@ -222,7 +226,8 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
   catching broadly.
 - `_deploy.handle_deploy`'s target-dispatch step distinguishes `ImportError` (missing optional
   extra — tells the user which `uv add haute[...]` to run), `NotImplementedError` (target not yet
-  supported), and a final `except Exception` fallback that formats and exits 1 for anything else.
+  supported), and `DeployError` (expected target/configuration or operational failure). It has no
+  catch-all fallback: implementation exceptions propagate with their original traceback.
 - `_train.handle_train` treats `UnsafeCodeError` from `validate_user_code` as a distinct, clearly
   labelled failure ("failed safety validation") from a plain execution/import error.
 - Browser auto-open is the one explicit UX fallback: `_helpers._open_browser` catches a
@@ -278,6 +283,9 @@ Key files and what they cover:
 - `test_cli_serve.py` / `test_cli_train.py` — additional `serve`/`train` scenarios beyond what
   `test_cli.py` covers.
 - `test_cli_lint.py` — lint edge cases beyond the happy path already covered in `test_cli.py`.
+- `test_docs_accuracy.py` — extracts every `haute <command>` shown in the
+  deployment guides/README and compares it with the command names emitted by
+  root `haute --help`; a phantom-command fixture must fail the same helper.
 
 Known gaps: no test boots a real Vite subprocess or uvicorn server. Readiness/open ordering and
 `finally` cleanup after a mocked uvicorn interruption are covered, but no test invokes the

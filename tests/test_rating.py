@@ -98,8 +98,9 @@ class TestNormaliseBandingFactors:
     def test_none_factors_returns_empty(self) -> None:
         assert _normalise_banding_factors({"factors": None}) == []
 
-    def test_non_list_returns_empty(self) -> None:
-        assert _normalise_banding_factors({"factors": "invalid"}) == []
+    def test_non_list_factors_rejected(self) -> None:
+        with pytest.raises(ValueError, match="banding factors must be a list"):
+            _normalise_banding_factors({"factors": "invalid"})
 
 
 # ---------------------------------------------------------------------------
@@ -1640,11 +1641,30 @@ class TestApplyRatingTableEdgeCases:
         table: dict[str, Any] = {
             "factors": [],
             "outputColumn": "out",
-            "entries": [{"value": 1.0}],
+            "entries": [],
         }
         result = _apply_rating_table(lf, table).collect()
         assert "out" not in result.columns
         assert result["x"].to_list() == [1, 2, 3]
+
+    @pytest.mark.parametrize(
+        "table, message",
+        [
+            ({"factors": "x", "entries": []}, "rating table factors must be a list"),
+            ({"factors": ["x"], "entries": {}}, "rating table entries must be a list"),
+            ({"entries": [{"value": 1.0}]}, "entries require a non-empty factors list"),
+            (
+                {"factors": [], "entries": [{"value": 1.0}]},
+                "entries require a non-empty factors list",
+            ),
+        ],
+        ids=["non_list_factors", "non_list_entries", "missing_factors", "empty_factors"],
+    )
+    def test_malformed_collection_shapes_rejected_before_passthrough(
+        self, table: dict[str, Any], message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            _apply_rating_table(pl.DataFrame({"x": [1]}).lazy(), table)
 
     def test_inf_in_entries_rejected(self) -> None:
         lf = pl.DataFrame({"region": ["North"]}).lazy()

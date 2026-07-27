@@ -157,6 +157,9 @@
   },
   "warning": null,
   "terminal_reason": null,
+  "error_code": null,
+  "http_status_code": null,
+  "error_detail": null,
   "execution_metrics": null,
   "feature_selection": null
 }

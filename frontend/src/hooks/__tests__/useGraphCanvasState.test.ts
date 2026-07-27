@@ -20,6 +20,41 @@ describe("useGraphCanvasState", () => {
     expect(result.current.canRedo).toBe(false)
   })
 
+  it("uses a full-snapshot load boundary on mount and remount", () => {
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [makeNode("old")],
+      edges: [],
+      preamble: "import old",
+      submodels: { old: { graph: { nodes: [makeNode("old-child")], edges: [] } } },
+    })
+    useGraphStore.getState().setNodes([makeNode("old"), makeNode("edited")])
+    const first = renderHook(() => useGraphCanvasState([makeNode("first")], []))
+
+    expect(useGraphStore.getState().preamble).toBe("")
+    expect(useGraphStore.getState().submodels).toEqual({})
+    expect(useGraphStore.getState().lastSavedSnapshot?.nodes.map((node) => node.id)).toEqual(["first"])
+    expect(useGraphStore.getState().undoStack).toEqual([])
+    expect(useGraphStore.getState().redoStack).toEqual([])
+    expect(useGraphStore.getState().dirty).toBe(false)
+
+    act(() => {
+      first.result.current.setNodes([makeNode("first"), makeNode("first-edit")])
+      first.result.current.undo()
+    })
+    expect(first.result.current.canRedo).toBe(true)
+    first.unmount()
+
+    const second = renderHook(() => useGraphCanvasState([makeNode("second")], []))
+    expect(second.result.current.nodes.map((node) => node.id)).toEqual(["second"])
+    expect(second.result.current.canUndo).toBe(false)
+    expect(second.result.current.canRedo).toBe(false)
+    act(() => {
+      second.result.current.undo()
+      second.result.current.redo()
+    })
+    expect(second.result.current.nodes.map((node) => node.id)).toEqual(["second"])
+  })
+
   it("setNodes pushes snapshot and enables undo", () => {
     const { result } = renderHook(() => useGraphCanvasState([makeNode("n1")], []))
     act(() => {

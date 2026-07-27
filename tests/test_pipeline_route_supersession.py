@@ -1478,12 +1478,12 @@ def test_preview_trace_concurrency_limit_env_must_be_positive_integer(
     import haute.routes.pipeline as route_mod
 
     monkeypatch.setenv("HAUTE_PREVIEW_MAX_CONCURRENCY", "3")
-    assert route_mod._positive_int_from_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2) == 3
+    assert route_mod.int_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2) == 3
 
     for raw in ("0", "-1", "not-an-int"):
         monkeypatch.setenv("HAUTE_PREVIEW_MAX_CONCURRENCY", raw)
         with pytest.raises(RuntimeError, match="HAUTE_PREVIEW_MAX_CONCURRENCY"):
-            route_mod._positive_int_from_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2)
+            route_mod.int_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2)
 
 
 def test_trace_supersession_key_shared_memo_pins_memoless_key(tmp_path) -> None:

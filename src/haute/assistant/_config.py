@@ -15,6 +15,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import SplitResult, urlsplit
 
 from haute import _git
 from haute.errors import ConfigError, HauteError
@@ -32,6 +33,7 @@ _PROVIDER_KEYS: dict[AssistantProvider, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
 }
+_ASSISTANT_TABLE_KEYS = frozenset({"provider", "model", "base_url"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,10 +179,51 @@ def _sdk_importable(provider: AssistantProvider) -> bool:
         return False
 
 
+def _invalid_base_url() -> ConfigError:
+    """Build the deliberately value-free OpenAI base URL validation error."""
+
+    return ConfigError(
+        "[assistant].base_url must be an absolute http or https URL with a hostname "
+        "and no user information"
+    )
+
+
+def _validate_openai_base_url(raw_base_url: str) -> str:
+    """Validate an OpenAI-compatible endpoint without exposing its value on failure."""
+
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in raw_base_url
+    ):
+        raise _invalid_base_url()
+
+    try:
+        parsed: SplitResult = urlsplit(raw_base_url)
+        port = parsed.port
+    except ValueError as exc:
+        raise _invalid_base_url() from exc
+
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or "@" in parsed.netloc
+        or "\\" in parsed.netloc
+        or parsed.netloc.endswith(":")
+        or (port is not None and not 0 <= port <= 65535)
+    ):
+        raise _invalid_base_url()
+    return raw_base_url
+
+
 def _resolve_config(
     table: dict[str, object],
 ) -> AssistantConfig | tuple[str, str | None, str | None]:
     """Resolve provider settings, returning one readiness reason on failure."""
+
+    unknown_keys = sorted(set(table).difference(_ASSISTANT_TABLE_KEYS))
+    if unknown_keys:
+        paths = ", ".join(f"[assistant].{key}" for key in unknown_keys)
+        raise ConfigError(f"Unknown [assistant] configuration key(s): {paths}.")
 
     raw_provider = table.get("provider")
     provider_echo = raw_provider if isinstance(raw_provider, str) else None
@@ -199,7 +242,7 @@ def _resolve_config(
         return "base_url is only supported for the openai assistant provider.", provider, model
     if raw_base_url is not None and not isinstance(raw_base_url, str):
         raise ConfigError("[assistant].base_url must be a string", provider=provider)
-    base_url: str | None = raw_base_url if isinstance(raw_base_url, str) else None
+    base_url = _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
 
     if not _sdk_importable(provider):
         return (

@@ -632,7 +632,7 @@ def test_solve_rejects_null_quote_id_instead_of_dropping_rows(
     assert "Null quote_id values found in optimiser input (2 rows)." in status["message"]
 
 
-def test_build_grid_rejects_interleaved_quote_blocks_loudly() -> None:
+def test_build_grid_sanitises_unknown_interleaved_quote_failure() -> None:
     store = JobStore()
     service = OptimiserSolveService(store)
     job_id = store.create_job({"status": "running"})
@@ -662,12 +662,13 @@ def test_build_grid_rejects_interleaved_quote_blocks_loudly() -> None:
             job_id,
         )
 
-    assert exc_info.value.status_code == 400
-    assert "contiguous rows" in exc_info.value.detail
-    assert "scenario_index order" in exc_info.value.detail
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Grid construction failed. Check the server logs for details."
+    assert "contiguous rows" not in exc_info.value.detail
+    assert "scenario_index order" not in exc_info.value.detail
     job = store.require_job(job_id)
-    assert job["status"] == "contract_error"
-    assert job["terminal_reason"] == "contract_error"
+    assert job["status"] == "error"
+    assert job["terminal_reason"] == "error"
 
 
 @pytest.mark.parametrize(

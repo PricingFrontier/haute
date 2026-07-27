@@ -677,6 +677,9 @@ export interface TrainStatusResponse {
   result?: TrainResponse | null
   warning?: string | null
   terminal_reason?: string | null
+  error_code?: string | null
+  http_status_code?: number | null
+  error_detail?: unknown
   execution_metrics?: ExecutionMetrics | null
   feature_selection?: TrainFeatureSelection | null
 }
@@ -705,6 +708,13 @@ export interface ExploreColumnStat {
   std_value?: string | null
   zero_count?: number | null
   negative_count?: number | null
+  unique_ratio: number | null
+  is_high_cardinality: boolean
+  is_identifier_candidate: boolean
+  text_min_length: number | null
+  text_mean_length: number | null
+  text_max_length: number | null
+  temporal_span: string | null
 }
 
 export interface ExploreDataQualityIssue {
@@ -716,6 +726,8 @@ export interface ExploreDataQualityIssue {
 export interface ExploreDataQualitySummary {
   issue_count: number
   issues: ExploreDataQualityIssue[]
+  duplicate_row_count: number | null
+  duplicate_ratio: number | null
 }
 
 export interface ExploreDistinctValueCount {

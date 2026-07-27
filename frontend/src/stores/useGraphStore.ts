@@ -29,7 +29,7 @@
  *     history push — used for mid-drag position updates (React Flow's
  *     `onNodesChange` replays many `position` events per frame; snapshotting
  *     each would fill undo with ~60 entries per drag), for WebSocket sync,
- *     and for pipeline load.
+ *     and for guarded external synchronisation.
  *
  * The 100-entry MAX_HISTORY cap prevents unbounded growth on long editing
  * sessions.
@@ -127,11 +127,18 @@ export interface GraphStore {
   ) => void
   setPreamble: (value: string) => void
 
-  // Raw actions (skip history push — for mid-drag, WS sync, load)
+  // Raw actions (skip history push — for mid-drag and guarded WS sync)
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[])) => void
   setSubmodelsRaw: (submodels: Record<string, unknown>) => void
   setPreambleRaw: (value: string) => void
+
+  /**
+   * Replace the complete persisted document and make it the clean saved
+   * baseline. Whole-document loads are cache-identity boundaries, so both
+   * derived versions advance monotonically even when fingerprints match.
+   */
+  loadGraphSnapshot: (snapshot: GraphSnapshot) => void
 
   // Explicit history operations
   pushSnapshot: () => void
@@ -777,6 +784,51 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     },
 
     // ── Explicit history operations ─────────────────────────────────────
+
+    loadGraphSnapshot: (snapshot) => {
+      set((state) => {
+        // Keep live state and the saved baseline independently cloned. Some
+        // React Flow/editor paths mutate node objects in place; sharing
+        // references here would let those mutations rewrite the baseline.
+        // The live graph may legitimately carry runtime-only column/status
+        // metadata supplied by the load response. Preserve it in live state;
+        // only the saved/history clone below crosses the persisted boundary
+        // that strips transient fields.
+        const loaded = structuredClone(snapshot)
+        const lastSavedSnapshot = captureGraphSnapshot(loaded)
+        const structuralFingerprint = computeStructuralFingerprint(
+          loaded.nodes,
+          loaded.edges,
+          loaded.preamble,
+        )
+        const panelContextFingerprint = computePanelContextFingerprint(
+          loaded.nodes,
+          loaded.edges,
+        )
+        const persistedFingerprint = computePersistedFingerprint(
+          loaded.nodes,
+          loaded.edges,
+          loaded.preamble,
+          loaded.submodels,
+        )
+        return {
+          nodes: loaded.nodes,
+          edges: loaded.edges,
+          preamble: loaded.preamble,
+          submodels: loaded.submodels,
+          lastSavedSnapshot,
+          undoStack: [],
+          redoStack: [],
+          structuralFingerprint,
+          structuralVersion: state.structuralVersion + 1,
+          panelContextFingerprint,
+          panelContextVersion: state.panelContextVersion + 1,
+          persistedFingerprint,
+          savedPersistedFingerprint: persistedFingerprint,
+          dirty: false,
+        }
+      })
+    },
 
     pushSnapshot: () => {
       set(() => ({ undoStack: pushSnapshotInternal(), redoStack: [] }))

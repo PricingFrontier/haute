@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 
 from haute._credential_security import redact_sensitive_text
-from haute._env import float_env
+from haute._env import float_env, int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -74,16 +74,7 @@ def _build_timeout() -> float:
 
 
 def _max_concurrent_builds() -> int:
-    raw = os.environ.get("HAUTE_INPUT_CACHE_MAX_CONCURRENT_BUILDS", "4")
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(
-            "HAUTE_INPUT_CACHE_MAX_CONCURRENT_BUILDS must be a positive integer"
-        ) from exc
-    if value < 1:
-        raise RuntimeError("HAUTE_INPUT_CACHE_MAX_CONCURRENT_BUILDS must be positive")
-    return value
+    return int_env("HAUTE_INPUT_CACHE_MAX_CONCURRENT_BUILDS", 4)
 
 
 def _provider_error_diagnostic(

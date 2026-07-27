@@ -87,6 +87,9 @@ export type TrainProgress = {
   result?: TrainResult
   warning?: string | null
   terminal_reason?: string | null
+  error_code?: string | null
+  http_status_code?: number | null
+  error_detail?: unknown
   execution_metrics?: ExecutionMetrics | null
 }
 

@@ -26,6 +26,7 @@ from haute._execution_context import (
     ExecutionTelemetryEvent,
     _bounded_telemetry_attributes,
 )
+from haute.errors import ContractMismatchError, SchemaMismatchError
 from haute.graph_utils import NodeType, _execute_eager_core, _execute_lazy
 from haute.schemas import ExecutionMetricsPayload
 from tests.conftest import (
@@ -2152,6 +2153,79 @@ def test_eager_graph_execution_does_not_swallow_cancellation() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ContractMismatchError("bad contract", node_id="source"),
+        SchemaMismatchError("bad schema", node_id="source"),
+    ],
+)
+def test_eager_graph_execution_does_not_swallow_mismatches(error: Exception) -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_INPUT.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    def build_node_fn(node, **_kwargs):
+        def raise_mismatch():
+            raise error
+
+        return node.id, raise_mismatch, True
+
+    with pytest.raises(type(error), match=error.message):
+        _execute_eager_core(
+            graph,
+            build_node_fn,
+            target_node_id="source",
+            swallow_errors=True,
+        )
+
+
+def test_eager_graph_execution_swallows_ordinary_node_errors() -> None:
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "source",
+                    "data": {
+                        "label": "source",
+                        "nodeType": NodeType.DATA_INPUT.value,
+                        "config": {},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+
+    def build_node_fn(node, **_kwargs):
+        def raise_runtime_error():
+            raise RuntimeError("ordinary node failure")
+
+        return node.id, raise_runtime_error, True
+
+    result = _execute_eager_core(
+        graph,
+        build_node_fn,
+        target_node_id="source",
+        swallow_errors=True,
+    )
+
+    assert result.errors == {"source": "ordinary node failure"}
+    assert result.outputs == {"source": None}
+
+
 def test_lazy_graph_execution_checks_cancellation_before_node_work() -> None:
     graph = make_graph(
         {
@@ -2980,8 +3054,8 @@ async def test_preview_route_maps_timeout_without_execution_context_to_http_504(
 
 
 @pytest.mark.asyncio
-async def test_preview_route_returns_error_response_for_contract_mismatch(monkeypatch) -> None:
-    from haute.errors import ContractMismatchError
+@pytest.mark.parametrize("error_type", [ContractMismatchError, SchemaMismatchError])
+async def test_preview_route_returns_error_response_for_mismatch(monkeypatch, error_type) -> None:
     from haute.routes import pipeline as pipeline_route
     from haute.schemas import PreviewNodeRequest
 
@@ -3001,10 +3075,10 @@ async def test_preview_route_returns_error_response_for_contract_mismatch(monkey
         }
     )
 
-    def raise_contract_mismatch(*_args, **_kwargs):
-        raise ContractMismatchError("bad preview contract", node_id="source")
+    def raise_mismatch(*_args, **_kwargs):
+        raise error_type("bad preview contract", node_id="source")
 
-    monkeypatch.setattr(pipeline_route, "execute_graph", raise_contract_mismatch)
+    monkeypatch.setattr(pipeline_route, "execute_graph", raise_mismatch)
 
     response = await pipeline_route.preview_node(PreviewNodeRequest(graph=graph, node_id="source"))
 
@@ -4579,11 +4653,12 @@ def test_training_start_creates_admitted_training_context(
     with (
         patch.object(service, "_compile_preamble", return_value={}),
         patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
-        patch.object(service, "_check_gpu_fallback", return_value=None),
+        patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink", side_effect=fake_execute_and_sink),
         patch.object(service, "_launch_background"),
     ):
         response = service.start(body)
+        service._join_preparation(response.job_id)
 
     assert response.status == "started"
     context = captured["execution_context"]
@@ -4591,13 +4666,13 @@ def test_training_start_creates_admitted_training_context(
     assert context.memory_limit_bytes == 1024 * 1024 * 1024
     assert context.admission is not None
     assert context.admission.rss_at_admission_bytes == 256 * 1024 * 1024
+    context.release_admission()
+    service._training_jobs.release(response.job_id)
 
 
 def test_training_start_maps_admission_failure_to_http_507(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes._job_store import JobStore
     from haute.routes._train_service import TrainService
     from haute.schemas import TrainRequest
@@ -4633,28 +4708,26 @@ def test_training_start_maps_admission_failure_to_http_507(
     with (
         patch.object(service, "_compile_preamble", return_value={}),
         patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
-        patch.object(service, "_check_gpu_fallback", return_value=None),
+        patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink") as execute_and_sink,
-        pytest.raises(HTTPException) as exc_info,
     ):
-        service.start(TrainRequest(graph=graph, node_id="model"))
+        response = service.start(TrainRequest(graph=graph, node_id="model"))
+        service._join_preparation(response.job_id)
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["profile"] == "training_prep"
-    assert exc_info.value.detail["reason"] == "process_rss_limit_exceeded"
     execute_and_sink.assert_not_called()
-    job = next(iter(store.jobs.values()))
+    job = store.require_job(response.job_id)
     assert job["status"] == "memory_limited"
     assert job["terminal_reason"] == "memory_limited"
+    assert job["http_status_code"] == 507
+    assert job["error_code"] == "memory_limit"
+    assert job["error_detail"]["profile"] == "training_prep"
+    assert job["error_detail"]["reason"] == "process_rss_limit_exceeded"
     assert "process_rss_limit_exceeded" in job["error"]
 
 
 def test_training_start_maps_runtime_memory_failure_to_http_507(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.routes._job_store import JobStore
     from haute.routes._train_service import TrainService
     from haute.schemas import TrainRequest
@@ -4692,16 +4765,18 @@ def test_training_start_maps_runtime_memory_failure_to_http_507(
     with (
         patch.object(service, "_compile_preamble", return_value={}),
         patch.object(service, "_estimate_ram", return_value=(None, None, None, [])),
-        patch.object(service, "_check_gpu_fallback", return_value=None),
+        patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
         patch.object(service, "_execute_and_sink", side_effect=memory_error),
-        pytest.raises(HTTPException) as exc_info,
     ):
-        service.start(TrainRequest(graph=graph, node_id="model"))
+        response = service.start(TrainRequest(graph=graph, node_id="model"))
+        service._join_preparation(response.job_id)
 
-    assert exc_info.value.status_code == 507
-    assert exc_info.value.detail["error_code"] == "memory_limit"
-    assert exc_info.value.detail["operation"] == "training_pipeline"
-    assert exc_info.value.detail["reason"] == "rss_exceeds_memory_limit"
+    job = service._store.require_job(response.job_id)
+    assert job["status"] == "memory_limited"
+    assert job["http_status_code"] == 507
+    assert job["error_code"] == "memory_limit"
+    assert job["error_detail"]["operation"] == "training_pipeline"
+    assert job["error_detail"]["reason"] == "rss_exceeds_memory_limit"
 
 
 def test_deploy_pyfunc_predict_creates_admitted_live_context(monkeypatch) -> None:

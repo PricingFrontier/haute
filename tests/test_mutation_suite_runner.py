@@ -9,6 +9,7 @@ from scripts.run_mutation_suite import (
     DEFAULT_TARGET_CONFIG,
     REPO_ROOT,
     MutationStageResult,
+    _load_target_specs,
     _load_targets,
     _parse_survival_rate,
     _select_targets_for_changed_files,
@@ -60,6 +61,54 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
         "json-cache": 11.0,
         "executor": 15.0,
     }
+    assert {target.name: (target.owner, target.review_by.isoformat()) for target in targets} == {
+        "job-store": ("background-jobs", "2026-10-25"),
+        "path-resolution": ("sandbox-security", "2026-10-25"),
+        "registry": ("pipeline-config", "2026-10-25"),
+        "output-assembler": ("output-assembly", "2026-10-25"),
+        "jsonpath": ("json-shredding", "2026-10-25"),
+        "json-shred": ("json-shredding", "2026-10-25"),
+        "json-cache": ("json-shredding", "2026-10-25"),
+        "executor": ("execution-engine", "2026-10-25"),
+    }
+
+
+def test_mutation_target_config_rejects_missing_or_expired_ownership_metadata(
+    tmp_path: Path,
+) -> None:
+    base = {
+        "schema_version": 2,
+        "targets": [
+            {
+                "name": "example",
+                "config": "mutation/cosmic-ray.registry.toml",
+                "max_survival_rate": 0.0,
+                "rationale": "example",
+                "owner": "engineering-quality",
+                "review_by": "2026-10-25",
+            }
+        ],
+    }
+    cases = (
+        ("missing-owner", {"owner": None}, "non-empty owner"),
+        ("expired-review", {"review_by": "2020-01-01"}, "has expired"),
+        ("malformed-review", {"review_by": "not-a-date"}, "must be an ISO date"),
+    )
+    for name, change, expected in cases:
+        payload = json.loads(json.dumps(base))
+        for key, value in change.items():
+            if value is None:
+                payload["targets"][0].pop(key)
+            else:
+                payload["targets"][0][key] = value
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            _load_target_specs(path)
+        except SystemExit as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError("expected invalid ownership metadata to fail closed")
 
 
 def test_changed_file_selection_limits_pr_smoke_to_owned_target() -> None:
@@ -191,4 +240,5 @@ def test_summary_markdown_includes_all_target_failures(tmp_path: Path) -> None:
     markdown = (tmp_path / "mutation-summary.md").read_text(encoding="utf-8")
     assert "`path-resolution`" in markdown
     assert "6.50%" in markdown
+    assert "Owner" in markdown
     assert "survival rate 6.50% exceeds threshold 5.00%" in markdown

@@ -115,6 +115,30 @@ class TestDeploy:
         resolve_pipeline.assert_called_once_with(tmp_path)
         assert resolve_deploy.call_args.args[0].pipeline_file == resolved_path
 
+    def test_no_toml_cli_passes_a_canonical_pipeline_to_resolution(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        pipeline = tmp_path / "rating.py"
+        pipeline.write_text('import haute\npipeline = haute.Pipeline("rating")\n')
+        resolved = _mock_resolved()
+
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved) as resolve_deploy,
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+        ):
+            result = runner.invoke(
+                cli,
+                ["deploy", "rating.py", "--model-name", "rating", "--dry-run"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert resolve_deploy.call_args.args[0].pipeline_file == pipeline.resolve()
+
     def test_resolution_failure(
         self,
         runner: CliRunner,
@@ -310,6 +334,29 @@ class TestDeploy:
             result = runner.invoke(cli, ["deploy"])
 
         assert result.exit_code == 1
+
+    def test_deploy_unexpected_runtime_error_propagates(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Backend programming failures retain their original exception type."""
+        monkeypatch.chdir(tmp_path)
+        _make_toml(tmp_path)
+        monkeypatch.setenv("CI", "true")
+        resolved = _mock_resolved()
+
+        with (
+            patch("haute.deploy._config.resolve_config", return_value=resolved),
+            patch("haute.deploy._validators.validate_deploy", return_value=[]),
+            patch("haute.deploy._validators.score_test_quotes", return_value=[]),
+            patch("haute.deploy.deploy_resolved", side_effect=RuntimeError("backend bug")),
+        ):
+            result = runner.invoke(cli, ["deploy"])
+
+        assert isinstance(result.exception, RuntimeError)
+        assert "Deployment failed" not in result.output
 
     def test_endpoint_suffix_override(
         self,

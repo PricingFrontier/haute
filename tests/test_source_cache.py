@@ -608,7 +608,7 @@ def test_store_rejects_non_positive_or_non_finite_staging_age(
 ) -> None:
     monkeypatch.setenv("HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS", value)
 
-    with pytest.raises(RuntimeError, match="must be positive"):
+    with pytest.raises(RuntimeError, match="finite number greater than 0"):
         SourceCacheStore(tmp_path)
 
 

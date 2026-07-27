@@ -82,11 +82,9 @@ from haute.errors import (
     SchemaMismatchError,
 )
 from haute.execution import (
-    ProjectionRequest,
     build_dataframe_execution_cache_request,
     dataframe_graph_input_fingerprint,
     execute_lazy_graph,
-    plan_execution_strategy,
     ratebook_factor_required_columns,
 )
 from haute.executor import _build_node_fn
@@ -178,6 +176,16 @@ _RATEBOOK_FACTORS_ARTIFACT_OWNER = "optimiser_ratebook_factors"
 _ARTIFACT_STALE_SECONDS_ENV = "HAUTE_ARTIFACT_STALE_SECONDS"
 _DEFAULT_ARTIFACT_STALE_SECONDS = 86_400
 _JOB_TYPE_KEY = "job_type"
+
+
+class _OptimiserSolveInputError(Exception):
+    """A user-actionable error while adapting optimiser solver input."""
+
+
+class _OptimiserSolverExecutionError(Exception):
+    """An exception raised by the external price-contour solver boundary."""
+
+
 _SOLVE_JOB_TYPE = "solve"
 _ESTIMATE_JOB_TYPE = "estimate"
 _FRONTIER_AUTO_RANGE_JOB_TYPE = "frontier_auto_range"
@@ -909,23 +917,6 @@ def _streaming_auto_range_node_is_eligible(
     return _looks_chunk_local_user_code(config.get("code"), frame_names=frame_names)
 
 
-def _projection_plan_for_auto_range(
-    graph: PipelineGraph,
-    node_id: str,
-    *,
-    required_columns_by_node: Mapping[str, Iterable[str]],
-) -> Any:
-    return plan_execution_strategy(
-        ProjectionRequest(
-            graph=graph,
-            target_node_id=node_id,
-            profile=ExecutionProfile.AUTO_RANGE,
-            source="batch",
-            required_columns_by_node=required_columns_by_node,
-        )
-    )
-
-
 def _upstream_slice_contains_node_type(
     graph: PipelineGraph,
     node_id: str,
@@ -1326,11 +1317,20 @@ def _load_apply_result_artifact(handle: dict[str, Any]) -> Any:
         artifact_path, _artifact_dir = _validate_apply_result_artifact_handle(handle)
     except ValueError as exc:
         _log_artifact_load_failure("optimiser_apply_artifact_validation_failed", handle, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    if not artifact_path.is_file():
         raise HTTPException(
             status_code=500,
-            detail="Optimiser apply artifact is missing. Re-run the solve to regenerate it.",
+            detail=(
+                "Optimiser apply artifact reference is invalid. Re-run the solve to regenerate it."
+            ),
+        ) from exc
+    if not artifact_path.is_file():
+        logger.warning("optimiser_apply_artifact_missing", path=str(artifact_path))
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Optimiser apply artifact is no longer available. "
+                "Re-run the solve to regenerate it."
+            ),
         )
 
     try:
@@ -1351,11 +1351,15 @@ def _load_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
         artifact_path, _artifact_dir = _validate_ratebook_factors_artifact_handle(handle)
     except ValueError as exc:
         _log_artifact_load_failure("optimiser_ratebook_artifact_validation_failed", handle, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    if not artifact_path.is_file():
         raise HTTPException(
             status_code=500,
-            detail="Optimiser ratebook factor artifact is missing. Re-run the solve.",
+            detail="Optimiser ratebook factor artifact reference is invalid. Re-run the solve.",
+        ) from exc
+    if not artifact_path.is_file():
+        logger.warning("optimiser_ratebook_artifact_missing", path=str(artifact_path))
+        raise HTTPException(
+            status_code=410,
+            detail="Optimiser ratebook factor artifact is no longer available. Re-run the solve.",
         )
     try:
         return pl.read_parquet(artifact_path)
@@ -1379,11 +1383,15 @@ def _scan_ratebook_factors_artifact(handle: dict[str, Any]) -> Any:
             handle,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    if not artifact_path.is_file():
         raise HTTPException(
             status_code=500,
-            detail="Optimiser ratebook factor artifact is missing. Re-run the solve.",
+            detail="Optimiser ratebook factor artifact reference is invalid. Re-run the solve.",
+        ) from exc
+    if not artifact_path.is_file():
+        logger.warning("optimiser_ratebook_artifact_scan_missing", path=str(artifact_path))
+        raise HTTPException(
+            status_code=410,
+            detail="Optimiser ratebook factor artifact is no longer available. Re-run the solve.",
         )
     try:
         return pl.scan_parquet(artifact_path)
@@ -2517,14 +2525,19 @@ def _solve_online(
 
     if check_cancelled is not None:
         check_cancelled()
-    solver = OnlineOptimiser(
-        objective=config["objective"],
-        constraints=config["constraints"] or None,
-        max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
-        tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
-        record_history=config.get("record_history", False),
-    )
-    solve_result: OnlineSolveResultLike = solver.solve(quote_grid)
+    try:
+        solver = OnlineOptimiser(
+            objective=config["objective"],
+            constraints=config["constraints"] or None,
+            max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
+            tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
+            record_history=config.get("record_history", False),
+        )
+        solve_result: OnlineSolveResultLike = solver.solve(quote_grid)
+    except (BackgroundJobStoppedError, ExecutionCancelledError):
+        raise
+    except Exception as exc:
+        raise _OptimiserSolverExecutionError(str(exc)) from exc
     if check_cancelled is not None:
         check_cancelled()
     elapsed = time.monotonic() - start_time
@@ -2593,7 +2606,7 @@ def _solve_ratebook(
     start_time = ctx.start_time
 
     if ratebook_factors_handle is None:
-        raise RuntimeError(
+        raise _OptimiserSolveInputError(
             "Ratebook mode requires a banding source. "
             "Select a banding node in the Rating Factor Source dropdown."
         )
@@ -2607,7 +2620,7 @@ def _solve_ratebook(
     available_cols = set(available_raw) if isinstance(available_raw, list) else set()
     missing = [c for group in raw_factor_columns for c in group if c not in available_cols]
     if missing:
-        raise RuntimeError(
+        raise _OptimiserSolveInputError(
             f"Missing ratebook factor columns in banding source: {missing}. "
             f"Available columns: {sorted(available_cols)}"
         )
@@ -2621,25 +2634,32 @@ def _solve_ratebook(
         factor_artifact_path,
         source="ratebook_factor_contexts",
     )
-    factor_contexts = _build_ratebook_factor_contexts(
-        ratebook_factors_handle,
-        quote_grid,
-        config,
-        factor_columns_valid,
-        chunk_decision=factor_chunk_decision,
-    )
+    try:
+        factor_contexts = _build_ratebook_factor_contexts(
+            ratebook_factors_handle,
+            quote_grid,
+            config,
+            factor_columns_valid,
+            chunk_decision=factor_chunk_decision,
+        )
+    except ValueError as exc:
+        raise _OptimiserSolveInputError(str(exc)) from exc
 
-    solver = RatebookOptimiser(
-        objective=config["objective"],
-        constraints=constraints,
-        factor_columns=factor_columns_valid,
-        max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
-        max_cd_iterations=config.get("max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS),
-        cd_tolerance=config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE),
-        tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
-    )
-
-    solve_result: RatebookSolveResultLike = solver.solve(quote_grid, factor_contexts)
+    try:
+        solver = RatebookOptimiser(
+            objective=config["objective"],
+            constraints=constraints,
+            factor_columns=factor_columns_valid,
+            max_iter=config.get("max_iter", _DEFAULT_MAX_ITER),
+            max_cd_iterations=config.get("max_cd_iterations", _DEFAULT_MAX_CD_ITERATIONS),
+            cd_tolerance=config.get("cd_tolerance", _DEFAULT_CD_TOLERANCE),
+            tolerance=config.get("tolerance", _DEFAULT_TOLERANCE),
+        )
+        solve_result: RatebookSolveResultLike = solver.solve(quote_grid, factor_contexts)
+    except (BackgroundJobStoppedError, ExecutionCancelledError):
+        raise
+    except Exception as exc:
+        raise _OptimiserSolverExecutionError(str(exc)) from exc
     if check_cancelled is not None:
         check_cancelled()
     elapsed = time.monotonic() - start_time
@@ -4171,6 +4191,7 @@ class OptimiserSolveService:
 
         try:
             _solve_timeout_from_config(config)
+            _explicit_chunk_size_from_config(config)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -4878,15 +4899,16 @@ class OptimiserSolveService:
             )
             raise HTTPException(status_code=422, detail=detail) from exc
         except Exception as exc:
-            detail = f"Grid construction failed: {exc}"
+            detail = "Grid construction failed. Check the server logs for details."
             logger.error("grid_build_failed", error=str(exc), node_id=node_id, exc_info=True)
             self._record_http_setup_failure(
                 job_id,
-                status_code=400,
+                status_code=500,
                 detail=detail,
+                to="error",
                 execution_context=execution_context,
             )
-            raise HTTPException(status_code=400, detail=detail) from exc
+            raise HTTPException(status_code=500, detail=detail) from exc
         finally:
             if Path(tmp_path).exists():
                 try:
@@ -5037,26 +5059,54 @@ class OptimiserSolveService:
                     fields=contract_error_job_fields(exc),
                     elapsed_seconds=time.monotonic() - start_time,
                 )
-            except Exception as exc:
-                error_categories: dict[type, tuple[str, str]] = {
-                    ValueError: ("Data error", "data"),
-                    RuntimeError: ("Algorithm error", "algorithm"),
-                }
-                prefix, category = error_categories.get(
-                    type(exc),
-                    ("Unexpected error", "unexpected"),
-                )
-                error_msg = f"{prefix}: {exc}"
+            except _OptimiserSolveInputError as exc:
+                error_msg = f"Data error: {exc}"
                 logger.error(
                     "solve_failed",
                     error=str(exc),
                     node_id=node_id,
-                    category=category,
+                    category="data",
+                    exc_info=True,
+                )
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=error_msg,
+                    fields={
+                        "message": error_msg,
+                        "elapsed_seconds": time.monotonic() - start_time,
+                    },
+                )
+            except _OptimiserSolverExecutionError as exc:
+                error_msg = f"Algorithm error: {exc}"
+                logger.error(
+                    "solve_failed",
+                    error=str(exc),
+                    node_id=node_id,
+                    category="algorithm",
+                    exc_info=True,
+                )
+                self._lifecycle.transition(
+                    job_id,
+                    to="error",
+                    message=error_msg,
+                    fields={
+                        "message": error_msg,
+                        "elapsed_seconds": time.monotonic() - start_time,
+                    },
+                )
+            except Exception as exc:
+                error_msg = f"Unexpected error: {exc}"
+                logger.error(
+                    "solve_failed",
+                    error=str(exc),
+                    node_id=node_id,
+                    category="unexpected",
                     exc_info=True,
                 )
                 error_job = self._lifecycle.transition(
                     job_id,
-                    to=("contract_error" if category == "data" else "error"),
+                    to="error",
                     message=error_msg,
                     fields={
                         "message": error_msg,

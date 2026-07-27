@@ -27,6 +27,12 @@ from this active queue.
 versioned persistence format. Do not pass live solvers or frames across spawn
 boundaries and do not use unversioned pickles as restart artifacts.
 
+**Activation trigger:** Each supported online and ratebook solver publishes a
+canonical versioned persistence adapter with round-trip, corrupt/unknown-version,
+and restart reconstruction tests. Until that trigger is met this package is
+intentionally non-startable; thread-backed isolation remains the truthful
+runtime contract.
+
 **Acceptance:** Supported workflows share no solver/data-frame state across processes, recover deterministically after cancellation/crash/restart, and leak no reservation or temporary artifact.
 
 **Dependencies:** Canonical execution boundary, lifecycle ownership, and versioned solver-specific persistence contracts.

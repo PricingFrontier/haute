@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in the routes package and is not re-exported here. |
-| `src/haute/assistant/_config.py` | Resolves assistant configuration: the `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML raises `ConfigError`, an absent table is a legitimate not-configured state), API keys from `os.getenv` after server lifespan startup has loaded the project `.env` without overriding inherited variables, and an SDK-import probe. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). It follows the same fail-loud credential posture as Databricks I/O. |
+| `src/haute/assistant/_config.py` | Resolves assistant configuration: the closed `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML or unknown keys raise `ConfigError`, an absent table is a legitimate not-configured state), validates OpenAI `base_url` as a credential-free absolute HTTP(S) URL, reads API keys from `os.getenv` after server lifespan startup has loaded the project `.env` without overriding inherited variables, and probes the SDK only after config validation. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). It follows the same fail-loud credential posture as Databricks I/O. |
 | `src/haute/assistant/_catalog.py` | The node-type catalog the model reads: mechanical facts derived from `haute._types` (`NodeType`, `NODE_TYPE_TO_DECORATOR`), `haute._config_validation` (`VALID_KEYS`, config TypedDict shapes), `haute._config_io` (sidecar folders), and the save service (singleton policy), plus hand-authored per-type usage notes. `validate_catalog_complete()` runs at import time and raises if any canonical fact or node entry drifts; `render_catalog()` is the sole static prompt renderer. |
 | `src/haute/assistant/_assets.py` | Loader for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` materialises the complete example tree (source plus parser-relative sidecars), then reparses and renders the exemplar on demand through `routes/_helpers.parse_pipeline_to_graph` and the same formatter used by the get-pipeline tool. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured tool error listing the valid names. |
 | `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance injected into every system prompt. |
@@ -17,7 +17,7 @@
 | `src/haute/assistant/assets/examples/config/quote_response/joined_priced.json`, `src/haute/assistant/assets/examples/config/quote_response/linear_priced.json`, `src/haute/assistant/assets/examples/config/quote_response/response.json` | Packaged response-output sidecars; each carries a concrete non-empty `outputMapping`. |
 | `src/haute/assistant/_ops.py` | The graph-edit operation model and its pure application engine: add-node, update-node, rename-node, delete-node, add-edge, delete-edge, and update-preamble operations; validation (unknown targets, unknown config keys, submodel-internal targets, ambiguous edge matches); ordered application over a `PipelineGraph` copy; and deterministic position assignment for new nodes. No I/O — unit-testable graph→graph functions. |
 | `src/haute/assistant/_tools.py` | The tool registry: JSON-schema definitions and dispatch for every read and mutation tool. Dataset listing and schema preview share the files route's installed-input-extension registry and reject hidden components plus denylisted state/credential names before any directory enumeration or read. Other read tools wrap saved-graph parsing, `_assets.load_example`, and production lazy execution for `get_node_schema`. `apply_graph_edits` itself owns mutation readiness, parse → ordered ops → transactional save under `save_lock` → re-parse → `graph.update` publish. Every tool returns a structured result-or-error payload instead of raising into the loop. |
-| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral message history including tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup, the provider-request history window, and the bounded-retention rules — an LRU cap on live sessions and a per-session stored-history cap (constants below). Memory is the runtime authority; when a `storage_dir` factory is supplied (the route wires `.haute/assistant/sessions/` under the project cwd), sessions write through to one JSON file per session (atomic tmp+`os.replace`) on create and on every committed turn, and `lookup` revives an unknown id from its file (fresh lock; history revalidated through the same JSON-boundary validators). Unreadable/corrupt/invalid files emit the assistant-session-unreadable warning and are treated as absent, mirroring the Git-state posture for `.haute/` files. Persist failures emit the assistant-session-persist-failed warning without failing the committed turn — the in-memory session stays intact and the reply was already delivered. Creation prunes abandoned UUID-shaped `.json.tmp` artifacts before applying the persisted-session cap. |
+| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral message history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, the provider-request history window, and the bounded-retention rules — an LRU cap on live sessions and a per-session stored-history cap (constants below). `resume(id, source_file)` validates the binding before touching/promoting the record. Memory is the runtime authority; when a `storage_dir` factory is supplied (the route wires `.haute/assistant/sessions/` under the project cwd), sessions write through to one JSON file per session (atomic tmp+`os.replace`) on create and on every committed turn, and `lookup` revives an unknown id from its file (fresh lock; history revalidated through the same JSON-boundary validators). Unreadable/corrupt/invalid files emit the assistant-session-unreadable warning and are treated as absent, mirroring the Git-state posture for `.haute/` files. Persist failures emit the assistant-session-persist-failed warning without failing the committed turn — the in-memory session stays intact and the reply was already delivered. Creation prunes abandoned UUID-shaped `.json.tmp` artifacts before applying the persisted-session cap. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its two adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API) and `OpenAIProvider` (`openai` SDK, Chat Completions streaming — the OpenAI-compatible protocol Databricks serving endpoints implement — honouring the configured base URL). SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields an in-flight tool from cancellation, enforces tool/time limits, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
@@ -47,7 +47,9 @@ orphaned halves).
 ## Key types and data structures
 
 - **`AssistantConfig`** (frozen dataclass, `src/haute/assistant/_config.py`): `provider: Literal["anthropic", "openai"]`,
-  `model: str`, `base_url: str | None` (OpenAI adapter only; rejected for anthropic),
+  `model: str`, `base_url: str | None` (OpenAI adapter only; rejected for
+  anthropic; when present it is an absolute `http|https` URL with a hostname,
+  valid port, no whitespace/control characters, and no user information),
   `api_key: str`, `max_output_tokens: int` (from `HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS`,
   default 8192 when unset; a set-but-malformed or non-positive value fails readiness with a
   named reason rather than silently substituting the default). Only ever constructed fully
@@ -109,16 +111,25 @@ orphaned halves).
 ## Control flow
 
 **Status** (`GET /api/assistant/status`): `_config.assistant_readiness()` — read `haute.toml`
-(malformed → `ConfigError` → 400), check provider/model fields, probe the SDK import for
-the configured provider, check the key env var. Pure inspection, no provider network call.
+(malformed or unknown `[assistant]` key → `ConfigError` → 400), check
+provider/model fields, validate an OpenAI `base_url`, then probe the SDK import
+for the configured provider and check the key env var. Pure inspection, no
+provider network call. Config errors name `[assistant].<field>` but never echo
+the field value.
 
 **Session create** (`POST /api/assistant/session`): resolve the pipeline (explicit name via
 `lookup_pipeline_by_name`, else the same first-pipeline default `GET /api/pipeline` uses);
-unknown name → 404. When the request carries a prior `session_id` and that session revives
-(memory or disk) **and** is bound to the same resolved source file, return it unchanged
+unknown name → 404. When the request carries a prior `session_id`,
+`SessionStore.resume` validates its source binding before touching an
+in-memory candidate or promoting a disk-backed candidate. When it matches,
+return it unchanged
 with `history`: the stored turns mapped to transcript entries (`user`/`assistant` text
 entries, and `tool` entries carrying the tool name, the same compact result summary the
-live stream uses, and the error flag) so the panel rehydrates the conversation. Any other
+live stream uses, and the error flag) so the panel rehydrates the conversation.
+A successful mutation tool result's persisted `graph_fingerprint` additionally
+derives a settled `graph_updated` activity entry immediately after that tool
+entry, matching the live “Canvas updated” row without duplicating provider
+history. Any other
 case — no `session_id`, unknown/pruned/corrupt, or a different pipeline — creates and
 returns a fresh session with empty `history`; resume is an offer, never an error.
 
@@ -271,10 +282,11 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
   allowlist source, different strictness, both deliberate.
-- **The `[assistant]` table itself is not allowlist-validated.** `provider`, `model`, and
-  `base_url` are read; additional keys are currently ignored. A non-string `base_url`
-  raises `ConfigError`, any `base_url` on Anthropic is a not-ready reason, and OpenAI
-  accepts a string (including an empty string) without URL syntax validation.
+- **The `[assistant]` table is closed.** Its accepted key set is exactly
+  `provider`, `model`, and `base_url`; unknown keys raise `ConfigError` naming
+  the full TOML path. A non-string `base_url` raises `ConfigError`, any
+  `base_url` on Anthropic is a not-ready reason, and OpenAI accepts only an
+  absolute credential-free HTTP(S) URL with a hostname and valid port.
 - **Submodel boundaries**: ops may only target top-level nodes; `add_node` of
   `submodel`/`submodelPort` types and any op addressing a node inside a submodel graph
   return named tool errors (v1 limitation, stated in the error text).
@@ -326,7 +338,9 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   never auto-created; one turn per session via the per-session lock; committed turns
   persist to `.haute/assistant/sessions/` and survive restarts, while a truly lost id
   (pruned, corrupt file, cleaned `.haute/`) still 404s and the frontend renders that
-  explicitly by starting a fresh session. Tool-role messages retain `is_error` through
+  explicitly by starting a fresh session. Current tool-role records require an
+  explicit boolean `is_error`; missing values are invalid session data rather
+  than inferred from an obsolete content shape. Tool-role messages retain `is_error` through
   validation, JSON persistence, revival, history-window rendering, and both provider
   adapters. Turn and response cleanup release their idempotent reservation in nested
   `finally` blocks even if history append or iterator close raises.
@@ -337,7 +351,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 
 | Failure | Where raised | Surfaced as |
 |---|---|---|
-| Malformed `haute.toml` `[assistant]` | `_config` | `ConfigError` → 400 (existing convention) |
+| Malformed `haute.toml`, unknown `[assistant]` key, or invalid OpenAI `base_url` | `_config`, before SDK probing/client construction | `ConfigError` naming the field (never its value) → 400 |
 | Not configured / provider SDK missing | `_config` via route pre-check | 400 with the readiness reason verbatim |
 | Unknown session | route | 404 |
 | Turn already running on session | route (lock try-acquire) | 409 |
@@ -390,7 +404,10 @@ fixture for route tests). The implemented coverage is:
   name → structured error listing valid names.
 - **`tests/test_assistant_config.py`** — readiness matrix (absent table, unknown provider,
   missing model, missing key, missing SDK, fully configured); malformed TOML raises;
-  `base_url` rejected for anthropic; `max_output_tokens` unset-defaults-to-8192 and
+  unknown keys name their TOML path; OpenAI `base_url` accepts absolute
+  credential-free HTTP(S) URLs and rejects malformed/relative/unsupported-
+  scheme/userinfo/invalid-port values without exposing them; `base_url` is
+  rejected for anthropic; `max_output_tokens` unset-defaults-to-8192 and
   malformed/non-positive-fails-readiness behaviour (named reason, no silent default);
   `mutations_enabled`/`mutations_reason` across all six `working_branch_status` states
   (ready, no-repository, unset, detached, divergent, invalid — asserting each state's

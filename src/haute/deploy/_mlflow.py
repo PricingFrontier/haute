@@ -390,11 +390,11 @@ def _check_databricks_connectivity(
     token = os.environ.get("DATABRICKS_RATING_TOKEN", "")
 
     if not host:
-        raise RuntimeError(
+        raise DeployError(
             "DATABRICKS_RATING_HOST is not set. Add it to .env or set it as a CI secret."
         )
     if not token:
-        raise RuntimeError(
+        raise DeployError(
             "DATABRICKS_RATING_TOKEN is not set. Add it to .env or set it as a CI secret."
         )
 
@@ -405,7 +405,7 @@ def _check_databricks_connectivity(
         _log("Databricks workspace reachable")
     except urllib.error.HTTPError as exc:
         if exc.code == 403:
-            raise RuntimeError(
+            raise DeployError(
                 f"Databricks returned 403 Forbidden. "
                 f"Check that your DATABRICKS_RATING_TOKEN is valid and has workspace access. "
                 f"Host: {host}"
@@ -413,7 +413,7 @@ def _check_databricks_connectivity(
         # Other HTTP errors (e.g. 404) are fine - it means the host is reachable
         _log("Databricks workspace reachable")
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError(
+        raise DeployError(
             f"Cannot reach Databricks workspace at {host} "
             f"(timed out after {timeout}s). Check DATABRICKS_RATING_HOST is correct "
             f"and that the workspace allows connections from this network "

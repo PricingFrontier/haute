@@ -90,8 +90,12 @@ silently become a *different* parameter name when the generated file is
 parsed — the exact hidden mapping this rule forbids — and ASCII lets the
 frontend mirror the rule exactly instead of approximating Unicode
 `str.isidentifier()`. Each table also carries a non-empty path,
-unique column names, known column types, and an optional row-ID column that must name one of its own
-columns. Table paths end at an array boundary; columns may live at that boundary
+unique column names, known column types, and an optional row-ID column that
+must name one of its own columns. When present, `emit` and `selected` are
+actual booleans (integer/string lookalikes are rejected), and column `status`
+is exactly `Confirmed` or `Inferred`. These declared scalar types are checked
+at this boundary before the shred can coerce them by truthiness. Table paths
+end at an array boundary; columns may live at that boundary
 or at an ancestor boundary so an ancestor value can be distributed into child
 rows. The OUTPUT side consumes only active, complete mapping rows and requires
 the same single array-outer path grammar: `$[:]` at the root, dotted ASCII
@@ -217,8 +221,11 @@ strict build and raises a specific, column-named error instead.
 
 ## Failure model
 
-- A malformed v2 schema config (bad table/column shape) is rejected up front by
-  schema validation before any shredding happens, not discovered mid-walk.
+- A malformed v2 schema config (bad table/column shape; wrong-typed
+  `tables[i].emit` / `tables[i].columns[j].selected`; or a column status other
+  than `Confirmed|Inferred`) is rejected up front with the exact field path by
+  schema validation before any shredding happens, not coerced or discovered
+  mid-walk.
 - Every OUTPUT assembly entry point calls the structural validator before frame
   collection. Malformed syntax, duplicate/prefix conflicts, divergent per-frame
   emit prefixes, and missing source ports/columns therefore fail loudly rather than

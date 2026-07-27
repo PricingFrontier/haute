@@ -1,11 +1,12 @@
 import { useState, useCallback } from "react"
 import type { OnUpdateConfig } from "./editors"
-import { trainModel, estimateTrainingRam } from "../api/client"
+import { cancelTrain, trainModel, estimateTrainingRam } from "../api/client"
 import { runDispersionEstimate } from "../api/dispersion"
-import type { DispersionParam } from "../api/types"
+import { FAILED_JOB_STATUSES, type DispersionParam } from "../api/types"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore from "../stores/useGraphStore"
+import useToastStore from "../stores/useToastStore"
 import { configField } from "../utils/configField"
 import { trainingObjectiveIssue } from "../utils/trainingObjective"
 import { buildGraph } from "../utils/buildGraph"
@@ -62,10 +63,15 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
   const trainJob = useNodeResultsStore((s) => s.trainJobs[nodeId])
   const cachedResult = useNodeResultsStore((s) => s.trainResults[nodeId])
   const startTrainJob = useNodeResultsStore((s) => s.startTrainJob)
+  const updateTrainProgress = useNodeResultsStore((s) => s.updateTrainProgress)
+  const completeTrainJob = useNodeResultsStore((s) => s.completeTrainJob)
+  const failTrainJob = useNodeResultsStore((s) => s.failTrainJob)
+  const addToast = useToastStore((s) => s.addToast)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const structuralVersion = useGraphStore((s) => s.structuralVersion)
 
   const [submitting, setSubmitting] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const training = !!trainJob
   const trainProgress: TrainProgress | null = trainJob?.progress ?? null
   const trainResult: TrainResult | null = cachedResult?.result ?? null
@@ -182,6 +188,33 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
     }
   }, [nodeId, allNodes, buildGraphCb, currentConfigHash, startTrainJob])
 
+  const handleCancel = useCallback(async () => {
+    const activeJob = useNodeResultsStore.getState().trainJobs[nodeId]
+    if (!activeJob || cancelling) return
+    setCancelling(true)
+    try {
+      const status = await cancelTrain<TrainProgress>(activeJob.jobId)
+      if (status.status === "completed" && status.result) {
+        completeTrainJob(nodeId, status.result as TrainResult, status)
+      } else if (FAILED_JOB_STATUSES.has(status.status)) {
+        failTrainJob(nodeId, status.message || "Training stopped", status)
+      } else {
+        updateTrainProgress(nodeId, status)
+      }
+    } catch (error) {
+      addToast("error", `Could not cancel training: ${trainErrorMessage(error)}`)
+    } finally {
+      setCancelling(false)
+    }
+  }, [
+    addToast,
+    cancelling,
+    completeTrainJob,
+    failTrainJob,
+    nodeId,
+    updateTrainProgress,
+  ])
+
   // ── Gateway: pick algorithm before showing full config ──
   if (!algorithm) {
     return (
@@ -262,7 +295,9 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
           terminalStatus={cachedResult?.terminalStatus?.status ?? null}
           terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
           submitting={submitting}
+          cancelling={cancelling}
           onTrain={handleTrain}
+          onCancel={handleCancel}
         />
       </div>
     )
@@ -322,7 +357,9 @@ export default function ModellingConfig({ config, onUpdate, upstreamColumns }: M
         terminalStatus={cachedResult?.terminalStatus?.status ?? null}
         terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
         submitting={submitting}
+        cancelling={cancelling}
         onTrain={handleTrain}
+        onCancel={handleCancel}
       />
     </div>
   )

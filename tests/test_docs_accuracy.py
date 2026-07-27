@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import importlib
 import re
 import subprocess
 import tomllib
@@ -24,6 +25,9 @@ from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._edge_join import _ALLOWED_HOW
 from haute._scaffold import TARGETS, haute_toml
 from haute._types import NodeType
+from haute.cli import cli
+from haute.cli._init_cmd import InitConfig, handle_init
+from haute.parser import parse_pipeline_file
 
 ROOT = Path(__file__).resolve().parents[1]
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
@@ -73,7 +77,6 @@ _GENERATED_REFERENCE_PREFIXES = ("src/haute/static",)
 _FRONTEND_OPERATIONAL_FILES = (
     ".npmrc",
     "README.md",
-    "bun.lock",
     "eslint.config.js",
     "index.html",
     "package-lock.json",
@@ -373,7 +376,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         "roadmap",
         "roadmaps",
     }
-    for path in _tracked_repo_files():
+    for path in _versionable_repo_files():
         if not path.exists() or path.suffix.casefold() != ".md":
             continue
         relative = path.relative_to(ROOT)
@@ -436,9 +439,7 @@ def _low_level_spec_references() -> set[str]:
 
 def _component_module_map_file_references() -> dict[str, set[str]]:
     """Return exact, tracked files by their low-level spec's component name."""
-    tracked_references = {
-        path.relative_to(ROOT).as_posix() for path in _tracked_repo_files() if path.is_file()
-    }
+    tracked_references = {path.relative_to(ROOT).as_posix() for path in _versionable_repo_files()}
     return {
         spec.parent.name: _module_map_file_references(_module_map_text(spec)) & tracked_references
         for spec in LOW_LEVEL_SPECS
@@ -469,16 +470,20 @@ def _module_map_file_references(module_map: str) -> set[str]:
 
 
 @cache
-def _tracked_repo_files() -> frozenset[Path]:
+def _versionable_repo_files() -> frozenset[Path]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=ROOT,
         check=True,
         capture_output=True,
         text=True,
         encoding="utf-8",
     )
-    return frozenset(ROOT / relative for relative in result.stdout.split("\0") if relative)
+    return frozenset(
+        path
+        for relative in result.stdout.split("\0")
+        if relative and (path := ROOT / relative).is_file()
+    )
 
 
 @dataclass(frozen=True, order=True)
@@ -1264,7 +1269,9 @@ def _read_baseline(path: Path) -> set[DocViolation]:
 def _explicit_documented_repo_paths() -> set[str]:
     references = _low_level_spec_references()
     root_files = {
-        path.relative_to(ROOT).as_posix() for path in _tracked_repo_files() if path.parent == ROOT
+        path.relative_to(ROOT).as_posix()
+        for path in _versionable_repo_files()
+        if path.parent == ROOT
     }
     return {
         reference.rstrip("/")
@@ -1285,7 +1292,7 @@ def _unreferenced_sources(paths: list[Path]) -> list[str]:
 
 
 def _backend_production_sources() -> list[Path]:
-    tracked = _tracked_repo_files()
+    tracked = _versionable_repo_files()
     sources: list[Path] = []
     for path in BACKEND_SOURCE_ROOT.rglob("*"):
         if not path.is_file() or path not in tracked:
@@ -1318,7 +1325,7 @@ def _is_frontend_production_source(path: Path) -> bool:
 
 def _repository_operational_sources() -> list[Path]:
     """Return maintained non-runtime artifacts that need explicit spec ownership."""
-    tracked = _tracked_repo_files()
+    tracked = _versionable_repo_files()
     paths = [path for path in tracked if path.parent == ROOT]
     paths.extend(ROOT / "frontend" / relative for relative in _FRONTEND_OPERATIONAL_FILES)
     paths.append(ROOT / "src" / "haute" / "py.typed")
@@ -1536,7 +1543,7 @@ def test_low_level_specs_reference_every_backend_source_file() -> None:
 
 
 def test_low_level_specs_reference_every_frontend_source_file() -> None:
-    tracked = _tracked_repo_files()
+    tracked = _versionable_repo_files()
     sources = sorted(
         path
         for path in FRONTEND_SOURCE_ROOT.rglob("*")
@@ -1564,7 +1571,7 @@ def test_low_level_specs_reference_every_repository_operational_source() -> None
 
 
 def test_repository_operational_inventory_includes_every_tracked_root_file() -> None:
-    tracked_root_files = {path for path in _tracked_repo_files() if path.parent == ROOT}
+    tracked_root_files = {path for path in _versionable_repo_files() if path.parent == ROOT}
     operational_sources = set(_repository_operational_sources())
     assert tracked_root_files <= operational_sources
 
@@ -1801,6 +1808,171 @@ def test_deployment_docs_use_scaffolded_pipeline_path() -> None:
                 f'{doc.name} shows pipeline = "{shown}" but haute init '
                 f'scaffolds pipeline = "{real_path}"'
             )
+
+
+def _marked_block(text: str, marker: str) -> str:
+    """Return a marker-delimited documentation block without its markers."""
+    match = re.search(
+        rf"<!-- {re.escape(marker)}:start -->\n(.*?)<!-- {re.escape(marker)}:end -->",
+        text,
+        flags=re.DOTALL,
+    )
+    assert match is not None, f"Missing {marker!r} documentation markers"
+    return match.group(1).strip()
+
+
+def _tree_listing(root: Path) -> str:
+    """Render a deterministic complete file-and-directory inventory."""
+    entries = sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix())
+    lines = [f"{root.name}/"]
+    lines.extend(
+        f"  {path.relative_to(root).as_posix()}{'/' if path.is_dir() else ''}" for path in entries
+    )
+    return "\n".join(lines)
+
+
+def _tree_from_marked_block(block: str) -> str:
+    match = re.search(r"```\n(.*?)\n```", block, flags=re.DOTALL)
+    assert match is not None, "Marked scaffold block must contain a tree code fence"
+    return match.group(1)
+
+
+def _scaffold_trees_match(text: str, before_tree: str, after_tree: str) -> bool:
+    return (
+        _tree_from_marked_block(_marked_block(text, "scaffold-tree-before")) == before_tree
+        and _tree_from_marked_block(_marked_block(text, "scaffold-tree-after")) == after_tree
+    )
+
+
+def _documented_starter_node_count(text: str) -> int:
+    block = _marked_block(text, "starter-pipeline-node-count")
+    match = re.search(r"\b(\d+) nodes\b", block)
+    assert match is not None, "Starter-pipeline node-count marker must name a node count"
+    return int(match.group(1))
+
+
+def _starter_node_count_matches(text: str, node_count: int) -> bool:
+    return _documented_starter_node_count(text) == node_count
+
+
+def _documented_haute_commands(text: str) -> set[str]:
+    return set(re.findall(r"(?<![\w.])haute[ \t]+([a-z][a-z-]*)\b", text))
+
+
+def _root_help_commands(help_text: str) -> set[str]:
+    commands_section = help_text.split("Commands:\n", maxsplit=1)
+    assert len(commands_section) == 2, "Root haute --help output has no Commands section"
+    return set(re.findall(r"^  ([a-z][a-z-]*)\b", commands_section[1], flags=re.MULTILINE))
+
+
+def _unregistered_documented_commands(text: str, help_text: str) -> set[str]:
+    return _documented_haute_commands(text) - _root_help_commands(help_text)
+
+
+def _documented_haute_imports(text: str) -> set[tuple[str, str | None]]:
+    """Extract imported Haute modules and from-import public attributes from Python fences."""
+    surfaces: set[tuple[str, str | None]] = set()
+    for source in re.findall(r"```python\n(.*?)```", text, flags=re.DOTALL):
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "haute" or alias.name.startswith("haute."):
+                        surfaces.add((alias.name, None))
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and (node.module == "haute" or node.module.startswith("haute."))
+            ):
+                for alias in node.names:
+                    surfaces.add((node.module, alias.name))
+    return surfaces
+
+
+def _missing_haute_imports(surfaces: set[tuple[str, str | None]]) -> set[str]:
+    missing: set[str] = set()
+    for module_name, attribute in surfaces:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            missing.add(module_name)
+            continue
+        if attribute is not None and not hasattr(module, attribute):
+            missing.add(f"{module_name}.{attribute}")
+    return missing
+
+
+def _scaffolded_docs_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    project = tmp_path / "my-project"
+    project.mkdir(parents=True)
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "my-project"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+    (project / "main.py").write_text("# sentinel root main.py\n", encoding="utf-8")
+    monkeypatch.chdir(project)
+    handle_init(InitConfig(target="databricks", ci="github"))
+    return project
+
+
+def test_deployment_index_scaffold_trees_match_real_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index = ROOT / "docs" / "deployment" / "index.md"
+    before_project = tmp_path / "my-project"
+    before_project.mkdir()
+    (before_project / "pyproject.toml").write_text(
+        '[project]\nname = "my-project"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+    (before_project / "main.py").write_text("# sentinel root main.py\n", encoding="utf-8")
+    before_tree = _tree_listing(before_project)
+    project = _scaffolded_docs_project(tmp_path / "after", monkeypatch)
+    text = index.read_text(encoding="utf-8")
+
+    assert _scaffold_trees_match(text, before_tree, _tree_listing(project))
+    assert (project / "main.py").read_text(encoding="utf-8") == "# sentinel root main.py\n"
+
+
+def test_deployment_index_starter_node_count_matches_real_scaffold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _scaffolded_docs_project(tmp_path, monkeypatch)
+    documented = _documented_starter_node_count(
+        (ROOT / "docs" / "deployment" / "index.md").read_text(encoding="utf-8")
+    )
+    assert documented == len(parse_pipeline_file(project / "rating" / "main.py").nodes)
+
+
+def test_documented_haute_commands_are_registered() -> None:
+    from click.testing import CliRunner
+
+    documents = [ROOT / "README.md", *DEPLOYMENT_DOCS]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in documents)
+    result = CliRunner().invoke(cli, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert not _unregistered_documented_commands(text, result.output)
+
+
+def test_documented_haute_python_surfaces_import() -> None:
+    documents = [ROOT / "README.md", *DEPLOYMENT_DOCS]
+    text = "\n".join(path.read_text(encoding="utf-8") for path in documents)
+    assert not _missing_haute_imports(_documented_haute_imports(text))
+
+
+def test_deployment_parity_helpers_detect_mutated_docs() -> None:
+    index = (ROOT / "docs" / "deployment" / "index.md").read_text(encoding="utf-8")
+    drifted_tree = index.replace("  main.py\n  prompts/", "  missing.py\n  prompts/", 1)
+    stale_count = index.replace("**3 nodes**", "**999 nodes**", 1)
+    phantom_command = "haute teleport"
+    phantom_surface = "```python\nfrom haute import PhantomSurface\n```"
+
+    before_tree = _tree_from_marked_block(_marked_block(index, "scaffold-tree-before"))
+    after_tree = _tree_from_marked_block(_marked_block(index, "scaffold-tree-after"))
+    assert not _scaffold_trees_match(drifted_tree, before_tree, after_tree)
+    assert not _starter_node_count_matches(stale_count, _documented_starter_node_count(index))
+    assert _unregistered_documented_commands(phantom_command, "Commands:\n  init\n") == {"teleport"}
+    assert _missing_haute_imports(_documented_haute_imports(phantom_surface)) == {
+        "haute.PhantomSurface"
+    }
 
 
 def test_docs_accuracy_ratchet() -> None:

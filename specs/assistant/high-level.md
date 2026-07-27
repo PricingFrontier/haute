@@ -62,6 +62,13 @@ Out of scope:
 `[assistant]` table names the `provider` (`"anthropic"` or `"openai"`), the `model`, and
 optionally a `base_url` (OpenAI adapter only). Credentials come exclusively from the
 environment — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — never from `haute.toml`.
+The table is closed: these three names are the complete accepted key set, and
+an unknown key raises `ConfigError` naming `[assistant].<key>`. An OpenAI
+`base_url`, when present, must be an absolute `http` or `https` URL with a
+hostname and no embedded user information; malformed, relative, unsupported-
+scheme, whitespace/control-bearing, or invalid-port values raise a
+field-specific `ConfigError` without echoing the URL. Anthropic continues to
+reject the field entirely.
 During lifespan startup, `haute serve` loads the project `.env` into the process environment
 without overriding variables the caller already exported. A status endpoint reports whether the
 assistant is ready and, if not, exactly which piece is missing (no `[assistant]` table, unknown
@@ -70,19 +77,15 @@ invalid output-token budget), so the
 UI can disable the input with a reason instead of letting a send fail. Sending a message while unconfigured is rejected with a 400 naming the missing
 piece — there is no default provider and no silent degradation.
 
-> NOTE: [Tracked by ASSIST-03](../roadmap/assistant.md#assist-03--closed-assistant-configuration).
-> Configuration validation is intentionally narrow in the current implementation:
-> `provider`, `model`, and `base_url` are interpreted, but additional keys in `[assistant]`
-> are ignored rather than rejected. OpenAI accepts any string `base_url` without URL-syntax
-> validation; Anthropic rejects the presence of `base_url` as a readiness failure.
-
 **Sessions.** A chat session is created explicitly, bound to one pipeline, and held in
 process memory as the runtime authority, with every committed turn written through to
 `.haute/assistant/sessions/<id>.json` so history survives the constant server restarts of
 a locally-run tool. Session create accepts an optional prior session id: when its
 persisted record exists (in memory or on disk) and is bound to the same pipeline, the
 session resumes with its transcript returned for the panel to rehydrate; otherwise a
-fresh session is created — resume is an offer, never an error. A *message* against an
+fresh session is created — resume is an offer, never an error. A mismatched
+offer is rejected before the candidate is promoted or touched in the live LRU,
+so asking to resume the wrong pipeline cannot evict a useful session. A *message* against an
 unknown session id still fails with 404 rather than silently creating a fresh one.
 Retention is bounded
 everywhere: the provider request carries a sliding window of recent turns (the system
@@ -122,6 +125,9 @@ tool-call/result pairs: a disconnect before execution drops the unmatched call, 
 completed tool result is recorded before any result/update event is emitted. Cleanup
 always releases the session reservation even if history persistence or response teardown
 raises, so a failed cleanup cannot turn into a permanent 409 for that session.
+The successful mutation result retains its graph fingerprint in neutral
+history; resume derives the same settled “Canvas updated” activity row from
+that durable fact, in its original position after the mutation tool row.
 
 **The tool surface** (complete in v1):
 
@@ -324,6 +330,10 @@ Loud, typed, and never averaged away:
 - **Unconfigured** — message send against a project with no usable `[assistant]` config
   returns 400 with a message naming exactly what is missing; the status endpoint reports the
   same reason machine-readably. No default provider, no fallback model.
+- **Malformed assistant configuration** — malformed TOML, an unknown
+  `[assistant]` key, or an invalid OpenAI `base_url` raises `ConfigError` before
+  SDK probing/client construction. Error text names the configuration field but
+  never repeats a URL or credential-bearing value.
 - **Provider failures** (bad key, rate limit, overloaded, network, malformed stream) raise a
   assistant-specific `HauteError` subclass whose hand-authored message carries the provider
   name and failure class but never the raw provider response body. Provider construction

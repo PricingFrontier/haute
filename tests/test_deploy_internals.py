@@ -19,6 +19,7 @@ import json
 import os
 import urllib.error
 import weakref
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from haute.errors import DeployError
 from tests._deploy_helpers import FIXTURE_DIR
 from tests._deploy_helpers import make_resolved_deploy as _make_resolved
 from tests.conftest import make_graph as _g
@@ -3850,6 +3852,23 @@ class TestLoadEnv:
 class TestResolveConfigEdgeCases:
     """Tests for resolve_config() edge cases."""
 
+    @staticmethod
+    def _minimal_graph() -> MagicMock:
+        from haute._types import NodeType
+
+        source = MagicMock()
+        source.id = "api"
+        source.data.nodeType = NodeType.API_INPUT
+        source.data.config = {}
+        output = MagicMock()
+        output.id = "out"
+        output.data.nodeType = NodeType.OUTPUT
+        output.data.config = {}
+        graph = MagicMock()
+        graph.nodes = [source, output]
+        graph.edges = []
+        return graph
+
     def test_resolve_config_no_source_nodes_raises(self):
         """Graph with no source nodes at all should raise ValueError."""
         from haute.deploy._config import DeployConfig, resolve_config
@@ -3905,8 +3924,13 @@ class TestResolveConfigEdgeCases:
             model_name="test-model",
         )
 
+        from haute._types import NodeType
+
         mock_graph = MagicMock()
-        mock_graph.nodes = [MagicMock()]
+        source = MagicMock()
+        source.id = "single_src"
+        source.data.nodeType = NodeType.DATA_INPUT
+        mock_graph.nodes = [source]
 
         with (
             patch("haute.parser.parse_pipeline_file", return_value=mock_graph),
@@ -3921,6 +3945,171 @@ class TestResolveConfigEdgeCases:
             resolved = resolve_config(config)
 
         assert resolved.input_node_ids == ["single_src"]
+
+    def test_resolve_config_rejects_a_sole_non_data_input_source(self):
+        """A constant must never be promoted to the live deploy input."""
+        from haute._types import NodeType
+        from haute.deploy._config import DeployConfig, resolve_config
+
+        config = DeployConfig(pipeline_file=PIPELINE_FILE, model_name="test-model")
+        source = MagicMock()
+        source.id = "constant"
+        source.data.nodeType = NodeType.CONSTANT
+        source.data.config = {}
+        graph = MagicMock()
+        graph.nodes = [source]
+
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph),
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch("haute.deploy._config.prune_for_deploy", return_value=(graph, ["out"], [])),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=[]),
+            patch("haute.deploy._config.find_source_nodes", return_value=["constant"]),
+        ):
+            with pytest.raises(ValueError, match="not a dataInput"):
+                resolve_config(config)
+
+    @pytest.mark.parametrize("pipeline_kind", ["relative", "absolute"])
+    def test_resolve_config_canonicalises_configured_pipeline(self, tmp_path, pipeline_kind):
+        from haute.deploy._config import DeployConfig, resolve_config
+
+        project = tmp_path / "project"
+        pipeline = project / "rating" / "main.py"
+        pipeline.parent.mkdir(parents=True)
+        pipeline.write_text("# pipeline\n")
+        configured = Path("rating/main.py") if pipeline_kind == "relative" else pipeline
+        config = DeployConfig(
+            pipeline_file=configured,
+            project_dir=project,
+            model_name="test-model",
+        )
+        graph = self._minimal_graph()
+
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph) as parse,
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch(
+                "haute.deploy._config.prune_for_deploy",
+                return_value=(graph, ["api", "out"], []),
+            ),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._bundler.collect_artifacts", return_value={}),
+            patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch("haute.deploy._schema.infer_output_schema", return_value={"out": "Float64"}),
+        ):
+            resolved = resolve_config(config)
+
+        assert config.pipeline_file == pipeline.resolve()
+        parse.assert_called_once_with(pipeline.resolve())
+        resolved.close()
+
+    def test_resolve_config_rejects_configured_pipeline_escape(self, tmp_path):
+        from haute.deploy._config import DeployConfig, resolve_config
+
+        project = tmp_path / "project"
+        project.mkdir()
+        outside = tmp_path / "outside.py"
+        outside.write_text("# outside\n")
+        config = DeployConfig(
+            pipeline_file=Path("../outside.py"),
+            project_dir=project,
+            model_name="test-model",
+        )
+
+        with (
+            patch("haute.parser.parse_pipeline_file") as parse,
+            pytest.raises(DeployError, match="outside.*project root"),
+        ):
+            resolve_config(config)
+        parse.assert_not_called()
+
+    def test_resolve_config_rejects_symlinked_pipeline_escape(self, tmp_path):
+        from haute.deploy._config import DeployConfig, resolve_config
+
+        project = tmp_path / "project"
+        project.mkdir()
+        outside = tmp_path / "outside.py"
+        outside.write_text("# outside\n")
+        link = project / "main.py"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlink creation is unavailable on this platform")
+        config = DeployConfig(
+            pipeline_file=link,
+            project_dir=project,
+            model_name="test-model",
+        )
+
+        with pytest.raises(DeployError, match="outside.*project root"):
+            resolve_config(config)
+
+    @pytest.mark.parametrize(
+        "output_fields",
+        [
+            [],
+            ["premium", "premium"],
+            ["missing"],
+            ["premium", 1],
+            ["premium", ["unhashable"]],
+        ],
+        ids=["empty", "duplicate", "missing", "non-string", "unhashable"],
+    )
+    def test_resolve_config_rejects_invalid_output_fields(self, output_fields):
+        from haute.deploy._config import DeployConfig, resolve_config
+
+        config = DeployConfig(
+            pipeline_file=PIPELINE_FILE,
+            model_name="test-model",
+            output_fields=output_fields,
+        )
+        graph = self._minimal_graph()
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph),
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch(
+                "haute.deploy._config.prune_for_deploy",
+                return_value=(graph, ["api", "out"], []),
+            ),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._bundler.collect_artifacts", return_value={}),
+            patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch(
+                "haute.deploy._schema.infer_output_schema",
+                return_value={"premium": "Float64", "age": "Int64"},
+            ),
+            pytest.raises(DeployError, match="output_fields"),
+        ):
+            resolve_config(config)
+
+    def test_resolve_config_projects_output_schema_in_configured_order(self):
+        from haute.deploy._config import DeployConfig, resolve_config
+
+        config = DeployConfig(
+            pipeline_file=PIPELINE_FILE,
+            model_name="test-model",
+            output_fields=["age", "premium"],
+        )
+        graph = self._minimal_graph()
+        with (
+            patch("haute.parser.parse_pipeline_file", return_value=graph),
+            patch("haute.deploy._config.find_output_node", return_value="out"),
+            patch(
+                "haute.deploy._config.prune_for_deploy",
+                return_value=(graph, ["api", "out"], []),
+            ),
+            patch("haute.deploy._config.find_deploy_input_nodes", return_value=["api"]),
+            patch("haute.deploy._bundler.collect_artifacts", return_value={}),
+            patch("haute.deploy._schema.infer_input_schema", return_value={"col": "Int64"}),
+            patch(
+                "haute.deploy._schema.infer_output_schema",
+                return_value={"premium": "Float64", "age": "Int64"},
+            ),
+        ):
+            resolved = resolve_config(config)
+
+        assert list(resolved.output_schema) == ["age", "premium"]
+        resolved.close()
 
 
 # ===========================================================================
@@ -4201,20 +4390,22 @@ class TestCheckDatabricksConnectivity:
 
     def test_missing_host_raises(self, monkeypatch):
         from haute.deploy._mlflow import _check_databricks_connectivity
+        from haute.errors import DeployError
 
         monkeypatch.delenv("DATABRICKS_RATING_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_RATING_TOKEN", raising=False)
 
-        with pytest.raises(RuntimeError, match="DATABRICKS_RATING_HOST is not set"):
+        with pytest.raises(DeployError, match="DATABRICKS_RATING_HOST is not set"):
             _check_databricks_connectivity(lambda msg: None)
 
     def test_missing_token_raises(self, monkeypatch):
         from haute.deploy._mlflow import _check_databricks_connectivity
+        from haute.errors import DeployError
 
         monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://host.databricks.com")
         monkeypatch.delenv("DATABRICKS_RATING_TOKEN", raising=False)
 
-        with pytest.raises(RuntimeError, match="DATABRICKS_RATING_TOKEN is not set"):
+        with pytest.raises(DeployError, match="DATABRICKS_RATING_TOKEN is not set"):
             _check_databricks_connectivity(lambda msg: None)
 
     def test_success(self, monkeypatch):
@@ -4235,6 +4426,7 @@ class TestCheckDatabricksConnectivity:
 
     def test_403_raises_with_clear_message(self, monkeypatch):
         from haute.deploy._mlflow import _check_databricks_connectivity
+        from haute.errors import DeployError
 
         monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://host.databricks.com")
         monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "bad_token")
@@ -4248,7 +4440,7 @@ class TestCheckDatabricksConnectivity:
                 fp=None,
             )
 
-            with pytest.raises(RuntimeError, match="403 Forbidden"):
+            with pytest.raises(DeployError, match="403 Forbidden"):
                 _check_databricks_connectivity(lambda msg: None)
 
     def test_non_403_http_error_succeeds(self, monkeypatch):
@@ -4275,6 +4467,7 @@ class TestCheckDatabricksConnectivity:
 
     def test_timeout_raises(self, monkeypatch):
         from haute.deploy._mlflow import _check_databricks_connectivity
+        from haute.errors import DeployError
 
         monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://host.databricks.com")
         monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "token")
@@ -4282,11 +4475,12 @@ class TestCheckDatabricksConnectivity:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = TimeoutError("connection timed out")
 
-            with pytest.raises(RuntimeError, match="Cannot reach Databricks"):
+            with pytest.raises(DeployError, match="Cannot reach Databricks"):
                 _check_databricks_connectivity(lambda msg: None)
 
     def test_url_error_raises(self, monkeypatch):
         from haute.deploy._mlflow import _check_databricks_connectivity
+        from haute.errors import DeployError
 
         monkeypatch.setenv("DATABRICKS_RATING_HOST", "https://host.databricks.com")
         monkeypatch.setenv("DATABRICKS_RATING_TOKEN", "token")
@@ -4294,7 +4488,7 @@ class TestCheckDatabricksConnectivity:
         with patch("urllib.request.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = urllib.error.URLError("DNS resolution failed")
 
-            with pytest.raises(RuntimeError, match="Cannot reach Databricks"):
+            with pytest.raises(DeployError, match="Cannot reach Databricks"):
                 _check_databricks_connectivity(lambda msg: None)
 
 

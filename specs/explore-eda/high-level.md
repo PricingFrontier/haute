@@ -18,7 +18,9 @@ In scope:
   upstream dataframe (`POST /api/explore/run`, `GET /api/explore/status/{job_id}`,
   `POST /api/explore/cancel/{job_id}`).
 - Computing the `ExploreCacheReport`: row count, column count, per-column schema stats
-  (`ExploreColumnStat`), a data-quality summary, and per-column bounded categorical value counts.
+  (`ExploreColumnStat`), a data-quality summary, per-column bounded categorical value counts,
+  text/temporal cues, cardinality flags, and an exact duplicate-row count when every column is
+  hashable.
 - Caching both the materialised dataframe (via the dataframe execution cache) and the typed
   report object (via a small in-process LRU) so repeated requests for the same analysis avoid
   recomputation.
@@ -72,6 +74,14 @@ Out of scope (owned elsewhere):
   error/default value materialises NaN, which `null_count` does not see), and everything else
   valid. `distinct_count` counts only those valid values — the null and NaN buckets are excluded,
   so an all-NaN float column reports `distinct_count == 0`, not `1`.
+- Every hashable column also reports `unique_ratio` over valid (non-null/non-NaN) rows.
+  `is_high_cardinality` is true when valid distinct values exceed the bounded categorical
+  display limit of 50. `is_identifier_candidate` is the narrower, descriptive cue for a
+  non-empty, fully populated, all-unique column whose case-insensitive name is `id`, `key`,
+  `uuid`, `guid`, starts with `id_`/`key_`, or ends with `_id`/`_key`; it is not a uniqueness
+  guarantee for a group of columns. Text-like columns report min/mean/max character length
+  after the same lenient display decoding used by their value counts. Temporal columns report
+  the formatted max-minus-min span.
 - The report also contains a derived data-quality summary: columns with missing (null) values,
   numeric columns with NaN values, constant (single-value) columns, numeric columns with negative
   values, and numeric columns that are ≥95% zero, each rendered as a short, human-readable issue
@@ -79,6 +89,11 @@ Out of scope (owned elsewhere):
   column is ≥50% affected, else `"warning"`. A column counts as constant only when every row holds
   the same valid value — one with nulls or NaNs alongside its single value is reported under the
   missing-values/NaN issues instead, not double-counted as constant (ruled 2026-07-16).
+- The data-quality summary also carries `duplicate_row_count` and `duplicate_ratio` and adds one
+  duplicate-row issue when the count is nonzero. Duplicate rows are counted exactly across the
+  full cached row shape in the same aggregation pass; if any column is unhashable (currently an
+  Object column), both fields are `None` rather than guessed from a projection. The issue is
+  danger severity at 50% duplicates or above and warning otherwise.
 - Materialisation always completes even when a column contains data that cannot be strictly cast
   to text (non-UTF-8 `Binary` bytes, `Duration` values): those columns are formatted leniently
   rather than aborting the whole report.
@@ -113,9 +128,10 @@ Out of scope (owned elsewhere):
   This lets an `overview` config change reuse the same materialised dataframe while still
   invalidating only the report if the report schema itself changes (`EXPLORE_CACHE_VERSION`).
 - **One batched cancellable streaming collect.** All column stats (min/max, quartiles,
-  null/zero/negative counts, bounded categorical value counts, and display-label group counts)
-  are computed in one Polars aggregation. Explore runs it as a native streaming background query
-  so checkpoints can cancel the query itself while retaining one-pass cost.
+  null/zero/negative counts, bounded categorical value counts, display-label group counts,
+  text lengths, temporal spans, and whole-row distinct count) are computed in one Polars
+  aggregation. Explore runs it as a native streaming background query so checkpoints can cancel
+  the query itself while retaining one-pass cost.
 - **Bounded categorical value counts.** Value counts are capped at the top 50 by count
   (`_CATEGORICAL_VALUE_COUNT_LIMIT`) so a high-cardinality column cannot make the report
   unbounded in size. `values_truncated` follows the number of display-label groups emitted by

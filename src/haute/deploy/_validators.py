@@ -329,6 +329,21 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
     if not resolved.output_schema:
         errors.append("Output schema is empty - dry-run produced no output columns.")
 
+    output_fields = resolved.config.output_fields
+    if output_fields is not None and (
+        not output_fields
+        or any(not isinstance(field, str) or not field for field in output_fields)
+        or (
+            all(isinstance(field, str) for field in output_fields)
+            and len(output_fields) != len(set(output_fields))
+        )
+        or list(resolved.output_schema) != output_fields
+    ):
+        errors.append(
+            "Configured output_fields must be a non-empty, duplicate-free list and "
+            "resolved output_schema must contain exactly those fields in configured order."
+        )
+
     # 8. Test-quote scoring — any failure here is a fatal deploy error.
     #    We collect them alongside structural errors so the aggregated
     #    report surfaces everything at once.  Two failure modes:
@@ -337,7 +352,13 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
     #      * The scorer raised an exception → surfaced via the result dict.
     test_quote_errors: list[str] = []
     tq_dir = resolved.config.test_quotes_dir
-    if tq_dir is not None and tq_dir.is_dir():
+    if tq_dir is not None and not tq_dir.exists():
+        errors.append(f"Configured test_quotes.dir does not exist: {tq_dir}")
+    elif tq_dir is not None and not tq_dir.is_dir():
+        errors.append(f"Configured test_quotes.dir is not a directory: {tq_dir}")
+    elif tq_dir is not None and not list(tq_dir.glob("*.json")):
+        errors.append(f"Configured test_quotes.dir contains no *.json files: {tq_dir}")
+    elif tq_dir is not None:
         # Pre-check each quote against the declared input schema; a
         # silently missing column won't be caught by a passthrough graph
         # and would deploy an API that accepts garbage quotes.
@@ -426,6 +447,7 @@ def score_test_quotes(
                 input_node_ids=resolved.input_node_ids,
                 output_node_id=resolved.output_node_id,
                 artifact_paths={name: str(path) for name, path in resolved.artifacts.items()},
+                output_fields=resolved.config.output_fields,
             )
             _validate_expected_outputs(cases=cases, output=output)
 

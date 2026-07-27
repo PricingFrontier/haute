@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import math
 import os
 import shutil
 import threading
@@ -20,6 +19,7 @@ import polars as pl
 
 from haute._cache import CacheConsumer, canonical_json, checked_cache_inputs
 from haute._credential_security import is_credential_name, validate_credential_free_uri
+from haute._env import float_env, int_env
 from haute._file_ops import atomic_write_text
 from haute._polars_utils import bounded_sink
 
@@ -280,30 +280,12 @@ class SourceCacheStore:
         self.inputs_root = self.root / ".haute_cache" / "inputs"
         self.inputs_root.mkdir(parents=True, exist_ok=True)
         if max_bytes is None:
-            raw_max_bytes = os.environ.get(
-                "HAUTE_INPUT_CACHE_MAX_BYTES",
-                str(20 * 1024 * 1024 * 1024),
-            )
-            try:
-                max_bytes = int(raw_max_bytes)
-            except ValueError as exc:
-                raise RuntimeError(
-                    "HAUTE_INPUT_CACHE_MAX_BYTES must be a positive integer"
-                ) from exc
+            max_bytes = int_env("HAUTE_INPUT_CACHE_MAX_BYTES", 20 * 1024 * 1024 * 1024)
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
             raise ValueError("source-cache max_bytes must be a positive integer")
         self.max_bytes = max_bytes
         if max_generations is None:
-            raw_max_generations = os.environ.get(
-                "HAUTE_INPUT_CACHE_MAX_GENERATIONS",
-                "64",
-            )
-            try:
-                max_generations = int(raw_max_generations)
-            except ValueError as exc:
-                raise RuntimeError(
-                    "HAUTE_INPUT_CACHE_MAX_GENERATIONS must be a positive integer"
-                ) from exc
+            max_generations = int_env("HAUTE_INPUT_CACHE_MAX_GENERATIONS", 64)
         if (
             isinstance(max_generations, bool)
             or not isinstance(max_generations, int)
@@ -311,19 +293,10 @@ class SourceCacheStore:
         ):
             raise ValueError("source-cache max_generations must be a positive integer")
         self.max_generations = max_generations
-        raw_staging_max_age = os.environ.get(
+        self.staging_max_age_seconds = float_env(
             "HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS",
-            str(_DEFAULT_STAGING_MAX_AGE_SECONDS),
+            _DEFAULT_STAGING_MAX_AGE_SECONDS,
         )
-        try:
-            staging_max_age_seconds = float(raw_staging_max_age)
-        except ValueError as exc:
-            raise RuntimeError(
-                "HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS must be positive"
-            ) from exc
-        if not math.isfinite(staging_max_age_seconds) or staging_max_age_seconds <= 0:
-            raise RuntimeError("HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS must be positive")
-        self.staging_max_age_seconds = staging_max_age_seconds
         coordination_key = self.inputs_root.resolve()
         with self._coordination_lock:
             coordination = self._coordination_by_root.setdefault(

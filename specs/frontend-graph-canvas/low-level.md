@@ -74,7 +74,12 @@
   `setPreamble`); raw actions
   (`setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`, `setPreambleRaw`); explicit history ops
   (`pushSnapshot`, `pushVcEntry`, `undo`, `redo`); `markSaved`; and pure
-  selectors (`isDirty`, `canUndo`, `canRedo`).
+  selectors (`isDirty`, `canUndo`, `canRedo`). `loadGraphSnapshot` is the
+  separate whole-document boundary: it deep-clones and installs all four
+  persisted fields, sets the saved baseline and both persisted
+  fingerprints to that snapshot, clears both history stacks, recomputes the
+  structural and panel-context fingerprints, and increments both versions
+  exactly once in one Zustand transition.
 - **`HauteNodeData`** (`types/node.ts`) — base node data shape:
   `label`, `nodeType`, `description?`, `config?`, `code?`, `func_name?`, plus
   underscore-prefixed *transient* fields that are runtime-only and never
@@ -121,10 +126,11 @@
 ## Control flow
 
 1. **Mount.** `FlowEditor` calls `useGraphCanvasState([], [], graphRefreshingRef)`.
-   A `seededRef`-guarded effect seeds the store once with the caller's
-   initial (empty in production) nodes/edges and resets `undoStack`/
-   `redoStack`/all three fingerprints. The real pipeline arrives later via
-   `usePipelineAPI` calling `setNodesRaw`/`setEdgesRaw` (out of scope here).
+   A `seededRef`-guarded effect calls `loadGraphSnapshot` once with the
+   caller's nodes/edges and canonical empty preamble/submodels. The real
+   pipeline later arrives through that same action. A remount therefore
+   cannot retain a prior document's persisted fields, saved baseline, or
+   history.
 2. **Render subscriptions.** `useGraphCanvasState` reads `nodes`/`edges`/
    `undoStack.length`/`redoStack.length` via selector-isolated
    `useGraphStore((s) => …)` calls. `App.tsx` separately subscribes to
@@ -198,11 +204,19 @@
    *current* (pre-undo) state onto the opposite stack via
    `captureGraphSnapshot`. Every push to either stack goes through the same
    `MAX_HISTORY` cap.
-9. **`markSaved(snapshot?)`.** Captures `lastSavedSnapshot` (defaults to the
+9. **Whole-document load and `markSaved(snapshot?)`.**
+   `loadGraphSnapshot(snapshot)` deep-clones the input, computes its
+   structural, panel-context, and persisted fingerprints, installs all four
+   graph fields, records a separate clone as `lastSavedSnapshot`, copies the
+   persisted fingerprint to `savedPersistedFingerprint`, sets `dirty=false`,
+   clears `undoStack`/`redoStack`, and increments
+   `structuralVersion`/`panelContextVersion` once regardless of fingerprint
+   equality. Versions are never reset: a document switch that changes only
+   submodels must still receive a fresh preview/result-cache identity.
+   `markSaved(snapshot?)` captures `lastSavedSnapshot` (defaults to the
    current state) and `savedPersistedFingerprint`, then recomputes `dirty`.
-   This is the only place `savedPersistedFingerprint` is updated; it's
-   called by the save flow (`usePipelineAPI`, out of scope) after a
-   successful save.
+   Loads use the atomic load action directly; `markSaved` remains the
+   successful-save boundary.
 10. **Panel context refresh.** `usePanelGraphContext` rebuilds its snapshot
     only when `panelContextVersion` changes (a `useMemo` keyed on it,
     reading fresh `nodes`/`edges` from `useGraphStore.getState()` at that
@@ -293,15 +307,14 @@
 15. **Pipeline load (`usePipelineAPI`, mount effect).** Calls `loadPipeline`
     with a cold-start retry policy (`INITIAL_PIPELINE_RETRY_POLICY`, 6
     retries at 250ms base delay); the response is validated through
-    `parsePipelineResponse` before touching the graph. On success, applies
-    nodes/edges/preamble/submodels via the raw setters. A nullable or omitted
-    HTTP `submodels` field is the empty map: the hook writes `{}` through
-    `setSubmodelsRaw` and into the request-facing `submodelsRef`, so a reload
-    cannot retain an earlier graph's submodels. It then seeds `nodeIdCounter`
-    from `computeNextNodeId` and calls
-    `useGraphStore.getState().markSaved()` — the just-loaded state IS the
-    on-disk state, so it starts clean. Aborted via `AbortController` on
-    unmount.
+    `parsePipelineResponse` before touching the graph. On success, the hook
+    canonicalises an omitted/null preamble to `""` and submodels to `{}`,
+    updates the matching refs, then calls `loadGraphSnapshot` once with
+    normalised edges and all four persisted fields. That one transition
+    makes the response the clean saved baseline and clears history; no
+    sequence of raw setters plus `markSaved` is permitted for a document
+    load. It then seeds `nodeIdCounter` from `computeNextNodeId`. Aborted via
+    `AbortController` on unmount.
 16. **Preview fetch (`usePipelineAPI.fetchPreview` →
     `fetchPreviewImmediate`).** `fetchPreview` cancels any in-flight
     request/debounce, paints cached data (or a `"loading"` placeholder)
@@ -412,13 +425,6 @@
     highlight a clicked node's counterpart.
 
 ## Edge cases and invariants
-
-> NOTE: [Tracked by CANVAS-STATE-01](../roadmap/frontend-canvas.md#canvas-state-01--deliberate-graph-seeding-lifecycle).
-> `useGraphCanvasState`'s seeding effect resets the store's
-> undo/redo stacks and fingerprints on first mount from the caller's
-> `initialNodes`/`initialEdges`. Production mounts it with empty arrays and
-> loads the real graph later through raw store updates, so the reset is a
-> one-time clear rather than part of the actual load path.
 
 - **API-input handle ids never synthesize.** Zero eligible frames render no
   source handle; one eligible frame or more renders one labelled handle per
@@ -650,6 +656,10 @@
   losing the breadcrumb is cosmetic, not blocking.
 
 ## Testing
+
+`frontend/src/stores/__tests__/useGraphStore.loadSnapshot.test.ts` pins atomic
+whole-document graph loads, saved-baseline installation, version advancement,
+and undo/redo history clearing across pipeline switches.
 
 The pure connection/frame helpers are defended by
 `frontend/src/utils/__tests__/apiInputPorts.test.ts`,

@@ -141,6 +141,21 @@ portal rather than in the generated YAML. Re-running `haute init --force` with a
 `--ci` prunes the previously-chosen provider's workflow files before writing the new ones, so
 switching providers doesn't leave orphaned config behind.
 
+Every emitted GitHub Actions, GitLab CI, and Azure DevOps workflow is a complete
+YAML document, not a template fragment that only looks plausible in Markdown.
+The scaffold contract parses every provider/target combination and structurally
+checks the release stages, branch/manual conditions, and target-secret mappings
+at the exact deploy/smoke/impact steps that consume them.
+
+The deployment guide's before/after project tree is generated from a real
+`handle_init` fixture with a preserved root `main.py`. Documentation parity
+tests derive the starter-pipeline node count from that same scaffold, compare
+every documented `haute <command>` with the registered root help surface, and
+import every `haute` Python surface named by a documentation example. The
+checks have mutation-style negative fixtures for a drifted tree, stale count,
+phantom command, and missing Python surface so an empty or self-confirming gate
+cannot pass.
+
 **Live callable arity and switching.** A live node derives its positional
 DataFrame-input arity once when it is registered and reuses that immutable
 result. Positional-only and positional-or-keyword parameters are inputs,

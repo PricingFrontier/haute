@@ -93,7 +93,7 @@ function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): Explore
     generated_at: 1710000000,
     columns: [],
     overview_summary: {
-      data_quality: { issue_count: 0, issues: [] },
+      data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
       categorical_summary: [],
     },
     ...overrides,

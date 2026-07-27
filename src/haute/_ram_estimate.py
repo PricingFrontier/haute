@@ -116,6 +116,92 @@ class MaterialisationEstimate:
 # ---------------------------------------------------------------------------
 
 
+_CGROUP_V2_MEMORY_MAX = "/sys/fs/cgroup/memory.max"
+_CGROUP_V2_MEMORY_CURRENT = "/sys/fs/cgroup/memory.current"
+_CGROUP_V1_MEMORY_LIMIT = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+_CGROUP_V1_MEMORY_USAGE = "/sys/fs/cgroup/memory/memory.usage_in_bytes"
+_CGROUP_V1_UNLIMITED_SENTINEL = 1 << 60
+
+
+def _read_cgroup_memory_file(path: str) -> str | None:
+    """Read one cgroup control file, returning ``None`` when absent."""
+    try:
+        return Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _cgroup_memory_headroom_bytes() -> int | None:
+    """Return observable Linux cgroup memory headroom, if it is finite."""
+
+    def controller_headroom(
+        version: str,
+        limit_path: str,
+        current_path: str,
+        *,
+        supports_max: bool,
+    ) -> tuple[bool, int | None]:
+        raw_limit = _read_cgroup_memory_file(limit_path)
+        raw_current = _read_cgroup_memory_file(current_path)
+        if raw_limit is None and raw_current is None:
+            return False, None
+        if raw_limit is None or raw_current is None:
+            logger.warning(
+                "cgroup_memory_state_incomplete",
+                version=version,
+                limit_path=limit_path,
+                current_path=current_path,
+            )
+            return True, None
+        if supports_max and raw_limit == "max":
+            return True, None
+        try:
+            limit = int(raw_limit)
+            current = int(raw_current)
+        except ValueError:
+            logger.warning(
+                "cgroup_memory_state_malformed",
+                version=version,
+                limit=raw_limit,
+                current=raw_current,
+            )
+            return True, None
+        if limit < 0 or current < 0:
+            logger.warning(
+                "cgroup_memory_state_malformed",
+                version=version,
+                limit=raw_limit,
+                current=raw_current,
+            )
+            return True, None
+        if not supports_max and limit >= _CGROUP_V1_UNLIMITED_SENTINEL:
+            return True, None
+        return True, max(limit - current, 0)
+
+    v2_present, v2_headroom = controller_headroom(
+        "v2",
+        _CGROUP_V2_MEMORY_MAX,
+        _CGROUP_V2_MEMORY_CURRENT,
+        supports_max=True,
+    )
+    if v2_present:
+        return v2_headroom
+    _v1_present, v1_headroom = controller_headroom(
+        "v1",
+        _CGROUP_V1_MEMORY_LIMIT,
+        _CGROUP_V1_MEMORY_USAGE,
+        supports_max=False,
+    )
+    return v1_headroom
+
+
+def _clamp_available_ram_to_cgroup(host_available: int | None) -> int | None:
+    if host_available is None or sys.platform != "linux":
+        return host_available
+    headroom = _cgroup_memory_headroom_bytes()
+    return host_available if headroom is None else min(host_available, headroom)
+
+
 def available_ram_bytes() -> int | None:
     """Return available system RAM in bytes, or ``None`` when unobservable.
 
@@ -136,7 +222,7 @@ def available_ram_bytes() -> int | None:
         with open("/proc/meminfo", encoding="utf-8") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
+                    return _clamp_available_ram_to_cgroup(int(line.split()[1]) * 1024)
         proc_meminfo_error = "MemAvailable not found"
     except (OSError, ValueError, IndexError) as exc:
         proc_meminfo_error = str(exc)
@@ -148,7 +234,7 @@ def available_ram_bytes() -> int | None:
         sysconf_pages = int(sysconf("SC_AVPHYS_PAGES"))
         sysconf_page_size = int(sysconf("SC_PAGE_SIZE"))
         if sysconf_pages > 0 and sysconf_page_size > 0:
-            return sysconf_pages * sysconf_page_size
+            return _clamp_available_ram_to_cgroup(sysconf_pages * sysconf_page_size)
         sysconf_error = "non-positive sysconf memory values"
     except (AttributeError, OSError, ValueError) as exc:
         sysconf_error = str(exc)
@@ -175,7 +261,7 @@ def available_ram_bytes() -> int | None:
             mem.dwLength = ctypes.sizeof(MemoryStatusEx)
             kernel32 = cast(Any, ctypes).windll.kernel32
             if kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
-                return int(mem.ullAvailPhys)
+                return _clamp_available_ram_to_cgroup(int(mem.ullAvailPhys))
             windows_error = "GlobalMemoryStatusEx returned false"
         except (OSError, AttributeError, ImportError) as exc:
             windows_error = str(exc)

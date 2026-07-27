@@ -163,6 +163,14 @@ Out of scope (owned elsewhere, linked where relevant):
   preview/trace cache-size constants use the same parser at module import and are
   therefore fixed for that module instance. A few component-owned parsers remain
   outside this shared policy.
+- **Direct production environment reads are statically inventoried.** An AST
+  guard discovers literal `os.getenv`, `os.environ.get`, and
+  `os.environ[...]` reads under `src/haute` (including string constants and
+  import aliases). Positive numeric Haute knobs must use `_env.py`; the only
+  direct-read exceptions are an explicit reviewed set whose string, boolean,
+  credential, mapping, or non-negative semantics are not represented by those
+  helpers. A new direct access fails without adding a parallel accessor test
+  case.
 - **`.gitignore` guard entries are idempotent and additive**: re-running the guard
   writer never duplicates an entry and never removes user-authored bytes. Existing
   content is decoded with replacement only for membership checks; missing entries are

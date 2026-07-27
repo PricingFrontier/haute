@@ -1774,6 +1774,102 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
 
 class TestAvailableRamPlatformPaths:
+    def test_linux_v2_cgroup_clamps_host_available_memory(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.platform", "linux")
+        cgroup = {
+            "/sys/fs/cgroup/memory.max": "1000",
+            "/sys/fs/cgroup/memory.current": "250",
+        }
+        with (
+            patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+            patch("haute._ram_estimate._read_cgroup_memory_file", side_effect=cgroup.get),
+        ):
+            assert available_ram_bytes() == 750
+
+    def test_linux_keeps_tighter_host_available_memory(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.platform", "linux")
+        cgroup = {
+            "/sys/fs/cgroup/memory.max": "10000",
+            "/sys/fs/cgroup/memory.current": "100",
+        }
+        with (
+            patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+            patch("haute._ram_estimate._read_cgroup_memory_file", side_effect=cgroup.get),
+        ):
+            assert available_ram_bytes() == 2 * 1024
+
+    def test_linux_v2_max_does_not_clamp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.platform", "linux")
+        cgroup = {
+            "/sys/fs/cgroup/memory.max": "max",
+            "/sys/fs/cgroup/memory.current": "250",
+        }
+        with (
+            patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+            patch("haute._ram_estimate._read_cgroup_memory_file", side_effect=cgroup.get),
+        ):
+            assert available_ram_bytes() == 2 * 1024
+
+    @pytest.mark.parametrize(
+        ("limit", "current", "expected"),
+        [("1000", "250", 750), (str(1 << 60), "250", 2 * 1024), ("100", "250", 0)],
+    )
+    def test_linux_v1_cgroup_fallback_and_limits(
+        self, monkeypatch: pytest.MonkeyPatch, limit: str, current: str, expected: int
+    ) -> None:
+        monkeypatch.setattr("sys.platform", "linux")
+        cgroup = {
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes": limit,
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes": current,
+        }
+        with (
+            patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+            patch("haute._ram_estimate._read_cgroup_memory_file", side_effect=cgroup.get),
+        ):
+            assert available_ram_bytes() == expected
+
+    @pytest.mark.parametrize(
+        "cgroup",
+        [
+            {"/sys/fs/cgroup/memory.max": "oops", "/sys/fs/cgroup/memory.current": "1"},
+            {"/sys/fs/cgroup/memory.max": "1000"},
+        ],
+    )
+    def test_linux_malformed_or_incomplete_cgroup_keeps_host_memory(
+        self, monkeypatch: pytest.MonkeyPatch, cgroup: dict[str, str]
+    ) -> None:
+        monkeypatch.setattr("sys.platform", "linux")
+        with (
+            patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+            patch("haute._ram_estimate._read_cgroup_memory_file", side_effect=cgroup.get),
+        ):
+            assert available_ram_bytes() == 2 * 1024
+
+    def test_non_linux_does_not_probe_cgroups(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.platform", "darwin")
+        with (
+            patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+            patch("haute._ram_estimate._read_cgroup_memory_file") as read_cgroup,
+        ):
+            assert available_ram_bytes() == 2 * 1024
+        read_cgroup.assert_not_called()
+
+    def test_unavailable_host_does_not_fabricate_cgroup_capacity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.platform", "linux")
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=AttributeError, create=True),
+            patch("haute._ram_estimate._read_cgroup_memory_file") as read_cgroup,
+        ):
+            assert available_ram_bytes() is None
+        read_cgroup.assert_not_called()
+
     def test_linux_proc_meminfo(self) -> None:
         """Successful /proc/meminfo read returns parsed MemAvailable."""
         fake_meminfo = (

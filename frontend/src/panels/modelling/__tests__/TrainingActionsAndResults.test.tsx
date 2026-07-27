@@ -18,6 +18,7 @@ function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): Tra
     ramEstimateLoading: false,
     rowLimit: null,
     onTrain: vi.fn(),
+    onCancel: vi.fn(),
     ...overrides,
   }
 }
@@ -44,6 +45,31 @@ describe("TrainingActionsAndResults", () => {
   it("shows Training... when training is in progress", () => {
     render(<TrainingActionsAndResults {...makeProps({ training: true })} />)
     expect(screen.getByText("Training...")).toBeInTheDocument()
+  })
+
+  it("shows a working Cancel control throughout an active job", () => {
+    const onCancel = vi.fn()
+    render(<TrainingActionsAndResults {...makeProps({
+      training: true,
+      trainProgress: {
+        status: "running",
+        progress: 0.1,
+        message: "Preparing training data...",
+        iteration: 0,
+        total_iterations: 0,
+        train_loss: {},
+        elapsed_seconds: 1,
+      },
+      onCancel,
+    })} />)
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel training" }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not offer cancellation before the start response supplies a job handle", () => {
+    render(<TrainingActionsAndResults {...makeProps({ submitting: true })} />)
+    expect(screen.queryByRole("button", { name: "Cancel training" })).not.toBeInTheDocument()
   })
 
   it("shows progress message when trainProgress has one", () => {
@@ -144,6 +170,19 @@ describe("TrainingActionsAndResults", () => {
     })} />)
     expect(screen.getByText("Dataset fits in memory")).toBeInTheDocument()
     expect(screen.getByText("50,000")).toBeInTheDocument()
+  })
+
+  it("asks for a manual CPU retry when the selected GPU cannot fit", () => {
+    render(<TrainingActionsAndResults {...makeProps({
+      ramEstimate: makeTrainEstimate({
+        total_rows: 50000,
+        gpu_vram_estimated_mb: 4096,
+        gpu_vram_available_mb: 1024,
+      }),
+    })} />)
+
+    expect(screen.getByText(/Select CPU and retry/i)).toBeInTheDocument()
+    expect(screen.queryByText(/fall back.*automatically/i)).not.toBeInTheDocument()
   })
 
   it("shows downsampling warning when was_downsampled", () => {

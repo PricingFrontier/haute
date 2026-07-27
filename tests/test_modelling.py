@@ -1321,6 +1321,62 @@ class TestMonotonicConstraints:
         for i in range(1, len(preds)):
             assert preds[i] >= preds[i - 1] - 1e-6
 
+    @staticmethod
+    def _validation_job(
+        constraints: object,
+        **overrides: object,
+    ) -> TrainingJob:
+        data = pl.DataFrame(
+            {
+                "x1": [1.0, 2.0, 3.0, 4.0],
+                "x2": [4.0, 3.0, 2.0, 1.0],
+                "category": ["a", "b", "a", "b"],
+                "y": [1.0, 2.0, 3.0, 4.0],
+            }
+        )
+        return TrainingJob(
+            name="validate_mono",
+            data=data,
+            target="y",
+            monotone_constraints=constraints,  # type: ignore[arg-type]
+            output_dir="/tmp/test_mono_validation",
+            **overrides,
+        )
+
+    @pytest.mark.parametrize(
+        ("constraints", "match"),
+        [
+            (["x1"], "must be a dict"),
+            ({"": 1}, "keys must be non-empty strings"),
+            ({1: 1}, "keys must be non-empty strings"),
+            ({"x1": 0}, "exact Python ints -1 or 1"),
+            ({"x1": True}, "exact Python ints -1 or 1"),
+        ],
+    )
+    def test_monotone_constraints_reject_invalid_shape_or_direction(
+        self,
+        constraints: object,
+        match: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=match):
+            self._validation_job(constraints).run()
+
+    def test_monotone_constraints_reject_unknown_feature(self) -> None:
+        with pytest.raises(ValueError, match="final selected features.*unknown"):
+            self._validation_job({"missing": 1}).run()
+
+    def test_monotone_constraints_reject_glm_non_term_feature(self) -> None:
+        with pytest.raises(ValueError, match="final selected features.*x2"):
+            self._validation_job(
+                {"x2": 1},
+                algorithm="glm",
+                params={"terms": {"x1": {}}},
+            ).run()
+
+    def test_monotone_constraints_reject_nonnumeric_feature(self) -> None:
+        with pytest.raises(ValueError, match="numeric Int64 or Float64.*category"):
+            self._validation_job({"category": 1}).run()
+
 
 # ---------------------------------------------------------------------------
 # SHAP Values + Feature Analysis

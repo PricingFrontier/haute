@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -323,8 +323,8 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
         "source": "live",
     }
     spec = _explore_service._prepare_spec(ExploreRunRequest.model_validate(body))
-    assert EXPLORE_CACHE_VERSION == 4
-    assert spec.report_cache_key.startswith("explore:v4:")
+    assert EXPLORE_CACHE_VERSION == 5
+    assert spec.report_cache_key.startswith("explore:v5:")
 
     _explore_service._report_cache.put(
         spec.report_cache_key,
@@ -365,7 +365,12 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
     assert payload["result"]["dataframe_cache_key"] == spec.dataframe_cache_key
     assert payload["result"]["overview_summary"] == {
         "categorical_summary": [],
-        "data_quality": {"issue_count": 0, "issues": []},
+        "data_quality": {
+            "issue_count": 0,
+            "issues": [],
+            "duplicate_row_count": None,
+            "duplicate_ratio": None,
+        },
     }
 
 
@@ -707,6 +712,124 @@ def test_build_frame_stats_empty_schema_returns_empty_list(explore_execution_con
     ).columns
 
     assert stats == []
+
+
+def test_build_frame_stats_profiles_text_and_temporal_columns(explore_execution_context) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "text": pl.Series("text", [None, "a", "three"], dtype=pl.String),
+            "empty_text": pl.Series("empty_text", [None, None, None], dtype=pl.String),
+            "day": [date(2024, 1, 1), date(2024, 1, 4), None],
+            "instant": [datetime(2024, 1, 1, 8), datetime(2024, 1, 2, 10), None],
+        }
+    ).lazy()
+
+    stats = _build_frame_stats(lf, lf.collect_schema(), execution_context=explore_execution_context)
+    by_name = {column.name: column for column in stats.columns}
+    assert (
+        by_name["text"].text_min_length,
+        by_name["text"].text_mean_length,
+        by_name["text"].text_max_length,
+    ) == (1, 3.0, 5)
+    assert by_name["empty_text"].text_min_length is None
+    assert by_name["empty_text"].text_mean_length is None
+    assert by_name["empty_text"].text_max_length is None
+    assert by_name["day"].temporal_span == "3 days, 0:00:00"
+    assert by_name["instant"].temporal_span == "1 day, 2:00:00"
+
+
+def test_build_frame_stats_profiles_cardinality_identifier_and_duplicates(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "policy_id": [f"p{index}" for index in range(51)] + ["p0"],
+            "id_exact": list(range(52)),
+        }
+    ).lazy()
+    stats = _build_frame_stats(lf, lf.collect_schema(), execution_context=explore_execution_context)
+    by_name = {column.name: column for column in stats.columns}
+    assert by_name["policy_id"].unique_ratio == 51 / 52
+    assert by_name["policy_id"].is_high_cardinality is True
+    assert by_name["policy_id"].is_identifier_candidate is False
+    assert by_name["id_exact"].is_identifier_candidate is True
+    summary = stats.overview_summary.data_quality
+    assert summary.duplicate_row_count == 0
+    assert summary.duplicate_ratio == 0
+
+
+def test_build_frame_stats_profile_flag_boundaries(explore_execution_context) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame(
+        {
+            "at_limit": list(range(50)) + [0],
+            "above_limit": list(range(51)),
+            "policy_id": list(range(51)),
+            "nullable_id": pl.Series(
+                "nullable_id",
+                [*range(50), None],
+                dtype=pl.Int64,
+            ),
+            "empty_id": pl.Series("empty_id", [None] * 51, dtype=pl.Int64),
+        }
+    ).lazy()
+    stats = _build_frame_stats(lf, lf.collect_schema(), execution_context=explore_execution_context)
+    by_name = {column.name: column for column in stats.columns}
+
+    assert by_name["at_limit"].is_high_cardinality is False
+    assert by_name["above_limit"].is_high_cardinality is True
+    assert by_name["policy_id"].is_identifier_candidate is True
+    assert by_name["nullable_id"].unique_ratio == 1
+    assert by_name["nullable_id"].is_identifier_candidate is False
+    assert by_name["empty_id"].unique_ratio is None
+    assert by_name["empty_id"].is_identifier_candidate is False
+
+    one_row = pl.DataFrame({"id": [1]}).lazy()
+    one_row_stat = _build_frame_stats(
+        one_row,
+        one_row.collect_schema(),
+        execution_context=explore_execution_context,
+    ).columns[0]
+    assert one_row_stat.unique_ratio == 1
+    assert one_row_stat.is_identifier_candidate is False
+
+
+@pytest.mark.parametrize(
+    ("values", "severity"),
+    [([1, 2, 1], "warning"), ([1, 1], "danger"), ([1, 1, 1], "danger")],
+)
+def test_build_frame_stats_reports_duplicate_rows(
+    explore_execution_context, values, severity
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.DataFrame({"value": values}).lazy()
+    summary = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).overview_summary.data_quality
+    assert summary.duplicate_row_count == len(values) - len(set(values))
+    assert summary.duplicate_ratio == pytest.approx(summary.duplicate_row_count / len(values))
+    duplicate_issue = summary.issues[-1]
+    assert duplicate_issue.severity == severity
+    assert "duplicate" in duplicate_issue.label
+
+
+def test_build_frame_stats_leaves_duplicate_profile_unknown_for_object_dtype(
+    explore_execution_context,
+) -> None:
+    from haute.routes._explore_service import _build_frame_stats
+
+    lf = pl.Series("obj", [{"a": 1}, {"a": 1}], dtype=pl.Object).to_frame().lazy()
+    summary = _build_frame_stats(
+        lf, lf.collect_schema(), execution_context=explore_execution_context
+    ).overview_summary.data_quality
+    assert summary.duplicate_row_count is None
+    assert summary.duplicate_ratio is None
 
 
 def test_build_explore_frame_stats_includes_row_count(explore_execution_context) -> None:
@@ -1081,9 +1204,10 @@ def test_build_frame_stats_includes_backend_overview_summary(
         "1 constant / single-value column",
         "1 numeric column with negatives",
         "1 mostly-zero numeric column",
+        "2 high-cardinality columns",
     ]
     assert summary.data_quality.issues[0].detail == "region worst at 25%"
-    assert summary.data_quality.issue_count == 4
+    assert summary.data_quality.issue_count == 5
 
 
 def test_build_frame_stats_includes_bounded_categorical_value_counts(

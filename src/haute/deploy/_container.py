@@ -19,6 +19,7 @@ from haute.deploy._request_limits import (
     DEFAULT_DEPLOY_QUOTE_REQUEST_BODY_LIMIT_BYTES,
 )
 from haute.deploy._utils import build_manifest
+from haute.errors import DeployError
 
 logger = get_logger(component="deploy.container")
 
@@ -540,7 +541,7 @@ def _pinned_dockerfile_dependency(distribution_name: str, install_name: str) -> 
     try:
         package_version = metadata_version(distribution_name)
     except PackageNotFoundError as exc:
-        raise RuntimeError(
+        raise DeployError(
             f"Cannot pin Dockerfile dependency {install_name!r}: "
             f"installed distribution {distribution_name!r} was not found."
         ) from exc
@@ -576,7 +577,7 @@ def _detect_extra_deps(resolved: ResolvedDeploy) -> list[str]:
 
 
 def _check_docker_available() -> None:
-    """Raise RuntimeError if Docker is not available."""
+    """Raise DeployError if Docker is not available."""
     try:
         subprocess.run(
             ["docker", "info"],
@@ -584,7 +585,7 @@ def _check_docker_available() -> None:
             capture_output=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(
+        raise DeployError(
             "Docker is not available. `haute deploy` for container targets "
             "is designed to run in CI (where Docker is pre-installed), not "
             "locally. Push your changes and let the CI pipeline build the image."
@@ -601,7 +602,7 @@ def _docker_build(build_dir: Path, image_tag: str) -> None:
         encoding="utf-8",
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Docker build failed:\n{result.stderr}")
+        raise DeployError(f"Docker build failed:\n{result.stderr}")
 
 
 def _docker_push(image_tag: str) -> None:
@@ -613,7 +614,7 @@ def _docker_push(image_tag: str) -> None:
         encoding="utf-8",
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Docker push failed:\n{result.stderr}")
+        raise DeployError(f"Docker push failed:\n{result.stderr}")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────

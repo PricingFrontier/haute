@@ -86,9 +86,10 @@ produces a sidecar with only `positions`.
 republishes doesn't deadlock). `subscribe()` returns a zero-arg unsubscribe closure;
 `publish()` snapshots the handler list under the lock, then calls each handler *outside* the
 lock, catching and logging any exception per-handler so one misbehaving subscriber can't
-silence the rest. `GraphUpdatePayload` / `ParseErrorPayload` are the two currently-declared
-typed events; `default_bus` is the module-level singleton `server.py`'s watcher and WebSocket
-translator share.
+silence the rest. `GraphUpdatePayload` is a closed required-key contract containing
+`graph`, `graph_fingerprint`, and `source_file`; `ParseErrorPayload` contains `error` and
+`source_file`. They are the two currently-declared typed events; `default_bus` is the
+module-level singleton `server.py`'s watcher and WebSocket translator share.
 
 **`SupersessionCoordinator._SupersessionState`** (`routes/_supersession.py`) is one
 `asyncio.Condition` + `latest_generation: int` + `active: bool` + `references: int` +
@@ -388,6 +389,7 @@ until the worker actually exits.
 |---|---|---|---|
 | `ConfigError` | save, preview, output-assemble dry-run | 400 / embedded `NodeResult.error` / 422 | Save: bad `haute.toml`. Preview: swallowed into the node result so the canvas shows it in-situ. |
 | `ContractMismatchError` | trace, preview, output-assemble dry-run | 422 / embedded `NodeResult.error` / 422 | Message already names the node + symmetric column diff. |
+| `SchemaMismatchError` | preview | embedded `NodeResult.error` | Adapted identically to `ContractMismatchError`, so a propagated join-key dtype mismatch never becomes a generic 500. |
 | `ParseError` | primary pipeline load, preview | 422 / embedded `NodeResult.error` | Primary load returns the first parse diagnostic when files exist but none parses; preview surfaces graph-shape issues per node. |
 | `ApiInputSchemaError` | json-cache; preview/write execution | 422 | JSON cache retains its `type` discriminator envelope; execution routes use the public-contract adapter (`api_input_schema_invalid`). |
 | `OutputMappingSchemaError` | output-assemble dry-run | 422 | Raised both by the schema-only pre-check and if execution surfaces it deeper (an unmapped port). |
@@ -519,7 +521,7 @@ for route-level tests, and direct unit tests for the pure-function modules.
 
 ## Approved change contract — canonical-only API payloads
 
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
 server routes return and consume only current versioned payload fields. They do not append
 temporary historical detail keys, classify earlier config generations, strip old fields, or try
 alternate sidecar identifiers. Ordinary current-schema validation and safe error translation remain.

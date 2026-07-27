@@ -84,6 +84,7 @@ class GraphUpdatePayload(TypedDict):
     """Emitted by the file-watcher when a pipeline file re-parses cleanly."""
 
     graph: dict[str, Any]
+    graph_fingerprint: str
     source_file: str
 
 

@@ -14,7 +14,9 @@
     "overview_summary": {
       "data_quality": {
         "issue_count": 0,
-        "issues": []
+        "issues": [],
+        "duplicate_row_count": 0,
+        "duplicate_ratio": 0
       },
       "categorical_summary": []
     },
