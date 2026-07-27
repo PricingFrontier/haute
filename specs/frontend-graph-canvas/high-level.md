@@ -19,93 +19,34 @@ consistently.
 ## Scope
 
 In scope:
-- Node rendering and geometry across zoom levels, node-type badges, status/
-  warning indicators, trace and comparison-diff visual states, and connection
-  handle placement — [`nodes/PipelineNode.tsx`](../../frontend/src/nodes/PipelineNode.tsx).
-- Submodel boundary rendering with per-port handles —
-  [`nodes/SubmodelNode.tsx`](../../frontend/src/nodes/SubmodelNode.tsx).
-- Submodel port markers shown when a submodel is drilled into —
-  [`nodes/SubmodelPortNode.tsx`](../../frontend/src/nodes/SubmodelPortNode.tsx).
-- The `<ReactFlow>` wiring in the top-level editor: node/edge change
-  handlers, selection, connect/drag/drop entry points, context menu and
-  keyboard-shortcut wiring, active-node/preview-pane selection, and the
-  save/commit gate — [`App.tsx`](../../frontend/src/App.tsx).
-- The graph-shaped Zustand store: nodes, edges, preamble, submodel
-  metadata, undo/redo history (including interleaved version-control
-  entries), and derived dirty state —
-  [`stores/useGraphStore.ts`](../../frontend/src/stores/useGraphStore.ts).
-- The read-only graph context exposed to the node inspector —
-  [`panels/GraphContext.tsx`](../../frontend/src/panels/GraphContext.tsx) and
-  [`panels/useGraph.ts`](../../frontend/src/panels/useGraph.ts).
-- Node CRUD and canvas-gesture handlers extracted from `FlowEditor`: add
-  (drag-drop from the palette), delete, duplicate, create-instance, rename,
-  and ELK auto-layout —
-  [`hooks/useNodeHandlers.ts`](../../frontend/src/hooks/useNodeHandlers.ts)
-  and
-  [`hooks/useEdgeHandlers.ts`](../../frontend/src/hooks/useEdgeHandlers.ts)
-  (connect, edge-join insertion, selection, click-to-preview, context menu,
-  drag-and-drop).
-- Loading and saving a pipeline over the network, and the debounced,
-  cache-first, cascade-propagating preview fetch that paints the canvas
-  preview pane —
-  [`hooks/usePipelineAPI.ts`](../../frontend/src/hooks/usePipelineAPI.ts).
-- The live code-to-canvas sync channel: reconciling `.py` file edits made
-  outside the browser into the in-memory graph over the `/ws/sync` WebSocket
-  —
-  [`hooks/useWebSocketSync.ts`](../../frontend/src/hooks/useWebSocketSync.ts).
-- Submodel drill-in/drill-out navigation from the canvas side — the view
-  stack, port-node synthesis from cross-boundary edges, and the
-  create/dissolve API calls —
-  [`hooks/useSubmodelNavigation.ts`](../../frontend/src/hooks/useSubmodelNavigation.ts)
-  and its
-  [`components/SubmodelDialog.tsx`](../../frontend/src/components/SubmodelDialog.tsx)
-  name-entry modal.
-- The node-rename modal, including its validation of length and unsafe
-  characters —
-  [`components/RenameDialog.tsx`](../../frontend/src/components/RenameDialog.tsx).
-- The read-only, side-by-side (or stacked) version comparison canvas pair
-  and the diff highlighting it draws, plus the read-only config inspector a
-  clicked node opens in it —
-  [`components/ComparisonView.tsx`](../../frontend/src/components/ComparisonView.tsx)
-  and
-  [`components/ComparisonInspector.tsx`](../../frontend/src/components/ComparisonInspector.tsx).
-- Graph construction, normalisation, diffing, layout, and validation
-  utilities that back the above: the backend graph payload shape
-  (`utils/buildGraph.ts`), node-level diffing for the comparison view
-  (`utils/graphDiff.ts`), id/edge normalisation (`utils/graphHelpers.ts`),
-  the large-graph performance threshold (`utils/graphPerformance.ts`),
-  preview-data shaping (`utils/makePreviewData.ts`), column-schema
-  fingerprinting (`utils/columnFingerprint.ts`), active-preview resolution
-  (`utils/activePreview.ts`), broken-config-reference validation
-  (`utils/validateConfigRefs.ts`), ELK auto-layout
-  (`utils/layout.ts`), pipeline-wide connection validity
-  (`utils/connectionValidation.ts`), the node/edge factory and id helpers
-  (`utils/flowElements.ts`), default-target-handle normalisation
-  (`utils/flowHandles.ts`), and the node-type metadata table
-  (`utils/nodeTypes.ts`, including its `PolarsIcon` entry at
-  `components/PolarsIcon.tsx`).
+- Node and handle rendering across zoom, status, trace, comparison, and
+  submodel-boundary states.
+- Top-level canvas interactions: selection, node/edge creation and mutation,
+  edge-join insertion, context/keyboard gestures, rename, layout, and
+  save/commit gating.
+- The single graph state/history/dirty contract and its read-only bridge to
+  inspectors.
+- Pipeline load/save, cache-aware previews, external code-to-canvas sync, and
+  submodel navigation from the browser side.
+- Read-only historical comparison and its inert configuration inspector.
+- Graph payload construction, normalisation, diffing, layout, connection
+  validation, and canonical node-type metadata used by those behaviors.
 
 Out of scope (owned by neighbouring components, linked where they exist):
 - Individual node configuration editors and the node inspector panel body —
-  `frontend-node-editors`. (`ComparisonInspector` reuses those same editors
+  [frontend-node-editors](../frontend-node-editors/high-level.md). (The comparison inspector reuses those same editors
   read-only; it does not reimplement them.)
-- Toolbar, node palette, and other editor chrome components rendered by
-  `App.tsx` but not part of the canvas itself. (`SubmodelDialog` and
-  `RenameDialog` are the two canvas-gesture modals that *are* in scope,
-  above.)
+- Toolbar, node palette, and other general editor chrome. Canvas-gesture
+  rename and submodel dialogs remain in scope.
 - Version-control UI and the async operations that populate VC history
-  entries — [git-integration](../git-integration/high-level.md).
-  `usePipelineAPI`'s `handleSave` reads/writes `useGitStore` (last-save SHA,
-  history-changed notification) but does not implement git operations
-  itself.
-- Trace overlay computation (`useTracing`) — the canvas only *renders* the
-  `_trace*` fields these hooks set on node data.
+  entries — [git-integration](../git-integration/high-level.md). The save path
+  consumes git state but does not implement git operations.
+- Trace overlay computation — the canvas only renders the resulting visual
+  state.
 - Background job polling.
-- Submodel domain logic on the backend — placeholder construction, port
-  classification from parsed AST, and the `/api/submodel/*` endpoints
-  themselves — [submodels](../submodels/high-level.md). This component owns
-  only the frontend side: navigating into/out of a submodel view and calling
-  those endpoints.
+- Backend submodel placeholder, port-classification, and endpoint behavior —
+  [submodels](../submodels/high-level.md). This component owns only browser
+  navigation and endpoint consumption.
 
 ## Behaviour
 
@@ -170,17 +111,12 @@ Out of scope (owned by neighbouring components, linked where they exist):
   drilled-into submodel view: an input port shows a source handle (data
   flows out of it into the submodel body); an output port shows a target
   handle.
-- **Graph state.** `useGraphStore` is the sole owner of `nodes`, `edges`,
-  `preamble`, and the `submodels` metadata (nested submodel graphs — store
-  state so a root-frame rename that migrates nested mappings is one
-  coherent, undoable transaction). All mutation goes through one of two
-  tiers: history-aware actions (`setNodes`, `setEdges`, `setNodesAndEdges`,
-  `setNodesAndEdgesAndSubmodels`, `setPreamble`) that push one undo snapshot
-  per call, or raw actions (`setNodesRaw`, `setEdgesRaw`, `setSubmodelsRaw`,
-  `setPreambleRaw`) that skip history — used for mid-drag position churn,
-  WebSocket sync, pipeline load, and the continuously edited imports
-  preamble. History snapshots carry `submodels` alongside nodes/edges/
-  preamble, and undo/redo restores all four together.
+- **Graph state.** One store owns nodes, edges, imports preamble, and nested
+  submodel metadata so a root-frame rename and its nested mapping changes are
+  one coherent transaction. User-meaningful changes push one complete snapshot;
+  transient drag motion, external sync, initial load, and continuous preamble
+  editing use a non-history path. Undo/redo restores all four persisted graph
+  fields together.
 - **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
   with optional `sourcePort`/`targetPort` fields used while a submodel placeholder occupies the
   visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain
@@ -188,7 +124,7 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - **Undo/redo** operates over a single stack that can hold either a graph
   snapshot or a version-control history entry, so a branch switch and a
   graph edit interleave and reverse in the order they actually happened.
-  Both undo and redo stacks retain at most `MAX_HISTORY` (100) entries.
+  Both undo and redo stacks retain at most 100 entries.
 - **Dirty state** is derived, not imperatively toggled: it's a fingerprint
   comparison over persisted nodes, edges, preamble, and submodels against the
   last-saved snapshot, recomputed on every persisted mutation. Undoing back
@@ -203,7 +139,9 @@ Out of scope (owned by neighbouring components, linked where they exist):
   version-control working-branch state before delegating to the save API.
 - **Node CRUD.** Deleting a node removes it and every edge touching it as
   one atomic undo step. Duplicating offsets the copy's position and is a
-  no-op for singleton node types (API-input, output). Creating an instance
+  no-op for singleton node types (Quote Input, Quote Response, and Source
+  Switch). The palette, duplicate, paste, and context-menu paths consume the
+  same singleton metadata, matching the backend save invariant. Creating an instance
   stamps `config.instanceOf` at the original's id and toasts confirmation.
   Auto-layout runs ELK asynchronously, guards against overlapping runs from
   repeated clicks, and re-fits the view once positions land.
@@ -263,17 +201,12 @@ Out of scope (owned by neighbouring components, linked where they exist):
   (bounded concurrency, diamond-shaped fan-in deduplicated so a shared
   child previews once), each terminating in a definite ok/error state even
   if the graph structure changes mid-flight.
-- **Column stash source identity.** Every node's `_columns`/
-  `_availableColumns`/`_schemaWarnings` stash is tagged with the active
-  source (`_columnsSource`) it was captured under. A dedicated effect runs
-  on mount and on every active-source change, stripping the stash from any
-  node whose `_columnsSource` disagrees with (or is missing relative to)
-  the now-active source; a stripped node returns to the same
-  never-previewed state a first load leaves it in, and the existing
-  lazy stale-upstream gap-fill in `refreshPreview` repopulates it on next
-  preview. `refreshPreview`'s upstream-staleness filter also checks
-  `_columnsSource` directly (not just presence of `_columns`), covering the
-  window before the invalidation effect's `setNodesRaw` has flushed.
+- **Column stash source identity.** Cached editor columns and schema warnings
+  carry the source under which they were captured. Initial mount and a source
+  change discard any stash from another or unknown source, returning that node
+  to its ordinary not-yet-previewed state; the next preview lazily refills the
+  required upstream columns. The preview path independently rechecks source
+  identity so it remains correct while the state update is still settling.
 - **Live code sync.** External edits to a pipeline's `.py` file arrive over
   WebSocket and replace the in-memory graph — but never while the user has
   unsaved local edits, where a banner asks them to reload or discard first.
@@ -326,11 +259,10 @@ Out of scope (owned by neighbouring components, linked where they exist):
   gesture level. A raw path lets a 60fps drag update node positions without
   ballooning undo to one entry per pixel; a history-aware path snapshots
   once per user-meaningful action.
-- **`setNodesAndEdges` exists to close an "undo atomicity" bug class.**
-  Calling `setNodes` then `setEdges` separately for one gesture (delete,
-  paste, cut) pushes two snapshots, so a single delete would need two undos
-  to fully reverse. `setNodesAndEdges` captures one snapshot for the whole
-  gesture.
+- **Combined graph mutations close an undo-atomicity bug class.** Updating
+  nodes and edges as separate history actions for one delete, paste, or cut
+  would require two undos; one complete snapshot makes each gesture reverse
+  as one action.
 - **Dirty is fully derived**, replacing an earlier imperative
   `setDirty(true)` pattern that had a specific bug: undoing back to the
   saved state left `dirty=true` because the boolean and the saved reference
@@ -371,8 +303,8 @@ Out of scope (owned by neighbouring components, linked where they exist):
   alignment structural: it holds for one, two, or any number of frames
   because there are no longer two layouts to keep in sync, and no
   per-frame-count constants exist to go stale.
-- **One frame-label derivation, one identity.** `apiInputFrameLabels` is
-  the single ordered list of eligible frame labels (no minimum count); the
+- **One frame-label derivation, one identity.** One ordered list of eligible
+  frame labels (with no minimum count) drives the
   rendered handles, the body rows, downstream input chips, and the
   generated function parameters all read from it, so none of them can
   disagree. The earlier design split "visible names" from "multi-port
@@ -401,28 +333,25 @@ Out of scope (owned by neighbouring components, linked where they exist):
   the latest graph to prevent a stale hover result from authorising a
   rewrite. A conditional live-region status mirrors the visual highlight so
   the affordance is not pointer-only.
-- **`useGraph()` throws instead of defaulting to an empty graph** when no
-  provider is mounted, so a misconfigured mount surfaces immediately through
+- **Missing graph context throws instead of defaulting to an empty graph**, so
+  a misconfigured mount surfaces immediately through
   the enclosing `ErrorBoundary` instead of silently rendering editors against
   no data (which would hide broken references and stale column sets).
-- **Cache cleanup on delete is deferred by one task tick, not run inline.**
-  `handleDeleteNode` calls `clearNode(id)` via `setTimeout(..., 0)` rather
-  than synchronously — a synchronous clear can run before React commits the
-  node-removal render, letting some other subscriber read "node gone, cache
-  already wiped" in the same cycle and flicker-crash (Issue #32).
+- **Cache cleanup on delete is deferred by one task turn.** Synchronous
+  cleanup can run before React commits the node-removal render and expose a
+  torn node/cache view to another subscriber; deferral lets the graph commit
+  first.
 - **The preview cascade snapshots row limit, active source, and chunk size
   once at fetch time**, then closes over those values for every node it
   previews in that cascade — reading the live settings refs again partway
   through would let a user flipping the active data source mid-cascade split
-  one logical preview across two sources (Issues #33/#34).
-- **Downstream propagation is a bounded-concurrency BFS with per-node
-  dedup**, not a naive "preview every descendant": a diamond-shaped fan-in
+  one logical preview across two sources.
+- **Downstream propagation is bounded and deduplicated**, not a naive
+  "preview every descendant": a diamond-shaped fan-in
   previews its shared child exactly once (waiting for every changed parent
-  first), and `DOWNSTREAM_PREVIEW_CONCURRENCY_LIMIT` caps how many preview
-  requests are in flight at once so a wide fan-out doesn't saturate the
-  backend.
-- **Save concurrency is guarded by a monotonic request id
-  (`saveRequestSeq`/`appliedSaveSeq`), not a boolean "save in flight" lock.**
+  first), and a fixed request bound prevents a wide fan-out from saturating
+  the backend.
+- **Save concurrency uses request ordering, not a boolean in-flight gate.**
   The user can start a second save (or keep editing) while the first is
   still in flight; only marking a save's *own* captured snapshot as saved,
   and only if no newer save has already landed, prevents a slow older
@@ -436,28 +365,23 @@ Out of scope (owned by neighbouring components, linked where they exist):
   preamble update thrown partway through) — the rollback attempt itself is
   best-effort (wrapped so a rollback failure doesn't mask the original
   error), but the common case restores a consistent prior state.
-- **`graphDiff` strips codegen-derived config keys (`contract`) before
+- **Version comparison strips codegen-derived contract metadata before
   comparing node content.** The I/O contract shifts whenever an *unrelated*
   node is added elsewhere in the graph; without stripping it, every node
   would read as "changed" whenever any other node's shape changed,
   defeating the point of the diff.
-- **`columnFingerprint` length-prefixes each field before joining** so a
-  column name or dtype that happens to contain the separator character
-  cannot collide with a different schema — correctness over a simpler but
-  collision-prone plain string join.
+- **Column-schema fingerprints encode field boundaries unambiguously**, so a
+  name or dtype containing a separator cannot collide with another schema.
 - **Column stashes are tagged with the source they were captured under,
-  not just left to go stale silently.** Before `_columnsSource` existed, a
-  node previewed under source A kept its `_columns` on the node data
-  indefinitely; switching to source B left editors reading source A's
-  columns as if they were current, because `_columns`'s mere *presence*
-  was the only signal `refreshPreview`'s stale-upstream check looked at.
+  not just left to go stale silently.** Without source identity, switching
+  from source A to B could leave editors reading A's columns as current.
   Tagging the stash with its capture source and invalidating on mismatch
   closes the same class of "cached result silently outlives the source it
   was computed for" bug that motivated widening `useNodeResultsStore`'s
   solve/train staleness key (see
   [frontend-shared](../frontend-shared/high-level.md)) — stripping the
   stash and re-triggering the existing lazy gap-fill was preferred over
-  keying the cache by `(nodeId, source)`, since editors already tolerate
+  keeping a per-node/per-source cache, since editors already tolerate
   "columns not loaded yet" as a normal transient state.
 
 ## Interactions
@@ -474,22 +398,14 @@ Out of scope (owned by neighbouring components, linked where they exist):
   `useWebSocketSync` (`/ws/sync`); both hooks feed the store via
   `setNodesRaw`/`setEdgesRaw`/`setSubmodelsRaw`/`setPreamble`, and
   `usePipelineAPI` calls `markSaved()` on a successful save.
-- `frontend-shared` — `api/client.ts`'s typed HTTP/WebSocket functions
-  (`loadPipeline`, `savePipeline`, `previewNode`, `createSubmodel`,
-  `loadSubmodel`, `dissolveSubmodel`, session-bootstrap helper) are the
-  transport this component's hooks call directly; this component owns the
-  orchestration (debounce, cache, cascade, retry-gating, reconnect/backoff)
-  around those calls, not the transport itself.
-- [tracing](../tracing/high-level.md) — `useTracing` sets the `_traceActive`/
-  `_traceDimmed`/`_hoverDimmed`/`_traceValue`/`_traceMotionDisabled` fields
-  these node components render; the canvas itself does not compute trace
-  state.
-- [submodels](../submodels/high-level.md) — `useSubmodelNavigation` calls
-  that component's `/api/submodel/create`, `/api/submodel/{name}`, and
-  `/api/submodel/dissolve` endpoints and owns the frontend-side drill-in/
-  out navigation (view stack, port-node synthesis); the backend placeholder
-  construction and port classification those endpoints perform is owned by
-  `submodels`, not here.
+- [frontend-shared](../frontend-shared/high-level.md) owns typed HTTP/WebSocket
+  transport; this component owns canvas orchestration such as debounce, cache,
+  cascade, retry gating, and reconnect/backoff.
+- [tracing](../tracing/high-level.md) supplies active/dimmed/hover/value/motion
+  state that nodes render; the canvas does not compute trace lineage.
+- [submodels](../submodels/high-level.md) owns backend placeholder construction
+  and port classification; this component consumes its endpoints and owns the
+  browser's drill-in/out stack and port-marker presentation.
 - [git-integration](../git-integration/high-level.md) — version-control
   operations (branch switch, archive, delete) are recorded as
   `VcHistoryEntry` items on the same undo/redo stacks as graph snapshots via
@@ -533,12 +449,11 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - The canvas render tree is wrapped in `<ErrorBoundary name="Canvas">` in
   `App.tsx`, isolating a rendering crash there from the palette, toolbar,
   and side panels.
-- Edge-join input-swap failures (`handleSwapEdgeJoinInputs` in `App.tsx`)
-  surface as a named `error` toast rather than throwing — this is a
+- Edge-join input-swap failures surface as a named error toast rather than
+  throwing — this is a
   best-effort canvas convenience action, not a data-integrity operation.
 - Edge-join *insertion* failures (self-join, cycle, missing source/target
-  node, drop point not over an edge) are looked up in a static
-  `edgeJoinFailureMessages` map and surfaced as a named `error` toast; no
+  node, drop point not over an edge) are surfaced as a named error toast; no
   partial node/edge mutation is applied. Candidate calculation uses those
   same compatibility reasons but does not toast while the pointer merely
   moves: invalid edges remain visually and programmatically unmarked. The
@@ -546,25 +461,22 @@ Out of scope (owned by neighbouring components, linked where they exist):
   was actually targeted. Every connection-end path clears the active
   candidate before it can return or throw, and pointer exit clears the
   feedback without ending the underlying connection gesture.
-- `useEdgeHandlers.onDrop`'s drag-carried config JSON is parsed
-  defensively: a malformed payload, or one that isn't a plain JSON object,
-  produces a named `error` toast and creates no node — it never falls back
-  to an empty-config node (Issue #35).
-- The initial pipeline load throws inside `parsePipelineResponse` on any
-  drift from the expected backend contract; the `.catch` in
-  `usePipelineAPI`'s load effect turns that into a load-failure toast
+- A palette drop parses its drag-carried config defensively: a malformed
+  payload, or one that is not a plain JSON object, produces a named error
+  toast and creates no node; it never falls back to an empty config.
+- The initial pipeline load throws on any drift from the expected backend
+  contract; its load boundary turns that into a load-failure toast
   rather than letting a malformed response reach the graph as
   `undefined`-shaped nodes.
-- `usePipelineAPI.handleSave` never rejects — every failure path (API
-  error, missing detail) is caught and surfaced as an `error` toast, and the
-  function resolves `false` so callers that chain follow-on work (Save &
-  Commit) can `await` it safely.
+- Saving never rejects to the UI — every failure path is caught and surfaced
+  as an error toast, and the action reports failure so Save & Commit can stop
+  safely.
 - A preview request or its downstream cascade member that fails with an
   aborted/superseded error is treated as expected cancellation (no toast);
   any other failure shows a `warning` toast naming the failing node, and a
   client-side preview *timeout* additionally shows an `error` toast.
-- `useWebSocketSync` toasts on WebSocket construction errors, on
-  unparsable message JSON, and on any error raised while applying an
+- Live sync toasts on WebSocket construction errors, unparsable message JSON,
+  and any error raised while applying an
   incoming `graph_update`, including an omitted or invalid non-object
   `submodels` value (explicit `null` means an empty map); a failed apply
   attempts to roll nodes, edges, submodels, and preamble
@@ -572,18 +484,9 @@ Out of scope (owned by neighbouring components, linked where they exist):
   swallowed so it doesn't mask the original error in the toast). A session-expiry
   close code stops reconnect attempts and calls
   `notifyHauteSessionExpired` instead.
-- `useSubmodelNavigation`'s create/drill-in/dissolve calls each catch their
-  own failure and surface a named `error` toast; the graph is only mutated
-  inside the success branch (`if (newGraph)` / `if (smGraph)` /
-  `if (flat)`), so a failed call never leaves a partially-applied graph.
-- `ComparisonView` catches a failed historical-pipeline fetch and renders a
+- Submodel create, drill-in, and dissolve actions catch their own failures
+  and surface a named error toast; graph mutation occurs only after a
+  successful response, so a failed call never leaves a partial graph.
+- Version comparison catches a failed historical-pipeline fetch and renders a
   dedicated error state (message plus a "Back to editor" button) in place
   of the canvases, rather than crashing the comparison view.
-
-> NOTE: `useGraphCanvasState`'s seeding effect (`hooks/useGraphCanvasState.ts`,
-> out of scope for this spec but load-bearing for it) resets the store's
-> `undoStack`/`redoStack`/fingerprints on first mount using whatever
-> `initialNodes`/`initialEdges` the caller passed — in production `App.tsx`
-> always calls it with `[]`/`[]` and the real graph arrives later via
-> `setNodesRaw`/`setEdgesRaw` from `usePipelineAPI`, so this reset is
-> effectively a one-time clear, not a load path.

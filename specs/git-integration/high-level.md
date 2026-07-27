@@ -259,10 +259,11 @@ caches are reconstructable by definition; and no routine read starts a network o
 Deliberate remote operations abort on a required refresh/inspection failure and never
 degrade to an assumed-empty, assumed-related, or successfully-updated remote.
 
-> NOTE: The content-addressed caches (`_merge_base_cached`, `_is_ancestor_cached`,
-> `_first_parent_spine_cached`, `_commit_parents_cached`, `_graph_log_cached`,
-> `_tree_of_cached`) are `functools.lru_cache` module-level globals, not per-request or
-> per-repo-instance state. Multiple repos (or worktrees) served by one long-lived process
-> are disambiguated by including `str(cwd)` in the cache key; `_clear_content_caches()`
-> exists for test isolation and repo-reset hygiene. Mutable ref-name lookups, including
-> default-branch discovery, are deliberately uncached.
+**Process-wide content-cache scope.** The content-addressed caches
+(`_merge_base_cached`, `_is_ancestor_cached`, `_first_parent_spine_cached`,
+`_commit_parents_cached`, `_graph_log_cached`, `_tree_of_cached`) are
+`functools.lru_cache` module-level globals rather than per-request or
+per-repository state. Including `str(cwd)` in each key disambiguates repositories and
+worktrees served by one process; `_clear_content_caches()` supports test isolation and
+repository-reset hygiene. Mutable ref-name lookups, including default-branch discovery, remain
+deliberately uncached.

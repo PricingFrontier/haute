@@ -14,6 +14,7 @@ behaviour. Current behaviour is specified in
 |---|---|---|---|
 | `ASSIST-01` | Reverify | P1 | Make resumed sessions reconstruct the complete authoring conversation without consuming live capacity for rejected resumes. |
 | `ASSIST-02` | Decision | P2 | Turn the early-preview prompt, provider, model, and recovery controls into a deliberate analyst workflow. |
+| `ASSIST-03` | Queued | P2 | Reject malformed or unknown assistant configuration before provider startup. |
 
 ## Planned improvements
 
@@ -88,3 +89,31 @@ working-branch mutation precondition.
 `frontend/src/panels/assistant/Composer.tsx`,
 `tests/test_assistant_config.py`, `tests/test_assistant_providers.py`, and
 `tests/test_assistant_loop.py`.
+
+### ASSIST-03 — Closed assistant configuration
+
+**Why:** The assistant currently ignores unknown `[assistant]` keys and accepts
+an OpenAI `base_url` as an arbitrary string, so a typo can survive readiness
+checks and fail later as a less actionable provider error.
+
+**Plan:**
+
+- Define the complete accepted key set and reject unknown keys with their
+  configuration path.
+- Validate provider-specific fields, including URL syntax and supported
+  schemes, before constructing a provider client.
+- Keep credentials out of exception details and retain the explicit
+  no-provider/no-fallback contract.
+
+**Acceptance:**
+
+- Unknown keys, malformed URLs, unsupported schemes, and wrong value types
+  fail with stable configuration errors before provider startup.
+- Valid OpenAI, Anthropic, and no-provider fixtures preserve current readiness
+  and secret-handling behaviour.
+
+**Dependencies:** `ASSIST-02` may later change where provider choice lives, but
+does not block closing the current configuration schema.
+
+**Evidence:** `src/haute/assistant/_config.py`,
+`tests/test_assistant_config.py`, and `tests/test_assistant_routes.py`.

@@ -21,7 +21,8 @@
   `result_value`, `input_values: dict[str, Any]`, and conditional-branch metadata
   (`taken_branch`, `taken_branch_index`, `dimmed_branches: list[int]`,
   `nested_branches: list[str]`).
-- **`PipelineGraph`** (`src/haute/_types.py`, owned outside this component but produced by it) — `nodes`,
+- **`PipelineGraph`** (`src/haute/_types.py`, owned by
+  [server-api](../server-api/low-level.md) and produced here) — `nodes`,
   `edges`, `pipeline_name`, `pipeline_description`, `preamble`, `preserved_blocks`, `source_file`,
   `warning`, `submodels`. Canonical structure shared with the executor, codegen, deploy, and the
   server API layer.
@@ -76,11 +77,6 @@ place — and populate `preserved_blocks` on the result, mirroring the healthy p
 extraction → recover and merge every authored submodel via `_recover_submodels`, collecting
 unrecoverable/missing references into one `ParseError` rather than skipping individual calls →
 run the same structure-conservation gate as the healthy path.
-
-> NOTE: prior to this fix, `fallback_parse` built its `PipelineParseResult` without
-> `preserved_blocks` at all, so any file that hit the regex-fallback path (e.g. a save while the
-> file had a transient syntax error) silently dropped every `# haute:preserve` block on the next
-> codegen round.
 
 **`merge_submodels`** (`_parser_submodels.py`): always builds the hierarchical form first — one
 `submodel__<name>` placeholder node per child graph (via `build_submodel_placeholder`), with
@@ -260,7 +256,9 @@ appended before the column that depends on it) → return the parsed expressions
 
 ## Testing
 
-- `tests/test_safety.py` covers expression safety and rejection of unsafe constructs.
+- `tests/test_safety.py` — discovers committed pipeline fixture files, parses
+  each one, and asserts every resulting graph contains at least one Output
+  node.
 
 Tests live under `tests/`, split by concern:
 

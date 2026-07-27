@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/server.py` | App factory (`app = FastAPI(...)`), lifespan (bytecode clear, logging config, env load, marked optimiser-artifact reaping, pipeline-index priming, watcher task lifecycle), middleware registration, router inclusion, `/api/session` health/bootstrap routes, bounded request-ID selection, the API/WS 404 guard, the `/ws/sync` WebSocket endpoint, the debounced file watcher, and credential-free static SPA serving. |
-| `src/haute/_local_security.py` | Per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
+| `src/haute/_local_security.py` | [sandbox-security](../sandbox-security/low-level.md)-owned per-process local-session token, trusted-Origin/Host parsing (including bracketed IPv6), `LocalSessionMiddleware`, `LocalTrustedHostMiddleware`, and the HTTP/WebSocket token-validation contract. |
 | `src/haute/schemas.py` | Shared Pydantic request/response models used across the app — re-exports the canonical graph types from `_types.py` and defines per-feature model groups (pipeline save/preview/trace/output write and destination, Explore, files/schema, Databricks, JSON cache, utility, submodel, modelling, MLflow, optimiser, git, I/O capabilities and execution diagnostics). The OUTPUT dry-run models are the deliberate route-local exception. |
 | `src/haute/errors.py` | The `HauteError` hierarchy, including execution, bounded-memory, schema/contract, deployment, and feature errors. Route-visible public subclasses carry stable `error_code` and `public_fields` metadata consumed by `_contract_errors.py`. |
 | `src/haute/_logging.py` | `configure_logging()` (structlog + stdlib bridge, dev-console vs. JSON-lines modes) and `get_logger()`. |
@@ -441,12 +441,12 @@ entirely and leave every touched file in whatever state it happened to be in."
 
 ## Testing
 
-- `tests/test_contract_error_adapter.py` covers contract-error adaptation.
-- `tests/test_error_detail_sanitization.py` covers error-detail sanitization.
-- `tests/test_error_response_shape.py` covers error-response shape.
-- `tests/test_pipeline_index_cache.py` covers pipeline-index caching.
-- `tests/test_pipeline_read_json_route.py` covers pipeline JSON read routes.
-- `tests/test_serialization_invariants.py` covers serialization invariants.
+- `tests/test_contract_error_adapter.py` verifies sync/background contract-error payload parity and rejects unversioned errors.
+- `tests/test_error_detail_sanitization.py` verifies safe public error details, logging, domain-error exposure, route-specific sanitization, and sensitive-information leak prevention.
+- `tests/test_error_response_shape.py` verifies standard error envelopes, flat syntax details, sanitized internal errors, and prohibition of dict route details.
+- `tests/test_pipeline_index_cache.py` verifies startup population, cache hits, watcher rebuilds, no manual invalidation, and race-free concurrent reads.
+- `tests/test_pipeline_read_json_route.py` verifies object JSON reads plus missing/non-JSON/invalid/non-object/traversal rejection.
+- `tests/test_serialization_invariants.py` verifies non-finite values serialize as sentinels in schema-preview and preview responses.
 
 Tests live under `tests/`, one file per module or per feature slice, using FastAPI's
 `TestClient` against a temporary project directory (a `haute.toml` + pipeline `.py` fixture)

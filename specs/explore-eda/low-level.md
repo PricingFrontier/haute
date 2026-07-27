@@ -6,10 +6,10 @@
 | --- | --- |
 | `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin `run`/`status`/`cancel` endpoints. Wires `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before delegating to a module-level `ExploreService` singleton. |
 | `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
-| `src/haute/_cache.py` | Dataframe execution-cache invariant used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
-| `src/haute/_polars_utils.py` | I/O-layer-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
+| `src/haute/_cache.py` | Dataframe execution-cache invariant owned by [caching](../caching/low-level.md) and used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
+| `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
-| `src/haute/schemas.py` | Shared Explore API/report contracts: column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
+| `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
 
 ## Key types and data structures
 
@@ -78,8 +78,8 @@
 
 ### `_prepare_spec` (`ExploreService._prepare_spec`)
 
-1. `find_typed_node(graph, body.node_id, NodeType.EXPLORE, "explore")` — raises 400 if the node
-   is missing or not Explore-typed.
+1. `find_typed_node(graph, body.node_id, NodeType.EXPLORE, "explore")` — raises 404 if the node
+   is missing and 400 if it exists but is not Explore-typed.
 2. Reads `graph.parents_of[node.id]`; raises `HTTPException(400)` unless there is exactly one
    parent.
 3. `execution_facade.dataframe_graph_input_fingerprint(...)` computes an input fingerprint over

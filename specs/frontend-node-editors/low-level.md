@@ -30,8 +30,9 @@
 | `frontend/src/panels/editors/rating/index.ts`, `frontend/src/panels/editors/rating/ratingTableUtils.ts`, `frontend/src/panels/editors/rating/cellStyles.ts` | Rating barrel, normalisation/levels/statistics/colours and cell styles. |
 | `frontend/src/panels/editors/rating/OneWayEditor.tsx`, `frontend/src/panels/editors/rating/TwoWayGrid.tsx`, `frontend/src/panels/editors/rating/ControlledNumberCell.tsx`, `frontend/src/panels/editors/rating/StatsFooter.tsx` | One-/two-way editing, commit-on-blur number input and table statistics. |
 | `frontend/src/panels/editors/shared/tableClipboard.ts` | Clipboard parsing/writing and TSV/CSV download helpers shared by editable grids. |
-| `frontend/src/utils/configField.ts`, `frontend/src/utils/banding.ts` | Modelling-owned typed config readers and Banding classification consumed by node editors. |
-| `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx` | Form barrel, committed text/area drafts, config checkboxes and accessible editor labels. |
+| `frontend/src/utils/buildGraph.ts` | Cross-component dependency owned by [frontend-graph-canvas](../frontend-graph-canvas/low-level.md); Data Output consumes the canonical graph payload and request-identity projection. |
+| `frontend/src/utils/configField.ts`, `frontend/src/utils/banding.ts` | Typed config readers and Banding classification owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by node editors. |
+| `frontend/src/components/form/index.ts`, `frontend/src/components/form/CommittedTextField.tsx`, `frontend/src/components/form/ConfigCheckbox.tsx`, `frontend/src/components/form/EditorLabel.tsx` | Form barrel, committed text/area drafts, config checkboxes, and accessible editor labels owned by [frontend-shared](../frontend-shared/low-level.md). |
 
 ## Key types and data structures
 
@@ -103,6 +104,38 @@
    `on`/`leftOn`/`rightOn`; selecting another mode exposes either same-name rows (`on`) or paired
    rows (`leftOn`/`rightOn`) and each key-mode switch clears the inactive representation. The
    join type list is exactly `inner`, `left`, `right`, `full`, `semi`, `anti`, `cross`.
+
+**Data I/O editors.** `DataInputEditor` is the provider/group orchestrator;
+`DataOutputEditor` receives node/graph context and owns explicit writes. The
+guarded `/api/io-capabilities` client returns ordered groups, fields,
+directional formats/modes/arguments/engines, direct batching, snapshot
+boundedness, writer class, and publication modes; each mount refreshes it and
+only concurrent pending requests coalesce. `_IoFormatEditor` renders one
+selected group/direction, while dedicated provider sections cover file,
+database, lakehouse, Databricks, and inline fields. `OnReplaceConfig` constructs
+and commits one fresh active branch for a provider change.
+
+`DataInputEditor` mounts its Polars editor below provider/cache controls and
+uses `useSchemaFetch` only when the selected capability requires a bounded
+schema, merging detected dtypes into `arguments.schema` without discarding
+other arguments. `DataOutputEditor` has no code panel. Its per-node Zustand
+entry carries request id, semantic request identity, phase, and structured
+result/error; request-id checks reject late results. Destination preview comes
+from `/api/pipeline/output-destination`, and write identity is projected from
+the semantic flattened graph, output node, execution source, and streaming
+settings. A 409 becomes `confirm_overwrite`; only that action retries with
+`overwrite=true`.
+
+**Banding/Rating classification and canonical formats.** `utils/banding.ts`
+classifies only plain objects with recognised continuous, categorical, or
+breakpoint modes. Recognised non-blank outputs contribute ordered valid levels
+or a named zero-level issue; invalid containers and unknown modes invent
+nothing. `RatingStepEditor` uses the complete configured-output set so a broken
+configured factor cannot be repopulated from stale raw/saved levels. Rating
+reads/writes only `combinedOutputs` and canonical entry rows; Output builds
+only complete `outputMapping` rows; API Input builds only `tables`.
+`NODE_TYPE_META` supplies those canonical defaults, and Optimiser Apply derives
+mode only from persisted `params.mode`.
 
 ## Edge cases and invariants
 
@@ -215,120 +248,19 @@ Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
 `frontend/e2e/persistence/api-input-frame-alignment.spec.ts` (downstream frame-naming chips
 alongside its canvas geometry assertions).
 
-## Data I/O editor implementation
+The Data I/O component matrix covers guarded capabilities, ordered provider
+groups and fields, dependency/direct/snapshot states, atomic provider changes
+and undo, schema merge/preservation, output direction and code-panel
+exclusion, destination mismatch, pending-write remounts, structured outcomes,
+and overwrite confirmation. `frontend/e2e/data-io-nodes.spec.ts` exercises the
+canonical nodes through save/reload, snapshot/offline execution, and write.
+`frontend/e2e/persistence/api-input-v2-native.spec.ts` remains a canonical API-frame schema-continuity
+suite; it does not test or preserve v1 migration behavior.
 
-Remaining node-editor improvement work is tracked in the
-[frontend canvas roadmap](../roadmap/frontend-canvas.md).
-
-- `DataSourceEditor.tsx` and `SinkEditor.tsx` have no registry, palette, guard, fixture, or
-  compatibility path. `DataInputEditor.tsx` is the provider/group orchestrator;
-  `DataOutputEditor.tsx` receives `nodeId`/graph context and owns the explicit write action.
-- The format-only payload helper is replaced by a guarded
-  `/api/io-capabilities` client. Types represent ordered groups, provider fields, per-direction
-  formats/modes/arguments/engines, direct-batching, snapshot-build boundedness, native
-  sink/eager-writer class, and publication modes. Rendering derives every option from that
-  payload. Each editor mount fetches current capabilities; only simultaneously pending requests
-  are coalesced. `_IoFormatEditor.tsx` remains a shared registry-backed body but accepts one selected
-  group and direction rather than flattening all formats.
-- Focused provider sections cover file path browsing, database connection/query, lakehouse
-  locator/options, Databricks selectors, and inline records. One shared source-snapshot
-  component uses the guarded input-cache API. Databricks reuses that component and retains
-  `_DatabricksSelector.tsx` only for browsing.
-- `OnReplaceConfig(nextConfig)` is the atomic editor callback alongside field updates. Input-type
-  changes construct a fresh valid branch with only safe common presentation fields retained;
-  they commit once and therefore produce one undo item. Capability/group/format inconsistency is
-  rendered as an error, not repaired in an effect.
-- `DataInputEditor` mounts `CodeEditor` directly beneath provider/cache controls.
-  `DataOutputEditor` never mounts it. The output Write action sends the unsaved current graph,
-  node id, active execution source, and streaming settings through the existing explicit sink
-  request, and surfaces cancellation/admission/publication diagnostics.
-- The one-to-one JSON/UI invariant remains: every key valid for the active branch has an editable
-  or visible read-only representation; an invalid/inactive key is shown as a configuration
-  error. The old generic “unrecognised keys, saved anyway” behaviour does not legitimise keys
-  from another input branch.
-- `DataInputEditor` calls `useSchemaFetch` with the configured file path only when
-  `format.input.needs_schema_when_bounded` is true. It imports `SchemaPreview`, renders the
-  hook's loading/error states, and merges
-  `Object.fromEntries(schema.columns.map(({name, dtype}) => ...))` into the current arguments on
-  confirmation.
-- `useSchemaFetch` recognises `ApiError` and stores `detail ?? message`. `ApiInputEditor`
-  consumes and renders its `error` return.
-- A small Zustand output-write store owns entries keyed by node id. Each entry carries request
-  id, full request identity, phase (`writing | success | error | confirm_overwrite`), and
-  structured result or message. Terminal actions update only the matching request id.
-- `DataOutputEditor` asks `/api/pipeline/output-destination` for the display destination and
-  extension mismatch; it does not reimplement backend path or default-extension rules. Stale
-  destination responses cannot replace a newer request's state.
-- `frontend/src/utils/buildGraph.ts` projects the write identity from the semantic flattened
-  graph, output node, active source, and streaming chunk size. Runtime preview/status/trace fields
-  are excluded from the identity but remain in the graph sent to the API. Overwrite confirmation
-  remains visible and actionable only while the semantic request is unchanged.
-- A node-level write remains mutually exclusive across config edits. While an older identity is
-  still writing, the editor continues to show that pending state instead of presenting a disabled
-  button with no explanation. Obsolete terminal entries are cleared when the editor observes a
-  different request identity, and terminal state is removed when its editor unmounts so a deleted
-  and recreated node id cannot inherit an earlier overwrite grant.
-- The editor starts the API promise after recording store state; the promise updates the store
-  even if the component unmounts. It sends `overwrite=false`, handles
-  `ApiError.status === 409` as `confirm_overwrite`, and retries true only from the confirmation
-  action.
-- `WriteOutputArgs` adds `overwrite?: boolean` and serialises an explicit boolean. Tests reset the
-  write store between cases and exercise unmount/remount while a deferred request is unresolved.
-
-Unit/component suites cover API guard rejection, ordered grouping, each field kind, dependency
-messages, direct/snapshot constraints, all cache states, type-switch atomicity/undo, Polars code
-round-trip, output direction filtering, write gating/status, no output code panel, schema
-merge/preservation, destination preview/mismatch, remount during a pending write, structured
-success/failure, and the overwrite-confirmation retry.
-`frontend/e2e/data-io-nodes.spec.ts` covers the hard-cutover graph with
-provider grouping, snapshot refresh, cached offline execution, multiple format legs, atomic file
-write, and removed-node absence. The separate API-input v1-to-v2 migration suite remains because
-it covers API-frame schema continuity, not the removed Data Source/Data Sink types.
-
-## Banding-to-Rating assurance
-
-The owned configuration-shape matrix is:
-
-| Shape | Fixture | Owner and tier |
-|---|---|---|
-| Continuous factor | Minimal literal factor with labelled rules | `src/__tests__/utils/banding.test.ts` — unit |
-| Categorical factor | Minimal literal value groups | `src/__tests__/utils/banding.test.ts` — unit |
-| Breakpoint factor | Minimal literal thresholds | `src/__tests__/utils/banding.test.ts` — unit |
-| Mixed three-factor output | Frozen, production-shaped Banding sidecar | `e2e/canvas-assurance.spec.ts` — browser |
-| Zero-level and malformed/partial factors | Explicit component literals, including blank drafts | `src/__tests__/editors/RatingStepEditor.test.tsx` — component |
-| Persisted three-factor Rating table | Deterministic generated project and sidecar | `e2e/canvas-assurance.spec.ts` — browser |
-
-- `utils/banding.ts` exposes a typed classification in addition to level extraction. A factor is
-  classifiable only when it is a plain object with a recognised continuous, categorical, or
-  breakpoint mode. Blank output names are drafts. For each recognised, non-blank output it
-  returns ordered valid levels and, when that list is empty, a named issue. Invalid containers and
-  unknown modes return no invented levels and do not throw.
-- `RatingStepEditor.tsx` uses the classification's complete configured-output set when deciding
-  whether raw preview/saved-table levels may fill a column. A zero-level configured output is not
-  repopulated from stale data: it is absent from selectors and named in a single `role="alert"`
-  warning. Healthy outputs from the same or other Banding nodes remain in the selectors.
-- `frontend/e2e/canvas-assurance.spec.ts` uses a generated, project-isolated pipeline with three
-  visibly named factor modes and deterministic two-level outputs. Rebuild produces exactly eight
-  Cartesian entries. The test edits one relativity through its accessible label, saves with the
-  keyboard, reloads, and verifies both the UI value and persisted sidecar.
-- Browser snapshots are element-scoped and animation-disabled for the mixed Banding editor and
-  rebuilt Rating table. They run in Chromium at 1440×900 and the supported narrow viewport
-  1024×768; the snapshot name encodes state and viewport. Below 1024 CSS px is outside this
-  assurance contract. Semantic locators, focus assertions, Enter/Space activation, and the save
-  shortcut form the accessibility boundary; this package makes no whole-page WCAG claim.
-
-## Canonical editor formats
-
-- `RatingStepEditor.tsx` removes `isLegacy`, reads only `combinedOutputs`, and sends only that key.
-- `OutputEditor.tsx` and `outputMappingSchema.ts` remove v1 classification/conversion and the
-  migration banner; the editor state is built only from canonical `outputMapping`, whose rows
-  carry required `source_port`, `source_column`, `output_path`, and `enabled` fields without
-  omitted-field defaults.
-- `ApiInputEditor.tsx` and `apiInputSchema.ts` remove pre-v2 key classification and conversion;
-  the editor state is built only from canonical `tables`.
-- `NODE_TYPE_META` creates rating and output nodes with only those canonical editor fields; new
-  nodes never begin life in an obsolete working-copy shape.
-- Optimiser Apply derives an MLflow selection's optimiser mode only from its persisted
-  `params.mode`; run metrics are not an alternate metadata format.
-- Migration-specific fixtures/tests are deleted. Canonical editor interaction tests remain
-  unchanged in intent.
+Banding/Rating coverage assigns continuous, categorical, breakpoint,
+mixed-three-factor, zero-level/malformed, and persisted-table shapes to the
+unit/component/browser tiers. `frontend/e2e/canvas-assurance.spec.ts` rebuilds eight
+Cartesian entries from three two-level factors, edits a relativity, saves and
+reloads it, and captures element-scoped desktop and 1024×768 snapshots. Canonical
+Rating/Output/API Input interaction tests cover new/edit/save/reload shapes;
+there are no migration-specific fixtures.

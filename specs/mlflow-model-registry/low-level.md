@@ -10,7 +10,7 @@
 | `src/haute/_model_scorer.py` | MODEL_SCORE node logic: the `ModelScorer` class, the unified `score_frame` dispatch (eager vs batched), the feature-validation cache, offset-column resolution, write-projection application, and `score_from_config` (codegen's delegation target). |
 | `src/haute/_model_explainability.py` | Per-prediction SHAP (CatBoost) and native GLM contribution (RustyStats) explanations for trace enrichment, plus `explain_model_score_from_config`, the config-driven entry point trace enrichment calls. |
 | `src/haute/routes/mlflow.py` | FastAPI router (`/api/mlflow/*`) exposing read-only experiment/run/model/version discovery for the MODEL_SCORE node's config UI. |
-| `src/haute/schemas.py` | Shared Pydantic contracts returned by the MLflow discovery routes (`MlflowExperimentSummary`, run/model/version summaries). |
+| `src/haute/schemas.py` | Shared Pydantic contracts owned by [server-api](../server-api/low-level.md) and returned by the MLflow discovery routes (`MlflowExperimentSummary`, run/model/version summaries). |
 
 ## Key types and data structures
 
@@ -408,9 +408,9 @@ plain `RuntimeError`, not a `HauteError` subclass.
 
 ## Testing
 
-- `tests/test_offset_scoring.py` covers offset scoring.
-- `tests/test_scoring_path_unified.py` covers unified scoring paths.
-- `tests/test_scoring_prep_perf.py` covers scoring-preparation performance.
+- `tests/test_offset_scoring.py` verifies offset-aware GLM/CatBoost/pyfunc/canvas/deploy scoring, feature-name handling, metrics, and signature contracts.
+- `tests/test_scoring_path_unified.py` verifies explicit flavor dispatch, unified scoring regression guards, structural invariants, wrapper dispatch, and eager/batch equivalence.
+- `tests/test_scoring_prep_perf.py` verifies prediction-frame preparation correctness, pyfunc named-frame dispatch, downstream passthrough, edge cases, and benchmark behavior.
 
 Tests live across fourteen primary files. Strategy is unit-level with `mlflow`,
 `catboost`, and `rustystats` either mocked or exercised against small

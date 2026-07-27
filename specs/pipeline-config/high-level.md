@@ -20,16 +20,15 @@ root directory and pipeline entry file, including scaffolding a new one via `hau
 **In scope:** the `Pipeline`/`Submodel`/`NodeRegistry` decorator API and its standalone
 `run()`/`score()` executor; per-node-type config dict construction and its cross-check against
 a user-declared `contract=`; the sidecar JSON path conventions, read/write helpers, and the
-write-time key allowlist; the `VALID_KEYS` registry that decides which config keys are
-recognised per node type; converting parsed source into `GraphNode`/`GraphEdge` models
+write-time key allowlist; the per-node-type recognised config contract; converting parsed source into the graph models
 (explicit `connect()` edges and implicit parameter-name-matching edges — never invented
 ones); the topology-only shape contracts (currently: Explore node in/out-degree); Haute
 project-root and pipeline-file discovery; and `haute init` project scaffolding.
 
 **Out of scope:** actual node execution semantics — running a transform, scoring a model,
 applying a banding table — belong to [execution-engine](../execution-engine/high-level.md),
-even though this component owns the shared registry (`NODE_REGISTRY`) that both config
-validation and execution dispatch through. Round-tripping a graph back into `.py` + sidecar
+even though configuration validation and execution dispatch consume one shared
+node-type registry. Round-tripping a graph back into `.py` + sidecar
 files is [codegen](../codegen/high-level.md)'s job. The AST walk that turns raw `.py` source
 into the function/decorator data this component consumes happens upstream, in
 [expression-parsing](../expression-parsing/high-level.md). The FastAPI routes that expose
@@ -92,17 +91,18 @@ outgoing edge is used; anything more ambiguous than that raises, naming every ca
 deploy input (`@pipeline.api_input`, or `api_input=True`) — or, when nothing is marked and
 there is exactly one source, into that source — leaving every other source to run its own
 load logic. Seeding is port-aware, with a complete seed-shape × port-count matrix: a **bare
-DataFrame** is accepted for zero connected ports (a source-only pipeline, where the seeded
-source is itself the output) and for exactly one distinct connected port (routed to that
-port), and raises for two or more. A **`{frame_label: DataFrame}` dict** is accepted only
+DataFrame** is accepted for zero named connected ports (a source-only pipeline, or an
+unnamed/`None` edge that consumes the source's whole output) and for exactly one distinct
+named port (routed to that port), and raises for two or more. An unnamed edge does not invent
+a dictionary key. A **`{frame_label: DataFrame}` dict** is accepted only
 when the seeded source has one or more connected ports and the dict's keys match the
 distinct connected ports *exactly* — a missing key, an unknown extra key, a dict against a
 zero-port source (there are no ports for `{}` or anything else to match; source-only
 pipelines take a bare frame), or a bare frame against a multi-port source all raise
 `ExecutionError` naming the ports concerned. A frame is never silently fanned out to
 multiple ports. Both `run()` and `score()` resolve each edge's frame through the same
-port-aware selection the full executor uses (`_pick_source_frame` on
-`RegisteredEdge.source_port`), keeping the single-execution-engine invariant.
+port-aware selection the full executor uses, keeping the
+single-execution-engine invariant.
 `@pipeline.instance` registrations are not executable on this live-object surface: the
 decorator records an internal instance marker, and `run()`/`score()` raise `ExecutionError`
 before calling the node regardless of whether `instanceOf` or `inputMapping` is empty. Static
@@ -111,14 +111,14 @@ silently treat an unresolved instance as an ordinary Polars node.
 
 **Project & discovery.** A Haute project is a directory containing `haute.toml` that also
 sits inside a git repository. Every surface that binds one pipeline, including `run`, `lint`,
-and deploy execution, uses `resolve_pipeline_file()` and its four-tier chain: the
+and deploy execution, uses the same four-tier chain: the
 `[project].pipeline` path from `haute.toml`, then a root-level `main.py`, then a single
 unambiguous auto-discovered `.py` file, and finally a hard failure enumerating what was tried.
 Malformed TOML and a broken configured path fail before any lower tier is considered.
 
-> NOTE: `discover_pipelines()` is the GUI's plural listing API, so after applying the same
-> strict configured-path checks it also returns additional valid root-level pipelines. It does
-> not choose among them; default binding still goes through `resolve_pipeline_file()`.
+The GUI's plural listing path applies the same strict configured-path checks
+but also returns additional valid root-level pipelines. It lists rather than
+chooses among them; the single-pipeline binding policy remains authoritative.
 
 `haute init` scaffolds a new project: `haute.toml`,
 `.env.example`, CI workflow YAML for one of several CI providers, a runnable starter pipeline
@@ -140,6 +140,40 @@ block, whose actual approval check is configured on that environment in the Azur
 portal rather than in the generated YAML. Re-running `haute init --force` with a different
 `--ci` prunes the previously-chosen provider's workflow files before writing the new ones, so
 switching providers doesn't leave orphaned config behind.
+
+**Live callable arity and switching.** A live node derives its positional
+DataFrame-input arity once when it is registered and reuses that immutable
+result. Positional-only and positional-or-keyword parameters are inputs,
+defaulted positional parameters are optional, keyword-only parameters are
+configuration, and `*args` is the only supported variadic form. Unsupported
+signatures or wiring fail with the node and expected/received arity. A
+live-switch with no configured mapping may use its default source; once a
+mapping exists it is exhaustive, and a missing active scenario raises
+`LiveSwitchScenarioError` with stable code `live_switch_scenario_missing` and
+stable switch/scenario/available-mappings detail. HTTP execution maps that
+contract failure to 422 and background execution records the same fields.
+
+**Canonical tabular I/O nodes.** The 19-value node vocabulary includes
+non-singleton `dataInput` and `dataOutput` types exposed by both `Pipeline` and
+`Submodel`. Data Input is a zero-parameter source with the strict provider
+union and optional post-read Polars body; Data Output is a connected terminal
+pass-through with the strict destination union. Multiple Data Outputs do not
+create a primary writer: standalone return selection still requires one
+explicit `output` or one unambiguous terminal leaf, while explicit persistence
+names a particular Data Output. Their only sidecar folders are
+`config/data_input/` and `config/data_output/`, and validation enforces the
+active branch, format/group agreement, safe references, cache constraints, and
+the absence of output code.
+
+**Retained input sidecars are authoritative.** Generated `apiInput` and
+`externalFile` functions retain executable user code but do not embed a second
+copy of declarative paths, source types, schemas, file types, or model classes.
+At execution time shared helpers load the duplicate-key-rejecting sidecar,
+validate its active shape, resolve relative paths through the normal
+project/pipeline policy, and perform the same source/object load used by the
+executor. Editing a valid sidecar therefore changes the next parse and
+standalone execution without regenerating Python; a missing, malformed, or
+shape-incomplete sidecar fails before the data/object file is read.
 
 ## Design rationale
 
@@ -204,13 +238,13 @@ handling.
 ## Interactions
 
 - [execution-engine](../execution-engine/high-level.md): consumes the `NodeType`/config dicts
-  this component produces. The two components share `NODE_REGISTRY` — a per-node-type
-  registration of an executable builder plus a column-contract callback — but this component
-  owns the registration mechanics and the parse-time contract cross-check, while
+  this component produces. The two components share one per-node-type
+  execution/column-contract registry, but this component owns registration
+  and the parse-time contract cross-check, while
   execution-engine owns what each builder actually computes at runtime.
 - [codegen](../codegen/high-level.md): round-trips the `GraphNode`/`GraphEdge` graph this
-  component builds back into `.py` source and sidecar JSON, and is the other consumer of
-  `NODE_REGISTRY`.
+  component builds back into `.py` source and sidecar JSON, and consumes the
+  same registry.
 - [expression-parsing](../expression-parsing/high-level.md): performs the AST walk over the
   raw `.py` pipeline file (splitting out function bodies, decorator keyword arguments,
   docstrings) that this component's graph-builder consumes as input.
@@ -229,73 +263,9 @@ function name becomes the graph node id, so a silent collision would drop a node
 with the contract derived from the rest of the node's config raises, naming which side
 (inputs/outputs) mismatched and what was missing or extra on each. Ambiguous or absent
 pipeline-file resolution raises, enumerating every candidate it considered. Not being inside
-a Haute project (no `haute.toml`, or no git repository above it) raises. The sole silent path
-is unrecognised config keys, which are logged at WARNING and dropped or ignored rather than
-failing the surrounding operation — called out above as the deliberate exception to this
-component's fail-loud default.
-
-### Live node arity and switch behaviour
-
-- A configured live-switch mapping is exhaustive for the active scenario set. When a mapping
-  exists and the active scenario is absent, execution raises
-  `LiveSwitchScenarioError(ExecutionError)` with stable code
-  `live_switch_scenario_missing` and stable `switch`, `scenario`, and
-  `available_mappings` fields. Synchronous API execution maps it to HTTP 422; background
-  execution records `contract_error` with the same code and fields. Default-source fallback
-  remains valid only when no mapping is configured.
-- A node derives positional DataFrame-input arity once at registration/construction and reuses
-  that immutable result. Positional-only and positional-or-keyword parameters are supported;
-  defaulted positional parameters are optional; keyword-only parameters are configuration, not
-  edges; and `*args` is the sole supported variadic-input form. Unsupported signatures and
-  invalid wiring fail loudly with node identity and expected/received arity.
-
-Focused tests cover configured versus unconfigured live-switch fallback, missing-scenario
-diagnostics and transport mappings, fixed/optional/variadic arities, cached signature
-inspection, and malformed wiring. The 0.6 pre-1.0 release/migration notes must identify the
-formerly silent configured-mapping fallback and the new stable error code and fields.
-Non-goals: implicit-edge changes, static source-graph inference changes, and changes to
-successful mapped live-switch selection or unconfigured fallback.
-
-### Canonical data I/O node types
-
-- `Pipeline` and `Submodel` expose `data_input` and `data_output` for tabular I/O; the canonical
-  node-type set contains 19 values and permits multiple input or output nodes.
-- `dataInput` is a zero-parameter source with the strict provider union and optional Polars body
-  defined by the I/O spec. `dataOutput` is a connected terminal pass-through with the strict
-  destination union.
-- Multiple Data Outputs do not change standalone return selection: `Pipeline.run()`/`score()`
-  still return the single explicit `output` node, otherwise the single terminal leaf, and raise
-  on ambiguous leaves. Explicit persistence always names one `dataOutput` id, so graph
-  cardinality is not resolved by guessing a “primary” writer.
-- Only `config/data_input/<name>.json` and `config/data_output/<name>.json` are valid tabular-I/O
-  sidecars.
-- Config validation enforces active-branch keys, group/format agreement, safe connection
-  references, cache-mode constraints, and the absence of `code` on outputs. Unknown
-  decorators/configs fail through the ordinary unknown-node/config error surface.
-- The node registry, decorator map, config-folder map, valid-key map, standalone pipeline API,
-  scaffold, assistant-facing graph schema, and parse/build round trip use the same canonical
-  types.
-
-### Retained input sidecar authority
-
-Retained input configuration implements [IO-IO02](../roadmap/io-layer.md)
-by making each sidecar the sole declarative runtime source.
-
-`apiInput` and `externalFile` keep their existing sidecar folders, and that
-sidecar is the sole declarative runtime source for generated pipelines.
-Generated function bodies do not embed a second copy of path, source type,
-schema, external file type, or model class. Editing a valid sidecar after code
-generation therefore changes both parsing/editor state and the next standalone
-execution without regenerating Python.
-
-Shared config-driven helpers load duplicate-key-rejecting sidecars, validate
-the active shape, and resolve relative paths with the same project/pipeline
-candidate policy used by the executor, with the generated module directory as
-the pipeline candidate. They then perform the same source/object load used by
-the executor. Missing, malformed, or shape-incomplete sidecars fail before
-reading the data/object file. User code remains in the Python function body
-and runs after the object or input frame has been resolved.
-
-Acceptance saves and reloads each retained node, edits only its sidecar, runs
-the already-generated module, and proves that executor and generated results
-or diagnostics agree.
+a Haute project (no `haute.toml`, or no git repository above it) raises. Unrecognised config
+keys are logged at WARNING and dropped or ignored rather than failing the surrounding
+operation. Two other deliberate continue paths are explicit: an unresolved
+`optimiserApply.ratebook_input` id logs a warning and preserves the original id, while
+plural discovery skips a candidate whose contents cannot be read. Neither path is described
+as the component's only non-raising case.

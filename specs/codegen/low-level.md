@@ -287,7 +287,7 @@ file tree on disk.
 
 ## Testing
 
-- `tests/test_codegen_input_identity.py` covers generated-code input identity and source-port contracts.
+- `tests/test_codegen_input_identity.py` — graph-to-source tests pin edge-derived input names as generated Python parameters and persisted `connect` metadata.
 
 Tests live under `tests/`, organised roughly one file per concern rather
 than one file per module:

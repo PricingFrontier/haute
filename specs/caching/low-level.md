@@ -10,7 +10,7 @@
 | `src/haute/_dataframe_execution_cache.py` | Dataframe cache key, Parquet artifact LRU, materialization, validation, scan pins, and cleanup. |
 | `src/haute/_stat_gated_cache.py` | Bounded LRU, per-key single-flight cache gated by backing-file metadata. |
 | `src/haute/routes/json_cache.py` | JSON-cache infer/build/progress/status/delete HTTP surface. |
-| `src/haute/_source_cache.py` | IO-layer-owned source snapshot store consumed for canonical cache identity and immutable generations. |
+| `src/haute/_source_cache.py` | Cross-component dependency owned by [io-layer](../io-layer/low-level.md); IO-layer-owned source snapshot store consumed for canonical cache identity and immutable generations. |
 
 The shared `_source_cache.py` relationship is recorded in `specs/ownership.toml`; IO
 layer is primary and caching is a consumer.
@@ -31,6 +31,36 @@ layer is primary and caching is a consumer.
   `DataFrameExecutionCacheRequest` define artifact identity and validated metadata.
 - `DataFrameExecutionCache` extends `LRUCache` with materialization locks, store-window pins,
   scan refcounts, and artifact unlinking.
+
+### Checked cache-input inventory
+
+Every maintained consumer has one closed payload shape and version. Construction
+requires exactly the listed fields, preserves contract order, and rejects both
+missing and unknown names before hashing:
+
+| Consumer | Version | Complete field set |
+|---|---:|---|
+| `graph_structure` | 2 | `nodes`, `edges` |
+| `graph_execution` | 8 | `base_fingerprint`, `preamble_fingerprint`, `source_file`, `extra_keys` |
+| `preview_trace` | 3 | `preamble`, `source_file`, `nodes`, `edges`, `target_node_id`, `source`, `requested_columns`, `initial_column_limit`, `row_limit`, `port_label`, `contract_fingerprint`, `selected_live_switch_path`, `runtime_input_fingerprint`, `execution_semantics_version` |
+| `dataframe_execution` | 2 | `namespace`, `node_id`, `lineage_fingerprint`, `source`, `profile`, `input_fingerprint`, `required_columns`, `extra_keys`, `execution_policy` |
+| `runtime_graph_input` | 2 | `source`, `sources`, `json_cache_signature`, `preamble_fingerprint`, `extra` |
+| `deploy_schema` | 1 | `graph_fingerprint`, `runtime_input_fingerprint`, `artifact_fingerprint`, `output_node_id`, `input_node_ids`, `source`, `row_limit`, `execution_policy` |
+| `model_contract` | 1 | `feature_names`, `categorical_features`, `offset_column` |
+| `input_snapshot` | 1 | `schema_version`, `provider`, `descriptor` |
+
+The repeated records inside those payloads are separately closed and versioned:
+`graph_node` v1 is `id`, `label`, `nodeType`, `config`; `graph_edge` v1 is
+`source`, `sourceHandle`, `target`, `targetHandle`; `runtime_input_entry` v1
+is `node_id`, `node_type`, `config`, `files`; and
+`live_switch_selection` v1 is `switch_id`, `incoming_edges`.
+
+Each consumer also classifies all ten logical input classes — node config,
+upstream lineage, edge wiring, user code, source selection, row limit,
+runtime files, artifacts, request shape, and execution policy — as either
+consumed by named payload fields or deliberately excluded with a non-empty
+rationale. A payload field that is not assigned to a class, or an input class
+that is neither consumed nor explained, makes contract construction fail.
 
 ## Control flow
 
@@ -125,9 +155,45 @@ entry. `DataFrameExecutionCacheError` reports impossible identity/store-window s
 JSON-cache routes preserve structured schema/parse/path errors, return 504 on response
 timeout, and log unexpected errors before a generic 500.
 
+### Boundary failure ordering
+
+1. Checked input construction validates the consumer enum, mapping shape,
+   exact field set, nested-record shape, and logical-class completeness before
+   canonical JSON or hashing. A caller cannot produce a best-effort key with an
+   omitted or extra dimension.
+2. Stat-gated loading stats before lookup, joins the per-key single-flight gate,
+   rechecks after acquiring it, loads, and restats before insertion. A loader
+   failure caches nothing; one moving gate retries and a second raises. Eviction
+   and idle-gate cleanup happen only after a stable insertion.
+3. A dataframe ordinary hit validates the Parquet artifact before it creates a
+   scan pin; missing/corrupt artifacts are evicted and reported as misses.
+   Materialisation validates the new artifact, checks oversize before removing a
+   same-key entry, stores it under a store-window pin, and first-consumes that
+   exact object without a second corruption pass. Replacement/clear may detach
+   an artifact, but unlink waits for the final scan pin.
+4. JSON-cache routes perform path containment, then select/validate schema,
+   then check the data file, then start blocking shred work. Consequently
+   missing schema is 422 even when the data path is absent; file absence is
+   404 only after schema succeeds; response timeout is 504 without being
+   presented as cooperative cancellation.
+5. Input-snapshot identity is checked here before storage selection; pointer,
+   lease, integrity, staging, quota, refresh, and clear failure order remains
+   owned by [io-layer](../io-layer/low-level.md#boundary-failure-ordering).
+
+### Depth-review questions
+
+The operational review checks that this specification answers: What is the
+complete field set and schema version for every maintained consumer and nested
+record? How is every logical input class consumed or deliberately excluded?
+When are cache values admitted, pinned, detached, and unlinked? In what order do
+contract, stat/load, artifact, JSON-route, and source-snapshot failures surface?
+The checked-input inventory, control-flow narratives, invariants, and boundary
+ordering above are the answers and must be updated together when a consumer or
+cache lifecycle changes.
+
 ## Testing
 
-- `tests/test_runtime_input_cache_invalidation.py` covers cache invalidation when runtime inputs change.
+- `tests/test_runtime_input_cache_invalidation.py` — preview/trace cache keys invalidate on runtime file/artifact edits or disappearance, preserve stat-gate semantics, and share file signatures across preview/trace.
 
 - `tests/test_cache_identity_contract.py`, `tests/test_cache_fingerprint_injectivity.py`,
   `tests/test_caching_correctness.py`, `tests/test_cache_unification.py`,

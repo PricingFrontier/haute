@@ -231,7 +231,7 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 ## Testing
 
-- `tests/test_starter_pipeline_e2e.py` covers starter-pipeline CLI end-to-end behaviour.
+- `tests/test_starter_pipeline_e2e.py` — hermetic `haute init` scaffold parse-and-execute test proving a fresh starter pipeline produces output through parser and executor.
 
 Tests live under `tests/` as a flat set of `test_cli_*.py` files (plus `test_cli.py` and
 `test_cli_no_shadow.py`), using `click.testing.CliRunner` for end-to-end command invocation and

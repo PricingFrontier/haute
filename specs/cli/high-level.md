@@ -159,7 +159,8 @@ immediately with the original exception chained. Training execution and result r
 separate failure boundaries: once `job.run()` has returned successfully, a formatting problem is
 reported as a result-reporting failure and never as “Training failed”.
 
-> NOTE: `handle_deploy`'s dispatch to the target-specific backend catches bare `except Exception`
+> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
+> `handle_deploy`'s dispatch to the target-specific backend catches bare `except Exception`
 > after already catching `ImportError` and `NotImplementedError` separately — a sufficiently exotic
 > backend failure (e.g. a bug in the deploy backend itself) is reported identically to a legitimate
 > deploy-target error, which can make debugging backend bugs from the CLI output harder than

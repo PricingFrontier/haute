@@ -325,7 +325,8 @@ JSON have separate structured payloads. A body exactly at the configured limit i
   leases or retirement across OS processes, so a refresh from another process remains a
   known limitation rather than a guarantee made by deploy.
 
-> NOTE: `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
+> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
+> `_pruner.py::find_deploy_input_nodes` only returns `apiInput` nodes even though
 > `find_source_nodes` also recognises `dataInput` and `constant` node types as sources;
 > `resolve_config`'s fallback-to-single-source-node path is the only way a non-`apiInput`
 > source becomes a deploy input, and it only fires when there is exactly one such source.

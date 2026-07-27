@@ -7,8 +7,17 @@ and writing rules):
 - **high-level.md** — purpose, observable behaviour, design rationale, failure model.
 - **low-level.md** — module map, key types, control flow, edge cases, error handling, testing.
 
-Specs describe the code **as it currently is**. Suspected defects are flagged with `> NOTE:`
-callouts inside the specs rather than being specced away.
+Specs describe the code **as it currently is**. A `> NOTE:` callout is reserved for a
+current suspected defect and contains a direct, anchored link to the active package in the
+owning component roadmap. Resolved history is folded into present-tense behaviour or removed;
+design rationale, accepted trade-offs, and operational caveats use ordinary prose; unresolved
+questions become `Decision` roadmap packages. `tests/test_docs_accuracy.py` enforces this
+linkage for every component specification.
+
+This inline-link rule is the repository's live-defect inventory decision. A separate reviewed
+NOTE registry was rejected because it would duplicate callout text and could drift independently
+from both the specification and roadmap. The callouts that predated this rule were classified
+during the migration; that point-in-time working record is not retained as a second registry.
 
 Planned changes follow the repository's spec-first workflow. Before tests or production code
 change, the owning component spec may add an explicitly labelled
@@ -27,6 +36,41 @@ references, roadmap evidence, ownership claims, and temporary-contract retiremen
 violations are explicit one-line entries in `tests/docs_accuracy_baseline.txt`; a component deletes
 its line when reconciled, while any new line is a reviewed ratchet change rather than a silent
 fallback.
+
+## Corpus review protocol
+
+A broad semantic review records one coverage state for every file in the checked corpus:
+
+- `full` means the whole file was semantically read;
+- `partial` names exact inclusive, non-overlapping line ranges;
+- `mechanical` means only a search, parser, or other mechanical check was applied; and
+- `unread` makes the absence of review explicit.
+
+The checked inventory uses the current working tree as one snapshot: it reads the exact on-disk
+bytes, including staged and unstaged changes present there and untracked in-scope files, and
+fingerprints every sorted path and file body together. It never combines counts from `HEAD`, the
+index, and the working tree. Component high/low documents, root specification-governance
+documents, and roadmap documents are reported separately; Markdown line totals use those same
+fingerprinted bytes. Coverage totals are derived from per-file records, and only `full` counts as
+a fully read file.
+
+Run the current working-tree inventory with:
+
+```powershell
+uv run python scripts/spec_corpus_inventory.py --format json
+```
+
+When a semantic review makes coverage claims, pass `--coverage` with that
+review's complete TOML ledger. The inventory validates the ledger against the
+exact file set instead of relying on a permanently retained point-in-time
+review artifact.
+
+Documentation-accuracy tests remain a mechanical consistency gate. A green result proves the
+checked paths, links, headings, ownership annotations, and related syntactic contracts; it does
+not prove that prose is semantically complete or correct. Broad complexity conclusions likewise
+separate current implementation complexity, complexity required by the specified product/design,
+and corpus/editorial complexity, and inspect owning component roadmaps before calling work
+unowned.
 
 ## Approved change contract — prerelease canonical-only formats
 

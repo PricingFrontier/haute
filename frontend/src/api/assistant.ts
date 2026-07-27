@@ -25,27 +25,115 @@ export type AssistantStreamEvent =
   | { type: "failed"; message: string }
   | { type: "cancelled" }
 
-const ASSISTANT_EVENT_TYPES = new Set<AssistantStreamEvent["type"]>([
-  "text_delta",
-  "tool_started",
-  "tool_finished",
-  "graph_updated",
-  "completed",
-  "failed",
-  "cancelled",
-])
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function parseEvent(payload: string): AssistantStreamEvent {
-  const parsed: unknown = JSON.parse(payload)
-  const type = isRecord(parsed) && typeof parsed.type === "string" ? parsed.type : undefined
-  if (type === undefined || !ASSISTANT_EVENT_TYPES.has(type as AssistantStreamEvent["type"])) {
-    throw new Error(`Unknown assistant stream event type: ${String(type)}`)
+function invalidAssistantPayload(path: string, expected: string): never {
+  throw new Error(`Invalid assistant payload at ${path}: expected ${expected}`)
+}
+
+function requireRecord(value: unknown, path: string): Record<string, unknown> {
+  if (!isRecord(value)) invalidAssistantPayload(path, "an object")
+  return value
+}
+
+function requireString(value: unknown, path: string): string {
+  if (typeof value !== "string") invalidAssistantPayload(path, "a string")
+  return value
+}
+
+function requireBoolean(value: unknown, path: string): boolean {
+  if (typeof value !== "boolean") invalidAssistantPayload(path, "a boolean")
+  return value
+}
+
+function requireNumber(value: unknown, path: string): number {
+  if (typeof value !== "number") invalidAssistantPayload(path, "a number")
+  return value
+}
+
+function requireNullableString(value: unknown, path: string): string | null {
+  if (value !== null && typeof value !== "string") invalidAssistantPayload(path, "a string or null")
+  return value
+}
+
+function parseAssistantStatus(value: unknown): AssistantStatus {
+  const payload = requireRecord(value, "status")
+  return {
+    configured: requireBoolean(payload.configured, "status.configured"),
+    reason: requireNullableString(payload.reason, "status.reason"),
+    provider: requireNullableString(payload.provider, "status.provider"),
+    model: requireNullableString(payload.model, "status.model"),
+    mutations_enabled: requireBoolean(payload.mutations_enabled, "status.mutations_enabled"),
+    mutations_reason: requireNullableString(payload.mutations_reason, "status.mutations_reason"),
   }
-  return parsed as AssistantStreamEvent
+}
+
+function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHistoryEntry {
+  const payload = requireRecord(value, path)
+  const kind = requireString(payload.kind, `${path}.kind`)
+  if (kind !== "user" && kind !== "assistant" && kind !== "tool") {
+    throw new Error(`Unknown assistant history entry kind: ${kind}`)
+  }
+  return {
+    kind,
+    text: requireString(payload.text, `${path}.text`),
+    name: requireString(payload.name, `${path}.name`),
+    summary: requireString(payload.summary, `${path}.summary`),
+    is_error: requireBoolean(payload.is_error, `${path}.is_error`),
+  }
+}
+
+function parseAssistantSession(value: unknown): AssistantSessionResult {
+  const payload = requireRecord(value, "session")
+  if (!Array.isArray(payload.history)) invalidAssistantPayload("session.history", "an array")
+  return {
+    sessionId: requireString(payload.session_id, "session.session_id"),
+    history: payload.history.map((entry, index) => parseAssistantHistoryEntry(entry, `session.history[${index}]`)),
+  }
+}
+
+function parseEvent(payload: string): AssistantStreamEvent {
+  const parsed = requireRecord(JSON.parse(payload), "stream event")
+  const type = requireString(parsed.type, "stream event.type")
+  switch (type) {
+    case "text_delta":
+      return { type, text: requireString(parsed.text, "stream event.text") }
+    case "tool_started":
+      return {
+        type,
+        id: requireString(parsed.id, "stream event.id"),
+        name: requireString(parsed.name, "stream event.name"),
+        summary: requireString(parsed.summary, "stream event.summary"),
+      }
+    case "tool_finished":
+      return {
+        type,
+        id: requireString(parsed.id, "stream event.id"),
+        name: requireString(parsed.name, "stream event.name"),
+        is_error: requireBoolean(parsed.is_error, "stream event.is_error"),
+        summary: requireString(parsed.summary, "stream event.summary"),
+      }
+    case "graph_updated":
+      return { type, fingerprint: requireString(parsed.fingerprint, "stream event.fingerprint") }
+    case "completed": {
+      const usage = requireRecord(parsed.usage, "stream event.usage")
+      return {
+        type,
+        usage: {
+          input_tokens: requireNumber(usage.input_tokens, "stream event.usage.input_tokens"),
+          output_tokens: requireNumber(usage.output_tokens, "stream event.usage.output_tokens"),
+        },
+      }
+    }
+    case "failed":
+      return { type, message: requireString(parsed.message, "stream event.message") }
+    case "cancelled":
+      return { type }
+    default:
+      throw new Error(`Unknown assistant stream event type: ${type}`)
+  }
 }
 
 function parseFrame(frame: string): AssistantStreamEvent | null {
@@ -60,7 +148,7 @@ function parseFrame(frame: string): AssistantStreamEvent | null {
 }
 
 export function getAssistantStatus(): Promise<AssistantStatus> {
-  return request<AssistantStatus>("/api/assistant/status")
+  return request<unknown>("/api/assistant/status").then(parseAssistantStatus)
 }
 
 export interface AssistantHistoryEntry {
@@ -81,11 +169,11 @@ export function createAssistantSession(
   sessionId: string | null = null,
   signal?: AbortSignal,
 ): Promise<AssistantSessionResult> {
-  return post<{ session_id: string; history: AssistantHistoryEntry[] }>(
+  return post<unknown>(
     "/api/assistant/session",
     { pipeline, session_id: sessionId },
     { signal },
-  ).then(({ session_id, history }) => ({ sessionId: session_id, history }))
+  ).then(parseAssistantSession)
 }
 
 export interface StreamAssistantMessageOptions {

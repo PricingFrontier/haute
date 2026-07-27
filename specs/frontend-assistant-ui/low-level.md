@@ -8,10 +8,10 @@
 | `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), or turn marker (completed/failed/stopped/interrupted). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
 | `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel` and `currentSourceFile` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
 | `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, notice, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. |
-| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, and `streamAssistantMessage` — a fetch-based SSE stream reader built on the authenticated raw-stream helper `frontend/src/api/client.ts` exports for split modules (auth headers plus API-error mapping without the JSON parse), with local event parsing that throws on an unrecognised event type and cancels the reader before propagating any parser/callback/transport failure. |
-| `frontend/src/App.tsx` *(modified)* | New branch in the right-panel if/else cascade: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` (derived from its submodel-navigation view stack, which is hook-local state a module-scope store cannot read) into the panel as a prop. |
-| `frontend/src/stores/useUIStore.ts` *(modified)* | New `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`importsOpen` (each setter clears the others, matching the existing pattern). |
-| `frontend/src/components/Toolbar.tsx` *(modified)* | Assistant toggle button next to the existing utility/imports buttons, calling `setAssistantOpen`. |
+| `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, and `streamAssistantMessage`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
+| `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` (derived from its submodel-navigation view stack, which is hook-local state a module-scope store cannot read) into the panel as a prop. |
+| `frontend/src/stores/useUIStore.ts` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned UI state with an `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`importsOpen` (each setter clears the others, matching the existing pattern). |
+| `frontend/src/components/Toolbar.tsx` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned toolbar with an Assistant toggle button next to the existing utility/imports buttons, calling `setAssistantOpen`. |
 
 ## Key types and data structures
 
@@ -26,9 +26,15 @@
   `text_delta { text }` · `tool_started { id, name, summary }` ·
   `tool_finished { id, name, is_error, summary }` · `graph_updated { fingerprint }` ·
   `completed { usage: { input_tokens, output_tokens } }` · `failed { message }` ·
-  `cancelled {}`. The parser throws on any other `type` — contract drift surfaces, never
-  skips. It validates the discriminator only; event-specific fields are trusted through the
-  TypeScript cast rather than runtime-validated.
+  `cancelled {}`. The parser validates the object, discriminator, every required
+  primitive, and the nested usage object before returning the union member; an
+  unknown type or malformed known variant throws. Unrelated additive fields are
+  ignored.
+- **`AssistantHistoryEntry` and session envelope** are locally parsed from
+  `unknown`: the envelope requires string `session_id` and an array `history`;
+  each row requires `kind` in `user|assistant|tool`, string `text`, `name`, and
+  `summary`, and Boolean `is_error`. `AssistantStatus` applies the same boundary
+  to its Boolean and nullable-string fields.
 - **`TranscriptEntry`** (`stores/useAssistantStore.ts`) — union on `kind`:
   `{ kind: "user"; text }` · `{ kind: "assistant"; text; streaming: boolean }` ·
   `{ kind: "activity"; id; name; state: "running" | "ok" | "error"; summary }` ·
@@ -62,15 +68,17 @@ rendered as the loading state; never polled).
    acquisition: a second same-tick send cannot pass while session creation is pending.
 3. Ensure a session: `createAssistantSession(null, rememberedSessionId, signal)` on first
    send — the current client deliberately sends `pipeline: null`; the remembered id comes from `localStorage`
-   (`haute.assistant.session:<sourceFile>`); the response's `session_id` is stored to both
-   state and `localStorage`, and a non-empty `history` (the backend's transcript mapping
-   of a resumed session) hydrates `entries` before the new turn's entries append.
+   (`haute.assistant.session:<sourceFile>`); the response is requested as
+   `unknown` and parsed locally before its `session_id` is stored to state and
+   `localStorage`; a non-empty validated `history` (the backend's transcript
+   mapping of a resumed session) hydrates `entries` before the new turn's entries append.
 4. Append the user entry and open a streaming assistant entry.
 5. `streamAssistantMessage(sessionId, text, signal)` — POST via the exported authenticated
    raw-stream helper, then read the response body: chunks are buffered and split on the
    SSE frame delimiter (frames may span chunk boundaries; one chunk may carry several
-   frames), each frame's `data:` payload is `JSON.parse`d into a `AssistantStreamEvent`, and
-   each event is applied to the store: `text_delta` appends to the open assistant entry;
+   frames), each frame's `data:` payload is JSON-decoded and fully parsed into
+   an `AssistantStreamEvent` before the callback runs, and each accepted event
+   is applied to the store: `text_delta` appends to the open assistant entry;
    `tool_started`/`tool_finished` append/settle an activity row; `graph_updated` appends an
    activity row noting the canvas was updated (the canvas itself refreshes via `/ws/sync`,
    not here). A terminal event is retained locally and committed as the single marker only
@@ -107,9 +115,10 @@ settled transcript row.
   all applied in order. An empty keep-alive frame is ignored without error.
 - **Stream ends without a terminal event** (network drop, server crash): marker
   `interrupted` — never rendered as a completed turn.
-- **Unrecognised event type throws** in the parser → turn marked `interrupted` + error
-  toast. Contract drift is loud. The API reader is cancelled before the error propagates,
-  so the server sees a disconnect.
+- **Malformed known events and unrecognised event types throw** before the store
+  callback → turn marked `interrupted` + error toast. Contract drift is loud and
+  no rejected field can partially mutate the transcript. The API reader is
+  cancelled before the error propagates, so the server sees a disconnect.
 - **Event after a terminal event throws** from the store callback, cancels the reader, and
   replaces the provisional terminal outcome with one `interrupted` marker plus an error
   toast. It is never discarded.
@@ -144,7 +153,8 @@ settled transcript row.
 | Send-time `ApiError` 404 (stale session) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline "session expired (server restarted)" notice offering New chat; no silent re-create. |
 | Send-time `ApiError` 409 | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; the still-finishing inline notice; composer stays enabled; no auto-retry. The client does not distinguish a post-stop 409 from another 409. |
 | Terminal `failed` event | Marker `failed` with the backend-provided message inline + error toast (`useToastStore`). |
-| Parser throw / callback throw / transport drop mid-stream | Response reader cancelled, marker `interrupted` + error toast; composer re-enabled. |
+| Status/session parser throw | Descriptive ordinary `Error`; no typed value or partial history is returned, and the existing status/session failure path handles it. |
+| SSE parser throw / callback throw / transport drop mid-stream | Response reader cancelled, marker `interrupted` + error toast; composer re-enabled. Contract failures are ordinary `Error` values, not `ApiError`. |
 | Caller-initiated `AbortError` (stop) | Marker `stopped`; not an error, no toast. |
 | Render crash anywhere in the panel | Contained by `<ErrorBoundary name="AssistantPanel">`; canvas/toolbar/inspector unaffected. |
 
@@ -153,7 +163,13 @@ settled transcript row.
 Implemented Vitest coverage is split between `frontend/src/stores/__tests__/useAssistantStore.test.ts`, `frontend/src/api/__tests__/assistant.test.ts`, and `frontend/src/__tests__/App.assistantLazy.test.ts`. Component-level transcript/composer DOM interactions are not currently covered directly.
 
 - **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; source-change reset versus same-source session reuse; session persistence/hydration; 400/404/409 notices; abort-stop; and idle-only New chat.
-- **SSE API reader** (`frontend/src/api/__tests__/assistant.test.ts`): endpoint payloads and abort signal, chunk-split and multi-frame ordering, keep-alive handling, unknown-event failure, non-OK `ApiError` mapping, and a stream ending without a terminal event for the store to classify.
+- **Assistant API boundary** (`frontend/src/api/__tests__/assistant.test.ts`):
+  endpoint payloads and abort signal; valid and malformed status/session/history
+  shapes; chunk-split and multi-frame ordering; keep-alive handling; missing or
+  wrong fields for every known SSE variant; unknown-discriminator failure;
+  callback-not-invoked proof for rejected frames; non-OK `ApiError` mapping;
+  reader cancellation after parser/callback failure; and a stream ending without
+  a terminal event for the store to classify.
 - **Bundle boundary** (`frontend/src/__tests__/App.assistantLazy.test.ts`): `App.tsx` uses only `React.lazy(import())` for the panel and neither it nor non-assistant production modules import the markdown renderer.
 
 The following matrix records the full regression contract; where the scenario is already unit-covered above, it remains a useful component/integration target:
@@ -162,7 +178,8 @@ The following matrix records the full regression contract; where the scenario is
   started→ok/error settlement; each terminal event's marker + `turnStatus` reset; `newChat`
   refused while streaming.
 - **SSE parsing**: frames split across chunk boundaries; multiple frames per chunk;
-  keep-alive frames ignored; unknown event type throws; stream end without terminal event →
+  keep-alive frames ignored; all required fields of every known variant are
+  validated; unknown event type throws; stream end without terminal event →
   `interrupted`.
 - **Send gates**: dirty canvas blocks with notice; unconfigured blocks and renders the
   backend reason; mutations-disabled blocks and renders `mutations_reason`; drilled into a

@@ -17,6 +17,7 @@ shared visual, keyboard, and accessibility evidence.
 | ROAD-UI-03 | Active | P1 | Make meaningful missing upstream choices visible. |
 | ROAD-UI-04 | Active | P2 | Add stable visual and keyboard/accessibility assurance. |
 | ROAD-UI-05 | Active | P2 | Keep UI CI risk-based and regressions cumulative. |
+| CANVAS-STATE-01 | Queued | P2 | Make graph seeding a deliberate load transition with truthful undo history. |
 
 ## Planned improvements
 
@@ -103,3 +104,24 @@ shared visual, keyboard, and accessibility evidence.
 **Dependencies:** ROAD-UI-01 matrix; existing CI/browser infrastructure.
 
 **Evidence:** `frontend/package.json`; `frontend/playwright.config.ts`; `frontend/e2e`; `.github/workflows`; `frontend/src/__tests__/App.integration.test.tsx`.
+
+### CANVAS-STATE-01 — Deliberate graph seeding lifecycle
+
+**Why:** `useGraphCanvasState` clears history only in its one-time seeding
+effect, while production mounts it with empty arrays and later loads through a
+different path. A load can therefore retain stale undo/redo state or bypass the
+documented seed transition.
+
+**Plan:** Define one graph-load action that installs nodes/edges, resets
+fingerprints and history atomically, and is used by both initial and subsequent
+pipeline loads.
+
+**Acceptance:** Component tests cover empty mount followed by load, pipeline
+switch, remount, undo, and redo; no history entry can refer to the previously
+loaded graph.
+
+**Dependencies:** `AUD-C17` owns remote message identity and ordering.
+
+**Evidence:** `frontend/src/hooks/useGraphCanvasState.ts`,
+`frontend/src/stores/useGraphStore.ts`, and
+`frontend/src/hooks/__tests__/useGraphCanvasState.test.ts`.

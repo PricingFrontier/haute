@@ -304,7 +304,8 @@ literal `quote_id` field.
 `HAUTE_SOLVER_TIMEOUT` is optional, but when present it must be a positive integer. A malformed,
 zero, or negative value fails loudly as a server configuration error; it never disables timeouts.
 
-> NOTE: `_load_apply_result_artifact`/`_load_ratebook_factors_artifact` always report a missing
+> NOTE: [Tracked by OPT-P02](../roadmap/optimiser.md#opt-p02--save-artifact-contract).
+> `_load_apply_result_artifact`/`_load_ratebook_factors_artifact` always report a missing
 > or corrupt artifact as a 500 ("Re-run the solve..."), even though a missing artifact caused by
 > user action (e.g. a stale handle after the job's TTL evicted it) is arguably a 400/404-shaped
 > problem rather than a server error. See [low-level.md](low-level.md#error-handling).

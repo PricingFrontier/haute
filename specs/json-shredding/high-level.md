@@ -40,7 +40,7 @@ Out of scope (owned elsewhere):
 - Graph-wide column projection planning (`projection.py`) and the executor's
   backward column-demand analysis belong to
   [execution-engine](../execution-engine/high-level.md). This component supplies
-  the shared edge-join demand-narrowing helper that planner consumes.
+  the shared edge-join demand-narrowing rule that planner consumes.
 - Submodel definition, boundary rewiring, and expansion into an executable graph —
   see [submodels](../submodels/high-level.md).
 - The HTTP routes that drive JSON-cache build/status/delete
@@ -99,10 +99,9 @@ identifier keys, and `[:]` for array traversal. Its explicit structural
 validator rejects same-port duplicate or prefix-comparable destinations and a
 single source frame mapped to divergent emit prefixes. The runtime assembler invokes
 that validator before frame collection, so dry-run, direct runtime, generated, and
-deployed execution share one acceptance boundary. Each distinct path is parsed once
-per validation, then sorted adjacent comparisons enforce prefix rules in
-`O(n log n)` time rather than reparsing an `O(n²)` pair matrix. Incomplete editor
-rows are inactive and ignored consistently.
+deployed execution share one acceptance boundary. Validation scales with the
+mapping set rather than repeatedly reparsing every pair of paths. Incomplete
+editor rows are inactive and ignored consistently.
 Assembly returns a top-level list of objects:
 sibling array branches are nested independently (never cross-multiplied),
 same-level frames use a deterministic cut plan and bag semantics, unmatched
@@ -115,9 +114,9 @@ non-key payloads remain valid. In shredding, an ancestor `$value` column does no
 turn a descendant object table into a scalar table — scalar classification requires
 the sentinel at the table's own array depth.
 
-The complete bounded output document is converted to Polars with
-`infer_schema_length=None`, preserving a nested field whose first non-null value
-occurs beyond the default inference window. Input inference and shredding use one
+The complete bounded output document uses full-document schema inference,
+preserving a nested field whose first non-null value occurs beyond a sampling
+window. Input inference and shredding use one
 JSON-scalar compatibility rule: genuine scalars can render deterministically into a
 declared string, while objects and arrays remain shape values and fail or count as
 shape mismatches. Inference rejects source keys outside the canonical ASCII
@@ -145,9 +144,9 @@ code resolved a shape mismatch (an array where an object was expected, mid-walk)
 by silently taking the first element and dropping the rest — a conservation
 violation that lost data with no trace. The shred now either resolves the shape
 cleanly or fails loud (a genuine structural mismatch, e.g. a dotted leaf crossing a
-non-empty array) or counts the loss (`ShredSkipStats`) so a build's summary can
-report exactly how many records/rows were dropped and why. `build_per_port_cache`
-additionally runs a conservation assertion at the root level — emitted-plus-skipped
+non-empty array) or counts the loss so a build's summary can report exactly how
+many records/rows were dropped and why. The cache build additionally runs a
+conservation assertion at the root level — emitted-plus-skipped
 must equal records-read — and raises `RuntimeError` if it doesn't, treating an
 unaccounted discrepancy as a shred bug, not something to serve silently.
 
@@ -174,36 +173,20 @@ publish. Both signed layers are verified before declaring a no-op, so invalid, s
 or concurrently changed working state cannot replace a healthy committed cache and
 damaged committed bytes are repaired from healthy working state.
 
-**Cache writes are fully staged and same-process builds are serialized per cache
-directory.** A build writes everything (parquets + `meta.json`) into a unique sibling
-temporary directory before publishing it. The publish helper renames the existing
-directory aside and then renames the completed staging directory into place; it
-retries transient Windows file-handle locks and attempts to restore the previous
-directory if the second rename raises. A process-local per-cache lock prevents two
-threads building the *same* cache from interleaving their write phases; builds of
-different caches remain independent. The same swap primitive is used both by the
-shred's own build and by promoting `working/` to `committed/` at save time. Table
-spec construction, source-signature calculation, validity checking, staging, and
-publish all occur inside that critical section. Locks are weakly retained after use
-but strongly referenced for the whole active section. Cache paths are rooted from
-the process working directory selected for the project; callers must not assume they
-are relative to the source file.
+**Cache writes are fully staged and same-process builds for one cache cannot
+interleave.** A build writes every parquet and its manifest into a unique sibling
+staging directory before replacing the live directory. Replacement attempts to
+restore the prior directory if publication fails. Builds for different cache
+directories remain independent, and the same staged-replacement behavior governs
+both a new shred and working-to-committed promotion. Cache paths are rooted from
+the process working directory selected for the project; callers must not assume
+they are relative to the source file. The reader-visibility limitation of this
+replacement is documented in the low-level specification.
 
 Within one logical raw-file load or cache-build operation, the source signature
 (size, mtime, and SHA-256) is computed once and shared by its consumers. A separate
 operation recomputes the signature, so same-size/same-mtime rewrites remain
 detectable.
-
-> NOTE: Replacing an existing directory is a two-rename swap, not one atomic
-> filesystem operation. Between `live -> backup` and `temp -> live`, a concurrent
-> reader can observe the live path as absent. The lock covers builders and promotion
-> in this process, but not readers or other processes. An abrupt process exit in that
-> window (or a failed restoration) can also leave only the uniquely named backup.
-> Tests cover same-process builder serialization, staged-write failure,
-> transient rename retry, synchronous restoration attempts, staged mirror tampering,
-> and already-returned LazyFrames surviving rebuild, mirror, and clear. A brand-new
-> concurrent reader can still observe the absent live path and reject that candidate;
-> cross-process publishers and interruption between the two renames are not covered.
 
 **Silent numeric/date coercion is rejected even though the underlying columnar
 library would allow it.** Polars will silently coerce a Python `bool` into a numeric
@@ -214,20 +197,18 @@ strict build and raises a specific, column-named error instead.
 
 ## Interactions
 
-- Owns the v2 apiInput type/path boundary in `_api_input_schema.py`; the shred,
-  cache route, executor, and editor consume that one validation contract.
-- The runtime entry point (`load_v2_api_source`) is called by both the eager
-  executor's source builder and the generated/deploy code path, so both paths share
-  identical cache-fast-path and direct-shred behaviour — see
+- Owns the v2 apiInput type/path boundary; the shred, cache route, executor,
+  and editor consume that one validation contract.
+- The eager executor and generated/deploy code consume the same runtime loader,
+  so both paths share identical cache-fast-path and direct-shred behaviour — see
   [execution-engine](../execution-engine/high-level.md) and
   [codegen](../codegen/high-level.md).
-- The execution engine's projection planner consumes `_edge_join.py`'s shared
-  demand-narrowing rule so static planning and runtime join construction agree —
+- The execution engine's projection planner consumes the same edge-join
+  demand-narrowing rule as runtime join construction —
   see [execution-engine](../execution-engine/high-level.md).
 - The JSON-cache build/status/delete HTTP routes owned by
-  [caching](../caching/high-level.md) drive the build and cache-lifecycle functions
-  in this component.
-- The shared path grammar (`_jsonpath.py`) is used by both the INPUT codec and
+  [caching](../caching/high-level.md) drive this component's build and cache lifecycle.
+- The shared path grammar is used by both the INPUT codec and
   this component's OUTPUT-mapping assembler, so both addressing directions stay
   single-sourced.
 - JSON-safe encoding is used wherever preview rows or route payloads carry pipeline

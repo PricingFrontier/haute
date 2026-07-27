@@ -27,8 +27,11 @@ Modelling and optimiser result presentation belongs to
   A failed autosave or flush preserves the dirty draft and blocks file switching until a later
   save succeeds. Shared preview chrome supports resizing, collapse and keyboard-accessible
   roving tabs.
-- Preview and Explore reports surface actionable execution-memory or rejected-strategy
-  diagnostics without replacing the primary data/status content.
+- Preview places actionable projection-boundary, rejected-strategy, or memory
+  pressure detail behind an accessible status icon beside the row/column
+  summary. Explore uses a compact diagnostics banner for actionable progress
+  or cache-report metrics. Missing/unsupported planner detail adds no invented
+  secondary state; primary data, error, and status content remains authoritative.
 
 ## Design rationale
 
@@ -54,11 +57,3 @@ cached report with a stale identity is not rendered, but an active node job is n
 identity change. Invalid optional overview configuration is discarded while parsing, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
 fabricated.
-
-## Execution diagnostics
-
-`DataPreview` places actionable boundary, rejected-strategy, and memory-pressure detail behind an
-accessible status icon beside the row/column summary. `ExplorePreview` renders actionable
-execution metrics from progress or the completed cache report as a compact banner with technical
-detail on demand. Missing or unsupported strategy payloads currently add no secondary diagnostic;
-the primary preview/Explore error and status remain visible and no result is invented.

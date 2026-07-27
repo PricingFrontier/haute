@@ -10,8 +10,8 @@
 | `src/haute/_builders.py` | Cross-component runtime registry owned by [execution-engine](../execution-engine/low-level.md). The optimiser component consumes its optimiser-apply online/ratebook closures; saved artifact validation and trace reconstruction must remain contract-compatible with those closures. |
 | `src/haute/_optimiser_io.py` | Loads a previously saved optimiser artifact for an optimiser-apply node — from a local JSON file (content-hash cached) or from MLflow (run-id/version cached). Analogous to `_mlflow_io.py` and `_io.py`. |
 | `src/haute/_optimiser_apply_explainability.py` | Builds a structured trace-detail payload for one clicked optimiser-apply output row, for both online and ratebook modes. Consumed by the tracing subsystem, not exposed as its own route. |
-| `src/haute/schemas.py` | Shared Pydantic contracts for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
-| `frontend/src/api/types.ts` | Canonical frontend optimiser response contracts, including `OptimiserSolveResult`; panels, stores, and tests import this type directly without panel-owned aliases. |
+| `src/haute/schemas.py` | Shared Pydantic contracts owned by [server-api](../server-api/low-level.md) for optimiser solve/estimate/status, auto-range, frontier, apply, save, and MLflow-log routes. |
+| `frontend/src/api/types.ts` | Canonical frontend optimiser response contracts owned by [frontend-shared](../frontend-shared/low-level.md), including `OptimiserSolveResult`; panels, stores, and tests import this type directly without panel-owned aliases. |
 
 ## Key types and data structures
 
@@ -207,7 +207,8 @@ transitions the job to `contract_error`; any `RuntimeError` is classified as an 
 error" and transitions to `error`; anything else is an "Unexpected error" → `error`. This
 classification is purely by exception type, not by origin.
 
-> NOTE: because the classification is type-based, a `ValueError` raised inside `price-contour`
+> NOTE: [Tracked by AUD-C10](../roadmap/optimiser.md#aud-c10--numerical-and-silent-failure-residuals).
+> Because the classification is type-based, a `ValueError` raised inside `price-contour`
 > for what is actually an internal algorithm defect (not a data problem) is still reported to
 > the user as a data/contract error. See
 > `OptimiserSolveService._launch_background` in `src/haute/routes/_optimiser_service.py`.
@@ -561,10 +562,9 @@ returned as a generic `status: "error"` payload.
   `_execute_pipeline`'s catch-all deliberately hides the real exception text from the client
   ("Pipeline execution failed. Check the server logs for details.") while `_build_grid`'s
   catch-all surfaces `f"Grid construction failed: {exc}"` directly. Both are plausibly
-  intentional (grid failures are more likely user-actionable data issues) but the asymmetry is
-  not documented as a deliberate choice in either function.
-  > NOTE: worth confirming with the team whether this split is intentional policy or an
-  > inconsistency to fix.
+  intentional (grid failures are more likely user-actionable data issues), but the policy has
+  not been chosen. [OPT-D01](../roadmap/optimiser.md#opt-d01--generic-setup-error-detail-policy)
+  owns that decision before either branch changes.
 - **`decision_score`/`is_baseline` tie-breaking is fully owned by `price-contour`.** The
   [`with_explainer_columns` contract](#withexplainercolumns-contract) requires it to match
   `apply(df)`'s tie-breaking exactly, including which `scenario_value` is treated as baseline
@@ -627,7 +627,7 @@ returned as a generic `status: "error"` payload.
 
 ## Testing
 
-- `tests/test_optimiser_contracts.py` covers optimiser contract invariants.
+- `tests/test_optimiser_contracts.py` verifies optimiser job-store isolation, streaming quote-contiguous projections, factor extraction, low-memory sink behavior, null/interleaved/range validation, and solve/apply totals.
 
 Tests live under `tests/` (unit/integration, `tests/performance/` for size/perf assertions), and
 share fixtures from `tests/optimiser_fixtures.py`. No dedicated property-based tests were found

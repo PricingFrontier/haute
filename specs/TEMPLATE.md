@@ -69,8 +69,11 @@ the key scenarios covered, and known coverage gaps.
 
 ## Writing rules
 
-- Describe the code **as it is**, not as it should be. If behaviour looks like a bug, describe
-  the behaviour and add a `> NOTE:` callout rather than speccing the intended-but-absent behaviour.
+- Describe the code **as it is**, not as it should be. If behaviour looks like a current bug,
+  describe the shipped behaviour and add a `> NOTE:` callout containing a direct, anchored link
+  to an active package in the owning component roadmap. Reserve that syntax for suspected live
+  defects: fold resolved history into present-tense prose, write rationale/trade-offs and
+  operational caveats as ordinary prose, and move unresolved questions to a `Decision` package.
 - For an approved spec-first change, add a final `## Approved change contract` section before
   implementation begins. State the current limitation, the approved target behaviour, explicit
   non-goals, failure and compatibility semantics, and executable acceptance evidence; link to the

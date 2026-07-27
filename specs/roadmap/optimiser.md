@@ -13,6 +13,7 @@ ratebooks, performance, interruptibility, and workflows remain reliable.
 | OPT-P04–OPT-P09 | Active | P1 | Make compute, retention, and jobs bounded and truthful. |
 | OPT-P10 | Active | P2 | Remove verified duplication and dead code. |
 | OPT-P11–OPT-P14 | Planned | P2 | Carve the solve-service god module behind preserved contracts. |
+| OPT-D01 | Decision | P2 | Choose one safe client-detail policy for generic setup failures. |
 
 ## Planned improvements
 
@@ -30,9 +31,13 @@ ratebooks, performance, interruptibility, and workflows remain reliable.
 ### OPT-P02 — Save artifact contract
 **Why:** Saved artifacts can be partial, non-finite, unversioned, or incompatible with apply.
 
-**Plan:** Define a versioned artifact schema and write it atomically after finite-value validation.
+**Plan:** Define a versioned artifact schema, write it atomically after
+finite-value validation, and distinguish an expired/missing handle from a
+corrupt server-owned artifact without exposing filesystem details.
 
-**Acceptance:** Tests cover interrupted write, non-finite values, version migration/rejection, and save-then-apply equivalence.
+**Acceptance:** Tests cover interrupted write, non-finite values, version
+migration/rejection, save-then-apply equivalence, typed stale-handle rejection,
+and sanitized corrupt-artifact failure.
 
 **Dependencies:** OPT-P01; ratebook contracts.
 
@@ -52,7 +57,10 @@ ratebooks, performance, interruptibility, and workflows remain reliable.
 ### AUD-C10 — Numerical and silent-failure residuals
 **Why:** Residual numerical failures can be masked, while duplicated orchestration obscures solver invariants.
 
-**Plan:** Close unowned numerical/silent-failure cases with explicit domain outcomes, then extract duplicated orchestration only behind preserved contracts.
+**Plan:** Close unowned numerical/silent-failure cases with explicit domain
+outcomes, replace origin-blind `ValueError`/`RuntimeError` classification with
+typed boundary errors, then extract duplicated orchestration only behind
+preserved contracts.
 
 **Acceptance:** Pathological numerical fixtures return typed terminal outcomes; refactoring preserves solve, frontier, save, and apply regressions.
 
@@ -136,6 +144,25 @@ ratebooks, performance, interruptibility, and workflows remain reliable.
 **Dependencies:** AUD-C10 and relevant P0/P1 packages.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`.
+
+### OPT-D01 — Generic setup error-detail policy
+
+**Why:** The pipeline setup catch-all hides exception text while grid
+construction's catch-all sends it to the client. Either distinction may be
+intentional, but it is not currently an explicit security or product policy.
+
+**Plan:** Decide which setup failures are user-actionable, define the sanitized
+detail vocabulary for all other failures, and record why the rejected policy
+would be less safe or less useful.
+
+**Acceptance:** A decision record classifies pipeline and grid failures before
+implementation; route tests then prove stable user-facing details and
+server-side diagnostic logging for both branches.
+
+**Dependencies:** Security owns information-disclosure policy.
+
+**Evidence:** `src/haute/routes/_optimiser_service.py`,
+`src/haute/routes/optimiser.py`, and `tests/test_optimiser_routes.py`.
 
 ### OPT-P11 — Extract owned artifact lifecycle
 **Why:** Persistence, handle validation, load diagnostics, orphan cleanup, and startup reaping are

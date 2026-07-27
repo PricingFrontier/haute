@@ -43,8 +43,10 @@ Out of scope (owned by neighbouring components):
 - All git mutation and guardrail logic (branch create/save/commit/fork/archive/delete,
   protected-branch enforcement, push/fetch, error taxonomy) — see
   [git-integration](../git-integration/high-level.md).
-- HTTP client plumbing, `ApiError`, and the request/response shapes themselves — see
-  [server-api](../server-api/high-level.md).
+- `frontend/src/api/client.ts` and `ApiError` are owned by
+  [frontend-shared](../frontend-shared/high-level.md). The Git request/response wire
+  contract is owned by [git-integration](../git-integration/high-level.md). Backend HTTP
+  routing and status behaviour are owned by [server-api](../server-api/high-level.md).
 - Shared chrome this component builds on but does not own: `PanelShell`, `ModalShell`,
   `Tooltip`, toast notifications — see
   [frontend-shared](../frontend-shared/high-level.md).
@@ -220,11 +222,13 @@ empty remote. The UI reads `default_branch`; it never hardcodes `main`.
 
 ## Interactions
 
-- Depends on [git-integration](../git-integration/high-level.md) for every git read and
-  mutation (`frontend/src/api/client.ts` git-prefixed functions), and on its response
-  shapes (`frontend/src/api/types.ts`, the `Git*` types).
-- Depends on [server-api](../server-api/high-level.md) for `ApiError` and the HTTP client
-  plumbing used to detect and parse 409 rejection bodies.
+- Depends on [git-integration](../git-integration/high-level.md) for every Git read and
+  mutation and for the Git request/response wire contract consumed by the git-prefixed
+  functions and `Git*` types.
+- Depends on [frontend-shared](../frontend-shared/high-level.md), which owns
+  `frontend/src/api/client.ts` and `ApiError`, for transport and 409 error delivery.
+- Depends on [server-api](../server-api/high-level.md) for backend HTTP routing and status
+  behaviour, not for ownership of the frontend transport.
 - Depends on shared chrome — see [frontend-shared](../frontend-shared/high-level.md):
   `PanelShell` (the sliding panel frame), `ModalShell` (modal frame/backdrop/focus),
   `Tooltip`, `ConfigCheckbox`, and the toast store (`useToastStore`).
@@ -281,6 +285,7 @@ are not the user's data, and **mutations**, which always surface an error.
 - Nothing in this component retries automatically; every recovery (catch-up, branch-away,
   retry a switch) is a distinct user-initiated action.
 
-> NOTE: `GitPanel.performSwitch` and `BranchManager.switchNow` remain separate mutation
-> entry points (rail lane menu vs. branch manager), but both use the same dirty-navigation
-> confirmation component, Save-first callback, and Git error formatter.
+**Shared switch policy, separate entry points.** `GitPanel.performSwitch` and
+`BranchManager.switchNow` remain separate mutations for the rail lane menu and branch manager,
+but both use the same dirty-navigation confirmation component, Save-first callback, and Git
+error formatter.

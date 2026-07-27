@@ -54,12 +54,10 @@ extra:
 extra_css:
   - stylesheets/extra.css
 
-# Internal engineering material that still lives under docs/ for repo
-# convenience but is not part of the public site: TRIP changelogs and CI/commit
-# reference notes. Component specs and engineering roadmaps live in root-level
-# specs/, outside the site source tree.
+# Internal engineering reference notes remain in the repository but are not
+# part of the public site. Component specs and engineering roadmaps live in
+# root-level specs/, outside the site source tree.
 exclude_docs: |
-  trip/
   CI_MIRROR.md
   COMMIT_STANDARDS.md
   PERFORMANCE_CHECKS.md

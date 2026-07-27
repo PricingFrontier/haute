@@ -5,7 +5,7 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in the routes package and is not re-exported here. |
-| `src/haute/assistant/_config.py` | Resolves assistant configuration: the `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML raises `ConfigError`, an absent table is a legitimate not-configured state), API keys from `os.getenv` (the server process must inherit them; `haute serve` does not load project `.env`), and an SDK-import probe. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). It follows the same fail-loud credential posture as Databricks I/O. |
+| `src/haute/assistant/_config.py` | Resolves assistant configuration: the `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML raises `ConfigError`, an absent table is a legitimate not-configured state), API keys from `os.getenv` after server lifespan startup has loaded the project `.env` without overriding inherited variables, and an SDK-import probe. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). It follows the same fail-loud credential posture as Databricks I/O. |
 | `src/haute/assistant/_catalog.py` | The node-type catalog the model reads: mechanical facts derived from `haute._types` (`NodeType`, `NODE_TYPE_TO_DECORATOR`), `haute._config_validation` (`VALID_KEYS`, config TypedDict shapes), `haute._config_io` (sidecar folders), and the save service (singleton policy), plus hand-authored per-type usage notes. `validate_catalog_complete()` runs at import time and raises if any canonical fact or node entry drifts; `render_catalog()` is the sole static prompt renderer. |
 | `src/haute/assistant/_assets.py` | Loader for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` materialises the complete example tree (source plus parser-relative sidecars), then reparses and renders the exemplar on demand through `routes/_helpers.parse_pipeline_to_graph` and the same formatter used by the get-pipeline tool. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured tool error listing the valid names. |
 | `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance injected into every system prompt. |
@@ -21,10 +21,10 @@
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its two adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API) and `OpenAIProvider` (`openai` SDK, Chat Completions streaming — the OpenAI-compatible protocol Databricks serving endpoints implement — honouring the configured base URL). SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields an in-flight tool from cancellation, enforces tool/time limits, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
-| `src/haute/schemas.py` | The assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
-| `src/haute/server.py` | Includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies graph-update fingerprint/wire-path helpers used by mutation publishing. |
-| `src/haute/routes/_save_pipeline.py` | Transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
-| `pyproject.toml` | Declares `anthropic>=0.40` and `openai>=1.55` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
+| `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
+| `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies graph-update fingerprint/wire-path helpers used by mutation publishing. |
+| `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
+| `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); declares `anthropic>=0.40` and `openai>=1.55` as core dependencies and omits `src/haute/assistant/assets/*` from import-coverage measurement because exemplar `.py` files are parsed package data, while ruff and parser tests still check them. |
 
 Environment knobs: `HAUTE_ASSISTANT_TURN_TIMEOUT` (seconds, default 300) and
 `HAUTE_ASSISTANT_MAX_TOOL_CALLS` (default 20) read lazily via `haute._env`, matching the
@@ -158,7 +158,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       boundary bypass), and an unknown id would be indistinguishable from a dissolved
       placeholder.
    2. **Reproduce the production execution callers' graph preparation** — the
-      `_explore_service._materialise_and_summarise` sequence, never a assistant-local
+      `_explore_service._materialise_and_summarise` sequence, never an assistant-local
       variant: `flat = flatten_graph(graph)` (submodels inlined, as every
       run/preview/optimise caller does first); `preamble_ns = _compile_preamble(
       graph.preamble or "", pipeline_dir=_pipeline_dir(graph))`; then
@@ -260,7 +260,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 - **The mutation is one critical section.** Parse→apply→save→re-parse→publish happens under
   the process-wide `save_lock`; a GUI save or submodel operation serialises entirely before
   or entirely after, never between the assistant's read and write. A GUI save landing *after*
-  a assistant save supersedes it — the same last-write-wins the product has for external
+  an assistant save supersedes it — the same last-write-wins the product has for external
   edits, mitigated by the frontend's clean-canvas gate and the sync banner. Base-revision
   conflict detection on ordinary saves is deliberately out of this feature's scope (noted
   as a candidate follow-up hardening).
@@ -420,9 +420,9 @@ fixture for route tests). The implemented coverage is:
   instruction → ops → real transactional save (files on disk assert codegen/sidecars) →
   `graph.update` published with the post-save fingerprint (asserted via a test subscriber)
   → a second turn reads its own edit back; a pipeline containing preserve markers survives
-  a assistant edit byte-identically outside the edited region; the mutation precondition
+  an assistant edit byte-identically outside the edited region; the mutation precondition
   (non-ready working-branch state → tool error carrying the git reason, nothing written);
-  `save_lock` exclusivity — a concurrent GUI-style save cannot interleave inside a assistant
+  `save_lock` exclusivity — a concurrent GUI-style save cannot interleave inside an assistant
   mutation's critical section; cancellation during a slow save leaves the lock held until
   the shielded save has landed and then releases it;
   a degraded ledger capture surfaces its warning in the tool result.

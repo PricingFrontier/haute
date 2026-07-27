@@ -52,6 +52,25 @@ backend API modules own validation and persistence.
   sharing the same pending request coalesce it. Provider changes replace the discriminated
   config in one undoable update, and output overwrite confirmation is tied to semantic graph
   and execution settings rather than preview/trace metadata.
+- Data Input groups providers as File, Database, Lakehouse, Databricks, and
+  Inline and derives every supported field, format, mode, dependency,
+  direct/snapshot choice, and cache control from the backend capability
+  contract. Its optional Polars editor transforms the direct or cached source.
+  Data Output presents only writable groups/modes, never Databricks or a Polars
+  editor, resolves the actual destination, and keeps per-node write,
+  collision-confirmation, and terminal state across panel remounts. Inactive
+  discriminated-branch keys are removed rather than preserved invisibly.
+- Rating consumes healthy configured Banding outputs across continuous,
+  categorical, and breakpoint shapes. Recognised non-blank outputs with zero
+  valid levels produce one accessible warning and cannot be silently refilled
+  from stale preview/table levels; healthy factors remain usable. Rebuilding
+  several factors constructs their full Cartesian table, and edited
+  relativities survive save/reload.
+- Rating, Output, and API Input expose only their current persisted shapes:
+  Rating uses `tables[].entries` plus `combinedOutputs`; Output uses
+  `outputMapping` rows with all four required fields including `enabled`; API
+  Input uses `tables`. Editors do not detect, upgrade, or mirror historical
+  working-copy formats.
 
 ## Design rationale
 
@@ -99,96 +118,3 @@ it never crashes the panel or aliases the API input's sole emitted table.
 An Edge Join with missing/ambiguous role edges, conflicting stored roles, an unknown join mode,
 or invalid key shape remains visibly invalid and blocks save; the editor never infers a role or
 silently substitutes join keys.
-
-## Data I/O editors
-
-The retained Data Input and Data Output behaviour follows
-[I/O behaviour](../io-layer/high-level.md).
-
-- The palette and editor registry expose one **Data Input** and one **Data Output** node type.
-  Data Source and Data Sink entries/editors are deleted with no legacy rendering path. Multiple
-  input/output instances remain allowed on a graph.
-- Data Input begins with an input-type menu: **File**, **Database**, **Lakehouse**,
-  **Databricks**, and **Inline**. Registry-backed sections show only their backend-declared
-  formats, modes, fields, arguments, dependencies, direct-batching capability, and snapshot
-  capability. Databricks keeps its dedicated warehouse/catalog/schema/table controls and shared
-  snapshot controls; it does not show a meaningless Polars format/mode selector.
-- The common snapshot panel shows direct/snapshot choice where both are valid and
-  Build/Refresh, progress, readiness, freshness, generation metadata, and Clear where snapshots
-  are supported. Mandatory-snapshot providers do not pretend direct mode is selectable.
-  Readiness and freshness have distinct labels, and `unknown` freshness is not styled as success.
-- The optional Polars editor appears after every Data Input provider section, with wording that
-  it transforms the opened direct source or cached snapshot. Chunk-incompatible code produces
-  the execution planner's actionable diagnostic; the editor never promises that arbitrary code
-  is chunk-local.
-- Switching input type is one undoable graph mutation which replaces the discriminated config
-  and removes inactive keys. There is no hidden reuse of a path, URI, query, table, records, or
-  arguments from another branch.
-- Data Output mirrors the input groups and format language but filters by write capability.
-  It shows destination, supported sink/write mode, arguments, dependency and boundedness
-  diagnostics, overwrite/append/replace/upsert options only when declared, and the explicit
-  **Write** button with progress/result status retained from Data Sink. It has no Polars editor.
-  Databricks is not displayed as an output group in 0.7.0.
-- A format with a missing optional engine remains visible with an actionable dependency warning;
-  a format with no capability for that direction is not presented as working. The UI never
-  hard-codes format membership or silently substitutes a default when capability loading fails.
-- A file Data Input whose backend capability requires a bounded schema shows schema-fetch
-  progress, a preview, and any safe route diagnostic inline. **Use detected schema** merges the
-  detected ordered dtype map into `arguments.schema` without discarding delimiter or other
-  arguments. A visible warning remains until a schema mapping is present.
-- API Input also renders the shared schema-fetch error instead of discarding it. Starting another
-  fetch clears the old error, so recovery is visible. Its retained JSON-family picker exposes
-  `.json`, `.jsonl`, and `.ndjson`; cancelling or closing the picker does not mutate config.
-- Data Output renders its resolved destination before writing and warns when an explicit file
-  extension disagrees with the selected capability. While an HTTP write is pending it renders an
-  indeterminate progress status and disables another write for that node.
-- Output write state is stored per node outside the editor component. Switching panels cannot
-  forget a pending request, enable a duplicate request, or lose the last success/failure.
-  Completion for an obsolete config identity is not presented as the current config's result.
-- A 409 collision renders an explicit **Replace existing file** action. Only that action retries
-  with `overwrite=true`; ordinary Write sends false. Success uses structured `row_count` and
-  `path`, and API failures prefer the safe server `detail` over a generic HTTP status string.
-
-Acceptance includes component tests for every group/config transition, capability-driven option
-sets, mandatory/optional/no-cache states, progress/freshness/error states, Polars-editor
-placement, inactive-key removal and undo, output Write gating/status, unavailable engines,
-schema merge/preservation, destination preview/mismatch, remount during a pending write,
-structured success/failure, and the overwrite-confirmation retry.
-Browser coverage creates, configures, saves, reloads, executes, snapshots, and writes the
-retained node types and asserts that no Data Source/Data Sink palette/editor affordance exists.
-
-## Banding-to-Rating assurance
-
-- One explicit matrix assigns continuous, categorical, breakpoint, mixed,
-  zero-level, malformed/partial, and persisted-table shapes to named fixtures, test owners, and
-  tiers. Rating discovery accepts all healthy configured Banding outputs, rebuilding three named
-  factors creates their complete Cartesian table, an edited relativity survives save/reload, and
-  malformed inputs never crash the panel. Once a recognised factor has a non-blank output name,
-  zero valid levels produce one accessible aggregated warning naming the affected outputs while
-  healthy choices remain usable.
-- No warning is shown merely because the graph has no Banding node, a
-  Banding node is still an unnamed draft, a factor output is blank, or every configured output is
-  healthy. A loaded factor with a recognised mode and non-blank output is configured even when
-  its rules are empty or malformed, so that state warns instead of silently reusing stale raw or
-  saved levels for that output.
-- The assurance does not alter Banding execution semantics,
-  relativity mathematics, table JSON shape, or existing raw/saved-level fallback for columns that
-  are not claimed by configured Banding factors. Existing one-factor and two-factor Rating tables
-  remain editable.
-- Unit/component tests pin every matrix row and warning boundary. The
-  deterministic browser journey proves three named factors, all Cartesian entries, a keyboard
-  rebuild/edit/save path, and the edited value after reload. Stable screenshots cover the mixed
-  Banding editor and rebuilt Rating state at desktop and the supported narrow viewport.
-
-## Canonical editor formats
-
-Rating renders and persists only canonical `tables[].entries` row arrays and
-`combinedOutputs`; it never synthesises a combined output from singular fields or mirrors
-canonical edits back into them. Output renders only `outputMapping`; the v1 `fields` working-copy
-conversion, migration banner, and save-to-upgrade path are removed. Each output mapping row
-contains all four current fields, including the required `enabled` boolean; readers do not
-default omitted row fields. API Input accepts only its current `tables` schema and contains no
-pre-v2 classifier.
-
-The editors contain no historical-format detection or special error state. Component tests retain
-canonical new-node, edit, save, and reload coverage while deleting migration assertions.

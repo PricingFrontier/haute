@@ -6,7 +6,7 @@
 |---|---|
 | `src/haute/executor.py` | GUI-facing eager entry point: `execute_graph()` (preview, with the `_preview_cache` `LRUCache`), `write_data_output()` (batch/data-output writes), preamble compilation + single-flight cache (`_compile_preamble`), preview-column projection/schema-warning assembly, and output-destination containment. |
 | `src/haute/execution.py` | Execution facade and implementation module: re-exports lower-level execution helpers; directly owns strategy-planner entry points, runtime-input fingerprints, `preview_lineage_cache_key`, `PREVIEW_EXECUTION_SEMANTICS_VERSION`, and the process-default dataframe execution-cache singleton. It is the stable application import boundary, but is not currently a thin re-export module. |
-| `src/haute/_path_resolution.py` | Canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
+| `src/haute/_path_resolution.py` | Cross-component dependency owned by [sandbox-security](../sandbox-security/low-level.md); canonical local-runtime-path resolution: separator normalization, project/pipeline candidate choice, symlink-aware containment, selected-external-pipeline root inference, and the context-local root used by eager/lazy builders. |
 | `src/haute/_execute_lazy.py` | The shared execution core: `_build_funcs` (per-node callable construction, shared by eager and lazy), `_execute_lazy` (lazy plan + structural parquet checkpointing + dataframe-cache seeding), `_execute_eager_core`/`EagerResult` (eager materialisation with contract checks), strict/non-strict `ContractResolution`, column-contract assertion helpers, multi-frame (`dict[label, Frame]`) source routing (`_pick_source_frame`). Graph preparation is consumed directly through `src/haute/projection.py::prepare_graph` and its prepared-plan value. |
 | `src/haute/_contracts.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution consumes the shared column-contract model and registry lookup. |
 | `src/haute/_registry.py` | Cross-component dependency owned by [pipeline-config](../pipeline-config/low-level.md): execution reads the canonical node registry. |
@@ -450,7 +450,8 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   currently caught by the generic per-node failure handler and returned as the
   node's error status.
 
-  > NOTE: The eager-preview treatment of `SchemaMismatchError` is an existing
+  > NOTE: [Tracked by EXEC-01](../roadmap/execution-engine.md#exec-01--symmetric-eager-mismatch-propagation).
+  > The eager-preview treatment of `SchemaMismatchError` is an existing
   > asymmetry: unlike `ContractMismatchError`, it is not in `_execute_eager_core`'s
   > explicit re-raise clause. Specs and callers must not treat it as a run-level
   > exception until the implementation changes.
@@ -520,17 +521,17 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
 
 ## Testing
 
-- `tests/performance/test_polars_scale_scenario.py` covers Polars scale scenarios.
-- `tests/test_bounded_collect_contracts.py` covers bounded-collect contracts.
-- `tests/test_builder_edge_cases.py` covers builder edge cases.
-- `tests/test_column_renames.py` covers column renames.
-- `tests/test_compute_needed_columns.py` covers needed-column computation.
-- `tests/test_data_input_chunking.py` covers data-input chunking.
-- `tests/test_extract_column_refs.py` covers column-reference extraction.
-- `tests/test_graph_input_identity.py` covers graph input identity.
-- `tests/test_polars_backend_strategy_contract.py` covers Polars backend strategy contracts.
-- `tests/test_scenario_propagation.py` covers scenario propagation.
-- `tests/test_streaming_collect_contract.py` covers streaming collect contracts.
+- `tests/performance/test_polars_scale_scenario.py` — bounded Polars join/training projection scale generation and CI-small execution-profile smoke contracts.
+- `tests/test_bounded_collect_contracts.py` — bounded execution modules route collection through the streaming helper rather than direct Polars `.collect()`.
+- `tests/test_builder_edge_cases.py` — builder edge cases for instance resolution, constants, outputs, live-switch/scenario expansion, banding, dispatch, and empty frames.
+- `tests/test_column_renames.py` — column-rename application for configured, empty, missing, and edge-name mappings.
+- `tests/test_compute_needed_columns.py` — topology, contract-algebra, and one-computation-per-node performance invariants for backward needed-column analysis.
+- `tests/test_data_input_chunking.py` — Data Input provider snapshots and chunk-plan/runner execution, including unsupported chunk plans.
+- `tests/test_extract_column_refs.py` — extraction of referenced columns across empty/minimal, selected/excluded, and node-config shapes.
+- `tests/test_graph_input_identity.py` — edge-derived pipeline input-name derivation contract across source handles and graph edges.
+- `tests/test_polars_backend_strategy_contract.py` — execution-strategy planning, boundedness/diagnostics payloads, projection/chunking, and error contracts.
+- `tests/test_scenario_propagation.py` — active scenario propagation through routes, executor, builders, and live-switch pruning.
+- `tests/test_streaming_collect_contract.py` — static contract that bounded callers use `streaming_collect` across execution/deploy/training/optimiser modules.
 
 Tests live in `tests/` (flat layout, no package-per-component subdirectories).
 

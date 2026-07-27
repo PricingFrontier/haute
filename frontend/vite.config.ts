@@ -52,6 +52,7 @@ export default defineConfig({
   build: {
     outDir: "../src/haute/static",
     emptyOutDir: true,
+    manifest: "manifest.json",
     rollupOptions: {
       output: {
         manualChunks(id: string) {

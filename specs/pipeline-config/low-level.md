@@ -104,10 +104,12 @@ DataFrames along declared edges — each edge's frame resolved port-aware throug
 `_pick_source_frame` selection on `RegisteredEdge.source_port` — and resolves the return value
 through `_resolve_output_node`: an explicit `@pipeline.output` node wins if there is exactly one;
 otherwise the single node with no outgoing edge; otherwise raise, naming every candidate node.
-`Pipeline.to_graph()` independently converts the same live objects into a React-Flow-shaped
-plain `dict`, inferring each node's display type from `config["_node_type"]` if present, else
-`DATA_INPUT` for an input node, else `OUTPUT` for the last-registered node, else `POLARS`, and
-serialising exactly the registered edges without parameter-name inference.
+`Pipeline.to_graph()` converts the same live objects into a React-Flow-shaped plain `dict`,
+inferring each node's display type from `config["_node_type"]` if present, else `DATA_INPUT`
+for an input node, else `OUTPUT` for the last-registered node, else `POLARS`. It delegates
+node and edge construction to the same `_build_rf_nodes`/`_build_edges` path as static
+parsing, so explicit connections and positional parameter-name inference are represented
+consistently; keyword-only parameters remain configuration rather than edges.
 
 **2. Static source graph (`_graph_builders.py` + `_config_builder.py`).** Given an
 already-parsed AST module and pre-extracted function bodies (produced upstream, not by this
@@ -184,6 +186,40 @@ once and rendered three ways. `handle_init` calls exactly the generator(s) for t
 artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
 `.github/workflows/`/`.github` directories, before writing the new provider's files.
 
+**Live arity and switch dispatch (`src/haute/pipeline.py`,
+`src/haute/_builders.py`).** `Node`
+computes frozen `_InputArity` once from `inspect.signature(fn)` at
+registration/construction. `POSITIONAL_ONLY` and
+`POSITIONAL_OR_KEYWORD` parameters become edge inputs, defaults lower the
+minimum, `KEYWORD_ONLY` parameters are ignored as configuration, and
+`VAR_POSITIONAL` makes the maximum unbounded; other variadic shapes are
+rejected. Live-switch dispatch distinguishes no mapping (default-source
+fallback) from a present mapping (mandatory active-scenario lookup). A miss
+raises `LiveSwitchScenarioError(ExecutionError)` with deterministic
+`available_mappings`; the public contract adapter supplies the same stable
+code and fields to synchronous 422 and background `contract_error` paths.
+
+**Canonical Data I/O construction.** `NodeType`, `DataInputConfig`,
+`DataOutputConfig`, and `DECORATOR_TO_NODE_TYPE` define the same 19-value
+vocabulary. `NodeRegistry.data_input()`/`.data_output()` allow multiple
+instances; `_resolve_output_node` still treats multiple terminal writers as
+ambiguous without an explicit `OUTPUT`. `_config_io.py` assigns only the
+`config/data_input/` and `config/data_output/` folders,
+`_config_validation.py` enforces their discriminated branches, and
+`_config_builder.py` extracts only Data Input's post-read Polars body into
+`code`.
+
+**Retained input resolution.** Generated `apiInput` and `externalFile`
+decorators pass only their sidecar path and module directory to
+`resolve_api_input_from_config` or `load_external_object_from_config`;
+declarative fields are not interpolated into generated bodies. The helpers
+also accept the executor's already-resolved inline mapping. Path inputs go
+through `load_node_config` and shared project/pipeline resolution. API input
+validates non-empty paths and JSON `tables[]` before reading/shredding and
+forwards projection/profile fields; external-file resolution validates
+`path`/`fileType` and forwards `modelClass`. Invalid tables raise
+`ApiInputSchemaError`, which the HTTP contract adapter maps to 422.
+
 ## Edge cases and invariants
 
 - `Pipeline.to_graph()` materialises live registrations through `_build_rf_nodes` and
@@ -224,6 +260,9 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   `NodeType` absent from `VALID_KEYS` (e.g. `SUBMODEL_PORT`, which has no `TypedDict` to
   anchor an allowlist on) — such configs fall through to the pre-existing code/internal-key
   stripping only, with no key-level filtering.
+- Config read/write accepts only each node type's current schema. It neither
+  classifies nor upgrades earlier emitted fields; where a canonical normaliser
+  exists, both paths call it directly rather than a migration-named wrapper.
 - A polars node with a self-contained code body and no upstream wiring (`_build_transform` in
   `_builders.py`) is treated as a source (`is_source=True`) rather than requiring an input —
   the code is expected to construct its own frame (e.g. `pl.DataFrame(...)`).
@@ -233,11 +272,11 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
   strategy nests `env:` at 18 spaces (so keys need 20). `azure_devops_yml` calls the helper
   twice with different `indent` values for this reason — sharing one indent across both call
   sites would under-indent the production secrets block into unparseable YAML.
-  > NOTE: the Azure DevOps workflow's `environment: production` block only names the
-  > environment; the approval check itself is configured on that environment inside the Azure
-  > DevOps portal, not emitted by `_scaffold.py`. A freshly-scaffolded Azure DevOps project's
-  > production stage runs unapproved until a human configures the environment's approval
-  > check out-of-band.
+- **Azure DevOps approval boundary.** The workflow's `environment: production`
+  block only names the environment; its approval check is configured in the
+  Azure DevOps portal, not emitted by `_scaffold.py`. A freshly scaffolded
+  project's production stage runs unapproved until an operator configures that
+  check out of band.
 
 ## Error handling
 
@@ -283,9 +322,9 @@ artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
 
 ## Testing
 
-- `tests/test_column_contracts_adoption.py` covers column-contract adoption.
-- `tests/test_registry_contracts.py` covers registry contracts.
-- `tests/test_sidecar_golden.py` covers sidecar golden fixtures.
+- `tests/test_column_contracts_adoption.py` verifies builder contract adoption, parser/executor boundary enforcement, codegen metadata, model-score exceptions, and overhead benchmark.
+- `tests/test_registry_contracts.py` verifies exec/codegen registration metadata, duplicate/missing-entry failures, readiness/idempotence, and behavioural-body detection.
+- `tests/test_sidecar_golden.py` verifies canonical sidecar JSON emission and loader round-trip.
 
 Tests live under `tests/`, predominantly as behavioural unit tests against the real decorator
 API and real JSON round-trips rather than mocks:
@@ -297,8 +336,10 @@ API and real JSON round-trips rather than mocks:
   (`TestInstanceReferencesFailLoud`), the API-input deploy-seed marker
   (`TestApiInputDecoratorMarksSeed`), and `to_graph()` shape/inference (`TestPipelineEdgeCases`
   and scattered `to_graph` tests across other classes). The input-identity release adds the
-  full `score()` seed matrix here: bare frame accepted at zero ports (source-only) and one
-  port; bare frame rejected at 2+ ports; exact one-key dict accepted at one port; dict
+  full `score()` seed matrix here: an unnamed (`None`) source edge is the whole-output
+  channel and does not create a labelable port; bare frame accepted at zero named ports
+  (including that unnamed-edge case) and one named port; bare frame rejected at 2+ named
+  ports; exact one-key dict accepted at one named port; dict
   rejected with missing keys, with unknown extra keys, and against a zero-port source — every
   rejection an `ExecutionError` naming the ports — plus `run()` port-aware frame selection
   for one- and many-frame apiInput sources.
@@ -332,75 +373,3 @@ API and real JSON round-trips rather than mocks:
 Property/round-trip style coverage (`TestRoundTripDrift` in `test_graph_shape_contracts.py`,
 `test_codegen_roundtrip_property.py`) asserts that parse → build → save → parse is stable for
 generated graphs.
-
-### Live node arity and switch behaviour
-
-Remaining pipeline-configuration improvement work is tracked in the
-[pipeline authoring roadmap](../roadmap/pipeline-authoring.md).
-
-`Node` computes `_InputArity` exactly once from `inspect.signature(fn)` during registration or
-construction and stores it as immutable node state; execution consumes that stored result rather
-than inspecting the callable again. `POSITIONAL_ONLY` and `POSITIONAL_OR_KEYWORD` parameters
-are supported edge inputs, with defaults making them optional. `KEYWORD_ONLY` parameters are
-never edges. `VAR_POSITIONAL` (`*args`) is the only supported unbounded form, after required
-positional inputs. Unsupported callable signatures and all arity/wiring mismatches raise loudly
-with node name and expected arity.
-
-Live-switch execution distinguishes an absent mapping from a present mapping. Without a mapping,
-default-source fallback remains permitted. With one, lookup of the active scenario is mandatory:
-a missing key raises `LiveSwitchScenarioError(ExecutionError)` and never silently selects the
-default source. The exception exposes stable code `live_switch_scenario_missing` plus stable
-`switch`, `scenario`, and `available_mappings` fields; `available_mappings` is deterministic so
-the same configuration produces the same diagnostic. HTTP translation returns 422, while a
-background run records `contract_error` with the same code and fields.
-
-Focused tests cover one-time signature inspection, required/optional/`*args` arity, malformed
-wiring, unconfigured live-switch fallback, configured matching selection, and configured
-mappings missing the active scenario, including exact exception inheritance/code/fields and
-HTTP/background translation. The 0.6 pre-1.0 migration note documents the newly loud configured
-mapping miss. Non-goals: implicit wiring inference, additional variadic forms, changes to
-successful mapped live-switch selection, or removal of unconfigured default-source fallback.
-
-### Canonical data I/O node types
-
-- `NodeType`, `DataInputConfig`, and `DataOutputConfig` define the 19-value canonical node set
-  and strict I/O discriminants; `DECORATOR_TO_NODE_TYPE` exposes the matching decorators.
-- `NodeRegistry.data_input()`/`.data_output()` are ordinary registration wrappers and the live
-  API may register multiple instances. `_resolve_output_node` preserves the rule that multiple
-  terminal Data Outputs
-  without one explicit `NodeType.OUTPUT` remain an actionable ambiguous-leaf error.
-- `_config_io.py` maps tabular sidecars to `config/data_input/` and
-  `config/data_output/`; `_config_validation.py` applies strict branch-aware validation.
-- `_config_builder.py` extracts the generated `dataInput` post-read Polars body into `code` and
-  validates it as part of the input config. Output body scaffolding never becomes config code.
-- Tests pin the exact enum/decorator/folder/key sets, branch-specific rejection, multiple-node
-  registration, standalone output selection, and config JSON round trips.
-
-### Retained input sidecar authority
-
-- Generated `apiInput` decorators reference
-  `config/quote_input/<name>.json`; generated `externalFile` decorators
-  reference `config/load_file/<name>.json`.
-- `resolve_api_input_from_config` and
-  `load_external_object_from_config` accept either an inline mapping or a
-  sidecar path. Path arguments are loaded through `load_node_config` and
-  relative data/object paths use `base_dir` as the pipeline candidate in the
-  shared project/pipeline resolution policy.
-- API-input resolution requires a non-empty path for flat/JSON inputs,
-  validates `tables[]` before the JSON shred, and forwards projection/profile
-  arguments for flat-file reads. External-file resolution validates non-empty
-  `path` and `fileType` strings and forwards `modelClass`.
-- Missing or malformed API-input `tables[]` raises the typed
-  `ApiInputSchemaError` contract. Execution routes adapt it to a stable 422
-  response rather than allowing a bare runtime exception to become a 500.
-- Executor builders call the same helpers with their already-resolved inline
-  graph config. Generated builders pass only the sidecar path and `base_dir`;
-  no declarative field is interpolated into the function body.
-
-### Canonical-only persisted configuration
-
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
-config loading and saving implement only each node type's current schema. They do not classify,
-strip, upgrade, or preserve fields because an earlier Haute version emitted them. Read and write
-paths share the canonical normaliser where one exists; redundant migration-named wrappers and
-migration-specific fixtures are deleted.

@@ -64,8 +64,11 @@ Out of scope (owned by neighbouring components, included as routers but not desc
 - `routes/databricks.py` — see [databricks-io](../databricks-io/high-level.md).
 - `routes/json_cache.py` — see [caching](../caching/high-level.md); its schema and
   shredding dependencies are owned by [json-shredding](../json-shredding/high-level.md).
-- `routes/mlflow.py`, `routes/modelling.py`, `routes/optimiser.py`, `routes/submodel.py` —
-  separate components not covered by this spec pass.
+- `routes/mlflow.py`, `routes/modelling.py`, `routes/optimiser.py`, and
+  `routes/submodel.py` — see
+  [mlflow-model-registry](../mlflow-model-registry/high-level.md),
+  [modelling](../modelling/high-level.md), [optimiser](../optimiser/high-level.md), and
+  [submodels](../submodels/high-level.md), respectively.
 - `routes/assistant.py` and the assistant agent loop/providers/tools — see
   [assistant](../assistant/high-level.md). This component defines the `Assistant*` schemas in
   `schemas.py` and provides the save service, event bus, self-write tracking, and
@@ -347,8 +350,9 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   1-second timeout; a stalled client is force-closed and dropped from the client set rather
   than stalling the fan-out to every other connected canvas.
 
-> NOTE: `routes/_helpers.py::pipeline_dir()` treats a missing `[project].pipeline` key in
-> `haute.toml` as a soft omission (warns, falls back to `Path.cwd()`), but a malformed
-> `haute.toml` or an unreadable one raises `ConfigError` rather than falling back — the
-> asymmetry is deliberate (a missing key is a fresh-project state; a decode failure would
-> silently misroute every subsequent save/load to the wrong directory if swallowed).
+**Missing-key configuration policy.** `routes/_helpers.py::pipeline_dir()`
+treats a missing `[project].pipeline` key in `haute.toml` as a soft omission
+(warns and falls back to `Path.cwd()`), while malformed or unreadable
+configuration raises `ConfigError`. The asymmetry is deliberate: a missing key
+can be a fresh-project state, whereas swallowing a decode failure could
+silently misroute subsequent saves and loads.

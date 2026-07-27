@@ -260,7 +260,8 @@ Out of scope (owned by neighbouring components):
   of a silently-missing column reaching a combined output.
   A non-empty banding rule list whose rules are all unusable is malformed and
   raises instead of taking this no-op path.
-  > NOTE: the public config-driven path rejects a populated entry row that
+  > NOTE: [Tracked by RATE-01](../roadmap/rating.md#rate-01--consistent-malformed-config-rejection).
+  > The public config-driven path rejects a populated entry row that
   > lacks any declared factor during `_rating_step_config` normalisation.
   > The lower-level `_apply_rating_table` primitive still returns unchanged
   > when a factor is absent from every already-normalised entry; when reached

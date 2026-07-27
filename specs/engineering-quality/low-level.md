@@ -4,10 +4,9 @@
 
 | File | Responsibility |
 |---|---|
-| `pyproject.toml` | Configures Ruff, pytest, coverage, critical backend coverage thresholds, mypy, pinned development tools, and excludes non-product directories from the normal Ruff target. |
+| `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); configures Ruff, pytest, coverage, critical backend coverage thresholds, mypy, pinned development tools, and excludes non-product directories from the normal Ruff target. |
 | `AGENTS.md` | Records repository-local engineering and review instructions for contributors and coding agents; it is guidance, not executable build or test configuration. |
 | `CLAUDE.md` | Directs Claude-compatible coding agents to the repository's authoritative `AGENTS.md` engineering instructions without duplicating policy. |
-| `SPECS-REVIEW-2026-07-27.md` | Point-in-time semantic audit of the specification corpus and evidence for `specs/roadmap/specs-corpus.md`; records review findings and coverage limitations rather than normative product behaviour. |
 | `.gitignore` | Excludes generated builds, virtual environments, caches, local pipeline output/data, tool state, and other non-source artifacts from normal version-control discovery. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |
@@ -16,7 +15,7 @@
 | `.github/workflows/frontend-shuffle.yml` | Runs the scheduled/manual shuffled Vitest monitor and raises/updates shuffle-watch issues with its seed on eligible failures. |
 | `.github/workflows/mutation.yml` | Plans changed mutation targets, runs separate CI-job shards whose mutants execute serially per runner, and uses a failure-aware non-cancelled status condition on the single merge gate so plan/shard failures become failed rather than skipped checks. |
 | `.github/workflows/performance.yml` | Runs scheduled/manual Python and browser-performance lanes and uploads their artifacts. |
-| `frontend/package.json` | Defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
+| `frontend/package.json` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); defines frontend lint/type/unit/coverage/bundle/E2E/benchmark command entry points and frontend critical-coverage entries. |
 | `frontend/eslint.config.js` | Defines blocking browser TypeScript/React ESLint rules, fourteen explicit pre-existing file/rule exceptions, generated-report ignores, and underscore-prefixed intentionally-unused names. |
 | `frontend/vitest.config.ts` | Configures the Vitest unit-test environment, setup, source/test selection, coverage reporting, and blocking 80/75/80/80 global thresholds. |
 | `frontend/playwright.config.ts` | Configures serial browser E2E projects, retries, artifacts, and readiness-managed local E2E server. |
@@ -55,6 +54,7 @@
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
 | `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
+| `scripts/spec_corpus_inventory.py` | Builds the exact working-tree specification inventory and content fingerprint, validates complete per-file review coverage, and derives component/governance/roadmap line and coverage totals for reproducible semantic-review claims. |
 | `scripts/setup-worktree.sh` | Sets up a development worktree. |
 | `mutation/README.md` | Documents the maintained mutation-testing workflow and constraints. |
 | `mutation/targets.json` | Declares selected mutation targets, witness suites, and survival budgets. |
@@ -248,17 +248,17 @@
 
 ## Testing
 
-- `tests/test_bug_regressions.py` covers bug regressions.
-- `tests/test_bugfixes.py` covers bugfix contracts.
-- `tests/test_coverage_gaps.py` covers identified coverage gaps.
-- `tests/test_decoupling_contracts.py` covers decoupling contracts.
-- `tests/test_dry_fixes.py` covers DRY fixes.
-- `tests/test_dry_refactors.py` covers DRY refactors.
-- `tests/test_performance_docs.py` covers performance documentation.
-- `tests/test_property.py` covers property-based contracts.
-- `tests/test_repository_hygiene.py` covers repository hygiene.
-- `tests/test_small_module_contracts.py` covers small-module contracts.
-- `tests/test_test_debt.py` covers test-debt tracking.
+- `tests/test_bug_regressions.py` — named deep-review bug regressions (streaming restoration, source/pipeline path handling, preview source files, and Polars/parser safety).
+- `tests/test_bugfixes.py` — regression contracts for streaming chunk restoration, source/pipeline path resolution, preview source files, and parser/config safety.
+- `tests/test_coverage_gaps.py` — targeted edge coverage for config/fingerprint/builders/artifacts/model helpers, schemas, and node discovery.
+- `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
+- `tests/test_dry_fixes.py` — DRY response/model inheritance and optimiser finalize contracts across online/ratebook/frontier paths.
+- `tests/test_dry_refactors.py` — shared exception hierarchy, dispatch-table parity, transport resolution, dead-code removal, typed-node lookup, and shared code compilation.
+- `tests/test_performance_docs.py` — documentation contracts for Python/Polars/frontend/memory performance workflows and links.
+- `tests/test_property.py` — Hypothesis properties for sanitisation, topology, path resolution, banding/rating, codegen/parser round-trips, fingerprints, config, validation, and cache invariants.
+- `tests/test_repository_hygiene.py` — repository artifact/path, dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.
+- `tests/test_small_module_contracts.py` — JSON-safe serialization, shared contracts, and package-init module contracts.
+- `tests/test_test_debt.py` — AST debt scanner budgets and explicit-reason contracts for backend/frontend skip/xfail/fixme markers.
 
 - Active backend test groups live in `tests/`: unit, property-based,
   regression, API/contract, end-to-end, security/sandbox, and repository
@@ -281,11 +281,13 @@
   `tests/test_mutation_sharding.py`, `tests/test_run_perf_suite.py`,
   `tests/test_perf_suite_script.py`,
   `tests/test_memory_smoke_script.py`, `tests/test_frontend_bundle_budget_ci.py`,
-  `tests/test_infrastructure_contracts.py`, and `tests/test_docs_accuracy.py`
+  `tests/test_infrastructure_contracts.py`, `tests/test_docs_accuracy.py`, and
+  `tests/test_spec_corpus_inventory.py`
   cover important assurance tooling and repository-policy contracts. The
   documentation-accuracy checks validate complete-document repository paths
-  from a fail-loud tracked-file inventory whose exact, suffix, and parent-path
-  indexes are built once per ratchet evaluation; they also validate
+  from a fail-loud versionable working-tree inventory (tracked plus untracked,
+  with ignored files excluded) whose exact, suffix, and parent-path indexes are
+  built once per ratchet evaluation; they also validate
   `path::symbol` and Module-map responsibility symbols, exact headings, Testing
   references and backend-test indexing, link anchors, roadmap evidence,
   present-tense ownership claims, positive-evidence temporary-contract

@@ -89,9 +89,10 @@ running heavy work in a child process the parent can kill on timeout or memory l
   captured per-node (`status="error"`) rather than aborting the whole preview. Once
   `_execute_eager_core` is running, every `HauteError` with a stable public
   `error_code`, cancellation, and memory-limit exhaustion is always raised. This includes
-  `ContractMismatchError`, `ContractResolutionError`,
+  `ContractResolutionError`,
   `ChunkMemoryRiskError`, `GroupByExecutionUnsupportedError`, and
-  `LiveSwitchScenarioError`. An uncoded join-key dtype `SchemaMismatchError` is
+  `LiveSwitchScenarioError`. `ContractMismatchError` has no public `error_code` but is
+  re-raised by its own explicit branch. An uncoded join-key dtype `SchemaMismatchError` is
   currently captured as a node error on this swallow-errors path (but propagates
   from lazy/fail-fast execution). Preamble compilation happens outside that core:
   interactive preview attaches a `PreambleError` only to nodes that consume its

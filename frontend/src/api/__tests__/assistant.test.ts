@@ -92,6 +92,18 @@ describe("getAssistantStatus", () => {
     const [url] = mockFetch.mock.calls[0]
     expect(String(url)).toContain("/api/assistant/status")
   })
+
+  it.each([
+    ["an array payload", []],
+    ["a missing required field", { configured: true, reason: null, provider: null, model: null, mutations_enabled: true }],
+    ["a wrong primitive field", { configured: "yes", reason: null, provider: null, model: null, mutations_enabled: true, mutations_reason: null }],
+    ["an invalid nullable field", { configured: true, reason: 1, provider: null, model: null, mutations_enabled: true, mutations_reason: null }],
+  ])("rejects %s with an ordinary validation error", async (_label, payload) => {
+    mockFetch.mockReturnValueOnce(jsonResponse(payload))
+    const result = getAssistantStatus()
+    await expect(result).rejects.toBeInstanceOf(Error)
+    await expect(result).rejects.not.toBeInstanceOf(ApiError)
+  })
 })
 
 describe("createAssistantSession", () => {
@@ -149,6 +161,19 @@ describe("createAssistantSession", () => {
 
     await expect(request).rejects.toMatchObject({ name: "AbortError" })
     expect(requestSignal?.aborted).toBe(true)
+  })
+
+  it.each([
+    ["a non-object envelope", []],
+    ["a missing session id", { history: [] }],
+    ["a non-array history", { session_id: "abc", history: {} }],
+    ["a non-object history entry", { session_id: "abc", history: [null] }],
+    ["an unknown history kind", { session_id: "abc", history: [{ kind: "other", text: "", name: "", summary: "", is_error: false }] }],
+    ["a missing history field", { session_id: "abc", history: [{ kind: "user", text: "", name: "", summary: "" }] }],
+    ["a wrong history field primitive", { session_id: "abc", history: [{ kind: "tool", text: "", name: "", summary: "", is_error: "false" }] }],
+  ])("rejects %s", async (_label, payload) => {
+    mockFetch.mockReturnValueOnce(jsonResponse(payload))
+    await expect(createAssistantSession(null)).rejects.toThrow(/assistant|session|history/i)
   })
 })
 
@@ -214,6 +239,27 @@ describe("streamAssistantMessage", () => {
         onEvent: () => {},
       }),
     ).rejects.toThrow(/mystery_event/)
+  })
+
+  it.each([
+    ["text_delta", { type: "text_delta" }],
+    ["tool_started", { type: "tool_started", id: "id", name: "tool", summary: false }],
+    ["tool_finished", { type: "tool_finished", id: "id", name: "tool", is_error: "false", summary: "done" }],
+    ["graph_updated", { type: "graph_updated", fingerprint: 1 }],
+    ["completed usage object", { type: "completed", usage: [] }],
+    ["completed nested input_tokens", { type: "completed", usage: { input_tokens: "1", output_tokens: 2 } }],
+    ["completed nested output_tokens", { type: "completed", usage: { input_tokens: 1 } }],
+    ["failed", { type: "failed", message: null }],
+    ["cancelled discriminator", { type: 1 }],
+  ])("rejects malformed %s before invoking the callback", async (_label, event) => {
+    const callback = vi.fn()
+    mockFetch.mockReturnValueOnce(sseResponse([`data: ${JSON.stringify(event)}\n\n`]))
+
+    await expect(streamAssistantMessage("session-1", "hi", {
+      signal: new AbortController().signal,
+      onEvent: callback,
+    })).rejects.toThrow(/Invalid assistant payload/)
+    expect(callback).not.toHaveBeenCalled()
   })
 
   it("cancels the reader when parsing fails", async () => {

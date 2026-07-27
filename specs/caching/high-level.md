@@ -25,6 +25,14 @@ defined by their checked consumer contract. Presentation-only fields are explici
 classified and excluded. `lineage_cache_key()` is the common preview/trace factory; callers
 do not key directly from `graph_fingerprint()` alone.
 
+Eight maintained consumers — graph structure, graph execution, preview/trace,
+dataframe execution, runtime graph input, deploy schema, model contract, and
+input snapshot — each declare one complete versioned field set. Every logical
+input class is either mapped to named fields or excluded with a rationale;
+missing, unknown, or unclassified fields fail before a key is produced. The
+low-level inventory is the reviewable source for those exact sets and their
+nested record shapes.
+
 `LRUCache` bounds entries, optionally bounds bytes/TTL, and supports pins. Rejecting an
 oversized value leaves an existing same-key entry intact. `StatGatedCache` is bounded by an
 entry count, uses `(mtime_ns, size)` gates, provides per-key single flight, and evicts least

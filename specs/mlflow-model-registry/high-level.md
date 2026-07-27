@@ -332,8 +332,7 @@ Out of scope (owned elsewhere):
   an empty output dtype, empty scoring fails loudly; no task-based default or
   synthetic all-null prediction is substituted.
 
-> NOTE: pyfunc models never populate the on-disk artifact cache under
-> `.cache/models/` — only CatBoost and RustyStats artifacts do. A pyfunc
-> model is instead re-resolved through MLflow's own `pyfunc.load_model`
-> path (which has its own, separate local caching behaviour) on every
-> cache-miss load.
+**Pyfunc cache boundary.** Pyfunc models never populate Haute's on-disk artifact
+cache under `.cache/models/`; only CatBoost and RustyStats artifacts do. On each
+Haute cache miss, a pyfunc model is re-resolved through MLflow's
+`pyfunc.load_model` path and its separate local caching behaviour.

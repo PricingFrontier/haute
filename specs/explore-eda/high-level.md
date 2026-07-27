@@ -174,11 +174,9 @@ Out of scope (owned elsewhere):
   top-level value, a non-string key, a known toggle key holding a non-boolean, or an unknown key
   holding a value that is not round-trippable; callers do not catch and paper over these.
 
-> NOTE: `ExploreFrameStats`/`_build_frame_stats` unconditionally include zero/negative counts and
-> quartile fields only for numeric columns and set them to `None` otherwise; a column reclassified
-> between numeric and non-numeric across two runs of the same pipeline (e.g. by an upstream code
-> change) will show a different populated-field set with no explicit migration note in the report
-> itself — this is describing existing behaviour, not a defect being fixed here. `nan_count` is
-> narrower still: it is populated only for float dtypes (`Float32`/`Float64`), not the broader
-> numeric set, so an integer column reclassified to/from float across two runs will also flip
-> `nan_count` between `0` and `None` in addition to the zero/negative/quartile fields above.
+**Statistics-shape caveat.** `ExploreFrameStats`/`_build_frame_stats`
+unconditionally include zero/negative counts and quartile fields only for numeric columns,
+setting them to `None` otherwise. A column reclassified between numeric and non-numeric across
+two runs therefore has a different populated-field set. `nan_count` is narrower still: it is
+populated only for float dtypes (`Float32`/`Float64`), so an integer column reclassified to or
+from float also flips `nan_count` between `0` and `None`.

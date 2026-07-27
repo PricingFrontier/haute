@@ -86,7 +86,8 @@ tolerance fails the deploy. All failures — structural and test-quote — are c
 raised together as one `DeployError` so an operator sees the whole picture in one pass,
 not a fix-rerun-fix cycle.
 
-> NOTE: quote validation currently runs only when `test_quotes_dir` exists and is a
+> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
+> Quote validation currently runs only when `test_quotes_dir` exists and is a
 > directory. A missing, non-directory, or empty configured location produces no quote
 > validation error and therefore does not act as a gate.
 
@@ -103,7 +104,8 @@ snapshot selected during resolution. `dataOutput` is a scoring pass-through
 and its writer is never invoked; persistence-only branches outside the served
 output's ancestry are pruned.
 
-> NOTE: `output_fields` is applied only by the deployed container/pyfunc calls. Output
+> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
+> `output_fields` is applied only by the deployed container/pyfunc calls. Output
 > schema inference and test-quote validation currently score the unprojected output, so a
 > missing selected field can pass deployment validation and fail at runtime, and the
 > MLflow signature can advertise columns the served projection omits.

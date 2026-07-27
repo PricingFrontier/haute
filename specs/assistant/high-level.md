@@ -62,15 +62,16 @@ Out of scope:
 `[assistant]` table names the `provider` (`"anthropic"` or `"openai"`), the `model`, and
 optionally a `base_url` (OpenAI adapter only). Credentials come exclusively from the
 environment — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — never from `haute.toml`.
-`haute serve` does not currently load the project `.env`, so those keys must be exported
-or otherwise inherited by the server process. A status endpoint reports whether the
+During lifespan startup, `haute serve` loads the project `.env` into the process environment
+without overriding variables the caller already exported. A status endpoint reports whether the
 assistant is ready and, if not, exactly which piece is missing (no `[assistant]` table, unknown
 provider, missing model, missing key, a provider SDK missing from the installation, or an
 invalid output-token budget), so the
 UI can disable the input with a reason instead of letting a send fail. Sending a message while unconfigured is rejected with a 400 naming the missing
 piece — there is no default provider and no silent degradation.
 
-> NOTE: configuration validation is intentionally narrow in the current implementation:
+> NOTE: [Tracked by ASSIST-03](../roadmap/assistant.md#assist-03--closed-assistant-configuration).
+> Configuration validation is intentionally narrow in the current implementation:
 > `provider`, `model`, and `base_url` are interpreted, but additional keys in `[assistant]`
 > are ignored rather than rejected. OpenAI accepts any string `base_url` without URL-syntax
 > validation; Anthropic rejects the presence of `base_url` as a readiness failure.

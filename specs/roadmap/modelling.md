@@ -95,13 +95,20 @@ performance, and modelling workflows remain trustworthy.
 ### MOD-M07 — Workflow UX
 **Why:** Cancellation, export, live loss, run history, and error states are incomplete or misleading.
 
-**Plan:** Add explicit lifecycle-driven controls and truthful progress/history/export presentation.
+**Plan:** Add explicit lifecycle-driven controls and truthful
+progress/history/export presentation. Rename or reshape the GPU feasibility
+check so a 507 clearly requests a user-selected CPU retry and never implies
+that an automatic fallback occurred.
 
-**Acceptance:** UI tests cover start, cancel, terminal states, live loss, export, and historical runs.
+**Acceptance:** UI tests cover start, cancel, terminal states, live loss,
+export, historical runs, and the insufficient-VRAM path with an actionable
+manual CPU-retry message.
 
 **Dependencies:** MOD-M06.
 
-**Evidence:** `frontend/src`; `src/haute/routes/modelling.py`; `frontend/src/**/*.test.tsx`.
+**Evidence:** `frontend/src`; `src/haute/routes/modelling.py`;
+`src/haute/routes/_train_service.py`; `tests/test_train_service_coverage.py`;
+`frontend/src/**/*.test.tsx`.
 
 ### MOD-M08 — Tracking and export drift
 **Why:** Tracking parameters and generated export configuration can represent different models.

@@ -445,8 +445,8 @@ the root itself are never removed.
 
 ## Testing
 
-- `tests/test_partial_failure.py` covers partial-failure handling.
-- `tests/test_state_transitions.py` covers background-job state transitions.
+- `tests/test_partial_failure.py` — adversarial save/preview, filesystem, watcher, WebSocket, stale-index, sidecar-corruption, OOM, and resource-cleanup failure handling.
+- `tests/test_state_transitions.py` — JobStore rejects invalid/double-start operations, wrong-status actions, and protected/invalid/duplicate Git transitions.
 
 - `tests/test_job_store.py` — the largest suite; unit-tests CRUD, TTL eviction
   (including exact-boundary and missing-`created_at` cases), artifact-handle cleanup

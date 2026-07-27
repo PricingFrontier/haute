@@ -340,7 +340,7 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
 
 ## Testing
 
-- `tests/test_host_binding.py` covers host-binding sandbox security contracts.
+- `tests/test_host_binding.py` verifies loopback-only host validation, CLI/config precedence, trusted-host middleware, token non-exposure, and loopback URL formatting.
 
 - `tests/test_sandbox.py` — the primary suite for `_sandbox.py`. `TestSafeGlobals`
   and `TestValidateUserCode` cover the happy-path/blocked-construct matrix for
@@ -368,14 +368,6 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   shadowing (`MatchStar`, `MatchMapping.rest`) not covered by the main suite's
   simpler shadowing tests.
 
-  > NOTE: this test file's own docstrings/comments describe some of these
-  > accept-arm cases as "prefix match" (e.g. `module.startswith(prefix)`), a
-  > leftover from an earlier package-prefix allowlist design. The current
-  > `_resolve_allowed_global` in `_sandbox.py` has no prefix-matching logic at
-  > all — both `_ALLOWED_PICKLE_GLOBALS` and `_ALLOWED_PICKLE_CLASSES` are
-  > exact `(module, qualname)` tuple lookups; the tests still pass and still
-  > pin the accept arms correctly, but the "prefix" terminology in the test
-  > file's comments is stale.
 - `tests/test_user_exec_imports.py` — a structural regression pin (not a
   behavioral test of `_exec_user_code` itself): asserts no file under `src/haute`
   imports `_exec_user_code` from `haute.executor` (the old location) and that
@@ -426,7 +418,8 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   exactly-once input-code execution, output-code rejection, and secret-free
   namespaces/failures.
 
-> NOTE: `test_env_lazy_accessors.py`'s `_ACCESSOR_CASES` table is a manually
+> NOTE: [Tracked by SEC-ENV-01](../roadmap/security-supply-chain.md#sec-env-01--complete-lazy-accessor-migration-guard).
+> `test_env_lazy_accessors.py`'s `_ACCESSOR_CASES` table is a manually
 > maintained parallel list of migrated lazy-knob call sites; a new knob added
 > elsewhere in the codebase that forgets to use `haute._env`'s helpers (or
 > forgets a corresponding entry here) would not be caught by this test file

@@ -16,10 +16,28 @@ active roadmap work.
 
 ## Priorities
 
-There are no active security or supply-chain improvement packages. Shipped
-behaviour is defined by the sandbox-security and engineering-quality component
-specifications and their ordinary regression tests.
+| Package | State | Priority | Outcome |
+|---|---|---:|---|
+| `SEC-ENV-01` | Queued | P2 | Derive lazy environment-accessor coverage from production call sites. |
 
 ## Planned improvements
 
-There are no queued security or supply-chain improvements.
+### SEC-ENV-01 — Complete lazy-accessor migration guard
+
+**Why:** The environment-accessor regression uses a manually maintained
+parallel table. A new environment knob can bypass `haute._env` without entering
+that table, leaving the intended import-safety boundary untested.
+
+**Plan:** Discover eligible production access sites from a checked source
+inventory or enforce them statically, with an explicit allowlist only for
+reviewed eager reads.
+
+**Acceptance:** Adding a direct eligible `os.getenv`/`os.environ` access outside
+`haute._env` fails the focused guard without a test-table edit; existing lazy
+knobs and deliberate exceptions remain green.
+
+**Dependencies:** Engineering quality owns repository-wide static-check
+orchestration.
+
+**Evidence:** `src/haute/_env.py`, `src/haute/`,
+`tests/test_env_lazy_accessors.py`, and `tests/test_repository_hygiene.py`.

@@ -20,7 +20,7 @@
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow check/log, export, model-cache clear, and dispersion jobs. |
 | `src/haute/routes/_train_service.py` | `TrainService`: validation, RAM/VRAM estimates, pipeline materialisation, background training/dispersion lifecycle, cancellation, and cleanup. |
-| `src/haute/schemas.py` | Shared Pydantic request/response contracts used by `/api/modelling/*` routes. |
+| `src/haute/schemas.py` | Shared Pydantic request/response contracts owned by [server-api](../server-api/low-level.md) and used by `/api/modelling/*` routes. |
 
 ## Key types and data structures
 
@@ -429,7 +429,8 @@ native CatBoost flavor.
   — this is the mechanism that catches a NaN/Inf anywhere inside a large nested
   diagnostics payload before it reaches the wire.
 
-> NOTE: `TrainService._check_gpu_fallback` is misleadingly named — despite
+> NOTE: [Tracked by MOD-M07](../roadmap/modelling.md#mod-m07--workflow-ux).
+> `TrainService._check_gpu_fallback` is misleadingly named — despite
 > "fallback," it does **not** fall back to CPU automatically. It only checks VRAM
 > feasibility and raises HTTP 507 when insufficient; the user must manually switch
 > `task_type` to CPU (or reduce rows/features) and retry.
@@ -493,11 +494,11 @@ native CatBoost flavor.
 ## Testing
 
 - `tests/performance/test_training_scoring_wide_perf.py` covers wide training/scoring performance.
-- `tests/test_ave.py` covers AVE modelling behaviour.
-- `tests/test_gpu_fit_cancel.py` covers GPU fit cancellation.
-- `tests/test_mem_helpers.py` covers modelling memory helpers.
-- `tests/test_mlflow_log.py` covers MLflow logging.
-- `tests/test_mlflow_log_button_roundtrip.py` covers MLflow log-button round trips.
+- `tests/test_ave.py` verifies AVE numeric/categorical binning, weights, NaN/null/constant/missing/empty inputs, category limits, and feature limits.
+- `tests/test_gpu_fit_cancel.py` verifies algorithm-level cancellation and metric-polling cancellation behavior.
+- `tests/test_mem_helpers.py` verifies RSS/available-memory helpers and checkpoint behavior.
+- `tests/test_mlflow_log.py` verifies tracking backend/experiment resolution, run URL construction, experiment/model-card/JSON logging, and tracking configuration.
+- `tests/test_mlflow_log_button_roundtrip.py` verifies CatBoost/GLM log-button round-trip construction and button payloads.
 
 Tests live in the flat `tests/` directory rather than mirroring the package layout:
 

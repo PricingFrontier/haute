@@ -22,23 +22,6 @@ actually flowed through a specific execution), and targeted cell trace (the
 value-level derivation of one cell for one row). This component implements
 the targeted cell trace.
 
-> NOTE: An alternative design — injecting a monotonic `__trace_row_id` column
-> at every source node and threading it through joins/group-bys — was
-> considered and never implemented. The shipped implementation instead
-> performs **post-hoc value-based correlation**: it reuses the exact
-> DataFrames the preview execution already produced and matches each parent
-> row to its resolved child row by shared column values, walking backward
-> from the target node. This guarantees the trace shows precisely the data
-> the preview table shows, with no extra columns threaded through user code.
-> Also never built: `JoinInfo` / `AggregationInfo` dataclasses for join/
-> aggregation provenance, a `branches` dict on `TraceResult`, the
-> `/api/pipeline/trace/column` and `/api/pipeline/trace/compare` endpoints,
-> and a `haute trace export` regulatory-report CLI command. The current
-> `TraceResult` carries successful `TraceStep`s, typed omissions for relevant
-> nodes whose rows could not be correlated, a `waterfall` summary, correlation
-> diagnostics, and generation provenance. Export is a deterministic projection
-> of that exact returned snapshot in the frontend; it never re-executes the graph.
-
 ## Scope
 
 In scope:
@@ -207,11 +190,10 @@ Out of scope (owned elsewhere, linked where relevant):
   `execution_origin` of `fresh_execution`, `preview_cache`, or `trace_cache`.
   These fields describe how the trace snapshot was assembled; they do not claim
   that an external data source is fresh.
-  > NOTE: provider group, safe source identity, direct-versus-snapshot mode,
-  > selected cache generation, and external freshness are not currently fields
-  > in `TraceResult`. Snapshot generation participates in execution/cache key
-  > identity, but the response must not infer or display provenance it does not
-  > carry.
+  Provider group, safe source identity, direct-versus-snapshot mode, selected
+  cache generation, and external freshness are outside the current
+  `TraceResult`; the response does not infer or display provenance it does not
+  carry.
 
 ## Design rationale
 
@@ -224,17 +206,16 @@ Out of scope (owned elsewhere, linked where relevant):
   provenance rules below).
 - **Preview-cache decoupling via a `PreviewReader` protocol.** Rather than
   reaching into `haute.executor`'s private preview-cache singleton, the trace
-  module accepts anything exposing `try_get(fingerprint) -> dict | None` (a
+  module accepts anything exposing `get(fingerprint) -> dict | None` (a
   reader) or a pre-materialised snapshot dict. This keeps the trace module
   testable in isolation and leaves room for a future non-in-process preview
   store, at the cost of the caller (the HTTP route) being responsible for
   wiring the executor's cache in explicitly.
-  > NOTE: the current HTTP preview route publishes target-only cache entries,
-  > while a truthful trace requires full ancestor materialisation. Those shapes
-  > deliberately do not share a key, so the first trace after an ordinary HTTP
-  > preview executes cold. Reuse requires a route/execution-cache decision
-  > outside this component; the trace layer must not accept a partial snapshot
-  > to manufacture the appearance of reuse.
+  The current HTTP preview route publishes target-only cache entries, while a
+  truthful trace requires full ancestor materialisation. Those shapes
+  deliberately do not share a key, so the first trace after an ordinary HTTP
+  preview executes cold; the trace layer never accepts a partial snapshot to
+  manufacture the appearance of reuse.
 - **Edge-join-aware parent projection.** A generic "keep the child's columns that
   exist in the parent" projection is provably wrong for the JOIN-role (right)
   parent of an edge-join, because Polars renames the right frame's copy of every
@@ -329,7 +310,7 @@ Out of scope (owned elsewhere, linked where relevant):
   mismatch).
 - **A malformed `preview` argument fails loudly as `TypeError`.** `execute_trace`
   only accepts `None`, a `PreviewReader`-shaped reader, or a snapshot dict; any
-  other type, or a reader whose `try_get` returns something other than
+  other type, or a reader whose `get` returns something other than
   `dict | None`, raises immediately rather than being coerced.
 - **Underlying execution errors propagate unchanged.** If a cold execution (no
   usable preview cache) fails — a bad node config, a contract mismatch — the

@@ -20,17 +20,16 @@ currently startable package.
 | [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | — |
 | [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | `AUD-DEPLOY-01` |
 | [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | `ROAD-TEST-01` |
-| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | — |
+| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | `EXEC-01` |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E01` |
 | [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | `AUD-C16` |
 | [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | — |
-| [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | — |
+| [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | `IO-JSON-01` |
 | [Modelling](modelling.md) | Training/scoring correctness, lifecycle, performance, capability | `MOD-M01` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P01` |
 | [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | `AUD-C05` |
-| [Rating](rating.md) | Key canonicalisation and persisted table round trips | — |
-| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | — |
-| [Specification corpus](specs-corpus.md) | Spec accuracy, contract folding, register, documentation governance | `SPEC-01` |
+| [Rating](rating.md) | Key canonicalisation and persisted table round trips | `RATE-01` |
+| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | `SEC-ENV-01` |
 | [Tracing and explainability](tracing-explainability.md) | Evaluation fidelity, row correlation, waterfall honesty | `AUD-C07` |
 
 ## Working protocol

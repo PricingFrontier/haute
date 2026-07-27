@@ -150,7 +150,8 @@
 - **Bug #1/#2 (naming collision):** lookup keys and values use internal names reserved against every input, entry, and output column (starting from `__haute_rating_key_{n}__` and `__haute_lookup_val__`, then prefixing `_` until free), so user columns named `"value"` or like an internal stem remain untouched.
 - **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`outputColumn`/`rules`, or a rating table with no `factors`/`entries`/`outputColumn`, is a *documented* passthrough (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `_apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
 - **`normalise_banding_factors` degrades gracefully on a non-list `factors` key**, returning `[]` rather than raising — this differs from the rating-table side, where a non-list `tables` raises `ValueError` (`normalise_rating_step_config`). This asymmetry is intentional but not called out in either module's docstring.
-  > NOTE: because `normalise_banding_factors` on a malformed (non-list) `factors` value silently returns an empty list instead of raising, a corrupted banding sidecar can silently execute as a no-op node rather than surfacing a config error — inconsistent with the "fail loud" pattern used everywhere else in this component.
+  > NOTE: [Tracked by RATE-01](../roadmap/rating.md#rate-01--consistent-malformed-config-rejection).
+  > Because `normalise_banding_factors` on a malformed (non-list) `factors` value silently returns an empty list instead of raising, a corrupted banding sidecar can silently execute as a no-op node rather than surfacing a config error — inconsistent with the "fail loud" pattern used everywhere else in this component.
 
 ## Error handling
 

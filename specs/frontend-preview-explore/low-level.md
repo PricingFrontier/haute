@@ -7,7 +7,7 @@
 | `frontend/src/panels/DataPreview.tsx` | Virtualised preview table, frame selection, search, cell callbacks and value formatting. |
 | `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip. |
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
-| `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Modelling-owned actionable execution-diagnostic banner consumed by Explore progress and cache reports. |
+| `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
 | `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview tab composition. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
@@ -57,6 +57,15 @@
 4. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
 
+`DataPreview` consumes guarded version-1 execution metrics through
+`ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states stay
+silent; a boundary or rejection places a warning/error icon immediately after
+the row/column summary, and memory pressure uses the warning path. Activating
+the icon explains projection limits, correctness, possible I/O/memory cost,
+and remediation without exposing raw bounded-collection JSON.
+`ExplorePreview` passes progress or cache-report metrics to
+`ExecutionDiagnosticsSummary`, whose technical detail is disclosed on demand.
+
 ### Utility editing concurrency
 
 1. `frontend/src/App.tsx` mounts `UtilityPanel` behind a local `Suspense` boundary only while
@@ -95,6 +104,9 @@ start/cancel exceptions also toast. Actionable cache-report execution metrics re
 shared diagnostics banner. Utility syntax errors remain inline and block a requested file switch;
 other file-operation failures toast or display action-local text. Cache/report/card shape is
 assumed to meet the API contract; optional overview settings alone are parsed defensively.
+Missing or unsupported execution diagnostics stay silent; the primary preview
+or Explore failure remains authoritative and no diagnostic-unavailable success
+state is fabricated.
 
 ## Testing
 
@@ -112,24 +124,3 @@ helpers are exercised through these component tests rather than owning standalon
 
 Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
-
-## Execution diagnostics
-
-`DataPreview.tsx` and `ExplorePreview.tsx` consume only the shared guarded version-1
-strategy payload through shared diagnostic components. Planning states remain available in
-execution metrics for support and observability, but
-`DataPreview` does not render a full-width strategy banner. `projected`,
-`admitted_eager`, and `not_planned` stay silent. A `boundary` adds a warning icon immediately after
-the Preview row/column summary; `rejected` uses an error icon in the same position. Activating the
-icon explains in plain language where projection stopped, that result correctness is unaffected,
-the possible I/O/memory cost, and an available remediation. Independently actionable memory
-pressure uses the warning indicator too. Raw reason codes, bounded-collection wrappers, and
-collection JSON are support data and are not user-facing copy.
-
-`ExplorePreview` passes progress or cache-report metrics to
-`ExecutionDiagnosticsSummary`, which renders memory pressure and rejected strategies with an
-accessible technical-detail disclosure. Missing/unsupported diagnostics stay silent; there is
-not yet a distinct diagnostic-unavailable UI state.
-
-Tests prove boundary and rejected indicator placement/explanations, memory-pressure detail,
-Explore cache-report metrics, and keyboard access without fabricated values.

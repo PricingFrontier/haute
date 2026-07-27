@@ -110,8 +110,10 @@ endpoint functions pass successful responses through a runtime parser before
 returning, so backend contract drift raises a descriptive `Error` at the call
 site instead of `undefined` propagating silently into a component. The
 exported generic `request`/`post` helpers, `postRawStream`, and caller-generic
-`readJson<T>` are deliberate exceptions: their response contract is supplied
-by the split module or call site, not asserted by `types/guards.ts`. A 403
+`readJson<T>` are deliberate exceptions: a split module must request
+`unknown` and validate its concrete response locally before exporting a typed
+value; the contract is not asserted by `types/guards.ts` or by the generic type
+parameter. A 403
 whose detail matches the "missing/invalid session" reason fires a
 `window` `CustomEvent` (`HAUTE_SESSION_EXPIRED_EVENT`) rather than being
 handled locally — any part of the app can listen for session expiry without
@@ -246,9 +248,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   reachable from the initial bundle graph; `frontend/scripts/check-bundle-size.mjs`
   gates the initial-gzip budget this layout exists to respect. The
   pattern generalises — `api/assistant.ts` follows the same split for the
-  assistant panel's endpoints (including its SSE stream reader and local
-  event parsing, the same local-parsing exception `api/dispersion.ts`
-  makes) rather than growing `client.ts` unconditionally.
+  assistant panel's endpoints (including its status/session/history parsers and
+  fully validating SSE reader, the same feature-owned local-parsing rule
+  `api/dispersion.ts` follows) rather than growing `client.ts`
+  unconditionally.
 - **A cached result's staleness key is `configHash` + `source` +
   `structuralVersion`, never `configHash` alone.** `CachedExploreResult`
   already tracked all three; solve/train results and
@@ -296,6 +299,11 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   object, got string") — this is a contract violation between frontend and
   backend, not a user-facing condition, and is expected to surface during
   development/CI rather than in production traffic.
+- A split-module response is subject to the same rule: the generic transport
+  returns `unknown`, the feature parser validates required fields before
+  returning, and a malformed payload throws an ordinary descriptive `Error`.
+  HTTP failures remain `ApiError`; a type parameter alone is never treated as
+  validation.
 - Parsers whose purpose is to discriminate an optional payload return
   `null` only when their discriminator does not match (for example an
   unsupported execution-diagnostic schema version or a non-divergence Git

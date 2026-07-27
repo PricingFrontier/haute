@@ -45,6 +45,7 @@ ROADMAP_INDEX = ROADMAP_ROOT / "README.md"
 _MARKDOWN_CODE_SPAN = re.compile(r"(?<!`)`([^`\r\n]+)`(?!`)")
 _MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _MARKDOWN_FENCE = re.compile(r"```.*?```", flags=re.DOTALL)
+_NOTE_CALLOUT_START = re.compile(r"^\s*>\s*NOTE:\s*(.*)$")
 _MODULE_MAP_HEADING = re.compile(r"^## Module map\s*$", flags=re.MULTILINE)
 _LEVEL_TWO_HEADING = re.compile(r"^##(?!#)\s+\S.*$", flags=re.MULTILINE)
 _MODULE_MAP_ROW = re.compile(r"^\s*\|\s*(.*?)\s*\|", flags=re.MULTILINE)
@@ -134,7 +135,6 @@ _EXPECTED_COMPONENT_ROADMAPS = (
     "pipeline-authoring",
     "rating",
     "security-supply-chain",
-    "specs-corpus",
     "tracing-explainability",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
@@ -239,7 +239,6 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
         0
     ]
 
-    assert "  trip/\n" in exclude_block
     for internal_file in (
         "CI_MIRROR.md",
         "COMMIT_STANDARDS.md",
@@ -496,7 +495,7 @@ class DocViolation:
 
 @dataclass(frozen=True)
 class RepoInventory:
-    """Tracked repository paths indexed once for repeated documentation lookups."""
+    """Versionable working-tree paths indexed for documentation lookups."""
 
     root: Path
     files: frozenset[Path]
@@ -551,7 +550,7 @@ def _h2_sections(text: str) -> dict[str, str]:
 
 def _repo_files(root: Path) -> set[Path]:
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=root,
         check=True,
         capture_output=True,
@@ -859,6 +858,122 @@ def _roadmap_evidence_blocks(text: str) -> list[str]:
     )
 
 
+def _shared_owner_annotation_violations(
+    root: Path,
+    specs_root: Path,
+    ownership_path: Path,
+) -> list[DocViolation]:
+    """Require each mapped consumer row to name the ledger's linked primary."""
+    with ownership_path.open("rb") as ownership_file:
+        records = tomllib.load(ownership_file).get("shared_file", [])
+
+    violations: list[DocViolation] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        path = record.get("path")
+        primary = record.get("primary")
+        consumers = record.get("consumers")
+        if (
+            not isinstance(path, str)
+            or not isinstance(primary, str)
+            or not isinstance(consumers, list)
+        ):
+            continue
+        expected = f"[{primary}](../{primary}/low-level.md)"
+        for consumer in consumers:
+            if not isinstance(consumer, str):
+                continue
+            document = specs_root / consumer / "low-level.md"
+            if not document.is_file():
+                continue
+            sections = _h2_sections(_without_fences(document.read_text(encoding="utf-8")))
+            matching_rows = [
+                row
+                for row in _module_map_rows(sections.get("Module map", ""))
+                if row
+                and path
+                in {
+                    _normalise_doc_reference(reference)
+                    for reference in _MARKDOWN_CODE_SPAN.findall(row[0])
+                }
+            ]
+            if matching_rows and not all(expected in " ".join(row[1:]) for row in matching_rows):
+                violations.append(
+                    DocViolation(
+                        document.relative_to(root).as_posix(),
+                        "shared-owner-annotation",
+                        f"{path} must name {expected}",
+                    )
+                )
+    return violations
+
+
+def _note_linkage_violations(
+    root: Path,
+    specs_root: Path,
+    roadmap_root: Path,
+) -> list[DocViolation]:
+    """Require every live-defect callout to link to an active roadmap package."""
+    violations: list[DocViolation] = []
+    for document in sorted(specs_root.glob("*/*.md")):
+        if document.name not in {"high-level.md", "low-level.md"}:
+            continue
+        lines = _without_fences(document.read_text(encoding="utf-8")).splitlines()
+        for line_number, line in enumerate(lines, start=1):
+            match = _NOTE_CALLOUT_START.match(line)
+            if match is None:
+                continue
+            callout_lines = [match.group(1)]
+            for continuation in lines[line_number:]:
+                quote = re.match(r"^\s*>\s?(.*)$", continuation)
+                if quote is None:
+                    break
+                callout_lines.append(quote.group(1))
+            callout = "\n".join(callout_lines)
+            linked_packages: list[tuple[Path, str]] = []
+            for target in _MARKDOWN_LINK.findall(callout):
+                target_path, hash_mark, anchor = target.strip().partition("#")
+                linked = (document.parent / target_path).resolve() if target_path else document
+                if (
+                    hash_mark
+                    and anchor
+                    and linked.is_file()
+                    and linked.parent == roadmap_root.resolve()
+                ):
+                    linked_packages.append((linked, anchor))
+            detail = f"line {line_number}"
+            if not linked_packages:
+                violations.append(
+                    DocViolation(
+                        document.relative_to(root).as_posix(),
+                        "untracked-live-defect-note",
+                        detail,
+                    )
+                )
+                continue
+            if not any(
+                anchor
+                in {
+                    _slug(heading.group(1))
+                    for heading in re.finditer(
+                        r"^###\s+(.+?)\s*$",
+                        linked.read_text(encoding="utf-8"),
+                        re.MULTILINE,
+                    )
+                }
+                for linked, anchor in linked_packages
+            ):
+                violations.append(
+                    DocViolation(
+                        document.relative_to(root).as_posix(),
+                        "inactive-live-defect-note",
+                        detail,
+                    )
+                )
+    return violations
+
+
 def _docs_violations(
     root: Path = ROOT,
     specs_root: Path | None = None,
@@ -1091,6 +1206,11 @@ def _docs_violations(
                     )
                     violations.add(DocViolation(relative, rule, violation.detail))
 
+    ownership_path = specs_root / "ownership.toml"
+    if ownership_path.is_file():
+        violations.update(_shared_owner_annotation_violations(root, specs_root, ownership_path))
+    violations.update(_note_linkage_violations(root, specs_root, roadmap_root))
+
     for test in files:
         rel = test.relative_to(root).as_posix()
         if re.fullmatch(r"tests(?:/.+)?/test_[^/]+\.py", rel) and rel not in referenced_tests:
@@ -1257,6 +1377,132 @@ def test_shared_file_component_parser_preserves_component_multiplicity() -> None
             "server-api": {"src/haute/shared.py", "src/haute/only_api.py"},
         }
     ) == {"src/haute/shared.py": {"pipeline-config", "server-api"}}
+
+
+@pytest.mark.parametrize(
+    ("annotation", "violates"),
+    [
+        ("Consumes the shared module.", True),
+        (
+            "Cross-component dependency owned by [wrong-owner](../wrong-owner/low-level.md).",
+            True,
+        ),
+        (
+            "Cross-component dependency owned by [primary](../primary/low-level.md).",
+            False,
+        ),
+    ],
+    ids=["missing-owner", "wrong-owner", "correct-owner"],
+)
+def test_shared_owner_annotation_rule_uses_ledger_primary(
+    tmp_path: Path,
+    annotation: str,
+    violates: bool,
+) -> None:
+    specs = tmp_path / "specs"
+    primary = specs / "primary"
+    consumer = specs / "consumer"
+    primary.mkdir(parents=True)
+    consumer.mkdir()
+    (primary / "low-level.md").write_text(
+        "## Module map\n\n| File | Responsibility |\n|---|---|\n| `src/shared.py` | Primary. |\n",
+        encoding="utf-8",
+    )
+    (consumer / "low-level.md").write_text(
+        "## Module map\n\n| File | Responsibility |\n|---|---|\n"
+        f"| `src/shared.py` | {annotation} |\n",
+        encoding="utf-8",
+    )
+    ownership = specs / "ownership.toml"
+    ownership.write_text(
+        "\n".join(
+            [
+                "version = 1",
+                "[[shared_file]]",
+                'path = "src/shared.py"',
+                'primary = "primary"',
+                'consumers = ["consumer"]',
+                'reason = "fixture"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    actual = _shared_owner_annotation_violations(tmp_path, specs, ownership)
+
+    assert bool(actual) is violates
+    if violates:
+        assert actual == [
+            DocViolation(
+                "specs/consumer/low-level.md",
+                "shared-owner-annotation",
+                "src/shared.py must name [primary](../primary/low-level.md)",
+            )
+        ]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_rule"),
+    [
+        (
+            "> NOTE: this shipped behaviour is a suspected defect.",
+            "untracked-live-defect-note",
+        ),
+        (
+            "> NOTE: [Tracked](../roadmap/component.md#missing-package) remains broken.",
+            "inactive-live-defect-note",
+        ),
+        (
+            "> NOTE: [Tracked](../roadmap/component.md#comp-01--fix-it) remains broken.",
+            None,
+        ),
+        (
+            "### Operational caveat\n\nThis limitation is accepted and untracked.",
+            None,
+        ),
+    ],
+    ids=["unlinked", "missing-package", "linked", "ordinary-caveat"],
+)
+def test_live_defect_note_linkage_rule(
+    tmp_path: Path,
+    body: str,
+    expected_rule: str | None,
+) -> None:
+    specs = tmp_path / "specs"
+    component = specs / "component"
+    roadmap = specs / "roadmap"
+    component.mkdir(parents=True)
+    roadmap.mkdir()
+    (component / "high-level.md").write_text(body, encoding="utf-8")
+    (roadmap / "component.md").write_text(
+        "### COMP-01 — Fix it\n",
+        encoding="utf-8",
+    )
+
+    violations = _note_linkage_violations(tmp_path, specs, roadmap)
+
+    assert [violation.rule for violation in violations] == (
+        [] if expected_rule is None else [expected_rule]
+    )
+
+
+def test_frontend_git_specs_state_the_transport_ownership_split() -> None:
+    high = (SPECS_ROOT / "frontend-git-ui" / "high-level.md").read_text(encoding="utf-8")
+    low = (SPECS_ROOT / "frontend-git-ui" / "low-level.md").read_text(encoding="utf-8")
+    for text in (high, low):
+        normalised = " ".join(text.split()).casefold()
+        assert "`frontend/src/api/client.ts` and `apierror` are owned by" in normalised
+        assert "the git request/response wire contract is owned by" in normalised
+        assert "backend http routing and status behaviour are owned by" in normalised
+    low_normalised = " ".join(low.split()).casefold()
+    assert (
+        re.search(
+            r"`frontend/src/api/client[.]ts` and `?apierror`?.{0,120}"
+            r"owned by \[server-api",
+            low_normalised,
+        )
+        is None
+    )
 
 
 def test_specs_readme_node_type_count_matches_enum() -> None:

@@ -40,11 +40,12 @@ Out of scope:
   Python 3.11 and later. Installed users receive the `haute` command and typing
   metadata.
 - Non-editable package builds made from a checkout that contains `frontend/`
-  require both `src/haute/static/index.html` and a non-empty
-  `src/haute/static/assets/` directory and require them to be no older than the
-  checked frontend source and selected build configuration. In that context, a
-  stale or missing asset set stops the build with instructions rather than
-  producing a wheel whose web interface does not match its sources. When
+  require a complete static dependency graph and an exact content proof for the
+  current production inputs. The proof covers package-version metadata, the
+  frontend HTML/public/source trees, npm metadata, Vite configuration, and every
+  referenced TypeScript project, so additions, edits, renames, and deletions all
+  invalidate it. Contributor documentation, tests, test support, and lint,
+  Vitest, and Playwright configuration are not production inputs. When
   `frontend/` itself is absent, the hook returns without validating the static
   bundle.
 - Setting `HAUTE_BUILD_FRONTEND` to a recognised true value explicitly permits
@@ -52,20 +53,22 @@ Out of scope:
   then run the frontend production build when assets are stale. Recognised false
   values select validation only. Invalid values fail before any editable-build
   or missing-frontend early return.
-- The frontend build type-checks first, then Vite writes a fresh static bundle
-  to `src/haute/static/`; it uses stable vendor chunks. Vite reads the package
-  version from `pyproject.toml` and defines `__APP_VERSION__` for browser
-  surfaces that render it. A missing package version fails the build instead
-  of substituting a stale or synthetic value.
+- The frontend build type-checks first, then Vite replaces
+  `src/haute/static/` with a fresh bundle and machine-readable dependency
+  manifest; it uses stable vendor chunks. The build hook records the exact
+  production-input proof beside that output. Vite reads the package version
+  from `pyproject.toml` and defines `__APP_VERSION__` for browser surfaces that
+  render it. A missing package version fails the build instead of substituting
+  a stale or synthetic value.
 - The source distribution intentionally excludes frontend source, documentation,
   tests and local/project artefacts, while the wheel includes the package and
   Hatch build artifacts. The generated static files are an explicit Hatch
   artifact so the wheel carries the browser client.
 - A push to `main` that changes any `docs/**` path or `mkdocs.yml` builds MkDocs
   in strict mode and deploys the resulting `site/` artifact to GitHub Pages.
-  `CI_MIRROR.md`, `COMMIT_STANDARDS.md`, `PERFORMANCE_CHECKS.md`, and TRIP
-  material are excluded from the public site, but changes to those paths still
-  trigger this workflow. Component specs and engineering roadmaps live in
+  `CI_MIRROR.md`, `COMMIT_STANDARDS.md`, and `PERFORMANCE_CHECKS.md` are
+  excluded from the public site, but changes to those paths still trigger this
+  workflow. Component specs and engineering roadmaps live in
   root-level `specs/`, outside the site source tree, so changes there neither
   publish nor trigger a docs deployment. A newer docs run queues behind an
   active Pages deployment instead of cancelling it.
@@ -78,6 +81,10 @@ Out of scope:
   source is available, automatically rebuilding on every package build was
   rejected in favour of a loud stale-asset failure: an accidental Node/npm
   difference should not silently change a wheel.
+- A canonical content inventory is used instead of modification times because
+  the package contract must detect deleted and renamed inputs as well as edited
+  files. Validation and the explicit-build skip path consume the same proof so
+  they cannot disagree about freshness.
 - `npm ci` and the checked-in `frontend/package-lock.json` make frontend
   dependency installation deterministic. The frontend is private because it is
   a package-build input, not an independently published npm library.
@@ -106,19 +113,24 @@ Out of scope:
 
 - An unrecognised `HAUTE_BUILD_FRONTEND` value raises `RuntimeError`; callers
   must choose an explicit true or false value.
-- A non-editable build with `frontend/` present and missing or stale
-  `src/haute/static/index.html` or `src/haute/static/assets/` raises
-  `RuntimeError` with the rebuild command.
-  It never substitutes a stale bundle.
+- A non-editable build with `frontend/` present raises `RuntimeError` when the
+  input proof is absent, malformed, or mismatched, or when the output graph is
+  incomplete. Readiness requires a regular `index.html`, a non-empty Vite
+  manifest with an entry chunk, every manifest file/CSS/asset and
+  imported/dynamic chunk, and every local HTML script or link reference to
+  resolve to a regular file inside the static root. An unrelated file in
+  `assets/` is never sufficient evidence. The hook never substitutes a stale
+  bundle.
 - If `frontend/` is absent, the hook skips both building and validation. This
   source-distribution/CI accommodation also means that such a build context can
   bypass the missing-static-asset failure; callers must ensure the static bundle
   is already included.
-- If Node/npm cannot be found, dependency installation fails, Vite fails, or no
-  complete output asset set is produced, the build hook raises `RuntimeError`
-  and forwards captured command output to stderr. Subprocess output uses
-  replacement decoding for malformed bytes and every build subprocess has a
-  finite timeout whose expiry is reported as a `RuntimeError`.
+- If Node/npm cannot be found, dependency installation fails, Vite fails, the
+  dependency manifest is malformed/dangling/escaping, an input cannot be read,
+  or the input proof cannot be written, the build hook raises `RuntimeError`.
+  Subprocess output is forwarded to stderr with replacement decoding for
+  malformed bytes, and every build subprocess has a finite timeout whose expiry
+  is reported as a `RuntimeError`.
 - Editable builds skip the hook's static-asset validation. This does not promise
   that an editable development environment can serve a production client.
 - A strict MkDocs build failure prevents the documentation artifact from being

@@ -167,6 +167,11 @@ generic `request`/`post` helpers, `postRawStream`, and caller-generic
 `readJson<T>` cannot assert an endpoint-specific shape and are documented
 exceptions. Split modules such as `api/dispersion.ts` validate with their own
 local parsers (`parseDispersion*`) to preserve the lazy bundle boundary.
+`api/assistant.ts` likewise requests status/session JSON as `unknown`, validates
+every history row locally, and parses every required field of each SSE variant
+before invoking its callback. These feature parsers tolerate unrelated additive
+fields but reject missing or mistyped required fields with ordinary `Error`
+values; only the shared transport manufactures `ApiError`.
 
 **Client-embedded job polling** (`runDispersionEstimate`): a third polling
 shape alongside `useJobPolling` and `useNodeResultsStore`'s result caches —
@@ -288,12 +293,11 @@ focus nor leaves stale callbacks.
   `preventDefault`ed and focus is forced back onto the container itself
   rather than escaping.
 
-> NOTE: `useSettingsStore.fetchMlflow` guards re-entrancy with a *module-level*
-> `let _mlflowFetchingGuard` boolean rather than store state. This means the
-> guard is shared across every store instance created in the process
-> (relevant for tests that create fresh store instances but don't reset this
-> module-level flag) — tests that exercise `fetchMlflow` concurrency need to
-> account for this shared guard rather than assuming per-instance isolation.
+**Process-wide MLflow fetch guard.** `useSettingsStore.fetchMlflow` guards
+re-entrancy with a module-level `let _mlflowFetchingGuard` rather than store
+state. The guard is shared across every store instance in the process, so tests
+that create fresh instances must retain process-wide concurrency semantics
+rather than assume per-instance isolation.
 
 ## Error handling
 
@@ -325,8 +329,8 @@ focus nor leaves stale callbacks.
 
 ## Testing
 
-- `tests/test_frontend_backend_contract.py` covers frontend/backend contract parity.
-- `tests/test_sanitize_parity_fixture.py` covers sanitization parity fixtures.
+- `tests/test_frontend_backend_contract.py` verifies frontend/backend node-type and allowed-column-type sets remain identical.
+- `tests/test_sanitize_parity_fixture.py` verifies the shared sanitization fixture matches backend output and retains minimum fixture width.
 
 Tests are split between colocated `frontend/src/**/__tests__/` folders next to each source
 file and a parallel `frontend/src/__tests__/`
@@ -341,6 +345,10 @@ same Vitest config.
   matrices for the remaining trust-boundary endpoints. Generic transport,
   raw-stream, and caller-generic JSON helpers are tested at their transport
   boundary rather than pretending to know a concrete response schema.
+- **Assistant split boundary** (`frontend/src/api/__tests__/assistant.test.ts`):
+  malformed status/session/history matrices and every SSE variant prove that
+  feature-local parsers reject invalid fields before typed return or callback;
+  non-OK transport responses remain `ApiError`, parser failures do not.
 - **`frontend/src/api/dispersion.ts`**
   (`frontend/src/api/__tests__/dispersion.test.ts`):
   `estimateGlmDispersion` request

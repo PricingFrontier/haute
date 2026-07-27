@@ -116,7 +116,8 @@ before commit. `parse_table_path`/`parse_column_path_full`/
 `parse_column_path` delegate grammar acceptance to `_jsonpath.py`; `make_table_path`
 delegates canonical rendering to the same writer.
 
-> NOTE: `validate_v2_schema` does not runtime-check the declared `emit`,
+> NOTE: [Tracked by IO-JSON-01](../roadmap/io-layer.md#io-json-01--closed-v2-json-input-schema).
+> `validate_v2_schema` does not runtime-check the declared `emit`,
 > `selected`, or `status` value types. `emit`/`selected` are consumed by
 > truthiness and `status` is UI metadata, despite their narrower `TypedDict`
 > annotations.
@@ -252,18 +253,18 @@ rename raises, it attempts to rename the backup back before re-raising.
 (`0.01s..0.1s`) before giving up — a Windows-specific transient-handle-lock
 accommodation.
 
-> NOTE: The replacement of an existing directory is not atomic to readers: the
-> live path is absent between the two renames. `_build_lock_for` is a process-local
-> thread lock that serializes same-process builders (and a promotion against a build
-> of its working directory), but it does not lock readers or other processes. A hard
-> interruption after `live_dir` is renamed aside, or a failed restoration, can leave
-> `live_dir` absent with a UUID `.build-old-<uuid>` backup. Existing
-> tests exercise same-process build serialization, different-cache parallelism,
-> staging-write cleanup, transient rename retry, synchronous restoration after a
-> failed second rename, staged mirror mutation rejection, and already-returned
-> LazyFrames surviving rebuild, mirror, and clear. A brand-new concurrent reader can
-> still observe an absent live path and reject that candidate; cross-process
-> publishers and mid-swap process death are not covered.
+**Reader-visibility caveat.** Replacing an existing directory is not atomic to
+readers: the live path is absent between the two renames. `_build_lock_for` is a
+process-local thread lock that serializes same-process builders (and a promotion
+against a build of its working directory), but it does not lock readers or other
+processes. A hard interruption after `live_dir` is renamed aside, or a failed
+restoration, can leave `live_dir` absent with a UUID `.build-old-<uuid>` backup.
+Existing tests exercise same-process build serialization, different-cache
+parallelism, staging-write cleanup, transient rename retry, synchronous
+restoration after a failed second rename, staged mirror mutation rejection, and
+already-returned LazyFrames surviving rebuild, mirror, and clear. A brand-new
+concurrent reader can still observe an absent live path and reject that
+candidate; cross-process publishers and mid-swap process death are not covered.
 
 **Schema inference** — `infer_v2_schema_from_data(data_path, sample_size=None)`:
 1. `_iter_records_for_inference` — full scan, or (for JSONL/root-array files) a
@@ -409,8 +410,8 @@ equal-length `leftOn`/`rightOn` values, and rejects mixing the two forms.
 
 ## Testing
 
-- `tests/test_apiinput_flat_output_dry_run.py` covers API-input flat-output dry runs.
-- `tests/test_output_nested_roundtrip.py` covers nested output round trips.
+- `tests/test_apiinput_flat_output_dry_run.py` verifies flat API-input-to-output graph execution and dry-run route responses.
+- `tests/test_output_nested_roundtrip.py` verifies nested output round-trips and deploy-scorer rendering.
 
 Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
 

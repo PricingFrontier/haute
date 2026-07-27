@@ -517,6 +517,24 @@ class TestPipelinePortAwareExecution:
 
         assert p.score(seed).to_dict(as_series=False) == {"quote_id": [17]}
 
+    def test_score_treats_an_unnamed_edge_as_the_whole_output_channel(self):
+        p = Pipeline("unnamed_port_score")
+
+        @p.api_input
+        def api_source() -> pl.DataFrame:
+            raise AssertionError("score() must seed the apiInput source")
+
+        @p.polars
+        def consume(quotes: pl.DataFrame) -> pl.DataFrame:
+            return quotes
+
+        p.connect("api_source", "consume")
+        seed = pl.DataFrame({"quote_id": [17]})
+
+        assert p.score(seed).to_dict(as_series=False) == {"quote_id": [17]}
+        with pytest.raises(ExecutionError, match="no connected ports"):
+            p.score({"quotes": seed})
+
     def test_score_rejects_a_bare_frame_for_multiple_connected_ports(self):
         p = self._two_port_score_pipeline()
 

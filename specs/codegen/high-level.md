@@ -182,10 +182,9 @@ Out of scope (owned by neighbouring components):
   execution graph keyed by sanitized function name. Catching collisions
   per-file would let a genuinely fatal cross-module shadowing bug through
   to runtime; `_error_on_name_collisions` is deliberately global.
-  > NOTE: this means renaming a node in one submodel can be rejected because
-  > of a same-named node in a completely different, unrelated submodel — a
-  > surprising error surface for the author of either submodel, but the
-  > alternative (silent shadowing at execution time) is worse.
+  Consequently, renaming a node in one submodel can be rejected because of a
+  same-named node in an unrelated submodel. That wider authoring error surface
+  is the accepted cost of preventing silent execution-time shadowing.
 - **`OSError`/`mlflow.*` are the only contract-computation errors treated as
   "opaque," not fallback-worthy.** `_is_codegen_infra_error` narrowly
   allowlists environmental failures (missing artifact, unreachable MLflow

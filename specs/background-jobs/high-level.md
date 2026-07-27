@@ -50,8 +50,8 @@ Out of scope (owned elsewhere):
   [execution-engine](../execution-engine/high-level.md). This component owns the
   versioned transport layered on that primitive.
 - Cancellation-token semantics, checkpoints, and memory-pressure sampling themselves —
-  see [tracing](../tracing/high-level.md) / [execution-engine](../execution-engine/high-level.md)
-  for `ExecutionContext` / `ExecutionCancellationToken`.
+  see [execution-engine](../execution-engine/high-level.md) for
+  `ExecutionContext` / `ExecutionCancellationToken`.
 - The route handlers that decide *when* to create a job, what config to store in it,
   and how to render its status to a client — see
   [server-api](../server-api/high-level.md), [modelling](../modelling/high-level.md),

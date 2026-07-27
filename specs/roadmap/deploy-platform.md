@@ -29,8 +29,16 @@ is not part of this package.
 - Reverify every deploy-facing input path, including model
   `artifact_path`/`feature_contract_path`, after CLI/config resolution and
   before bundling.
+- Require a configured quote-validation directory to exist, be a directory,
+  and contain at least one quote; validate the same projected `output_fields`
+  contract that the deployed scorer serves.
+- Make deploy-graph input discovery accept every supported deploy source node
+  deliberately, or reject unsupported sources before pruning rather than
+  reaching the single-source fallback accidentally.
 - Make the no-`haute.toml` `--pipeline` path use the same canonical resolution
   as configured discovery instead of allowing a raw argument to overwrite it.
+- Narrow CLI backend exception mapping so implementation defects remain
+  distinguishable from user-actionable target/configuration failures.
 - Parse every generated GitHub, GitLab, and Azure pipeline as complete YAML and
   validate required environment/secret placement.
 - Replace generic configuration failures with actionable messages naming the
@@ -48,6 +56,9 @@ is not part of this package.
   secret names, indentation, and branch conditions.
 - Missing model/config inputs produce stable domain errors and never deploy as
   identity passthroughs.
+- Missing/empty quote suites cannot pass a configured validation gate, selected
+  output fields are checked before deployment, and backend defects retain a
+  diagnostic path distinct from expected deploy failures.
 
 **Dependencies:** [Security](security-supply-chain.md) owns trust policy;
 [pipeline authoring](pipeline-authoring.md) owns sidecar/DSL semantics.

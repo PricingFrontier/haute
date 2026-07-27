@@ -81,6 +81,16 @@
 5. `frontend/src/panels/OptimiserDataPreview.tsx` caps rows at 5,000 before grouping by quote,
    orders scenario rows, and calculates full-preview statistics only when its Statistics tab is open.
 
+`ExecutionDiagnosticsSummary` consumes the guarded versioned metrics contract
+and renders only actionable memory pressure or rejected strategy, with
+technical collections behind disclosure. `useDataInputColumns` consumes
+guarded schema/preview results keyed by node/config/source generation and never
+derives columns from path, provider internals, or a snapshot-build side effect.
+The Banding classifier supplies both ordered healthy levels and named
+zero-level issues; `OptimiserConfig` compares any explicit source id with the
+current direct-Banding candidates and renders one aggregate accessible alert
+without broadening the exactly-one-direct fallback.
+
 ## Edge cases and invariants
 
 - With no modelling algorithm, configuration sections that require it are not rendered. Hiding a
@@ -127,58 +137,14 @@ through their parent preview tests; not every helper has a dedicated test file.
 Performance regression coverage for background progress rendering is in
 `frontend/e2e/job-progress-render.benchmark.spec.ts`.
 
-## Execution diagnostics
-
-`ModellingConfig.tsx`, `OptimiserConfig.tsx`, their action/result areas, and
-`ExecutionDiagnosticsSummary` consume the guarded execution-metrics contract. The summary renders
-actionable memory pressure and a rejected strategy with blocking node/operator/profile, cost,
-stable reason and remediation; technical collections remain behind an accessible disclosure.
-Other planner statuses stay silent and do not pre-emptively gate submit. Missing or unsupported
-strategy detail currently yields no secondary diagnostic while the request's ordinary error/status
-copy remains authoritative.
-
-Focused tests cover rejected-strategy and memory-pressure detail, structured request failures,
-contract-error retention, and the absence of invented planner state.
-
-## Data-input consumption
-
-- `OptimiserConfig.tsx` continues to derive candidate ids from direct graph inputs and preserves
-  explicit selection when valid. `useDataInputColumns.ts` consumes the retained node's guarded
-  schema/preview contract and keys results by node/config/source generation, not by path, table,
-  or removed node type.
-- `utils/banding.ts` keeps its exactly-one-direct-banding-source fallback. Its node filtering and
-  tests remove legacy I/O constants without broadening the fallback to an arbitrary `dataInput`.
-- Estimate/solve/auto-range request state carries backend capability and snapshot diagnostics
-  unchanged. Column loading never calls input-cache Build/Refresh.
-- Update component/hook/helper fixtures for grouped Data Input configs, optional code, multiple
-  roots, cached generation changes, and removed-node absence. Guard tests reject legacy node
-  values rather than rewriting them.
-
-## Optimiser canvas assurance
-
-- `utils/banding.ts` supplies the same typed factor classification consumed by Rating.
-  `OptimiserConfig.tsx` compares an explicit source id with current direct Banding candidates;
-  an absent explicit source is a confirmed missing source, while an unconfigured optimiser
-  retains the existing exactly-one-direct-source fallback and is not itself an error.
-- `OptimiserConfig.tsx` renders one accessible warning that aggregates the missing selected source
-  and named zero-level outputs from the effective selected Banding node. Healthy levels still
-  render as factor controls. Changing to a healthy source clears only issues that no longer apply.
-- `e2e/canvas-assurance.spec.ts` extends the deterministic E2E project with a solved optimiser and
-  apply node. It saves non-default objective/constraint ranges, reloads and reopens the editor,
-  then asserts the fields before solving. Frontier selection is asserted by stable
-  `point_index`/display identity, and local apply is checked against the selected artefact.
-- The MLflow leg is a browser-network contract: Playwright intercepts the repository-owned API
-  boundary with a fixed run response, records the requested job/selected-point identity, and
-  asserts the editor displays the returned experiment/run identity. Optimiser logging currently
-  creates a run and artifacts rather than a registered-model identity; the journey neither starts
-  nor contacts an external MLflow server.
-- `src/panels/__tests__/OptimiserConfig.test.tsx` owns missing explicit source, healthy source,
-  zero-level source, and mixed-output alert boundaries. Existing result-store tests continue to
-  own rejection of a backend response whose echoed point index differs from the requested one.
-
-## Frontier-range editor
-
-`frontend/src/panels/OptimiserConfig.tsx` reads and writes only the named object in
-`frontier_ranges`; it has no scalar-range fallback or mirror write. `useConstraintHandlers`
-migrates the matching range on rename and removes it with its constraint in the same complete
-update payload. Focused hook/component tests inspect the atomic updates.
+Focused diagnostics tests cover rejected-strategy and memory-pressure detail,
+structured request failures, contract-error retention, and the absence of
+invented planner state. Data-input tests cover multiple roots/direct parents,
+explicit selection, direct/cached post-Polars columns, missing-snapshot
+diagnostics, and no implicit build. Optimiser warning tests cover missing
+explicit sources and mixed healthy/zero-level outputs. The deterministic
+`frontend/e2e/canvas-assurance.spec.ts` journey persists constraint/range
+fields, selects and applies the backend `point_index`, and intercepts the
+MLflow API to assert request/result identity without contacting a live service.
+Hook/component tests also inspect atomic constraint-range rename/removal and
+prove no global frontier bounds are read or written.

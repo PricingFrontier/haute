@@ -15,7 +15,7 @@
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
 | `src/haute/_polars_utils.py` | Streaming and cancellable streaming collect, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
 | `src/haute/_file_ops.py` | Atomic byte/text writers used for pointer and metadata publication. |
-| `src/haute/_path_resolution.py` | Shared runtime path containment/resolution consumed by I/O. |
+| `src/haute/_path_resolution.py` | Shared runtime path containment/resolution owned by [sandbox-security](../sandbox-security/low-level.md) and consumed by I/O. |
 | `src/haute/_path_case_audit.py` | Cross-platform case-ambiguity warnings for user-facing paths. |
 | `src/haute/discovery.py` | Pipeline-file discovery used by file-facing workflows. |
 
@@ -57,9 +57,6 @@ relationship is recorded in `specs/ownership.toml`.
    and attaches lease release to execution cleanup or an explicit callable scan-plan token.
 6. `resolve_data_input_from_config()` is the generated-code sidecar entry point.
 
-The dead registry helpers `read_polars_input_from_config()` and
-`write_polars_output_from_config()` do not form part of this flow and are not shipped.
-
 ### Snapshot publication
 
 1. The per-identity process lock serialises same-process builders.
@@ -77,6 +74,51 @@ newest activity timestamp and removes a directory only when that timestamp preda
 `HAUTE_INPUT_CACHE_STAGING_MAX_AGE_SECONDS`; stat failures and recent staging are preserved.
 Non-current generations are never startup-swept. Staging bytes are included in quota
 projection, excluding only the build currently being admitted.
+
+### Snapshot lease lifecycle
+
+1. Snapshot resolution validates the Data Input, derives the redacted identity,
+   and enters the store lease under that identity's coordination lock.
+   Pointer, metadata, size/digest, footer, row count, and schema validation
+   complete before the local `(identity, generation)` lease count is incremented
+   and the generation is exposed.
+2. The generation supplies a Parquet `LazyFrame`. Inside an
+   `ExecutionContext`, one idempotent release callback is registered with
+   execution cleanup, so every plan derived during that request remains
+   protected through collection and teardown. Outside an execution context,
+   an identity batch operation carrying a finalizer is embedded in the lazy
+   plan; Polars-derived plans retain that operation and therefore the lease
+   until the last reachable plan is collected.
+3. Refresh publishes a new immutable generation and changes the current
+   pointer. The old generation remains because its lease count is non-zero;
+   new resolvers lease the new current generation. Clear removes the pointer
+   first, so no new resolver can select either generation, but it likewise
+   retains any locally leased generation.
+4. The idempotent callback exits the lease once. The count is decremented under
+   the identity lock, and when the final holder releases, every non-current
+   unleased generation is retired. Thus refresh/clear affect future selection
+   immediately without invalidating an already-derived scan.
+
+### Staging reclamation and quota admission
+
+Store construction examines only real, non-symlink `.staging-*` directories.
+For each it walks the tree without following symlinks and finds the newest
+activity time across the directory and its contents. A tree is removed only
+when that proof is readable and older than the configured threshold; a recent,
+racing, or unreadable tree remains. No generation directory is part of startup
+cleanup.
+
+Before publication, quota accounting totals every published Parquet plus every
+retained staging byte except the staging tree being admitted, then adds the
+new artifact and generation count. The old current generation for the same
+identity is subtracted only if locally unleased because successful pointer
+replacement makes it reclaimable. If the projection still exceeds byte or
+count limits, candidates are the oldest current generations of other
+identities. Admission takes each candidate's identity lock without waiting,
+rechecks that it is still current and unleased, and subtracts it provisionally.
+Nothing is evicted unless the resulting projection fits; otherwise admission
+raises and leaves all pointers/generations unchanged. On success the selected
+pointers and generation directories are removed before the new staging rename.
 
 ### SQLite builder
 
@@ -97,7 +139,7 @@ projection, excluding only the build currently being admitted.
 `validate_data_output_config()` and registry mode resolution select the Polars sink.
 `write_polars_output()` validates arguments/engines, applies the output target, and uses the
 bounded sink discipline. Sidecar loading and parent-directory preparation are owned by the
-generated pipeline/runtime seam, not dead registry wrappers.
+generated pipeline/runtime seam.
 
 ### Streaming collection
 
@@ -143,15 +185,55 @@ Provider route handlers log exception type plus a credential-scrubbed message, w
 job responses use stable non-sensitive messages and error codes. Unexpected sidecar
 overwrite is an HTTP 409; registered data sinks keep their documented overwrite semantics.
 
+### Boundary failure ordering
+
+1. Data Input/Output shape, active-branch fields, arguments, mode, engine
+   availability, and raw-URI credential safety are validated before identity
+   construction or provider access. Identity canonicalisation then rejects
+   secret-bearing keys/values before hashing or metadata publication.
+2. A snapshot build rejects unsupported/mismatched build class before creating
+   staging. Once staged, cancellation/deadline checkpoints bracket provider
+   read, artifact write, integrity/footer/schema measurement, quota admission,
+   generation rename, and pointer publication. Metadata is written and the
+   staged artifact is self-validated before the pointer changes. Any failure
+   removes staging and any unpublished generation; the prior current pointer
+   remains authoritative.
+3. Opening/lease acquisition reads and validates the pointer first, then the
+   generation id/metadata identity and counts, byte size/digest, Parquet footer,
+   Arrow names, and Polars schema. Proven structural/integrity failures become
+   `SourceCacheCorruptError`; a missing pointer remains “not built,” and
+   transient `OSError` is propagated rather than mislabeled corruption. No
+   direct-provider fallback is attempted for a requested snapshot.
+4. SQLite validates safe locator, existing regular file, and read-only query
+   before connection. It begins the read transaction and completes one
+   all-column storage-class query before the data cursor emits any batch, so an
+   incompatible column mixture cannot leave a partial artifact.
+5. Data Output validates the destination/config and, when overwrite is false,
+   refuses an existing target before sink work. Bounded/partitioned publication
+   stages and validates its result before replacement, preserving the previous
+   target on compute, validation, or publish failure.
+
+### Depth-review questions
+
+The operational review checks that this specification answers: Which exact
+source semantics enter snapshot identity and where are credentials rejected?
+What owns a lease from acquisition through derived plans and final release, and
+what do refresh and clear do meanwhile? Which staging trees may startup reclaim,
+which bytes/counts enter quota projection, and when may another current
+generation be evicted? At which boundary does each config, provider,
+cancellation, schema, integrity, quota, pointer, SQLite, and output failure
+surface? The identity, lease, reclamation/quota, SQLite, output, and ordered
+failure sections above are the maintained answers.
+
 ## Testing
 
-- `tests/test_apiinput_flat_nested_relative_path.py` covers flat API-input nested relative paths.
-- `tests/test_data_input_nested_relative_path.py` covers data-input nested relative paths.
-- `tests/test_data_io_config_contract.py` covers data I/O configuration contracts.
-- `tests/test_external_file_nested_relative_path.py` covers external-file nested relative paths.
-- `tests/test_pipeline_runtime_path_validation.py` covers runtime pipeline path validation.
-- `tests/test_read_user_text.py` covers user-text reading.
-- `tests/test_sink.py` covers sink behaviour.
+- `tests/test_apiinput_flat_nested_relative_path.py` verifies API-input execution resolves pipeline-relative files from project root and rejects out-of-root absolute paths.
+- `tests/test_data_input_nested_relative_path.py` verifies data-input project-root resolution, escape/symlink rejection, selected external pipeline roots, and HTTP external-root denial.
+- `tests/test_data_io_config_contract.py` exercises valid/invalid data-input/output discriminated configurations and loud rejection of unknown branches.
+- `tests/test_external_file_nested_relative_path.py` verifies project-root relative external-file loading, absolute passthrough, and project-escape rejection.
+- `tests/test_pipeline_runtime_path_validation.py` verifies runtime path/graph validation, HTTP status mapping, sidecar/codegen case-collision and reserved-name protections, and safe rename/delete semantics.
+- `tests/test_read_user_text.py` verifies robust text/config/pipeline decoding across encodings and malformed inputs.
+- `tests/test_sink.py` verifies sink execution errors, parquet/CSV output, directory creation, scenario handling, compute failures, and response metadata.
 
 - `tests/test_source_cache.py` covers canonical/redacted identity, atomic refresh,
   immutable generations, leases, corruption, quota, same-identity single flight,

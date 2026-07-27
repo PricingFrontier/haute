@@ -13,10 +13,33 @@ regression tests, and the maintained performance test.
 
 ## Priorities
 
-There are no active rating improvement packages.
+| Package | State | Priority | Outcome |
+|---|---|---:|---|
+| `RATE-01` | Queued | P2 | Reject malformed banding/rating rows consistently at every public boundary. |
 
 ## Planned improvements
 
-There are no queued rating improvements. The existing miss-guard benchmark may
-justify a future package only if representative evidence crosses its declared
-materiality threshold.
+### RATE-01 — Consistent malformed-config rejection
+
+**Why:** A non-list banding `factors` value silently normalises to an empty
+configuration, and the lower rating primitive accepts a populated row with no
+factor even though the public config path rejects it. Both paths can turn
+corruption into an unchanged frame.
+
+**Plan:** Give public normalisers and lower execution primitives one explicit
+malformed-row/type contract while preserving intentionally empty configuration
+as a documented no-op.
+
+**Acceptance:** Wrong container types and populated factorless rows raise the
+same typed error through generated-code and executor paths; intentional empty
+config remains a parity-tested passthrough.
+
+**Dependencies:** Optimiser apply consumes rating-table semantics but does not
+own their validation.
+
+**Evidence:** `src/haute/_banding_config.py`, `src/haute/_rating.py`,
+`src/haute/_rating_step_config.py`, `tests/test_banding.py`, and
+`tests/test_rating_step.py`.
+
+The existing miss-guard benchmark may justify a future package only if
+representative evidence crosses its declared materiality threshold.

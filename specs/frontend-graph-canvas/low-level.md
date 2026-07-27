@@ -11,7 +11,7 @@
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
-| `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract consumed by the canvas. Its primary owner is `frontend-shared`; this component is the declared consumer. |
+| `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a JSON API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
 | `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
@@ -413,6 +413,13 @@
 
 ## Edge cases and invariants
 
+> NOTE: [Tracked by CANVAS-STATE-01](../roadmap/frontend-canvas.md#canvas-state-01--deliberate-graph-seeding-lifecycle).
+> `useGraphCanvasState`'s seeding effect resets the store's
+> undo/redo stacks and fingerprints on first mount from the caller's
+> `initialNodes`/`initialEdges`. Production mounts it with empty arrays and
+> loads the real graph later through raw store updates, so the reset is a
+> one-time clear rather than part of the actual load path.
+
 - **API-input handle ids never synthesize.** Zero eligible frames render no
   source handle; one eligible frame or more renders one labelled handle per
   frame, ids = the raw labels. A blank, duplicate,
@@ -513,9 +520,10 @@
   rejected, and a third incoming edge of any role is rejected — independent
   of the generic `maxInputs` check, which edge-join nodes bypass entirely.
 - **`handleDuplicateNode` and singleton types.** Duplicating a node whose
-  type is in `SINGLETON_TYPES` (API-input, output) is a silent no-op —
-  there is no error path because the palette already prevents adding a
-  second one; duplication is just another way to reach the same invariant.
+  type is in `SINGLETON_TYPES` (`apiInput`, `output`, or `liveSwitch`) is a
+  silent no-op — there is no error path because the palette already prevents
+  adding a second one; duplication, paste, and context-menu creation all
+  consume the same frontend set that mirrors the backend save invariant.
 - **`onDrop`'s config JSON never falls back to `{}` on a parse failure** — a
   malformed or non-object payload aborts node creation entirely (toast,
   return) rather than creating a node with an empty config that would then
@@ -968,8 +976,9 @@ again through the editor and save paths.
     sink shape; Data Input/Data Output source/sink and non-singleton
     membership with strict branch-shaped defaults; Edge Join's compact
     centre-origin shape; label/name casing
-    convention; `SINGLETON_TYPES`/`SOURCE_ONLY_TYPES`/`SINK_ONLY_TYPES`
-    membership and exact counts; `isSingletonType` true/false/undefined
+    convention; exact `SINGLETON_TYPES` membership including `liveSwitch`,
+    plus `SOURCE_ONLY_TYPES`/`SINK_ONLY_TYPES` membership and counts;
+    `isSingletonType` true/false/undefined
     cases; `PALETTE_TYPES` validity, submodel/edgeJoin exclusion, explore
     inclusion and ordering, no duplicates; every derived lookup
     (`nodeTypeIcons`/`nodeTypeColors`/`nodeTypeLabels`) covers every node type.

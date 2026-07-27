@@ -304,8 +304,10 @@ or a failed push.
 
 ## Error handling
 
-- API calls throughout this component surface `ApiError` (from `frontend/src/api/client.ts`,
-  owned by [server-api](../server-api/high-level.md)); handlers narrow on
+- `frontend/src/api/client.ts` and `ApiError` are owned by
+  [frontend-shared](../frontend-shared/low-level.md). The Git request/response wire contract
+  is owned by [git-integration](../git-integration/low-level.md), while backend HTTP routing
+  and status behaviour are owned by [server-api](../server-api/low-level.md). Handlers narrow on
   `err instanceof ApiError && err.status === 409` to distinguish the two structured
   rejection bodies (`GitMilestoneFork`, `GitPushRejection`) from all other errors.
   Generic Git failures pass through `gitErrorMessage`, which prefers a human-readable

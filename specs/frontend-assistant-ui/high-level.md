@@ -48,7 +48,7 @@ backend's assistant status. An unconfigured assistant renders the composer disab
 backend-supplied reason (no `[assistant]` config, missing API key, unknown provider, extra
 not installed) — never a send that bounces. Mutations-disabled (working branch not ready —
 no repository, unset, detached, divergent, or invalid) renders the same way, with the backend's per-state reason: authoring is this panel's whole
-purpose, so a assistant that could talk but not edit would only mislead. The status is
+purpose, so an assistant that could talk but not edit would only mislead. The status is
 re-checked on every panel open, not polled.
 
 **A turn streams into the transcript live.** Sending a message appends the user entry,
@@ -103,6 +103,14 @@ response reader so the backend sees the disconnect and stops mutating. An event 
 terminal frame is a contract violation: it cancels the response and renders the turn
 interrupted rather than silently preserving a false completed state.
 
+**Assistant responses are validated at the feature boundary.** Status and
+session JSON, every history row, and every field of all seven SSE variants are
+checked at runtime before they become typed values or reach a store callback.
+Required object/array/primitive shapes are closed while unrelated additional
+fields are tolerated for additive compatibility. Contract drift raises a
+descriptive ordinary `Error`, not `ApiError`, and a rejected stream frame
+cannot partially append text or activity.
+
 ## Design rationale
 
 - **A separate panel component, not a node-inspector tab body grown in place.** The chat
@@ -117,9 +125,9 @@ interrupted rather than silently preserving a false completed state.
   their own `api/` module (the established bundle-split pattern for lazy-panel-only
   endpoints), reusing the shared client's machinery for the non-streaming calls and owning
   the SSE reader for the message stream — POSTs are never auto-retried by the shared client,
-  which is exactly right for a mutating chat turn. Event parsing is local to the module,
-  like the existing split module's response parsing, and fails loudly on an unrecognised
-  event type rather than skipping it.
+  which is exactly right for a mutating chat turn. Concrete JSON and stream-event parsing
+  stays local to the module so typed transport assertions cannot bypass the runtime boundary;
+  malformed known variants and unrecognised discriminators both fail loudly.
 - **The canvas stays the single writer of graph state.** This panel deliberately has no path
   to mutate the graph store. Assistant edits reach the canvas exactly the way IDE edits do —
   one channel, one apply/rollback/dirty-gating behaviour, zero new reconciliation logic. The
@@ -151,7 +159,7 @@ interrupted rather than silently preserving a false completed state.
 
 ## Failure model
 
-- **Status fetch failure** renders the panel's error state with retry — a assistant of unknown
+- **Status fetch failure** renders the panel's error state with retry — an assistant of unknown
   readiness never presents an enabled composer.
 - **Send-time rejections** (400 unconfigured, 404 stale session, 409 concurrent turn) map to
   distinct inline messages; the stale-session case offers starting a new chat, and none of
@@ -161,8 +169,9 @@ interrupted rather than silently preserving a false completed state.
 - **A transport drop mid-stream** (network error, aborted reader without a terminal event)
   marks the turn interrupted — visually distinct from completed — and re-enables the
   composer.
-- **An unrecognised SSE event type throws** in the API module's parser and surfaces as an
-  interrupted turn with an error toast — a contract drift between frontend and backend is a
-  bug to surface, not an event to skip.
+- **Malformed assistant payloads throw** in the API module's parser. Status/session
+  failures stop before typed state is returned; malformed known SSE variants and
+  unrecognised event types surface as an interrupted turn with an error toast after
+  cancelling the reader. Contract drift is a bug to surface, not data to coerce or skip.
 - **A crash anywhere in the panel** is contained by the error boundary it mounts inside; the
   canvas, inspector, and toolbar are unaffected.
