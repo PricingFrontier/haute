@@ -7,7 +7,7 @@
 | `pyproject.toml` | Configures Ruff, pytest, coverage, critical backend coverage thresholds, mypy, pinned development tools, and excludes non-product directories from the normal Ruff target. |
 | `AGENTS.md` | Records repository-local engineering and review instructions for contributors and coding agents; it is guidance, not executable build or test configuration. |
 | `CLAUDE.md` | Directs Claude-compatible coding agents to the repository's authoritative `AGENTS.md` engineering instructions without duplicating policy. |
-| `CUserspriciAppDataLocalTempclaudeC--Users-prici-haute9daf718f-4e77-45e0-851a-0e379f6253dascratchpadpr139.diff` | Preserved point-in-time PR #139 review scratch diff; historical evidence only, not a build, test, or runtime input. |
+| `SPECS-REVIEW-2026-07-27.md` | Point-in-time semantic audit of the specification corpus and evidence for `specs/roadmap/specs-corpus.md`; records review findings and coverage limitations rather than normative product behaviour. |
 | `.gitignore` | Excludes generated builds, virtual environments, caches, local pipeline output/data, tool state, and other non-source artifacts from normal version-control discovery. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |

@@ -30,6 +30,7 @@ currently startable package.
 | [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | `AUD-C05` |
 | [Rating](rating.md) | Key canonicalisation and persisted table round trips | — |
 | [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | — |
+| [Specification corpus](specs-corpus.md) | Spec accuracy, contract folding, register, documentation governance | `SPEC-01` |
 | [Tracing and explainability](tracing-explainability.md) | Evaluation fidelity, row correlation, waterfall honesty | `AUD-C07` |
 
 ## Working protocol

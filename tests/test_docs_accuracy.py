@@ -134,6 +134,7 @@ _EXPECTED_COMPONENT_ROADMAPS = (
     "pipeline-authoring",
     "rating",
     "security-supply-chain",
+    "specs-corpus",
     "tracing-explainability",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
