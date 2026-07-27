@@ -4,74 +4,43 @@
 
 Optimiser configuration, numerical solve/frontier behaviour, artifacts,
 ratebooks, performance, interruptibility, and workflows remain reliable.
+Current behaviour is specified in [the optimiser specification](../optimiser/low-level.md).
 
 ## Priorities
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| OPT-P01–OPT-P03, AUD-C10 | Active | P0 | Preserve state and reject numerical/artifact failures. |
-| OPT-P04–OPT-P09 | Active | P1 | Make compute, retention, and jobs bounded and truthful. |
+| AUD-C10 | Active | P0 | Replace origin-blind solver error classification with typed boundary outcomes. |
+| OPT-P06 | Active | P1 | Add bounded parallel frontier computation where solver inputs are isolated. |
 | OPT-P10 | Active | P2 | Remove verified duplication and dead code. |
 | OPT-P11–OPT-P14 | Planned | P2 | Carve the solve-service god module behind preserved contracts. |
-| OPT-D01 | Decision | P2 | Choose one safe client-detail policy for generic setup failures. |
+| OPT-D01 | Decision | P2 | Choose one safe client-detail policy for setup and artifact-load failures. |
 
 ## Planned improvements
 
-### OPT-P01 — Frontier multi-point apply
-**Why:** Applying several frontier points can lose expensive state or recompute inconsistently.
-
-**Plan:** Preserve the solve context and immutable frontier artifacts across point selection and apply.
-
-**Acceptance:** Multi-point tests apply points in any order with stable results and no repeated heavy setup.
-
-**Dependencies:** OPT-P09.
-
-**Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_frontier_materialisation.py`.
-
-### OPT-P02 — Save artifact contract
-**Why:** Saved artifacts can be partial, non-finite, unversioned, or incompatible with apply.
-
-**Plan:** Define a versioned artifact schema, write it atomically after
-finite-value validation, and distinguish an expired/missing handle from a
-corrupt server-owned artifact without exposing filesystem details.
-
-**Acceptance:** Tests cover interrupted write, non-finite values, version
-migration/rejection, save-then-apply equivalence, typed stale-handle rejection,
-and sanitized corrupt-artifact failure.
-
-**Dependencies:** OPT-P01; ratebook contracts.
-
-**Evidence:** `src/haute/routes/optimiser.py`; `tests/test_optimiser_apply_artifacts.py`; `tests/test_optimiser_golden.py`.
-
-### OPT-P03 — Constraint validation
-**Why:** Null or non-finite constraints can silently bias a solve.
-
-**Plan:** Validate every constraint input at the domain boundary before model construction.
-
-**Acceptance:** Null, NaN, infinity, and valid boundary fixtures produce typed rejection or correct solve results.
-
-**Dependencies:** AUD-C10.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `src/haute/routes/optimiser.py`; `tests/test_optimiser_service_validation.py`.
-
 ### AUD-C10 — Numerical and silent-failure residuals
-**Why:** Residual numerical failures can be masked, while duplicated orchestration obscures solver invariants.
+**Why:** The solve worker's fallback classification is purely exception-type based
+(`ValueError` → data/contract error, `RuntimeError` → algorithm error), so an internal
+algorithm defect that surfaces as a `ValueError` inside the solver stack is still reported
+to the user as a data problem.
 
-**Plan:** Close unowned numerical/silent-failure cases with explicit domain
-outcomes, replace origin-blind `ValueError`/`RuntimeError` classification with
-typed boundary errors, then extract duplicated orchestration only behind
-preserved contracts.
+**Plan:** Replace the remaining origin-blind `ValueError`/`RuntimeError` fallback
+classification with typed boundary errors so terminal categories reflect an error's origin,
+not its Python type. The typed public-contract-error layer in front of this fallback is
+already delivered; orchestration extraction stays with OPT-P11–OPT-P14.
 
-**Acceptance:** Pathological numerical fixtures return typed terminal outcomes; refactoring preserves solve, frontier, save, and apply regressions.
+**Acceptance:** Pathological numerical fixtures return typed terminal outcomes whose
+category reflects the error's origin; solve, frontier, save, and apply regressions are
+preserved.
 
-**Dependencies:** OPT-P01–OPT-P03.
+**Dependencies:** Delivered validation and artifact contracts (formerly OPT-P01–OPT-P03).
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_contracts.py`; `tests/test_optimiser_service_validation.py`.
 
 ### OPT-P06 — Frontier compute scaling
-**Why:** Frontier calculation carries scaling multipliers and misses safe bounded parallelism.
+**Why:** Frontier calculation misses safe bounded parallelism.
 
-**Plan:** Remove redundant scale factors and introduce bounded parallel frontier work only where solver inputs are isolated.
+**Plan:** Introduce bounded parallel frontier work only where solver inputs are isolated. The redundant scale factors named by the original audit are already removed.
 
 **Acceptance:** Numerical equivalence and concurrency-bound tests cover serial and parallel frontier execution.
 
@@ -79,69 +48,14 @@ preserved contracts.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes_real_library.py`.
 
-### OPT-P07 — Setup I/O passes
-**Why:** Setup, auto-range, preview, counts, and statistics repeatedly scan the same data.
-
-**Plan:** Share validated intermediate results and eliminate redundant scans without serving stale data.
-
-**Acceptance:** Structural tests prove bounded scan counts and changed inputs invalidate reused values.
-
-**Dependencies:** OPT-P06.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_service_coverage.py`.
-
-### OPT-P09 — Trace apply recomputation
-**Why:** Clicking a trace point reapplies an entire portfolio unnecessarily.
-
-**Plan:** Reuse per-point apply artifacts and calculate only the selected delta where semantics permit.
-
-**Acceptance:** Trace-click tests prove equivalent outputs with no full portfolio reapplication.
-
-**Dependencies:** OPT-P01.
-
-**Evidence:** `src/haute/_optimiser_apply_explainability.py`; `frontend/src/trace/optimiserApplyHelpers.ts`; `tests/test_optimiser_apply_trace_enrichment.py`.
-
-### OPT-P08 — Memory lifecycle
-**Why:** Optimiser memory, disk artifacts, and orphaned outputs can accumulate on long-lived servers.
-
-**Plan:** Define bounded retention and safe orphan sweeping for solve/frontier artifacts.
-
-**Acceptance:** Retention, expiry, active-artifact preservation, and orphan cleanup tests pass.
-
-**Dependencies:** Job and cache lifecycle policy.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `src/haute/routes/_job_store.py`; `tests/test_optimiser_apply_artifacts.py`.
-
-### OPT-P05 — Solve interruptibility
-**Why:** Cancellation, timeout reporting, and admission release can disagree with actual solver state.
-
-**Plan:** Thread cancellation and deadlines through supported solve boundaries and make terminal transitions release admission exactly once.
-
-**Acceptance:** Tests cover cancellation, timeout, non-interruptible boundary reporting, and admission recovery.
-
-**Dependencies:** Background-job and execution-engine lifecycle.
-
-**Evidence:** `src/haute/routes/_optimiser_service.py`; `src/haute/routes/_job_store.py`; `tests/test_optimiser_routes.py`.
-
-### OPT-P04 — Heavy endpoints as jobs
-**Why:** Heavy synchronous endpoints block request workers and lack consistent lifecycle visibility.
-
-**Plan:** Move eligible operations behind the established job protocol with progress, typed terminal results, and polling semantics.
-
-**Acceptance:** Route tests verify immediate job creation, progress, terminal success/failure, and equivalent operation results.
-
-**Dependencies:** OPT-P05; background-job lifecycle.
-
-**Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`.
-
 ### OPT-P10 — Optimiser hygiene
 **Why:** Verified dead code and duplication make numerical paths harder to maintain.
 
-**Plan:** Remove or consolidate only code proved unused or duplicated after core contracts are protected.
+**Plan:** Re-run a dead-code/duplication inventory against `HEAD` to identify concrete candidates, then remove or consolidate only code proved unused or duplicated after core contracts are protected.
 
 **Acceptance:** Each cleanup has focused regression coverage for the affected solve/artifact behaviour.
 
-**Dependencies:** AUD-C10 and relevant P0/P1 packages.
+**Dependencies:** AUD-C10; otherwise delivered P0/P1 packages.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`.
 
@@ -150,14 +64,19 @@ preserved contracts.
 **Why:** The pipeline setup catch-all hides exception text while grid
 construction's catch-all sends it to the client. Either distinction may be
 intentional, but it is not currently an explicit security or product policy.
+Relatedly, `_load_apply_result_artifact`/`_load_ratebook_factors_artifact`
+report a missing artifact — including one evicted by TTL after user delay —
+with the same 500 status as a corrupt server-owned artifact, though the former
+is arguably a client-shaped 400/404 outcome.
 
 **Plan:** Decide which setup failures are user-actionable, define the sanitized
-detail vocabulary for all other failures, and record why the rejected policy
+detail vocabulary for all other failures, classify missing-versus-corrupt
+artifact loads within the same vocabulary, and record why the rejected policy
 would be less safe or less useful.
 
-**Acceptance:** A decision record classifies pipeline and grid failures before
-implementation; route tests then prove stable user-facing details and
-server-side diagnostic logging for both branches.
+**Acceptance:** A decision record classifies pipeline, grid, and artifact-load
+failures before implementation; route tests then prove stable user-facing
+details and server-side diagnostic logging for each branch.
 
 **Dependencies:** Security owns information-disclosure policy.
 
@@ -175,7 +94,7 @@ compatibility re-exports for one release.
 **Acceptance:** Artifact round-trip, tampered-handle, orphan-race, TTL-cleanup, and stale-startup
 tests pass unchanged; `_optimiser_service.py` owns no filesystem deletion.
 
-**Dependencies:** OPT-P08.
+**Dependencies:** Delivered memory lifecycle (formerly OPT-P08).
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_apply_artifacts.py`.
 
@@ -193,7 +112,8 @@ state lock. Keep FastAPI response assembly in `src/haute/routes/optimiser.py`.
 materialisation, artifact-cap, and unrelated-parent concurrency regressions remain green at each
 extraction step.
 
-**Dependencies:** OPT-P01, OPT-P05, OPT-P06.
+**Dependencies:** OPT-P06; delivered frontier apply and interruptibility (formerly OPT-P01,
+OPT-P05).
 
 **Evidence:** `src/haute/routes/optimiser.py`; `src/haute/routes/_optimiser_service.py`;
 `tests/test_optimiser_frontier_materialisation.py`; `tests/test_optimiser_routes.py`.
@@ -210,7 +130,7 @@ contract errors. `OptimiserSolveService` retains only orchestration calls.
 **Acceptance:** Projection, bounded-memory, multi-input, null/non-finite, chunk provenance, and
 grid ordering tests pass without fixture rewrites.
 
-**Dependencies:** OPT-P03, OPT-P07.
+**Dependencies:** Delivered constraint validation and scan bounding (formerly OPT-P03, OPT-P07).
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_service_coverage.py`;
 `tests/test_optimiser_service_validation.py`.
@@ -231,3 +151,22 @@ rather than a mixed domain/utilities module.
 
 **Evidence:** `src/haute/routes/_optimiser_service.py`; `tests/test_optimiser_routes.py`;
 `tests/test_optimiser_golden.py`; `tests/test_optimiser_ratebook_apply_agreement.py`.
+
+## Delivered outcomes
+
+- Frontier multi-point apply without repeated heavy setup, the versioned
+  save-artifact contract with sanitized corrupt-artifact failures,
+  domain-boundary constraint validation, heavy endpoints behind the job
+  protocol, solve interruptibility with exactly-once admission release,
+  single-scan setup estimation, trace-apply reuse of stored point summaries,
+  and bounded artifact memory lifecycle (`OPT-P01`–`OPT-P05`,
+  `OPT-P07`–`OPT-P09`) are present-tense contracts in
+  [the optimiser specification](../optimiser/low-level.md), enforced by
+  `tests/test_optimiser_frontier_materialisation.py`,
+  `tests/test_optimiser_apply_artifacts.py`,
+  `tests/test_optimiser_service_validation.py`,
+  `tests/test_optimiser_routes_real_library.py`, and
+  `tests/test_optimiser_routes.py`.
+- The typed public-contract-error layer from `AUD-C10`'s first phase is
+  delivered; the origin-blind fallback classification it fronts remains active
+  above.
