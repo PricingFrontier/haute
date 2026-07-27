@@ -83,7 +83,7 @@ function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): Explore
     generated_at: 1710000000,
     columns: [],
     overview_summary: {
-      data_quality: { issue_count: 0, issues: [] },
+      data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
       categorical_summary: [],
     },
     ...overrides,
@@ -403,6 +403,46 @@ describe("useBackgroundJobs", () => {
       await advance(1_000)
       expect(mockGetStatus).toHaveBeenCalledTimes(2)
       expect(useNodeResultsStore.getState().trainJobs["t1"]?.progress?.progress).toBe(0.4)
+    })
+
+    it("surfaces the structured GPU 507 as an actionable manual CPU retry", async () => {
+      const mockGetStatus = vi.mocked(getTrainStatus)
+      const detail = {
+        error_code: "gpu_vram_limit",
+        operation: "training_job",
+        job_id: "tj-gpu",
+        message: "GPU training needs 4.0 GB but GPU has 1.0 GB. Select CPU and retry, or reduce rows/features.",
+        gpu_vram_estimated_mb: 4096,
+        gpu_vram_available_mb: 1024,
+        reason: "gpu_vram_limit_exceeded",
+      }
+      mockGetStatus.mockResolvedValueOnce(
+        makeTrainProgress({
+          status: "memory_limited",
+          progress: 1,
+          message: detail.message,
+          terminal_reason: "memory_limited",
+          error_code: "gpu_vram_limit",
+          http_status_code: 507,
+          error_detail: detail,
+        }),
+      )
+
+      act(() => {
+        useNodeResultsStore.getState().startTrainJob("t1", "tj-gpu", "Train Node", "th", "live", 0)
+      })
+      renderHook(() => useBackgroundJobs())
+      await advance(500)
+
+      const cached = useNodeResultsStore.getState().trainResults.t1
+      expect(cached?.result.error).toBe(detail.message)
+      expect(cached?.terminalStatus).toMatchObject({
+        status: "memory_limited",
+        error_code: "gpu_vram_limit",
+        http_status_code: 507,
+        error_detail: detail,
+      })
+      expect(cached?.result.error).not.toMatch(/automatically/i)
     })
   })
 

@@ -69,7 +69,8 @@ logger = get_logger(component="server.explore")
 # frame would serve stale distinct counts.
 # v4: categorical truncation now follows the number of display-label groups
 # emitted to clients, rather than the raw-value cardinality.
-EXPLORE_CACHE_VERSION = 4
+# v5: column quality profiles and exact duplicate-row statistics added.
+EXPLORE_CACHE_VERSION = 5
 EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16
 
 # Dtypes whose values are not hashable in Polars and therefore cannot have
@@ -121,6 +122,29 @@ def _is_float_dtype(dtype: pl.DataType) -> bool:
     """
 
     return dtype.base_type() in (pl.Float32, pl.Float64)
+
+
+def _is_identifier_candidate(
+    name: str,
+    *,
+    row_count: int,
+    null_count: int,
+    nan_count: int | None,
+    distinct_count: int | None,
+) -> bool:
+    lower_name = name.lower()
+    has_identifier_name = (
+        lower_name in {"id", "key", "uuid", "guid"}
+        or lower_name.startswith(("id_", "key_"))
+        or lower_name.endswith(("_id", "_key"))
+    )
+    return (
+        row_count >= 2
+        and null_count == 0
+        and not (nan_count or 0)
+        and distinct_count == row_count
+        and has_identifier_name
+    )
 
 
 def _truncate_for_display(text: str) -> str:
@@ -244,6 +268,7 @@ def _plural(count: int, singular: str, plural: str | None = None) -> str:
 def _build_data_quality_summary(
     row_count: int,
     columns: list[ExploreColumnStat],
+    duplicate_row_count: int | None,
 ) -> ExploreDataQualitySummary:
     issues: list[ExploreDataQualityIssue] = []
 
@@ -368,9 +393,43 @@ def _build_data_quality_summary(
             )
         )
 
+    high_cardinality_columns = sorted(
+        [column for column in columns if column.is_high_cardinality],
+        key=lambda column: column.name.lower(),
+    )
+    if high_cardinality_columns:
+        issues.append(
+            ExploreDataQualityIssue(
+                severity="warning",
+                label=(
+                    f"{len(high_cardinality_columns)} high-cardinality "
+                    f"{_plural(len(high_cardinality_columns), 'column')}"
+                ),
+                detail=_names_text([column.name for column in high_cardinality_columns]),
+            )
+        )
+
+    duplicate_ratio = (
+        duplicate_row_count / row_count
+        if row_count > 0 and duplicate_row_count is not None
+        else None
+    )
+    if duplicate_row_count and duplicate_ratio is not None:
+        issues.append(
+            ExploreDataQualityIssue(
+                severity="danger" if duplicate_ratio >= 0.5 else "warning",
+                label=f"{duplicate_row_count:,} duplicate {_plural(duplicate_row_count, 'row')}",
+                detail=(
+                    f"{_percent_text(duplicate_row_count, row_count)} of rows are exact duplicates"
+                ),
+            )
+        )
+
     return ExploreDataQualitySummary(
         issue_count=len(issues),
         issues=issues,
+        duplicate_row_count=duplicate_row_count,
+        duplicate_ratio=duplicate_ratio,
     )
 
 
@@ -506,9 +565,10 @@ def _build_overview_summary(
     columns: list[ExploreColumnStat],
     values_by_column: dict[str, list[ExploreDistinctValueCount]],
     label_group_counts: dict[str, int],
+    duplicate_row_count: int | None,
 ) -> ExploreOverviewSummary:
     return ExploreOverviewSummary(
-        data_quality=_build_data_quality_summary(row_count, columns),
+        data_quality=_build_data_quality_summary(row_count, columns, duplicate_row_count),
         categorical_summary=_build_categorical_summary(
             schema,
             columns,
@@ -533,6 +593,11 @@ def _build_frame_stats(
 
     column_names = list(schema.names())
     aggregations: list[pl.Expr] = [pl.len().alias("row_count")]
+    can_count_unique_rows = bool(column_names) and all(
+        not _is_unhashable_dtype(schema[name]) for name in column_names
+    )
+    if can_count_unique_rows:
+        aggregations.append(pl.struct(column_names).n_unique().alias("unique_rows"))
     for name in column_names:
         dtype = schema[name]
         aggregations.append(pl.col(name).null_count().alias(f"null::{name}"))
@@ -542,6 +607,13 @@ def _build_frame_stats(
             min_max_expr = _min_max_column_expr(name, dtype)
             aggregations.append(min_max_expr.min().alias(f"min::{name}"))
             aggregations.append(min_max_expr.max().alias(f"max::{name}"))
+        if dtype.base_type() in _TEXT_DTYPE_BASES:
+            text_expr = _categorical_value_label_expr(name, dtype).str.len_chars()
+            aggregations.append(text_expr.min().alias(f"text_min_length::{name}"))
+            aggregations.append(text_expr.mean().alias(f"text_mean_length::{name}"))
+            aggregations.append(text_expr.max().alias(f"text_max_length::{name}"))
+        if dtype.is_temporal():
+            aggregations.append((pl.col(name).max() - pl.col(name).min()).alias(f"span::{name}"))
         if dtype.is_numeric():
             numeric_expr = pl.col(name)
             aggregations.append(
@@ -577,6 +649,10 @@ def _build_frame_stats(
         execution_context=execution_context,
     ).row(0, named=True)
 
+    row_count = int(aggregate_row["row_count"])
+    duplicate_row_count = (
+        row_count - int(aggregate_row["unique_rows"]) if can_count_unique_rows else None
+    )
     stats: list[ExploreColumnStat] = []
     categorical_values_by_column: dict[str, list[ExploreDistinctValueCount]] = {}
     categorical_label_group_counts: dict[str, int] = {}
@@ -597,6 +673,27 @@ def _build_frame_stats(
                 distinct_count -= 1
             if nan_count:
                 distinct_count -= 1
+        valid_row_count = row_count - null_count - (nan_count or 0)
+        unique_ratio = (
+            distinct_count / valid_row_count
+            if distinct_count is not None and valid_row_count > 0
+            else None
+        )
+        # Only text-like columns get bounded categorical display, so only they
+        # can outgrow it; numeric/temporal columns legitimately hold many
+        # distinct values and are never flagged.
+        is_high_cardinality = (
+            dtype.base_type() in _TEXT_DTYPE_BASES
+            and distinct_count is not None
+            and distinct_count > _CATEGORICAL_VALUE_COUNT_LIMIT
+        )
+        is_identifier_candidate = _is_identifier_candidate(
+            name,
+            row_count=row_count,
+            null_count=null_count,
+            nan_count=nan_count,
+            distinct_count=distinct_count,
+        )
         profile_stats: dict[str, Any] = {}
         if _supports_min_max(dtype):
             profile_stats.update(
@@ -626,6 +723,16 @@ def _build_frame_stats(
             categorical_label_group_counts[name] = int(
                 aggregate_row[_categorical_label_group_count_alias(name)]
             )
+        if dtype.base_type() in _TEXT_DTYPE_BASES:
+            profile_stats.update(
+                {
+                    "text_min_length": aggregate_row[f"text_min_length::{name}"],
+                    "text_mean_length": aggregate_row[f"text_mean_length::{name}"],
+                    "text_max_length": aggregate_row[f"text_max_length::{name}"],
+                }
+            )
+        if dtype.is_temporal():
+            profile_stats["temporal_span"] = _format_duration(aggregate_row[f"span::{name}"])
 
         stats.append(
             ExploreColumnStat(
@@ -634,10 +741,12 @@ def _build_frame_stats(
                 kind=_column_kind(dtype),
                 null_count=null_count,
                 distinct_count=distinct_count,
+                unique_ratio=unique_ratio,
+                is_high_cardinality=is_high_cardinality,
+                is_identifier_candidate=is_identifier_candidate,
                 **profile_stats,
             )
         )
-    row_count = int(aggregate_row["row_count"])
     return ExploreFrameStats(
         row_count=row_count,
         columns=stats,
@@ -647,6 +756,7 @@ def _build_frame_stats(
             stats,
             categorical_values_by_column,
             categorical_label_group_counts,
+            duplicate_row_count,
         ),
     )
 

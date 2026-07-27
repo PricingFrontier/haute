@@ -192,7 +192,7 @@ def test_load_rejects_corrupt_parquet() -> None:
 
 
 def test_load_reports_missing_artifact() -> None:
-    """A validated handle whose file was deleted reports a missing-artifact 500."""
+    """A validated handle whose file was deleted reports an expired-artifact 410."""
     df = pl.DataFrame({"quote_id": ["q1"], "optimal_scenario_value": [1.05]})
     handle = _persist_apply_result_artifact(SimpleNamespace(dataframe=df))
     assert handle is not None
@@ -200,8 +200,10 @@ def test_load_reports_missing_artifact() -> None:
         Path(str(handle["path"])).unlink()
         with pytest.raises(HTTPException) as exc_info:
             _load_apply_result_artifact(handle)
-        assert exc_info.value.status_code == 500
-        assert "missing" in str(exc_info.value.detail)
+        assert exc_info.value.status_code == 410
+        assert exc_info.value.detail == (
+            "Optimiser apply artifact is no longer available. Re-run the solve to regenerate it."
+        )
     finally:
         _cleanup_apply_result_artifact(handle)
 
@@ -389,10 +391,13 @@ def test_load_ratebook_factors_rejects_invalid_handle() -> None:
     with pytest.raises(HTTPException) as exc_info:
         _load_ratebook_factors_artifact(bad)
     assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        "Optimiser ratebook factor artifact reference is invalid. Re-run the solve."
+    )
 
 
 def test_load_ratebook_factors_reports_missing_artifact() -> None:
-    """A validated handle whose file was deleted reports a missing-artifact 500."""
+    """A validated handle whose file was deleted reports an expired-artifact 410."""
     df = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]})
     handle = _persist_ratebook_factors_artifact(df)
     assert handle is not None
@@ -400,8 +405,10 @@ def test_load_ratebook_factors_reports_missing_artifact() -> None:
         Path(str(handle["path"])).unlink()
         with pytest.raises(HTTPException) as exc_info:
             _load_ratebook_factors_artifact(handle)
-        assert exc_info.value.status_code == 500
-        assert "missing" in str(exc_info.value.detail)
+        assert exc_info.value.status_code == 410
+        assert exc_info.value.detail == (
+            "Optimiser ratebook factor artifact is no longer available. Re-run the solve."
+        )
     finally:
         _cleanup_ratebook_factors_artifact(handle)
 
@@ -427,10 +434,13 @@ def test_scan_ratebook_factors_rejects_invalid_handle() -> None:
     with pytest.raises(HTTPException) as exc_info:
         _scan_ratebook_factors_artifact(bad)
     assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        "Optimiser ratebook factor artifact reference is invalid. Re-run the solve."
+    )
 
 
 def test_scan_ratebook_factors_reports_missing_artifact() -> None:
-    """A validated handle whose file was deleted reports a missing-artifact 500."""
+    """A validated handle whose file was deleted reports an expired-artifact 410."""
     df = pl.DataFrame({"quote_id": ["q1"], "region": ["north"]})
     handle = _persist_ratebook_factors_artifact(df)
     assert handle is not None
@@ -438,8 +448,10 @@ def test_scan_ratebook_factors_reports_missing_artifact() -> None:
         Path(str(handle["path"])).unlink()
         with pytest.raises(HTTPException) as exc_info:
             _scan_ratebook_factors_artifact(handle)
-        assert exc_info.value.status_code == 500
-        assert "missing" in str(exc_info.value.detail)
+        assert exc_info.value.status_code == 410
+        assert exc_info.value.detail == (
+            "Optimiser ratebook factor artifact is no longer available. Re-run the solve."
+        )
     finally:
         _cleanup_ratebook_factors_artifact(handle)
 

@@ -55,7 +55,9 @@ def test_apply_artifact_load_rejects_paths_outside_owned_root(tmp_path: Path) ->
         )
 
     assert exc_info.value.status_code == 500
-    assert "outside the artifact root" in str(exc_info.value.detail)
+    assert exc_info.value.detail == (
+        "Optimiser apply artifact reference is invalid. Re-run the solve to regenerate it."
+    )
     assert outside_path.exists()
 
 
@@ -87,7 +89,9 @@ def test_apply_artifact_load_rejects_relative_paths() -> None:
         )
 
     assert exc_info.value.status_code == 500
-    assert "absolute paths" in str(exc_info.value.detail)
+    assert exc_info.value.detail == (
+        "Optimiser apply artifact reference is invalid. Re-run the solve to regenerate it."
+    )
 
 
 def test_apply_artifact_read_failure_logs_underlying_cause_before_wrapping() -> None:

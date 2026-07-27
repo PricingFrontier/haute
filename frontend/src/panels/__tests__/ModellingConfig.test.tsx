@@ -12,10 +12,12 @@ import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsF
 // ── Mocks ────────────────────────────────────────────────────────
 
 const mockTrainModel = vi.fn()
+const mockCancelTrain = vi.fn()
 const mockEstimateTrainingRam = vi.fn()
 
 vi.mock("../../api/client", () => ({
   trainModel: (...args: unknown[]) => mockTrainModel(...args),
+  cancelTrain: (...args: unknown[]) => mockCancelTrain(...args),
   estimateTrainingRam: (...args: unknown[]) => mockEstimateTrainingRam(...args),
   // GLMTargetConfig narrows errors with `instanceof ApiError`, so the mock
   // must export a real class or the instanceof check throws.
@@ -118,6 +120,7 @@ beforeEach(() => {
   })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
   mockTrainModel.mockReset()
+  mockCancelTrain.mockReset()
   // Return a never-resolving promise by default so the useEffect doesn't cause
   // act() warnings from resolved promises after unmount.
   mockEstimateTrainingRam.mockReset().mockReturnValue(new Promise(() => {}))
@@ -590,6 +593,53 @@ describe("ModellingConfig", () => {
       renderConfig()
       expect(screen.getByRole("button", { name: /Training\.\.\./ })).toBeTruthy()
       expect(screen.getByRole("button", { name: /Training\.\.\./ })).toHaveProperty("disabled", true)
+    })
+
+    it("cancels the active preparation job and records its terminal state", async () => {
+      useNodeResultsStore.setState({
+        trainJobs: {
+          node_1: {
+            jobId: "job_1",
+            nodeId: "node_1",
+            nodeLabel: "Model",
+            progress: {
+              status: "running",
+              progress: 0.1,
+              message: "Preparing training data...",
+              iteration: 0,
+              total_iterations: 0,
+              train_loss: {},
+              elapsed_seconds: 1,
+            },
+            error: null,
+            configHash: "abc",
+            source: "live",
+            structuralVersion: 0,
+          },
+        },
+      })
+      mockCancelTrain.mockResolvedValue({
+        status: "cancelled",
+        progress: 0.1,
+        message: "Cancelled",
+        iteration: 0,
+        total_iterations: 0,
+        train_loss: {},
+        elapsed_seconds: 1,
+        result: null,
+        terminal_reason: "cancelled",
+      })
+
+      renderConfig()
+      fireEvent.click(screen.getByRole("button", { name: "Cancel training" }))
+
+      await waitFor(() => expect(mockCancelTrain).toHaveBeenCalledWith("job_1"))
+      await waitFor(() => {
+        const state = useNodeResultsStore.getState()
+        expect(state.trainJobs.node_1).toBeUndefined()
+        expect(state.trainResults.node_1?.terminalStatus?.status).toBe("cancelled")
+        expect(state.trainResults.node_1?.result.error).toBe("Cancelled")
+      })
     })
 
     it("stores error result when trainModel throws", async () => {

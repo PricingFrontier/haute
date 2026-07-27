@@ -14,7 +14,7 @@ import {
   type NodeChange,
   type EdgeChange,
 } from "@xyflow/react"
-import useGraphStore, { computePanelContextFingerprint, computeStructuralFingerprint } from "../stores/useGraphStore"
+import useGraphStore from "../stores/useGraphStore"
 
 export interface GraphCanvasState {
   nodes: Node[]
@@ -33,23 +33,18 @@ export default function useGraphCanvasState(
   const canUndo = useGraphStore((s) => s.undoStack.length > 0)
   const canRedo = useGraphStore((s) => s.redoStack.length > 0)
 
-  // On first mount, seed the graph store from the caller's initial graph.
-  // Production mounts this once through FlowEditor; tests render the hook
-  // directly, so history is reset here to keep each render isolated.
+  // On first mount, install a complete persisted snapshot through the same
+  // atomic boundary used by the pipeline loader. Production's seed is empty,
+  // while tests can provide nodes/edges directly.
   const seededRef = useRef(false)
   useEffect(() => {
     if (seededRef.current) return
     seededRef.current = true
-    useGraphStore.setState({
+    useGraphStore.getState().loadGraphSnapshot({
       nodes: initialNodes,
       edges: initialEdges,
+      preamble: "",
       submodels: {},
-      undoStack: [],
-      redoStack: [],
-      structuralVersion: 0,
-      structuralFingerprint: computeStructuralFingerprint(initialNodes, initialEdges),
-      panelContextVersion: 0,
-      panelContextFingerprint: computePanelContextFingerprint(initialNodes, initialEdges),
     })
     // initialNodes/initialEdges are constructor-style seeds, not reactive.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- seed-once semantics

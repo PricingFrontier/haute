@@ -448,12 +448,17 @@ def test_start_releases_admission_when_prep_fails_before_launch(
             side_effect=recording_create,
         ),
         patch.object(service, "_execute_and_sink", side_effect=RuntimeError("prep boom")),
-        pytest.raises(RuntimeError, match="prep boom"),
     ):
-        service.start(TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"))
+        response = service.start(
+            TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
+        )
+        service._join_preparation(response.job_id)
 
     assert captured_contexts, "admitted context should have been created"
     assert captured_contexts[0]._admission_released is True
+    job = store.require_job(response.job_id)
+    assert job["status"] == "error"
+    assert "prep boom" in job["error"]
 
 
 def test_start_keeps_admission_held_after_successful_launch(
@@ -498,6 +503,7 @@ def test_start_keeps_admission_held_after_successful_launch(
         response = service.start(
             TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"),
         )
+        service._join_preparation(response.job_id)
 
     assert response.status == "started"
     admitted = captured["context"]
@@ -517,7 +523,11 @@ def test_catboost_gpu_vram_limit_refuses_before_launch(
     client,
     haute_scratch: Path,
 ) -> None:
-    from tests.test_modelling_routes import _fast_training_params, _make_modelling_graph
+    from tests.test_modelling_routes import (
+        _fast_training_params,
+        _make_modelling_graph,
+        _poll_until_done,
+    )
 
     data_path = haute_scratch / "training.parquet"
     pl.DataFrame(
@@ -540,19 +550,20 @@ def test_catboost_gpu_vram_limit_refuses_before_launch(
             "/api/modelling/train",
             json={"graph": graph, "node_id": "train"},
         )
+        assert resp.status_code == 200
+        detail = _poll_until_done(client, resp.json()["job_id"])
 
-    assert resp.status_code == 507
-    detail = resp.json()["detail"]
+    assert detail["status"] == "memory_limited"
+    assert detail["http_status_code"] == 507
     assert detail["error_code"] == "gpu_vram_limit"
-    assert "GPU training needs" in detail["message"]
+    assert "GPU training needs" in detail["error_detail"]["message"]
+    assert "Select CPU and retry" in detail["error_detail"]["message"]
     run.assert_not_called()
 
 
 def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
     tmp_path: Path,
 ) -> None:
-    from fastapi import HTTPException
-
     from haute.schemas import TrainRequest
     from tests.test_modelling_routes import _make_modelling_graph
 
@@ -564,16 +575,18 @@ def test_training_memory_estimate_failure_refuses_before_pipeline_execution(
     with (
         patch("haute._ram_estimate.estimate_safe_training_rows", side_effect=RuntimeError("boom")),
         patch.object(service, "_execute_and_sink") as execute_and_sink,
-        pytest.raises(HTTPException) as exc_info,
     ):
-        service.start(TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train"))
+        response = service.start(
+            TrainRequest(graph=_make_modelling_graph(str(data_path)), node_id="train")
+        )
+        service._join_preparation(response.job_id)
 
-    assert exc_info.value.status_code == 422
-    assert exc_info.value.detail["error_code"] == "training_memory_estimate_failed"
     execute_and_sink.assert_not_called()
-    job = next(iter(store.jobs.values()))
+    job = store.require_job(response.job_id)
     assert job["status"] == "contract_error"
     assert job["terminal_reason"] == "contract_error"
+    assert job["http_status_code"] == 422
+    assert job["error_code"] == "training_memory_estimate_failed"
 
 
 def test_training_mlflow_log_receives_cancellation_checkpoint(tmp_path: Path) -> None:

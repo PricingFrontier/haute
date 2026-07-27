@@ -10,6 +10,7 @@ import gc
 import math
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -29,6 +30,7 @@ from haute._execution_admission import (
     create_admitted_execution_context,
 )
 from haute._execution_context import (
+    ExecutionCancellationToken,
     ExecutionCancelledError,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
@@ -79,6 +81,7 @@ from haute.routes._contract_errors import (
 from haute.routes._helpers import find_typed_node
 from haute.routes._job_lifecycle import (
     JobLifecycle,
+    TerminalReason,
     bind_running_execution_metrics_publisher,
 )
 from haute.routes._job_store import JobStore
@@ -155,7 +158,30 @@ def _seeded_training_sample(lf: pl.LazyFrame, row_limit: int) -> pl.LazyFrame:
 def _memory_limit_http_exception(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
 ) -> HTTPException:
-    return HTTPException(status_code=507, detail=exc.to_payload())
+    detail = exc.to_payload()
+    detail.setdefault("message", str(exc))
+    return HTTPException(status_code=507, detail=detail)
+
+
+def _http_failure_job_parts(
+    exc: HTTPException,
+    *,
+    job_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Preserve an HTTP failure's public shape on a terminal background job."""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        detail = dict(detail)
+        if job_id is not None:
+            detail.setdefault("job_id", job_id)
+    message = detail.get("message") if isinstance(detail, dict) else None
+    message = message if isinstance(message, str) and message else str(detail)
+    return message, {
+        "error": message,
+        "error_detail": detail,
+        "error_code": detail.get("error_code") if isinstance(detail, dict) else None,
+        "http_status_code": exc.status_code,
+    }
 
 
 def _gpu_vram_http_exception(
@@ -999,6 +1025,45 @@ def _worker_timing(job: Mapping[str, Any], *, job_id: str) -> tuple[float, float
     return float(raw_start), float(raw_timeout)
 
 
+_WINDOWS_ARTIFACT_REPLACE_RETRIES = 3
+_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS = 0.1
+
+
+class TrainingArtifactPublicationError(RuntimeError):
+    """A Windows contention error prevented a training artifact replacement."""
+
+    def __init__(self, source: Path, destination: Path, attempts: int) -> None:
+        self.source = source
+        self.destination = destination
+        self.attempts = attempts
+        super().__init__(
+            "Could not publish training artifact after "
+            f"{attempts} attempts: {source} -> {destination}"
+        )
+
+
+def _is_windows_artifact_contention(exc: OSError) -> bool:
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+
+
+def _replace_training_artifact(source: Path, destination: Path) -> None:
+    """Replace an artifact, retrying only transient Windows file contention."""
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            retryable = sys.platform == "win32" and _is_windows_artifact_contention(exc)
+            if not retryable:
+                raise
+            if attempts > _WINDOWS_ARTIFACT_REPLACE_RETRIES:
+                error = TrainingArtifactPublicationError(source, destination, attempts)
+                raise error from exc
+            time.sleep(_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS)
+
+
 def _publish_training_artifacts(
     manifest: WorkerResultManifest,
     *,
@@ -1053,10 +1118,10 @@ def _publish_training_artifacts(
                 backup = final.with_name(f".{final.name}.{job_id}.haute-backup")
                 if backup.exists() or backup.is_symlink():
                     raise FileExistsError(f"Training artifact backup already exists: {backup}")
-                os.replace(final, backup)
+                _replace_training_artifact(final, backup)
                 backups[final] = backup
         for staged, final in staged_and_final.values():
-            os.replace(staged, final)
+            _replace_training_artifact(staged, final)
             published.append(final)
     except BaseException as exc:
         rollback_errors: list[BaseException] = []
@@ -1069,7 +1134,7 @@ def _publish_training_artifacts(
         for final, backup in reversed(tuple(backups.items())):
             try:
                 if backup.exists() or backup.is_symlink():
-                    os.replace(backup, final)
+                    _replace_training_artifact(backup, final)
             except BaseException as rollback_exc:
                 rollback_errors.append(rollback_exc)
         for rollback_error in rollback_errors:
@@ -1159,16 +1224,19 @@ class TrainService:
         )
         self._training_jobs = CancellableJobRegistry()
         self._start_lock = threading.Lock()
+        self._preparation_threads_lock = threading.Lock()
+        self._preparation_threads: dict[str, threading.Thread] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
     def start(self, body: TrainRequest) -> TrainResponse:
-        """Validate, prepare data, and launch training in a supervised spawn worker.
+        """Validate and return a cancellable handle before preparing training data.
 
         Returns a ``TrainResponse`` with status ``"started"`` and the job ID.
-        Raises ``HTTPException`` on validation or pipeline execution failures.
+        Raises ``HTTPException`` only for synchronous validation or preparation-thread
+        launch failures. Preparation and fit outcomes are published through job status.
         """
         node = _find_modelling_node(body.graph, body.node_id)
         config = node.data.config
@@ -1190,7 +1258,7 @@ class TrainService:
                     "status": "running",
                     _JOB_TYPE_KEY: _TRAINING_JOB_TYPE,
                     "progress": 0.0,
-                    "message": "Starting",
+                    "message": "Preparing training data...",
                     "config": dict(config),
                     "node_label": node.data.label,
                     "start_time": start_time,
@@ -1198,93 +1266,136 @@ class TrainService:
                 }
             )
 
-        execution_context: ExecutionContext | None = None
-        launch_started = False
+        cancellation_token = ExecutionCancellationToken()
+        self._training_jobs.register_latest(
+            (_TRAINING_JOB_TYPE, job_id), job_id, execution_token=cancellation_token
+        )
+
+        def prepare() -> None:
+            try:
+                self._prepare_and_launch_training(
+                    job_id, body, body.node_id, config, cancellation_token
+                )
+            except Exception:
+                # The preparation owner converts expected failures to terminal
+                # job state itself. This final boundary prevents teardown/store
+                # infrastructure races from escaping as an unhandled daemon-thread
+                # exception while still leaving a server-side diagnostic.
+                logger.exception(
+                    "training_preparation_thread_failed",
+                    job_id=job_id,
+                )
+            finally:
+                with self._preparation_threads_lock:
+                    self._preparation_threads.pop(job_id, None)
+
+        thread = threading.Thread(
+            target=prepare,
+            name=f"haute-training-prep-{job_id}",
+            daemon=True,
+        )
+        with self._preparation_threads_lock:
+            self._preparation_threads[job_id] = thread
         try:
-            preamble_ns = self._compile_preamble(body.graph)
-            ram_warning, row_limit, total_source_rows, probe_columns = self._estimate_ram(
-                body.graph,
-                body.node_id,
-                preamble_ns,
-                job_id,
-                source=body.source,
+            thread.start()
+        except Exception as exc:
+            with self._preparation_threads_lock:
+                self._preparation_threads.pop(job_id, None)
+            self._training_jobs.release(job_id)
+            logger.exception(
+                "training_preparation_thread_start_failed",
+                job_id=job_id,
             )
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message="Training preparation failed to start. Check the server logs for details.",
+                fields={"error": str(exc)},
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Training preparation failed to start. Check the server logs for details.",
+            ) from exc
+        return TrainResponse(status="started", job_id=job_id)
+
+    def _join_preparation(self, job_id: str, *, timeout: float = 10.0) -> None:
+        """Wait for an in-flight preparation owner (used by shutdown/tests)."""
+        with self._preparation_threads_lock:
+            thread = self._preparation_threads.get(job_id)
+        if thread is None:
+            return
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            raise TimeoutError(f"Training preparation for job {job_id!r} is still running")
+
+    def _prepare_and_launch_training(
+        self,
+        job_id: str,
+        body: TrainRequest,
+        node_id: str,
+        config: dict[str, Any],
+        cancellation_token: ExecutionCancellationToken,
+    ) -> None:
+        """Run expensive preparation in the request-owned daemon thread."""
+        execution_context: ExecutionContext | None = None
+        worker_owns_cleanup = False
+        try:
+            cancellation_token.throw_if_cancelled("training_preparation", job_id=job_id)
+            preamble_ns = self._compile_preamble(body.graph)
+            cancellation_token.throw_if_cancelled("training_preamble", job_id=job_id)
+            ram_warning, row_limit, total_source_rows, probe_columns = self._estimate_ram(
+                body.graph, node_id, preamble_ns, job_id, source=body.source
+            )
+            cancellation_token.throw_if_cancelled("training_memory_estimate", job_id=job_id)
             user_limit = config.get("row_limit")
             row_limit = _clamp_row_limit(row_limit, user_limit)
-
-            # If the user's row_limit is the binding constraint, the RAM
-            # downsample warning is irrelevant — suppress it.
             if (
                 ram_warning
                 and user_limit
                 and isinstance(user_limit, (int, float))
                 and int(user_limit) > 0
-                and (row_limit is not None and row_limit == int(user_limit))
+                and row_limit == int(user_limit)
             ):
                 ram_warning = None
                 self._store.update_job(job_id, warning=None)
-
-            # Shared config→params builder (also used by script export).
-            # GLM keys are merged for GLM only — CatBoost has no **kwargs.
             train_params = build_train_params(config)
-
-            ram_warning = self._check_gpu_fallback(
-                train_params,
-                row_limit,
-                total_source_rows,
-                probe_columns,
-                ram_warning,
-                job_id,
+            ram_warning = self._check_gpu_vram_before_launch(
+                train_params, row_limit, total_source_rows, probe_columns, ram_warning, job_id
             )
-
-            # Build the list of columns that must survive projection
-            # (target, weight, offset — even if they're in the exclude list).
-            excluded = config.get("exclude", [])
-            keep_cols = _training_projection_keep_columns(config)
-
-            required_columns_by_node = _training_required_columns_by_node(
-                body.node_id,
-                config,
-            )
+            cancellation_token.throw_if_cancelled("training_preparation", job_id=job_id)
             execution_context = create_admitted_execution_context(
                 operation="training_pipeline",
                 profile=ExecutionProfile.TRAINING_PREP,
                 job_id=job_id,
+                cancellation_token=cancellation_token,
             )
             bind_running_execution_metrics_publisher(self._store, job_id, execution_context)
-            # Register before synchronous materialisation so cancellation can
-            # stop the expensive upstream execution as well as child fitting.
-            self._training_jobs.register_latest(
-                (_TRAINING_JOB_TYPE, job_id),
-                job_id,
-                execution_token=execution_context.cancellation_token,
-            )
+            execution_context.checkpoint(label="training_preparation")
             tmp_parquet = self._execute_and_sink(
                 body,
                 preamble_ns,
                 row_limit,
                 job_id,
-                exclude=excluded or None,
-                keep_columns=keep_cols,
-                required_columns_by_node=required_columns_by_node,
+                exclude=config.get("exclude") or None,
+                keep_columns=_training_projection_keep_columns(config),
+                required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
             )
+            execution_context.checkpoint(label="training_preparation_complete")
             feature_selection = self._store.require_job(job_id).get("feature_selection")
-
-            # Default output_dir to <pipeline_dir>/outputs when not explicitly set.
-            if "output_dir" not in config:
+            launch_config = config
+            if "output_dir" not in launch_config:
                 from haute.executor import _pipeline_dir
 
-                p_dir = _pipeline_dir(body.graph)
-                config = {
-                    **config,
-                    "output_dir": str(p_dir / "outputs") if p_dir else "outputs",
+                pipeline_dir = _pipeline_dir(body.graph)
+                launch_config = {
+                    **launch_config,
+                    "output_dir": str(pipeline_dir / "outputs") if pipeline_dir else "outputs",
                 }
-
             self._launch_background(
                 job_id,
-                body.node_id,
-                config,
+                node_id,
+                launch_config,
                 train_params,
                 tmp_parquet,
                 ram_warning,
@@ -1292,69 +1403,44 @@ class TrainService:
                 feature_selection=feature_selection,
                 execution_context=execution_context,
             )
-            launch_started = True
+            worker_owns_cleanup = True
+        except ExecutionCancelledError:
+            reason = self._training_jobs.cancellation_reason(job_id) or "cancelled"
+            self._lifecycle.transition(
+                job_id,
+                to=reason,
+                message="Cancelled" if reason == "cancelled" else reason,
+                elapsed_seconds=_job_elapsed_seconds(self._store.require_job(job_id)),
+            )
         except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
-            http_exc = _memory_limit_http_exception(exc)
-            self._lifecycle.transition(
-                job_id,
-                to="memory_limited",
-                message=str(http_exc.detail),
-                fields={"error": str(http_exc.detail)},
-            )
-            raise http_exc from None
+            self._persist_preparation_http_failure(job_id, _memory_limit_http_exception(exc))
         except HTTPException as exc:
-            if exc.status_code == 507:
-                self._lifecycle.transition(
-                    job_id,
-                    to="memory_limited",
-                    message=str(exc.detail),
-                    fields={
-                        "error": str(exc.detail),
-                        "error_detail": exc.detail,
-                        "error_code": (
-                            exc.detail.get("error_code") if isinstance(exc.detail, dict) else None
-                        ),
-                        "http_status_code": exc.status_code,
-                    },
-                )
-            elif 400 <= exc.status_code < 500:
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=str(exc.detail),
-                    fields={
-                        "error": str(exc.detail),
-                        "error_detail": exc.detail,
-                        "error_code": (
-                            exc.detail.get("error_code") if isinstance(exc.detail, dict) else None
-                        ),
-                        "http_status_code": exc.status_code,
-                    },
-                )
-            else:
-                self._lifecycle.transition(
-                    job_id,
-                    to="error",
-                    message=str(exc.detail),
-                    fields={"error": str(exc.detail)},
-                )
-            raise
+            self._persist_preparation_http_failure(job_id, exc)
         except Exception as exc:
+            logger.exception("training_preparation_failed", job_id=job_id)
             self._lifecycle.transition(
-                job_id,
-                to="error",
-                message=str(exc),
-                fields={"error": str(exc)},
+                job_id, to="error", message=_friendly_error(exc), fields={"error": str(exc)}
             )
-            raise
         finally:
-            if execution_context is not None and not launch_started:
-                execution_context.release_admission(preserve_primary_error=True)
+            if not worker_owns_cleanup:
+                if execution_context is not None:
+                    execution_context.release_admission(preserve_primary_error=True)
+                self._training_jobs.release(job_id)
 
-        return TrainResponse(
-            status="started",
-            job_id=job_id,
-            feature_selection=feature_selection,
+    def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:
+        message, fields = _http_failure_job_parts(exc, job_id=job_id)
+        terminal: TerminalReason
+        if exc.status_code == 507:
+            terminal = "memory_limited"
+        elif 400 <= exc.status_code < 500:
+            terminal = "contract_error"
+        else:
+            terminal = "error"
+        self._lifecycle.transition(
+            job_id,
+            to=terminal,
+            message=message,
+            fields=fields,
         )
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -1949,7 +2035,7 @@ class TrainService:
 
         return ram_warning, row_limit, total_source_rows, probe_columns
 
-    def _check_gpu_fallback(
+    def _check_gpu_vram_before_launch(
         self,
         train_params: dict[str, Any],
         row_limit: int | None,
@@ -1971,8 +2057,8 @@ class TrainService:
             )
             if vram_check.warning:
                 gpu_warning = (
-                    f"{vram_check.warning} Switch task_type to CPU or reduce rows/features "
-                    "before starting GPU training."
+                    f"{vram_check.warning} Select CPU and retry, or reduce rows/features "
+                    "before retrying GPU training."
                 )
                 logger.warning(
                     "gpu_vram_refused",
@@ -2105,12 +2191,15 @@ class TrainService:
                     schema_cols,
                 )
             except ValueError as exc:
+                http_exc = HTTPException(status_code=422, detail=str(exc))
+                message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
                 self._lifecycle.transition(
                     job_id,
                     to="contract_error",
-                    message=str(exc),
+                    message=message,
+                    fields=fields,
                 )
-                raise HTTPException(status_code=422, detail=str(exc)) from None
+                raise http_exc from None
             self._store.update_job(job_id, feature_selection=feature_selection)
             required_training_columns = set(keep_columns or [])
             node_demand = (
@@ -2124,20 +2213,21 @@ class TrainService:
                 required_training_columns.update(str(column) for column in node_demand)
             missing_training_columns = sorted(required_training_columns - schema_set)
             if missing_training_columns:
-                self._lifecycle.transition(
-                    job_id,
-                    to="contract_error",
-                    message=(
-                        f"Training input is missing required column(s): {missing_training_columns}"
-                    ),
-                )
-                raise HTTPException(
+                http_exc = HTTPException(
                     status_code=422,
                     detail=(
                         "Training input is missing required column(s): "
                         f"{missing_training_columns}. Available columns: {schema_cols}"
                     ),
                 )
+                message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+                self._lifecycle.transition(
+                    job_id,
+                    to="contract_error",
+                    message=message,
+                    fields=fields,
+                )
+                raise http_exc
 
             # Project down to only the columns needed for training.
             # This reduces peak memory during sink and all subsequent
@@ -2181,6 +2271,10 @@ class TrainService:
             gc.collect()
             _malloc_trim()
             _mem_checkpoint("sunk to temp parquet")
+        except ExecutionCancelledError:
+            if Path(tmp_parquet).exists():
+                os.unlink(tmp_parquet)
+            raise
         except ExecutionMemoryLimitExceededError as exc:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
@@ -2189,12 +2283,15 @@ class TrainService:
                 error=str(exc),
                 node_id=body.node_id,
             )
+            http_exc = _memory_limit_http_exception(exc)
+            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
             self._lifecycle.transition(
                 job_id,
                 to="memory_limited",
-                message=str(exc),
+                message=message,
+                fields=fields,
             )
-            raise _memory_limit_http_exception(exc) from None
+            raise http_exc from None
         except PUBLIC_CONTRACT_ERROR_TYPES as exc:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
@@ -2214,12 +2311,15 @@ class TrainService:
                 error=str(exc),
                 node_id=body.node_id,
             )
+            http_exc = HTTPException(status_code=422, detail=error_msg)
+            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
             self._lifecycle.transition(
                 job_id,
                 to="contract_error",
-                message=error_msg,
+                message=message,
+                fields=fields,
             )
-            raise HTTPException(status_code=422, detail=error_msg) from None
+            raise http_exc from None
         except HTTPException:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
@@ -2227,17 +2327,19 @@ class TrainService:
         except Exception as exc:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)
-            error_msg = f"Pipeline execution failed: {exc}"
             logger.error("pipeline_exec_failed", error=str(exc), node_id=body.node_id)
-            self._lifecycle.transition(
-                job_id,
-                to="error",
-                message=error_msg,
-            )
-            raise HTTPException(
+            http_exc = HTTPException(
                 status_code=500,
                 detail="Pipeline execution failed. Check the server logs for details.",
             )
+            message, fields = _http_failure_job_parts(http_exc, job_id=job_id)
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=message,
+                fields=fields,
+            )
+            raise http_exc
         finally:
             if execution_context is not None:
                 self._store.update_job(

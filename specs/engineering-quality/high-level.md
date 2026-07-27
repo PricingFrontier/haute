@@ -105,6 +105,13 @@ Out of scope:
 - Mutation targets are deliberately curated and sharded across isolated CI
   runners, avoiding an unbounded or environment-racy mutation gate while
   retaining threshold enforcement for selected high-value code.
+- Test debt is visible through one generated, committed health summary rather
+  than scattered comments alone. Backend skip/xfail/flaky sites and frontend
+  skipped/focused/expected-failure sites remain exact fingerprint ratchets.
+  The same summary includes the pinned Playwright retry budget and every
+  mutation target's survivor threshold. A stale generated summary fails
+  ordinary tests; review is event-driven through the ratchet, with no
+  calendar-expiry gate (ruled 2026-07-27).
 - Point-in-time reproduction material is non-normative evidence. Treating it as
   a current product contract would create misleading claims.
 - Component roadmaps preserve only the actionable conclusion and current
@@ -137,6 +144,10 @@ Out of scope:
   claim that every historical run blocks a pull request.
 - Strict pytest configuration fails unknown markers/configuration and unexpected
   xpasses; configured warning filters turn most runtime warnings into errors.
+- The test-health gate fails on an unreviewed backend/frontend debt site, a
+  missing static reason, a non-strict unbudgeted xfail, a stale aggregate
+  summary, or malformed mutation-target metadata. Zero current backend flaky
+  markers is an enforced budget, not an undocumented observation.
 - Coverage merge/gate fails when shard data cannot satisfy the 90% global floor
   or `scripts/check_critical_coverage.py` finds a configured file below its
   statement/branch thresholds.

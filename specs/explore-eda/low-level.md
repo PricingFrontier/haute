@@ -144,8 +144,9 @@ Error handling section): `ExecutionCancelledError` → `token.terminal_reason or
 
 Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
 
-1. Builds one `aggregations: list[pl.Expr]` list: `pl.len().alias("row_count")`, then per column
-   `name`/`dtype`:
+1. Builds one `aggregations: list[pl.Expr]` list: `pl.len().alias("row_count")`, plus
+   `pl.struct(all columns).n_unique().alias("unique_rows")` when the schema is non-empty and
+   every dtype is hashable, then per column `name`/`dtype`:
    - `null_count().alias(f"null::{name}")` always.
    - `n_unique().alias(f"unique::{name}")` unless `_is_unhashable_dtype(dtype)`.
    - min/max (via `_min_max_column_expr`, casting text-like/boolean bases to `String`) when
@@ -158,6 +159,8 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
      — `value_counts(sort=True).struct.rename_fields(...).head(50).implode()` — aliased
      `categorical_values::{name}`, plus `n_unique()` over the same display-label expression,
      aliased `categorical_label_groups::{name}`.
+   - text-like dtypes additionally aggregate min/mean/max display-label character length;
+     temporal dtypes aggregate `max - min` as a duration-like span.
 2. The shared I/O-layer helper
    `cancellable_streaming_collect(lf.select(aggregations), execution_context=execution_context)`
    checkpoints before starting native work, then calls
@@ -172,13 +175,20 @@ Given `lf: pl.LazyFrame` and `schema: pl.Schema`:
    and again by 1 if `nan_count` is truthy — `n_unique()` counts the null bucket and (for float
    columns) the NaN bucket each as one distinct group, and the stat's `distinct_count` is defined
    as valid-values-only.
-4. `row_count = int(aggregate_row["row_count"])`.
-5. Returns `ExploreFrameStats(row_count, columns, overview_summary=_build_overview_summary(...))`.
+4. For each hashable column, `unique_ratio` is valid distinct count divided by valid row count
+   (rows minus null and float-NaN counts), or `None` when there are no valid rows. A distinct
+   count above 50 sets `is_high_cardinality` only when the dtype base is text-like
+   (`_TEXT_DTYPE_BASES`). `_is_identifier_candidate` additionally requires
+   at least two rows, no missing/NaN values, one distinct value per row, and an id/key/uuid/guid
+   name shape.
+5. `row_count = int(aggregate_row["row_count"])`; `duplicate_row_count` is
+   `row_count - unique_rows` when the whole-row expression was available, otherwise `None`.
+6. Returns `ExploreFrameStats(row_count, columns, overview_summary=_build_overview_summary(...))`.
 
 ### Data-quality summary (`_build_data_quality_summary`)
 
-Given `row_count` and `columns`, in this fixed order, each condition appends at most one
-`ExploreDataQualityIssue` (so up to 5 issues total per report):
+Given `row_count`, `columns`, and the optional duplicate count, in this fixed order, each
+condition appends at most one `ExploreDataQualityIssue` (so up to 7 issues total per report):
 
 1. **Missing values** — any column with `null_count > 0`, sorted by descending null ratio then
    name. Severity is `"danger"` if any of those columns are ≥50% null
@@ -202,6 +212,11 @@ Given `row_count` and `columns`, in this fixed order, each condition appends at 
    zero_count / (row_count - null_count) >= 0.95`, sorted by descending zero count; this issue is
    computed and referenced (via `zero_heavy_names`) before the constant-column issue is appended,
    even though it is appended last.
+6. **High-cardinality fields** — any text-like column whose valid distinct count exceeds 50;
+   detail lists up to three names. This is a caution about bounded categorical display, not an
+   error, so it never fires for numeric or temporal columns.
+7. **Duplicate rows** — when exact whole-row distinct counting is available and
+   `duplicate_row_count > 0`; danger at a duplicate ratio of at least 50%, warning below it.
 
 `_names_text`/`_limited_names` cap the number of names listed in a detail string at 3
 (`_SUMMARY_NAME_LIMIT`), joined with `", "`; `_plural` pluralises "column"/"columns" based on

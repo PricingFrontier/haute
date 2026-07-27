@@ -6465,8 +6465,8 @@ class TestSolveBackgroundErrors:
     """Test error categorization in the _solve_background thread."""
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_solve_value_error(self, client, scored_data):
-        """ValueError in solver produces 'Data error' message."""
+    def test_solve_untyped_value_error_is_unexpected(self, client, scored_data):
+        """An untyped ValueError must not be mistaken for an input error."""
         graph = _make_optimiser_graph(scored_data)
         with patch(
             "haute.routes._optimiser_service._solve_online",
@@ -6474,13 +6474,13 @@ class TestSolveBackgroundErrors:
         ):
             resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
             status = _poll_until_done(client, resp.json()["job_id"])
-            assert status["status"] == "contract_error"
-            assert status["terminal_reason"] == "contract_error"
-            assert "Data error" in status["message"]
+            assert status["status"] == "error"
+            assert status["terminal_reason"] == "error"
+            assert status["message"] == "Unexpected error: Invalid constraint column"
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
-    def test_solve_runtime_error(self, client, scored_data):
-        """RuntimeError in solver produces 'Algorithm error' message."""
+    def test_solve_untyped_runtime_error_is_unexpected(self, client, scored_data):
+        """An untyped RuntimeError must not be mistaken for a solver error."""
         graph = _make_optimiser_graph(scored_data)
         with patch(
             "haute.routes._optimiser_service._solve_online",
@@ -6489,7 +6489,37 @@ class TestSolveBackgroundErrors:
             resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
             status = _poll_until_done(client, resp.json()["job_id"])
             assert status["status"] == "error"
-            assert "Algorithm error" in status["message"]
+            assert status["message"] == "Unexpected error: Solver diverged"
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_solve_typed_input_error_is_contract_error(self, client, scored_data):
+        from haute.routes._optimiser_service import _OptimiserSolveInputError
+
+        graph = _make_optimiser_graph(scored_data)
+        with patch(
+            "haute.routes._optimiser_service._solve_online",
+            side_effect=_OptimiserSolveInputError("missing factor column"),
+        ):
+            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            status = _poll_until_done(client, resp.json()["job_id"])
+            assert status["status"] == "contract_error"
+            assert status["terminal_reason"] == "contract_error"
+            assert status["message"] == "Data error: missing factor column"
+
+    @pytest.mark.usefixtures("_widen_sandbox_root")
+    def test_solve_typed_solver_error_is_algorithm_error(self, client, scored_data):
+        from haute.routes._optimiser_service import _OptimiserSolverExecutionError
+
+        graph = _make_optimiser_graph(scored_data)
+        with patch(
+            "haute.routes._optimiser_service._solve_online",
+            side_effect=_OptimiserSolverExecutionError("solver rejected grid"),
+        ):
+            resp = client.post("/api/optimiser/solve", json={"graph": graph, "node_id": "opt"})
+            status = _poll_until_done(client, resp.json()["job_id"])
+            assert status["status"] == "error"
+            assert status["terminal_reason"] == "error"
+            assert status["message"] == "Algorithm error: solver rejected grid"
 
     @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_solve_generic_exception(self, client, scored_data):
@@ -8339,6 +8369,19 @@ class TestValidateConfig:
         assert exc_info.value.status_code == 400
         assert "objective" in exc_info.value.detail.lower()
 
+    @pytest.mark.parametrize("chunk_size", [0, -1, 1.5, "1000", True])
+    def test_invalid_explicit_chunk_size_raises_400_synchronously(self, chunk_size):
+        from fastapi import HTTPException
+
+        from haute.routes._optimiser_service import OptimiserSolveService
+
+        with pytest.raises(HTTPException) as exc_info:
+            OptimiserSolveService._validate_config(
+                {"objective": "income", "chunk_size": chunk_size}
+            )
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.detail == "chunk_size must be a positive integer."
+
 
 # ---------------------------------------------------------------------------
 # _compute_scenario_value_stats unit tests (gap: empty dataframe)
@@ -9283,7 +9326,7 @@ class TestApplyLambdasUnit:
             {"quote_id": "q2", "optimal_scenario_value": 1.1},
         ]
 
-    def test_apply_corrupt_artifact_handle_fails_loudly(
+    def test_apply_missing_artifact_handle_returns_gone(
         self,
         client,
         clean_job_store,
@@ -9308,8 +9351,10 @@ class TestApplyLambdasUnit:
 
         resp = client.post("/api/optimiser/apply", json={"job_id": "apply_missing_handle"})
 
-        assert resp.status_code == 500
-        assert "artifact" in resp.json()["detail"].lower()
+        assert resp.status_code == 410
+        assert resp.json()["detail"] == (
+            "Optimiser apply artifact is no longer available. Re-run the solve to regenerate it."
+        )
 
     def test_apply_solve_result_without_dataframe_attribute_fails_loudly(
         self,
@@ -11507,9 +11552,10 @@ class TestSolveRatebookUnit:
     """Unit tests for _solve_ratebook."""
 
     def test_solve_ratebook_no_factors_df(self):
-        """Ratebook mode without factors_df raises RuntimeError."""
+        """Ratebook mode without factors_df raises a typed input error."""
         from haute.routes._job_store import JobStore
         from haute.routes._optimiser_service import (
+            _OptimiserSolveInputError,
             _solve_ratebook,
         )
 
@@ -11517,7 +11563,7 @@ class TestSolveRatebookUnit:
         job_id = store.create_job({"status": "running", "config": {}})
         mock_grid = MagicMock()
 
-        with pytest.raises(RuntimeError, match="banding source"):
+        with pytest.raises(_OptimiserSolveInputError, match="banding source"):
             _solve_ratebook(
                 SolveContext(
                     job_id=job_id,
@@ -11552,9 +11598,9 @@ class TestSolveRatebookUnit:
             )
 
     def test_solve_ratebook_invalid_factor_columns(self):
-        """Ratebook mode with factor columns not in DataFrame raises RuntimeError."""
+        """Ratebook mode with missing factor columns is a typed input error."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_ratebook
+        from haute.routes._optimiser_service import _OptimiserSolveInputError, _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job({"status": "running", "config": {}})
@@ -11568,7 +11614,7 @@ class TestSolveRatebookUnit:
         }
 
         with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
-            with pytest.raises(RuntimeError, match="Missing ratebook factor columns"):
+            with pytest.raises(_OptimiserSolveInputError, match="Missing ratebook factor columns"):
                 _solve_ratebook(
                     SolveContext(
                         job_id=job_id,
@@ -12062,7 +12108,7 @@ class TestSolveRatebookUnit:
     def test_solve_ratebook_rejects_null_factor_values_before_solver(self):
         """Null banding levels should fail loudly before price-contour runs."""
         from haute.routes._job_store import JobStore
-        from haute.routes._optimiser_service import _solve_ratebook
+        from haute.routes._optimiser_service import _OptimiserSolveInputError, _solve_ratebook
 
         store = JobStore()
         job_id = store.create_job({"status": "running", "config": {"constraints": {}}})
@@ -12086,7 +12132,7 @@ class TestSolveRatebookUnit:
 
         with _persisted_ratebook_factors_handle(factors_df) as factors_handle:
             with patch("price_contour.RatebookOptimiser") as mock_solver:
-                with pytest.raises(ValueError) as exc_info:
+                with pytest.raises(_OptimiserSolveInputError) as exc_info:
                     _solve_ratebook(
                         SolveContext(
                             job_id=job_id,
@@ -13278,12 +13324,16 @@ class TestBuildGrid:
 
             with pytest.raises(HTTPException) as exc_info:
                 service._build_grid(scored_lf, [], config, "opt", job_id)
-            assert exc_info.value.status_code == 400
+            assert exc_info.value.status_code == 500
+            assert (
+                exc_info.value.detail
+                == "Grid construction failed. Check the server logs for details."
+            )
 
         job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
-        assert "grid" in job["message"].lower()
+        assert job["status"] == "error"
+        assert job["terminal_reason"] == "error"
+        assert job["message"] == "Grid construction failed. Check the server logs for details."
 
     def test_build_grid_bounded_sink_failure_is_http_422(self) -> None:
         """Bounded streaming incompatibility must not be reported as a generic 500."""

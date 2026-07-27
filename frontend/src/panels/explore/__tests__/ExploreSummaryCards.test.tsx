@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import type { ExploreCacheReport, ExploreColumnStat } from "../../../api/types"
 import {
   CategoricalSummaryCard,
@@ -8,6 +8,9 @@ import {
   NumericSummaryCard,
 } from "../ExploreSummaryCards"
 
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+const originalSecureContext = Object.getOwnPropertyDescriptor(globalThis, "isSecureContext")
+
 function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnStat {
   return {
     name: "premium",
@@ -15,6 +18,13 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
     kind: "Numeric",
     null_count: 0,
     distinct_count: 10,
+    unique_ratio: null,
+    is_high_cardinality: false,
+    is_identifier_candidate: false,
+    text_min_length: null,
+    text_mean_length: null,
+    text_max_length: null,
+    temporal_span: null,
     ...overrides,
   }
 }
@@ -47,6 +57,8 @@ function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheRe
     overview_summary: {
       data_quality: {
         issue_count: 1,
+        duplicate_row_count: 0,
+        duplicate_ratio: 0,
         issues: [
           {
             severity: "warning",
@@ -85,7 +97,18 @@ function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheRe
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  vi.restoreAllMocks()
+  if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard)
+  else Reflect.deleteProperty(navigator, "clipboard")
+  if (originalSecureContext) Object.defineProperty(globalThis, "isSecureContext", originalSecureContext)
+  else Reflect.deleteProperty(globalThis, "isSecureContext")
 })
+
+function installClipboard(writeText = vi.fn().mockResolvedValue(undefined)) {
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+  Object.defineProperty(globalThis, "isSecureContext", { value: true, configurable: true })
+  return writeText
+}
 
 describe("Explore summary cards", () => {
   it("renders Dataset Snapshot without repeating schema-level column detail", () => {
@@ -111,6 +134,8 @@ describe("Explore summary cards", () => {
           overview_summary: {
             data_quality: {
               issue_count: 2,
+              duplicate_row_count: 0,
+              duplicate_ratio: 0,
               issues: [
                 {
                   severity: "danger",
@@ -145,7 +170,7 @@ describe("Explore summary cards", () => {
       <DataQualityCard
         report={makeReport({
           overview_summary: {
-            data_quality: { issue_count: 0, issues: [] },
+            data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
             categorical_summary: [],
           },
         })}
@@ -408,7 +433,7 @@ describe("Explore summary cards", () => {
       <CategoricalSummaryCard
         report={makeReport({
           overview_summary: {
-            data_quality: { issue_count: 0, issues: [] },
+            data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
             categorical_summary: [],
           },
         })}
@@ -417,5 +442,99 @@ describe("Explore summary cards", () => {
 
     const card = screen.getByTestId("explore-categorical-summary-card")
     expect(card).toHaveTextContent("No non-numeric fields in this dataset.")
+  })
+
+  it("copies the numeric display grid as TSV from its native action button", async () => {
+    const writeText = installClipboard()
+    render(<NumericSummaryCard report={makeReport({ row_count: 100 })} />)
+
+    const copy = await screen.findByRole("button", {
+      name: "Copy Numeric Summary table as TSV",
+    })
+    copy.click()
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce())
+    expect(writeText).toHaveBeenCalledWith(
+      "Field\tType\tNull %\tDistinct\tMin\tP25\tMedian\tMean\tP75\tMax\tStd\tZeros\tNegatives\tNaN\n" +
+        "id\tInt64\t0.0%\t1,234\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n" +
+        "premium\tFloat64\t0.0%\t980\t10.5\t-\t-\t-\t-\t999.99\t-\t0\t0\t-",
+    )
+  })
+
+  it("downloads categorical CSV using shared escaping", async () => {
+    const blobs: Blob[] = []
+    let downloadedFilename = ""
+    vi.spyOn(URL, "createObjectURL").mockImplementation((blob: Blob | MediaSource) => {
+      blobs.push(blob as Blob)
+      return "blob:explore"
+    })
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {})
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloadedFilename = this.download
+    })
+    render(
+      <CategoricalSummaryCard
+        report={makeReport({
+          source: "pricing/claims.v1",
+          overview_summary: {
+            data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
+            categorical_summary: [{ field: 'region, "quoted"', distinct_count: 1, expandable: false, values_truncated: false, values: [] }],
+          },
+        })}
+      />,
+    )
+
+    ;(
+      await screen.findByRole("button", {
+        name: "Download Categorical Summary table as CSV",
+      })
+    ).click()
+
+    await waitFor(() => expect(blobs).toHaveLength(1))
+    expect(await blobs[0].text()).toContain('"region, ""quoted""",-,-,1')
+    expect(downloadedFilename).toBe("explore-pricing_claims_v1-categorical-summary.csv")
+  })
+
+  it("surfaces a download failure inline instead of rejecting unhandled", async () => {
+    vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
+      throw new Error("blob allocation failed")
+    })
+    render(
+      <CategoricalSummaryCard
+        report={makeReport({
+          source: "pricing/claims.v1",
+          overview_summary: {
+            data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
+            categorical_summary: [{ field: "region", distinct_count: 1, expandable: false, values_truncated: false, values: [] }],
+          },
+        })}
+      />,
+    )
+
+    ;(
+      await screen.findByRole("button", {
+        name: "Download Categorical Summary table as CSV",
+      })
+    ).click()
+
+    expect(
+      await screen.findByTestId("explore-categorical-summary-export-error"),
+    ).toHaveTextContent("blob allocation failed")
+  })
+
+  it("keeps empty numeric and categorical export actions visible but disabled", async () => {
+    render(
+      <>
+        <NumericSummaryCard report={makeReport({ columns: [] })} />
+        <CategoricalSummaryCard report={makeReport({ overview_summary: { data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 }, categorical_summary: [] } })} />
+      </>,
+    )
+
+    expect(await screen.findByTestId("explore-numeric-summary-copy-tsv")).toBeDisabled()
+    expect(await screen.findByTestId("explore-numeric-summary-download-csv")).toBeDisabled()
+    expect(await screen.findByTestId("explore-categorical-summary-copy-tsv")).toBeDisabled()
+    expect(await screen.findByTestId("explore-categorical-summary-download-csv")).toBeDisabled()
   })
 })

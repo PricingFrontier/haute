@@ -149,7 +149,7 @@ Exceptions are handled with narrow, explicit catches rather than blanket `except
 a fallback mechanism: transport-classification helpers (`_is_databricks_not_found`,
 `_is_http_not_found` in `src/haute/cli/_impact.py`) exist specifically so that only the exact "not found" shape is
 swallowed and reclassified — everything else re-raises. Where `except Exception` does appear (e.g.
-around `resolve_config`, `deploy_resolved`, script execution in `train`), it is used to convert an
+around `resolve_config` or script execution in `train`), it is used to convert an
 internal exception into a formatted CLI error message and `SystemExit(1)`, not to continue past the
 failure.
 
@@ -159,9 +159,9 @@ immediately with the original exception chained. Training execution and result r
 separate failure boundaries: once `job.run()` has returned successfully, a formatting problem is
 reported as a result-reporting failure and never as “Training failed”.
 
-> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
-> `handle_deploy`'s dispatch to the target-specific backend catches bare `except Exception`
-> after already catching `ImportError` and `NotImplementedError` separately — a sufficiently exotic
-> backend failure (e.g. a bug in the deploy backend itself) is reported identically to a legitimate
-> deploy-target error, which can make debugging backend bugs from the CLI output harder than
-> necessary.
+`handle_deploy` renders `DeployError` as an expected target/configuration failure and keeps
+the explicit missing-dependency and not-implemented messages. It does not catch the
+backend with `except Exception`: an unexpected implementation exception retains its
+original type and traceback, while target adapters are responsible for raising
+`DeployError` for expected operational failures such as missing credentials, unavailable
+Docker, or rejected build/push operations.

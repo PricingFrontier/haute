@@ -14,8 +14,7 @@
 | `src/haute/__init__.py` | Defines the installed package's public import surface, which is the package root selected for wheel distribution. |
 | `src/haute/py.typed` | PEP 561 marker declaring that the installed `haute` package ships type information. |
 | `frontend/package.json` | Declares the private frontend's pinned Node/npm engines, locked-toolchain commands, production build (`tsc -b && vite build`), and build-time dependencies. |
-| `frontend/package-lock.json` | Pins the npm dependency graph consumed by `npm ci` for reproducible frontend builds. |
-| `frontend/bun.lock` | Checked-in Bun lockfile for the frontend; current package-build and CI commands use npm and `frontend/package-lock.json`, not this lockfile. |
+| `frontend/package-lock.json` | Pins the sole supported frontend dependency graph consumed by `npm ci` for reproducible frontend builds. Secondary package-manager lockfiles are unsupported and must not be checked in because CI cannot verify their parity. |
 | `frontend/.npmrc` | Supplies npm configuration used when installing the frontend dependency graph. |
 | `frontend/README.md` | Documents the frontend project for repository contributors. |
 | `frontend/index.html` | Vite HTML entry document for the browser bundle. |

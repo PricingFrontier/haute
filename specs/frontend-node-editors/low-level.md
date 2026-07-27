@@ -257,10 +257,33 @@ canonical nodes through save/reload, snapshot/offline execution, and write.
 `frontend/e2e/persistence/api-input-v2-native.spec.ts` remains a canonical API-frame schema-continuity
 suite; it does not test or preserve v1 migration behavior.
 
-Banding/Rating coverage assigns continuous, categorical, breakpoint,
-mixed-three-factor, zero-level/malformed, and persisted-table shapes to the
-unit/component/browser tiers. `frontend/e2e/canvas-assurance.spec.ts` rebuilds eight
-Cartesian entries from three two-level factors, edits a relativity, saves and
-reloads it, and captures element-scoped desktop and 1024×768 snapshots. Canonical
-Rating/Output/API Input interaction tests cover new/edit/save/reload shapes;
-there are no migration-specific fixtures.
+The initial Banding-to-Rating configuration-shape matrix is:
+
+| Variant | Owning component | Representative fixture/contract | Smallest proving tier | Browser escalation |
+|---|---|---|---|---|
+| Continuous Banding | `frontend-node-editors` | `frontend/src/panels/editors/banding/__tests__/BandingRulesGrid.test.tsx::makeFactor` plus continuous render/edit/copy cases | Component | None; behaviour is local to one grid. |
+| Categorical Banding | `frontend-node-editors` | The same factory with categorical rules and value/match-count cases | Component | Included only as one factor in the mixed journey. |
+| Breakpoint Banding | `frontend-node-editors` | `frontend/src/panels/editors/banding/__tests__/BreakpointGrid.test.tsx` boundary/label/order fixtures and `frontend/src/__tests__/editors/BandingEditor.test.tsx` mode cases | Component | Included only as one factor in the mixed journey. |
+| Mixed three-factor Banding→Rating | `frontend-node-editors` | Generated `browser_mixed_banding.json` and `browser_rating.json` from `run_frontend_e2e_server.py` | Browser | Authoritative cross-editor Cartesian rebuild, edit, save, and reload journey. |
+| Zero-level configured factor | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` zero-level classifier plus `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` warning/no-stale-level case | Unit + component | None; a deterministic warning contract needs no browser duplication. |
+| Malformed or partial draft | `frontend-modelling-optimiser-ui` | `frontend/src/__tests__/utils/banding.test.ts` malformed-default, blank-output, and partial-rule cases | Unit | None; invalid drafts are classification inputs, not a persistence journey. |
+| Mixed Rating outputs | `frontend-node-editors` | `frontend/src/__tests__/editors/RatingStepEditor.test.tsx` multi-table `combinedOutputs` selection/duplicate/output cases | Component | None until a cross-node persisted failure is found. |
+| Persisted Rating table | `frontend-node-editors` | Generated three-factor fixture and eight edited Cartesian entries | Browser | Save/reload assertion is the owning evidence. |
+
+`frontend/e2e/canvas-assurance.spec.ts` rebuilds eight Cartesian entries from
+three two-level factors, edits a relativity, saves and reloads it, and captures
+element-scoped 1440×900 and 1024×768 snapshots. Its optimiser selection
+journey captures the same two supported viewport sizes. The protected Rating
+rebuild is explicitly focused and activated with Enter, editing leaves with
+Tab, and the save uses the platform keyboard shortcut.
+
+The accessibility-automation boundary is a recorded no-new-dependency
+decision: native semantic queries and explicit ARIA/focus assertions remain
+blocking in Vitest, and the one stable cross-editor keyboard journey remains
+blocking in Playwright. Screenshots protect visual state but are not treated as
+an accessibility audit. A blanket axe-style scan is not added because the
+repository has not defined a whole-application conformance claim or an owned
+exception policy; reconsidering one requires a small named route set, rule
+scope, browser, exception owner, and expiry rather than silently accepting
+scanner noise. Canonical Rating/Output/API Input interaction tests continue to
+cover new/edit/save/reload shapes; there are no migration-specific fixtures.

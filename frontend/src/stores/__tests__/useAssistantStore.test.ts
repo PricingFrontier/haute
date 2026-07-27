@@ -298,6 +298,13 @@ describe("session persistence across reloads and restarts", () => {
         {
           kind: "tool",
           text: "",
+          name: "graph_updated",
+          summary: "Canvas updated",
+          is_error: false,
+        },
+        {
+          kind: "tool",
+          text: "",
           name: "get_node_schema",
           summary: "No node x",
           is_error: true,
@@ -321,12 +328,18 @@ describe("session persistence across reloads and restarts", () => {
     })
     expect(entries[3]).toMatchObject({
       kind: "activity",
+      name: "graph_updated",
+      state: "ok",
+      summary: "Canvas updated",
+    })
+    expect(entries[4]).toMatchObject({
+      kind: "activity",
       name: "get_node_schema",
       state: "error",
       summary: "No node x",
     })
     // The new turn's user entry appends after the rehydrated transcript.
-    expect(entries[4]).toEqual({ kind: "user", text: "hi" })
+    expect(entries[5]).toEqual({ kind: "user", text: "hi" })
   })
 
   it("remembers a freshly issued session id per pipeline", async () => {

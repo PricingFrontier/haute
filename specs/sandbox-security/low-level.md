@@ -9,7 +9,7 @@
 | `src/haute/_local_security.py` | Local-session protection for the FastAPI/WebSocket server: session-token generation/comparison, exact authority parsing, loopback/forwarded-header middleware, HttpOnly-cookie bootstrap policy, HTTP middleware, and WebSocket pre-accept rejection helper. |
 | `src/haute/_path_resolution.py` | Cross-platform runtime path normalization, project/pipeline candidate resolution, symlink-aware containment, and the context-local execution root shared by eager/lazy builders. |
 | `src/haute/_gitignore_guard.py` | The shared `.gitignore` guard-entry tuple and the idempotent append-if-missing writer (`ensure_gitignore_guards`) used by both `haute init` and the unborn-repo commit seed. |
-| `src/haute/_env.py` | Lazy, fail-fast positive numeric environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by selected request-timeout, optimiser chunk/partition, solver-timeout, training-history, assistant-loop, execution-admission, and preview/trace cache-budget accessors. Other numeric environment settings use component-owned parsers. |
+| `src/haute/_env.py` | Fail-fast positive numeric environment-variable parsing helpers (`float_env`, `int_env`, `optional_int_env`) used by request-timeout, concurrency, source/dataframe-cache limits, optimiser chunk/partition, solver-timeout, training-history, assistant-loop, execution-admission, and preview/trace cache-budget accessors. Callers choose lazy call-time or deliberate process-wide import-time resolution. Component-owned parsers remain only where positive-numeric semantics do not apply. |
 
 ## Key types and data structures
 
@@ -374,11 +374,12 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   `haute.executor` does not re-export it, keeping the single canonical import
   path (`haute._user_exec`) from silently regressing after the module split.
 - `tests/test_env_lazy_accessors.py` — unit tests for the three `_env.py` parse
-  helpers directly, plus a parametrized sweep (`_ACCESSOR_CASES`) over every
-  known call site across the codebase that wraps a knob in a lazy accessor
-  function, asserting each honours a post-import env override and rejects a
-  malformed explicit value. This is the regression suite for the
-  "frozen at import" defect class described in the file's docstring.
+  helpers directly, plus a parametrized behavioural sweep over lazy accessors
+  and an AST-derived inventory of direct production environment reads. The AST
+  guard resolves literal module constants and common `os` import aliases,
+  requires positive numeric Haute knobs to use `_env.py`, and permits only a
+  reviewed explicit exception set for semantics those helpers do not own. A
+  new direct read therefore fails without updating a manually parallel list.
 - `tests/test_gitignore_guard.py` — pins the guard-entry list's required
   contents (including the explicit "stable-layer JSON must NOT be ignored"
   assertion) and exercises `ensure_gitignore_guards`'s four behaviors: create,
@@ -418,15 +419,8 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   exactly-once input-code execution, output-code rejection, and secret-free
   namespaces/failures.
 
-> NOTE: [Tracked by SEC-ENV-01](../roadmap/security-supply-chain.md#sec-env-01--complete-lazy-accessor-migration-guard).
-> `test_env_lazy_accessors.py`'s `_ACCESSOR_CASES` table is a manually
-> maintained parallel list of migrated lazy-knob call sites; a new knob added
-> elsewhere in the codebase that forgets to use `haute._env`'s helpers (or
-> forgets a corresponding entry here) would not be caught by this test file
-> itself — the regression protection is only as complete as the table's upkeep.
-
 ## Approved change contract — canonical sandbox payload
 
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
 the sandbox accepts only the current generated payload namespace. Historical module aliases and
 shim globals are removed; allow-list and containment behavior for the current payload is unchanged.

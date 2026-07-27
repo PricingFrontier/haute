@@ -6,6 +6,7 @@ polars dtypes and missing metadata instead of silently coercing to string.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from mlflow.models import ModelSignature
@@ -18,13 +19,27 @@ _POLARS_TO_MLFLOW: dict[str, DataType] = {
     "Boolean": DataType.boolean,
 }
 
+_CANONICAL_DATETIME = re.compile(
+    r"Datetime(?:\(time_unit='(?:ns|us|ms)', time_zone=(?:None|'[^']*')\))?\Z"
+)
+_CANONICAL_DECIMAL = re.compile(r"Decimal(?:\(precision=(?:\d+|None), scale=(?:\d+|None)\))?\Z")
+
 
 def _map_dtype(dtype: str) -> DataType:
-    if dtype not in _POLARS_TO_MLFLOW:
+    if dtype in _POLARS_TO_MLFLOW:
+        return _POLARS_TO_MLFLOW[dtype]
+    if dtype == "Date" or _CANONICAL_DATETIME.fullmatch(dtype):
+        return DataType.datetime
+    if _CANONICAL_DECIMAL.fullmatch(dtype):
         raise ValueError(
-            f"Unknown polars dtype {dtype!r}. Supported dtypes: {sorted(_POLARS_TO_MLFLOW)}"
+            f"Polars dtype {dtype!r} cannot be represented exactly in an MLflow "
+            "3.x signature: MLflow has no exact Decimal scalar. Cast upstream "
+            "explicitly to String for precision-preserving text or Float64 if you "
+            "accept precision loss."
         )
-    return _POLARS_TO_MLFLOW[dtype]
+    raise ValueError(
+        f"Unknown polars dtype {dtype!r}. Supported dtypes: {sorted(_POLARS_TO_MLFLOW)}"
+    )
 
 
 def build_signature(

@@ -83,7 +83,7 @@ def _inline_route_service(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(service._supervisor, "launch_protocol", capture_launch)
     monkeypatch.setattr("haute.routes.modelling._train_service", service)
-    return launched
+    return service, launched
 
 
 class TestTrainingCategoricalLevelDeclarations:
@@ -281,8 +281,11 @@ class TestTrainEndpoint:
     def test_train_with_invalid_target(self, client, training_data):
         graph = _make_modelling_graph(training_data, target="nonexistent")
         resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
-        assert resp.status_code == 422
-        assert "nonexistent" in resp.text
+        assert resp.status_code == 200
+        status = _poll_until_done(client, resp.json()["job_id"])
+        assert status["status"] == "contract_error"
+        assert status["http_status_code"] == 422
+        assert "nonexistent" in status["message"]
 
     def test_train_missing_node(self, client, training_data):
         graph = _make_modelling_graph(training_data)
@@ -363,7 +366,7 @@ class TestTrainEndpoint:
             training_data,
             params=_fast_training_params(task_type="GPU"),
         )
-        # Pretend GPU has only 1 byte VRAM -- forces refusal before launch.
+        # Pretend GPU has only 1 byte VRAM -- forces async refusal before fit.
         with (
             patch("haute._ram_estimate.available_vram_bytes", return_value=1),
             patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()) as run,
@@ -372,11 +375,14 @@ class TestTrainEndpoint:
                 "/api/modelling/train",
                 json={"graph": graph, "node_id": "train"},
             )
-            assert resp.status_code == 507
-            detail = resp.json()["detail"]
-            assert detail["error_code"] == "gpu_vram_limit"
+            assert resp.status_code == 200
+            status = _poll_until_done(client, resp.json()["job_id"])
+            assert status["status"] == "memory_limited"
+            assert status["http_status_code"] == 507
+            assert status["error_code"] == "gpu_vram_limit"
+            detail = status["error_detail"]
             assert detail["reason"] == "gpu_vram_limit_exceeded"
-            assert "Switch task_type to CPU" in detail["message"]
+            assert "Select CPU and retry" in detail["message"]
             run.assert_not_called()
 
 
@@ -1153,11 +1159,12 @@ class TestBackgroundThreadErrors:
             def run(self, *_args, **_kwargs):
                 raise ValueError("Invalid target column: not found")
 
-        launched = _inline_route_service(monkeypatch)
+        service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
             assert data["status"] == "started"
+            service._join_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "contract_error"
@@ -1175,10 +1182,11 @@ class TestBackgroundThreadErrors:
             def run(self, *_args, **_kwargs):
                 raise RuntimeError("CUDA out of memory")
 
-        launched = _inline_route_service(monkeypatch)
+        service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
+            service._join_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
@@ -1195,10 +1203,11 @@ class TestBackgroundThreadErrors:
             def run(self, *_args, **_kwargs):
                 raise RuntimeError("unexpected crash")
 
-        launched = _inline_route_service(monkeypatch)
+        service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
             resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
             data = resp.json()
+            service._join_preparation(data["job_id"])
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
@@ -1219,7 +1228,7 @@ class TestBackgroundThreadErrors:
         )
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
-        launched = _inline_route_service(monkeypatch)
+        service, launched = _inline_route_service(monkeypatch)
         with patch(
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
@@ -1230,6 +1239,7 @@ class TestBackgroundThreadErrors:
                     json={"graph": graph, "node_id": "train"},
                 )
                 data = resp.json()
+                service._join_preparation(data["job_id"])
                 launched[0].join_and_raise(timeout=10)
                 status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
                 # Whether it completed or errored, the warning should be set
@@ -1255,7 +1265,7 @@ class TestBackgroundThreadErrors:
         )
         from tests.test_training_worker_protocol import _SuccessfulTrainingJob
 
-        launched = _inline_route_service(monkeypatch)
+        service, launched = _inline_route_service(monkeypatch)
         with patch(
             "haute._ram_estimate.estimate_safe_training_rows",
             return_value=mock_est,
@@ -1266,6 +1276,7 @@ class TestBackgroundThreadErrors:
                     json={"graph": graph, "node_id": "train"},
                 )
                 data = resp.json()
+                service._join_preparation(data["job_id"])
                 launched[0].join_and_raise(timeout=10)
                 status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
                 # RAM warning should be suppressed since user limit (30) < RAM limit (50)

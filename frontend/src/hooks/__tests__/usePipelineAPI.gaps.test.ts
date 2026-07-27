@@ -299,15 +299,19 @@ describe("usePipelineAPI — gap tests", () => {
         schema_warnings: [],
       }
 
-      // Pre-populate the cache with structuralVersion=0 (matching graph store default)
-      useNodeResultsStore.setState({
-        previews: { n1: { data: cachedData, structuralVersion: 0, source: "live", rowLimit: 1000 } },
-        columnCache: {},
-      })
-
       const params = makeParams()
       const { result } = renderHook(() => usePipelineAPI(params))
       await waitFor(() => expect(result.current.loading).toBe(false))
+
+      // Populate after the initial load: a whole-document load is an
+      // intentional cache-identity boundary and advances structuralVersion.
+      const structuralVersion = useGraphStore.getState().structuralVersion
+      useNodeResultsStore.setState({
+        previews: {
+          n1: { data: cachedData, structuralVersion, source: "live", rowLimit: 1000 },
+        },
+        columnCache: {},
+      })
 
       const node = makeNode("n1")
 

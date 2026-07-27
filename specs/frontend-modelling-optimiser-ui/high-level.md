@@ -16,8 +16,15 @@ results are supplied by API and result-store layers.
 ## Behaviour
 
 - Modelling config selects an algorithm, feature/target/split/metric options and algorithm-specific
-  controls, including GLM factors, regularisation and dispersion estimation; it submits training
-  and shows progress, estimates, failures and result actions.
+  controls, including GLM factors, regularisation and dispersion estimation. Training submission
+  records the returned job handle immediately, keeps an explicit Cancel control visible through
+  preparation and fitting, and shows progress, estimates, failures and result actions. An
+  insufficient-GPU estimate or terminal 507 asks the user to select CPU and retry (or reduce the
+  workload); it never claims that CPU fallback happened automatically.
+- The modelling editor exposes monotonicity as the sole additional cross-algorithm
+  capability lever. It lists only selected numeric input features and writes `-1` or
+  `1` per feature, removing the key when the user selects zero. String/categorical,
+  Boolean, date/datetime, target, weight, and excluded columns are never offered.
 - Modelling preview exposes only result-backed tabs (summary, coefficients/relativities, loss,
   lift, residuals, feature importance, AVE and PDP) and resets selection when the result changes.
 - Optimiser config selects input/objective/mode, banding/ratebook factors, constraints, solver
@@ -66,7 +73,10 @@ shares the preview frame/tab controls with
 ## Failure model
 
 Training, solve, MLflow, export, auto-range and materialisation failures are displayed in their
-local action/result area. A locally aborted/superseded auto-range request suppresses an error,
-while a terminal cancelled/superseded status returned by the server is shown in the auto-range
-error area. Deliberately strict helper parsers throw for malformed numerical result contracts
-rather than silently charting incorrect values.
+local action/result area. Training cancellation posts the active job ID, records the returned
+terminal state immediately, and leaves a terminal race winner intact. Structured training status
+fields (`error_code`, `http_status_code`, `error_detail`) survive runtime parsing so an asynchronous
+GPU-VRAM 507 retains its actionable server message. A locally aborted/superseded auto-range request
+suppresses an error, while a terminal cancelled/superseded status returned by the server is shown
+in the auto-range error area. Deliberately strict helper parsers throw for malformed numerical
+result contracts rather than silently charting incorrect values.

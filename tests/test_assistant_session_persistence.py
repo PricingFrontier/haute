@@ -100,6 +100,20 @@ class TestRevival:
         assert again is not None
         assert len(again.history) == 2
 
+    def test_mismatched_disk_resume_does_not_promote_or_evict_live_sessions(self, tmp_path: Path):
+        persisted = _store(tmp_path).create("persisted.py")
+        store = _store(tmp_path, max_live_sessions=2)
+        first = store.create("first.py")
+        second = store.create("second.py")
+
+        assert store.resume(persisted.id, "other.py") is None
+        assert persisted.id not in store
+        store.create("third.py")
+
+        assert first.id not in store
+        assert second.id in store
+        assert persisted.id not in store
+
 
 class TestCorruption:
     def _plant(self, tmp_path: Path, session_id: str, text: str) -> None:
@@ -138,6 +152,33 @@ class TestCorruption:
             "id": "d" * 32,
             "source_file": "rating/main.py",
             "history": [],
+            "created_at": 1.0,
+            "last_used": 2.0,
+        }
+        self._plant(tmp_path, session_id, json.dumps(payload))
+        with structlog.testing.capture_logs() as logs:
+            assert store.lookup(session_id) is None
+        assert any(e["event"] == "assistant_session_unreadable" for e in logs)
+
+    def test_tool_message_without_error_flag_is_a_logged_miss(self, tmp_path: Path):
+        store = _store(tmp_path)
+        session_id = "e" * 32
+        payload = {
+            "id": session_id,
+            "source_file": "rating/main.py",
+            "history": [
+                {
+                    "messages": [
+                        {"role": "user", "content": "inspect"},
+                        {
+                            "role": "tool",
+                            "tool_call_id": "t1",
+                            "name": "get_pipeline",
+                            "content": {"error": {"code": "failed"}},
+                        },
+                    ]
+                }
+            ],
             "created_at": 1.0,
             "last_used": 2.0,
         }

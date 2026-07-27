@@ -141,9 +141,11 @@ Out of scope (owned by neighbouring components):
   breakpoint raises rather than silently keeping only the last; duplicate
   breakpoint boundaries raise rather than producing an empty interval.
   `onMissing: "neutral"` is the explicit rating-miss opt-out, and it logs
-  each materialised batch containing misses. Banding rejects unknown operators;
-  its remaining documented fail-soft behaviour is that a malformed non-list
-  top-level `factors` value normalises to an empty no-op list.
+  each materialised batch containing misses. Banding rejects unknown operators
+  and any non-list top-level `factors` value. Rating rejects non-list factor or
+  entry containers and any populated entry list without declared factors at
+  both config and execution boundaries. Missing, `null`, or genuinely empty
+  collections remain the intentional draft/no-op forms described below.
 - **One dtype-faithful key form, shared everywhere.**
   `normalise_rating_key(value, dtype)` evaluates the same `_rating_key_expr`
   contract that the frame lookup uses, but does so with an eager scalar/Series
@@ -251,19 +253,19 @@ Out of scope (owned by neighbouring components):
   absence), and apply dtype. Legacy ratebook artifacts without
   `factor_dtypes` must be re-solved and re-saved; they are not applied with
   guesswork.
-- **Incomplete table or factor** (no factors, no entries, no output column, or
-  an entirely empty banding rule list): this is a *documented no-op*, not a
-  failure — the frame passes
-  through unchanged for that table/factor. When a rating table has an
+- **Incomplete table or factor** (a completely empty rating-table draft, an
+  empty entry list, no output column, or an entirely empty banding rule list):
+  this is a *documented no-op*, not a failure — the frame passes through
+  unchanged for that table/factor. An entry list may omit factors only while it
+  is empty; a populated entry list with no declared factors is malformed and
+  raises `ValueError`. When a rating table has an
   `outputColumn` configured but is otherwise incomplete, the skip is logged at
   WARNING (`rating_table_skipped_incomplete`) so the gap is observable instead
   of a silently-missing column reaching a combined output.
   A non-empty banding rule list whose rules are all unusable is malformed and
   raises instead of taking this no-op path.
-  > NOTE: [Tracked by RATE-01](../roadmap/rating.md#rate-01--consistent-malformed-config-rejection).
-  > The public config-driven path rejects a populated entry row that
-  > lacks any declared factor during `_rating_step_config` normalisation.
-  > The lower-level `_apply_rating_table` primitive still returns unchanged
-  > when a factor is absent from every already-normalised entry; when reached
-  > through `_apply_rating_step_outputs`, that skip is visible only through the
-  > WARNING log.
+- **Malformed collection shape:** a non-list banding `factors` value, a
+  non-list rating-table `factors` or `entries` value, or populated rating
+  entries without a non-empty factor list raises `ValueError` before the frame
+  is touched. Executor-built nodes and generated standalone pipeline code use
+  the same normalisation contract.

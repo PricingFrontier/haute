@@ -19,7 +19,7 @@ from haute.deploy._pruner import (
     prune_for_deploy,
 )
 from haute.errors import DeployError
-from haute.graph_utils import PipelineGraph
+from haute.graph_utils import NodeType, PipelineGraph
 
 logger = get_logger(component="deploy.config")
 
@@ -306,7 +306,14 @@ class DeployConfig:
         endpoint_name = deploy.get("endpoint_name")
         target = deploy.get("target", "databricks")
         output_fields_raw = deploy.get("output_fields")
-        output_fields = list(output_fields_raw) if output_fields_raw else None
+        if output_fields_raw is not None and not isinstance(output_fields_raw, list):
+            raise ValueError(
+                "[deploy].output_fields must be an array of output column names; "
+                f"got {type(output_fields_raw).__name__}."
+            )
+        # Preserve an explicit empty array so resolution can reject it with the
+        # output-schema context an operator needs to correct it.
+        output_fields = list(output_fields_raw) if output_fields_raw is not None else None
 
         tq_dir = (path.parent / tq["dir"]).resolve() if tq.get("dir") else None
 
@@ -522,6 +529,8 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     ``DeployConfig`` into a fully resolved ``ResolvedDeploy`` ready for
     deployment.
     """
+    from haute._path_resolution import RuntimePathError, resolve_runtime_file_path
+    from haute._project import resolve_pipeline_file
     from haute.deploy._bundler import collect_artifacts
     from haute.deploy._schema import infer_input_schema, infer_output_schema
     from haute.parser import parse_pipeline_file
@@ -538,11 +547,23 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
 
     # Ensure .env is loaded (idempotent — also called in from_toml, but
     # needed here for programmatic DeployConfig construction).
-    project_root = (
-        config.project_dir.resolve()
-        if config.project_dir is not None
-        else config.pipeline_file.resolve().parent
-    )
+    if config.project_dir is not None:
+        project_root = config.project_dir.resolve()
+        pipeline_candidate = config.pipeline_file
+        if not pipeline_candidate.is_absolute():
+            pipeline_candidate = project_root / pipeline_candidate
+        canonical_pipeline = resolve_pipeline_file(pipeline_candidate)
+        if not canonical_pipeline.is_relative_to(project_root):
+            raise DeployError(
+                "Configured pipeline resolves outside the configured project root. "
+                "Move it inside the project or correct [project].pipeline.",
+                pipeline=str(config.pipeline_file),
+                project_root=str(project_root),
+            )
+    else:
+        canonical_pipeline = resolve_pipeline_file(config.pipeline_file)
+        project_root = canonical_pipeline.parent
+    config.pipeline_file = canonical_pipeline
     _load_env(project_root)
 
     # Parse the pipeline
@@ -562,6 +583,13 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
         # Fallback: use the single source node in the pruned graph
         all_sources = find_source_nodes(pruned_graph)
         if len(all_sources) == 1:
+            source_id = all_sources[0]
+            source = next(node for node in pruned_graph.nodes if node.id == source_id)
+            if source.data.nodeType != NodeType.DATA_INPUT:
+                raise ValueError(
+                    f"Sole source node {source_id!r} is {source.data.nodeType.value!r}, "
+                    "not a dataInput. Add an API Input node with @pipeline.api_input(...)."
+                )
             deploy_inputs = all_sources
         elif len(all_sources) == 0:
             raise ValueError("No source nodes in the pruned graph.")
@@ -578,10 +606,39 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
     resources = ExitStack()
     snapshot_provenance: dict[str, dict[str, Any]] = {}
     try:
+        # Validate every local runtime path before any bundle copy, schema
+        # read, or sample load.  Reuse execution's maintained enumeration so
+        # deploy cannot drift from runtime's definition of local file reads.
+        from haute.execution import _local_runtime_input_path_fields
+
+        for node in pruned_graph.nodes:
+            for field_name in _local_runtime_input_path_fields(node):
+                raw_path = node.data.config.get(field_name)
+                if not isinstance(raw_path, str) or not raw_path:
+                    continue
+                try:
+                    resolve_runtime_file_path(
+                        raw_path,
+                        source_file=config.pipeline_file,
+                        pipeline_dir=pipeline_dir,
+                        project_root=project_root,
+                        prefer="pipeline",
+                        enforce_project_root=True,
+                    )
+                except RuntimePathError as exc:
+                    raise DeployError(
+                        f"Node {node.id!r} field {field_name!r} has invalid local "
+                        f"runtime path {raw_path!r} ({type(exc).__name__}): {exc}. "
+                        "Use a path inside the configured project.",
+                        node_id=node.id,
+                        field=field_name,
+                        path=raw_path,
+                    ) from exc
         artifacts = collect_artifacts(
             pruned_graph,
             deploy_inputs,
             pipeline_dir,
+            project_root=project_root,
             resources=resources,
             snapshot_provenance=snapshot_provenance,
         )
@@ -598,6 +655,27 @@ def resolve_config(config: DeployConfig) -> ResolvedDeploy:
             deploy_inputs,
             artifact_paths=artifact_paths,
         )
+        if config.output_fields is not None:
+            fields = config.output_fields
+            available = list(output_schema)
+            invalid = (
+                not fields
+                or any(not isinstance(field, str) or not field for field in fields)
+                or (
+                    all(isinstance(field, str) for field in fields)
+                    and len(fields) != len(set(fields))
+                )
+                or any(isinstance(field, str) and field not in output_schema for field in fields)
+            )
+            if invalid:
+                raise DeployError(
+                    "[deploy].output_fields must be a non-empty, duplicate-free list "
+                    "of non-empty output column names present in the inferred schema. "
+                    f"Available fields: {available!r}. Correct [deploy].output_fields.",
+                    output_fields=fields,
+                    available_fields=available,
+                )
+            output_schema = {field: output_schema[field] for field in fields}
     except BaseException:
         resources.close()
         raise

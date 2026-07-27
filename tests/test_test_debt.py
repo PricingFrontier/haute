@@ -7,12 +7,14 @@ review budget, and a ratchet that prevents casual growth.
 
 from __future__ import annotations
 
+import argparse
 import ast
 import hashlib
+import json
 import re
+import sys
 import textwrap
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).parent
@@ -24,14 +26,16 @@ _CALL_DEBT_TARGETS = {
     "pytest.xfail",
 }
 _MARK_DEBT_TARGETS = {
+    "pytest.mark.flaky",
     "pytest.mark.skip",
     "pytest.mark.skipif",
     "pytest.mark.xfail",
 }
 _DEBT_TARGETS = _CALL_DEBT_TARGETS | _MARK_DEBT_TARGETS
 
-# When this date passes, review whether each remaining entry is still justified.
-_DEBT_REVIEW_BY = date(2026, 10, 25)
+_TEST_HEALTH_SUMMARY_PATH = TESTS_DIR / "test-health-summary.md"
+_MUTATION_TARGETS_PATH = REPO_ROOT / "mutation" / "targets.json"
+_PLAYWRIGHT_CI_RETRY_BUDGET = 2
 
 # Exact debt-site fingerprints as of the test-suite review. The fingerprint uses
 # path, enclosing scope, debt kind, reason text, and normalized AST source. A new
@@ -91,6 +95,11 @@ _EXPECTED_DEBT_IDS = {
     # one, while the Linux CI leg and developer-mode Windows run the assertion.
     # See test_data_input_nested_relative_path.py.
     "235519354498d5aa",
+    # Deploy containment has the same platform prerequisite for local artifact
+    # and pipeline-file escape tests. Linux CI and symlink-capable Windows
+    # environments run both assertions.
+    "6fb8a1d2d768c835",
+    "a7c21a9dc1f1aada",
     # W2.9 — the trace-cache budget wiring assertion cannot hold when an
     # operator deliberately overrides HAUTE_TRACE_CACHE_MAX_BYTES; the skip
     # documents that the pin targets default wiring only. See
@@ -113,20 +122,13 @@ _EXPECTED_DEBT_IDS = {
     # only fires on POSIX (Windows chmod differs); the test is skipped
     # on win32 by design. See TestPermissionDenied.
     "716bebf07ce4f9f3",
-    "efaa6262fa369b7b",
     "531fb2f9161337c8",
-    "b1a877eb33f7ed72",
-    "b014f75c351f71e8",
-    "923dd77d913747c1",
-    "ecfff38c87946544",
-    "24665ee51c5161bd",
     # (test_windows_reserved_names_produce_paths's win32 skipif retired: the
     # test is now an all-platform predicate check, so its debt entry is gone.)
     "d23a55b468b6e518",
     "5efdb01a5c96e2ef",
     "bdc246f0c4c5f76e",
     "e7555cb715103f36",
-    "fa170fc37d031be4",
     "b8ed76e2d8a5a137",
     "c87e80ef52f08568",
     "50a51dcce3b28cae",
@@ -157,18 +159,15 @@ _EXPECTED_DEBT_IDS = {
     "6881417aa251afb7",
     "fb0e81ff682c42ba",
     "de69a025e2015f76",
-    "967836b4341f4a4a",
     "c846306558bad02c",
     "9ca93c4280b5017c",
     "bfd8943e3c6770ee",
-    "06ed3efefb4ae119",
     "a6bc71691f1fd1db",
     "f68efc20cf708633",
     "68865fbae69e1d1c",
     "24327ebd107b8ae0",
     "2a634b625baa4350",
     "aec15b8d084c0f9f",
-    "87cf9927840facbd",
     "36389904372edffb",
     "40f0104677c0d566",
     "454198ff8535ff31",
@@ -523,7 +522,7 @@ class _DebtVisitor(ast.NodeVisitor):
         if not (
             isinstance(marker_arg, ast.Constant)
             and isinstance(marker_arg.value, str)
-            and marker_arg.value in {"skip", "skipif", "xfail"}
+            and marker_arg.value in {"flaky", "skip", "skipif", "xfail"}
         ):
             return
 
@@ -940,6 +939,85 @@ def _format_frontend_site(site: _FrontendDebtSite) -> str:
     return f"{site.id} {site.path.as_posix()}:{site.line} {site.callee} source={site.source!r}"
 
 
+def _load_summary_mutation_targets() -> list[dict[str, object]]:
+    try:
+        payload = json.loads(_MUTATION_TARGETS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid mutation target JSON: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise ValueError("Mutation targets must use schema_version 1")
+    targets = payload.get("targets")
+    if not isinstance(targets, list):
+        raise ValueError("Mutation targets must define targets as a list")
+    result: list[dict[str, object]] = []
+    for raw in targets:
+        if not isinstance(raw, dict):
+            raise ValueError("Mutation target must be an object")
+        name, rate = raw.get("name"), raw.get("max_survival_rate")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Mutation target requires a non-empty name")
+        if isinstance(rate, bool) or not isinstance(rate, int | float) or not 0 <= rate <= 100:
+            raise ValueError(f"Mutation target {name} has invalid max_survival_rate")
+        result.append({"name": name, "rate": float(rate)})
+    return sorted(result, key=lambda target: str(target["name"]))
+
+
+def _test_health_summary() -> str:
+    backend = _scan_debt_sites()
+    frontend = _scan_frontend_debt_sites()
+    rows = [
+        (
+            "Backend skip/skipif",
+            sum(
+                site.kind in {"pytest.skip", "pytest.mark.skip", "pytest.mark.skipif"}
+                for site in backend
+            ),
+            "Backend AST scanner",
+        ),
+        (
+            "Backend importorskip",
+            sum(site.kind == "pytest.importorskip" for site in backend),
+            "Backend AST scanner",
+        ),
+        (
+            "Backend xfail",
+            sum(site.kind in {"pytest.xfail", "pytest.mark.xfail"} for site in backend),
+            "Backend AST scanner",
+        ),
+        (
+            "Backend flaky",
+            sum(site.kind == "pytest.mark.flaky" for site in backend),
+            "Backend AST scanner (zero-budget fingerprint ratchet)",
+        ),
+        ("Frontend marker debt", len(frontend), "Frontend source scanner"),
+        (
+            "Playwright CI retries",
+            _PLAYWRIGHT_CI_RETRY_BUDGET,
+            "frontend/playwright.config.ts: process.env.CI ? 2 : 0",
+        ),
+    ]
+    lines = [
+        "# Test Health Summary",
+        "",
+        (
+            "Generated deterministically from the live test-debt scanners and "
+            "mutation targets. Regenerate with `uv run python tests/test_test_debt.py "
+            "--write-summary`."
+        ),
+        "",
+        "| Signal | Count / max survivor rate | Enforcement/source |",
+        "| --- | ---: | --- |",
+    ]
+    for signal, value, source in rows:
+        lines.append(f"| {signal} | {value} | {source} |")
+    for target in _load_summary_mutation_targets():
+        lines.append(
+            f"| Mutation `{target['name']}` | {target['rate']:.2f}% | "
+            "mutation/targets.json max_survival_rate |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def test_skip_xfail_importorskip_sites_have_reasons() -> None:
     missing_reasons = [site for site in _scan_debt_sites() if not site.reason_is_static]
 
@@ -997,12 +1075,13 @@ def test_non_strict_xfails_are_explicitly_budgeted() -> None:
     assert non_strict_or_ambiguous_xfails == _EXPECTED_NON_STRICT_XFAIL_IDS
 
 
-def test_skip_xfail_debt_budget_has_not_gone_stale() -> None:
-    assert date.today() <= _DEBT_REVIEW_BY, (
-        "The skip/xfail/importorskip debt budget is stale. Review every "
-        "remaining entry, remove fixed debt, and extend _DEBT_REVIEW_BY only "
-        "after the review is complete."
-    )
+def test_playwright_ci_retry_budget_is_pinned() -> None:
+    source = (REPO_ROOT / "frontend" / "playwright.config.ts").read_text(encoding="utf-8")
+    assert f"retries: process.env.CI ? {_PLAYWRIGHT_CI_RETRY_BUDGET} : 0," in source
+
+
+def test_test_health_summary_matches_regeneration() -> None:
+    assert _TEST_HEALTH_SUMMARY_PATH.read_text(encoding="utf-8") == _test_health_summary()
 
 
 def test_scanner_requires_explicit_marker_reasons() -> None:
@@ -1040,6 +1119,22 @@ def test_scanner_detects_module_pytestmark_and_param_marks() -> None:
     assert [(site.kind, site.reason, site.strict) for site in sites] == [
         ("pytest.mark.skip", "module is intentionally skipped", None),
         ("pytest.mark.xfail", "known", True),
+    ]
+
+
+def test_scanner_detects_flaky_markers() -> None:
+    sites = _scan_source(
+        """
+        import pytest
+
+        @pytest.mark.flaky(reason="intermittent dependency")
+        def test_flaky():
+            pass
+        """
+    )
+
+    assert [(site.kind, site.reason) for site in sites] == [
+        ("pytest.mark.flaky", "intermittent dependency")
     ]
 
 
@@ -1263,3 +1358,23 @@ def test_frontend_scanner_ignores_chained_debt_in_comments_and_strings() -> None
     )
 
     assert [site.callee for site in sites] == ["test.skip"]
+
+
+def _main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate the deterministic test-health summary.")
+    parser.add_argument("--write-summary", action="store_true")
+    args = parser.parse_args(argv)
+    summary = _test_health_summary()
+    if args.write_summary:
+        _write_generated_summary(_TEST_HEALTH_SUMMARY_PATH, summary)
+    sys.stdout.write(summary)
+    return 0
+
+
+def _write_generated_summary(path: Path, summary: str) -> None:
+    """Write the explicitly requested tracked report outside pytest execution."""
+    path.write_text(summary, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

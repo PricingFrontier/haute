@@ -6,6 +6,7 @@ import { formatNullPct } from "../../utils/formatValue"
 import { formatRelativeTime } from "../../utils/formatTime"
 import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
+import ExploreTableActions from "./ExploreTableActions"
 
 interface SummaryCardProps {
   report: ExploreCacheReport
@@ -145,13 +146,50 @@ export function DataQualityCard({ report }: SummaryCardProps) {
 
 export function NumericSummaryCard({ report }: SummaryCardProps) {
   const numericColumns = useMemo(() => report.columns.filter(isNumericColumn), [report.columns])
+  const exportGrid = useMemo(
+    () => ({
+      headers: [
+        "Field",
+        "Type",
+        "Null %",
+        "Distinct",
+        "Min",
+        "P25",
+        "Median",
+        "Mean",
+        "P75",
+        "Max",
+        "Std",
+        "Zeros",
+        "Negatives",
+        "NaN",
+      ],
+      rows: numericColumns.map((column) => [
+        column.name,
+        column.dtype,
+        formatNullPct(column.null_count, report.row_count) ?? "-",
+        formatOptionalNumber(column.distinct_count),
+        column.min_value ?? "-",
+        column.p25_value ?? "-",
+        column.median_value ?? "-",
+        column.mean_value ?? "-",
+        column.p75_value ?? "-",
+        column.max_value ?? "-",
+        column.std_value ?? "-",
+        formatOptionalNumber(column.zero_count),
+        formatOptionalNumber(column.negative_count),
+        formatOptionalNumber(column.nan_count),
+      ]),
+    }),
+    [numericColumns, report.row_count],
+  )
   const fieldCount = `${numericColumns.length.toLocaleString()} ${
     numericColumns.length === 1 ? "field" : "fields"
   }`
 
   return (
     <div data-testid="explore-numeric-summary-card" className={CARD_CLASS} style={CARD_STYLE}>
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <CardHeading
           icon={<Hash size={14} className="shrink-0" style={{ color: NODE_GROUP_COLORS.explore }} />}
           title="Numeric Summary"
@@ -159,6 +197,13 @@ export function NumericSummaryCard({ report }: SummaryCardProps) {
         <span className="text-[11px]" style={MUTED_STYLE}>
           {fieldCount}
         </span>
+        <ExploreTableActions
+          grid={exportGrid}
+          source={report.source}
+          tableSlug="numeric-summary"
+          testIdPrefix="explore-numeric-summary"
+          tableLabel="Numeric Summary"
+        />
       </div>
       {numericColumns.length === 0 ? (
         <div
@@ -262,6 +307,21 @@ export function CategoricalSummaryCard({ report }: SummaryCardProps) {
     [report.columns],
   )
   const fieldCount = `${profiles.length.toLocaleString()} ${profiles.length === 1 ? "field" : "fields"}`
+  const exportGrid = useMemo(
+    () => ({
+      headers: ["Field", "Type", "Null %", "Distinct"],
+      rows: profiles.map((profile) => {
+        const column = columnByName.get(profile.field)
+        return [
+          profile.field,
+          column?.dtype ?? "-",
+          column ? (formatNullPct(column.null_count, report.row_count) ?? "-") : "-",
+          formatOptionalNumber(profile.distinct_count),
+        ]
+      }),
+    }),
+    [columnByName, profiles, report.row_count],
+  )
   const toggleField = (field: string) => {
     setExpandedFields((current) => {
       const next = new Set(current)
@@ -276,7 +336,7 @@ export function CategoricalSummaryCard({ report }: SummaryCardProps) {
 
   return (
     <div data-testid="explore-categorical-summary-card" className={CARD_CLASS} style={CARD_STYLE}>
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <CardHeading
           icon={<ListTree size={14} className="shrink-0" style={{ color: NODE_GROUP_COLORS.explore }} />}
           title="Categorical Summary"
@@ -284,6 +344,13 @@ export function CategoricalSummaryCard({ report }: SummaryCardProps) {
         <span className="text-[11px]" style={MUTED_STYLE}>
           {fieldCount}
         </span>
+        <ExploreTableActions
+          grid={exportGrid}
+          source={report.source}
+          tableSlug="categorical-summary"
+          testIdPrefix="explore-categorical-summary"
+          tableLabel="Categorical Summary"
+        />
       </div>
       {profiles.length === 0 ? (
         <div

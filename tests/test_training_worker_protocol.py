@@ -26,6 +26,7 @@ from haute.errors import PreambleError
 from haute.modelling._training_job import TrainResult, model_contract_filename
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import (
+    TrainingArtifactPublicationError,
     TrainService,
     _publish_training_artifacts,
     _run_dispersion_process_job,
@@ -790,6 +791,119 @@ def test_publication_rolls_back_pair_when_second_staged_artifact_fails(
     assert not (output_root / f".{final_contract.name}.job-1.haute-backup").exists()
     assert not (staged_output / "quoted.cbm").exists()
     assert staged_contract.exists()
+
+
+def test_windows_publication_retries_transient_contention_and_publishes_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_root, staged_output, manifest = _staged_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+    staged_model = staged_output / "quoted.cbm"
+    original_replace = os.replace
+    attempts = 0
+
+    def transient_replace(source: Path | str, destination: Path | str) -> None:
+        nonlocal attempts
+        if Path(source) == staged_model and attempts < 2:
+            attempts += 1
+            raise PermissionError("sharing violation")
+        original_replace(source, destination)
+
+    monkeypatch.setattr("haute.routes._train_service.sys.platform", "win32")
+    with (
+        patch("haute.routes._train_service.os.replace", side_effect=transient_replace),
+        patch("haute.routes._train_service.time.sleep") as sleep,
+    ):
+        published = _publish_training_artifacts(
+            manifest,
+            artifact_root=artifact_root,
+            output_root=output_root,
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+    assert attempts == 2
+    assert sleep.call_count == 2
+    assert published["model"].read_bytes() == b"new-model"
+    assert published["feature_contract"].read_bytes() == b"new-contract"
+
+
+def test_windows_publication_exhaustion_restores_old_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_root, staged_output, manifest = _staged_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+    output_root.mkdir()
+    final_model = output_root / "quoted.cbm"
+    final_contract = output_root / model_contract_filename("quoted")
+    final_model.write_bytes(b"old-model")
+    final_contract.write_bytes(b"old-contract")
+    staged_model = staged_output / "quoted.cbm"
+    original_replace = os.replace
+    attempts = 0
+
+    def blocked_replace(source: Path | str, destination: Path | str) -> None:
+        nonlocal attempts
+        if Path(source) == staged_model:
+            attempts += 1
+            raise PermissionError("sharing violation")
+        original_replace(source, destination)
+
+    monkeypatch.setattr("haute.routes._train_service.sys.platform", "win32")
+    with (
+        patch("haute.routes._train_service.os.replace", side_effect=blocked_replace),
+        patch("haute.routes._train_service.time.sleep") as sleep,
+        pytest.raises(TrainingArtifactPublicationError) as raised,
+    ):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=artifact_root,
+            output_root=output_root,
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+    assert raised.value.source == staged_model
+    assert raised.value.destination == final_model
+    assert raised.value.attempts == 4
+    assert attempts == 4
+    assert sleep.call_count == 3
+    assert final_model.read_bytes() == b"old-model"
+    assert final_contract.read_bytes() == b"old-contract"
+
+
+def test_windows_publication_does_not_retry_non_contention_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_root, staged_output, manifest = _staged_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+    staged_model = staged_output / "quoted.cbm"
+    original_replace = os.replace
+    attempts = 0
+
+    def failing_replace(source: Path | str, destination: Path | str) -> None:
+        nonlocal attempts
+        if Path(source) == staged_model:
+            attempts += 1
+            raise OSError("disk failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr("haute.routes._train_service.sys.platform", "win32")
+    with (
+        patch("haute.routes._train_service.os.replace", side_effect=failing_replace),
+        patch("haute.routes._train_service.time.sleep") as sleep,
+        pytest.raises(OSError, match="disk failure"),
+    ):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=artifact_root,
+            output_root=output_root,
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+    assert attempts == 1
+    sleep.assert_not_called()
 
 
 def test_publication_keeps_new_pair_when_backup_deletion_is_denied(

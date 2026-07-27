@@ -1120,5 +1120,5 @@ class TestBundler:
             ],
             edges=[],
         )
-        artifacts = collect_artifacts(graph, [], pipeline_dir="/tmp")
+        artifacts = collect_artifacts(graph, [], pipeline_dir=Path("/tmp"))
         assert len(artifacts) == 0

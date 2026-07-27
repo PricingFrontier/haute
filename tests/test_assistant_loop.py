@@ -516,6 +516,28 @@ class TestSessionRetention:
         assert store.lookup(first.id) is not None
         assert store.lookup(third.id) is not None
 
+    def test_mismatched_live_resume_does_not_refresh_lru(self):
+        store = SessionStore(max_live_sessions=2)
+        mismatched = store.create("a.py")
+        unrelated = store.create("b.py")
+
+        assert store.resume(mismatched.id, "other.py") is None
+        store.create("c.py")
+
+        assert mismatched.id not in store
+        assert unrelated.id in store
+
+    def test_matched_resume_refreshes_lru(self):
+        store = SessionStore(max_live_sessions=2)
+        resumed = store.create("a.py")
+        other = store.create("b.py")
+
+        assert store.resume(resumed.id, "a.py") is resumed
+        store.create("c.py")
+
+        assert resumed.id in store
+        assert other.id not in store
+
     async def test_lru_never_evicts_session_with_running_turn(self):
         store = SessionStore(max_live_sessions=1)
         busy = store.create("a.py")
@@ -735,6 +757,19 @@ class TestNeutralRecordValidationSweep:
         )
 
         assert message.as_dict()["is_error"] is True
+
+    def test_tool_role_mapping_requires_explicit_error_flag(self):
+        from haute.assistant._session import AssistantMessage
+
+        with pytest.raises(ValueError, match="is_error"):
+            AssistantMessage.from_mapping(
+                {
+                    "role": "tool",
+                    "tool_call_id": "t1",
+                    "name": "get_pipeline",
+                    "content": {"error": {"code": "failed"}},
+                }
+            )
 
     def test_coerce_turn_mapping_requires_messages_field(self):
         store = SessionStore()

@@ -3,6 +3,7 @@ import type { OnUpdateConfig } from "../editors"
 import { configField, safeParseInt } from "../../utils/configField"
 import { CHART_COLORS } from "../../theme/colors"
 import { CommittedTextField } from "../../components/form"
+import { isNumericDtype } from "../../utils/polarsDtypes"
 
 type Column = { name: string; dtype: string }
 
@@ -249,7 +250,7 @@ export function SplitAndMetricsConfig({
             <div className="mt-1.5 space-y-1">
               <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>Set per-feature constraints (numeric features only)</div>
               {columns
-                .filter(c => c.name !== target && c.name !== weight && !exclude.includes(c.name) && !["Utf8", "Categorical", "String"].includes(c.dtype))
+                .filter(c => c.name !== target && c.name !== weight && !exclude.includes(c.name) && isNumericDtype(c.dtype))
                 .sort((a, b) => a.name.localeCompare(b.name))
                 .map(c => {
                   const mc = configField<Record<string, number>>(config, "monotone_constraints", {})

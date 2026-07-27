@@ -375,11 +375,11 @@ def test_build_grid_still_rejects_non_finite_scenario_grid() -> None:
             job_id,
         )
 
-    assert exc_info.value.status_code == 400
-    assert "Grid construction failed" in exc_info.value.detail
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Grid construction failed. Check the server logs for details."
     job = store.require_job(job_id)
-    assert job["status"] == "contract_error"
-    assert job["terminal_reason"] == "contract_error"
+    assert job["status"] == "error"
+    assert job["terminal_reason"] == "error"
 
 
 def _group_by_contract_error() -> GroupByExecutionUnsupportedError:
@@ -678,3 +678,32 @@ def test_multi_quote_real_solve_pins_result_shape(client, tmp_path, clean_job_st
     assert len(histogram["counts"]) == 20
     assert len(histogram["edges"]) == 21
     assert sum(histogram["counts"]) == 3
+
+
+def test_online_solver_value_error_is_wrapped_as_solver_execution_error() -> None:
+    """A price-contour ValueError is an algorithm failure, not a data error."""
+    from haute.routes._optimiser_service import (
+        _OptimiserSolverExecutionError,
+        _solve_online,
+        solver_worker_context,
+    )
+
+    store = JobStore()
+    job_id = store.create_job({"status": "running"})
+    with (
+        solver_worker_context(),
+        patch("price_contour.OnlineOptimiser") as optimiser,
+        pytest.raises(_OptimiserSolverExecutionError, match="invalid solver state"),
+    ):
+        optimiser.return_value.solve.side_effect = ValueError("invalid solver state")
+        _solve_online(
+            SolveContext(
+                job_id=job_id,
+                node_id="opt",
+                mode="online",
+                store=store,
+                start_time=time.monotonic(),
+            ),
+            quote_grid=SimpleNamespace(),
+            config={"objective": "expected_income", "constraints": {}},
+        )

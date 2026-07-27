@@ -23,6 +23,17 @@ Modelling and optimiser result presentation belongs to
   the graph or active source changes while it runs.
 - Overview cards have a fixed order and are individually enabled from config. They display
   dataset, quality, numeric, categorical and schema information with accessible empty states.
+  Schema, numeric-summary, and categorical-summary tables expose native-button actions to copy
+  their tabular contents as TSV and download them as CSV. Schema export follows the active
+  search filter but is independent of the visible pagination page, so a filtered wide schema is
+  exported in full. Empty tables keep both actions visible but disabled. The optional Overview
+  card implementation, including its action bars, is loaded on demand only when Overview is
+  selected; the pane exposes a labelled loading state during that short module load.
+- Schema rows and their exports include concise profile cues supplied by the report: identifier
+  candidate, high cardinality, text length range/mean, and temporal span. Exact duplicate-row
+  findings appear through the existing Data Quality issue list.
+- The Explore run indicator exposes determinate `progressbar` semantics while a run is active,
+  including a stable accessible name and a clamped percentage value from 0 through 100.
 - Utility manages reusable utility Python modules, including parsed syntax failure locations.
   A failed autosave or flush preserves the dirty draft and blocks file switching until a later
   save succeeds. Shared preview chrome supports resizing, collapse and keyboard-accessible
@@ -39,7 +50,10 @@ Virtualisation and delegated cell events make tabular inspection remain responsi
 dimensions. Cache identity excludes view-only Explore overview toggles so changing displayed
 cards does not invalidate an otherwise reusable report. Cached reports are identity-gated, while
 running jobs are node-owned so a changed editor cannot strand their Cancel action. Utility-module
-saves separately guard stale responses after an awaited request.
+saves separately guard stale responses after an awaited request. Explore table actions reuse the
+shared clipboard and RFC-4180 CSV serializers so quoting behaviour cannot drift from editor
+exports; exports contain the same display strings and headers as the corresponding card rather
+than reconstructing raw data in the browser.
 
 ## Interactions
 

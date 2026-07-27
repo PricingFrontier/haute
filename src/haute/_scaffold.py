@@ -516,7 +516,8 @@ jobs:
           name: impact-report
           path: impact_report.md
       - name: Record deployed SHA
-        run: echo "Staged commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+        run: >-
+          echo "Staged commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 """
 
 

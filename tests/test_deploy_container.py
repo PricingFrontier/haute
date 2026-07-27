@@ -37,13 +37,14 @@ class TestCheckDockerAvailable:
         )
 
     def test_raises_runtime_error_when_docker_missing(self) -> None:
-        """RuntimeError when 'docker info' raises CalledProcessError."""
+        """DeployError when 'docker info' raises CalledProcessError."""
         from haute.deploy._container import _check_docker_available
+        from haute.errors import DeployError
 
         with patch("haute.deploy._container.subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.CalledProcessError(1, "docker info")
 
-            with pytest.raises(RuntimeError, match="Docker is not available"):
+            with pytest.raises(DeployError, match="Docker is not available"):
                 _check_docker_available()
 
 
@@ -69,8 +70,9 @@ class TestDockerBuild:
         )
 
     def test_raises_runtime_error_on_failure(self, tmp_path: Path) -> None:
-        """RuntimeError when docker build returns non-zero, including stderr."""
+        """DeployError when docker build returns non-zero, including stderr."""
         from haute.deploy._container import _docker_build
+        from haute.errors import DeployError
 
         with patch("haute.deploy._container.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
@@ -78,7 +80,7 @@ class TestDockerBuild:
                 stderr="ERROR: Dockerfile parse error",
             )
 
-            with pytest.raises(RuntimeError, match="Docker build failed") as exc_info:
+            with pytest.raises(DeployError, match="Docker build failed") as exc_info:
                 _docker_build(tmp_path, "test-image:latest")
             assert "Dockerfile parse error" in str(exc_info.value)
 

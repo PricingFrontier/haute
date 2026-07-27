@@ -230,7 +230,7 @@ def handle_deploy(config: DeployCliConfig) -> None:
     except NotImplementedError as e:
         click.echo(f"\n  \u2717 {e}", err=True)
         raise SystemExit(1)
-    except Exception as e:
+    except DeployError as e:
         click.echo(f"\n  \u2717 Deployment failed: {e}", err=True)
         raise SystemExit(1)
     finally:

@@ -173,7 +173,8 @@ class TestSessionResume:
                         "role": "tool",
                         "tool_call_id": "c1",
                         "name": "apply_graph_edits",
-                        "content": {"applied": 1},
+                        "content": {"applied": 1, "graph_fingerprint": "abc123"},
+                        "is_error": False,
                     },
                     {"role": "assistant", "content": "Done"},
                 ]
@@ -186,14 +187,22 @@ class TestSessionResume:
         body = resumed.json()
         assert body["session_id"] == session_id
         kinds = [entry["kind"] for entry in body["history"]]
-        assert kinds == ["user", "assistant", "tool", "assistant"]
+        assert kinds == ["user", "assistant", "tool", "tool", "assistant"]
         assert body["history"][0]["text"] == "add a node"
         assert body["history"][1]["text"] == "Working on it"
         tool = body["history"][2]
         assert tool["name"] == "apply_graph_edits"
         assert "applied" in tool["summary"]
         assert tool["is_error"] is False
-        assert body["history"][3]["text"] == "Done"
+        graph_updated = body["history"][3]
+        assert graph_updated == {
+            "kind": "tool",
+            "text": "",
+            "name": "graph_updated",
+            "summary": "Canvas updated",
+            "is_error": False,
+        }
+        assert body["history"][4]["text"] == "Done"
 
     def test_tool_error_entries_carry_the_error_flag_and_message(
         self, client: TestClient, project_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -214,6 +223,7 @@ class TestSessionResume:
                         "tool_call_id": "c1",
                         "name": "get_node_schema",
                         "content": {"error": {"code": "unknown_node", "message": "No node x"}},
+                        "is_error": True,
                     },
                 ]
             },

@@ -47,6 +47,7 @@ from haute.deploy._request_limits import (
     read_limited_json_body,
 )
 from haute.deploy._utils import build_manifest as _build_manifest
+from haute.errors import DeployError
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
 from tests._deploy_helpers import make_resolved_deploy
 
@@ -913,7 +914,7 @@ class TestGenerateDockerfile:
 
         monkeypatch.setattr(_container, "metadata_version", fake_version)
 
-        with pytest.raises(RuntimeError, match="Cannot pin Dockerfile dependency 'fastapi'"):
+        with pytest.raises(DeployError, match="Cannot pin Dockerfile dependency 'fastapi'"):
             _generate_dockerfile("python:3.11-slim", 8080, _make_resolved())
 
     def test_includes_catboost_for_cbm(self) -> None:
@@ -1085,13 +1086,13 @@ class TestDockerPush:
             encoding="utf-8",
         )
 
-    def test_raises_runtime_error_on_failure(self) -> None:
+    def test_raises_deploy_error_on_failure(self) -> None:
         with patch("haute.deploy._container.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=1,
                 stderr="denied: requested access to the resource is denied",
             )
-            with pytest.raises(RuntimeError, match="Docker push failed") as exc_info:
+            with pytest.raises(DeployError, match="Docker push failed") as exc_info:
                 _docker_push("myregistry/model:abc1234")
             assert "denied" in str(exc_info.value)
 
@@ -1112,10 +1113,10 @@ class TestNextVersion:
 
 
 class TestCheckDockerAvailableExtra:
-    def test_raises_runtime_error_on_file_not_found(self) -> None:
+    def test_raises_deploy_error_on_file_not_found(self) -> None:
         with patch("haute.deploy._container.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError("docker not found")
-            with pytest.raises(RuntimeError, match="Docker is not available"):
+            with pytest.raises(DeployError, match="Docker is not available"):
                 _check_docker_available()
 
 

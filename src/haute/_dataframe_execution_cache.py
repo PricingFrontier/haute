@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import threading
 import uuid
 import weakref
@@ -24,6 +23,7 @@ from haute._cache import (
     checked_cache_inputs,
     graph_fingerprint,
 )
+from haute._env import optional_int_env
 from haute._execution_context import ExecutionProfile
 from haute._graph_utils import upstream_node_ids
 from haute._hashing import content_hash_bytes
@@ -48,20 +48,7 @@ DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_BYTES: int | None = None
 DEFAULT_DATAFRAME_EXECUTION_CACHE_MAX_ENTRIES = 16
 
 
-def _optional_positive_int_from_env(name: str) -> int | None:
-    raw = os.environ.get(name)
-    if raw is None or raw == "":
-        return None
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a positive integer when set") from exc
-    if value < 1:
-        raise RuntimeError(f"{name} must be a positive integer when set")
-    return value
-
-
-DATAFRAME_EXECUTION_CACHE_MAX_BYTES = _optional_positive_int_from_env(
+DATAFRAME_EXECUTION_CACHE_MAX_BYTES = optional_int_env(
     "HAUTE_DATAFRAME_EXECUTION_CACHE_MAX_BYTES",
 )
 

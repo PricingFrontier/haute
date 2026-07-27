@@ -20,6 +20,41 @@ describe("useGraphCanvasState", () => {
     expect(result.current.canRedo).toBe(false)
   })
 
+  it("uses a full-snapshot load boundary on mount and remount", () => {
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [makeNode("old")],
+      edges: [],
+      preamble: "import old",
+      submodels: { old: { graph: { nodes: [makeNode("old-child")], edges: [] } } },
+    })
+    useGraphStore.getState().setNodes([makeNode("old"), makeNode("edited")])
+    const first = renderHook(() => useGraphCanvasState([makeNode("first")], []))
+
+    expect(useGraphStore.getState().preamble).toBe("")
+    expect(useGraphStore.getState().submodels).toEqual({})
+    expect(useGraphStore.getState().lastSavedSnapshot?.nodes.map((node) => node.id)).toEqual(["first"])
+    expect(useGraphStore.getState().undoStack).toEqual([])
+    expect(useGraphStore.getState().redoStack).toEqual([])
+    expect(useGraphStore.getState().dirty).toBe(false)
+
+    act(() => {
+      first.result.current.setNodes([makeNode("first"), makeNode("first-edit")])
+      first.result.current.undo()
+    })
+    expect(first.result.current.canRedo).toBe(true)
+    first.unmount()
+
+    const second = renderHook(() => useGraphCanvasState([makeNode("second")], []))
+    expect(second.result.current.nodes.map((node) => node.id)).toEqual(["second"])
+    expect(second.result.current.canUndo).toBe(false)
+    expect(second.result.current.canRedo).toBe(false)
+    act(() => {
+      second.result.current.undo()
+      second.result.current.redo()
+    })
+    expect(second.result.current.nodes.map((node) => node.id)).toEqual(["second"])
+  })
+
   it("setNodes pushes snapshot and enables undo", () => {
     const { result } = renderHook(() => useGraphCanvasState([makeNode("n1")], []))
     act(() => {
@@ -58,6 +93,56 @@ describe("useGraphCanvasState", () => {
     expect(result.current.nodes).toHaveLength(2)
     expect(result.current.edges).toHaveLength(1)
     expect(result.current.canUndo).toBe(false)
+  })
+
+  it("setNodesAndEdgesAndSubmodels snapshots the complete graph as one undo entry", () => {
+    const initialNodes = [makeNode("n1"), makeNode("n2")]
+    const initialEdges = [makeEdge("n1", "n2", { id: "e1" })]
+    const submodels = {
+      child: { graph: { nodes: [makeNode("child-node")], edges: [] } },
+    }
+    const { result } = renderHook(() => useGraphCanvasState(initialNodes, initialEdges))
+
+    act(() => {
+      result.current.setNodesAndEdgesAndSubmodels(
+        (nodes) => nodes.filter((node) => node.id !== "n1"),
+        [],
+        submodels,
+      )
+    })
+
+    expect(result.current.nodes.map((node) => node.id)).toEqual(["n2"])
+    expect(result.current.edges).toEqual([])
+    expect(useGraphStore.getState().submodels).toEqual(submodels)
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+
+    act(() => {
+      result.current.undo()
+    })
+    expect(result.current.nodes.map((node) => node.id)).toEqual(["n1", "n2"])
+    expect(result.current.edges).toHaveLength(1)
+    expect(useGraphStore.getState().submodels).toEqual({})
+  })
+
+  it("exposes raw submodel replacement and explicit snapshot actions", () => {
+    const submodels = {
+      child: { graph: { nodes: [makeNode("child-node")], edges: [] } },
+    }
+    const { result } = renderHook(() => useGraphCanvasState([makeNode("n1")], []))
+
+    act(() => {
+      result.current.setSubmodelsRaw(submodels)
+    })
+    expect(useGraphStore.getState().submodels).toEqual(submodels)
+    expect(useGraphStore.getState().undoStack).toEqual([])
+
+    act(() => {
+      result.current.pushSnapshot()
+    })
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    expect(useGraphStore.getState().undoStack[0]).toEqual(
+      expect.objectContaining({ submodels }),
+    )
   })
 
   it("undo restores previous state", () => {

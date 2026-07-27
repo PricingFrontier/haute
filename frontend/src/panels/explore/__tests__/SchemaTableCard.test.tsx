@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { ExploreCacheReport, ExploreColumnStat } from "../../../api/types"
 import SchemaTableCard from "../SchemaTableCard"
+
+const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+const originalSecureContext = Object.getOwnPropertyDescriptor(globalThis, "isSecureContext")
 
 function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnStat {
   return {
@@ -10,6 +13,13 @@ function makeColumn(overrides: Partial<ExploreColumnStat> = {}): ExploreColumnSt
     kind: "Numeric",
     null_count: 0,
     distinct_count: 10,
+    unique_ratio: 0.05,
+    is_high_cardinality: false,
+    is_identifier_candidate: false,
+    text_min_length: null,
+    text_mean_length: null,
+    text_max_length: null,
+    temporal_span: null,
     min_value: "0",
     max_value: "100",
     ...overrides,
@@ -28,14 +38,27 @@ function makeReport(overrides: Partial<ExploreCacheReport> = {}): ExploreCacheRe
     generated_at: 1710000000,
     columns: [makeColumn()],
     overview_summary: {
-      data_quality: { issue_count: 0, issues: [] },
+      data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
       categorical_summary: [],
     },
     ...overrides,
   }
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+  if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard)
+  else Reflect.deleteProperty(navigator, "clipboard")
+  if (originalSecureContext) Object.defineProperty(globalThis, "isSecureContext", originalSecureContext)
+  else Reflect.deleteProperty(globalThis, "isSecureContext")
+})
+
+function installClipboard(writeText = vi.fn().mockResolvedValue(undefined)) {
+  Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+  Object.defineProperty(globalThis, "isSecureContext", { value: true, configurable: true })
+  return writeText
+}
 
 describe("SchemaTableCard", () => {
   it("renders one row per column from report.columns", () => {
@@ -69,7 +92,7 @@ describe("SchemaTableCard", () => {
             makeColumn({ name: "renewal_flag", dtype: "Boolean", kind: "Boolean", distinct_count: 2 }),
           ],
           overview_summary: {
-            data_quality: { issue_count: 0, issues: [] },
+            data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 },
             categorical_summary: [],
           },
         })}
@@ -315,7 +338,7 @@ describe("SchemaTableCard", () => {
     const empty = screen.getByTestId("explore-schema-empty")
     expect(empty.textContent).toBe("(no columns)")
     expect(empty.tagName).toBe("TD")
-    expect(empty).toHaveAttribute("colSpan", "7")
+    expect(empty).toHaveAttribute("colSpan", "8")
   })
 
   it("colours dtype cells using the shared dtypeColors palette", () => {
@@ -335,5 +358,66 @@ describe("SchemaTableCard", () => {
     const strDtype = screen.getByTestId("explore-schema-row-str_col").querySelectorAll("td")[1]
     expect(intDtype.className).toContain("text-blue-400")
     expect(strDtype.className).toContain("text-amber-400")
+  })
+
+  it("exports every filtered schema row rather than only the current page", async () => {
+    const columns = Array.from({ length: 125 }, (_, index) => makeColumn({ name: `keep_${String(index).padStart(3, "0")}` }))
+    columns.push(makeColumn({ name: "skip_me" }))
+    const writeText = installClipboard()
+    render(<SchemaTableCard report={makeReport({ column_count: columns.length, columns })} />)
+
+    fireEvent.change(screen.getByRole("searchbox", { name: /search schema columns/i }), { target: { value: "keep_" } })
+    ;(await screen.findByRole("button", { name: "Copy Schema table as TSV" })).click()
+
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledOnce())
+    const text = writeText.mock.calls[0][0] as string
+    expect(text.split("\n")).toHaveLength(126)
+    expect(text).toContain("keep_000")
+    expect(text).toContain("keep_124")
+    expect(text).not.toContain("skip_me")
+  })
+
+  it("renders, searches, and exports factual profile cues", async () => {
+    const writeText = installClipboard()
+    render(
+      <SchemaTableCard
+        report={makeReport({
+          column_count: 51,
+          columns: [
+            makeColumn({
+              name: "policy_id",
+              is_identifier_candidate: true,
+              is_high_cardinality: true,
+              text_min_length: 3,
+              text_mean_length: 4.25,
+              text_max_length: 8,
+              temporal_span: "2 days, 0:00:00",
+            }),
+            makeColumn({ name: "plain" }),
+            ...Array.from({ length: 49 }, (_, index) => makeColumn({ name: `other_${index}` })),
+          ],
+        })}
+      />,
+    )
+
+    expect(screen.getByTestId("explore-schema-row-policy_id")).toHaveTextContent(
+      "ID candidate; High cardinality; Text length 3–8 (mean 4.25); Span 2 days, 0:00:00",
+    )
+    expect(screen.getByTestId("explore-schema-row-plain").querySelector("[data-testid='explore-schema-profile']")).toHaveTextContent("-")
+
+    fireEvent.change(screen.getByRole("searchbox", { name: /search schema columns/i }), { target: { value: "high cardinality" } })
+    expect(screen.getByTestId("explore-schema-row-policy_id")).toBeInTheDocument()
+    expect(screen.queryByTestId("explore-schema-row-plain")).not.toBeInTheDocument()
+    ;(await screen.findByRole("button", { name: "Copy Schema table as TSV" })).click()
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledOnce())
+    expect(writeText.mock.calls[0][0]).toContain("Profile")
+    expect(writeText.mock.calls[0][0]).toContain("ID candidate; High cardinality")
+  })
+
+  it("keeps schema export actions visible but disabled for an empty schema", async () => {
+    render(<SchemaTableCard report={makeReport({ column_count: 0, columns: [] })} />)
+
+    expect(await screen.findByTestId("explore-schema-copy-tsv")).toBeDisabled()
+    expect(await screen.findByTestId("explore-schema-download-csv")).toBeDisabled()
   })
 })

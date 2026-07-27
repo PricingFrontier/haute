@@ -112,11 +112,12 @@ export interface GraphStoreShape {
   setEdges: (updater: Edge[] | ((eds: Edge[]) => Edge[])) => void
   setPreamble: (value: string) => void
 
-  // Actions (raw — bypass undo history, used for WebSocket sync / load)
+  // Actions (raw — bypass undo history, used for WebSocket sync)
   setNodesRaw: (nodes: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: Edge[] | ((eds: Edge[]) => Edge[])) => void
   setSubmodelsRaw: (submodels: Record<string, unknown>) => void
   setPreambleRaw: (value: string) => void
+  loadGraphSnapshot: (snapshot: GraphSnapshot) => void
 
   // Undo/redo
   pushSnapshot: () => void
@@ -229,6 +230,7 @@ describe("useGraphStore — consolidation", () => {
       expect(typeof s.setNodesRaw).toBe("function")
       expect(typeof s.setEdgesRaw).toBe("function")
       expect(typeof s.setPreambleRaw).toBe("function")
+      expect(typeof s.loadGraphSnapshot).toBe("function")
       expect(typeof s.pushSnapshot).toBe("function")
       expect(typeof s.undo).toBe("function")
       expect(typeof s.redo).toBe("function")

@@ -957,6 +957,13 @@ class ExploreColumnStat(BaseModel):
     std_value: str | None = None
     zero_count: int | None = None
     negative_count: int | None = None
+    unique_ratio: float | None = None
+    is_high_cardinality: bool = False
+    is_identifier_candidate: bool = False
+    text_min_length: int | None = None
+    text_mean_length: float | None = None
+    text_max_length: int | None = None
+    temporal_span: str | None = None
 
 
 class ExploreDistinctValueCount(BaseModel):
@@ -981,6 +988,8 @@ class ExploreDataQualityIssue(BaseModel):
 class ExploreDataQualitySummary(BaseModel):
     issue_count: int = 0
     issues: list[ExploreDataQualityIssue] = Field(default_factory=list)
+    duplicate_row_count: int | None = None
+    duplicate_ratio: float | None = None
 
 
 class ExploreOverviewSummary(BaseModel):
@@ -1466,6 +1475,9 @@ class TrainStatusResponse(BaseModel):
     terminal_reason: str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
     feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None
+    error_code: str | None = None
+    http_status_code: int | None = None
+    error_detail: Any | None = None
 
 
 class TrainEstimateRequest(BaseModel):

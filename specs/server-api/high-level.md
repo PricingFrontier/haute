@@ -219,8 +219,9 @@ become diagnostic-unavailable rather than a fabricated success.
   client; the real exception — which can embed absolute filesystem paths, OS error strings,
   or git stderr — is logged server-side with `exc_info=True`. This is deliberate defence
   against information disclosure, not an oversight; contrast with explicitly surfaced
-  domain subclasses such as `ConfigError` and `ContractMismatchError`, whose hand-authored
-  messages are safe to return. `HauteError` ancestry alone is not a safety marker: plain
+  domain subclasses such as `ConfigError`, `ContractMismatchError`, and
+  `SchemaMismatchError`, whose hand-authored messages are safe to return.
+  `HauteError` ancestry alone is not a safety marker: plain
   `GitError` can wrap raw stderr and is deliberately sanitized.
 - **Event bus, not a direct watcher→WebSocket call.** The file watcher publishes typed
   events; it has no reference to the WebSocket client set. This keeps the watcher unit-
@@ -306,8 +307,9 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   `HauteError`, optional structured `**context`) that the relevant route treats as safe to
   surface: save-time `ConfigError` → 400; output dry-run `ConfigError` /
   `ContractMismatchError` → 422; trace `ContractMismatchError` → 422; and preview
-  config/contract failures are embedded in `NodeResult.error` so the canvas can show them
-  in-situ rather than as a banner. JSON-cache `ApiInputSchemaError` uses a direct 422 body
+  `ContractMismatchError` / `SchemaMismatchError` failures are embedded in
+  `NodeResult.error` so the canvas can show either mismatch in-situ rather than
+  as a banner. JSON-cache `ApiInputSchemaError` uses a direct 422 body
   with a `type` discriminator, while preview/write execution uses the stable public-contract
   payload under `detail`; `OutputMappingSchemaError` uses FastAPI's
   `{"detail": <message>}` 422 envelope.

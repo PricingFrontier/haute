@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import keyword
+import re
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,83 @@ def _minimal_v2() -> dict[str, Any]:
 
 def test_validate_v2_schema_accepts_minimal() -> None:
     validate_v2_schema(_minimal_v2())  # raises on failure
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        pytest.param("emit", 1, "v2 tables[0].emit must be a bool", id="emit-int"),
+        pytest.param("emit", "true", "v2 tables[0].emit must be a bool", id="emit-string"),
+        pytest.param(
+            "selected",
+            0,
+            "v2 tables[0].columns[0].selected must be a bool",
+            id="selected-int",
+        ),
+        pytest.param(
+            "selected",
+            "false",
+            "v2 tables[0].columns[0].selected must be a bool",
+            id="selected-string",
+        ),
+        pytest.param(
+            "status",
+            None,
+            "v2 tables[0].columns[0].status must be Confirmed or Inferred",
+            id="status-null",
+        ),
+        pytest.param(
+            "status",
+            True,
+            "v2 tables[0].columns[0].status must be Confirmed or Inferred",
+            id="status-bool",
+        ),
+        pytest.param(
+            "status",
+            "Pending",
+            "v2 tables[0].columns[0].status must be Confirmed or Inferred",
+            id="status-unknown",
+        ),
+        pytest.param(
+            "status",
+            ["Confirmed"],
+            "v2 tables[0].columns[0].status must be Confirmed or Inferred",
+            id="status-list",
+        ),
+    ],
+)
+def test_validate_v2_schema_rejects_invalid_declared_scalars(
+    field: str, value: Any, message: str
+) -> None:
+    cfg = _minimal_v2()
+    target = cfg["tables"][0] if field == "emit" else cfg["tables"][0]["columns"][0]
+    target[field] = value
+
+    with pytest.raises(ApiInputSchemaError, match=f"^{re.escape(message)}$"):
+        validate_v2_schema(cfg)
+
+
+@pytest.mark.parametrize("emit", [False, True])
+@pytest.mark.parametrize("selected", [False, True])
+@pytest.mark.parametrize("status", ["Confirmed", "Inferred"])
+def test_validate_v2_schema_accepts_declared_scalars(
+    emit: bool, selected: bool, status: str
+) -> None:
+    cfg = _minimal_v2()
+    cfg["tables"][0]["emit"] = emit
+    cfg["tables"][0]["columns"][0]["selected"] = selected
+    cfg["tables"][0]["columns"][0]["status"] = status
+
+    validate_v2_schema(cfg)
+
+
+def test_validate_v2_schema_accepts_missing_declared_scalars() -> None:
+    cfg = _minimal_v2()
+    del cfg["tables"][0]["emit"]
+    del cfg["tables"][0]["columns"][0]["selected"]
+    del cfg["tables"][0]["columns"][0]["status"]
+
+    validate_v2_schema(cfg)
 
 
 @pytest.mark.parametrize(

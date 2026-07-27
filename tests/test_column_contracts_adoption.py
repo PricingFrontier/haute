@@ -423,9 +423,7 @@ class TestParserValidatesUserDeclaredContracts:
         contract is caught at parse time, not at the first runtime
         execution or — worse — silently at deploy.
         """
-        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
-        if cls is None:
-            pytest.skip("ContractMismatchError not yet defined (covered by test above)")
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME)
         from haute.parser import parse_pipeline_source
 
         # Banding factor says column='age', outputColumn='age_band',
@@ -486,9 +484,6 @@ pipeline.connect("src", "band")
 
     def test_parser_accepts_matching_user_contract(self, tmp_path: Path):
         """Matching user contracts parse cleanly (no false positives)."""
-        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
-        if cls is None:
-            pytest.skip("ContractMismatchError not yet defined")
         from haute.parser import parse_pipeline_source
 
         source_config = write_data_input_config(tmp_path, "src", "x.parquet")
@@ -698,9 +693,7 @@ class TestExecutorAssertsContractsAtBoundaries:
         the query plan; after adoption the check fires *before*
         node execution with a crisp Haute error.
         """
-        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
-        if cls is None:
-            pytest.skip("ContractMismatchError not yet defined")
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME)
         # Source produces 'height' only; banding references 'age'.
         # Write the parquet so read_source finds real columns.
         import polars as pl_
@@ -742,9 +735,7 @@ class TestExecutorAssertsContractsAtBoundaries:
         scenario — the parser can't fully verify opaque Polars nodes,
         but the executor can.
         """
-        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
-        if cls is None:
-            pytest.skip("ContractMismatchError not yet defined")
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME)
         import polars as pl_
 
         from haute.executor import execute_graph
@@ -785,9 +776,7 @@ class TestExecutorAssertsContractsAtBoundaries:
         pins that execution-time behaviour end-to-end so the guarantee
         the audit verified is protected against regression.
         """
-        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME, None)
-        if cls is None:
-            pytest.skip("ContractMismatchError not yet defined")
+        cls = getattr(haute_errors, CONTRACT_MISMATCH_ERROR_NAME)
         import polars as pl_
 
         from haute.executor import execute_graph

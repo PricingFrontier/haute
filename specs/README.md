@@ -74,8 +74,8 @@ unowned.
 
 ## Approved change contract — prerelease canonical-only formats
 
-The approved implementation plan is
-[ROAD-CANON-01](roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract).
+The delivered `ROAD-CANON-01` decision is the present-tense contract in this
+section.
 Haute is prerelease software with no external compatibility obligation. Each boundary therefore
 accepts exactly its current canonical Haute representation. Production code must not retain an
 obsolete Haute format through conversion, fallback, deprecated aliases, temporary

@@ -55,8 +55,8 @@ _train_service = TrainService(_store)
 def train_model(body: TrainRequest) -> TrainResponse:
     """Start model training for a modelling node.
 
-    Executes the pipeline up to the modelling node to materialise the
-    training DataFrame, then runs TrainingJob in a supervised spawn worker.
+    Returns the cancellable job handle before background preparation
+    materialises the training DataFrame and launches the supervised fit worker.
     """
     graph = _prepare_runtime_graph(body.graph)
     return _train_service.start(body.model_copy(update={"graph": graph}))
@@ -117,6 +117,9 @@ async def train_status(job_id: str) -> TrainStatusResponse:
         terminal_reason=job.get("terminal_reason"),
         execution_metrics=job.get("execution_metrics"),
         feature_selection=job.get("feature_selection"),
+        error_code=job.get("error_code"),
+        http_status_code=job.get("http_status_code"),
+        error_detail=job.get("error_detail"),
     )
 
 
@@ -139,6 +142,9 @@ async def cancel_training(job_id: str) -> TrainStatusResponse:
         terminal_reason=job.get("terminal_reason"),
         execution_metrics=job.get("execution_metrics"),
         feature_selection=job.get("feature_selection"),
+        error_code=job.get("error_code"),
+        http_status_code=job.get("http_status_code"),
+        error_detail=job.get("error_detail"),
     )
 
 

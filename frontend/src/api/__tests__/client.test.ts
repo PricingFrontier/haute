@@ -25,6 +25,7 @@ import {
   createSubmodel,
   checkMlflow,
   getTrainStatus,
+  cancelTrain,
   estimateTrainingRam,
   getWarehouses,
   getCatalogs,
@@ -544,6 +545,7 @@ describe("endpoint contracts", () => {
       if (url.startsWith("/api/schema")) return jsonResponse(makeSchemaResponse())
       if (url === "/api/modelling/train") return jsonResponse(makeTrainResponse())
       if (url === "/api/modelling/train/status/job-123") return jsonResponse(makeTrainStatusResponse())
+      if (url === "/api/modelling/train/cancel/job-123") return jsonResponse(makeTrainStatusResponse({ status: "cancelled", terminal_reason: "cancelled" }))
       if (url === "/api/modelling/estimate") return jsonResponse(makeTrainEstimateResponse())
       if (url === "/api/optimiser/solve") return jsonResponse(makeSolveOptimiserResponse())
       if (url === "/api/submodel/create") return jsonResponse(makeSubmodelCreateResponse())
@@ -674,6 +676,14 @@ describe("endpoint contracts", () => {
     await getTrainStatus("job-123")
     const [url] = mockFetch.mock.calls[0]
     expect(url).toBe("/api/modelling/train/status/job-123")
+  })
+
+  it("cancelTrain POSTs to /api/modelling/train/cancel/{jobId}", async () => {
+    const result = await cancelTrain("job-123")
+    const [url, opts] = mockFetch.mock.calls[0]
+    expect(url).toBe("/api/modelling/train/cancel/job-123")
+    expect(opts.method).toBe("POST")
+    expect(result.status).toBe("cancelled")
   })
 
   it("estimateTrainingRam posts to /api/modelling/estimate", async () => {

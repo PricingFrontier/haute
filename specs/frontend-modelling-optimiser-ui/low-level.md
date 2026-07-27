@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, training submission, RAM estimate and GLM estimate wiring. |
+| `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, source/constraint configuration and auto-range lifecycle. |
 | `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration, point selection, exports and ratebook detail materialisation. |
@@ -27,6 +27,7 @@
 | `frontend/src/panels/optimiser/RatebookRatesTab.tsx`, `frontend/src/panels/optimiser/RatebookImpactBeeswarm.tsx`, `frontend/src/panels/optimiser/ratebookFactorTables.ts` | Ratebook tables, impact chart and factor-table normalisation/order. |
 | `frontend/src/panels/optimiser/iterationSummary.ts`, `frontend/src/panels/optimiser/optimiserHelpers.ts` | Iteration copy and optimiser result/save/constraint helpers. |
 | `frontend/src/utils/banding.ts` | Extracts banding factor-levels/order and resolves an optimiser's explicit or sole direct banding source. |
+| `frontend/src/utils/polarsDtypes.ts` | Shared canonical Polars numeric-dtype predicate used by modelling and banding controls. |
 
 ## Key types and data structures
 
@@ -48,13 +49,23 @@
    shared `onUpdate` contract, and gates training with `trainingObjectiveIssue`. CatBoost
    hyperparameters use `config.params` and `config.variance_power`; GLM controls write their
    algorithm fields directly on `config`, including `config.var_power`.
+   `SplitAndMetricsConfig` uses the shared Polars numeric-dtype classifier for
+   monotonicity rows, so only numeric selected features can write
+   `monotone_constraints[name] = -1|1`; choosing zero removes the key.
 2. `useStaleConfigEstimate` receives the RAM request endpoint with graph/source/structural version;
    it owns abort/loading/error and associates an estimate with the current config. Every cached
    solve/train result carries the complete canonical identity
    `{ configHash, source, structuralVersion }`; the hook has no partial-result shape.
-3. Training creates/updates result-store job state. Structured execution details are converted to
-   progress/error state. The optional GLM dispersion action calls the dispersion API and writes a
-   successful theta/variance-power estimate through the ordinary editable update callback.
+3. Training records the `POST /api/modelling/train` job handle as soon as it is returned, after
+   which background polling owns preparation/fit progress. `TrainingActionsAndResults` keeps a
+   distinct Cancel control visible while that job is active; `ModellingConfig` posts its job ID to
+   `/train/cancel`, then immediately stores a returned terminal failure/cancellation or completed
+   race winner. Structured execution details and additive `error_code`/`http_status_code`/
+   `error_detail` fields are retained in progress/error state. Both the estimate warning and the
+   terminal `gpu_vram_limit` message require an explicit CPU selection and retry rather than
+   describing an automatic fallback. The optional GLM dispersion action calls the dispersion API
+   and writes a successful theta/variance-power estimate through the ordinary editable update
+   callback.
 4. `frontend/src/panels/ModellingPreview.tsx` computes which tabs have result data, renders only
    those, and resets the active tab when a new result arrives. `SummaryTab` exposes diagnostics
    rather than suppressing a partially successful training result.
@@ -95,6 +106,8 @@ without broadening the exactly-one-direct fallback.
 
 - With no modelling algorithm, configuration sections that require it are not rendered. Hiding a
   GLM/regularisation/config subsection preserves its stored values for later re-selection.
+- The start request itself has no Cancel control because no job handle exists yet; once the handle
+  is registered, cancellation remains available in both preparation and fit progress states.
 - Dispersion estimation is an explicit action. Missing/failed estimates remain visible as a field
   gate/error rather than being silently defaulted.
 - `frontend/src/utils/banding.ts` returns `{}` for a missing/invalid/non-banding source; when no

@@ -185,6 +185,22 @@ once and rendered three ways. `handle_init` calls exactly the generator(s) for t
 `_prune_stale_ci_files(project_dir, keep=ci)`, which deletes every other provider's known
 artifact paths (from the `_CI_ARTIFACTS` map) and removes the resulting empty
 `.github/workflows/`/`.github` directories, before writing the new provider's files.
+Every generator result must parse as one complete YAML document for every
+`TARGETS` entry. Structural tests locate the actual validate, staging, smoke,
+impact, and production jobs/stages, assert their branch/manual conditions, and
+compare each consuming step's environment/variables mapping with the target's
+registry-derived secret list. Header-only parsing and substring checks are not
+accepted as evidence for this boundary.
+
+`tests/test_docs_accuracy.py` builds a real Databricks/GitHub scaffold on
+`tmp_path`, inventories its before/after tree, parses the generated starter
+pipeline for its node count, and compares marker-delimited documentation facts
+with those results. It also extracts documented `haute <command>` names and
+checks them against the commands printed by root `haute --help`; Python import
+statements in documentation examples are resolved with `importlib`. Pure
+comparison helpers accept supplied text so negative tests can prove that a
+drifted tree, stale node count, phantom command, or nonexistent public import
+produces a violation.
 
 **Live arity and switch dispatch (`src/haute/pipeline.py`,
 `src/haute/_builders.py`).** `Node`
@@ -361,8 +377,12 @@ API and real JSON round-trips rather than mocks:
 - **`test_graph_shape_contracts.py`** — Explore in/out-degree contracts
   (`TestExploreGraphShape`), single-node and empty-graph edge cases, submodel boundary handle
   matching, and round-trip drift (`TestRoundTripDrift`).
-- **`test_scaffold.py`** — every CI provider × deploy target combination, YAML/TOML
-  structural validation, and starter pipeline/test content.
+- **`test_scaffold.py`** — every CI provider × deploy target combination, complete
+  YAML/TOML structural validation (including release conditions and exact secret
+  placement), and starter pipeline/test content.
+- **`test_docs_accuracy.py`** — executable deployment-documentation parity for the
+  real scaffold tree and starter node count, registered CLI commands, public Python
+  imports, target secrets, and configured pipeline path, plus negative drift fixtures.
 - **`test_project_root.py`** + **`test_project_gaps.py`** — `get_project_root` walk-up
   behaviour, `is_haute_project`, and the full `resolve_pipeline_file` four-tier fallback
   (`TestResolvePipelineFile`, `TestTomlConfiguredPipeline`, `TestLooksLikePipelineFile`).

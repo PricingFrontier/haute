@@ -225,3 +225,44 @@ class TestScoreTestQuotesGuard:
         (empty_dir / "readme.txt").write_text("not a quote")
 
         assert score_test_quotes(resolved, test_quotes_dir=empty_dir) == []
+
+
+class TestConfiguredQuoteDirectoryGate:
+    @pytest.mark.parametrize("kind", ["missing", "file", "empty"])
+    def test_configured_quote_directory_must_be_usable(self, tmp_path: Path, kind: str) -> None:
+        from haute.deploy._validators import validate_deploy
+
+        quote_dir = tmp_path / "quotes"
+        if kind == "file":
+            quote_dir.write_text("not a directory")
+        elif kind == "empty":
+            quote_dir.mkdir()
+        config = DeployConfig(
+            pipeline_file=PIPELINE_FILE, model_name="m", test_quotes_dir=quote_dir
+        )
+        inp = _make_node("api_in", node_type=NodeType.API_INPUT)
+        out = _make_node("output", node_type=NodeType.OUTPUT)
+        resolved = _make_resolved(
+            nodes=[inp, out],
+            edges=[GraphEdge(id="e", source="api_in", target="output")],
+            config=config,
+        )
+
+        with pytest.raises(DeployError, match="test_quotes.dir"):
+            validate_deploy(resolved)
+
+    def test_score_test_quotes_forwards_output_projection(self, tmp_path: Path) -> None:
+        from haute.deploy._validators import score_test_quotes
+
+        quote = tmp_path / "q.json"
+        quote.write_text('[{"input": {"col": 1}}]')
+        config = DeployConfig(
+            pipeline_file=PIPELINE_FILE, model_name="m", output_fields=["premium"]
+        )
+        resolved = _make_resolved(config=config)
+        with patch(
+            "haute.deploy._validators.score_graph",
+            return_value=__import__("polars").DataFrame({"premium": [1]}),
+        ) as score:
+            score_test_quotes(resolved, tmp_path)
+        assert score.call_args.kwargs["output_fields"] == ["premium"]

@@ -770,6 +770,7 @@ def _write_target_summary(
         "config": _relative_path(target.config_path),
         "status": "failed" if failures else "passed",
         "fail_over": target.fail_over,
+        "rationale": target.rationale,
         "survival_rate": survival_rate,
         "failures": failures,
         "stages": [stage.__dict__ for stage in stages],
@@ -902,6 +903,7 @@ def _phase_plan(
             "num_work_items": num_items,
             "num_pending": num_pending,
             "fail_over": target.fail_over,
+            "rationale": target.rationale,
         }
         _write_json(target_dir / "meta.json", meta)
         targets_plan.append(meta)

@@ -164,9 +164,9 @@ can still leave OS-temporary files behind.
 
 `_execute_pipeline` passes the required-column seed to the execution facade, whose typed
 strategy result is attached to the admitted context and drives the same lazy execution and
-dataframe-cache request. Auto-range obtains its narrow plan through
-`_projection_plan_for_auto_range`; solve/estimate reuse the corresponding request-context
-plan rather than deriving a second optimiser-owned planning policy.
+dataframe-cache request. Auto-range uses that same `_execute_pipeline` boundary and
+request context; there is no standalone optimiser-owned projection-plan helper or
+second planning policy.
 
 Every failure mode in this thread (cancellation, `HTTPException`, memory-admission error,
 bounded-streaming-unsupported error, or a bare exception) is mapped to a terminal job-store
@@ -202,16 +202,14 @@ frontier failure is recorded but does not fail the solve), persists the apply-re
 (freeing the in-memory result dataframe as a side effect — see Artifact lifecycle below), and
 atomically transitions the job to `completed`.
 
-Any `ValueError` raised anywhere in the solver call stack is classified as a "Data error" and
-transitions the job to `contract_error`; any `RuntimeError` is classified as an "Algorithm
-error" and transitions to `error`; anything else is an "Unexpected error" → `error`. This
-classification is purely by exception type, not by origin.
-
-> NOTE: [Tracked by AUD-C10](../roadmap/optimiser.md#aud-c10--numerical-and-silent-failure-residuals).
-> Because the classification is type-based, a `ValueError` raised inside `price-contour`
-> for what is actually an internal algorithm defect (not a data problem) is still reported to
-> the user as a data/contract error. See
-> `OptimiserSolveService._launch_background` in `src/haute/routes/_optimiser_service.py`.
+The solver worker classifies failures by the boundary that translated them.
+`_OptimiserSolveInputError` names a user-actionable input-adaptation failure and
+transitions the job to `contract_error`. `_OptimiserSolverExecutionError`
+wraps exceptions from external `price-contour` optimiser construction/solve
+calls and transitions to algorithm `error`, even when the library raised
+`ValueError`. Any untyped orchestration or post-processing exception is an
+unexpected `error`. Versioned `PUBLIC_CONTRACT_ERROR_TYPES` remain the first
+and structured classification layer.
 
 ### Frontier auto-range estimation
 
@@ -364,11 +362,15 @@ Two artifact families, both rooted under the versioned marker-aware OS-temp hier
   deleted does not itself crash) to a direct child of the artifact root with the expected name
   prefix and filename — every load and cleanup call goes through this check first.
 - **Load** (`_load_apply_result_artifact`, `_load_ratebook_factors_artifact`,
-  `_scan_ratebook_factors_artifact`): eager or lazy re-reads of the persisted parquet; any
-  missing file, corrupt parquet, or invalid handle is wrapped into a 500 `HTTPException` with a
-  "re-run the solve" message — the underlying OS/parquet exception text is never surfaced to the
-  caller. Validation and parquet-library failures are logged server-side with `exc_info=True`
-  before they are wrapped.
+  `_scan_ratebook_factors_artifact`): eager or lazy re-reads of the persisted
+  parquet. A valid handle whose file is absent is a 410 lifecycle outcome with
+  a stable "no longer available; re-run the solve" detail. Invalid
+  server-owned handles and present-but-unreadable parquet remain sanitized 500
+  outcomes with distinct stable invalid/corrupt details. Validation and
+  parquet-library failures are logged server-side with `exc_info=True`; missing
+  paths are logged without exposing the path to the caller. The complete
+  rationale and rejected alternatives are in
+  [the OPT-D01 decision record](error-detail-policy.md).
 - **Cleanup**: `_cleanup_apply_result_artifact`/`_cleanup_ratebook_factors_artifact` are
   registered with the job store's own artifact-cleaner registry
   (`register_artifact_cleaner` in `src/haute/routes/_optimiser_service.py`) so a job's TTL/eviction sweep
@@ -558,13 +560,11 @@ returned as a generic `status: "error"` payload.
   token per solve/auto-range job; `_graph_node_setup_singleflight` owns only graph/node exclusion.
   Worker scopes release both once, after the actual worker has stopped, so a cancelled job keeps
   the exclusion lease until it can no longer mutate state.
-- **Inconsistent error-detail exposure between two "generic setup failure" branches.**
-  `_execute_pipeline`'s catch-all deliberately hides the real exception text from the client
-  ("Pipeline execution failed. Check the server logs for details.") while `_build_grid`'s
-  catch-all surfaces `f"Grid construction failed: {exc}"` directly. Both are plausibly
-  intentional (grid failures are more likely user-actionable data issues), but the policy has
-  not been chosen. [OPT-D01](../roadmap/optimiser.md#opt-d01--generic-setup-error-detail-policy)
-  owns that decision before either branch changes.
+- **Generic setup failure detail is boundary-safe.** Explicit grid chunk-size
+  validation remains an actionable 400. Unknown `_execute_pipeline` and
+  `_build_grid` failures are fixed-detail 500s and preserve their raw
+  exception only in server logs, as defined by
+  [OPT-D01](error-detail-policy.md).
 - **`decision_score`/`is_baseline` tie-breaking is fully owned by `price-contour`.** The
   [`with_explainer_columns` contract](#withexplainercolumns-contract) requires it to match
   `apply(df)`'s tie-breaking exactly, including which `scenario_value` is treated as baseline
@@ -585,9 +585,11 @@ returned as a generic `status: "error"` payload.
   (job not found or wrong job type), 409 (concurrent job/graph-node conflict, a frontier sweep
   already running for the target solve job, or an atomic job-store update losing a race against a
   concurrent state change), 422 (`ProjectionImpossibleError`/`ChunkPlanUnsupportedError`/
-  `BoundedMemoryUnsupportedError`, and the frontier compute-budget rejection), 500 (a background
-  worker thread failing to even start; a generic/unclassified pipeline failure; a missing or
-  corrupt persisted artifact), 507 (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
+  `BoundedMemoryUnsupportedError`, and the frontier compute-budget rejection), 410 (a valid
+  server-owned handle whose artifact is no longer present), 500 (a background
+  worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
+  invalid server-owned artifact handle; a corrupt persisted artifact), 507
+  (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
   wrapped via `_memory_limit_http_exception`). This applies to `POST /frontier` only up through its
   synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
   once validation and worker launch succeed, the request returns 200 with a `status: "started"`

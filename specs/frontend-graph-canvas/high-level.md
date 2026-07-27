@@ -114,9 +114,11 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - **Graph state.** One store owns nodes, edges, imports preamble, and nested
   submodel metadata so a root-frame rename and its nested mapping changes are
   one coherent transaction. User-meaningful changes push one complete snapshot;
-  transient drag motion, external sync, initial load, and continuous preamble
-  editing use a non-history path. Undo/redo restores all four persisted graph
-  fields together.
+  transient drag motion, external sync, and continuous preamble editing use a
+  non-history path. A whole-document load is a distinct atomic transition: it
+  installs all four persisted fields, establishes that exact snapshot as the
+  saved baseline, clears undo and redo, and advances cache/context versions
+  monotonically. Undo/redo restores all four persisted graph fields together.
 - **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
   with optional `sourcePort`/`targetPort` fields used while a submodel placeholder occupies the
   visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain
@@ -190,7 +192,11 @@ Out of scope (owned by neighbouring components, linked where they exist):
   edge-join wiring first — a broken edge-join blocks the save outright with
   an error toast, while broken config references only warn. A concurrent
   second save can never let an older response's `markSaved` clobber a newer
-  one's. Backend edge metadata that is not a React Flow UI-only field,
+  one's. Initial canvas seeding and every successful whole-pipeline
+  load/switch use the same full-snapshot load action; a missing preamble or
+  submodel collection becomes its canonical empty value, so no persisted
+  field, saved baseline, or history entry can survive from the prior
+  document. Backend edge metadata that is not a React Flow UI-only field,
   including authored submodel `sourcePort`/`targetPort`, remains present in
   the captured save snapshot and outgoing graph payload.
 - **Preview fetching.** Selecting or refreshing a node debounces, then
@@ -274,7 +280,12 @@ Out of scope (owned by neighbouring components, linked where they exist):
   rehashes node config; a preview-only field update bumps the panel-context
   version (so the inspector panel refreshes) without bumping the structural
   version (so the graph isn't marked "changed" for undo-history purposes
-  beyond what's needed).
+  beyond what's needed). Whole-document loads are deliberate identity
+  boundaries: they recompute all fingerprints and increment the structural
+  and panel-context versions rather than resetting or conditionally reusing
+  an earlier number, including when only nested submodel metadata changed.
+  This prevents preview/result caches from treating a different loaded
+  document as an earlier in-memory graph.
 - **API-input handle ids are the raw configured table labels, never
   synthesized ids.** The backend's codegen round-trips through those exact
   labels, so a synthesized `port_<idx>` id would silently fail to resolve at
@@ -395,9 +406,10 @@ Out of scope (owned by neighbouring components, linked where they exist):
   delivers.
 - [server-api](../server-api/high-level.md) — the backend counterpart to
   `usePipelineAPI` (`/api/pipeline/*` load/save/preview) and
-  `useWebSocketSync` (`/ws/sync`); both hooks feed the store via
-  `setNodesRaw`/`setEdgesRaw`/`setSubmodelsRaw`/`setPreamble`, and
-  `usePipelineAPI` calls `markSaved()` on a successful save.
+  `useWebSocketSync` (`/ws/sync`). `usePipelineAPI` installs a successful
+  whole-document response through the atomic snapshot-load action and calls
+  `markSaved()` only after successful saves; `useWebSocketSync` retains its
+  guarded raw-update/rollback path for external edits.
 - [frontend-shared](../frontend-shared/high-level.md) owns typed HTTP/WebSocket
   transport; this component owns canvas orchestration such as debounce, cache,
   cascade, retry gating, and reconnect/backoff.

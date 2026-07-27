@@ -14,7 +14,8 @@
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
-| `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards. |
+| `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
+| `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
 
 ## Key types and data structures
@@ -54,8 +55,22 @@
    polls background Explore jobs and moves terminal responses into the result store. A visible
    report is touched to update cache recency. Preview and Overview are the only tabs and mount
    only for their active tab; a remembered value from a removed pane normalises to Preview.
+   `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
+   of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
+   tabpanel until that module is ready.
 4. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
+5. Schema, numeric-summary, and categorical-summary cards derive a `TableGrid` from the exact
+   display fields they render and pass it to `ExploreTableActions`. Copy serialises the header
+   and every exported row as TSV; download uses the shared CSV escaping helper. Schema supplies
+   every column matching its current search query, not only the current 50-row page. Numeric and
+   categorical summaries export their complete profile lists. The actions do not offer JSON
+   sharing or paste-in because Explore reports are read-only analysis artifacts. The shared
+   serializers remain click-loaded from the already-lazy Overview code.
+6. `SchemaTableCard` derives one factual Profile cell per column from the report's additive
+   quality fields: ID candidate, high cardinality, text length min/mean/max, and temporal span.
+   The same text participates in schema search and full filtered TSV/CSV export; an unflagged
+   column renders an em dash.
 
 `DataPreview` consumes guarded version-1 execution metrics through
 `ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states stay
@@ -88,6 +103,9 @@ and remediation without exposing raw bounded-collection JSON.
 - Explore refuses run while there is no input or a job is active. An instant completed response
   without a report, or a started response without `job_id`, is an explicit failure rather than a
   false success.
+- Explore progress is a determinate ARIA progressbar only while the run is busy. Its value is
+  the displayed fraction clamped to 0-100; native buttons give export actions keyboard semantics,
+  and both are disabled when their grid has no body rows.
 - Utility save replies cannot clear/show errors for a different active module. A 400 API detail
   matching `line N` highlights that line; list/load errors are toast-visible, not interpreted as
   a missing utility directory.
@@ -118,7 +136,10 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/explore/__tests__/`. They cover virtualisation, frames, search, trace click
 delegation, boundary/rejected execution diagnostics, cache identity/result/job lifecycle,
 card ordering/config, roving-tab accessibility, utility save-flush/stale-response behaviour and
-syntax errors. `frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
+syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
+contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
+pagination, disabled empty-table actions, and native-button accessibility.
+`frontend/src/__tests__/App.utilityPanelLazy.test.ts` and the bundle-budget tests
 guard the Utility panel's on-demand chunk boundary. Shared layout/constants and small visual
 helpers are exercised through these component tests rather than owning standalone suites.
 

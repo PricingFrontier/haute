@@ -85,9 +85,11 @@ Out of scope:
   the package contract must detect deleted and renamed inputs as well as edited
   files. Validation and the explicit-build skip path consume the same proof so
   they cannot disagree about freshness.
-- `npm ci` and the checked-in `frontend/package-lock.json` make frontend
-  dependency installation deterministic. The frontend is private because it is
-  a package-build input, not an independently published npm library.
+- npm is the sole supported frontend package manager. `npm ci` and the
+  checked-in `frontend/package-lock.json` make dependency installation
+  deterministic; unsupported secondary lockfiles are not checked in. The
+  frontend is private because it is a package-build input, not an independently
+  published npm library.
 - Package workflows and frontend metadata pin the supported Node/npm toolchain.
   CI has one authoritative package-build path so it cannot compare two wheels
   produced by different implicit toolchains.

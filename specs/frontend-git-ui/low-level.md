@@ -469,5 +469,5 @@ the only pure, intricate geometry code in the surface.
 
 ## Approved change contract — canonical branch source
 
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
 the Git panel renders topology chips only from the current graph payload.

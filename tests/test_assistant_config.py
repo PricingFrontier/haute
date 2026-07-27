@@ -109,6 +109,100 @@ class TestReadinessMatrix:
         assert status.configured is True
         assert resolve_assistant_config().base_url == "https://dbx"
 
+    @pytest.mark.parametrize(
+        "base_url", ["http://localhost:8080/v1", "https://dbx.example/v1/chat"]
+    )
+    def test_openai_base_url_accepts_absolute_http_urls(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch, base_url: str
+    ):
+        _write_toml(
+            project_root,
+            f'[assistant]\nprovider = "openai"\nmodel = "m"\nbase_url = "{base_url}"\n',
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        assert resolve_assistant_config().base_url == base_url
+
+
+class TestClosedTableAndBaseUrlValidation:
+    def test_unknown_key_names_its_full_toml_path(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _write_toml(
+            project_root,
+            '[assistant]\nprovider = "openai"\nmodel = "m"\nendpoint = "secret"\n',
+        )
+        monkeypatch.setattr(
+            _config,
+            "_sdk_importable",
+            lambda _provider: pytest.fail("SDK probe must not run for invalid configuration"),
+        )
+        with pytest.raises(ConfigError, match=r"\[assistant\]\.endpoint") as exc_info:
+            resolve_assistant_config()
+        assert "secret" not in str(exc_info.value)
+
+    def test_multiple_unknown_keys_have_deterministic_full_paths(self, project_root: Path):
+        _write_toml(
+            project_root,
+            '[assistant]\nmodel = "m"\nzebra = "value"\nalpha = "value"\n',
+        )
+        with pytest.raises(ConfigError) as exc_info:
+            resolve_assistant_config()
+        assert str(exc_info.value) == (
+            "Unknown [assistant] configuration key(s): [assistant].alpha, [assistant].zebra."
+        )
+
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "",
+            "/v1",
+            "api.example/v1",
+            "ftp://api.example/v1",
+            "file:///tmp/model",
+            "https:///v1",
+            "http://[::1",
+            "http://api.example:invalid",
+            "http://api.example:70000",
+            "http://api.example:",
+            "https://user:password@api.example/v1",
+            "https://api.example\\\\gateway/v1",
+            "https://api.example/v1 with-space",
+            "https://api.example/v1\t",
+        ],
+    )
+    def test_invalid_openai_base_url_raises_redacted_field_error_before_sdk_probe(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch, base_url: str
+    ):
+        _write_toml(
+            project_root,
+            f'[assistant]\nprovider = "openai"\nmodel = "m"\nbase_url = "{base_url}"\n',
+        )
+        monkeypatch.setattr(
+            _config,
+            "_sdk_importable",
+            lambda _provider: pytest.fail("SDK probe must not run for invalid base_url"),
+        )
+        with pytest.raises(ConfigError, match=r"\[assistant\]\.base_url") as exc_info:
+            resolve_assistant_config()
+        if base_url:
+            assert base_url not in str(exc_info.value)
+
+    def test_non_string_base_url_is_redacted_and_precedes_sdk_probe(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        _write_toml(
+            project_root,
+            '[assistant]\nprovider = "openai"\nmodel = "m"\nbase_url = 123\n',
+        )
+        monkeypatch.setattr(
+            _config,
+            "_sdk_importable",
+            lambda _provider: pytest.fail("SDK probe must not run for invalid base_url"),
+        )
+        with pytest.raises(ConfigError, match=r"\[assistant\]\.base_url") as exc_info:
+            resolve_assistant_config()
+        assert "123" not in str(exc_info.value)
+
 
 class TestOutputTokenBudget:
     def test_unset_defaults_to_8192(self, project_root: Path, monkeypatch: pytest.MonkeyPatch):

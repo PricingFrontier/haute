@@ -937,6 +937,17 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
     .then((data) => parseTrainStatusResponse(data) as T)
 }
 
+export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<T> {
+  return post<unknown>(
+    `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
+    undefined,
+    options,
+  ).then((data) => parseTrainStatusResponse(data) as T)
+}
+
 export interface TrainModelArgs {
   graph: GraphPayload
   node_id: string

@@ -58,9 +58,13 @@
    c. For each table: call `_apply_rating_table`; if it actually materialised an output column (`_rating_table_skip_reason(table) is None`), register the output column name and its `Float64` dtype in the local schema dict for subsequent tables/combines to see; otherwise log `rating_table_skipped_incomplete` at WARNING with the specific skip reason and omit it from combining.
    d. For each combined output: call `_combine_rating_output(lf, out_cols, operation, output_col, base_value)`.
 5. `_apply_rating_table(lf, table, input_schema=...)` (per table):
-   a. Return `lf` unchanged if `factors` or `outputColumn` is empty. Otherwise
-      validate every declared factor against the once-resolved input schema
-      before treating empty/incomplete entries as a documented no-op.
+   a. Validate the collection shapes before any passthrough guard: missing or
+      `None` `factors`/`entries` become empty draft collections; non-list values
+      raise `ValueError`; and a populated entry list with no factors raises
+      `ValueError`. Return `lf` unchanged for a completely empty draft or an
+      empty `outputColumn`. Otherwise validate every declared factor against
+      the once-resolved input schema before treating empty entries as a
+      documented no-op.
    b. Return unchanged for an empty `entries` list only after that factor
       validation; then parse `defaultValue`: tolerate non-numeric/non-finite
       strings (treated as "no usable default", noted in the eventual miss error
@@ -148,10 +152,12 @@
 - **B15 entry-column pollution guard:** `_apply_rating_table` selects only `[*factors, "value"]` from the entries `DataFrame` before joining, so stray extra keys left in an entry dict (e.g. leftover UI state) never leak into the main frame as spurious columns.
 - **B14 fan-out guard:** the lookup side is deduplicated on its final typed temporary keys with `keep="last"` before the join, so aliases in the originating factor dtype can never fan out (multiply) rows in the output — the last-authored entry wins, matching trace enrichment's own reverse-walk resolution of "the winning row" for the same duplicate-key case.
 - **Bug #1/#2 (naming collision):** lookup keys and values use internal names reserved against every input, entry, and output column (starting from `__haute_rating_key_{n}__` and `__haute_lookup_val__`, then prefixing `_` until free), so user columns named `"value"` or like an internal stem remain untouched.
-- **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`outputColumn`/`rules`, or a rating table with no `factors`/`entries`/`outputColumn`, is a *documented* passthrough (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `_apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
-- **`normalise_banding_factors` degrades gracefully on a non-list `factors` key**, returning `[]` rather than raising — this differs from the rating-table side, where a non-list `tables` raises `ValueError` (`normalise_rating_step_config`). This asymmetry is intentional but not called out in either module's docstring.
-  > NOTE: [Tracked by RATE-01](../roadmap/rating.md#rate-01--consistent-malformed-config-rejection).
-  > Because `normalise_banding_factors` on a malformed (non-list) `factors` value silently returns an empty list instead of raising, a corrupted banding sidecar can silently execute as a no-op node rather than surfacing a config error — inconsistent with the "fail loud" pattern used everywhere else in this component.
+- **Empty-config no-ops are load-bearing, not incidental:** a banding factor with no `column`/`outputColumn`/`rules`, or a completely empty rating-table draft / rating table with an empty entry list or no `outputColumn`, is a *documented* passthrough (see Failure model) — both the executor's GUI node builder and the generated-code entry point route through the exact same `_apply_banding_factors`/`_apply_rating_step_outputs` functions, so an empty/incomplete config behaves identically in preview and in a saved standalone script.
+- **Malformed collection shapes never become empty configs.**
+  `normalise_banding_factors` raises `ValueError("banding factors must be a list")`
+  for any non-`None`, non-list value, matching sidecar expansion. Rating-table
+  config and lower execution boundaries likewise reject non-list
+  `factors`/`entries` and populated entries without declared factors.
 
 ## Error handling
 
@@ -172,15 +178,15 @@
 | `ratingStep.factors` not a list, too many factors (>3), a factor not a non-empty string, or a duplicate factor | `ValueError` | `_rating_step_config._validate_factors` | Eagerly, at config expand/compact |
 | Rating entry row missing a required factor, has a non-JSON factor scalar, or lacks literal `value` | `ValueError` | `_rating_step_config` normalisation helpers | Eagerly, at config validation |
 | Banding `factors` (or a compact rule map) not structurally valid; duplicate categorical/breakpoint rule key; empty categorical rule key | `ValueError` | `_banding_config.py` various | Eagerly, at config expand/compact |
+| Lower rating-table `factors`/`entries` is not a list, or populated entries have no factors | `ValueError` | `_apply_rating_table` | Eagerly, before inspecting the frame |
 | Non-empty banding rule list has no usable mapping/condition and assignment | `ValueError` | `_apply_banding` | Eagerly, before publishing an output expression |
 | Every participating `min`/`max` value is null for any row | `RatingExtremaUndefinedError` (`ExecutionError`) with output/operation fields | `_rating_extrema_expr`, at materialisation | Public adapters map to HTTP 422 or background `contract_error`; the batch publishes no partial output |
 | Declared rating factor absent from the input schema, including an entry-less table | `RatingFactorMissingError` (`SchemaMismatchError`) with table/factor fields | `_apply_rating_table`, before lookup construction | Public adapters map to HTTP 422 or background `contract_error` |
 
 No exception raised by these helpers is caught and swallowed internally: every
-raise propagates to the caller. Non-raising exceptional/config-gap behaviour is
-not limited to structured logs: `normalise_banding_factors` turns a non-list `factors` value into an empty
-no-op list (see Edge cases). Rating misses and skipped tables use the
-`rating_table_lookup_misses` / `rating_table_skipped_incomplete` WARNING-level logs.
+raise propagates to the caller. Rating misses and intentionally incomplete
+tables use the `rating_table_lookup_misses` /
+`rating_table_skipped_incomplete` WARNING-level logs.
 
 ## Testing
 
@@ -227,10 +233,10 @@ factor/table shapes, breakpoint closure controls, factor-level ordering, one-/tw
 three-way table editing, combined outputs, and invalid/incomplete status display;
 the corresponding production modules remain owned by the frontend editor spec.
 
-The remaining fail-soft top-level banding behaviour is pinned directly:
-`tests/test_rating.py::TestNormaliseBandingFactors.test_non_list_returns_empty`
-covers the malformed top-level shape. Unknown operators and invalid thresholds
-are fail-loud and share runtime/trace contract coverage in
-`tests/test_trace_fidelity_contract.py`. F084 ordering is observable and pinned:
+Malformed collection rejection is pinned directly in `tests/test_rating.py`
+and generated-code/executor agreement in `tests/test_rating_step.py`. Unknown
+operators and invalid thresholds are fail-loud and share runtime/trace contract
+coverage in `tests/test_trace_fidelity_contract.py`. F084 ordering is observable
+and pinned:
 the lookup first coerces `"25.0"` and `"25.00"` through a Float64 factor dtype,
 then deduplicates their identical final key with `keep="last"`.

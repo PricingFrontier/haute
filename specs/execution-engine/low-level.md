@@ -21,7 +21,7 @@
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
-| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
+| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing, including Linux cgroup v2/v1 headroom clamping), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 
 ## Key types and data structures
 
@@ -103,6 +103,14 @@
   requires `None` and a reason. One estimate memoises metadata/schema lookups,
   accounts conservatively for variable-width columns, and lets unexpected failures
   propagate.
+- **Linux available RAM** — first obtain host availability from
+  `/proc/meminfo` (or `sysconf`), then clamp it to a finite cgroup v2
+  `memory.max - memory.current`. If the v2 controller is absent, use the v1
+  `memory.limit_in_bytes - memory.usage_in_bytes` pair. `max` and the v1
+  unlimited sentinel do not clamp; negative headroom clamps to zero.
+  Missing/malformed/incomplete controller files are logged and leave the
+  independently observed host value unchanged. No synthetic capacity is
+  returned when host availability itself is unobservable.
 - **`ExecutionFaultPoint` / `ExecutionTelemetryEvent`** (`_execution_context.py`) —
   immutable sequenced request-local fault boundaries and schema-versioned,
   identifier-free terminal telemetry with a bounded scalar attribute allow-list.
@@ -165,10 +173,12 @@ checks input columns against the contract before calling the node function, call
 applies `selected_columns`/`column_renames`, checks output columns against the
 contract, and either materialises the result (`streaming_collect`) or — when
 `materialize_node_ids` restricts collection to a target-only preview — keeps it lazy
-and reports schema via `collect_schema()` without collecting. Exceptions are captured
-per-node when `swallow_errors=True`, except any `HauteError` whose class declares a
-stable public `error_code`, plus `ExecutionCancelledError` and
-`ExecutionMemoryLimitExceededError`, which always propagate.
+and reports schema via `collect_schema()` without collecting. Exceptions are
+captured per-node when `swallow_errors=True`, except
+`ContractMismatchError` and `SchemaMismatchError`, any `HauteError` whose class
+declares a stable public `error_code`, plus `ExecutionCancelledError` and
+`ExecutionMemoryLimitExceededError`, which always propagate. The preview route
+adapts either explicit mismatch to the same in-situ error response.
 
 **Sink/lazy execution (`execution.execute_lazy_graph` → `_execute_lazy._execute_lazy`).**
 Same graph preparation as the eager path, plus: optional seeding from a
@@ -442,19 +452,13 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   cyclic graph, listing every participating node.
 - `ContractMismatchError` (`haute.errors`, extends `HauteError`) — raised by
   missing input/output columns and checkpoint/eager projection mismatches in
-  `_execute_lazy.py`, and by chunking's `_project_frame`; it is re-raised even when
-  eager preview uses `swallow_errors=True`.
+  `_execute_lazy.py`, and by chunking's `_project_frame`; it is re-raised with
+  `SchemaMismatchError` even when eager preview uses `swallow_errors=True`.
 - `SchemaMismatchError` (`haute.errors`, extends `HauteError`) — raised for a
-  simple inferred join whose parent key dtypes differ. It propagates on lazy and
-  fail-fast eager calls. In ordinary eager preview (`swallow_errors=True`) it is
-  currently caught by the generic per-node failure handler and returned as the
-  node's error status.
-
-  > NOTE: [Tracked by EXEC-01](../roadmap/execution-engine.md#exec-01--symmetric-eager-mismatch-propagation).
-  > The eager-preview treatment of `SchemaMismatchError` is an existing
-  > asymmetry: unlike `ContractMismatchError`, it is not in `_execute_eager_core`'s
-  > explicit re-raise clause. Specs and callers must not treat it as a run-level
-  > exception until the implementation changes.
+  simple inferred join whose parent key dtypes differ. It propagates on lazy,
+  fail-fast eager, and swallow-mode eager calls through the same explicit branch
+  as `ContractMismatchError`. The preview HTTP adapter catches either mismatch
+  and returns the same target-node error response.
 - `ContractResolutionError` (`haute.errors`, extends `ExecutionError`) — strict
   profiled and unprofiled execution could not resolve a node contract. It carries
   public code `contract_resolution_failed` and stable `node_id`, `node_type`, and
@@ -622,7 +626,7 @@ fixed, strict-server, explicit-override, process-RSS, and in-flight-reservation 
 
 ## Approved change contract — canonical-only execution interfaces
 
-Under [ROAD-CANON-01](../roadmap/engineering-quality.md#road-canon-01--prerelease-canonical-only-contract),
+Under the [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
 maintained execution call sites use the current typed planner, admission, runtime-input, and
 diagnostic result objects directly. Private compatibility wrappers, tuple projections, and
 test-only call shapes are removed together with their wrapper-specific tests.

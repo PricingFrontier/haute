@@ -32,12 +32,10 @@ API assumptions made by this test file (documented for the dev agent):
          ``batch`` kwarg),
        - returns a :class:`polars.LazyFrame` with the prediction column.
 
-   Because the exact name and signature are the dev's choice, this test
-   file discovers the unified entry point dynamically via a helper
-   ``_get_unified_scorer`` defined below, and skips the explicit-shape
-   tests with a clear ``pytest.skip`` message if the symbol is not yet
-   present.  Regression guards do NOT depend on the new API at all —
-   they use the current ``_run_score_pipeline`` so they pass pre-fix.
+   The unified entry point is ``haute._model_scorer.score_frame``,
+   returned by the ``_get_unified_scorer`` helper below.  Regression
+   guards do NOT depend on the new API at all — they use the current
+   ``_run_score_pipeline`` so they pass pre-fix.
 
 2. After the refactor ``_score_batched_standalone`` should be either
    removed from :mod:`haute._model_scorer` OR rewritten as a thin
@@ -51,7 +49,6 @@ API assumptions made by this test file (documented for the dev agent):
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -75,31 +72,10 @@ from haute.errors import ConfigError
 
 
 def _get_unified_scorer() -> Any:
-    """Return the callable unified scorer, or raise ``pytest.skip``.
+    """Return the unified scorer entry point, ``haute._model_scorer.score_frame``."""
+    from haute._model_scorer import score_frame
 
-    The post-refactor entry point will be discoverable under one of these
-    module.attribute pairs.  We probe each in order and return the first
-    match; if none is present we skip the test with an informative
-    message so the dev agent sees exactly what API shape was assumed.
-    """
-    candidates = [
-        ("haute._model_scorer", "score_frame"),
-        ("haute._model_scorer", "score"),
-        ("haute._mlflow_io", "score_frame"),
-        ("haute._mlflow_io", "score"),
-    ]
-    for mod_name, attr in candidates:
-        try:
-            mod = importlib.import_module(mod_name)
-        except ImportError:
-            continue
-        fn = getattr(mod, attr, None)
-        if callable(fn):
-            return fn
-    pytest.skip(
-        "Unified scorer entry point not yet implemented. "
-        "Expected one of the known scorer API candidates."
-    )
+    return score_frame
 
 
 def _train_tiny_catboost_regressor(
@@ -569,22 +545,13 @@ class TestRefactorStructuralInvariants:
         assert large_result["pred"].to_list() == [0.5] * 5000
 
     def test_unified_scorer_explicit_batch_kwarg_if_supported(self) -> None:
-        """If the unified scorer supports a ``batch`` keyword, both
-        ``batch=True`` and ``batch=False`` must produce the same output.
-
-        Skipped if the scorer doesn't expose an explicit knob — the
-        auto-detection test above is enough in that case.
-        """
+        """Both ``batch=True`` and ``batch=False`` must produce the same output."""
         score = _get_unified_scorer()
 
         import inspect
 
         sig = inspect.signature(score)
-        if "batch" not in sig.parameters:
-            pytest.skip(
-                "Unified scorer has no explicit ``batch`` knob; auto-detection "
-                "test covers the invariant"
-            )
+        assert "batch" in sig.parameters
 
         model = MagicMock()
         preds = np.array([1.0, 2.0, 3.0, 4.0])

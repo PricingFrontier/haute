@@ -212,7 +212,8 @@ class AssistantMessage:
         if not isinstance(self.role, str) or self.role not in _MESSAGE_ROLES:
             valid = ", ".join(sorted(_MESSAGE_ROLES))
             raise ValueError(f"message role must be one of {valid}; got {self.role!r}")
-        object.__setattr__(self, "content", _copy_json_value(self.content))
+        content = _copy_json_value(self.content)
+        object.__setattr__(self, "content", content)
 
         calls: list[AssistantToolCall] = []
         for call in self.tool_calls:
@@ -242,6 +243,14 @@ class AssistantMessage:
                 raise ValueError(f"{field_name} must be a non-empty string when provided")
         if not isinstance(self.is_error, bool):
             raise TypeError("message is_error must be a boolean")
+        if (
+            self.role == "tool"
+            and not self.is_error
+            and isinstance(content, dict)
+            and "graph_fingerprint" in content
+            and not isinstance(content["graph_fingerprint"], str)
+        ):
+            raise TypeError("tool graph_fingerprint must be a string")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> AssistantMessage:
@@ -279,18 +288,17 @@ class AssistantMessage:
             )
         except TypeError:
             raise TypeError("message tool_results must be a sequence of JSON objects") from None
-        content = value.get("content")
-        inferred_error = (
-            value["role"] == "tool" and isinstance(content, Mapping) and "error" in content
-        )
+        role = value["role"]
+        if role == "tool" and "is_error" not in value:
+            raise ValueError("tool message is missing required field: is_error")
         return cls(
-            role=value["role"],
-            content=content,
+            role=role,
+            content=value.get("content"),
             tool_calls=calls,
             tool_results=results,
             tool_call_id=value.get("tool_call_id"),
             name=value.get("name"),
-            is_error=value.get("is_error", inferred_error),
+            is_error=value.get("is_error", False),
         )
 
     def as_dict(self) -> dict[str, JSONValue]:
@@ -543,7 +551,9 @@ class SessionStore:
         except OSError:
             logger.warning("assistant_session_prune_failed", exc_info=True)
 
-    def _revive(self, session_id: str) -> AssistantSession | None:
+    def _revive(
+        self, session_id: str, *, expected_source_file: str | None = None
+    ) -> AssistantSession | None:
         """Load a persisted session into the store, or None with a warning.
 
         Ids are uuid4 hex; anything else (including path-traversal attempts)
@@ -589,6 +599,8 @@ class SessionStore:
                 detail=str(exc),
             )
             return None
+        if expected_source_file is not None and session.source_file != expected_source_file:
+            return None
         self._sessions[session_id] = session
         self._sessions.move_to_end(session_id)
         self._evict_idle(exclude=frozenset({session_id}))
@@ -632,6 +644,28 @@ class SessionStore:
         session = self._sessions.get(session_id)
         if session is None:
             session = self._revive(session_id)
+        if session is None:
+            return None
+        self._touch(session)
+        return session
+
+    def resume(
+        self, session_id: str, source_file: str | os.PathLike[str]
+    ) -> AssistantSession | None:
+        """Resume a session only when it is bound to ``source_file``.
+
+        A source mismatch is deliberately observational: it must not refresh
+        the live LRU or promote a persisted record into it.
+        """
+
+        if not isinstance(session_id, str):
+            raise TypeError("session id must be a string")
+        source = self._source_file_text(source_file)
+        session = self._sessions.get(session_id)
+        if session is not None and session.source_file != source:
+            return None
+        if session is None:
+            session = self._revive(session_id, expected_source_file=source)
         if session is None:
             return None
         self._touch(session)

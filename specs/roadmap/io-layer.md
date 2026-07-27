@@ -12,27 +12,15 @@ editor specifications and ordinary regression tests.
 
 ## Priorities
 
-| Package | State | Priority | Outcome |
-|---|---|---:|---|
-| `IO-JSON-01` | Queued | P2 | Enforce the declared v2 JSON-input value types at runtime. |
+No active implementation packages.
 
 ## Planned improvements
 
-### IO-JSON-01 — Closed v2 JSON-input schema
+There are no active I/O roadmap packages.
 
-**Why:** `validate_v2_schema` checks the surrounding structure but currently
-consumes `emit` and `selected` by truthiness and leaves `status` unchecked,
-despite the narrower public schema.
+## Delivered outcomes
 
-**Plan:** Validate all declared scalar fields at the schema boundary and report
-the exact field path and expected type before shredding or UI consumption.
-
-**Acceptance:** Boolean lookalikes, invalid status values, and wrong scalar
-types fail deterministically; canonical schema fixtures and round trips remain
-unchanged.
-
-**Dependencies:** Frontend node editors consume the same persisted schema.
-
-**Evidence:** `src/haute/_api_input_schema.py`,
-`tests/test_v2_codec_and_shred.py`, and
-`frontend/src/__tests__/editors/ApiInputEditor.test.tsx`.
+- `IO-JSON-01` closes the v2 API-input scalar boundary: `emit` and
+  `selected` accept only real booleans, `status` accepts only
+  `Confirmed|Inferred`, and every failure names its exact field path before
+  shredding can apply truthiness coercion.

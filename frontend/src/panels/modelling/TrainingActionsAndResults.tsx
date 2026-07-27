@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { Play, Loader2, AlertTriangle, RefreshCw, CheckCircle2, Database } from "lucide-react"
+import { Play, Loader2, AlertTriangle, RefreshCw, CheckCircle2, Database, XCircle } from "lucide-react"
 import type { TrainResult, TrainProgress } from "../../stores/useNodeResultsStore"
 import type { TrainEstimate } from "../../api/types"
 import { MODEL_COLORS } from "../../theme/colors"
@@ -33,9 +33,11 @@ export type TrainingActionsAndResultsProps = {
   terminalMetrics?: ExecutionMetrics | null
   terminalStatus?: string | null
   terminalReason?: string | null
-  /** True while the initial POST /api/modelling/train is in flight (pipeline executing). */
+  /** True while the short start request is waiting for its cancellable job handle. */
   submitting?: boolean
+  cancelling?: boolean
   onTrain: () => void
+  onCancel: () => void
 }
 
 export function TrainingActionsAndResults({
@@ -53,7 +55,9 @@ export function TrainingActionsAndResults({
   terminalStatus = null,
   terminalReason = null,
   submitting = false,
+  cancelling = false,
   onTrain,
+  onCancel,
 }: TrainingActionsAndResultsProps) {
   // Recalculate training MB and GPU VRAM reactively as row_limit changes
   const adjusted = useMemo(() => {
@@ -177,7 +181,7 @@ export function TrainingActionsAndResults({
             <div className="flex items-center gap-2 mt-1" style={{ color: "var(--warning-strong)" }}>
               <AlertTriangle size={12} className="shrink-0" />
               <span>
-                GPU training needs ~{formatMb(adjusted.gpuVramMb)} but GPU has {formatMb(ramEstimate.gpu_vram_available_mb)}. Training will fall back to CPU automatically.
+                GPU training needs ~{formatMb(adjusted.gpuVramMb)} but GPU has {formatMb(ramEstimate.gpu_vram_available_mb)}. Select CPU and retry, or reduce rows/features.
               </span>
             </div>
           )}
@@ -199,6 +203,25 @@ export function TrainingActionsAndResults({
           {trainIcon}
           {trainLabel}
         </button>
+        {training && (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={cancelling}
+            className="mt-2 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
+            style={{
+              background: "var(--danger-soft-subtle)",
+              border: "1px solid var(--danger-border)",
+              color: "var(--danger)",
+              opacity: cancelling ? 0.6 : 1,
+            }}
+          >
+            {cancelling
+              ? <Loader2 size={14} className="animate-spin" />
+              : <XCircle size={14} />}
+            {cancelling ? "Cancelling..." : "Cancel training"}
+          </button>
+        )}
         {missingObjective && !busy && (
           <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
             <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
@@ -226,7 +249,9 @@ export function TrainingActionsAndResults({
           <div className="flex items-start gap-2">
             <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: "var(--danger)" }} />
             <div className="space-y-1 min-w-0">
-              <div className="font-semibold" style={{ color: "var(--danger)" }}>Training failed</div>
+              <div className="font-semibold" style={{ color: "var(--danger)" }}>
+                {terminalStatus === "cancelled" ? "Training cancelled" : "Training failed"}
+              </div>
               <div style={{ color: "var(--danger-text-soft)", lineHeight: "1.5" }}>{trainResult.error}</div>
               <ExecutionDiagnosticsSummary
                 metrics={terminalMetrics}

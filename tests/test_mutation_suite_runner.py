@@ -9,6 +9,7 @@ from scripts.run_mutation_suite import (
     DEFAULT_TARGET_CONFIG,
     REPO_ROOT,
     MutationStageResult,
+    _load_target_specs,
     _load_targets,
     _parse_survival_rate,
     _select_targets_for_changed_files,
@@ -60,6 +61,41 @@ def test_threshold_config_owns_all_default_mutation_targets() -> None:
         "json-cache": 11.0,
         "executor": 15.0,
     }
+
+
+def test_mutation_target_config_rejects_malformed_entries(tmp_path: Path) -> None:
+    base = {
+        "schema_version": 1,
+        "targets": [
+            {
+                "name": "example",
+                "config": "mutation/cosmic-ray.registry.toml",
+                "max_survival_rate": 0.0,
+                "rationale": "example",
+            }
+        ],
+    }
+    cases = (
+        ("wrong-schema", {"schema_version": 2}, "schema_version 1"),
+        ("missing-rationale", {"rationale": None}, "must define rationale"),
+        ("bad-rate", {"max_survival_rate": 250}, "between 0 and 100"),
+    )
+    for name, change, expected in cases:
+        payload = json.loads(json.dumps(base))
+        for key, value in change.items():
+            record = payload if key == "schema_version" else payload["targets"][0]
+            if value is None:
+                record.pop(key)
+            else:
+                record[key] = value
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            _load_target_specs(path)
+        except SystemExit as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError("expected malformed target config to fail closed")
 
 
 def test_changed_file_selection_limits_pr_smoke_to_owned_target() -> None:

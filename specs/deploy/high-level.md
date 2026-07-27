@@ -63,7 +63,9 @@ Out of scope (owned elsewhere):
 ## Behaviour
 
 **Resolution.** Given a `DeployConfig` (loaded from `haute.toml`, CLI args, or
-constructed programmatically), `resolve_config()` parses the pipeline, finds the single
+constructed programmatically), `resolve_config()` first resolves the pipeline through
+the canonical project resolver and rejects a configured-project pipeline that resolves
+outside that project (including through a symlink). It then parses the pipeline, finds the single
 node marked as output, prunes the graph to that node's ancestors (keeping only the live
 branch of any `liveSwitch`), identifies the API input node(s), collects supported artefacts
 the pruned path references, and dry-runs the graph once to infer input and output
@@ -75,25 +77,36 @@ registry is currently process-local: it protects refresh/clear activity in the s
 process, but a second process is not coordinated and remains a known source-cache
 limitation.
 
+Every local file read needed by the pruned deploy graph is resolved with pipeline-relative
+precedence and must remain inside the resolved project root. This includes API sample
+inputs, external/static data, file-backed optimiser artefacts, and explicit model feature
+contracts. MLflow artefact identifiers are not local paths, but absolute or
+parent-traversal-shaped identifiers are rejected before download. A configured
+`feature_contract_path` is bundled under the canonical model-sidecar name and takes
+precedence over an adjacent downloaded sidecar.
+
+An `apiInput` is the preferred live request source. For legacy single-source graphs,
+exactly one source may be promoted only when it is a `dataInput`, whose configured data
+provides schema/sample information before live requests replace it. A `constant` or any
+other source type is never promoted accidentally; deployment fails with a correction that
+names the node and asks for an API Input.
+
 **Validation.** Before anything ships, `validate_deploy()` checks structural invariants
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts
-exist on disk, schemas are non-empty, and every retained Data Input has a validated,
-deploy-ready direct source or snapshot) and, when the configured test-quotes path is an existing directory, scores every
-JSON file there through the
+exist on disk, schemas are non-empty, configured `output_fields` are distinct non-empty
+column names present in the inferred output schema, and every retained Data Input has a
+validated, deploy-ready direct source or snapshot). When `test_quotes.dir` is configured,
+the path must exist, be a directory, and contain at least one `*.json` quote; otherwise
+validation fails rather than silently disabling the gate. Every quote is scored through the
 resolved graph. Test-quote files may be plain input rows or "golden" rows with an
 `expected` output and a `tolerance_pct`; any row whose actual output falls outside
 tolerance fails the deploy. All failures — structural and test-quote — are collected and
 raised together as one `DeployError` so an operator sees the whole picture in one pass,
 not a fix-rerun-fix cycle.
 
-> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
-> Quote validation currently runs only when `test_quotes_dir` exists and is a
-> directory. A missing, non-directory, or empty configured location produces no quote
-> validation error and therefore does not act as a gate.
-
 **Scoring.** The runtime scorer (`score_graph` / `score_graph_lazy`) executes the pruned
 graph with a live-injected input `DataFrame` in place of the API input node's file read.
-File-backed external/static/optimiser/model artefacts are redirected to bundled local
+File-backed external/static/optimiser/model artefacts and explicit feature contracts are redirected to bundled local
 copies; `optimiserApply` nodes configured from an MLflow run or registered model resolve
 that artefact at request time. This is the same
 scoring path used by pre-deploy dry-runs, golden test-quote validation, the generated
@@ -104,11 +117,10 @@ snapshot selected during resolution. `dataOutput` is a scoring pass-through
 and its writer is never invoked; persistence-only branches outside the served
 output's ancestry are pruned.
 
-> NOTE: [Tracked by AUD-DEPLOY-01](../roadmap/deploy-platform.md#aud-deploy-01--deployment-path-and-scaffold-integrity).
-> `output_fields` is applied only by the deployed container/pyfunc calls. Output
-> schema inference and test-quote validation currently score the unprojected output, so a
-> missing selected field can pass deployment validation and fail at runtime, and the
-> MLflow signature can advertise columns the served projection omits.
+When `output_fields` is configured, resolution validates it against the full dry-run
+schema and stores only the selected columns, in configured order, in the resolved schema.
+Test-quote scoring applies the same projection. The deploy manifest, MLflow signature,
+golden validation, and served response therefore describe one output contract.
 
 **Packaging and shipping.** Two backends are implemented:
 - **Databricks**: logs the pipeline as an `mlflow.pyfunc.PythonModel` (models-from-code),
@@ -253,8 +265,10 @@ most: a silent wrong answer here mis-prices real policies.
   resolve time — before any expensive work (pipeline parsing, artefact download, Docker
   build) starts. `deploy()` explicitly validates the target *before* resolving the config,
   so an unknown target never gets misreported as "no output node found".
-- **Missing or drifted artefacts** raise `FileNotFoundError` (bundler: artefact file
-  absent on disk) or `haute.errors.DeployError` (bundler: a retained Data Input has an
+- **Missing, escaped, or drifted artefacts** raise `FileNotFoundError` (bundler: an
+  in-project artefact file is absent on disk) or `haute.errors.DeployError` (a pipeline,
+  local artefact, explicit feature contract, or MLflow artefact identifier violates the
+  project/path policy; or a retained Data Input has an
   invalid provider config, cannot satisfy its canonical `arguments.schema` declaration,
   or cannot complete a bounded one-row readability probe; scorer:
   `FeatureMismatchError` when a live request schema disagrees with a bundled training-time
@@ -274,6 +288,11 @@ most: a silent wrong answer here mis-prices real policies.
   output mismatches) are all collected and raised together as a single `DeployError`
   listing every failure, rather than surfaced one at a time across repeated deploy
   attempts.
+- **Expected backend operational failures** (missing credentials, unavailable Docker,
+  and failed image build/push) are typed `DeployError` instances and receive the CLI's
+  concise deployment-failure rendering. An unexpected backend exception is not converted
+  into that user-error shape; it propagates with its original type and traceback so an
+  implementation defect remains diagnosable.
 - **Runtime request errors** in the generated container usually surface as structured JSON
   error envelopes: oversized bodies → 413, malformed `Content-Length` → 400, JSON syntax
   errors → 422, admission/memory-limit rejection → 507, cancelled execution →
@@ -284,7 +303,7 @@ most: a silent wrong answer here mis-prices real policies.
   an unhandled `predict()` exception. Invalid UTF-8 currently escapes the structured body
   parser, and invalid array element shapes can fail later during Polars materialisation.
 - **Docker/subprocess failures** (`docker info`, `docker build`, `docker push`) raise
-  `RuntimeError` with the captured stderr; a `RuntimeError` telling the caller to run in
+  `DeployError` with the captured stderr; a `DeployError` telling the caller to run in
   CI is raised specifically when Docker itself isn't available. The `haute deploy` CLI
   separately blocks every non-dry-run target outside a recognised CI environment;
   `smoke` and `impact` do not apply that CI guard and can be run wherever their endpoint

@@ -51,6 +51,31 @@ class TestResolveTrackingBackend:
         assert backend == "local"
 
 
+def test_decimal_signature_error_happens_before_pyfunc_model_logging(tmp_path: Path) -> None:
+    """Unsupported Decimal contracts fail before MLflow receives a log_model call."""
+    import mlflow
+
+    from haute.modelling._mlflow_log import _log_model_with_signature
+
+    model_path = tmp_path / "model.rsglm"
+    model_path.write_bytes(b"placeholder")
+    with patch("mlflow.pyfunc.log_model") as log_model:
+        with pytest.raises(ValueError, match="MLflow 3.x"):
+            _log_model_with_signature(
+                mlflow,
+                model_path=str(model_path),
+                algorithm="glm",
+                task="regression",
+                features=["monetary_amount"],
+                feature_types={"monetary_amount": "Decimal(precision=12, scale=3)"},
+                categorical_features=[],
+                target_name="loss",
+                target_type="Float64",
+            )
+
+    log_model.assert_not_called()
+
+
 class TestResolveExperimentName:
     def test_explicit_wins(self) -> None:
         from haute.modelling._mlflow_log import resolve_experiment_name

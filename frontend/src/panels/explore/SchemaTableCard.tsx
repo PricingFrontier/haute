@@ -20,6 +20,7 @@ import { getDtypeColor } from "../../utils/dtypeColors"
 import { formatNullPct } from "../../utils/formatValue"
 import DistinctInfoButton from "./DistinctInfoButton"
 import { StatValueCell } from "./StatValueCell"
+import ExploreTableActions from "./ExploreTableActions"
 
 interface SchemaTableCardProps {
   report: ExploreCacheReport
@@ -61,6 +62,22 @@ function nullPctStyle(nullCount: number, rowCount: number): { color: string } {
   if (pct > 50) return { color: "var(--warning-strong)" }
   if (pct === 0) return MUTED_STYLE
   return PRIMARY_STYLE
+}
+
+function formatProfileMean(value: number): string {
+  return Number.isInteger(value) ? value.toLocaleString() : value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+function profileText(column: ExploreColumnStat): string {
+  const cues: string[] = []
+  if (column.is_identifier_candidate) cues.push("ID candidate")
+  if (column.is_high_cardinality) cues.push("High cardinality")
+  if (column.text_min_length !== null && column.text_max_length !== null) {
+    const mean = column.text_mean_length === null ? "" : ` (mean ${formatProfileMean(column.text_mean_length)})`
+    cues.push(`Text length ${column.text_min_length}–${column.text_max_length}${mean}`)
+  }
+  if (column.temporal_span !== null) cues.push(`Span ${column.temporal_span}`)
+  return cues.join("; ") || "-"
 }
 
 function SchemaRow({
@@ -118,6 +135,9 @@ function SchemaRow({
       </td>
       <StatValueCell testId="explore-schema-min-value" value={column.min_value} />
       <StatValueCell testId="explore-schema-max-value" value={column.max_value} />
+      <td data-testid="explore-schema-profile" className={CELL_BASE_CLASS} style={profileText(column) === "-" ? MUTED_STYLE : PRIMARY_STYLE}>
+        {profileText(column)}
+      </td>
     </tr>
   )
 }
@@ -135,11 +155,13 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
       const dtype = column.dtype.toLowerCase()
       const minValue = column.min_value?.toLowerCase() ?? ""
       const maxValue = column.max_value?.toLowerCase() ?? ""
+      const profile = profileText(column).toLowerCase()
       return (
         name.includes(normalisedQuery) ||
         dtype.includes(normalisedQuery) ||
         minValue.includes(normalisedQuery) ||
         maxValue.includes(normalisedQuery)
+        || profile.includes(normalisedQuery)
       )
     })
   }, [normalisedQuery, report.columns])
@@ -151,6 +173,24 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
   const rangeEnd = firstVisibleIndex + visibleColumns.length
   const summarySuffix = `${normalisedQuery ? "matching " : ""}${filteredColumns.length === 1 ? "column" : "columns"}`
   const hasMultiplePages = filteredColumns.length > SCHEMA_PAGE_SIZE
+  const exportGrid = useMemo(
+    () => ({
+      headers: ["Name", "Type", "Null %", "NaN %", "Distinct", "Min", "Max", "Profile"],
+      rows: filteredColumns.map((column) => [
+        column.name,
+        column.dtype,
+        formatNullPct(column.null_count, report.row_count) ?? "-",
+        column.nan_count === null || column.nan_count === undefined
+          ? "-"
+          : (formatNullPct(column.nan_count, report.row_count) ?? "-"),
+        column.distinct_count === null ? "-" : column.distinct_count.toLocaleString(),
+        column.min_value ?? "-",
+        column.max_value ?? "-",
+        profileText(column),
+      ]),
+    }),
+    [filteredColumns, report.row_count],
+  )
 
   const handleQueryChange = (value: string) => {
     setQuery(value)
@@ -166,7 +206,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
         border: "1px solid var(--border)",
       }}
     >
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <Columns size={14} className="shrink-0" style={{ color: accent }} />
         <span
           id="explore-schema-card-heading"
@@ -178,6 +218,13 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
         <span className="text-[11px]" style={MUTED_STYLE}>
           {columnCount.toLocaleString()} columns
         </span>
+        <ExploreTableActions
+          grid={exportGrid}
+          source={report.source}
+          tableSlug="schema"
+          testIdPrefix="explore-schema"
+          tableLabel="Schema"
+        />
       </div>
 
       {columnCount > SCHEMA_PAGE_SIZE && (
@@ -257,13 +304,16 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
               <th className={HEADER_CLASS} style={HEADER_STYLE}>
                 Max
               </th>
+              <th className={HEADER_CLASS} style={HEADER_STYLE}>
+                Profile
+              </th>
             </tr>
           </thead>
           <tbody>
             {report.columns.length === 0 ? (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={8}
                   className={CELL_BASE_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"
@@ -274,7 +324,7 @@ export default function SchemaTableCard({ report }: SchemaTableCardProps) {
             ) : visibleColumns.length === 0 ? (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={8}
                   className={CELL_BASE_CLASS}
                   style={MUTED_STYLE}
                   data-testid="explore-schema-empty"

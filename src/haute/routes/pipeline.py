@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from haute._cache import GraphFingerprintMemo, canonical_json
-from haute._env import float_env
+from haute._env import float_env, int_env
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -43,6 +42,7 @@ from haute.errors import (
     ConfigError,
     ContractMismatchError,
     ParseError,
+    SchemaMismatchError,
 )
 from haute.execution import _runtime_input_path_fields, prune_source_switch_edges
 from haute.executor import (
@@ -127,19 +127,8 @@ _preview_supersession = SupersessionCoordinator()
 _trace_supersession = SupersessionCoordinator()
 
 
-def _positive_int_from_env(name: str, default: int) -> int:
-    raw = os.environ.get(name, str(default))
-    try:
-        value = int(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"{name} must be a positive integer") from exc
-    if value < 1:
-        raise RuntimeError(f"{name} must be a positive integer")
-    return value
-
-
-_PREVIEW_MAX_CONCURRENCY = _positive_int_from_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2)
-_TRACE_MAX_CONCURRENCY = _positive_int_from_env("HAUTE_TRACE_MAX_CONCURRENCY", 2)
+_PREVIEW_MAX_CONCURRENCY = int_env("HAUTE_PREVIEW_MAX_CONCURRENCY", 2)
+_TRACE_MAX_CONCURRENCY = int_env("HAUTE_TRACE_MAX_CONCURRENCY", 2)
 _preview_work_slots = asyncio.Semaphore(_PREVIEW_MAX_CONCURRENCY)
 _trace_work_slots = asyncio.Semaphore(_TRACE_MAX_CONCURRENCY)
 
@@ -370,20 +359,30 @@ async def list_pipelines() -> list[PipelineSummary]:
     files = discover_pipelines()
     cwd = Path.cwd()
 
+    def _wire_file(f: Path) -> str:
+        try:
+            return str(f.relative_to(cwd))
+        except ValueError:
+            return f.name
+
     async def _parse_one(f: Path) -> PipelineSummary:
         try:
             graph = await asyncio.to_thread(parse_pipeline_file, f)
             return PipelineSummary(
                 name=graph.pipeline_name or f.stem,
                 description=graph.pipeline_description or "",
-                file=str(f.relative_to(cwd)),
+                file=_wire_file(f),
                 node_count=len(graph.nodes),
             )
+        except ParseError as e:
+            # Hand-authored parser messages are the path-safe client contract.
+            return PipelineSummary(name=f.stem, file=_wire_file(f), error=str(e))
         except Exception as e:
+            logger.warning("pipeline_list_parse_failed", file=f.name, error=str(e))
             return PipelineSummary(
                 name=f.stem,
-                file=str(f),
-                error=str(e),
+                file=_wire_file(f),
+                error="Failed to parse pipeline. Check the server logs for details.",
             )
 
     return list(await asyncio.gather(*[_parse_one(f) for f in files]))
@@ -841,10 +840,10 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     except PUBLIC_CONTRACT_ERROR_TYPES as e:
         logger.warning("preview_public_contract_error", **contract_error_payload(e))
         raise contract_error_http_exception(e) from None
-    except ContractMismatchError as e:
-        # ``_execute_eager_core`` re-raises ``ContractMismatchError`` even
-        # with ``swallow_errors=True`` (API-level violation, not a per-node
-        # transient failure), so the preview path can receive one here.
+    except (ContractMismatchError, SchemaMismatchError) as e:
+        # ``_execute_eager_core`` re-raises contract and schema mismatches even
+        # with ``swallow_errors=True`` (API-level violations, not per-node
+        # transient failures), so the preview path can receive one here.
         # Surface the node + column diagnostic from ``str(e)`` via the
         # target node's ``NodeResult.error`` — the frontend renders that
         # field in-situ, which is a better UX than a generic 500 banner.

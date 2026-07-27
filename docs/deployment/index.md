@@ -59,23 +59,61 @@ haute init --target databricks
 
 This generates all the deployment files you need. You don't write them by hand - `haute init` creates them for you. Here's what your project folder looks like before and after:
 
-```
-Before haute init:          After haute init:
-my-project/                 my-project/
-  main.py                     pyproject.toml       ← haute added as a dependency
-  pyproject.toml              haute.toml           ← project, deploy & CI config
-                              .env.example         ← credential template
-                              .gitignore           ← keeps .env safe
-                              rating/main.py       ← starter pipeline
-                              rating/utility/      ← project-level utility functions
-                              data/                ← put your data files here
-                              prompts/             ← reusable AI prompts
-                              tests/quotes/        ← test data for validation
-                              .githooks/           ← auto-format on commit
-                              .github/workflows/   ← CI/CD pipeline files
-```
+<!-- scaffold-tree-before:start -->
+Before `haute init`:
 
-Two existing files are touched: a root `main.py` left over from `uv init` is **removed** (your pipeline lives at `rating/main.py` instead), and `pyproject.toml` is updated to list `haute` as a dependency. Everything else is additive - if a file like `.gitignore` already exists, Haute appends to it rather than replacing it. If the project is already initialised (a `haute.toml` exists), `haute init` refuses to run unless you pass `--force`.
+```
+my-project/
+  main.py
+  pyproject.toml
+```
+<!-- scaffold-tree-before:end -->
+
+<!-- scaffold-tree-after:start -->
+After `haute init --target databricks --ci github`:
+
+```
+my-project/
+  .env.example
+  .githooks/
+  .githooks/pre-commit
+  .github/
+  .github/workflows/
+  .github/workflows/ci.yml
+  .github/workflows/deploy-production.yml
+  .github/workflows/deploy-staging.yml
+  .gitignore
+  data/
+  haute.toml
+  main.py
+  prompts/
+  pyproject.toml
+  rating/
+  rating/__init__.py
+  rating/config/
+  rating/config/data_input/
+  rating/config/data_input/raw_rows.json
+  rating/config/quote_response/
+  rating/config/quote_response/priced.json
+  rating/data/
+  rating/main.py
+  rating/models/
+  rating/outputs/
+  rating/utility/
+  rating/utility/__init__.py
+  rating/utility/features.py
+  tests/
+  tests/quotes/
+  tests/quotes/example.json
+  tests/test_pipeline.py
+```
+<!-- scaffold-tree-after:end -->
+
+A root `main.py` left over from `uv init` is preserved; Haute puts its starter pipeline in `rating/main.py`. `pyproject.toml` is updated to list `haute` as a dependency. Everything else is additive - if a file like `.gitignore` already exists, Haute appends to it rather than replacing it. If the project is already initialised (a `haute.toml` exists), `haute init` refuses to run unless you pass `--force`.
+
+<!-- starter-pipeline-node-count:start -->
+The starter pipeline contains **3 nodes**.
+<!-- starter-pipeline-node-count:end -->
 
 !!! tip "Not sure which target to pick?"
     If your organisation uses Databricks, start with the **Databricks** target - it's the most mature and requires the least infrastructure setup. If you don't have Databricks, use **Docker** to start and move to a cloud target later.
