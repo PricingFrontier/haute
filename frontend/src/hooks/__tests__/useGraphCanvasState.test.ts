@@ -95,6 +95,56 @@ describe("useGraphCanvasState", () => {
     expect(result.current.canUndo).toBe(false)
   })
 
+  it("setNodesAndEdgesAndSubmodels snapshots the complete graph as one undo entry", () => {
+    const initialNodes = [makeNode("n1"), makeNode("n2")]
+    const initialEdges = [makeEdge("n1", "n2", { id: "e1" })]
+    const submodels = {
+      child: { graph: { nodes: [makeNode("child-node")], edges: [] } },
+    }
+    const { result } = renderHook(() => useGraphCanvasState(initialNodes, initialEdges))
+
+    act(() => {
+      result.current.setNodesAndEdgesAndSubmodels(
+        (nodes) => nodes.filter((node) => node.id !== "n1"),
+        [],
+        submodels,
+      )
+    })
+
+    expect(result.current.nodes.map((node) => node.id)).toEqual(["n2"])
+    expect(result.current.edges).toEqual([])
+    expect(useGraphStore.getState().submodels).toEqual(submodels)
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+
+    act(() => {
+      result.current.undo()
+    })
+    expect(result.current.nodes.map((node) => node.id)).toEqual(["n1", "n2"])
+    expect(result.current.edges).toHaveLength(1)
+    expect(useGraphStore.getState().submodels).toEqual({})
+  })
+
+  it("exposes raw submodel replacement and explicit snapshot actions", () => {
+    const submodels = {
+      child: { graph: { nodes: [makeNode("child-node")], edges: [] } },
+    }
+    const { result } = renderHook(() => useGraphCanvasState([makeNode("n1")], []))
+
+    act(() => {
+      result.current.setSubmodelsRaw(submodels)
+    })
+    expect(useGraphStore.getState().submodels).toEqual(submodels)
+    expect(useGraphStore.getState().undoStack).toEqual([])
+
+    act(() => {
+      result.current.pushSnapshot()
+    })
+    expect(useGraphStore.getState().undoStack).toHaveLength(1)
+    expect(useGraphStore.getState().undoStack[0]).toEqual(
+      expect.objectContaining({ submodels }),
+    )
+  })
+
   it("undo restores previous state", () => {
     const initial = [makeNode("n1")]
     const { result } = renderHook(() => useGraphCanvasState(initial, []))

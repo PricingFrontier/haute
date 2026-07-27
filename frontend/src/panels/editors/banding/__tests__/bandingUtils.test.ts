@@ -46,6 +46,16 @@ describe("parseRuleInterval", () => {
     expect(iv).toEqual({ lower: 10, upper: 20, lowerInclusive: false, upperInclusive: true })
   })
 
+  it("lets the second condition supply an inclusive lower bound", () => {
+    const iv = parseRuleInterval(rule({ op1: "<", val1: "20", op2: ">=", val2: "10" }))
+    expect(iv).toEqual({ lower: 10, upper: 20, lowerInclusive: true, upperInclusive: false })
+  })
+
+  it("lets the second condition supply an equality bound", () => {
+    const iv = parseRuleInterval(rule({ op2: "==", val2: "42" }))
+    expect(iv).toEqual({ lower: 42, upper: 42, lowerInclusive: true, upperInclusive: true })
+  })
+
   it("parses equality operator", () => {
     const iv = parseRuleInterval(rule({ op1: "=", val1: "42" }))
     expect(iv).toEqual({ lower: 42, upper: 42, lowerInclusive: true, upperInclusive: true })
