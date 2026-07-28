@@ -149,6 +149,20 @@
   --chart-positive: #4caf50;
   --chart-negative: #f44336;
   --chart-neutral: #9e9e9e;
+  /* Trace-panel semantic aliases (StepCard, TraceDetail, WaterfallChart,
+     OptimiserApplyDetail): column-diff and delta-sign colours.  Call sites
+     reference these with the alias target as inline fallback.  Note
+     --color-added tracks --success-hover, deliberately BRIGHTER than
+     --diff-added's --success: these colour small (10-11px) trace text,
+     kept exactly as the call sites shipped, whereas --diff-* tint the
+     comparison view's fills.  Consolidating the two "added" greens is a
+     DESIGN-session decision, not a drive-by. */
+  --color-added: var(--success-hover);
+  --color-modified: var(--warning);
+  --color-removed: var(--danger-text);
+  --color-positive: var(--chart-positive);
+  --color-negative: var(--chart-negative);
+  --color-neutral: var(--chart-neutral);
   --chart-impact-value-high: #ff0051;
   --chart-impact-value-low: #008bfb;
   --chart-impact-value-neutral: #7c3aed;

@@ -15,41 +15,68 @@
  *     across `#ef4444`, `#ee4444`, `#ef4445` etc.
  *   - Defeat light/dark-mode overrides which work by re-declaring tokens.
  *
- * This suite pins three properties:
+ * This suite pins four properties:
  *
  *   1. NO hex literals (`#RGB`, `#RRGGBB`, `#RRGGBBAA`) appear outside
  *      the `:root` block.  Inside `:root` they are expected — that's where
  *      the token palette is defined.
  *
  *   2. Every `var(--name)` reference in the file resolves to a matching
- *      `--name:` declaration somewhere in the same file (i.e. no dangling
- *      references that would silently cascade to the initial value).
- *      Exception: parameterised passes-through like
+ *      `--name:` declaration — in this file, or an entry in the
+ *      TAILWIND_PROVIDED_TOKENS list of Tailwind theme tokens the app
+ *      deliberately relies on.  Tailwind v4 TREE-SHAKES its theme: a
+ *      token reaches the emitted `@layer theme { :root ... }` only while
+ *      some generated utility uses it, so "declared in theme.css" does
+ *      NOT mean "resolves at runtime" — each listed token therefore
+ *      carries a usage guard pinning the utility that keeps it emitted.
+ *      No dangling references that would silently cascade to the initial
+ *      value.
+ *      Exception: deliberately caller-supplied properties like
  *        `var(--node-accent, var(--accent))`
- *      are allowed without a :root declaration when they carry an inline
- *      fallback — those are caller-supplied properties whose fallback is
- *      the real token.  We only flag var() calls with no fallback.
+ *      — set at runtime via inline `style={{ ... }}` on JSX, so they
+ *      cannot be declared in :root.  These are enumerated explicitly in
+ *      PARAMETERISED_TOKENS below and must carry an inline fallback.
+ *      An undeclared token that is NOT on that list is flagged even when
+ *      it carries a fallback: a fallback-shaped exemption is exactly how
+ *      a typo'd or never-declared token hides (the component renders via
+ *      the fallback and nobody notices the token is dead).
  *
- *   3. Every fallback-less `var(--name)` in live `.ts`/`.tsx` source
- *      (inline `style={{ ... }}` objects, CSS-in-JS strings) resolves to
- *      a token declared in index.css.  A dangling reference is worse here
- *      than in CSS: the declaration is invalid at computed-value time, so
- *      the property silently becomes its initial value — `transparent`
- *      backgrounds, `currentColor` borders — with no build error and no
- *      console warning.  Tokens provided at runtime by something other
- *      than index.css (caller-set inline properties, Tailwind's @theme
- *      layer) must carry an inline fallback, same as rule 2.
+ *   3. Every `var(--name)` in live `.ts`/`.tsx` source (inline
+ *      `style={{ ... }}` objects, CSS-in-JS strings) resolves to a token
+ *      declared in index.css or listed in TAILWIND_PROVIDED_TOKENS,
+ *      under the same PARAMETERISED_TOKENS exception as rule 2.  A dangling reference
+ *      is worse here than in CSS: the declaration is invalid at
+ *      computed-value time, so the property silently becomes its initial
+ *      value — `transparent` backgrounds, `currentColor` borders — with
+ *      no build error and no console warning.
+ *
+ *   4. index.css must NOT redeclare a Tailwind theme token in its plain
+ *      (unlayered) `:root` block.  Unlayered declarations outrank every
+ *      cascade layer, so such a shadow silently re-themes ALL utility
+ *      classes built on the token (e.g. shadowing `--font-mono` retunes
+ *      every `.font-mono` call site and base `code`/`pre` styling, not
+ *      just the intended component).  Deliberate overrides belong in an
+ *      `@theme { ... }` block, which Tailwind ingests properly.
  *
  * When this test fails
  * --------------------
  * - "hex literal outside :root" — move the colour to a new token inside
  *   `:root { ... }` and reference it via `var(--token)` at the call site.
  * - "dangling var(--name) reference" — declare `--name: <value>;` in the
- *   `:root` block, or add an inline fallback at the call site if the
- *   property is deliberately caller-supplied.
+ *   `:root` block.  If the token is a Tailwind theme token the app
+ *   genuinely uses, add it to TAILWIND_PROVIDED_TOKENS with the utility
+ *   regex that keeps it emitted — do NOT declare it in :root (see the
+ *   shadow rule below).  Only if the property is genuinely
+ *   caller-supplied (some JSX sets it via inline `style={{ ... }}`) add
+ *   it to PARAMETERISED_TOKENS *and* give every reference an inline
+ *   fallback.
+ * - "index.css shadows a Tailwind theme token" — either rename your token,
+ *   or if the override is deliberate move it into an `@theme { ... }`
+ *   block; the shadow guard exempts @theme blocks automatically.
  */
 import { describe, it, expect } from "vitest"
 import { readFileSync, readdirSync, statSync } from "node:fs"
+import { createRequire } from "node:module"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -60,6 +87,33 @@ import { fileURLToPath } from "node:url"
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CSS_PATH = path.resolve(HERE, "..", "index.css")
 const CSS = readFileSync(CSS_PATH, "utf8")
+// All CSS parsing below runs on the comment-stripped text so a
+// commented-out `--x: y;` can't satisfy the must-resolve rules (or trip
+// the staleness guard), and a hex literal or `:root {` inside a comment
+// can't misanchor the scanners.  stripComments (hoisted) is shared with
+// the ts/tsx scan; its string modes are safe on CSS because quote
+// characters OUTSIDE comments only occur in balanced pairs (quoted font
+// names, `content: ''`), so string-mode toggling re-synchronises, and
+// quotes inside /* */ comments are blanked before string handling
+// applies.
+const CSS_CODE = stripComments(CSS)
+
+// Tailwind v4's default theme declarations (`--font-mono`,
+// `--color-red-500`, `--spacing`, ...).  index.css starts with
+// `@import "tailwindcss"`.  IMPORTANT: this is the DECLARED set, not the
+// EMITTED set — Tailwind tree-shakes theme variables, emitting a token
+// into `@layer theme { :root ... }` only when some generated utility (or
+// another emitted variable) references it, and `@theme ... reference`
+// blocks are never emitted at all.  Of ~375 declarations here only ~50
+// exist in the built bundle.  So this full set is used ONLY for the
+// negative guards (shadowing, allowlist staleness), NEVER to satisfy the
+// must-resolve rules — that's what TAILWIND_PROVIDED_TOKENS is for.
+// A missing file here fails the whole suite loudly (run `npm ci`), which
+// is the right failure mode: without it the contract cannot be evaluated.
+const TAILWIND_THEME = readFileSync(
+  createRequire(import.meta.url).resolve("tailwindcss/theme.css"),
+  "utf8",
+)
 
 // ---------------------------------------------------------------------------
 // Parser — find the :root { ... } block (only looks at the first one, which
@@ -71,13 +125,49 @@ const CSS = readFileSync(CSS_PATH, "utf8")
  * block's contents (i.e. the range between the `{` and the matching `}`).
  *
  * Uses brace-depth tracking rather than a regex so nested braces (e.g.
- * keyframes inside :root, if ever added) are handled correctly.  Strings
- * and comments are not stripped because the canonical :root block does
- * not contain either — if it ever does, the regex-free approach still
- * errs in the safe direction (treating a `}` inside a string as a close
- * brace is harmless for the contract, which only cares about the OUTER
- * extent of :root).
+ * keyframes inside :root, if ever added) are handled correctly.  Call
+ * sites pass the comment-stripped CSS_CODE, so comments cannot misanchor
+ * the match; strings are not separately stripped — if the block ever
+ * contains one, the walk still errs in the safe direction (treating a
+ * `}` inside a string as a close brace is harmless for the contract,
+ * which only cares about the OUTER extent of :root).
  */
+/**
+ * Blank the CONTENTS of every `@theme ... { ... }` block (newlines
+ * preserved) so a scan over the result sees no @theme-scoped
+ * declarations.  Used by the shadow guard: an @theme block is the
+ * SANCTIONED place to override a Tailwind theme token (Tailwind ingests
+ * it into the theme layer), so declarations there must not be reported
+ * as shadows — otherwise the guard's own failure guidance ("move the
+ * override into @theme") would re-trip the guard it remedies.
+ */
+function stripThemeBlocks(css: string): string {
+  let out = css
+  const openRe = /@theme[^{]*\{/g
+  let m: RegExpExecArray | null
+  while ((m = openRe.exec(css)) !== null) {
+    let depth = 1
+    let end = css.length
+    for (let i = m.index + m[0].length; i < css.length; i++) {
+      const ch = css[i]
+      if (ch === "{") depth++
+      else if (ch === "}") {
+        depth--
+        if (depth === 0) {
+          end = i
+          break
+        }
+      }
+    }
+    const start = m.index + m[0].length
+    const blanked = css
+      .slice(start, end)
+      .replace(/[^\n]/g, " ")
+    out = out.slice(0, start) + blanked + out.slice(end)
+  }
+  return out
+}
+
 function findRootBlockRange(css: string): { start: number; end: number } {
   const match = /:root\s*\{/.exec(css)
   if (!match) {
@@ -179,10 +269,10 @@ interface VarRef {
  * parsed balanced via lookahead; anything after a matched `--name` up to
  * the NEXT `,` or `)` at the same paren depth counts as the fallback.
  *
- * For our purposes we only need to know whether a fallback EXISTS, not
- * its exact value — so a simple look-past-the-name approach is enough:
- * consume everything up to the matching `)` of this var(...) call and
- * check whether a `,` appears at depth 0 within that span.
+ * For our purposes we only need to know whether a NON-EMPTY fallback
+ * exists, not its exact value — so a simple look-past-the-name approach
+ * is enough: consume everything up to the matching `)` of this var(...)
+ * call and check for a depth-1 `,` followed by non-whitespace content.
  */
 function findVarRefs(css: string): VarRef[] {
   const refs: VarRef[] = []
@@ -191,7 +281,10 @@ function findVarRefs(css: string): VarRef[] {
     if (css[i] === "\n") lineStarts.push(i + 1)
   }
 
-  const openRe = /\bvar\s*\(\s*(--[a-zA-Z_][a-zA-Z0-9_-]*)\s*/g
+  // Name charset admits digit-leading names (`--2xl`) — valid CSS idents
+  // that a letters-only pattern would silently skip on BOTH the reference
+  // and declaration side, making such a token invisible to the contract.
+  const openRe = /\bvar\s*\(\s*(--[a-zA-Z0-9_][a-zA-Z0-9_-]*)\s*/g
   let m: RegExpExecArray | null
   while ((m = openRe.exec(css)) !== null) {
     const name = m[1]
@@ -208,9 +301,16 @@ function findVarRefs(css: string): VarRef[] {
     // whitespace is that \s* run, so trimEnd() lands exactly at the
     // name end.
     if (css.startsWith("${", m.index + m[0].trimEnd().length)) continue
-    // Walk forward from the end of the match to find the matching `)`
-    // and note whether we pass a comma at depth 0.
+    // Walk forward from the end of the match to find the matching `)`.
+    // hasFallback requires a NON-EMPTY fallback: a comma at depth 1
+    // followed by at least one non-whitespace character before the
+    // matching close.  `var(--x,)` is syntactically valid CSS but
+    // substitutes to nothing when --x is unset, leaving the declaration
+    // invalid at computed-value time — the exact runtime failure this
+    // gate exists to prevent — so an empty fallback must not satisfy
+    // the parameterised exemption.
     let depth = 1
+    let sawComma = false
     let hasFallback = false
     for (let i = openRe.lastIndex; i < css.length; i++) {
       const ch = css[i]
@@ -218,9 +318,12 @@ function findVarRefs(css: string): VarRef[] {
       else if (ch === ")") {
         depth--
         if (depth === 0) break
-      } else if (ch === "," && depth === 1) {
-        hasFallback = true
       }
+      if (ch === "," && depth === 1 && !sawComma) {
+        sawComma = true
+        continue
+      }
+      if (sawComma && /\S/.test(ch)) hasFallback = true
     }
     // Translate offset -> line.
     let lo = 0
@@ -236,6 +339,77 @@ function findVarRefs(css: string): VarRef[] {
 }
 
 /**
+ * Custom properties that are DELIBERATELY caller-supplied: some JSX sets
+ * them at runtime via inline `style={{ "--name": ... }}`, so they cannot
+ * be declared in :root.  References to these are exempt from the
+ * must-resolve rule, but ONLY when they carry an inline fallback (the
+ * value used until a caller sets the property).
+ *
+ * Keep this list minimal and literal.  Before adding an entry, verify a
+ * live call site actually sets the property inline — an undeclared token
+ * that nothing sets belongs in :root, not here.  (The staleness test
+ * below fails if an entry gains a :root declaration and becomes
+ * redundant.)
+ */
+const PARAMETERISED_TOKENS = new Set([
+  // Accent piped into .accent-hover-btn — per node type in
+  // RatingStepEditor, BandingRulesGrid, BreakpointGrid; TwoWayGrid pins
+  // the literal default 'var(--accent)'.
+  "--node-accent",
+  // Focus-ring colour overrides set by editor wrappers via withAlpha(...)
+  // — EdgeJoinEditor and _IoFormatEditor pipe their accentColor prop,
+  // ExploreOverviewConfig uses NODE_GROUP_COLORS.explore directly.
+  "--focus-ring-border",
+  "--focus-ring-shadow",
+])
+
+/**
+ * Tailwind theme tokens the app's var() references deliberately rely on.
+ * Because of Tailwind's tree-shaking (see TAILWIND_THEME above), each
+ * entry is only safe while some utility keeps it in the emitted bundle —
+ * the value is a regex matching that utility in live source, asserted by
+ * the emission guard test below.  Keep this list minimal and literal;
+ * verify a token really appears in the built CSS before adding it.
+ */
+const TAILWIND_PROVIDED_TOKENS = new Map<string, RegExp>([
+  // Trace detail components use var(--font-mono, monospace); the token
+  // stays emitted because `.font-mono` utility classes are used
+  // throughout the app.
+  ["--font-mono", /(?<![\w-])font-mono(?![\w-])/],
+])
+
+// Full DECLARED Tailwind theme token set — negative guards only (see the
+// TAILWIND_THEME comment).  Parsed once from comment-stripped text; ~375
+// entries.
+const TAILWIND_DECLARED = findTokenDeclarations(stripComments(TAILWIND_THEME))
+
+/** The union that satisfies the must-resolve rules: index.css tokens plus
+ *  the explicitly listed Tailwind-provided ones. */
+function resolvableTokens(css: string): Set<string> {
+  return new Set([...findTokenDeclarations(css), ...TAILWIND_PROVIDED_TOKENS.keys()])
+}
+
+/**
+ * A reference is dangling when its token is neither in `declared` (at
+ * the call sites below: index.css declarations plus the explicit
+ * TAILWIND_PROVIDED_TOKENS entries via resolvableTokens() — NEVER the
+ * full TAILWIND_DECLARED set, which contains ~322 tree-shaken tokens
+ * that don't exist at runtime) nor a PARAMETERISED_TOKENS entry
+ * (caller-supplied) carrying a non-empty inline fallback.  Note an allowlisted token WITHOUT a fallback is still
+ * dangling — until a caller sets it, the property has no value.  The
+ * allowlist is a parameter so the predicate is testable with synthetic
+ * tokens.
+ */
+function isDangling(
+  ref: VarRef,
+  declared: Set<string>,
+  parameterised: Set<string> = PARAMETERISED_TOKENS,
+): boolean {
+  if (declared.has(ref.name)) return false
+  return !(parameterised.has(ref.name) && ref.hasFallback)
+}
+
+/**
  * Find every `--name:` declaration in the CSS file (restricted to the
  * :root block in practice, but we scan the whole file so tokens declared
  * inside e.g. `[data-theme="dark"]` blocks would also count).  Returns
@@ -243,7 +417,7 @@ function findVarRefs(css: string): VarRef[] {
  */
 function findTokenDeclarations(css: string): Set<string> {
   const decls = new Set<string>()
-  const re = /(^|[\s{;])(--[a-zA-Z_][a-zA-Z0-9_-]*)\s*:/g
+  const re = /(^|[\s{;])(--[a-zA-Z0-9_][a-zA-Z0-9_-]*)\s*:/g
   let m: RegExpExecArray | null
   while ((m = re.exec(css)) !== null) {
     decls.add(m[2])
@@ -288,6 +462,12 @@ function collectSourceFiles(dir: string): string[] {
  *
  * The block-comment pass is STRING-AWARE: a `/*` inside a '…', "…" or
  * `…` literal (e.g. a glob like "src/*") does not open a comment span.
+ * KNOWN LIMITATION: it is not regex-literal-aware — a REGEX literal
+ * whose body contains slash-star (say, a path glob matching "/api/" then
+ * star) opens a phantom comment span and blanks following code up to the
+ * next star-slash, hiding any dangling var() in that stretch.
+ * Distinguishing regex literals from division needs a real tokeniser;
+ * none of the scanned tree contains such a literal today.
  * A naive regex pass blanked real code from such a string to the next
  * comment terminator in the file — the bad direction for this contract,
  * since a dangling var(--...) in the blanked span went unreported
@@ -353,12 +533,12 @@ function stripComments(text: string): string {
 describe("index.css — design-token contract", () => {
   it("contains a :root { ... } block", () => {
     // Sanity: the rest of the suite assumes this is present.
-    expect(() => findRootBlockRange(CSS)).not.toThrow()
+    expect(() => findRootBlockRange(CSS_CODE)).not.toThrow()
   })
 
   it("no hex literals appear outside the :root block", () => {
-    const { start, end } = findRootBlockRange(CSS)
-    const hits = findHexOutsideRoot(CSS, start, end)
+    const { start, end } = findRootBlockRange(CSS_CODE)
+    const hits = findHexOutsideRoot(CSS_CODE, start, end)
     if (hits.length > 0) {
       const summary = hits
         .map((h) => `  index.css:${h.line}  ${h.literal}   // ${h.lineText}`)
@@ -370,19 +550,86 @@ describe("index.css — design-token contract", () => {
     expect(hits).toEqual([])
   })
 
-  it("every var(--name) reference resolves to a :root declaration (or has an inline fallback)", () => {
-    const refs = findVarRefs(CSS)
-    const declared = findTokenDeclarations(CSS)
-    const dangling = refs.filter((r) => !declared.has(r.name) && !r.hasFallback)
+  it("every var(--name) reference resolves to a declaration (index.css or a listed Tailwind token, or an allowlisted parameterised token with a fallback)", () => {
+    const refs = findVarRefs(CSS_CODE)
+    const declared = resolvableTokens(CSS_CODE)
+    const dangling = refs.filter((r) => isDangling(r, declared))
     if (dangling.length > 0) {
       const summary = dangling
-        .map((d) => `  index.css:${d.line}  var(${d.name})  — no :root declaration and no inline fallback`)
+        .map((d) => `  index.css:${d.line}  var(${d.name})  — undeclared and not an allowlisted parameterised token`)
         .join("\n")
       throw new Error(
-        `Found ${dangling.length} dangling var(--...) reference(s). Declare the token in :root or provide an inline fallback:\n${summary}`,
+        `Found ${dangling.length} dangling var(--...) reference(s). Declare the token in :root — or, ONLY if JSX sets it inline, add it to PARAMETERISED_TOKENS with a fallback at every call site:\n${summary}`,
       )
     }
     expect(dangling).toEqual([])
+  })
+
+  it("index.css does not shadow a Tailwind theme token in plain :root (contract property 4)", () => {
+    // An unlayered :root declaration outranks `@layer theme`, so
+    // redeclaring e.g. `--font-mono` here silently re-themes every
+    // `.font-mono` utility call site and Tailwind's base code/pre
+    // styling — far beyond whatever component prompted the declaration.
+    // Deliberate overrides go in an `@theme { ... }` block instead —
+    // stripThemeBlocks excludes those, so following the failure guidance
+    // actually turns this guard green.  Checked against Tailwind's full
+    // DECLARED set, not just the emitted subset: a today-unemitted token
+    // can start being emitted the moment a utility using it appears, at
+    // which point an existing plain-:root declaration would begin
+    // shadowing it.
+    const shadows = [...findTokenDeclarations(stripThemeBlocks(CSS_CODE))].filter((t) =>
+      TAILWIND_DECLARED.has(t),
+    )
+    expect(shadows).toEqual([])
+  })
+
+  it("the shadow guard exempts @theme-block overrides but not plain :root ones (unit)", () => {
+    const sample =
+      "@theme {\n  --font-mono: 'My Mono', monospace;\n}\n:root {\n  --font-sans: serif;\n  --house-token: #fff;\n}"
+    const scanned = findTokenDeclarations(stripThemeBlocks(sample))
+    // The @theme-scoped override is invisible to the shadow scan...
+    expect(scanned.has("--font-mono")).toBe(false)
+    // ...while plain :root declarations (shadowing or not) still are.
+    expect(scanned.has("--font-sans")).toBe(true)
+    expect(scanned.has("--house-token")).toBe(true)
+  })
+
+  it("TAILWIND_PROVIDED_TOKENS entries are declared in theme.css and kept emitted by a live utility usage (emission guard)", () => {
+    // Two ways an entry can rot: the token disappears from Tailwind's
+    // theme on an upgrade, or the last usage of the utility that keeps
+    // it in the tree-shaken bundle is refactored away — after which
+    // every var() reference to it silently falls back at runtime while
+    // theme.css still declares it.
+    // Scan surface mirrors Tailwind's own class scanner: ts/tsx source
+    // PLUS index.html and index.css (utilities can live in markup or
+    // @apply) — so migrating the last usage to either surface doesn't
+    // fail the guard spuriously.
+    const files = collectSourceFiles(SRC_ROOT)
+    const texts = files.map((f) => stripComments(readFileSync(f, "utf8")))
+    texts.push(CSS_CODE)
+    // HTML comments stripped so a stale <!-- font-mono --> remark can't
+    // keep the guard green after the last real usage is gone.
+    texts.push(
+      readFileSync(path.resolve(HERE, "..", "..", "index.html"), "utf8").replace(
+        /<!--[\s\S]*?-->/g,
+        " ",
+      ),
+    )
+    const undeclared = [...TAILWIND_PROVIDED_TOKENS.keys()].filter((t) => !TAILWIND_DECLARED.has(t))
+    expect(undeclared).toEqual([])
+    const unemitted = [...TAILWIND_PROVIDED_TOKENS.entries()]
+      .filter(([, usageRe]) => !texts.some((t) => usageRe.test(t)))
+      .map(([name]) => name)
+    expect(unemitted).toEqual([])
+  })
+
+  it("PARAMETERISED_TOKENS entries are not also declared in index.css or Tailwind's theme (staleness guard)", () => {
+    // If an allowlisted token gains a declaration, it is no longer
+    // caller-supplied-only and the allowlist entry is dead weight that
+    // could mask a future regression — remove it.
+    const declared = new Set([...findTokenDeclarations(CSS_CODE), ...TAILWIND_DECLARED])
+    const stale = [...PARAMETERISED_TOKENS].filter((t) => declared.has(t))
+    expect(stale).toEqual([])
   })
 
   it("a non-trivial palette is declared (smoke — prevents accidental :root deletion)", () => {
@@ -391,7 +638,7 @@ describe("index.css — design-token contract", () => {
     // there are no refs either).  This smoke test pins that a real palette
     // exists — the exact size is not meaningful, only that the file hasn't
     // been gutted.
-    const declared = findTokenDeclarations(CSS)
+    const declared = findTokenDeclarations(CSS_CODE)
     // The core token set at time of writing has ~30 entries; require at
     // least 10 so a small refactor doesn't trip this but a deletion does.
     expect(declared.size).toBeGreaterThanOrEqual(10)
@@ -402,7 +649,7 @@ describe("index.css — design-token contract", () => {
     // of these is renamed/removed without a codemod of the call sites, the
     // UI silently falls back to the CSS initial value — this test catches
     // that before it ships.
-    const declared = findTokenDeclarations(CSS)
+    const declared = findTokenDeclarations(CSS_CODE)
     const required = [
       "--bg-base",
       "--bg-canvas",
@@ -427,32 +674,123 @@ describe("index.css — design-token contract", () => {
 })
 
 describe("ts/tsx source — design-token contract", () => {
-  it("every fallback-less var(--name) in live source resolves to an index.css token", () => {
+  it("every var(--name) in live source resolves to an index.css token (or is an allowlisted parameterised token with a fallback)", () => {
     // Regression guard for the bug class where a component references a
     // token that was never declared (or was renamed away): the style is
     // invalid at computed-value time and the property silently falls back
     // to its initial value — e.g. `background` → transparent or
-    // `border-color` → currentColor.
-    const declared = findTokenDeclarations(CSS)
+    // `border-color` → currentColor.  A fallback does NOT exempt a
+    // reference: the `--color-added/...` family shipped undeclared behind
+    // fallbacks, rendering only via them, and the old shape-based
+    // exemption never noticed.
+    const declared = resolvableTokens(CSS_CODE)
     const offenders: string[] = []
     const files = collectSourceFiles(SRC_ROOT)
     for (const file of files) {
       const text = stripComments(readFileSync(file, "utf8"))
-      const dangling = findVarRefs(text).filter((r) => !r.hasFallback && !declared.has(r.name))
+      const dangling = findVarRefs(text).filter((r) => isDangling(r, declared))
       for (const d of dangling) {
         const rel = path.relative(SRC_ROOT, file).split(path.sep).join(path.posix.sep)
-        offenders.push(`  ${rel}:${d.line}  var(${d.name})  — no index.css declaration and no inline fallback`)
+        offenders.push(`  ${rel}:${d.line}  var(${d.name})  — undeclared and not an allowlisted parameterised token`)
       }
     }
     if (offenders.length > 0) {
       throw new Error(
         `Found ${offenders.length} dangling var(--...) reference(s) in ts/tsx source. ` +
-          `Declare the token in index.css :root, or add an inline fallback ` +
-          `(var(--name, <fallback>)) if the property is caller-supplied or provided by Tailwind:\n` +
+          `Declare the token in index.css :root; for a Tailwind theme token the app uses, ` +
+          `add it to TAILWIND_PROVIDED_TOKENS instead (never shadow one in plain :root); ` +
+          `or, ONLY if JSX sets the property via inline style, add it to ` +
+          `PARAMETERISED_TOKENS with a fallback at every call site:\n` +
           offenders.join("\n"),
       )
     }
     expect(offenders).toEqual([])
+  })
+
+  it("an undeclared token is dangling even behind a fallback, unless allowlisted (regression: --color-* family)", () => {
+    // Pins the hardened rule directly: the old shape-based exemption let
+    // ANY `var(--x, fallback)` pass, which is exactly how an undeclared
+    // token hides behind its fallback.  Uses a synthetic allowlist so
+    // the assertion doesn't silently change meaning if the real
+    // PARAMETERISED_TOKENS entries are ever edited.
+    const declared = new Set(["--real"])
+    const allow = new Set(["--param"])
+    const [typo] = findVarRefs("a { font-family: var(--font-typo, monospace); }")
+    expect(isDangling(typo, declared, allow)).toBe(true)
+    // Declared token — fine with or without fallback.
+    const [real] = findVarRefs("a { color: var(--real); }")
+    expect(isDangling(real, declared, allow)).toBe(false)
+    // Allowlisted parameterised token — exempt only WITH a fallback.
+    const [withFb] = findVarRefs("a { color: var(--param, var(--real)); }")
+    expect(isDangling(withFb, declared, allow)).toBe(false)
+    const [withoutFb] = findVarRefs("a { color: var(--param); }")
+    expect(isDangling(withoutFb, declared, allow)).toBe(true)
+    // An EMPTY fallback does not count: `var(--param,)` is valid syntax
+    // but substitutes to nothing when the property is unset, leaving the
+    // declaration invalid at computed-value time.
+    const [emptyFb] = findVarRefs("a { color: var(--param,); }")
+    expect(emptyFb.hasFallback).toBe(false)
+    expect(isDangling(emptyFb, declared, allow)).toBe(true)
+    const [wsFb] = findVarRefs("a { color: var(--param,  ); }")
+    expect(wsFb.hasFallback).toBe(false)
+    expect(isDangling(wsFb, declared, allow)).toBe(true)
+  })
+
+  it("trace-colour aliases point at their intended targets (semantic pinning)", () => {
+    // The six aliases were introduced as behaviour-preserving: each MUST
+    // track the exact token its call sites historically used as inline
+    // fallback.  Without this table a silent swap (added ↔ removed, or
+    // re-pointing at a different green) would pass every structural rule.
+    const expected: Record<string, string> = {
+      "--color-added": "var(--success-hover)",
+      "--color-modified": "var(--warning)",
+      "--color-removed": "var(--danger-text)",
+      "--color-positive": "var(--chart-positive)",
+      "--color-negative": "var(--chart-negative)",
+      "--color-neutral": "var(--chart-neutral)",
+    }
+    for (const [name, target] of Object.entries(expected)) {
+      const m = new RegExp(`(^|[\\s{;])${name}\\s*:\\s*([^;]+);`).exec(CSS_CODE)
+      expect(m, `${name} is not declared in index.css`).toBeTruthy()
+      expect((m as RegExpExecArray)[2].trim()).toBe(target)
+    }
+  })
+
+  it("stripComments: a commented-out declaration does not count as declared (canary)", () => {
+    // Mirrors the string-literal canary above, in the other direction:
+    // the CSS-side parsers run on stripped text precisely so a
+    // commented-out `--x: y;` can't satisfy the must-resolve rules.
+    const sample = "/* --ghost: red; */\n:root { --real: blue; }"
+    const decls = findTokenDeclarations(stripComments(sample))
+    expect(decls.has("--ghost")).toBe(false)
+    expect(decls.has("--real")).toBe(true)
+  })
+
+  it("every PARAMETERISED_TOKENS entry has a live inline setter in source (honesty guard)", () => {
+    // The allowlist's premise is that some JSX actually SETS the property.
+    // If the last setter is refactored away, every reference renders
+    // permanently via its fallback — the exact bug class this suite
+    // exists to catch — so the entry must not stay green on trust.
+    // The permitted setter shapes (doc and regex must stay in sync):
+    //   1. computed style key:  ["--name" as string]: value  /  ["--name"]: value
+    //   2. plain quoted key:    "--name": value   (object-level cast)
+    //   3. setProperty call:    el.style.setProperty("--name", value)
+    // A quoted-name-followed-by-colon shape is what distinguishes a
+    // setter from readers (getPropertyValue("--name")) — those never put
+    // a `:` after the closing quote.  A token-list ARRAY (["--name"])
+    // has no colon either.  New setter shapes must be added here if
+    // introduced.
+    const files = collectSourceFiles(SRC_ROOT)
+    const texts = files.map((f) => stripComments(readFileSync(f, "utf8")))
+    const orphaned = [...PARAMETERISED_TOKENS].filter((name) => {
+      const setterRe = new RegExp(
+        `\\[\\s*["'\`]${name}["'\`](\\s+as\\s+string)?\\s*\\]\\s*:` +
+          `|["'\`]${name}["'\`]\\s*:` +
+          `|setProperty\\(\\s*["'\`]${name}["'\`]`,
+      )
+      return !texts.some((t) => setterRe.test(t))
+    })
+    expect(orphaned).toEqual([])
   })
 
   it("skips template-interpolated token names (dynamic refs like var(--diff-${status}))", () => {
