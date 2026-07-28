@@ -487,7 +487,8 @@ def test_database_snapshot_pointer_uses_configured_pipeline_directory(
             nodes=[_node("database", node_type=NodeType.DATA_INPUT, config=config)],
         )
         identity = source_cache_identity(config, base_dir=pipeline_dir)
-        pointer = SourceCacheStore(tmp_path).identity_path(identity) / "current.json"
+        store = SourceCacheStore(tmp_path)
+        pointer = tmp_path / store.identity_path(identity).relative_to(tmp_path) / "current.json"
         pointer.parent.mkdir(parents=True, exist_ok=True)
         pointer.write_text('{"generation":"first"}', encoding="utf-8")
 
