@@ -110,7 +110,11 @@ function formatAndModeReady(
   if (capability.modes.length === 0) return true
   const configuredMode = typeof config.mode === "string" ? config.mode : ""
   if (!configuredMode) return capability.modes.length === 1
-  return capability.modes.includes(configuredMode as "read" | "scan")
+  // The capability payload advertises only the default mode; the backend
+  // (resolve_input_mode) is the authority on availability and fails loudly,
+  // so a stored explicit mode is ready whenever it is in the closed
+  // vocabulary — membership here would wrongly block backend-valid `read`.
+  return configuredMode === "scan" || configuredMode === "read"
 }
 
 function databricksConfigurationErrors(config: Record<string, unknown>): string[] {

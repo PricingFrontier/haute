@@ -370,7 +370,7 @@ describe("DataInputEditor", () => {
     expect(screen.getAllByText("quotes.parquet")).toHaveLength(1)
   })
 
-  it("renders the cache control for a snapshot-backed read-mode Parquet input", async () => {
+  it("keeps the cache control usable for a snapshot-backed read-mode Parquet input", async () => {
     renderEditor({
       inputType: "file",
       format: "parquet",
@@ -380,9 +380,10 @@ describe("DataInputEditor", () => {
       code: "",
     })
 
-    expect(
-      await screen.findByRole("button", { name: "Cache as Parquet" }),
-    ).toBeInTheDocument()
+    const build = await screen.findByRole("button", { name: "Cache as Parquet" })
+    expect(build).toBeEnabled()
+    await waitFor(() => expect(getInputCacheStatus).toHaveBeenCalled())
+    expect(screen.queryByText("The selected mode is not valid for this format.")).not.toBeInTheDocument()
   })
 
   it("uses the capability schema requirement and preserves other arguments when adopting it", async () => {

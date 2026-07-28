@@ -7,6 +7,7 @@
 | `pyproject.toml` | Cross-component dependency owned by [build-and-distribution](../build-and-distribution/low-level.md); configures Ruff, pytest, coverage, critical backend coverage thresholds, mypy, pinned development tools, and excludes non-product directories from the normal Ruff target. |
 | `AGENTS.md` | Records repository-local engineering and review instructions for contributors and coding agents; it is guidance, not executable build or test configuration. |
 | `CLAUDE.md` | Directs Claude-compatible coding agents to the repository's authoritative `AGENTS.md` engineering instructions without duplicating policy. |
+| `current_thoughts.md`, `current_thoughts_implementation.md` | Transient working notes and their implementation plan for the in-flight `manual-tweaks` change set; guidance for that flow only, expected to be removed once the flow lands. |
 | `.gitignore` | Excludes generated builds, virtual environments, caches, local pipeline output/data, tool state, and other non-source artifacts from normal version-control discovery. |
 | `specs/ownership.toml` | Machine-checked ledger for files shared by multiple Module maps or explicit cross-component prose ownership claims; records the single primary owner and all consumer components. |
 | `.pre-commit-config.yaml` | Runs Ruff fix/format plus local mypy and frontend typecheck/lint hooks on relevant source changes. |

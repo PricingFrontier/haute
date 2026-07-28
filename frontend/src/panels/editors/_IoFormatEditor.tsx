@@ -391,7 +391,10 @@ export default function IoFormatEditor({
   if (
     capability &&
     explicitMode !== "" &&
-    !modes.includes(explicitMode as never)
+    !modes.includes(explicitMode as never) &&
+    // Input capabilities advertise only the default mode; a stored
+    // backend-valid explicit mode is not a configuration error.
+    !(direction === "input" && (explicitMode === "scan" || explicitMode === "read"))
   ) {
     configErrors.push("The selected mode is not valid for this format.")
   }
