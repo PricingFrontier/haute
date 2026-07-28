@@ -258,53 +258,6 @@ describe("ModelScoreEditor", () => {
     expect(props.onUpdate).toHaveBeenCalledWith("output_column", "my_score")
   })
 
-  // 14. Post-processing code section collapsed by default
-  it("post-processing code section is collapsed by default", () => {
-    render(<ModelScoreEditor {...defaultProps()} />)
-    expect(screen.getByText("Post-processing Code (optional)")).toBeInTheDocument()
-    expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
-  })
-
-  // 15. Code section expanded when config has code
-  it("code section is expanded when config has existing code", () => {
-    const props = defaultProps()
-    props.config = { code: "df = df.head(10)" }
-    render(<ModelScoreEditor {...props} />)
-    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
-    expect(editor).toBeInTheDocument()
-    expect(editor.defaultValue).toBe("df = df.head(10)")
-  })
-
-  // 16. Code toggle expands/collapses
-  it("toggling code section expands and collapses", () => {
-    render(<ModelScoreEditor {...defaultProps()} />)
-    // Initially collapsed
-    expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
-    // Expand
-    fireEvent.click(screen.getByText("Post-processing Code (optional)"))
-    expect(screen.getByTestId("code-editor")).toBeInTheDocument()
-    // Collapse
-    fireEvent.click(screen.getByText("Post-processing Code (optional)"))
-    expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
-  })
-
-  it("does not synthesize scoring scaffold in the post-processing editor", () => {
-    render(<ModelScoreEditor {...defaultProps()} />)
-    fireEvent.click(screen.getByText("Post-processing Code (optional)"))
-    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
-    expect(editor.defaultValue).toBe("")
-    expect(editor.defaultValue).not.toContain("score_from_config")
-  })
-
-  it("shows only configured post-processing code", () => {
-    const props = defaultProps()
-    props.config = { code: "df = df.with_columns(double_score=pl.col('prediction') * 2)" }
-    render(<ModelScoreEditor {...props} />)
-    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
-    expect(editor.defaultValue).toBe("df = df.with_columns(double_score=pl.col('prediction') * 2)")
-    expect(editor.defaultValue).not.toContain("score_from_config")
-  })
-
   // 17. Shows error messages when MLflow hooks have errors
   it("shows error messages when MLflow hooks have errors", () => {
     mockMlflow.errorModels = "Models endpoint unavailable"

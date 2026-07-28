@@ -115,14 +115,12 @@ class _DataInputPolarsCommon(_DataInputCommon, total=False):
 class DataInputFileConfig(_DataInputPolarsCommon, total=False):
     inputType: Required[Literal["file"]]
     format: Required[str]
-    cacheMode: Required[Literal["direct", "snapshot"]]
     path: Required[str]
 
 
 class DataInputDatabaseConfig(_DataInputCommon, total=False):
     inputType: Required[Literal["database"]]
     format: Required[Literal["database"]]
-    cacheMode: Required[Literal["snapshot"]]
     connection: str
     uri: str
     query: Required[str]
@@ -131,13 +129,11 @@ class DataInputDatabaseConfig(_DataInputCommon, total=False):
 class DataInputLakehouseConfig(_DataInputPolarsCommon, total=False):
     inputType: Required[Literal["lakehouse"]]
     format: Required[Literal["delta", "iceberg"]]
-    cacheMode: Required[Literal["direct", "snapshot"]]
     path: Required[str]
 
 
 class DataInputDatabricksConfig(_DataInputCommon, total=False):
     inputType: Required[Literal["databricks"]]
-    cacheMode: Required[Literal["snapshot"]]
     http_path: Required[str]
     table: Required[str]
     query: str
@@ -146,7 +142,6 @@ class DataInputDatabricksConfig(_DataInputCommon, total=False):
 class DataInputInlineConfig(_DataInputPolarsCommon, total=False):
     inputType: Required[Literal["inline"]]
     format: Required[Literal["records"]]
-    cacheMode: Required[Literal["direct"]]
     records: Required[list[dict[str, Any]]]
 
 

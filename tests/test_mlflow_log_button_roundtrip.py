@@ -35,11 +35,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-# Budgeted debt site: needs the real mlflow package (the ``databricks``
-# extra).  Main CI installs it via the dev group; core-only installs skip.
+# This integration test needs the real core MLflow package. Keep the guard for
+# deliberately partial test environments.
 mlflow = pytest.importorskip(
     "mlflow",
-    reason="mlflow optional dependency (databricks extra) not installed",
+    reason="core mlflow dependency is unavailable",
 )
 
 from haute.modelling._feature_contract import (  # noqa: E402 — after importorskip by design

@@ -32,8 +32,8 @@ from haute.trace import (
     trace_result_to_dict,
 )
 from tests.conftest import make_edge as _edge
-from tests.conftest import make_file_input_config
 from tests.conftest import make_graph as _g
+from tests.conftest import make_ready_file_input_config
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
 
@@ -708,7 +708,7 @@ class TestPipelineStructureEdgeCases:
                     data=NodeData(
                         label="live_src",
                         nodeType="dataInput",
-                        config=make_file_input_config(p_live),
+                        config=make_ready_file_input_config(p_live),
                     ),
                 ),
                 GraphNode(
@@ -716,7 +716,7 @@ class TestPipelineStructureEdgeCases:
                     data=NodeData(
                         label="batch_src",
                         nodeType="dataInput",
-                        config=make_file_input_config(p_batch),
+                        config=make_ready_file_input_config(p_batch),
                     ),
                 ),
                 GraphNode(

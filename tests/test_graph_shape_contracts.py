@@ -28,7 +28,7 @@ from haute.executor import execute_graph
 from haute.graph_utils import GraphEdge, PipelineGraph
 from haute.parser import parse_pipeline_source
 from haute.trace import execute_trace
-from tests.conftest import compile_node_code, make_output_config
+from tests.conftest import build_test_input_snapshot, compile_node_code, make_output_config
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _node
 
@@ -137,7 +137,6 @@ class TestSingleNodeVariants:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": "data/input.parquet",
                                     "arguments": {},
                                 },
@@ -207,7 +206,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": "data/input.parquet",
                                     "arguments": {},
                                 },
@@ -261,7 +259,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": "a.parquet",
                                     "arguments": {},
                                 },
@@ -278,7 +275,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": "b.parquet",
                                     "arguments": {},
                                 },
@@ -313,7 +309,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": "data.parquet",
                                     "arguments": {},
                                 },
@@ -361,7 +356,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": str(path),
                                     "arguments": {},
                                 },
@@ -429,7 +423,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": str(data_path),
                                     "arguments": {},
                                 },
@@ -456,6 +449,7 @@ class TestExploreGraphShape:
                 "edges": [_edge("src", "calc")],
             }
         )
+        build_test_input_snapshot(graph.node_map["src"].data.config)
 
         results = execute_graph(
             graph,
@@ -488,7 +482,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": str(first),
                                     "arguments": {},
                                 },
@@ -505,7 +498,6 @@ class TestExploreGraphShape:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": str(second),
                                     "arguments": {},
                                 },
@@ -577,7 +569,6 @@ class TestRoundTripDrift:
                                     "inputType": "file",
                                     "format": "parquet",
                                     "mode": "scan",
-                                    "cacheMode": "direct",
                                     "path": "data/input.parquet",
                                     "arguments": {},
                                 },

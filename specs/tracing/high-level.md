@@ -190,8 +190,8 @@ Out of scope (owned elsewhere, linked where relevant):
   `execution_origin` of `fresh_execution`, `preview_cache`, or `trace_cache`.
   These fields describe how the trace snapshot was assembled; they do not claim
   that an external data source is fresh.
-  Provider group, safe source identity, direct-versus-snapshot mode, selected
-  cache generation, and external freshness are outside the current
+  Provider group, safe source identity, selected snapshot generation, and
+  external freshness are outside the current
   `TraceResult`; the response does not infer or display provenance it does not
   carry.
 

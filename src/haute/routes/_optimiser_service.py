@@ -750,12 +750,12 @@ def _data_input_schema_has_column(node: GraphNode, column: str) -> bool:
         return False
     config = node.data.config
     try:
+        from haute._builders import _configured_pipeline_dir
         from haute._input_providers import resolve_data_input
-        from haute._sandbox import _get_project_root
 
         lf = resolve_data_input(
             config,
-            base_dir=_get_project_root(),
+            base_dir=_configured_pipeline_dir(),
             profile=ExecutionProfile.AUTO_RANGE,
         )
         return column in set(lf.collect_schema().names())

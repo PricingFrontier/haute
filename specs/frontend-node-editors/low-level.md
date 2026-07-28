@@ -10,14 +10,15 @@
 | `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, imports and utility authoring views. A shell with no stored width chooses 50% of the available space when it mounts and keeps that established width across unrelated rerenders and viewport changes; an explicit drag updates the shared stored width. |
 | `frontend/src/components/ReadOnlyNodeConfig.tsx`, `frontend/src/components/FramesTable.tsx`, `frontend/src/components/KeyPickerModal.tsx` | Inert configuration, API-frame rows and reusable API-input key picker. |
 | `frontend/src/panels/editors/index.ts` | Public editor exports. |
-| `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser, schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
+| `frontend/src/panels/editors/_shared.tsx` | Shared editor types, styles, file browser (nullable directory size, numeric file-size rendering), schema preview and the input-source bar (chips keyed by edge id, showing each edge's input name — the code argument — with the source node named in the tooltip). |
 | `frontend/src/components/ColumnTable.tsx`, `frontend/src/components/CacheFetchButton.tsx` | Reusable column-selection table and API-input cache action/status control. |
-| `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx` | Code-editor wrappers and Polars-specific panel. |
+| `frontend/src/utils/dataInputMode.ts` | Shared `dataInputIsDirect` derivation mirroring the backend's `data_input_is_direct`; drives the Data Input editor's cache surface and [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)'s `ensureInputSnapshots` orchestration. |
+| `frontend/src/panels/editors/CodeEditor.tsx`, `frontend/src/panels/editors/CodeMirrorEditor.tsx`, `frontend/src/panels/editors/shared/PolarsCodePanel.tsx`, `frontend/src/panels/editors/shared/PathPickerField.tsx` | Code-editor wrappers, Polars-specific panel, and the shared selected-path picker. |
 | `frontend/src/panels/editors/ConstantEditor.tsx`, `frontend/src/panels/editors/TransformEditor.tsx`, `frontend/src/panels/editors/EdgeJoinEditor.tsx`, `frontend/src/panels/editors/LiveSwitchEditor.tsx`, `frontend/src/panels/editors/ScenarioExpanderEditor.tsx` | Editors for scalar, transform, join, conditional-switch and scenario nodes. `EdgeJoinEditor` exposes fixed canvas-derived base/join roles, atomic swap, the seven supported join modes, mutually exclusive same-name/asymmetric key forms, and advanced Polars options. |
 | `frontend/src/panels/editors/ExternalFileEditor.tsx`, `frontend/src/panels/editors/DataInputEditor.tsx`, `frontend/src/panels/editors/DataOutputEditor.tsx` | External-object, grouped tabular input, and grouped tabular output configuration. |
 | `frontend/src/stores/useOutputWriteStore.ts` | Per-node output-write request identity, pending/terminal lifecycle, and overwrite-confirmation state retained across editor remounts. |
-| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputCacheControls.tsx` | Registry-driven IO arguments, mount-refetched capabilities with concurrent-request coalescing, dedicated Databricks browsing, and shared input-cache lifecycle controls. |
-| `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, persisted/inferred schema conversion, reconciliation and row actions. |
+| `frontend/src/panels/editors/_IoFormatEditor.tsx`, `frontend/src/panels/editors/_ioFormats.ts`, `frontend/src/panels/editors/_DatabricksSelector.tsx`, `frontend/src/panels/editors/_InputSnapshotCacheButton.tsx` | Registry-driven IO arguments, mount-refetched capabilities with concurrent-request coalescing, dedicated Databricks browsing, and the shared-button input-snapshot lifecycle. |
+| `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, JSON/JSONL/NDJSON/XML preview selection and cache action, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx` | Explore-code and overview-card configuration. |
@@ -104,27 +105,91 @@
    `on`/`leftOn`/`rightOn`; selecting another mode exposes either same-name rows (`on`) or paired
    rows (`leftOn`/`rightOn`) and each key-mode switch clears the inactive representation. The
    join type list is exactly `inner`, `left`, `right`, `full`, `semi`, `anti`, `cross`.
+   Once both role edges are connected, a non-cross join with no configured
+   keys seeds the first known common column exactly once per mounted node;
+   existing keys, unknown common columns, and a deliberate user clear never
+   trigger another seed.
 
 **Data I/O editors.** `DataInputEditor` is the provider/group orchestrator;
 `DataOutputEditor` receives node/graph context and owns explicit writes. The
 guarded `/api/io-capabilities` client returns ordered groups, fields,
-directional formats/modes/arguments/engines, direct batching, snapshot
-boundedness, writer class, and publication modes; each mount refreshes it and
+directional formats/modes/arguments/engines, snapshot build class and schema
+requirements, writer class, and publication modes; each mount refreshes it and
 only concurrent pending requests coalesce. `_IoFormatEditor` renders one
 selected group/direction, while dedicated provider sections cover file,
 database, lakehouse, Databricks, and inline fields. `OnReplaceConfig` constructs
-and commits one fresh active branch for a provider change.
+and commits one fresh active branch for a provider change. Data Input provider
+choices are an accent-coloured `radiogroup` of toggle buttons in backend
+capability order; an unknown or not-yet-selected provider leaves every toggle
+inactive while retaining the explicit configuration error for unknown values.
+The editor derives its cache surface from the config through the shared
+`dataInputIsDirect` predicate (`frontend/src/utils/dataInputMode.ts`), which
+mirrors the backend's `data_input_is_direct`: a file-backed Parquet scan
+renders no cache control; every other branch renders the shared
+Cache-as-Parquet control. The capability payload still reports each format's
+derived `cache_mode` for contract completeness. No cache-mode field is
+authored or stored, and a leftover `cacheMode` key is never migrated by the
+editor — the backend rejects it as an inactive field. A mode selector is rendered only when the capability advertises more
+than one mode; an explicitly stored `scan` does not make a one-option selector
+visible.
 
-`DataInputEditor` mounts its Polars editor below provider/cache controls and
-uses `useSchemaFetch` only when the selected capability requires a bounded
-schema, merging detected dtypes into `arguments.schema` without discarding
-other arguments. `DataOutputEditor` has no code panel. Its per-node Zustand
-entry carries request id, semantic request identity, phase, and structured
-result/error; request-id checks reject late results. Destination preview comes
-from `/api/pipeline/output-destination`, and write identity is projected from
-the semantic flattened graph, output node, execution source, and streaming
-settings. A 409 becomes `confirm_overwrite`; only that action retries with
-`overwrite=true`.
+`DataInputEditor` keeps provider/cache controls in Config while NodePanel hosts
+its Polars code in the shared Polars tab. It uses `useSchemaFetch` only when the
+selected capability requires a bounded schema, merging detected dtypes into
+`arguments.schema` without discarding other arguments. `DataOutputEditor` has
+no code panel. Its per-node Zustand entry carries request id, semantic request
+identity, phase, and structured result/error; request-id checks reject late
+results. Destination preview comes from `/api/pipeline/output-destination`,
+and write identity is projected from the semantic flattened graph, output
+node, execution source, and streaming settings. A 409 becomes
+`confirm_overwrite`; only that action retries with `overwrite=true`.
+
+Every snapshot-backed provider renders `InputSnapshotCacheButton`, which adapts
+the same `CacheFetchButton` presentation and Cache-as-Parquet labels used by
+Quote Input to the input-cache API. Missing snapshots offer `Cache as Parquet`
+and a not-cached hint, while ready snapshots offer `Refresh Cache` with
+generation statistics and a clear action. Direct Parquet renders no cache
+control; a stored `read`-mode Parquet input is snapshot-backed and renders
+the cache control like any other snapshot input. Snapshot build classification is execution metadata and is not shown
+as technical diagnostic copy in the editor. Builds use `lazy_sink`, except admitted-eager formats use
+`preview_eager`, and refresh a ready snapshot. The adapter polls jobs to a
+terminal result, allows the active button action to cancel the current job,
+and keeps stale readiness reactive so `Source changed since cache — Refresh to
+update.` remains visible. Required source fields gate all build actions.
+
+**Shared path picker.** `PathPickerField` supplies Preview Data, external
+model-file, and registry-defined path fields with one interaction contract:
+an empty value immediately shows `FileBrowser`; a selected value renders a
+green confirmed-path pill and hides the browser until its `change` action is
+pressed (then `close` restores the collapsed state). Browser selection calls
+`onSelect` and collapses the picker. Its preserved `file-change-btn` test id
+is the API preview contract. While expanded, the picker remains the sole
+selected-path summary; its embedded `FileBrowser` does not repeat the path.
+Registry-defined input paths are browser-only, matching Preview Data. Output
+destinations may additionally enable committed manual entry because their
+target file need not exist yet.
+
+**Shared Polars tab.** Known non-instance Data Input, External File, Scenario
+Expander, Rating Step, and Model Score nodes expose `Config`, `Polars`, then
+(when applicable) `Columns` tabs. Their supplementary code is rendered only in
+the shared `PolarsCodePanel`; Config retains only the node-specific settings,
+and switching nodes returns to Config. The panel retains the node's code, error
+line, input sources and upstream columns, while its hint is node-specific React
+content so code-formatted variable names remain semantic.
+
+**Column-selection draft semantics.** `selected_columns: []` remains the
+committed sentinel for all columns. The Columns tab's None action instead
+holds an editor-local zero-selection draft, unticks every row, shows a
+`Select at least one column to apply.` status, and does not write config.
+Re-ticking a column resumes commits; selecting every available column
+normalises back to the empty all-columns sentinel. Value-equal selections do
+not commit, and an external config change invalidates an obsolete local draft.
+A config update that changes only `selected_columns` invalidates the
+post-filter `_columns` result but retains `_availableColumns`: selection cannot
+change the pre-filter schema, and retaining it keeps the selector stable while
+the refreshed preview is pending. Other config edits continue to clear both
+column caches. The pane communicates selection through checkbox state and the
+selected-count summary; it does not expose the internal `.select()` operation.
 
 **Banding/Rating classification and canonical formats.** `utils/banding.ts`
 classifies only plain objects with recognised continuous, categorical, or
@@ -248,8 +313,13 @@ Browser coverage for authoring flows is in `frontend/e2e/data-io-nodes.spec.ts`,
 `frontend/e2e/persistence/api-input-frame-alignment.spec.ts` (downstream frame-naming chips
 alongside its canvas geometry assertions).
 
+`frontend/src/__tests__/editors/ApiInputEditor.test.tsx` pins the structured-file extension
+filter and XML cache action. `frontend/src/panels/editors/__tests__/_shared.test.tsx` pins
+navigation/rendering for a directory whose `size` is null and ensures no numeric/`NaN` size is
+shown.
+
 The Data I/O component matrix covers guarded capabilities, ordered provider
-groups and fields, dependency/direct/snapshot states, atomic provider changes
+groups and fields, dependency/build/snapshot states, atomic provider changes
 and undo, schema merge/preservation, output direction and code-panel
 exclusion, destination mismatch, pending-write remounts, structured outcomes,
 and overwrite confirmation. `frontend/e2e/data-io-nodes.spec.ts` exercises the

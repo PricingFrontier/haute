@@ -146,7 +146,7 @@ def test_frontier_lambda_rejects_conflicting_value() -> None:
 
 def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_path: Path):
     from haute._sandbox import set_project_root
-    from tests.conftest import make_edge, make_file_input_config, make_graph
+    from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
     set_project_root(tmp_path)
     data_path = tmp_path / "scored.parquet"
@@ -167,7 +167,7 @@ def test_estimate_returns_input_metrics_when_metadata_lookup_fails(client, tmp_p
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(data_path),
+                        "config": make_ready_file_input_config(data_path),
                     },
                 },
                 {

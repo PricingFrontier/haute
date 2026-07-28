@@ -3,13 +3,14 @@
 ## Purpose
 
 The IO layer turns persisted Data Input and Data Output node configuration into
-validated Polars operations. It also owns provider-neutral, immutable input snapshots so
-database, Databricks, and selected file inputs can be built explicitly and then executed
-without contacting the source.
+validated Polars operations. It also owns provider-neutral, immutable input snapshots for
+sources that are not already Parquet. A file-backed Parquet Data Input is the canonical
+direct-read case and is scanned from its configured source.
 
-The component keeps source acquisition separate from pipeline execution. Direct inputs
-remain lazy where Polars supports them; snapshot inputs publish a verified Parquet
-generation and execute only from that generation.
+The component keeps source acquisition separate from pipeline execution. Explicit
+snapshot builds acquire non-Parquet provider data and publish a verified Parquet
+generation; pipeline execution reads that generation. File-backed Parquet skips the
+redundant build and is scanned directly.
 
 ## Scope
 
@@ -29,9 +30,13 @@ to [server API](../server-api/high-level.md).
 
 ## Behaviour
 
-`dataInput` configurations select exactly one provider. File and lakehouse inputs may run
-directly or through a snapshot; inline records run directly only; database and Databricks
-inputs require snapshots. `dataOutput` configurations select a registered file,
+`dataInput` configurations select exactly one provider. There is no stored cache-mode
+field: `data_input_is_direct` derives the execution mode, so a file-backed Parquet scan
+reads directly and every other file format and every database, lakehouse, Databricks, or
+inline input is snapshot-backed. A config still carrying the removed `cacheMode` field is
+rejected as an inactive field, never migrated. Inline records
+use a bounded snapshot build whose identity contains a digest of the logical records
+rather than their raw values. `dataOutput` configurations select a registered file,
 lakehouse, or database sink. Unknown fields, unsupported arguments, unavailable engines,
 ambiguous locators, and invalid mode/provider combinations fail before provider access.
 
@@ -45,7 +50,8 @@ credential-name policy plus resolved in-process secret values before logging.
 Snapshot identity includes source semantics: provider, canonical locator, validated query,
 format/mode, and source arguments that can affect returned rows or schema. Databricks
 `batch_size` is excluded because it changes fetch partitioning, not logical source data.
-`code` and `cacheMode` are also excluded because they are post-read execution choices.
+`code` is excluded because it does not change the acquired source bytes; the derived
+direct-versus-snapshot execution mode is not part of the config at all.
 
 A snapshot build writes a unique staging directory, validates the Parquet artifact and
 metadata, admits it against byte/count quotas, atomically publishes an immutable generation,
@@ -62,6 +68,12 @@ newest filesystem activity beneath that directory is older than the configured s
 threshold; recent or unreadable staging state is preserved. Unreclaimed staging bytes count
 against the store byte quota. Publication and leases are coordinated within one process,
 while published immutable generations may be read by another process.
+
+Registry input capabilities advertise `scan` whenever a format has a scanner;
+reader-only formats advertise `read`, and declare the derived execution mode
+(`cache_mode`) for that provider/format so the editor knows whether to render the cache
+control. Stored `read` configurations remain valid and executable even when the
+current capability payload advertises only `scan`.
 
 SQLite snapshots open an existing database in read-only URI mode and start a read
 transaction. One aggregate query determines every output column's observed SQLite storage

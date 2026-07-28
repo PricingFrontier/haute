@@ -8,7 +8,7 @@ import pytest
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _normalise_requested_preview_columns, execute_graph
-from tests.conftest import make_file_input_config
+from tests.conftest import make_ready_file_input_config
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +32,7 @@ def _make_graph(data_path: Path, artifact_path: Path) -> PipelineGraph:
                 data=NodeData(
                     label="source",
                     nodeType=NodeType.DATA_INPUT,
-                    config=make_file_input_config(data_path),
+                    config=make_ready_file_input_config(data_path),
                 ),
             ),
             GraphNode(

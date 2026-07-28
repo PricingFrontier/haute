@@ -17,7 +17,11 @@ from fastapi.testclient import TestClient
 from watchfiles import Change
 
 from haute._sandbox import set_project_root
-from tests.conftest import write_data_input_config
+from tests.conftest import (
+    build_test_input_snapshot,
+    make_ready_file_input_config,
+    write_data_input_config,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -29,7 +33,6 @@ def _file_input_config(path: str) -> dict:
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": path,
         "arguments": {},
     }
@@ -57,6 +60,7 @@ def pipeline_dir(tmp_path: Path) -> Path:
     # generated Python source (e.g. \U interpreted as unicode escape).
     data_path = (data_dir / "input.parquet").as_posix()
     source_config = write_data_input_config(tmp_path, "source", data_path)
+    build_test_input_snapshot(_file_input_config(data_path), base_dir=tmp_path)
 
     code = f'''\
 import polars as pl
@@ -634,7 +638,7 @@ class TestExecuteSinkEndpoint:
                     "data": {
                         "label": "src",
                         "nodeType": "dataInput",
-                        "config": _file_input_config(str(data_path)),
+                        "config": make_ready_file_input_config(str(data_path)),
                     },
                 },
                 {
@@ -698,7 +702,7 @@ class TestExecuteSinkEndpoint:
                     "data": {
                         "label": "src",
                         "nodeType": "dataInput",
-                        "config": _file_input_config(str(data_path)),
+                        "config": make_ready_file_input_config(str(data_path)),
                     },
                 },
                 {
@@ -2157,7 +2161,7 @@ class TestPipelineTimeouts:
                     "data": {
                         "label": "src",
                         "nodeType": "dataInput",
-                        "config": _file_input_config(str(data_path)),
+                        "config": make_ready_file_input_config(str(data_path)),
                     },
                 },
                 {
@@ -2233,7 +2237,7 @@ class TestPipelineExceptions:
                     "data": {
                         "label": "src",
                         "nodeType": "dataInput",
-                        "config": _file_input_config(str(data_path)),
+                        "config": make_ready_file_input_config(str(data_path)),
                     },
                 },
                 {

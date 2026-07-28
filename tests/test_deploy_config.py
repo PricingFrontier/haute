@@ -499,7 +499,6 @@ class TestValidateDeploy:
             node_type=NodeType.DATA_INPUT,
             config={
                 "inputType": "databricks",
-                "cacheMode": "snapshot",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.schema.table",
                 "arguments": {},
@@ -531,7 +530,6 @@ class TestValidateDeploy:
             node_type=NodeType.DATA_INPUT,
             config={
                 "inputType": "databricks",
-                "cacheMode": "snapshot",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.schema.table",
                 "arguments": {},

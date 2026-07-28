@@ -11,7 +11,11 @@ import pytest
 from haute._mlflow_io import ScoringModel, _artifact_cache_path
 from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
-from tests.conftest import make_edge, make_file_input_config, make_graph
+from tests.conftest import (
+    make_edge,
+    make_graph,
+    make_ready_file_input_config,
+)
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -47,7 +51,7 @@ def _make_model_score_graph(
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(data_path),
+                        "config": make_ready_file_input_config(data_path),
                     },
                 },
                 {
@@ -172,7 +176,7 @@ class TestModelScorePassthrough:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": make_file_input_config(sample_data),
+                            "config": make_ready_file_input_config(sample_data),
                         },
                     },
                     {

@@ -29,6 +29,7 @@ import pytest
 from haute._sandbox import _get_project_root, set_project_root
 from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
+from tests.conftest import build_test_input_snapshot
 
 #: The Data Input ``path`` written into the node config — RELATIVE and
 #: pipeline-directory-relative (resolves under ``rating/`` at runtime).
@@ -87,7 +88,6 @@ def _data_input_graph(path: str) -> PipelineGraph:
                         "inputType": "file",
                         "format": "csv",
                         "mode": "scan",
-                        "cacheMode": "direct",
                         "path": path,
                         "arguments": {},
                     },
@@ -95,6 +95,13 @@ def _data_input_graph(path: str) -> PipelineGraph:
             ),
         ],
         edges=[],
+    )
+
+
+def _build_graph_snapshot(graph: PipelineGraph, *, base_dir: Path) -> None:
+    build_test_input_snapshot(
+        graph.node_map["src"].data.config,
+        base_dir=base_dir,
     )
 
 
@@ -107,6 +114,7 @@ def test_data_input_reads_pipeline_relative_path_from_project_root(nested_projec
     pipeline dir (``<root>/rating/data/customers.csv``) where the file lives.
     """
     graph = _data_input_graph(_RELATIVE_DATA_PATH)
+    _build_graph_snapshot(graph, base_dir=nested_project.parent.parent)
 
     results = execute_graph(graph, target_node_id="src")
 
@@ -118,7 +126,7 @@ def test_data_input_reads_pipeline_relative_path_from_project_root(nested_projec
 def test_data_input_out_of_cwd_absolute_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Direct execution rejects absolute file inputs outside its project root."""
+    """Snapshot-only execution rejects absolute inputs outside its project root."""
     monkeypatch.chdir(tmp_path)  # cwd == project root
     original = _get_project_root()
     set_project_root(tmp_path)
@@ -141,7 +149,7 @@ def test_data_input_out_of_cwd_absolute_is_rejected(
 
 
 @pytest.mark.parametrize("escape", ["../outside.csv", r"nested\..\..\outside.csv"])
-def test_direct_executor_rejects_relative_and_mixed_separator_escape(
+def test_snapshot_executor_rejects_relative_and_mixed_separator_escape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     escape: str,
@@ -155,7 +163,7 @@ def test_direct_executor_rejects_relative_and_mixed_separator_escape(
         execute_graph(_data_input_graph(escape), target_node_id="src")
 
 
-def test_direct_executor_rejects_symlink_escape(
+def test_snapshot_executor_rejects_symlink_escape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -196,6 +204,7 @@ def test_selected_external_pipeline_uses_its_parent_as_execution_root(
     graph = _data_input_graph("data/customers.csv").model_copy(
         update={"source_file": str(source_file)}
     )
+    _build_graph_snapshot(graph, base_dir=source_file.parent)
 
     results = execute_graph(graph, target_node_id="src")
 

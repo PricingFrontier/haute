@@ -63,7 +63,6 @@ function seedPipeline(): void {
       inputType: "file",
       format: "parquet",
       mode: "scan",
-      cacheMode: "direct",
       path: "data/sample.parquet",
       arguments: {},
     }, null, 2)}\n`,
@@ -75,9 +74,13 @@ function seedPipeline(): void {
       inputType: "file",
       format: "csv",
       mode: "scan",
-      cacheMode: "direct",
       path: "data/lookup.csv",
-      arguments: {},
+      arguments: {
+        schema: {
+          id: "int64",
+          lookup_value: "str",
+        },
+      },
     }, null, 2)}\n`,
     "utf8",
   )

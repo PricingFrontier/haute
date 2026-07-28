@@ -26,6 +26,7 @@ from tests.conftest import (
     make_file_input_config,
     make_file_output_config,
     make_output_config,
+    make_ready_file_input_config,
 )
 
 FIXTURE_DIR = Path("tests/fixtures")
@@ -304,7 +305,10 @@ class TestFullPipelineLifecycle:
 
         nodes = [
             _make_node(
-                "src", "src", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+                "src",
+                "src",
+                NodeType.DATA_INPUT,
+                make_ready_file_input_config(_posix_path(data_path)),
             ),
             _make_node(
                 "transform",
@@ -395,7 +399,10 @@ class TestAllNodeTypesRoundtrip:
         # source_names correctly and the parser can reconstruct edges.
         nodes = [
             _make_node(
-                "ds", "ds", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+                "ds",
+                "ds",
+                NodeType.DATA_INPUT,
+                make_ready_file_input_config(_posix_path(data_path)),
             ),
             _make_node(
                 "api",
@@ -602,7 +609,10 @@ class TestSubmodelLifecycle:
 
         nodes = [
             _make_node(
-                "src", "src", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+                "src",
+                "src",
+                NodeType.DATA_INPUT,
+                make_ready_file_input_config(_posix_path(data_path)),
             ),
             _make_node(
                 "t1",
@@ -692,7 +702,7 @@ class TestConfigRoundtrip:
             "ds",
             "ds",
             NodeType.DATA_INPUT,
-            make_file_input_config(_posix_path(data_path)),
+            make_ready_file_input_config(_posix_path(data_path)),
         )
         graph = PipelineGraph(
             nodes=[node],
@@ -885,7 +895,10 @@ class TestUtilityModuleLifecycle:
         preamble = "from utility.helpers import MAGIC_CONSTANT, double_it"
         nodes = [
             _make_node(
-                "src", "src", NodeType.DATA_INPUT, make_file_input_config(_posix_path(data_path))
+                "src",
+                "src",
+                NodeType.DATA_INPUT,
+                make_ready_file_input_config(_posix_path(data_path)),
             ),
             _make_node(
                 "t",
@@ -965,13 +978,13 @@ class TestMultiScenarioExecution:
                 "live_src",
                 "live_src",
                 NodeType.DATA_INPUT,
-                make_file_input_config(_posix_path(live_path)),
+                make_ready_file_input_config(_posix_path(live_path)),
             ),
             _make_node(
                 "batch_src",
                 "batch_src",
                 NodeType.DATA_INPUT,
-                make_file_input_config(_posix_path(batch_path)),
+                make_ready_file_input_config(_posix_path(batch_path)),
             ),
             _make_node(
                 "switch",

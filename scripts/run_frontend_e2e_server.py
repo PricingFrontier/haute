@@ -49,6 +49,34 @@ BACKEND_URL = f"{BACKEND_ORIGIN}/api/pipeline"
 READINESS_HOST = "127.0.0.1"
 READINESS_PORT = _port_from_env("HAUTE_E2E_READINESS_PORT", 15174)
 READINESS_URL = f"http://{READINESS_HOST}:{READINESS_PORT}/ready"
+_BROWSER_CORE_BLOCK = """
+
+
+@pipeline.data_input(config="config/data_input/raw_rows.json")
+def raw_rows() -> pl.LazyFrame:
+    \"\"\"Deterministic browser source independent of the product scaffold.\"\"\"
+    from pathlib import Path
+
+    from haute.graph_utils import resolve_data_input_from_config
+
+    df = resolve_data_input_from_config(
+        "config/data_input/raw_rows.json",
+        base_dir=Path(__file__).parent,
+    )
+    return df
+
+
+@pipeline.polars
+def enriched(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
+    \"\"\"Core transform used by preview, trace, and editor browser flows.\"\"\"
+    return raw_rows.with_columns(value_doubled=pl.col("value") * 2)
+
+
+@pipeline.output(config="config/quote_response/priced.json")
+def priced(enriched: pl.LazyFrame) -> pl.LazyFrame:
+    \"\"\"Core terminal node used by version-control browser flows.\"\"\"
+    return enriched
+"""
 _BROWSER_MODEL_BLOCK = """
 
 
@@ -93,6 +121,8 @@ _BROWSER_OPTIMISER_BLOCK = """
 @pipeline.data_input(config="config/data_input/browser_optimiser_rows.json")
 def browser_optimiser_rows() -> pl.LazyFrame:
     \"\"\"Browser E2E scored rows for optimiser flows.\"\"\"
+    from pathlib import Path
+
     from haute.graph_utils import resolve_data_input_from_config
 
     df = resolve_data_input_from_config(
@@ -134,6 +164,24 @@ _BROWSER_MODEL_CONFIG = """{
   ],
   "row_limit": 30,
   "output_dir": ".haute_cache/browser_training"
+}
+"""
+_BROWSER_OUTPUT_CONFIG = """{
+  "outputMapping": [
+    {
+      "source_port": "enriched",
+      "source_column": "value",
+      "output_path": "$[:].value",
+      "enabled": true
+    },
+    {
+      "source_port": "enriched",
+      "source_column": "value_doubled",
+      "output_path": "$[:].value_doubled",
+      "enabled": true
+    }
+  ],
+  "outputFormat": "json"
 }
 """
 _BROWSER_MIXED_BANDING_CONFIG = """{
@@ -357,6 +405,17 @@ def _augment_starter_pipeline() -> None:
         'Path(__file__).parent / "../data/sample.parquet"',
         'Path(__file__).parent.parent / "data" / "sample.parquet"',
     )
+    if "def raw_rows(" not in source:
+        if "import polars as pl" not in source:
+            constructor_marker = "pipeline = haute.Pipeline("
+            if constructor_marker not in source:
+                raise RuntimeError("Browser fixture scaffold has no pipeline constructor")
+            source = source.replace(
+                constructor_marker,
+                f"import polars as pl\n\n{constructor_marker}",
+                1,
+            )
+        source = source.rstrip() + _BROWSER_CORE_BLOCK
     if "def browser_model(" not in source:
         source = source.rstrip() + _BROWSER_MODEL_BLOCK
     if "def browser_mixed_banding(" not in source:
@@ -367,30 +426,37 @@ def _augment_starter_pipeline() -> None:
         source = source.rstrip() + _QUOTES_API_INPUT_BLOCK
     main_path.write_text(source, encoding="utf-8")
 
-    raw_rows_config_path = E2E_PROJECT_DIR / "rating" / "config" / "data_input" / "raw_rows.json"
+    # The blank `haute init` scaffold creates no node sidecars or their
+    # directories; this augmentation owns the data_input tree it writes into.
+    data_input_config_dir = E2E_PROJECT_DIR / "rating" / "config" / "data_input"
+    data_input_config_dir.mkdir(parents=True, exist_ok=True)
+    raw_rows_config_path = data_input_config_dir / "raw_rows.json"
     raw_rows_config_path.write_text(
         "{\n"
         '  "inputType": "file",\n'
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
-        '  "cacheMode": "direct",\n'
         '  "path": "data/sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",
         encoding="utf-8",
     )
-    optimiser_rows_config_path = (
-        E2E_PROJECT_DIR / "rating" / "config" / "data_input" / "browser_optimiser_rows.json"
-    )
+    optimiser_rows_config_path = data_input_config_dir / "browser_optimiser_rows.json"
     optimiser_rows_config_path.write_text(
         "{\n"
         '  "inputType": "file",\n'
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
-        '  "cacheMode": "direct",\n'
         '  "path": "data/optimiser_sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",
+        encoding="utf-8",
+    )
+
+    quote_response_config_dir = E2E_PROJECT_DIR / "rating" / "config" / "quote_response"
+    quote_response_config_dir.mkdir(parents=True, exist_ok=True)
+    (quote_response_config_dir / "priced.json").write_text(
+        _BROWSER_OUTPUT_CONFIG,
         encoding="utf-8",
     )
 

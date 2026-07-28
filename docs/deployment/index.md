@@ -85,16 +85,10 @@ my-project/
   .gitignore
   data/
   haute.toml
-  main.py
-  prompts/
   pyproject.toml
   rating/
   rating/__init__.py
   rating/config/
-  rating/config/data_input/
-  rating/config/data_input/raw_rows.json
-  rating/config/quote_response/
-  rating/config/quote_response/priced.json
   rating/data/
   rating/main.py
   rating/models/
@@ -109,10 +103,10 @@ my-project/
 ```
 <!-- scaffold-tree-after:end -->
 
-A root `main.py` left over from `uv init` is preserved; Haute puts its starter pipeline in `rating/main.py`. `pyproject.toml` is updated to list `haute` as a dependency. Everything else is additive - if a file like `.gitignore` already exists, Haute appends to it rather than replacing it. If the project is already initialised (a `haute.toml` exists), `haute init` refuses to run unless you pass `--force`.
+A root `main.py` left over from `uv init` is removed; Haute uses `rating/main.py` as the project pipeline. `pyproject.toml` is updated to list `haute` as a dependency. Existing shared files such as `.gitignore` are updated in place rather than replaced. If the project is already initialised (a `haute.toml` exists), `haute init` refuses to run unless you pass `--force`.
 
 <!-- starter-pipeline-node-count:start -->
-The starter pipeline contains **3 nodes**.
+The starter pipeline contains **0 nodes**, giving you a blank canvas.
 <!-- starter-pipeline-node-count:end -->
 
 !!! tip "Not sure which target to pick?"

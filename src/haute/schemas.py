@@ -2330,6 +2330,7 @@ class IoInputCapability(_StrictIoCapabilitiesModel):
     modes: list[Literal["scan", "read"]]
     arguments: dict[str, list[str]]
     engines_missing: list[str]
+    cache_mode: Literal["direct", "snapshot"]
     direct_bounded: bool
     needs_schema_when_bounded: bool
     snapshot_build: Literal["bounded", "admitted_eager", "unsupported"]

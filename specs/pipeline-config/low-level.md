@@ -168,9 +168,11 @@ shares the configured-path checks but additionally lists valid sibling pipelines
 template function is parameterised by `target`/`ci` and looks up per-target facts through
 `TARGETS`/`_get_target` rather than branching on the target string directly, so adding a
 target means adding one registry entry, not touching every template function.
-The starter Data Input sidecar uses the traversal-free pipeline-relative path
-`data/sample.parquet`, and `handle_init` creates the matching rating/data/ directory.
-It never writes a `..` segment that direct generated-function execution would reject.
+`starter_pipeline(name)` emits imports plus a named `haute.Pipeline` declaration and no decorated
+nodes. `starter_test(name)` parses that file and asserts only the configured pipeline name.
+`handle_init` creates empty config, data, model, and output placeholder subdirectories under
+`rating/`, but no node sidecars or `prompts/` directory, and removes any root `main.py` before
+writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]`/`[server]` sections, splicing in `_target_section()`'s
@@ -379,7 +381,8 @@ API and real JSON round-trips rather than mocks:
   matching, and round-trip drift (`TestRoundTripDrift`).
 - **`test_scaffold.py`** — every CI provider × deploy target combination, complete
   YAML/TOML structural validation (including release conditions and exact secret
-  placement), and starter pipeline/test content.
+  placement), blank starter pipeline/test content, root-`main.py` removal, and absence of
+  generated prompts and node sidecars.
 - **`test_docs_accuracy.py`** — executable deployment-documentation parity for the
   real scaffold tree and starter node count, registered CLI commands, public Python
   imports, target secrets, and configured pipeline path, plus negative drift fixtures.

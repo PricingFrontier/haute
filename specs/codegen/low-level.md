@@ -134,9 +134,9 @@ fresh markers.
   External-file user code follows the generated object load.
 - Removed `dataSource`/`dataSink` enum values, decorators, templates, and
   extractor aliases have no compatibility path. Round trips preserve the
-  retained I/O provider branch, format/mode, arguments, cache mode,
+  retained I/O provider branch, format/mode, arguments,
   destination fields, connections, and user code without inventing inactive
-  fields.
+  fields. No cache-mode field exists to round-trip; execution mode is derived.
 
 ### `_inject_contract_kwarg` / `_matching_close_paren`
 

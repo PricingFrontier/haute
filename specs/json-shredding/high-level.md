@@ -6,10 +6,11 @@ This component turns nested, tree- or graph-shaped inputs into the flat, minimal
 representations the rest of the pipeline actually consumes. Two related problems
 are grouped here:
 
-1. **JSON API-input shredding** — a JSON/JSONL document (arbitrarily nested objects
-   and arrays) is "shredded" into one or more flat, typed tables (Polars frames),
-   using a valid parquet cache as a fast path when present and otherwise parsing
-   the source directly for that execution.
+1. **Structured API-input shredding** — a JSON/JSONL document (arbitrarily nested
+   objects and arrays) or a supported XML document is normalised and "shredded"
+   into one or more flat, typed tables (Polars frames), using a valid parquet
+   cache as a fast path when present and otherwise parsing the source directly
+   for that execution.
 2. **JSON output assembly** — flat frames plus output-path mappings can be
    structurally validated and are re-nested into one deterministic array-outer
    response document without cross-multiplying independent sibling arrays.
@@ -22,7 +23,7 @@ JSON-safe value encoder used whenever pipeline data crosses an HTTP boundary.
 
 In scope:
 
-- Shredding a JSON/JSONL API input into per-table parquet caches, schema inference
+- Shredding a JSON/JSONL/XML API input into per-table parquet caches, schema inference
   from sample data, and the dual-layer (working/committed) cache lifecycle around it.
 - The v2 apiInput schema codec: shape recognition, shared table/column path
   parsing, canonical path writing, structural validation, and filesystem-safe
@@ -48,9 +49,9 @@ Out of scope (owned elsewhere):
 
 ## Behaviour
 
-**JSON shredding.** Given a v2 schema config describing zero or more output
+**Structured-input shredding.** Given a v2 schema config describing zero or more output
 "tables" (each a JSON path plus a set of selected columns with declared types), the
-shred walks every top-level record of a JSON or JSONL data file once and produces
+shred walks every top-level record of a JSON, JSONL, or XML data file once and produces
 one row buffer per table whose `emit` flag is on and which has at least one selected
 column. Relational depth is defined purely by array (`[:]`) nesting — a 1-1 nested
 object never starts a new table, its scalar leaves fold into the enclosing table as
@@ -68,10 +69,20 @@ refreshing cache files. Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
 naming collision-free bare leaf keys as their own column names. Inferred table
 labels are readable identifiers derived from the source key names — the root
-table is `root`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
+table is `quote_info`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
 sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw path
 strings, so an inferred schema is immediately valid under the label rule below
 and its labels read as the argument names they will become.
+
+XML is converted to the same object/list/scalar record shape before inference or
+shredding. Element namespaces are removed from field names; attributes become
+fields; leaf text is the scalar value (or a `value` field when attributes are also
+present); repeated same-name children become lists, while a single child remains a
+single value. A document whose root contains repeated same-name object children
+uses those children as its top-level records; otherwise the root is one record.
+DTD/entity declarations, mixed child/text content, and field-name collisions
+between namespace-stripped attributes, children, or the synthetic `value` field
+are rejected rather than interpreted ambiguously.
 
 Every array element the shred sees is accounted for: it either becomes a row in some
 table, or is counted as a skip against that table (its shape didn't match — an

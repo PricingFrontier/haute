@@ -159,22 +159,22 @@ describe("useUIStore", () => {
 
     it("stores the selected section by node id", () => {
       useUIStore.getState().setRatingStepEditorSection("rating_1", "tables")
-      useUIStore.getState().setRatingStepEditorSection("rating_2", "code")
+      useUIStore.getState().setRatingStepEditorSection("rating_2", "combined")
 
       expect(useUIStore.getState().ratingStepEditorSections).toEqual({
         rating_1: "tables",
-        rating_2: "code",
+        rating_2: "combined",
       })
     })
 
     it("replaces only the selected node entry", () => {
       useUIStore.getState().setRatingStepEditorSection("rating_1", "tables")
-      useUIStore.getState().setRatingStepEditorSection("rating_2", "code")
+      useUIStore.getState().setRatingStepEditorSection("rating_2", "tables")
       useUIStore.getState().setRatingStepEditorSection("rating_1", "combined")
 
       expect(useUIStore.getState().ratingStepEditorSections).toEqual({
         rating_1: "combined",
-        rating_2: "code",
+        rating_2: "tables",
       })
     })
   })

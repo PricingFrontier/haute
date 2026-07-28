@@ -25,6 +25,7 @@ import {
   ColumnsTab,
   ModellingConfig,
   OptimiserConfig,
+  PolarsCodePanel,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
@@ -52,6 +53,8 @@ type NodePanelProps = {
   selectedPreviewLoading?: boolean
 }
 
+type NodePanelTab = "config" | "polars" | "columns"
+
 // ─── Node types that do NOT show the Columns tab ──
 // Output already has its own field selection; submodels/ports are placeholders;
 // modelling and explore nodes are sink-only (no outputs).
@@ -65,6 +68,22 @@ const NO_COLUMNS_TAB = new Set<string>([
   NODE_TYPES.MODELLING,
   NODE_TYPES.EXPLORE,
 ])
+
+const POLARS_TAB_TYPES = new Set<string>([
+  NODE_TYPES.DATA_INPUT,
+  NODE_TYPES.EXTERNAL_FILE,
+  NODE_TYPES.SCENARIO_EXPANDER,
+  NODE_TYPES.RATING_STEP,
+  NODE_TYPES.MODEL_SCORE,
+])
+
+const POLARS_TAB_HINTS: Record<string, React.ReactNode> = {
+  [NODE_TYPES.DATA_INPUT]: <><code>df</code> = the opened input snapshot</>,
+  [NODE_TYPES.EXTERNAL_FILE]: <><code>obj</code> = loaded file, assign to <code>df</code></>,
+  [NODE_TYPES.SCENARIO_EXPANDER]: <>use <code>df</code> for expanded data</>,
+  [NODE_TYPES.RATING_STEP]: <>use <code>df</code> for rated data</>,
+  [NODE_TYPES.MODEL_SCORE]: <>Post-processing Code (optional)</>,
+}
 
 const NO_REFRESH_PREVIEW = new Set<string>([
   NODE_TYPES.SUBMODEL,
@@ -624,6 +643,8 @@ function UnknownNodeTypeDiagnostic({
 
 // Cached preview-result fields cleared on user config edits.  Listing the
 // keys explicitly (rather than stripping every leading-underscore field)
+// lets selected_columns-only edits preserve `_availableColumns`: that
+// pre-filter schema remains valid while the post-filter preview is stale.
 // preserves selection/trace state — `_status`, `_traceActive`, etc. — which
 // are intentionally NOT invalidated by a config change.  Adding a new cached
 // field to ``HauteNodeData`` will not surface here automatically — the choice
@@ -636,9 +657,13 @@ const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columnsSource",
 ]
 
-function clearCachedResultShape(data: HauteNodeData): HauteNodeData {
+function clearCachedResultShape(
+  data: HauteNodeData,
+  { preserveAvailableColumns = false }: { preserveAvailableColumns?: boolean } = {},
+): HauteNodeData {
   const next = { ...data }
   for (const key of CACHED_PREVIEW_KEYS) {
+    if (preserveAvailableColumns && key === "_availableColumns") continue
     delete next[key]
   }
   return next
@@ -660,7 +685,7 @@ export default function NodePanel({
 }: NodePanelProps) {
   const { allNodes, edges, submodels } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
-  const [activeTab, setActiveTab] = useState<"config" | "columns">("config")
+  const [activeTab, setActiveTab] = useState<NodePanelTab>("config")
   const [labelUpdateError, setLabelUpdateError] = useState<string | null>(null)
   const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
   const setExplorePane = useUIStore((s) => s.setExplorePane)
@@ -671,6 +696,7 @@ export default function NodePanel({
   useEffect(() => { configRef.current = config }, [config])
   useEffect(() => { nodeRef.current = node }, [node])
   useEffect(() => { setLabelUpdateError(null) }, [node?.id, node?.data.label])
+  useEffect(() => { setActiveTab("config") }, [node?.id])
 
   // Bundle 3b — dismissal state for the stale-columns banner.
   // Stored as the warning-signature the user dismissed, so the banner
@@ -689,7 +715,19 @@ export default function NodePanel({
     const newConfig = typeof keyOrUpdates === "string"
       ? { ...currentConfig, [keyOrUpdates]: value }
       : { ...currentConfig, ...keyOrUpdates }
-    return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: newConfig }))
+    const changedKeys =
+      typeof keyOrUpdates === "string"
+        ? [keyOrUpdates]
+        : Object.keys(keyOrUpdates)
+    const selectionOnlyUpdate =
+      changedKeys.length === 1 && changedKeys[0] === "selected_columns"
+    return onUpdateNode(
+      currentNode.id,
+      clearCachedResultShape(
+        { ...currentNode.data, config: newConfig },
+        { preserveAvailableColumns: selectionOnlyUpdate },
+      ),
+    )
   }, [onUpdateNode])
 
   const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
@@ -741,6 +779,7 @@ export default function NodePanel({
   const nodeType = effectiveNodeType(node)
   const isKnownNodeType = Object.hasOwn(NODE_TYPE_META, nodeType)
   const showColumnsTab = isKnownNodeType && !isInstance && !NO_COLUMNS_TAB.has(nodeType)
+  const showPolarsTab = isKnownNodeType && !isInstance && POLARS_TAB_TYPES.has(nodeType)
   const showExplorePanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.EXPLORE
   const showRefreshPreview = !!onRefreshPreview && !NO_REFRESH_PREVIEW.has(nodeType)
   const refreshTitle = showExplorePanes ? "Refresh Explore outputs" : "Refresh preview"
@@ -855,7 +894,6 @@ export default function NodePanel({
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
             upstreamColumns={upstreamColumns}
-            errorLine={errorLine}
           />
         )
 
@@ -955,6 +993,11 @@ export default function NodePanel({
 
   const availableColumns = ((node.data as Record<string, unknown>)?._availableColumns as { name: string; dtype: string }[]) || []
   const currentColumns = ((node.data as Record<string, unknown>)?._columns as { name: string; dtype: string }[]) || []
+  const editorTabs: NodePanelTab[] = [
+    "config",
+    ...(showPolarsTab ? ["polars" as const] : []),
+    ...(showColumnsTab ? ["columns" as const] : []),
+  ]
 
   return (
     <PanelShell testId="node-panel" style={{ opacity: dimmed ? 0.6 : 1, transition: 'opacity 150ms' }}>
@@ -1007,9 +1050,9 @@ export default function NodePanel({
           flicker on mouseover.  Inactive tabs deliberately omit an
           inline `background` so the Tailwind `hover:` rule can apply
           (inline styles would otherwise win over class rules). */}
-      {showColumnsTab && (
+      {(showColumnsTab || showPolarsTab) && (
         <div className="flex shrink-0" style={{ borderBottom: '1px solid var(--border)' }}>
-          {(["config", "columns"] as const).map((tab) => {
+          {editorTabs.map((tab) => {
             const isActive = activeTab === tab
             const activeStyle: React.CSSProperties = {
               color: 'var(--accent)',
@@ -1029,7 +1072,7 @@ export default function NodePanel({
                 }`}
                 style={isActive ? activeStyle : inactiveStyle}
               >
-                {tab}
+                {tab === "polars" ? "Polars" : tab}
               </button>
             )
           })}
@@ -1107,7 +1150,17 @@ export default function NodePanel({
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         <LazyEditorBoundary>
-          {activeTab === "columns" && showColumnsTab ? (
+          {activeTab === "polars" && showPolarsTab ? (
+            <PolarsCodePanel
+              config={config}
+              onUpdate={handleConfigUpdate}
+              inputSources={nodeType === NODE_TYPES.DATA_INPUT ? [] : inputSources}
+              onDeleteInput={onDeleteEdge}
+              errorLine={errorLine}
+              upstreamColumns={upstreamColumns}
+              hint={POLARS_TAB_HINTS[nodeType] ?? null}
+            />
+          ) : activeTab === "columns" && showColumnsTab ? (
             <ColumnsTab
               config={config}
               onUpdate={handleConfigUpdate}

@@ -1,14 +1,10 @@
-"""Smoke contracts for environments without optional MLflow or Databricks extras."""
+"""Smoke contracts for core MLflow without the Databricks SQL connector."""
 
 from __future__ import annotations
 
 import importlib.util
-import time
-from types import SimpleNamespace
 
 import pytest
-
-import haute.routes.optimiser as optimiser_routes
 
 
 def _module_available(module_name: str) -> bool:
@@ -18,13 +14,12 @@ def _module_available(module_name: str) -> bool:
         return False
 
 
-_OPTIONAL_DEPS_PRESENT = any(
-    _module_available(module_name) for module_name in ("mlflow", "databricks.sdk", "databricks.sql")
-)
+_HAS_CORE_MLFLOW = _module_available("mlflow")
+_HAS_DATABRICKS_SQL_CONNECTOR = _module_available("databricks.sql")
 
 pytestmark = pytest.mark.skipif(
-    _OPTIONAL_DEPS_PRESENT,
-    reason="This smoke file is for the core-only CI lane without optional extras.",
+    not _HAS_CORE_MLFLOW or _HAS_DATABRICKS_SQL_CONNECTOR,
+    reason="This smoke file requires core MLflow without the Databricks extra.",
 )
 
 
@@ -37,73 +32,13 @@ def test_server_import_succeeds_without_optional_extras() -> None:
     assert "/api/databricks/warehouses" in route_paths
 
 
-def test_modelling_mlflow_check_reports_not_installed(client) -> None:
+def test_modelling_mlflow_check_reports_core_dependency_installed(client) -> None:
     resp = client.get("/api/modelling/mlflow/check")
 
     assert resp.status_code == 200
-    assert resp.json() == {
-        "mlflow_installed": False,
-        "mlflow_importable": False,
-        "tracking_configured": False,
-        "backend": "",
-        "databricks_host": "",
-        "detail": "MLflow package is not installed",
-    }
+    assert resp.json()["mlflow_installed"] is True
+    assert resp.json()["mlflow_importable"] is True
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/mlflow/experiments",
-        "/api/mlflow/models",
-        "/api/mlflow/model-versions?model_name=pricing-model",
-    ],
-)
-def test_mlflow_discovery_routes_fail_cleanly_without_dependency(client, path: str) -> None:
-    resp = client.get(path)
-
-    assert resp.status_code == 503
-    assert "mlflow is not installed" in resp.json()["detail"].lower()
-
-
-def test_optimiser_mlflow_log_fails_cleanly_without_dependency(client) -> None:
-    optimiser_routes._store.jobs["no_mlflow"] = {
-        "status": "completed",
-        "solver": object(),
-        "solve_result": SimpleNamespace(
-            lambdas={},
-            total_objective=0.0,
-            total_constraints={},
-            converged=True,
-        ),
-        "config": {"mode": "online"},
-        "node_label": "opt",
-        "created_at": time.time(),
-    }
-
-    try:
-        resp = client.post(
-            "/api/optimiser/mlflow/log",
-            json={"job_id": "no_mlflow", "experiment_name": "/test"},
-        )
-    finally:
-        optimiser_routes._store.jobs.pop("no_mlflow", None)
-
-    assert resp.status_code == 400
-    assert "mlflow" in resp.json()["detail"].lower()
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/databricks/warehouses",
-        "/api/databricks/catalogs",
-        "/api/databricks/schemas?catalog=main",
-        "/api/databricks/tables?catalog=main&schema=pricing",
-    ],
-)
-def test_databricks_browsing_routes_fail_cleanly_without_sdk(client, path: str) -> None:
-    resp = client.get(path)
-
-    assert resp.status_code == 503
-    assert "databricks-sdk is not installed" in resp.json()["detail"].lower()
+def test_core_lane_omits_the_databricks_sql_connector() -> None:
+    assert not _module_available("databricks.sql")

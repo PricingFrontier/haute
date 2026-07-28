@@ -64,7 +64,6 @@ def _file_input_config(path: str) -> dict:
         "inputType": "file",
         "format": format_name,
         "mode": mode,
-        "cacheMode": "direct",
         "path": path,
         "arguments": {},
     }
@@ -641,7 +640,6 @@ class TestCurlyBracesInValues:
             "dataInput",
             {
                 "inputType": "databricks",
-                "cacheMode": "snapshot",
                 "http_path": "/sql/1.0/warehouses/test",
                 "table": "catalog.{env}.table",
                 "arguments": {},

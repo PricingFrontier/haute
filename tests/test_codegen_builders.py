@@ -1141,7 +1141,6 @@ class TestCodegenExecValidation:
             "inputType": "file",
             "format": "parquet",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data/policies.parquet",
             "arguments": {},
         }
@@ -1158,6 +1157,7 @@ class TestCodegenExecValidation:
         assert isinstance(result, pl.LazyFrame)
         assert len(result.collect()) > 0
 
+    @pytest.mark.usefixtures("_widen_sandbox_root")
     def test_data_source_exec_uses_declared_schema_boundary(
         self,
         tmp_path: Path,
@@ -1174,7 +1174,6 @@ class TestCodegenExecValidation:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data/quotes.csv",
             "arguments": {
                 "schema_overrides": {
@@ -1187,6 +1186,9 @@ class TestCodegenExecValidation:
         config_dir = tmp_path / "config" / "data_input"
         config_dir.mkdir(parents=True)
         (config_dir / "load_quotes.json").write_text(json.dumps(config))
+        from tests.conftest import build_test_input_snapshot
+
+        build_test_input_snapshot(config, base_dir=tmp_path)
 
         code = _node_to_code(node)
 

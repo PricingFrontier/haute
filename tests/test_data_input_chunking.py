@@ -67,21 +67,50 @@ def _run(graph, *, output_fields: list[str]) -> pl.DataFrame:
     )
 
 
-def test_direct_ndjson_input_and_row_local_editor_code_are_chunked(
+def test_direct_parquet_input_is_chunked_without_a_snapshot(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
+    path = tmp_path / "input.parquet"
+    pl.DataFrame({"id": [1, 2, 3]}).write_parquet(path)
+    config: dict[str, object] = {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "path": str(path),
+        "arguments": {},
+    }
+
+    result = _run(_graph(config, ["id"]), output_fields=["id"])
+
+    plt.assert_frame_equal(result, pl.DataFrame({"id": [1, 2, 3]}))
+
+
+def test_snapshot_ndjson_input_and_row_local_editor_code_are_chunked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    set_project_root(tmp_path)
     path = tmp_path / "input.ndjson"
     pl.DataFrame({"id": [1, 2, 3, 4], "value": [10, 20, 30, 40]}).write_ndjson(path)
     config: dict[str, object] = {
         "inputType": "file",
         "format": "ndjson",
-        "cacheMode": "direct",
         "path": str(path),
         "code": (
             "df = df.filter(pl.col('id') % 2 == 0)"
             ".with_columns((pl.col('value') * 2).alias('doubled'))"
         ),
     }
+    build_input_snapshot(
+        config,
+        store=SourceCacheStore(tmp_path),
+        base_dir=tmp_path,
+        profile=ExecutionProfile.LAZY_SINK,
+    )
 
     result = _run(_graph(config, ["id", "doubled"]), output_fields=["id", "doubled"])
 
@@ -103,7 +132,6 @@ def test_cached_eager_only_format_runs_from_published_parquet_snapshot(
         "inputType": "file",
         "format": "json",
         "mode": "read",
-        "cacheMode": "snapshot",
         "path": str(path),
     }
     build_input_snapshot(
@@ -121,16 +149,17 @@ def test_cached_eager_only_format_runs_from_published_parquet_snapshot(
     )
 
 
-def test_direct_eager_only_format_is_rejected_before_execution(tmp_path: Path) -> None:
+def test_noncanonical_direct_format_is_rejected_before_execution(tmp_path: Path) -> None:
     config: dict[str, object] = {
         "inputType": "file",
         "format": "json",
         "mode": "read",
+        # The removed stored field: any value is rejected before execution.
         "cacheMode": "direct",
         "path": str(tmp_path / "input.json"),
     }
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="bounded"):
+    with pytest.raises(ChunkPlanUnsupportedError, match="configuration"):
         chunk_plan(
             ChunkPlanRequest(
                 graph=_graph(config, ["id"]),

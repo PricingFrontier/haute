@@ -136,6 +136,10 @@ that re-executed successfully clears any stale cached error. On a full miss, exe
 from scratch. `_eager_execute()` compiles the preamble (`_compile_preamble`, tolerant
 of failure — the error is attached only to nodes whose builder actually consumes the
 preamble namespace) and delegates to `_execute_eager_core()`.
+When the caller omits an execution context, `execute_graph()` creates its admitted
+`PREVIEW_EAGER` context before any preview-cache work. Cache lookup, hit, extension,
+and miss stages therefore always use a concrete context and always record telemetry;
+there is no silent no-op stage path.
 
 An API input bundle containing exactly one labelled frame has one canonical flat
 frame, so that frame remains the node's ordinary preview without requiring

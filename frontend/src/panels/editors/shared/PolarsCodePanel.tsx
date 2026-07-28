@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, type ReactNode } from "react"
 
 import { configField } from "../../../utils/configField"
 import { CodeEditor } from "../CodeEditor"
@@ -12,7 +12,7 @@ type PolarsCodePanelProps = {
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
   upstreamColumns?: { name: string; dtype: string }[]
-  hint: string
+  hint: ReactNode
   placeholder?: string
 }
 

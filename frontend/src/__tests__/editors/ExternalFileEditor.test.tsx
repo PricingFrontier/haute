@@ -112,8 +112,10 @@ describe("ExternalFileEditor", () => {
     expect(screen.getByTestId("file-browser")).toBeTruthy()
   })
 
-  it("passes current path from config to FileBrowser", () => {
+  it("shows the configured path and passes it to FileBrowser after change", () => {
     render(<ExternalFileEditor {...DEFAULT_PROPS} config={{ path: "models/my_model.pkl" }} />)
+    expect(screen.getByText("models/my_model.pkl")).toBeTruthy()
+    fireEvent.click(screen.getByTestId("file-change-btn"))
     expect(screen.getByTestId("current-path").textContent).toBe("models/my_model.pkl")
   })
 
@@ -122,31 +124,6 @@ describe("ExternalFileEditor", () => {
     render(<ExternalFileEditor {...DEFAULT_PROPS} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByTestId("select-file"))
     expect(onUpdate).toHaveBeenCalledWith("path", "model.pkl")
-  })
-
-  it("renders Code label", () => {
-    render(<ExternalFileEditor {...DEFAULT_PROPS} />)
-    expect(screen.getByText("Code")).toBeTruthy()
-  })
-
-  it("renders CodeEditor with default value from config", () => {
-    render(<ExternalFileEditor {...DEFAULT_PROPS} config={{ code: "df = pl.DataFrame()" }} />)
-    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
-    expect(editor.defaultValue).toBe("df = pl.DataFrame()")
-  })
-
-  it("does not synthesize file loading scaffold in the code editor", () => {
-    render(<ExternalFileEditor {...DEFAULT_PROPS} config={{ path: "models/model.pkl" }} />)
-    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
-    expect(editor.defaultValue).toBe("")
-    expect(editor.defaultValue).not.toContain("load_external_object")
-    expect(editor.defaultValue).not.toContain("with open")
-  })
-
-  it("shows empty placeholder for code editor", () => {
-    render(<ExternalFileEditor {...DEFAULT_PROPS} />)
-    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
-    expect(editor.placeholder).toBe("")
   })
 
   it("reflects external fileType config changes (B22 fix)", () => {

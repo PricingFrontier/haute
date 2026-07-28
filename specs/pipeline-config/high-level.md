@@ -121,9 +121,10 @@ but also returns additional valid root-level pipelines. It lists rather than
 chooses among them; the single-pipeline binding policy remains authoritative.
 
 `haute init` scaffolds a new project: `haute.toml`,
-`.env.example`, CI workflow YAML for one of several CI providers, a runnable starter pipeline
-and starter test suite, and deploy-target-specific credentials and TOML sections for one of
-several supported deploy targets.
+`.env.example`, CI workflow YAML for one of several CI providers, a valid blank pipeline and
+starter parse test, and deploy-target-specific credentials and TOML sections for one of several
+supported deploy targets. The blank pipeline declares its `Pipeline` object but no nodes. Init
+removes a root `main.py`, creates no `prompts/` directory, and creates no node sidecars.
 
 **CI/CD generation.** `haute init --ci` supports three providers today — GitHub Actions,
 GitLab CI, Azure DevOps — plus `none`, which writes no workflow files at all, crossed against
@@ -148,7 +149,7 @@ checks the release stages, branch/manual conditions, and target-secret mappings
 at the exact deploy/smoke/impact steps that consume them.
 
 The deployment guide's before/after project tree is generated from a real
-`handle_init` fixture with a preserved root `main.py`. Documentation parity
+`handle_init` fixture whose root `main.py` is removed. Documentation parity
 tests derive the starter-pipeline node count from that same scaffold, compare
 every documented `haute <command>` with the registered root help surface, and
 import every `haute` Python surface named by a documentation example. The

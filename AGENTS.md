@@ -69,20 +69,21 @@ Use the fewest workers that materially reduce wall-clock time. Prefer direct too
 2. For a bug, reproduce it with the smallest failing regression test before implementing the fix. For new behaviour, add the smallest non-overlapping tests that prove the acceptance criteria. Cover boundaries, invalid input, state transitions, concurrency, and past regressions only when relevant; prefer extending an existing test module or parameterisation over creating a redundant test matrix.
 3. Keep small, clear fixes in the root thread. A Terra worker may implement already-specified tests or code. A Luna worker may perform a genuinely batched mechanical change whose exact transformation is already specified.
 4. Work in tight red-green-refactor loops. Run the new or failing test first, make the smallest coherent implementation, rerun the targeted test, then clean up without broadening scope.
-5. Inspect the actual diff and run the verification ladder below. The root must not accept a worker summary in place of reviewing its changes and evidence.
+5. Inspect the actual diff and run the relevant targeted checks below. The root must not accept a worker summary in place of reviewing its changes and evidence.
 6. The root performs the final review for correctness, regressions, maintainability, consistency, and user experience. Work is complete only after the acceptance criteria are met and the relevant verification evidence is clean.
 
-For failures reported by GitHub CI, inspect the failing check and logs with `gh`, make the smallest targeted fix, and validate it by pushing and rerunning the GitHub workflow. Do not recreate or run the full CI, preflight, or browser suite locally unless the user asks, or a targeted local reproduction is necessary to diagnose an unclear failure. Limit local verification to the affected test or static check; treat the GitHub pipeline as the authoritative full-suite environment.
+For failures reported by GitHub CI, inspect the failing check and logs with `gh`, make the smallest targeted fix, and validate it by pushing and rerunning the GitHub workflow. Do not recreate or run the full CI or browser suite locally unless the user asks, or a targeted local reproduction is necessary to diagnose an unclear failure. Limit local verification to the affected test or static check; treat the GitHub pipeline as the authoritative full-suite environment.
 
-# Verification ladder
+# Targeted verification
 
-Run only the lowest sufficient level while iterating, then climb when the change's risk warrants it:
+Run only the lowest sufficient level while iterating:
 
 1. Run the single failing or newly added test.
 2. Run the affected test module or nearest related tests, plus checks for touched files.
 3. Run affected cross-stack contract, browser, concurrency, or integration tests only when the change crosses those boundaries.
-4. Run the quick preflight for a wider local confidence check.
-5. Run the full preflight once, near completion, for broad or high-risk changes and before pushing when practical. Do not rerun the full preflight after every edit; CI remains the final full compatibility, mutation, performance, and browser gate.
+
+CI remains the final full compatibility, mutation, performance, coverage, build,
+and browser gate.
 
 Useful commands:
 
@@ -91,5 +92,3 @@ Useful commands:
 - Touched Python files: `uv run ruff check <files>` and `uv run ruff format --check <files>`
 - Affected backend typing: `uv run mypy src/haute/`
 - Frontend static checks: `npm --prefix frontend run typecheck` and `npm --prefix frontend run lint`
-- Quick preflight: `powershell -ExecutionPolicy Bypass -File .\scripts\preflight.ps1 -Quick`
-- Full preflight: `powershell -ExecutionPolicy Bypass -File .\scripts\preflight.ps1`

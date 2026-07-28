@@ -2,6 +2,7 @@ import { useState, useEffect } from "react"
 import { X, Folder, FileText, ChevronLeft, Check, Table2, Loader2, AlertTriangle } from "lucide-react"
 import type { ColumnInfo } from "../../types/node"
 import { listFiles } from "../../api/client"
+import type { FileListItem } from "../../api/types"
 import ColumnTable from "../../components/ColumnTable"
 import useSettingsStore, { useMlflowStatus } from "../../stores/useSettingsStore"
 import { formatValue } from "../../utils/formatValue"
@@ -29,12 +30,7 @@ export type OnUpdateConfig = (
 /** Replace an IO configuration atomically when its provider branch changes. */
 export type OnReplaceConfig = (nextConfig: Record<string, unknown>) => OnUpdateConfigResult
 
-export type FileItem = {
-  name: string
-  path: string
-  type: "file" | "directory"
-  size?: number
-}
+export type FileItem = FileListItem
 
 export type InputSource = {
   sourceNodeId: string
@@ -181,7 +177,17 @@ export function MlflowStatusBadge() {
 
 // ─── FileBrowser ──────────────────────────────────────────────────
 
-export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath?: string; onSelect: (path: string) => void; extensions?: string }) {
+export function FileBrowser({
+  currentPath,
+  onSelect,
+  extensions,
+  showSelectionSummary = true,
+}: {
+  currentPath?: string
+  onSelect: (path: string) => void
+  extensions?: string
+  showSelectionSummary?: boolean
+}) {
   const [dir, setDir] = useState(() => {
     if (!currentPath) return "."
     const lastSlash = currentPath.lastIndexOf("/")
@@ -242,7 +248,7 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
 
   return (
     <div>
-      {selectedPath && (
+      {showSelectionSummary && selectedPath && (
         <div className="mb-2 px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'var(--success-soft)', border: '1px solid var(--success-border)' }}>
           <Check size={14} style={{ color: 'var(--success)' }} className="shrink-0" />
           <span className="text-xs font-mono truncate" style={{ color: 'var(--success-hover)' }}>{selectedPath}</span>
@@ -297,7 +303,7 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
                   <span className="text-xs truncate" style={{ color: isSelected ? 'var(--accent)' : 'var(--text-secondary)', fontWeight: isSelected ? 500 : 400 }}>
                     {item.name}
                   </span>
-                  {item.size !== undefined && (
+                  {typeof item.size === "number" && (
                     <span className="text-[11px] ml-auto shrink-0" style={{ color: 'var(--text-muted)' }}>
                       {formatSize(item.size)}
                     </span>

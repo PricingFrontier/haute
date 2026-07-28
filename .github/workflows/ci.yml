@@ -271,7 +271,7 @@ jobs:
 
       - run: uv sync --locked --no-group dev
       - run: uv pip install pytest pytest-asyncio httpx
-      - name: Optional dependency smoke (core install, no MLflow or Databricks extras)
+      - name: Optional dependency smoke (core MLflow, no Databricks SQL connector)
         run: uv run pytest tests/test_optional_dependency_matrix.py -q
 
   optional-deps-present-smoke:

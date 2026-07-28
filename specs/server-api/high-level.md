@@ -167,9 +167,12 @@ until the worker exits.
 
 **File browsing and schema inspection.** `GET /api/files` lists a directory for the file
 picker; when its `extensions` query is omitted, the effective readable extensions come from
-the installed I/O registry. `GET /api/schema` reads a data file's column schema, a 5-row
-preview, and (for parquet) an exact row count or (for JSONL) an estimated one, without
-loading the whole file. `GET /api/io-capabilities` exposes provider groups, the Polars I/O
+the installed I/O registry. Directory items omit file size in the backend model and therefore
+serialize it as `null`; file items carry their byte size. `GET /api/schema` reads a data file's
+column schema, a 5-row preview, and (for parquet) an exact row count or (for JSONL) an estimated
+one, without loading the whole file. XML is decoded through the API-input structured-record
+normaliser and returns an exact row count; invalid or unsafe XML returns 400.
+`GET /api/io-capabilities` exposes provider groups, the Polars I/O
 format registry (read/write capability, modes, accepted arguments, missing optional engines),
 and cache/materialisation capabilities so the dataInput/dataOutput node editors never
 hard-code format knowledge. `/api/input-cache/*` owns shared snapshot build, progress,

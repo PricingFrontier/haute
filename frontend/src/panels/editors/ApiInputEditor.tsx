@@ -1,6 +1,6 @@
 import { useMemo, useState, type CSSProperties } from "react"
 import { AlertTriangle, Radio, Check, HelpCircle, KeyRound, Plus, X } from "lucide-react"
-import { FileBrowser, SchemaPreview } from "./_shared"
+import { SchemaPreview } from "./_shared"
 import type { OnUpdateConfig, OnUpdateConfigResult } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
 import { configField } from "../../utils/configField"
@@ -10,8 +10,12 @@ import {
   apiInputLabelIssue,
   apiInputLabelIssueMessage,
 } from "../../utils/apiInputPorts"
-import { CacheFetchButton } from "../../components/CacheFetchButton"
+import {
+  CacheFetchButton,
+  PARQUET_CACHE_LABELS,
+} from "../../components/CacheFetchButton"
 import { FrameTableActions } from "./FrameTableActions"
+import PathPickerField from "./shared/PathPickerField"
 import {
   buildJsonCache,
   getJsonCacheProgress,
@@ -129,10 +133,8 @@ function JsonCacheButton({
       deleteCache={(_key) => deleteJsonCache(dataPath) as Promise<JsonCacheStatus>}
       timestampField="cached_at"
       labels={{
-        fetchLabel: "Cache as Parquet",
-        refreshLabel: "Refresh Cache",
+        ...PARQUET_CACHE_LABELS,
         notCachedHint: "Runs directly from JSON — cache as Parquet for faster repeat runs",
-        pendingLabel: "Processing...",
       }}
       disabled={disabled}
       disabledReason={disabledReason}
@@ -160,8 +162,7 @@ export default function ApiInputEditor({
   const currentPath = configField<string | undefined>(config, "path", undefined)
   const { schema, loading: loadingSchema, error: schemaError, fetchForPath } = useSchemaFetch(currentPath)
   const showCacheButton =
-    !!currentPath && /\.(?:json|jsonl|ndjson)$/i.test(currentPath)
-  const [fileExpanded, setFileExpanded] = useState(false)
+    !!currentPath && /\.(?:json|jsonl|ndjson|xml)$/i.test(currentPath)
   const [inferring, setInferring] = useState(false)
   const [inferError, setInferError] = useState<string | null>(null)
   // Defect 2 — when a re-infer would overwrite tables the user has
@@ -711,60 +712,16 @@ export default function ApiInputEditor({
           <span>This node receives live API requests at deploy time</span>
         </div>
 
-        {/* File picker */}
-        <div>
-          <label
-            className="text-[11px] font-bold uppercase tracking-[0.08em] mb-1.5 block"
-            style={{ color: "var(--text-muted)" }}
-          >
-            Preview Data
-            <span className="ml-1.5 normal-case tracking-normal font-normal">
-              .json, .jsonl, or .ndjson
-            </span>
-          </label>
-          {currentPath && (
-            <div
-              className="px-2.5 py-2 rounded-lg flex items-center gap-2"
-              style={{
-                background: "var(--success-soft)",
-                border: "1px solid var(--success-border)",
-              }}
-            >
-              <Check
-                size={14}
-                style={{ color: "var(--success)" }}
-                className="shrink-0"
-              />
-              <span
-                className="text-xs font-mono truncate flex-1"
-                style={{ color: "var(--success-hover)" }}
-              >
-                {currentPath}
-              </span>
-              <button
-                data-testid="file-change-btn"
-                onClick={() => setFileExpanded(!fileExpanded)}
-                className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded transition-colors"
-                style={{ color: "var(--success-hover)" }}
-              >
-                {fileExpanded ? "close" : "change"}
-              </button>
-            </div>
-          )}
-          {(!currentPath || fileExpanded) && (
-            <div className="mt-2">
-              <FileBrowser
-                currentPath={undefined}
-                onSelect={(path) => {
-                  onUpdate("path", path)
-                  fetchForPath(path)
-                  setFileExpanded(false)
-                }}
-                extensions=".json,.jsonl,.ndjson"
-              />
-            </div>
-          )}
-        </div>
+        <PathPickerField
+          label="Preview Data"
+          sublabel=".json, .jsonl, .ndjson, or .xml"
+          value={currentPath ?? ""}
+          extensions=".json,.jsonl,.ndjson,.xml"
+          onSelect={(path) => {
+            onUpdate("path", path)
+            fetchForPath(path)
+          }}
+        />
 
         {/* Bundle 3b — cache button positioned ABOVE the Tables editor.
             Contextual rationale: the cache action operates on the data

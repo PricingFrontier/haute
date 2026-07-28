@@ -616,6 +616,15 @@ describe("App integration — load a pipeline with nodes", () => {
 
   it("selecting an Explore node previews the post-code dataframe in the Explore lower panel", async () => {
     const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
+    // Direct Parquet by derivation, so the pre-preview snapshot-ensure stage
+    // skips this source instead of querying the unmocked input-cache API.
+    sourceNode.data.config = {
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
+      path: "data/claims.parquet",
+      arguments: {},
+    }
     sourceNode.data._columns = [{ name: "premium", dtype: "i64" }]
     sourceNode.data._availableColumns = [{ name: "premium", dtype: "i64" }]
     // Tag the stash with its capture source — untagged stashes are treated

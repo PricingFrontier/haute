@@ -23,7 +23,7 @@ from haute._polars_io_registry import PolarsIoConfigError
 from haute._source_cache import SourceCacheStore
 
 
-def test_file_direct_and_snapshot_are_equivalent_and_snapshot_is_offline(
+def test_file_snapshot_is_offline(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "input.csv"
@@ -32,14 +32,13 @@ def test_file_direct_and_snapshot_are_equivalent_and_snapshot_is_offline(
         "inputType": "file",
         "format": "csv",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": "input.csv",
         "arguments": {"schema": {"id": "int64", "value": "str"}},
     }
-    direct = resolve_data_input(config, base_dir=tmp_path).collect()
+    expected = pl.DataFrame({"id": [1, 2], "value": ["a", "b"]})
     store = SourceCacheStore(tmp_path)
     build_input_snapshot(
-        {**config, "cacheMode": "snapshot"},
+        config,
         store=store,
         base_dir=tmp_path,
         profile=ExecutionProfile.LAZY_SINK,
@@ -47,11 +46,43 @@ def test_file_direct_and_snapshot_are_equivalent_and_snapshot_is_offline(
 
     source.unlink()
     cached = resolve_data_input(
-        {**config, "cacheMode": "snapshot"},
+        config,
         store=store,
         base_dir=tmp_path,
     ).collect()
-    assert_frame_equal(cached, direct)
+    assert_frame_equal(cached, expected)
+
+
+def test_missing_snapshot_is_reported_as_a_config_error(tmp_path: Path) -> None:
+    config = {
+        "inputType": "file",
+        "format": "csv",
+        "mode": "scan",
+        "path": "input.csv",
+        "arguments": {"schema": {"id": "int64"}},
+    }
+
+    with pytest.raises(PolarsIoConfigError, match="^input_snapshot_missing:"):
+        resolve_data_input(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
+
+
+def test_direct_parquet_reads_the_anchored_source_without_a_snapshot(tmp_path: Path) -> None:
+    source = tmp_path / "input.parquet"
+    pl.DataFrame({"id": [1]}).write_parquet(source)
+    config = {
+        "inputType": "file",
+        "format": "parquet",
+        "path": "input.parquet",
+    }
+
+    result = resolve_data_input(
+        config,
+        store=SourceCacheStore(tmp_path),
+        base_dir=tmp_path,
+    ).collect()
+    assert result.to_dicts() == [{"id": 1}]
+    with pytest.raises(PolarsIoConfigError, match="does not support snapshot builds"):
+        build_input_snapshot(config, store=SourceCacheStore(tmp_path), base_dir=tmp_path)
 
 
 def test_eager_only_file_snapshot_requires_admitted_eager_profile(tmp_path: Path) -> None:
@@ -61,7 +92,6 @@ def test_eager_only_file_snapshot_requires_admitted_eager_profile(tmp_path: Path
         "inputType": "file",
         "format": "json",
         "mode": "read",
-        "cacheMode": "snapshot",
         "path": "input.json",
     }
     store = SourceCacheStore(tmp_path)
@@ -85,14 +115,24 @@ def test_eager_only_file_snapshot_requires_admitted_eager_profile(tmp_path: Path
     ]
 
 
-def test_inline_provider_is_direct_only() -> None:
+def test_inline_snapshot_builds_resolves_and_redacts_records(tmp_path: Path) -> None:
     config = {
         "inputType": "inline",
         "format": "records",
-        "cacheMode": "direct",
-        "records": [{"id": 1}, {"id": 2}],
+        "records": [{"customer_secret": "top-secret-value", "id": 1}],
     }
-    assert resolve_data_input(config).collect()["id"].to_list() == [1, 2]
+    changed_records = {
+        **config,
+        "records": [{"customer_secret": "top-secret-value", "id": 2}],
+    }
+    identity = source_cache_identity(config)
+    assert identity.digest != source_cache_identity(changed_records).digest
+    assert b"customer_secret" not in identity.canonical_bytes
+    assert b"top-secret-value" not in identity.canonical_bytes
+
+    store = SourceCacheStore(tmp_path)
+    build_input_snapshot(config, store=store)
+    assert resolve_data_input(config, store=store).collect()["id"].to_list() == [1]
 
 
 def test_database_uses_bounded_sqlite_snapshot_and_cached_read_is_offline(
@@ -111,7 +151,6 @@ def test_database_uses_bounded_sqlite_snapshot_and_cached_read_is_offline(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies ORDER BY id",
         "arguments": {"batch_size": 1},
@@ -140,7 +179,6 @@ def test_empty_database_query_publishes_schema_bearing_snapshot(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies",
     }
@@ -171,7 +209,6 @@ def test_database_snapshot_uses_one_declared_schema_across_batches(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies ORDER BY id",
         "arguments": {"batch_size": 1},
@@ -192,7 +229,6 @@ def test_database_snapshot_rejects_missing_sqlite_without_creating_it(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT id FROM policies",
     }
@@ -214,7 +250,6 @@ def test_database_snapshot_uses_runtime_storage_class_for_datetime(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT occurred_at FROM events",
         "arguments": {"batch_size": 1},
@@ -239,7 +274,6 @@ def test_database_snapshot_rejects_incompatible_runtime_storage_classes_before_o
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT value FROM values_table",
         "arguments": {"batch_size": 1},
@@ -262,7 +296,6 @@ def test_empty_database_expression_fails_with_typed_schema_error(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT value + 1 AS next_value FROM values_table",
     }
@@ -280,7 +313,6 @@ def test_raw_sqlite_uri_is_resolved_relative_to_pipeline_base(tmp_path: Path) ->
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": "sqlite:///pricing.sqlite",
         "query": "SELECT id FROM policies",
     }
@@ -293,16 +325,15 @@ def test_raw_sqlite_uri_is_resolved_relative_to_pipeline_base(tmp_path: Path) ->
     ]
 
 
-def test_database_direct_execution_is_rejected_before_connector_access(
+def test_non_snapshot_execution_is_rejected_before_connector_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HAUTE_TEST_DATABASE_URL", "sqlite:///does-not-matter.sqlite")
-    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'snapshot'"):
+    with pytest.raises(PolarsIoConfigError, match="input_snapshot_missing"):
         resolve_data_input(
             {
                 "inputType": "database",
                 "format": "database",
-                "cacheMode": "direct",
                 "connection": "HAUTE_TEST_DATABASE_URL",
                 "query": "SELECT 1",
             }
@@ -315,7 +346,6 @@ def test_databricks_identity_is_query_distinct_and_contains_no_resolved_secrets(
     monkeypatch.setenv("DATABRICKS_TOKEN", "top-secret-token")
     base = {
         "inputType": "databricks",
-        "cacheMode": "snapshot",
         "http_path": "/sql/1.0/warehouses/abc",
         "table": "main.pricing.policies",
     }
@@ -330,7 +360,6 @@ def test_databricks_identity_is_query_distinct_and_contains_no_resolved_secrets(
 def test_databricks_identity_excludes_fetch_batch_size() -> None:
     base = {
         "inputType": "databricks",
-        "cacheMode": "snapshot",
         "http_path": "/sql/1.0/warehouses/abc",
         "table": "main.pricing.policies",
     }
@@ -342,23 +371,25 @@ def test_databricks_identity_excludes_fetch_batch_size() -> None:
     assert "arguments" not in small_batches.payload["descriptor"]
 
 
-def test_identity_excludes_code_and_cache_selection(tmp_path: Path) -> None:
+def test_identity_excludes_post_snapshot_code(tmp_path: Path) -> None:
     common = {
         "inputType": "file",
-        "format": "parquet",
-        "path": "data/input.parquet",
+        "format": "csv",
+        "mode": "scan",
+        "path": "data/input.csv",
+        "arguments": {"schema": {"id": "int64"}},
     }
-    direct = source_cache_identity(
-        {**common, "cacheMode": "direct", "code": "df = df.head(1)"},
+    head = source_cache_identity(
+        {**common, "code": "df = df.head(1)"},
         base_dir=tmp_path,
     )
-    snapshot = source_cache_identity(
-        {**common, "cacheMode": "snapshot", "code": "df = df.tail(1)"},
+    tail = source_cache_identity(
+        {**common, "code": "df = df.tail(1)"},
         base_dir=tmp_path,
     )
-    assert direct.digest == snapshot.digest
-    assert "code" not in direct.payload["descriptor"]
-    assert "cacheMode" not in direct.payload["descriptor"]
+    assert head.digest == tail.digest
+    assert "code" not in head.payload["descriptor"]
+    assert "cacheMode" not in head.payload["descriptor"]
 
 
 def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
@@ -368,7 +399,6 @@ def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
         "inputType": "lakehouse",
         "format": "delta",
         "mode": "scan",
-        "cacheMode": "snapshot",
         "path": "lake/policies",
     }
 
@@ -380,13 +410,13 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
 ) -> None:
     from haute._execution_context import ExecutionContext
 
-    source = tmp_path / "input.parquet"
-    pl.DataFrame({"id": [1]}).write_parquet(source)
+    source = tmp_path / "input.ndjson"
+    pl.DataFrame({"id": [1]}).write_ndjson(source)
     config = {
         "inputType": "file",
-        "format": "parquet",
-        "cacheMode": "snapshot",
-        "path": "input.parquet",
+        "format": "ndjson",
+        "mode": "scan",
+        "path": "input.ndjson",
     }
     store = SourceCacheStore(tmp_path)
     first = build_input_snapshot(config, store=store, base_dir=tmp_path)
@@ -397,7 +427,7 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
 
     with context.stage("resolve"):
         leased_frame = resolve_data_input(config, store=store, base_dir=tmp_path)
-    pl.DataFrame({"id": [2]}).write_parquet(source)
+    pl.DataFrame({"id": [2]}).write_ndjson(source)
     second = build_input_snapshot(
         config,
         store=store,
@@ -415,20 +445,20 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
 def test_derived_snapshot_plan_retains_lease_without_execution_context(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "input.parquet"
-    pl.DataFrame({"id": [1]}).write_parquet(source)
+    source = tmp_path / "input.ndjson"
+    pl.DataFrame({"id": [1]}).write_ndjson(source)
     config = {
         "inputType": "file",
-        "format": "parquet",
-        "cacheMode": "snapshot",
-        "path": "input.parquet",
+        "format": "ndjson",
+        "mode": "scan",
+        "path": "input.ndjson",
     }
     store = SourceCacheStore(tmp_path)
     first = build_input_snapshot(config, store=store, base_dir=tmp_path)
 
     derived = resolve_data_input(config, store=store, base_dir=tmp_path).select("id")
     gc.collect()
-    pl.DataFrame({"id": [2]}).write_parquet(source)
+    pl.DataFrame({"id": [2]}).write_ndjson(source)
     build_input_snapshot(config, store=store, base_dir=tmp_path, refresh=True)
 
     assert first.data_path.exists()

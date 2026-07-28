@@ -19,6 +19,7 @@ from haute.errors import GroupByExecutionUnsupportedError
 from haute.execution import ProjectionRequest, execute_lazy_graph, plan_execution_strategy
 from haute.executor import _build_node_fn
 from haute.routes._train_service import _build_training_feature_selection
+from tests.conftest import build_test_input_snapshot
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
@@ -45,12 +46,11 @@ def _edge(source: str, target: str) -> GraphEdge:
     return GraphEdge(id=f"{source}-{target}", source=source, target=target)
 
 
-def _direct_parquet_input(path: Path, **extra: Any) -> dict[str, Any]:
+def _snapshot_parquet_input(path: Path, **extra: Any) -> dict[str, Any]:
     return {
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": str(path),
         "arguments": {},
         **extra,
@@ -114,12 +114,18 @@ def _scenario_graph(
     base_columns: list[str],
     lookup_columns: list[str],
 ) -> PipelineGraph:
+    build_test_input_snapshot(
+        _snapshot_parquet_input(base_path, contract={"inputs": [], "outputs": base_columns})
+    )
+    build_test_input_snapshot(
+        _snapshot_parquet_input(lookup_path, contract={"inputs": [], "outputs": lookup_columns})
+    )
     return PipelineGraph(
         nodes=[
             _node(
                 "base",
                 NodeType.DATA_INPUT,
-                _direct_parquet_input(
+                _snapshot_parquet_input(
                     base_path,
                     contract={"inputs": [], "outputs": base_columns},
                 ),
@@ -127,7 +133,7 @@ def _scenario_graph(
             _node(
                 "lookup",
                 NodeType.DATA_INPUT,
-                _direct_parquet_input(
+                _snapshot_parquet_input(
                     lookup_path,
                     contract={"inputs": [], "outputs": lookup_columns},
                 ),

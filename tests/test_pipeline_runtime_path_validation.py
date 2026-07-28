@@ -50,7 +50,6 @@ def test_validate_runtime_input_paths_rejects_project_escape_for_file_backed_nod
                 "inputType": "file",
                 "format": "parquet",
                 "mode": "scan",
-                "cacheMode": "direct",
                 "arguments": {},
             }
         )
@@ -279,7 +278,6 @@ def _config_node(node_id: str, label: str) -> GraphNode:
                 "inputType": "file",
                 "format": "csv",
                 "mode": "scan",
-                "cacheMode": "direct",
                 "path": f"{node_id}.csv",
                 "arguments": {},
             },

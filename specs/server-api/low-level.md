@@ -14,7 +14,7 @@
 | `src/haute/routes/__init__.py` | Package docstring only — no code. |
 | `src/haute/routes/_helpers.py` | `SidecarModel` (the `.haute.json` on-disk schema); `validate_safe_path`; `pipeline_dir()`; the pipeline-name→path index (`_ensure_pipeline_index`, `invalidate_pipeline_index`, `lookup_pipeline_by_name`) and its module-dependency twin (`_ensure_module_deps`, `pipelines_importing_module`); self-write tracking (`mark_self_write`, `is_self_write`); watcher-pause (`pause_watcher`, `watcher_is_paused`); the WebSocket client registry and `broadcast()`; sidecar load/save (`load_sidecar`, `save_sidecar`); `parse_pipeline_to_graph` (parse + sidecar merge); `commit_pipeline_graph` (read-only historical-commit parse); the shared `save_lock` asyncio.Lock. |
 | `src/haute/routes/pipeline.py` | `/api/pipelines`, `/api/pipeline`, `/api/pipeline/{name}`, `/api/pipeline/save`, `/api/pipeline/read-json`, `/api/pipeline/trace`, `/api/pipeline/preview`, `/api/pipeline/write-output`, `/api/pipeline/output-destination` — plus the supersession-key builders, shared output-request preparation, `_prepare_runtime_graph` request containment, runtime-input/output path validators, and memory-limit-to-HTTP-exception translators shared across graph-executing route families. |
-| `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file schema+preview). |
+| `src/haute/routes/files.py` | `/api/files` (directory browse) and `/api/schema` (flat-file plus XML structured-record schema/preview). |
 | `src/haute/routes/io_capabilities.py` | `/api/io-capabilities`, the versioned provider/format/cache capability contract consumed by the input and output editors. |
 | `src/haute/routes/input_cache.py` | `/api/input-cache/*`, the shared build/status/cancel/clear lifecycle for snapshot-backed inputs. |
 | `src/haute/routes/utility.py` | `/api/utility` CRUD (list/read/create/update/delete) for `utility/*.py` helper modules, with AST syntax validation on every write. |
@@ -119,9 +119,9 @@ when a path/query/body fails model validation):
 | `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}` | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
 | `POST /api/pipeline/write-output` | `WriteOutputRequest {graph, node_id, source="live", streaming_chunk_size=null, overwrite=false}` | `WriteOutputResponse` with status, row count, destination path/table, format, publication outcome, and execution metrics |
 | `POST /api/pipeline/output-destination` | `OutputDestinationRequest {graph, node_id}` | Safe destination display path, format, and suffix-mismatch flag; performs no graph execution or filesystem write |
-| `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}` |
+| `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null` |
 | `GET /api/io-capabilities` | No body | Versioned provider groups, format capabilities, modes, accepted arguments, optional engines, cache modes, and materialisation diagnostics |
-| `GET /api/schema` | Required query `path` | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}` |
+| `GET /api/schema` | Required query `path`; XML uses the structured API-input decoder | `SchemaResponse {path, columns, row_count?, row_count_estimated=false, column_count, preview=[]}`; invalid/unsafe XML is 400 |
 | `POST /api/input-cache/build` | Canonical `dataInput` config and source identity | Starts or coalesces a cache-generation build and returns its job identity |
 | `POST /api/input-cache/status` | Canonical `dataInput` config | Current published-generation readiness, freshness, metadata, and active job |
 | `POST /api/input-cache/clear` | Canonical `dataInput` config | Clears published cache generations when no active lease prevents deletion |
@@ -242,10 +242,10 @@ concurrent plain saves):
    validate every output path against the allowlist (main file exact match, or
    `modules/<name>.py` with no traversal/reserved-device-name/case-collision), and stage each
    write.
-5. Emit non-blocking warnings for JSON `apiInput` nodes with no `tables[]` yet.
+5. Emit non-blocking warnings for structured `apiInput` nodes with no `tables[]` yet.
 6. Write per-node config JSON sidecars (collision-checked against protected load-error paths
    and against each other, casefolded).
-7. Best-effort mirror each JSON/JSONL `apiInput`'s volatile cache to its committed layer.
+7. Best-effort mirror each JSON/JSONL/NDJSON/XML `apiInput`'s volatile cache to its committed layer.
    Mirror errors are logged and swallowed; mirrors are idempotent and are not recorded in
    `_TouchedFile`, so partial cache state is outside rollback and repaired by a later save.
 8. Write the `.haute.json` position sidecar (collision warnings for label-sanitisation
@@ -495,8 +495,9 @@ for route-level tests, and direct unit tests for the pure-function modules.
   (source, target) pair (→ 400 `"Target node ... multiple frames"` when it can't
   be resolved).
 - **`test_files_routes.py`**, **`test_formats_route.py`**, **`test_utility_routes.py`** —
-  route-level coverage of file browsing, the I/O format registry endpoint, and utility-script
-  CRUD (including AST-syntax-error rejection with line numbers).
+  route-level coverage of file browsing (including nullable directory size), schema previews
+  including XML, the I/O format registry endpoint, and utility-script CRUD (including
+  AST-syntax-error rejection with line numbers).
 - **`test_output_assemble_routes.py`** — the dry-run route: schema-pre-check ordering,
   volatile-config swap-in behaviour, structured 507 admission mapping, timeout/error-status
   mapping, and admission-context release on success.

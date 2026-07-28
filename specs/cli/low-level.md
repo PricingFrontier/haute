@@ -68,12 +68,15 @@ without validating required positional arguments.
 **`init`**: `handle_init` checks for an existing `haute.toml` (abort unless `--force`), resolves the
 project name from `pyproject.toml` (creating/patching it via `_ensure_haute_dependency`, which does
 a structural TOML edit rather than string templating so existing content survives), creates the
-`rating/` package tree and config placeholders, writes `haute.toml` via `haute._scaffold.haute_toml`,
+`rating/` package tree and empty config/data/model/output placeholders, writes `haute.toml` via `haute._scaffold.haute_toml`,
 writes `.env.example`, writes starter tests, writes CI workflow files for the chosen provider
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
-`haute._gitignore_guard.ensure_gitignore_guards`. A pre-existing root `main.py` is preserved
-verbatim and reported; `--force` applies to Haute-owned scaffold files, not that root entry point.
+`haute._gitignore_guard.ensure_gitignore_guards`. A pre-existing root `main.py` is deleted and
+reported: `uv init` recreates that placeholder whenever it runs and the project's real entry
+point is `rating/main.py`, so the root file is treated as a tooling artifact, not user content. The generated pipeline declares only
+`haute.Pipeline(name)` and therefore parses with zero nodes; its starter test checks that parse and
+name contract without requiring execution data. Init creates neither `prompts/` nor node sidecars.
 
 **`run`**: resolves the pipeline file via `haute._project.resolve_pipeline_file`, calls
 `parse_pipeline_file` then `execute_graph`, prints one line per node (row/column count or error),
@@ -236,7 +239,9 @@ appends to `$GITHUB_STEP_SUMMARY` when that env var is set.
 
 ## Testing
 
-- `tests/test_starter_pipeline_e2e.py` — hermetic `haute init` scaffold parse-and-execute test proving a fresh starter pipeline produces output through parser and executor.
+- `tests/test_starter_pipeline_e2e.py` — hermetic `haute init` scaffold test proving the blank
+  generated pipeline parses with the configured name and zero nodes, and that its generated test
+  suite passes without source data.
 
 Tests live under `tests/` as a flat set of `test_cli_*.py` files (plus `test_cli.py` and
 `test_cli_no_shadow.py`), using `click.testing.CliRunner` for end-to-end command invocation and

@@ -763,7 +763,6 @@ def test_execute_lazy_dataframe_cache_graph_config_change_invalidates(
                     "inputType": "file",
                     "format": "parquet",
                     "mode": "scan",
-                    "cacheMode": "direct",
                     "path": "changed.parquet",
                     "arguments": {},
                 },

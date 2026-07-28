@@ -40,7 +40,7 @@ You'll see `(.venv)` appear in your terminal prompt after the activate step - th
 Depending on your deploy target, you may need additional packages:
 
 ```powershell
-uv add "haute[databricks]"         # Adds mlflow + databricks-sdk (for Databricks target)
+uv add "haute[databricks]"         # Adds SQL support and pins Databricks clients
 ```
 
 ---

@@ -336,8 +336,30 @@ def _reject_inactive_fields(
             raise PolarsIoConfigError(f"Field {field!r} is not valid for {discriminant} {value!r}.")
 
 
+def data_input_is_direct(config: Mapping[str, Any]) -> bool:
+    """THE derivation of a Data Input's execution mode — never stored in config.
+
+    A file-backed Parquet scan already has the lazy, schema-bearing execution
+    shape a snapshot would duplicate, so it is read directly from its
+    configured source. Every other canonical input executes from a published
+    snapshot generation. An absent or blank ``mode`` means the format's
+    default — the same unset rule as :func:`resolve_input_mode` — which for
+    Parquet is ``scan``.
+    """
+    return (
+        config.get("inputType") == "file"
+        and config.get("format") == "parquet"
+        and config.get("mode") in (None, "", "scan")
+    )
+
+
 def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Strictly validate one persisted canonical ``dataInput`` config."""
+    """Strictly validate one persisted canonical ``dataInput`` config.
+
+    The removed ``cacheMode`` field has no compatibility path: direct-versus-
+    snapshot execution is derived by :func:`data_input_is_direct`, so a config
+    still carrying the field is rejected as an inactive field.
+    """
     result = dict(config)
     input_type = result.get("inputType")
     if input_type not in {"file", "database", "lakehouse", "databricks", "inline"}:
@@ -346,7 +368,6 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
     common = {
         "inputType",
         "format",
-        "cacheMode",
         "arguments",
         "code",
     } | _IO_UNIVERSAL_KEYS
@@ -356,7 +377,6 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             result,
             allowed={
                 "inputType",
-                "cacheMode",
                 "http_path",
                 "table",
                 "query",
@@ -367,8 +387,6 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        if result.get("cacheMode") != "snapshot":
-            raise PolarsIoConfigError("Databricks input requires cacheMode 'snapshot'.")
         _require_nonempty_string(result, "http_path", subject="Databricks input")
         _require_nonempty_string(result, "table", subject="Databricks input")
         query = result.get("query")
@@ -398,20 +416,17 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
         raise PolarsIoConfigError(
             f"Format {fmt.name!r} belongs to group {group!r}, not inputType {input_type!r}."
         )
+    mode = resolve_input_mode(fmt, result) if input_type != "database" else None
     if input_type == "file":
         _reject_inactive_fields(
             result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
         )
         _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
-        if result.get("cacheMode") not in {"direct", "snapshot"}:
-            raise PolarsIoConfigError("File input requires cacheMode 'direct' or 'snapshot'.")
     elif input_type == "lakehouse":
         _reject_inactive_fields(
             result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type
         )
         _require_nonempty_string(result, "path", subject=f"Format {fmt.name!r}")
-        if result.get("cacheMode") not in {"direct", "snapshot"}:
-            raise PolarsIoConfigError("Lakehouse input requires cacheMode 'direct' or 'snapshot'.")
     elif input_type == "database":
         _reject_inactive_fields(
             result,
@@ -419,8 +434,6 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        if result.get("cacheMode") != "snapshot":
-            raise PolarsIoConfigError("Database input requires cacheMode 'snapshot'.")
         _validate_exactly_one_locator(result, subject="Database input")
         _require_nonempty_string(result, "query", subject="Database input")
         arguments = result.get("arguments", {})
@@ -444,15 +457,13 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             discriminant="inputType",
             value=input_type,
         )
-        if result.get("cacheMode") != "direct":
-            raise PolarsIoConfigError("Inline input requires cacheMode 'direct'.")
         if not isinstance(result.get("records"), list):
             raise PolarsIoConfigError("Inline input requires 'records' as a list.")
         if not all(isinstance(record, Mapping) for record in result["records"]):
             raise PolarsIoConfigError("Inline input 'records' must contain objects.")
 
     if input_type != "database":
-        mode = resolve_input_mode(fmt, result)
+        assert mode is not None
         owner, callable_name = input_callable_key(fmt, mode)
         validate_arguments(fmt, owner, callable_name, result.get("arguments") or {})
     return result
@@ -810,7 +821,7 @@ def default_output_extension(fmt: IoFormat) -> str | None:
 
 def _snapshot_build(fmt: IoFormat) -> Literal["bounded", "admitted_eager", "unsupported"]:
     if fmt.source_kind == "inline":
-        return "unsupported"
+        return "bounded"
     if fmt.source_kind == "database":
         return "bounded"
     return "bounded" if fmt.bounded_read else "admitted_eager"
@@ -862,7 +873,7 @@ def registry_capabilities() -> dict[str, Any]:
             "label": "Lakehouse",
             "input_available": True,
             "output_available": True,
-            "cache_modes": ["direct", "snapshot"],
+            "cache_modes": ["snapshot"],
             "input_fields": [
                 {"name": "path", "label": "Table locator", "kind": "path", "required": True}
             ],
@@ -895,7 +906,7 @@ def registry_capabilities() -> dict[str, Any]:
             "label": "Inline",
             "input_available": True,
             "output_available": False,
-            "cache_modes": ["direct"],
+            "cache_modes": ["snapshot"],
             "input_fields": [
                 {"name": "records", "label": "Records", "kind": "records", "required": True}
             ],
@@ -904,9 +915,7 @@ def registry_capabilities() -> dict[str, Any]:
         },
     }
     for fmt in FORMATS:
-        input_modes = [
-            mode for mode, available in (("scan", fmt.scanner), ("read", fmt.reader)) if available
-        ]
+        input_modes = ["scan"] if fmt.scanner else (["read"] if fmt.reader else [])
         output_modes = [
             mode for mode, available in (("sink", fmt.sinker), ("write", fmt.writer)) if available
         ]
@@ -925,6 +934,7 @@ def registry_capabilities() -> dict[str, Any]:
         }
         input = {
             "modes": input_modes,
+            "cache_mode": "direct" if fmt.name == "parquet" else "snapshot",
             "arguments": input_arguments,
             # Database Data Input is acquired by the bounded provider adapter
             # rather than Polars' eager read_database_uri callable. Its engine
@@ -938,7 +948,7 @@ def registry_capabilities() -> dict[str, Any]:
             "direct_bounded": fmt.bounded_read,
             "needs_schema_when_bounded": fmt.needs_schema_when_bounded,
             "snapshot_build": _snapshot_build(fmt),
-            "cached_read": fmt.source_kind != "inline",
+            "cached_read": _snapshot_build(fmt) != "unsupported",
         }
         output = None
         if output_modes:

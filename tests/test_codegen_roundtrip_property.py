@@ -190,7 +190,6 @@ def _capstone_root_graph(
                     "inputType": "file",
                     "format": "parquet",
                     "mode": "scan",
-                    "cacheMode": "direct",
                     "path": r"data\raw {quotes}\left (gross).parquet",
                     "arguments": {"schema": {"premium (gross)": "Float64"}},
                     "code": _c5_chain_user_code(user_text),
@@ -475,7 +474,6 @@ def _capstone_root_graph(
                     "inputType": "file",
                     "format": "csv",
                     "mode": "scan",
-                    "cacheMode": "direct",
                     "path": r"data\wide {quotes}\input (raw).csv",
                     "arguments": {
                         "separator": ";",

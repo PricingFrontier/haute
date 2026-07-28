@@ -28,11 +28,11 @@ def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _data_input_config(path: str) -> dict[str, object]:
     suffix = Path(path).suffix.casefold()
+    format_name = "csv" if suffix == ".csv" else "parquet"
     return {
         "inputType": "file",
-        "format": "csv" if suffix == ".csv" else "parquet",
+        "format": format_name,
         "mode": "scan",
-        "cacheMode": "direct",
         "path": path,
         "arguments": {},
     }
@@ -343,7 +343,7 @@ def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
         config_dir.mkdir(parents=True)
         (config_dir / "source.json").write_text(
             '{"inputType":"file","format":"parquet","mode":"scan",'
-            '"cacheMode":"direct","path":"rating-data.parquet","arguments":{}}'
+            '"path":"rating-data.parquet","arguments":{}}'
         )
         modules_dir = rating_root / "modules"
         modules_dir.mkdir()

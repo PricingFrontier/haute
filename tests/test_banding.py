@@ -483,7 +483,6 @@ def _banding_graph(factors: list[dict]) -> tuple[PipelineGraph, GraphNode]:
                 "inputType": "file",
                 "format": "parquet",
                 "mode": "scan",
-                "cacheMode": "direct",
                 "path": "data.parquet",
                 "arguments": {},
             },

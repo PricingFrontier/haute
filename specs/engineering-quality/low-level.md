@@ -154,8 +154,15 @@
    waits for its readiness URL. The harness preserves the same-origin Vite
    proxy and real HttpOnly-cookie bootstrap used by the product; it never
    exports a browser-readable session-token variable or adds a browser bearer
-   header. Its out-of-browser readiness probe uses the supported non-browser
-   token header. `HAUTE_E2E_BACKEND_PORT`, `HAUTE_E2E_FRONTEND_PORT`, and
+   header. Its generated fixture explicitly owns the deterministic
+   `raw_rows` → `enriched` → `priced` core graph and sidecars after invoking
+   the blank `haute init` scaffold; browser coverage must not depend on product
+   scaffolding to supply test nodes. The fixture keeps all standard imports
+   before the pipeline constructor so the parser retains externally inserted
+   preamble code and websocket file sync can refresh the Imports editor. Its
+   out-of-browser readiness probe uses the supported non-browser token header.
+   `HAUTE_E2E_BACKEND_PORT`,
+   `HAUTE_E2E_FRONTEND_PORT`, and
    `HAUTE_E2E_READINESS_PORT` may select alternate loopback ports when a
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
@@ -270,6 +277,7 @@
 - `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
 - `tests/test_dry_fixes.py` — DRY response/model inheritance and optimiser finalize contracts across online/ratebook/frontier paths.
 - `tests/test_dry_refactors.py` — shared exception hierarchy, dispatch-table parity, transport resolution, dead-code removal, typed-node lookup, and shared code compilation.
+- `tests/test_frontend_e2e_server.py` — browser-harness contracts for augmenting the blank scaffold with a complete, executable fixture graph.
 - `tests/test_performance_docs.py` — documentation contracts for Python/Polars/frontend/memory performance workflows and links.
 - `tests/test_property.py` — Hypothesis properties for sanitisation, topology, path resolution, banding/rating, codegen/parser round-trips, fingerprints, config, validation, and cache invariants.
 - `tests/test_repository_hygiene.py` — repository artifact/path, dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.

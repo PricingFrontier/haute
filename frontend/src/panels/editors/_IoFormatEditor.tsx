@@ -12,8 +12,9 @@ import type {
   IoOutputCapability,
 } from "../../api/types"
 import { withAlpha } from "../../utils/color"
-import { FileBrowser, INPUT_STYLE } from "./_shared"
+import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
+import PathPickerField from "./shared/PathPickerField"
 
 type Direction = "input" | "output"
 
@@ -327,19 +328,7 @@ function CapabilityDiagnostics({
   capability: IoInputCapability | IoOutputCapability
 }) {
   if (direction === "input") {
-    const input = capability as IoInputCapability
-    const snapshotLabel =
-      input.snapshot_build === "bounded"
-        ? "bounded"
-        : input.snapshot_build === "admitted_eager"
-          ? "eager with memory admission"
-          : "not supported"
-    return (
-      <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-        Direct reads are {input.direct_bounded ? "bounded" : "eager"}; snapshot
-        builds are {snapshotLabel}.
-      </p>
-    )
+    return null
   }
 
   const output = capability as IoOutputCapability
@@ -384,8 +373,8 @@ export default function IoFormatEditor({
   const effectiveMode = explicitMode || modes[0] || ""
   const fields =
     direction === "input" ? group.input_fields : group.output_fields
-  const modeVisible = modes.length > 1 || explicitMode !== ""
-  const [browsingField, setBrowsingField] = useState<string | null>(null)
+  const modeVisible =
+    modes.length > 1 || (direction === "output" && explicitMode !== "")
   const formatId = useId()
   const modeId = useId()
 
@@ -402,7 +391,10 @@ export default function IoFormatEditor({
   if (
     capability &&
     explicitMode !== "" &&
-    !modes.includes(explicitMode as never)
+    !modes.includes(explicitMode as never) &&
+    // Input capabilities advertise only the default mode; a stored
+    // backend-valid explicit mode is not a configuration error.
+    !(direction === "input" && (explicitMode === "scan" || explicitMode === "read"))
   ) {
     configErrors.push("The selected mode is not valid for this format.")
   }
@@ -422,7 +414,6 @@ export default function IoFormatEditor({
     "arguments",
     ...fields.map((field) => field.name),
   ])
-  if (direction === "input") knownKeys.add("cacheMode")
   if (!(direction === "input" && group.name === "database")) {
     knownKeys.add("mode")
   }
@@ -576,49 +567,15 @@ export default function IoFormatEditor({
         const value = typeof rawValue === "string" ? rawValue : ""
 
         if (field.kind === "path") {
-          const browsing = browsingField === field.name
           return (
-            <div key={field.name}>
-              <div className="flex items-center justify-between">
-                <EditorLabel>
-                  {field.label}
-                  {field.required ? " *" : ""}
-                </EditorLabel>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setBrowsingField(browsing ? null : field.name)
-                  }
-                  className="text-[11px] font-medium"
-                  style={{ color: "var(--accent)" }}
-                >
-                  {browsing ? "close" : "browse"}
-                </button>
-              </div>
-              <CommittedTextField
-                aria-label={field.label}
-                value={value}
-                onCommit={(next) => updateField(field.name, next)}
-                className="focus-ring mt-1 w-full px-2.5 py-1.5 text-xs font-mono rounded-lg"
-                style={inputStyle}
-              />
-              {browsing && (
-                <div className="mt-2">
-                  <FileBrowser
-                    currentPath={value || undefined}
-                    extensions={
-                      format && format.extensions.length > 0
-                        ? format.extensions.join(",")
-                        : undefined
-                    }
-                    onSelect={(path) => {
-                      updateField(field.name, path)
-                      setBrowsingField(null)
-                    }}
-                  />
-                </div>
-              )}
-            </div>
+            <PathPickerField
+              key={field.name}
+              label={`${field.label}${field.required ? " *" : ""}`}
+              value={value}
+              onSelect={(path) => updateField(field.name, path)}
+              extensions={format && format.extensions.length > 0 ? format.extensions.join(",") : undefined}
+              manualEntry={direction === "output"}
+            />
           )
         }
 

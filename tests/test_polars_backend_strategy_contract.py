@@ -34,7 +34,12 @@ from haute.schemas import (
     TrainingFeatureSelectionDiagnosticPayload,
 )
 from haute.trace import execute_trace
-from tests.conftest import make_edge, make_file_input_config, make_graph
+from tests.conftest import (
+    make_edge,
+    make_file_input_config,
+    make_graph,
+    make_ready_file_input_config,
+)
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -719,7 +724,7 @@ def _single_source_graph(path: Path):
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(path),
+                        "config": make_ready_file_input_config(path),
                     },
                 }
             ],

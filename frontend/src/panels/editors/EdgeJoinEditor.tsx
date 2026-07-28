@@ -1,5 +1,5 @@
 import { AlertTriangle, ArrowUpDown, Plus, Trash2 } from "lucide-react"
-import type { CSSProperties } from "react"
+import { useEffect, useRef, type CSSProperties } from "react"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import { CommittedTextField, EditorLabel } from "../../components/form"
 import { withAlpha } from "../../utils/color"
@@ -83,6 +83,24 @@ export default function EdgeJoinEditor({
     joinColumns,
     commonColumns,
   } = analysis
+
+  // With both inputs connected, make the first available common column an
+  // explicit starting point. Remember the node after that first suggestion so
+  // a user clearing it is a durable choice rather than a recurring edit.
+  const seededNodesRef = useRef<Set<string>>(new Set())
+  const hasAnyKeys = onKeys.length > 0 || leftKeys.length > 0 || rightKeys.length > 0
+  const canSeed =
+    !hasAnyKeys &&
+    how !== "cross" &&
+    baseRoleEdge !== undefined &&
+    joinRoleEdge !== undefined &&
+    commonColumns.length > 0
+  const seedColumnName = canSeed ? commonColumns[0].name : null
+  useEffect(() => {
+    if (!canSeed || seedColumnName === null || seededNodesRef.current.has(nodeId)) return
+    seededNodesRef.current.add(nodeId)
+    onUpdate({ on: [seedColumnName], leftOn: [], rightOn: [] })
+  }, [canSeed, nodeId, onUpdate, seedColumnName])
 
   const hasSameConfig = onKeys.length > 0
   const hasPairedConfig = leftKeys.length > 0 || rightKeys.length > 0

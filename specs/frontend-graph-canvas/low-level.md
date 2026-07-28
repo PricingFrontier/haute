@@ -13,8 +13,9 @@
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
-| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a JSON API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
-| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`); an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
+| `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a structured API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
+| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`), where every network preview path first awaits `ensureInputSnapshots` for the graph's snapshot-backed Data Inputs; an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
+| `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), polls jobs to a terminal state with abort support, and notifies at most once when a build starts. |
 | `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying `graph_update`/`parse_error` frames (with dirty-blocking and rollback-on-failure), and session-expiry handling. |
 | `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — the view-stack state machine, cross-boundary port-node/edge synthesis on drill-in, and the three submodel API calls. |
 | `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
@@ -241,10 +242,11 @@
     crossing — not every pixel of zoom — triggers a re-render. At full
     detail an api-input with ≥1 eligible frame renders the frame-row body:
     one relatively-positioned row per frame carrying a right-aligned
-    truncating mono name (full name as `title` tooltip) and that row's
-    labelled source `Handle` (id = the frame's raw label, a sole frame
-    included), absolutely positioned at the row's vertical midline with
-    its dot centred on the node's right border. The instance name is
+    truncating name in the same 13px semibold primary-text typography as
+    node names (full name as `title` tooltip) and that row's labelled
+    source `Handle` (id = the frame's raw label, a sole frame included),
+    absolutely positioned at the row's vertical midline with its dot
+    centred on the node's right border. The instance name is
     suppressed in that body; the trace-value pill, when active, renders
     above the rows. Zero eligible frames keeps the instance name, adds a
     muted "No emitted frames" line, and renders no source handle. At
@@ -255,7 +257,8 @@
     ids follow the visual top-to-bottom order in both modes, and the name
     span keeps its `api-input-body-label-<label>` test id. Edge-join nodes
     short-circuit to an entirely separate marker/pill render before the
-    LOD branches run.
+    LOD branches run; their status and warning dots sit inside the visible
+    marker ellipse rather than outside its right edge.
 12. **Node delete (`useNodeHandlers.handleDeleteNode`).** Calls
     `setNodesAndEdges` once (node filter + edge filter closed over the same
     call, one undo entry), nulls `selectedNode`/`previewData` if they
@@ -324,6 +327,11 @@
     for a hit matching source+rowLimit; if the cached entry also matches the
     current `structuralVersion` it short-circuits with no network call,
     otherwise it shows the cached data while re-fetching in the background.
+    Before any network preview is sent, the request awaits
+    `ensureInputSnapshots` on the resolved graph — missing snapshot-backed
+    inputs are built or joined first (see the caching spec) — and an ensure
+    failure surfaces as that node's preview error; `refreshPreview` and
+    `previewNodeFrame` gate the same way.
     `previewNode()` resolves into `resultToPreview`; if the response's
     columns differ from the node's previous columns
     (`columnsEqualByFingerprint`), `propagate(nodeId)` kicks off the
@@ -545,7 +553,7 @@
   but `previewOptionsForClick` never sends it through the generic preview
   path, avoiding an ambiguous promise that a persistence boundary is always
   side-effect-free.
-- **A JSON API-input without a `tables` array is not automatically
+- **A structured API-input without a `tables` array is not automatically
   previewed when selected.** `previewOptionsForClick` classifies that
   incomplete authoring state as unavailable for click-to-preview,
   `onNodeClick` clears any prior preview, and no request is sent. The editor

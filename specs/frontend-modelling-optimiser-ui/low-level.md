@@ -153,7 +153,7 @@ Performance regression coverage for background progress rendering is in
 Focused diagnostics tests cover rejected-strategy and memory-pressure detail,
 structured request failures, contract-error retention, and the absence of
 invented planner state. Data-input tests cover multiple roots/direct parents,
-explicit selection, direct/cached post-Polars columns, missing-snapshot
+explicit selection, snapshot-backed post-Polars columns, missing-snapshot
 diagnostics, and no implicit build. Optimiser warning tests cover missing
 explicit sources and mixed healthy/zero-level outputs. The deterministic
 `frontend/e2e/canvas-assurance.spec.ts` journey persists constraint/range

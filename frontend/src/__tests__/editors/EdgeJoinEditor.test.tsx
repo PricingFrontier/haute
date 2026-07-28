@@ -55,13 +55,14 @@ function renderEditor(
   onUpdate: OnUpdateConfig = vi.fn(() => ({ ok: true as const })),
   overrides: {
     edges?: SimpleEdge[]
+    allNodes?: SimpleNode[]
     onDeleteInput?: (edgeId: string) => void
     onSwapInputs?: () => void
   } = {},
 ) {
   const onSwapInputs = overrides.onSwapInputs ?? vi.fn()
   const result = render(
-    <GraphProvider allNodes={[baseNode, joinNode, edgeJoinNode]} edges={overrides.edges ?? edges}>
+    <GraphProvider allNodes={overrides.allNodes ?? [baseNode, joinNode, edgeJoinNode]} edges={overrides.edges ?? edges}>
       <EdgeJoinEditor
         config={config}
         onUpdate={onUpdate}
@@ -76,6 +77,59 @@ function renderEditor(
 }
 
 describe("EdgeJoinEditor", () => {
+  it("seeds the first common column as the join key", () => {
+    const onUpdate = vi.fn()
+    renderEditor({ how: "left", suffix: "_right" }, onUpdate)
+
+    expect(onUpdate).toHaveBeenCalledWith({ on: ["policy_id"], leftOn: [], rightOn: [] })
+  })
+
+  it("does not seed when keys are already configured", () => {
+    const onUpdate = vi.fn()
+    renderEditor({ how: "left", on: ["state"] }, onUpdate)
+
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("does not seed while common columns are unknown or for cross joins", () => {
+    const onUpdate = vi.fn()
+    const noCommonBase: SimpleNode = {
+      ...baseNode,
+      data: { ...baseNode.data, _columns: [{ name: "base_only", dtype: "String" }] },
+    }
+    const noCommonJoin: SimpleNode = {
+      ...joinNode,
+      data: { ...joinNode.data, _columns: [{ name: "join_only", dtype: "String" }] },
+    }
+    renderEditor({ how: "left" }, onUpdate, { allNodes: [noCommonBase, noCommonJoin, edgeJoinNode] })
+    expect(onUpdate).not.toHaveBeenCalled()
+
+    cleanup()
+    renderEditor({ how: "cross" }, onUpdate)
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("does not re-seed after the user clears the seeded key", () => {
+    const onUpdate = vi.fn()
+    const { rerender } = renderEditor({ how: "left" }, onUpdate)
+    expect(onUpdate).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <GraphProvider allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
+        <EdgeJoinEditor config={{ how: "left", on: ["policy_id"], leftOn: [], rightOn: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
+      </GraphProvider>,
+    )
+    fireEvent.change(screen.getByLabelText("Same-name key 1"), { target: { value: "" } })
+    rerender(
+      <GraphProvider allNodes={[baseNode, joinNode, edgeJoinNode]} edges={edges}>
+        <EdgeJoinEditor config={{ how: "left", on: [], leftOn: [], rightOn: [] }} onUpdate={onUpdate} nodeId="edge_join_1" accentColor="#0ea5e9" />
+      </GraphProvider>,
+    )
+
+    expect(onUpdate).toHaveBeenCalledTimes(2)
+    expect(onUpdate).toHaveBeenLastCalledWith({ on: [], leftOn: [], rightOn: [] })
+  })
+
   it("does not render a duplicate edge-join title inside the config body", () => {
     renderEditor({
       baseInput: "quotes",

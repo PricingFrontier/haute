@@ -15,6 +15,7 @@ import pytest
 
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from tests.conftest import make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -83,14 +84,7 @@ def _make_optimiser_graph(data_path: str, *, mode: str = "online") -> dict:
                 data=NodeData(
                     label="source",
                     nodeType=NodeType.DATA_INPUT,
-                    config={
-                        "inputType": "file",
-                        "format": "parquet",
-                        "mode": "scan",
-                        "cacheMode": "direct",
-                        "path": data_path,
-                        "arguments": {},
-                    },
+                    config=make_ready_file_input_config(data_path),
                 ),
             ),
             GraphNode(
@@ -874,6 +868,9 @@ class TestTraceHandlerThreading:
 
 
 def _validate_and_project_data_path(tmp_path) -> str:
+    from haute._sandbox import set_project_root
+
+    set_project_root(tmp_path)
     data_path = tmp_path / "data.parquet"
     pl.DataFrame(
         {

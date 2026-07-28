@@ -236,6 +236,17 @@ describe("PipelineNode", () => {
   })
 
   describe("full-detail apiInput frame rows", () => {
+    it("renders api-input frame labels with node-name typography", () => {
+      renderNode({
+        label: "Quote Input",
+        nodeType: NODE_TYPES.API_INPUT,
+        config: { tables: [apiInputTable("quote_info")] },
+      })
+
+      const label = screen.getByTestId("api-input-body-label-quote_info")
+      expect(label).toHaveClass("font-semibold", "text-[13px]")
+    })
+
     it("suppresses the instance name in the body while preserving ordered row/name/handle identity and node accessibility", () => {
       const nodeLabel = "Quote Input 1"
       const frameLabels = [
@@ -693,6 +704,19 @@ describe("PipelineNode", () => {
 
     expect(screen.getByLabelText("Node running")).toHaveClass("animate-pulse-dot")
     expect(screen.getByLabelText("Node has schema warnings")).toBeInTheDocument()
+  })
+
+  it("keeps edge-join status dots inside the marker ellipse", () => {
+    renderNode({
+      label: "Edge Join",
+      nodeType: NODE_TYPES.EDGE_JOIN,
+      _status: "ok",
+      _schemaWarnings: [{ column: "policy_id", status: "missing" }],
+    })
+
+    expect(screen.getByTestId("edge-join-status-indicator")).toHaveClass("right-[6px]", "bottom-[8px]")
+    expect(screen.getByTestId("edge-join-status-indicator")).not.toHaveClass("-right-0.5")
+    expect(screen.getByTestId("edge-join-warning-indicator")).toHaveClass("right-[6px]", "top-[8px]")
   })
 
   it("edgeJoin marker hides warning indicator when status is error", () => {

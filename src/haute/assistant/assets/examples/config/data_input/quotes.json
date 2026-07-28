@@ -2,7 +2,6 @@
   "inputType": "file",
   "format": "parquet",
   "mode": "scan",
-  "cacheMode": "direct",
   "path": "data/quotes.parquet",
   "arguments": {}
 }

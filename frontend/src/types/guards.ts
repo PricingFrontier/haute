@@ -1404,7 +1404,7 @@ function parseInputCacheStringRecord(parser: string, value: unknown, field: stri
 function parseIoInputCapability(value: unknown, field: string): IoInputCapability {
   const p = "parseIoCapabilitiesResponse"
   const obj = expectPlainObject(p, value, field)
-  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_INPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), direct_bounded: expectBoolean(p, obj.direct_bounded, `${field}.direct_bounded`), needs_schema_when_bounded: expectBoolean(p, obj.needs_schema_when_bounded, `${field}.needs_schema_when_bounded`), snapshot_build: expectStringLiteral(p, obj.snapshot_build, `${field}.snapshot_build`, BUILD_CLASSES), cached_read: expectBoolean(p, obj.cached_read, `${field}.cached_read`) }
+  return { modes: parseArray(p, obj.modes, `${field}.modes`, (v, f) => expectStringLiteral(p, v, f, IO_INPUT_MODES)), arguments: parseArrayRecord(p, obj.arguments, `${field}.arguments`, (v, f) => expectString(p, v, f)), engines_missing: parseStringArray(p, obj.engines_missing, `${field}.engines_missing`), cache_mode: expectStringLiteral(p, obj.cache_mode, `${field}.cache_mode`, IO_CACHE_MODES), direct_bounded: expectBoolean(p, obj.direct_bounded, `${field}.direct_bounded`), needs_schema_when_bounded: expectBoolean(p, obj.needs_schema_when_bounded, `${field}.needs_schema_when_bounded`), snapshot_build: expectStringLiteral(p, obj.snapshot_build, `${field}.snapshot_build`, BUILD_CLASSES), cached_read: expectBoolean(p, obj.cached_read, `${field}.cached_read`) }
 }
 
 function parseIoOutputCapability(value: unknown, field: string): IoOutputCapability {
@@ -2406,7 +2406,7 @@ export function parseFileListResponse(value: unknown): { items?: FileListItem[] 
         name: expectString("parseFileListResponse", itemObj.name, `${field}.name`),
         path: expectString("parseFileListResponse", itemObj.path, `${field}.path`),
         type: expectStringLiteral("parseFileListResponse", itemObj.type, `${field}.type`, ["file", "directory"]),
-        ...(itemObj.size === undefined ? {} : { size: expectNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
+        ...(itemObj.size === undefined ? {} : { size: expectNullableNumber("parseFileListResponse", itemObj.size, `${field}.size`) }),
       }
     }),
   }

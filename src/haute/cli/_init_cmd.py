@@ -518,14 +518,12 @@ def handle_init(config: InitConfig) -> None:
 
     # -- Directories -----------------------------------------------------------
     (project_dir / "data").mkdir(exist_ok=True)
-    (project_dir / "prompts").mkdir(exist_ok=True)
 
-    # -- Preserve root main.py ------------------------------------------------
+    # -- Remove the root placeholder created by tools such as ``uv init`` ------
     root_main = project_dir / "main.py"
     if root_main.exists():
-        click.echo(
-            "  Preserved existing main.py (Haute uses rating/main.py for its starter pipeline)."
-        )
+        root_main.unlink()
+        click.echo("  Removed root main.py (Haute uses rating/main.py).")
 
     # -- rating/ - user pipeline files -----------------------------------------
     rating_dir = project_dir / "rating"
@@ -544,31 +542,6 @@ def handle_init(config: InitConfig) -> None:
     # -- rating/ placeholder directories (used once the pipeline grows) --------
     for sub in ("config", "data", "models", "outputs"):
         (rating_dir / sub).mkdir(exist_ok=True)
-    data_input_config_dir = rating_dir / "config" / "data_input"
-    data_input_config_dir.mkdir(parents=True, exist_ok=True)
-    (data_input_config_dir / "raw_rows.json").write_text(
-        "{\n"
-        '  "inputType": "file",\n'
-        '  "format": "parquet",\n'
-        '  "cacheMode": "direct",\n'
-        '  "path": "data/sample.parquet"\n'
-        "}\n",
-        encoding="utf-8",
-    )
-    output_config_dir = rating_dir / "config" / "quote_response"
-    output_config_dir.mkdir(parents=True, exist_ok=True)
-    (output_config_dir / "priced.json").write_text(
-        "{\n"
-        '  "outputMapping": [\n'
-        '    {"source_port": "enriched", "source_column": "value", '
-        '"output_path": "$[:].value", "enabled": true},\n'
-        '    {"source_port": "enriched", "source_column": "value_doubled", '
-        '"output_path": "$[:].value_doubled", "enabled": true}\n'
-        "  ],\n"
-        '  "outputFormat": "json"\n'
-        "}\n",
-        encoding="utf-8",
-    )
 
     # -- haute.toml - project + deploy + safety + CI config --------------------
     (project_dir / "haute.toml").write_text(
@@ -669,7 +642,6 @@ def handle_init(config: InitConfig) -> None:
     click.echo("  rating/main.py       - starter pipeline")
     click.echo("  rating/utility/      - project-level utility functions")
     click.echo("  data/                - put your data files here")
-    click.echo("  prompts/             - reusable AI prompts for pipeline tasks")
     click.echo("  tests/               - starter test + example quote payloads")
     click.echo("  .githooks/pre-commit - auto-format on commit (ruff)")
     for f in ci_files:

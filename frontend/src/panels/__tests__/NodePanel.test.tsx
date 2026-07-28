@@ -5,13 +5,14 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   dataInputEditorProps: [] as Record<string, unknown>[],
   dataOutputEditorProps: [] as Record<string, unknown>[],
+  columnsTabProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
 }))
@@ -23,6 +24,13 @@ vi.mock("../LazyNodeEditors", async () => {
   )
   return {
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  PolarsCodePanel: ({ hint }: { hint: React.ReactNode }) => (
+    <div data-testid="PolarsCodePanel">
+      <span>Polars Code</span>
+      <span data-testid="polars-hint">{hint}</span>
+      <textarea data-testid="code-editor" />
+    </div>
+  ),
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return (
@@ -72,7 +80,10 @@ vi.mock("../LazyNodeEditors", async () => {
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
-  ColumnsTab: () => <div data-testid="ColumnsTab" />,
+  ColumnsTab: (props: Record<string, unknown>) => {
+    columnsTabProps.push(props)
+    return <div data-testid="ColumnsTab" />
+  },
   ModellingConfig: (props: Record<string, unknown>) => {
     modellingConfigProps.push(props)
     return <div data-testid="ModellingConfig" />
@@ -83,6 +94,16 @@ vi.mock("../LazyNodeEditors", async () => {
   },
   }
 })
+
+vi.mock("../editors/shared/PolarsCodePanel", () => ({
+  default: ({ hint }: { hint: React.ReactNode }) => (
+    <div data-testid="PolarsCodePanel">
+      <span>Polars Code</span>
+      <span data-testid="polars-hint">{hint}</span>
+      <textarea data-testid="code-editor" />
+    </div>
+  ),
+}))
 
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
   return {
@@ -159,6 +180,7 @@ describe("NodePanel", () => {
     bandingEditorProps.length = 0
     dataInputEditorProps.length = 0
     dataOutputEditorProps.length = 0
+    columnsTabProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
   })
@@ -216,6 +238,46 @@ describe("NodePanel", () => {
     expect(updatedData._availableColumns).toBeUndefined()
     expect(updatedData._schemaWarnings).toBeUndefined()
   })
+
+  it.each([
+    ["an ordinary checkbox selection", ["quote_id"]],
+    ["All", []],
+  ])(
+    "retains the pre-filter schema when %s updates selected_columns",
+    (_action, selectedColumns) => {
+      const availableColumns = [
+        { name: "quote_id", dtype: "String" },
+        { name: "premium", dtype: "Float64" },
+      ]
+      const node = makeNode({
+        data: {
+          label: "Transform",
+          description: "",
+          nodeType: "polars",
+          config: {},
+          _columns: availableColumns,
+          _availableColumns: availableColumns,
+          _schemaWarnings: [],
+        },
+      })
+      const onUpdateNode = vi.fn(
+        (_nodeId: string, _data: Record<string, unknown>) => ({ ok: true as const }),
+      )
+      renderPanel({ node, onUpdateNode })
+      fireEvent.click(screen.getByRole("button", { name: /^columns$/i }))
+      const onUpdate = columnsTabProps.at(-1)?.onUpdate as (
+        key: string,
+        value: unknown,
+      ) => void
+
+      onUpdate("selected_columns", selectedColumns)
+
+      const updatedData = onUpdateNode.mock.calls.at(-1)?.[1] as Record<string, unknown>
+      expect(updatedData.config).toEqual({ selected_columns: selectedColumns })
+      expect(updatedData._availableColumns).toEqual(availableColumns)
+      expect(updatedData._columns).toBeUndefined()
+    },
+  )
 
   it("renders TransformEditor for transform nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "T", description: "", nodeType: "polars", config: {} } }) })
@@ -282,6 +344,49 @@ describe("NodePanel", () => {
   it("renders DataInputEditor for dataInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: {} } }) })
     expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
+  })
+
+  it.each([
+    ["dataInput", "the opened input snapshot"],
+    ["externalFile", "loaded file, assign to"],
+    ["scenarioExpander", "expanded data"],
+    ["ratingStep", "use"],
+    ["modelScore", "Post-processing Code (optional)"],
+  ])("shows the Polars tab and shared code panel for %s nodes", (nodeType, hint) => {
+    renderPanel({ node: makeNode({ data: { label: "Code node", description: "", nodeType, config: {} } }) })
+
+    expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /^polars$/i })).toBeInTheDocument()
+    expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+
+    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+    expect(screen.getByTestId("polars-hint")).toHaveTextContent(hint)
+    expect(screen.getByTestId("code-editor")).toBeInTheDocument()
+  })
+
+  it("returns to Config when switching between Polars-tab nodes", () => {
+    const first = makeNode({
+      id: "input_1",
+      data: { label: "First input", description: "", nodeType: "dataInput", config: {} },
+    })
+    const { rerender, props } = renderPanel({ node: first })
+    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+
+    const second = makeNode({
+      id: "input_2",
+      data: { label: "Second input", description: "", nodeType: "dataInput", config: {} },
+    })
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={second} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
+    expect(screen.queryByTestId("PolarsCodePanel")).not.toBeInTheDocument()
   })
 
   it("renders DataOutputEditor for dataOutput nodes", () => {

@@ -22,7 +22,12 @@ from haute.routes._train_service import (
     _training_required_columns_by_node,
     _validate_glm_family_link,
 )
-from tests.conftest import make_edge, make_file_input_config, make_graph
+from tests.conftest import (
+    make_edge,
+    make_file_input_config,
+    make_graph,
+    make_ready_file_input_config,
+)
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -165,7 +170,7 @@ def _make_modelling_graph(
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(data_path),
+                        "config": make_ready_file_input_config(data_path),
                     },
                 },
                 {
@@ -1794,7 +1799,7 @@ def _make_negbinomial_graph(data_path: str, **config_overrides: object) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(data_path),
+                        "config": make_ready_file_input_config(data_path),
                     },
                 },
                 {

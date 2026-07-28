@@ -20,6 +20,7 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { apiInputFrameLabels } from "../utils/apiInputPorts"
+import { ensureInputSnapshots } from "./ensureInputSnapshots"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
 interface PipelineAPIParams {
@@ -272,6 +273,14 @@ export default function usePipelineAPI({
   useEffect(() => { streamingChunkSizeRef.current = streamingChunkSize }, [streamingChunkSize])
   const activeSourceRef = useRef(activeSource)
   useEffect(() => { activeSourceRef.current = activeSource }, [activeSource])
+  const ensureSnapshotsForNodes = useCallback(
+    (nodes: Node[], signal: AbortSignal) =>
+      ensureInputSnapshots(nodes, {
+        signal,
+        onBuildStart: () => addToast("info", "Building input snapshot…"),
+      }),
+    [addToast],
+  )
 
   // Source switch invalidates column stashes captured under other sources.
   // Runs on mount too: the invariant is "no stash disagrees with the active
@@ -339,7 +348,7 @@ export default function usePipelineAPI({
     }
   }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
 
-  const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean }) => {
+  const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean; snapshotsEnsured?: boolean }) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
     // Abort any in-flight preview request
     previewAbort.current?.abort()
@@ -566,16 +575,28 @@ export default function usePipelineAPI({
     })
 
     const portLabel = previewPortLabel(node)
-    previewNode({
-      graph,
-      nodeId: node.id,
-      rowLimit: snapshotRowLimit,
-      source: snapshotSource,
-      requestedPreviewColumns: previewColumnNamesForNode(node),
-      portLabel,
-      streamingChunkSize: snapshotChunkSize,
-      signal: controller.signal,
-    })
+    const executePreview = () => {
+      if (!requestStillCurrent() || controller.signal.aborted) {
+        throw new DOMException("Preview request was superseded.", "AbortError")
+      }
+      return previewNode({
+        graph,
+        nodeId: node.id,
+        rowLimit: snapshotRowLimit,
+        source: snapshotSource,
+        requestedPreviewColumns: previewColumnNamesForNode(node),
+        portLabel,
+        streamingChunkSize: snapshotChunkSize,
+        signal: controller.signal,
+      })
+    }
+    const previewRequest =
+      options?.snapshotsEnsured
+        ? executePreview()
+        : ensureSnapshotsForNodes(graph.nodes, controller.signal).then(
+            executePreview,
+          )
+    previewRequest
       .then((result) => {
         // Superseded by a newer preview request: that request owns the
         // panel surface and will reach its own terminal state.
@@ -647,7 +668,7 @@ export default function usePipelineAPI({
           }
         })
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
@@ -805,18 +826,36 @@ export default function usePipelineAPI({
       drain()
     })
 
-    previewStaleUpstream().then(() => {
-      if (!requestStillCurrent()) {
-        if (previewRequestSeq.current === requestId) setPreviewBusy(false)
-        return
-      }
-      fetchPreviewImmediate(node, requestId, { bypassCache: true })
-    }).finally(() => {
-      if (previewAbort.current === controller) {
-        previewAbort.current = null
-      }
-    })
-  }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast])
+    ensureSnapshotsForNodes(graph.nodes, controller.signal)
+      .then(() => previewStaleUpstream())
+      .then(() => {
+        if (!requestStillCurrent()) {
+          if (previewRequestSeq.current === requestId) setPreviewBusy(false)
+          return
+        }
+        fetchPreviewImmediate(node, requestId, {
+          bypassCache: true,
+          snapshotsEnsured: true,
+        })
+      })
+      .catch((err: unknown) => {
+        if (previewRequestSeq.current !== requestId || isAbortError(err)) return
+        const detail = previewErrorDetail(err)
+        setPreviewData(
+          makePreviewData(node.id, nodeLabel(node), {
+            status: "error",
+            error: detail,
+          }),
+        )
+        setNodeStatuses({})
+        setPreviewBusy(false)
+      })
+      .finally(() => {
+        if (previewAbort.current === controller) {
+          previewAbort.current = null
+        }
+      })
+  }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
@@ -839,15 +878,21 @@ export default function usePipelineAPI({
       previewRequestSeq.current === requestId &&
       useGraphStore.getState().structuralVersion === structuralVersion
     const graph = resolveGraphFromRefs(graphRef, parentGraphRef, submodelsRef, preambleRef)
-    previewNode({
-      graph,
-      nodeId: node.id,
-      rowLimit: rowLimitRef.current,
-      source: activeSourceRef.current,
-      portLabel,
-      streamingChunkSize: streamingChunkSizeRef.current,
-      signal: controller.signal,
-    })
+    ensureSnapshotsForNodes(graph.nodes, controller.signal)
+      .then(() => {
+        if (!requestStillCurrent() || controller.signal.aborted) {
+          throw new DOMException("Preview request was superseded.", "AbortError")
+        }
+        return previewNode({
+          graph,
+          nodeId: node.id,
+          rowLimit: rowLimitRef.current,
+          source: activeSourceRef.current,
+          portLabel,
+          streamingChunkSize: streamingChunkSizeRef.current,
+          signal: controller.signal,
+        })
+      })
       .then((result) => {
         if (previewRequestSeq.current !== requestId) return
         const preview = resultToPreview(node.id, label, result, portLabel)
@@ -866,7 +911,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, addToast, ensureSnapshotsForNodes])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (e.g. save & commit) await this so they only proceed

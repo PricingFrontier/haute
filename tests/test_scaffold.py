@@ -808,31 +808,12 @@ class TestStarterFiles:
         assert "haute.Pipeline(" in result
         assert '"my_project"' in result
         assert "import haute" in result
-        assert "import polars" in result
+        assert "import polars" not in result
 
-    def test_pipeline_is_runnable_scaffold(self) -> None:
-        """The starter ships a minimal runnable graph (source → transform → output).
-
-        Replaces the old ``test_pipeline_imports_from_utility``: Wave 10A
-        #112 removes the unconditional ``from utility.features import …``
-        line so the starter stands on its own, and introduces decorators
-        (``@pipeline.data_input``, ``@pipeline.polars``,
-        ``@pipeline.output``) so ``haute init`` → ``haute run`` yields a
-        real executable graph instead of an empty ``Pipeline()``.
-        """
+    def test_pipeline_starts_without_nodes(self) -> None:
+        """The starter canvas is blank until the user adds their own nodes."""
         result = starter_pipeline("my_project")
-        # The three core decorator forms must be present so the parser
-        # picks up a source, a transform, and a terminal node.
-        assert "@pipeline.data_input(" in result, (
-            "Starter pipeline must include a dataInput node so data can flow into the graph."
-        )
-        assert "@pipeline.polars" in result, (
-            "Starter pipeline must include a polars transform so users "
-            "have a working example of the transform surface."
-        )
-        assert "@pipeline.output" in result, (
-            "Starter pipeline must include an output node so the terminal preview materialises."
-        )
+        assert "@pipeline." not in result
 
     def test_starter_utility_features(self) -> None:
         from haute._scaffold import starter_utility_features, starter_utility_init
@@ -1047,7 +1028,7 @@ class TestStarterPipelineContent:
         assert "haute.Pipeline(" in result
         assert '"acme_rating"' in result
 
-    def test_imports_haute_and_polars(self) -> None:
+    def test_imports_only_haute(self) -> None:
         result = starter_pipeline("test")
         assert "import haute" in result
-        assert "import polars as pl" in result
+        assert "import polars" not in result

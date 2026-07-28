@@ -32,6 +32,10 @@ backend API modules own validation and persistence.
   output frame blocks present the same names — there is no separate display identity anywhere.
 - Editors retain incomplete persisted rows when they can be repaired (notably API schema and
   output mappings); fresh inference data may be normalised separately from persisted data.
+- API Input preview browsing advertises and filters JSON, JSONL, NDJSON, and XML. Selecting any
+  of those structured formats fetches its schema preview, and all four expose the cache/infer
+  action. Directory rows remain navigable when the server reports a null size; only numeric file
+  sizes are rendered.
 - Banding exposes categorical/numeric rule editing, preview-derived suggestions and histogram
   context. Rating supports one- and two-way factor tables, value-level matching, statistics,
   paste/copy and downloadable table data.
@@ -54,8 +58,11 @@ backend API modules own validation and persistence.
   and execution settings rather than preview/trace metadata.
 - Data Input groups providers as File, Database, Lakehouse, Databricks, and
   Inline and derives every supported field, format, mode, dependency,
-  direct/snapshot choice, and cache control from the backend capability
-  contract. Its optional Polars editor transforms the direct or cached source.
+  snapshot build class, and cache control from the backend capability
+  contract. A single available read mode is not rendered. Cache mode is also
+  not presented as a choice: file-backed Parquet scans directly and has no
+  cache action; every other input uses the shared Cache-as-Parquet control.
+  Its optional Polars editor transforms the resolved frame.
   Data Output presents only writable groups/modes, never Databricks or a Polars
   editor, resolves the actual destination, and keeps per-node write,
   collision-confirmation, and terminal state across panel remounts. Inactive

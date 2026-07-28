@@ -19,7 +19,11 @@ import pytest
 
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.executor import PreambleError, _compile_preamble
-from tests.conftest import make_file_input_config, make_file_output_config
+from tests.conftest import (
+    make_file_input_config,
+    make_file_output_config,
+    make_ready_file_input_config,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,10 +34,16 @@ def _e(src: str, tgt: str) -> GraphEdge:
     return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
 
 
-def _source_node(nid: str, path: str = "data.parquet") -> GraphNode:
+def _source_node(
+    nid: str,
+    path: str = "data.parquet",
+    *,
+    ready: bool = False,
+) -> GraphNode:
+    config = make_ready_file_input_config(path) if ready else make_file_input_config(path)
     return GraphNode(
         id=nid,
-        data=NodeData(label=nid, nodeType=NodeType.DATA_INPUT, config=make_file_input_config(path)),
+        data=NodeData(label=nid, nodeType=NodeType.DATA_INPUT, config=config),
     )
 
 
@@ -417,7 +427,7 @@ class TestDataInputConfigPath:
             data=NodeData(
                 label="src",
                 nodeType=NodeType.DATA_INPUT,
-                config=make_file_input_config(path),
+                config=make_ready_file_input_config(path),
             ),
         )
         _, fn, is_source = _build_node_fn(node, source_names=[])
@@ -613,7 +623,7 @@ class TestPreviewRouteSourceFile:
                     data=NodeData(
                         label="quotes",
                         nodeType=NodeType.DATA_INPUT,
-                        config=make_file_input_config("data/quotes.parquet"),
+                        config=make_ready_file_input_config("data/quotes.parquet"),
                     ),
                 ),
             ],
@@ -641,7 +651,7 @@ class TestPreviewRouteSourceFile:
 
         graph = _make_graph(
             nodes=[
-                _source_node("src", path="claims.parquet"),
+                _source_node("src", path="claims.parquet", ready=True),
                 GraphNode(
                     id="calc",
                     data=NodeData(
@@ -729,7 +739,7 @@ class TestPreviewRouteSourceFile:
 
         graph = _make_graph(
             nodes=[
-                _source_node("src", path="claims.parquet"),
+                _source_node("src", path="claims.parquet", ready=True),
                 GraphNode(
                     id="explore",
                     data=NodeData(
@@ -840,7 +850,7 @@ class TestParserConfigLoadWarning:
         config_dir.mkdir(parents=True)
         (config_dir / "src.json").write_text(
             '{"inputType":"file","format":"parquet","mode":"scan",'
-            '"cacheMode":"direct","path":"d.parquet","arguments":{}}'
+            '"path":"d.parquet","arguments":{}}'
         )
         (pipeline_dir / "main.py").write_text(
             "import haute\nimport polars as pl\n\n"

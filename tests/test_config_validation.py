@@ -151,7 +151,6 @@ class TestWarnUnrecognizedConfigKeys:
                 "inputType": "file",
                 "format": "parquet",
                 "mode": "scan",
-                "cacheMode": "direct",
                 "path": "x.parquet",
                 "arguments": {},
                 "instanceOf": "other",

@@ -32,11 +32,13 @@ Out of scope, owned elsewhere:
 ## Behaviour
 
 - `haute init [--target ...] [--ci ...] [--force]` scaffolds a new project in the current directory:
-  `haute.toml`, a starter `rating/` pipeline package, `.env.example`, test-quote fixtures, CI/CD
+  `haute.toml`, a blank `rating/` pipeline package, `.env.example`, test-quote fixtures, CI/CD
   workflow files for the chosen provider, a git pre-commit hook, and `.gitignore` guard entries.
-  Refuses to run if `haute.toml` already exists unless `--force` is given. An existing root
-  `main.py` is never deleted or overwritten: the scaffold uses `rating/main.py` and reports that
-  it preserved the root entry point.
+  Refuses to run if `haute.toml` already exists unless `--force` is given. A root `main.py` is
+  always deleted: `uv init` recreates that placeholder every time it runs, and a Haute project's
+  real entry point is `rating/main.py`, so the root file is a tooling artifact — never user
+  content — and removing it keeps the entry point unambiguous. No `prompts/` directory or
+  starter nodes/sidecars are generated.
 - `haute run [pipeline_file]` executes a pipeline end-to-end through the same
   `parse_pipeline_file` → `execute_graph` path the GUI uses, printing a per-node row/column summary
   and a preview of the final node's output.

@@ -288,28 +288,39 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
         if not path.is_file():
             errors.append(f"Artifact '{name}' not found: {path}")
 
-    # 5. Canonical Data Inputs must resolve to a valid direct provider or a
-    # ready immutable snapshot. Provider exceptions are deliberately redacted.
+    # 5. Direct Parquet inputs must resolve to a readable contained source;
+    # every other canonical Data Input must resolve to a ready snapshot.
+    # Provider exceptions are deliberately redacted.
     for node in resolved.pruned_graph.nodes:
         if node.data.nodeType != NodeType.DATA_INPUT:
             continue
         try:
-            from haute._input_providers import source_cache_identity
-            from haute._polars_io_registry import validate_data_input_config
+            from haute._polars_io_registry import (
+                data_input_is_direct,
+                validate_data_input_config,
+            )
             from haute._sandbox import _get_project_root
-            from haute._source_cache import SourceCacheStore
 
             config = validate_data_input_config(node.data.config)
-            if config["cacheMode"] == "snapshot":
-                identity = source_cache_identity(
-                    config, base_dir=resolved.config.pipeline_file.parent
+            if data_input_is_direct(config):
+                from haute.deploy._bundler import _resolve_direct_parquet_source
+
+                project_root = (
+                    resolved.config.project_dir or resolved.config.pipeline_file.parent
+                ).resolve()
+                _resolve_direct_parquet_source(
+                    node.id,
+                    config,
+                    resolved.config.pipeline_file.parent,
+                    project_root,
                 )
-                SourceCacheStore(_get_project_root()).open_generation(identity)
-            elif config["inputType"] not in {"file", "lakehouse", "inline"}:
-                errors.append(
-                    f"Data Input node '{node.id}' cannot execute directly for deploy; "
-                    "a ready snapshot is required."
-                )
+                continue
+
+            from haute._input_providers import source_cache_identity
+            from haute._source_cache import SourceCacheStore
+
+            identity = source_cache_identity(config, base_dir=resolved.config.pipeline_file.parent)
+            SourceCacheStore(_get_project_root()).open_generation(identity)
         except Exception as exc:
             logger.exception(
                 "deploy_data_input_validation_failed",
@@ -317,8 +328,8 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
                 error_type=type(exc).__name__,
             )
             errors.append(
-                f"Data Input node '{node.id}' requires a ready, valid matching snapshot "
-                "or a supported direct engine before packaging."
+                f"Data Input node '{node.id}' requires a readable direct Parquet source "
+                "or a ready, valid matching snapshot before packaging."
             )
 
     # 6. Input schema is non-empty

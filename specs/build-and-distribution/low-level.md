@@ -64,6 +64,11 @@ package input validated by `hatch_build.py`, not hand-edited source.
 - **Browser package version** is the required `project.version` value read from
   root `pyproject.toml` by Vite and exposed as the compile-time
   `__APP_VERSION__` string.
+- **Python dependency boundary:** MLflow is a core dependency because model
+  scoring, registry browsing, and modelling export are first-class palette
+  features. MLflow brings `databricks-sdk` transitively; the `databricks`
+  extra pins the supported SDK range and adds the SQL connector needed for
+  workspace data access and deployment.
 - **MkDocs site inputs** are public Markdown, `docs/overrides/home.html`,
   `docs/stylesheets/extra.css`, and `mkdocs.yml`; `exclude_docs` prevents the
   three engineering procedure documents from becoming pages. Component specs
@@ -150,8 +155,11 @@ package input validated by `hatch_build.py`, not hand-edited source.
 ## Testing
 
 - `tests/test_dependency_contracts.py` — dependency version floors for Polars ordered joins, ratebook factor contexts, and required build/runtime assumptions.
-- `tests/test_optional_dependency_extras.py` — optional MLflow/Databricks-extra import smoke checks (skipped when extras absent).
-- `tests/test_optional_dependency_matrix.py` — core-only import/route smoke checks when optional MLflow/Databricks extras are unavailable (skipped when present).
+- `tests/test_optional_dependency_extras.py` — core MLflow plus Databricks-extra
+  import smoke checks (skipped when the Databricks extra is absent).
+- `tests/test_optional_dependency_matrix.py` — core-install import/route smoke
+  checks with core MLflow present and the optional Databricks SQL connector
+  absent. MLflow itself brings `databricks-sdk` transitively.
 
 - `tests/test_hatch_build.py` covers editable-build behavior, environment-value
   validation ordering, the complete included/excluded input matrix,

@@ -16,16 +16,18 @@ from typing import Any
 
 import polars as pl
 
+from haute._cache import canonical_json
 from haute._execution_context import (
     ExecutionContext,
     ExecutionProfile,
     current_execution_context,
 )
-from haute._hashing import content_hash
+from haute._hashing import content_hash, content_hash_bytes
 from haute._polars_io_registry import (
     PolarsIoConfigError,
     _snapshot_build,
     anchor_config_source_path,
+    data_input_is_direct,
     format_for_config,
     read_polars_input,
     resolve_input_mode,
@@ -61,14 +63,12 @@ def source_cache_identity(
 ) -> SourceCacheIdentity:
     """Build the redacted identity of one external source.
 
-    ``code`` and ``cacheMode`` intentionally do not participate: they affect
-    post-read execution and generation selection, not the source bytes.
+    ``code`` does not participate because it runs after the snapshot opens.
+    This is only used by snapshot-backed inputs; canonical direct Parquet
+    inputs bypass the cache entirely.
     """
     validated = validate_data_input_config(config)
     provider = str(validated["inputType"])
-    if provider == "inline":
-        raise PolarsIoConfigError("Inline Data Input does not support snapshots.")
-
     descriptor: dict[str, object]
     if provider in {"file", "lakehouse"}:
         anchored = _resolved_config_path(validated, base_dir)
@@ -92,7 +92,7 @@ def source_cache_identity(
         else:
             uri = str(validated["uri"])
             descriptor["uri"] = canonical_database_locator(uri, base_dir=base_dir)
-    else:
+    elif provider == "databricks":
         from haute._databricks_io import _canonical_table, _validate_select_clause
 
         query = validated.get("query")
@@ -104,6 +104,21 @@ def source_cache_identity(
             "query": str(query).strip() if query else None,
             "host_ref": "DATABRICKS_HOST",
             "token_ref": "DATABRICKS_TOKEN",
+        }
+    else:
+        # Inline records are source material, but must never be persisted in
+        # cache identity metadata. Hash the complete source-semantic payload
+        # and retain only a non-sensitive summary in the descriptor.
+        inline_source = {
+            "format": validated["format"],
+            "mode": resolve_input_mode(format_for_config(validated), validated),
+            "arguments": dict(validated.get("arguments") or {}),
+            "records": validated["records"],
+        }
+        descriptor = {
+            "format": str(validated["format"]),
+            "content_digest": content_hash_bytes(canonical_json(inline_source).encode("utf-8")),
+            "row_count": len(validated["records"]),
         }
     return SourceCacheIdentity(provider=provider, descriptor=descriptor)
 
@@ -167,7 +182,9 @@ def _snapshot_builder(
         from haute._databricks_io import DatabricksSnapshotBuilder
 
         return DatabricksSnapshotBuilder(config), "bounded"
-    raise PolarsIoConfigError("Inline Data Input does not support snapshots.")
+    if provider == "inline":
+        return _PolarsSnapshotBuilder(config, profile, "bounded"), "bounded"
+    raise PolarsIoConfigError(f"Unsupported Data Input provider {provider!r}.")
 
 
 def input_snapshot_build_class(
@@ -178,6 +195,8 @@ def input_snapshot_build_class(
 ) -> BuildClass:
     """Return the declared build class without contacting the provider."""
     validated = validate_data_input_config(config)
+    if data_input_is_direct(validated):
+        raise PolarsIoConfigError("Direct Parquet Data Input does not support snapshot builds.")
     _, build_class = _snapshot_builder(validated, base_dir=base_dir, profile=profile)
     return build_class
 
@@ -196,8 +215,8 @@ def build_input_snapshot(
 ) -> SourceCacheGeneration:
     """Explicitly build or refresh one shared input snapshot."""
     validated = validate_data_input_config(config)
-    if validated.get("cacheMode") != "snapshot":
-        raise PolarsIoConfigError("Snapshot build requires cacheMode 'snapshot'.")
+    if data_input_is_direct(validated):
+        raise PolarsIoConfigError("Direct Parquet Data Input does not support snapshot builds.")
     identity = source_cache_identity(validated, base_dir=base_dir)
     builder, build_class = _snapshot_builder(validated, base_dir=base_dir, profile=profile)
     context = SourceCacheBuildContext(
@@ -224,51 +243,48 @@ def resolve_data_input(
     base_dir: str | Path | None = None,
     profile: ExecutionProfile | str | None = None,
 ) -> pl.LazyFrame:
-    """Resolve direct input or an already-published snapshot.
-
-    Snapshot execution never builds and never contacts the provider.
-    """
+    """Resolve canonical direct Parquet or an already-published snapshot."""
     validated = validate_data_input_config(config)
-    if validated["cacheMode"] == "snapshot":
-        cache_store = store or SourceCacheStore(_cache_root())
-        identity = source_cache_identity(validated, base_dir=base_dir)
-        lease = cache_store.lease(identity)
+    if data_input_is_direct(validated):
+        anchored = _resolved_config_path(validated, base_dir)
+        return read_polars_input(anchored, profile=profile)
+
+    cache_store = store or SourceCacheStore(_cache_root())
+    identity = source_cache_identity(validated, base_dir=base_dir)
+    lease = cache_store.lease(identity)
+    try:
         generation = lease.__enter__()
-        release_lock = threading.Lock()
-        released = False
+    except FileNotFoundError:
+        raise PolarsIoConfigError(
+            "input_snapshot_missing: This Data Input runs from a snapshot "
+            "that has not been built yet. Build the snapshot (or run a "
+            "preview, which builds it automatically) and try again."
+        ) from None
+    release_lock = threading.Lock()
+    released = False
 
-        def release_lease() -> None:
-            nonlocal released
-            with release_lock:
-                if released:
-                    return
-                released = True
-            lease.__exit__(None, None, None)
+    def release_lease() -> None:
+        nonlocal released
+        with release_lock:
+            if released:
+                return
+            released = True
+        lease.__exit__(None, None, None)
 
-        frame = generation.lazy_frame
-        execution_context = current_execution_context()
-        if execution_context is not None:
-            try:
-                execution_context.add_cleanup(release_lease)
-            except BaseException:
-                release_lease()
-                raise
-        else:
-            frame = frame.map_batches(
-                _SnapshotLeasePlan(release_lease),
-                streamable=True,
-            )
-        return frame
-
-    provider = validated["inputType"]
-    if provider not in {"file", "lakehouse", "inline"}:
-        raise PolarsIoConfigError(f"{provider.title()} input cannot execute directly.")
-    anchored = (
-        _resolved_config_path(validated, base_dir)
-        if provider in {"file", "lakehouse"}
-        else validated
-    )
-    return read_polars_input(anchored, profile=profile)
+    frame = generation.lazy_frame
+    execution_context = current_execution_context()
+    if execution_context is not None:
+        try:
+            execution_context.add_cleanup(release_lease)
+        except BaseException:
+            release_lease()
+            raise
+    else:
+        frame = frame.map_batches(
+            _SnapshotLeasePlan(release_lease),
+            streamable=True,
+        )
+    return frame
 
 
 def resolve_data_input_from_config(
@@ -277,7 +293,7 @@ def resolve_data_input_from_config(
     base_dir: str | Path | None = None,
     profile: ExecutionProfile | str | None = None,
 ) -> pl.LazyFrame:
-    """Load a generated sidecar and resolve its direct or cached provider."""
+    """Load a generated sidecar and resolve its direct or snapshot-backed input."""
     from haute._config_io import load_node_config
 
     base = _base_path(base_dir)

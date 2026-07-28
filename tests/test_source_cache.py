@@ -117,6 +117,25 @@ def test_build_publishes_immutable_generation_and_lease_reads_it(tmp_path: Path)
         assert_frame_equal(leased.lazy_frame.collect(), expected)
 
 
+def test_generation_validation_is_independent_of_canonical_metadata_key_order(
+    tmp_path: Path,
+) -> None:
+    store = SourceCacheStore(tmp_path)
+    identity = _identity(path="data/nonalphabetical.parquet", format="parquet")
+    expected = pl.DataFrame({"z_value": [1], "a_value": [2]})
+
+    generation = store.build(
+        identity,
+        _LazyBuilder(expected.lazy()),
+        context=_context(),
+    )
+
+    metadata = json.loads(generation.metadata_path.read_text(encoding="utf-8"))
+    assert list(metadata["columns"]) == ["a_value", "z_value"]
+    with store.lease(identity) as leased:
+        assert leased.lazy_frame.collect().columns == ["z_value", "a_value"]
+
+
 def test_admitted_context_covers_snapshot_read_write_and_publication_checkpoints(
     tmp_path: Path,
 ) -> None:
@@ -462,12 +481,7 @@ def test_build_rejects_publication_that_exceeds_store_quota(tmp_path: Path) -> N
     assert not any((store.identity_path(identity) / "generations").glob("*"))
 
 
-def test_generation_quota_evicts_oldest_unleased_identity_deterministically(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    timestamps = iter([10.0, 20.0, 30.0])
-    monkeypatch.setattr("haute._source_cache.time.time", lambda: next(timestamps))
+def test_generation_quota_rejects_another_current_snapshot(tmp_path: Path) -> None:
     store = SourceCacheStore(tmp_path, max_bytes=1_000_000, max_generations=2)
     oldest = _identity(path="oldest.parquet")
     middle = _identity(path="middle.parquet")
@@ -483,15 +497,40 @@ def test_generation_quota_evicts_oldest_unleased_identity_deterministically(
         _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
         context=_context(),
     )
-    store.build(
-        newest,
-        _LazyBuilder(pl.DataFrame({"id": [3]}).lazy()),
+    with pytest.raises(
+        SourceCacheQuotaExceededError,
+        match="existing snapshots are kept.*Clear an unused Data Input snapshot",
+    ):
+        store.build(
+            newest,
+            _LazyBuilder(pl.DataFrame({"id": [3]}).lazy()),
+            context=_context(),
+        )
+
+    assert store.status(oldest).state == "ready"
+    assert store.status(middle).state == "ready"
+    assert store.status(newest).state == "missing"
+
+
+def test_generation_quota_reclaims_an_unleased_superseded_generation(tmp_path: Path) -> None:
+    store = SourceCacheStore(tmp_path, max_bytes=1_000_000, max_generations=1)
+    identity = _identity(path="refreshable.parquet")
+    first = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [1]}).lazy()),
         context=_context(),
     )
 
-    assert store.status(oldest).state == "missing"
-    assert store.status(middle).state == "ready"
-    assert store.status(newest).state == "ready"
+    second = store.build(
+        identity,
+        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+        context=_context(),
+        refresh=True,
+    )
+
+    assert second.generation_id != first.generation_id
+    assert not first.data_path.parent.exists()
+    assert store.open_generation(identity).lazy_frame.collect()["id"].to_list() == [2]
 
 
 def test_generation_quota_never_evicts_a_leased_snapshot(tmp_path: Path) -> None:
@@ -513,13 +552,14 @@ def test_generation_quota_never_evicts_a_leased_snapshot(tmp_path: Path) -> None
             )
         assert store.status(pinned).state == "ready"
 
-    store.build(
-        replacement,
-        _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
-        context=_context(),
-    )
-    assert store.status(pinned).state == "missing"
-    assert store.status(replacement).state == "ready"
+    with pytest.raises(SourceCacheQuotaExceededError):
+        store.build(
+            replacement,
+            _LazyBuilder(pl.DataFrame({"id": [2]}).lazy()),
+            context=_context(),
+        )
+    assert store.status(pinned).state == "ready"
+    assert store.status(replacement).state == "missing"
 
 
 def test_store_startup_preserves_unproven_cross_process_staging_and_generations(

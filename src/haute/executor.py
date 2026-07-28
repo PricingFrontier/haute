@@ -13,7 +13,6 @@ can optimise the full plan end-to-end.
 from __future__ import annotations
 
 import ast as _ast
-import contextlib
 import ctypes
 import functools
 import gc
@@ -177,15 +176,6 @@ class DataOutputDurabilityError(RuntimeError):
 
 _IS_WINDOWS = os.name == "nt"
 _WINDOWS_OUTPUT_SYNC_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
-
-
-def _execution_stage(
-    execution_context: ExecutionContext | None,  # pragma: no mutate
-    name: str,
-) -> contextlib.AbstractContextManager[None]:
-    if execution_context is None:
-        return contextlib.nullcontext()
-    return execution_context.stage(name)
 
 
 # Cache compiled preamble results by (content, pipeline_dir, execution
@@ -956,11 +946,7 @@ def execute_graph(
         execution_facade.ProjectionRequest(
             graph=graph,
             target_node_id=target_node_id,
-            profile=(
-                execution_context.profile
-                if execution_context is not None
-                else ExecutionProfile.PREVIEW_EAGER
-            ),
+            profile=execution_context.profile,
             required_columns_by_node=preview_required_columns or None,
             source=source,
         ),
@@ -1005,7 +991,7 @@ def execute_graph(
     preview_entry_pinned = False
 
     # Check if we can extend the cache (same graph, new target is a superset)
-    with _execution_stage(execution_context, "preview_cache_lookup"):
+    with execution_context.stage("preview_cache_lookup"):
         cached = _preview_cache.get(fp)
     if cached is not None:
         prev_outputs = cached["eager_outputs"]
@@ -1030,7 +1016,7 @@ def execute_graph(
         )
         if cache_satisfies_request:
             # Full cache hit — all required nodes already materialised
-            with _execution_stage(execution_context, "preview_cache_hit"):
+            with execution_context.stage("preview_cache_hit"):
                 logger.debug(
                     "preview_cache_hit",
                     fingerprint=fp[:8],
@@ -1054,7 +1040,7 @@ def execute_graph(
                 target=target_node_id,
                 cached_nodes=len(prev_outputs),
             )
-            with _execution_stage(execution_context, "preview_cache_extend"):
+            with execution_context.stage("preview_cache_extend"):
                 (
                     raw_outputs,
                     order,
@@ -1139,7 +1125,7 @@ def execute_graph(
             target=target_node_id,
             prev_fingerprint=(_preview_cache.most_recent_key or "")[:8],
         )
-        with _execution_stage(execution_context, "preview_cache_miss"):
+        with execution_context.stage("preview_cache_miss"):
             (
                 raw_outputs,
                 order,

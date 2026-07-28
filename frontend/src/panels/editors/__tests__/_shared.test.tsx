@@ -738,6 +738,17 @@ describe("FileBrowser", () => {
     expect(screen.getByText("subdir")).toBeInTheDocument()
   })
 
+  it("renders directories whose API size is null", async () => {
+    mockListFiles.mockResolvedValue({
+      items: [{ name: "data", path: "data", type: "directory", size: null }],
+    })
+    render(<FileBrowser onSelect={vi.fn()} />)
+    await waitFor(() => {
+      expect(screen.getByText("data")).toBeInTheDocument()
+    })
+    expect(screen.queryByText("NaN KB")).not.toBeInTheDocument()
+  })
+
   it("uses cache on second load", async () => {
     const cached = [
       { name: "cached.csv", path: "cached.csv", type: "file" as const },

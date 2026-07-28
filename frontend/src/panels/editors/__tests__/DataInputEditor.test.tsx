@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react"
 import type { IoCapabilityGroup } from "../../../api/types"
@@ -63,15 +64,34 @@ const groups: IoCapabilityGroup[] = [
     output_fields: [],
     formats: [
       {
+        name: "parquet",
+        label: "Parquet",
+        group: "file",
+        extensions: [".parquet"],
+        unstable: false,
+        input: {
+          modes: ["scan"],
+          arguments: { scan: [] },
+          engines_missing: [],
+          cache_mode: "direct",
+          direct_bounded: true,
+          needs_schema_when_bounded: false,
+          snapshot_build: "bounded",
+          cached_read: true,
+        },
+        output: null,
+      },
+      {
         name: "csv",
         label: "CSV",
         group: "file",
         extensions: [".csv"],
         unstable: false,
         input: {
-          modes: ["scan", "read"],
-          arguments: { scan: ["separator"], read: ["separator"] },
+          modes: ["scan"],
+          arguments: { scan: ["separator"] },
           engines_missing: [],
+          cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: true,
           snapshot_build: "bounded",
@@ -89,6 +109,7 @@ const groups: IoCapabilityGroup[] = [
           modes: ["read"],
           arguments: { read: [] },
           engines_missing: [],
+          cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
           snapshot_build: "admitted_eager",
@@ -106,6 +127,7 @@ const groups: IoCapabilityGroup[] = [
           modes: ["read"],
           arguments: { read: [] },
           engines_missing: ["fastexcel"],
+          cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
           snapshot_build: "admitted_eager",
@@ -148,6 +170,7 @@ const groups: IoCapabilityGroup[] = [
           modes: [],
           arguments: { snapshot: ["batch_size"] },
           engines_missing: [],
+          cache_mode: "snapshot",
           direct_bounded: false,
           needs_schema_when_bounded: false,
           snapshot_build: "bounded",
@@ -162,7 +185,7 @@ const groups: IoCapabilityGroup[] = [
     label: "Lakehouse",
     input_available: true,
     output_available: true,
-    cache_modes: ["direct", "snapshot"],
+    cache_modes: ["snapshot"],
     input_fields: [
       {
         name: "path",
@@ -183,6 +206,7 @@ const groups: IoCapabilityGroup[] = [
           modes: ["scan", "read"],
           arguments: { scan: [], read: [] },
           engines_missing: [],
+          cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
           snapshot_build: "bounded",
@@ -221,7 +245,7 @@ const groups: IoCapabilityGroup[] = [
     label: "Inline",
     input_available: true,
     output_available: false,
-    cache_modes: ["direct"],
+    cache_modes: ["snapshot"],
     input_fields: [
       { name: "records", label: "Records", kind: "records", required: true },
     ],
@@ -237,10 +261,11 @@ const groups: IoCapabilityGroup[] = [
           modes: ["read"],
           arguments: { read: [] },
           engines_missing: [],
+          cache_mode: "snapshot",
           direct_bounded: true,
           needs_schema_when_bounded: false,
-          snapshot_build: "unsupported",
-          cached_read: false,
+          snapshot_build: "bounded",
+          cached_read: true,
         },
         output: null,
       },
@@ -324,10 +349,46 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe("DataInputEditor", () => {
+  it("scans Parquet directly without one-option mode or cache controls", async () => {
+    renderEditor({
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
+      path: "quotes.parquet",
+      arguments: {},
+      code: "",
+    })
+
+    expect(await screen.findByLabelText("Format")).toHaveValue("parquet")
+    expect(screen.queryByLabelText("Mode")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Cache as Parquet" })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Data Input requires cache mode/)).not.toBeInTheDocument()
+    expect(getInputCacheStatus).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId("file-change-btn"))
+    expect(screen.queryByRole("textbox", { name: "Path" })).not.toBeInTheDocument()
+    expect(screen.getAllByText("quotes.parquet")).toHaveLength(1)
+  })
+
+  it("keeps the cache control usable for a snapshot-backed read-mode Parquet input", async () => {
+    renderEditor({
+      inputType: "file",
+      format: "parquet",
+      mode: "read",
+      path: "quotes.parquet",
+      arguments: {},
+      code: "",
+    })
+
+    const build = await screen.findByRole("button", { name: "Cache as Parquet" })
+    expect(build).toBeEnabled()
+    await waitFor(() => expect(getInputCacheStatus).toHaveBeenCalled())
+    expect(screen.queryByText("The selected mode is not valid for this format.")).not.toBeInTheDocument()
+  })
+
   it("uses the capability schema requirement and preserves other arguments when adopting it", async () => {
     const { onUpdate } = renderEditor({
       inputType: "file",
-      cacheMode: "direct",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -336,6 +397,10 @@ describe("DataInputEditor", () => {
     })
 
     expect(await screen.findByText("A schema mapping is required for this bounded input.")).toBeInTheDocument()
+    expect(screen.queryByLabelText("Cache mode")).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Cache as Parquet" }),
+    ).toBeInTheDocument()
     fireEvent.click(await screen.findByRole("button", { name: "Use detected schema" }))
     expect(onUpdate).toHaveBeenCalledWith("arguments", {
       separator: "|",
@@ -344,11 +409,27 @@ describe("DataInputEditor", () => {
     })
   })
 
+  it("tolerates a leftover cacheMode key and never migrates it", async () => {
+    const onUpdate = vi.fn(() => ({ ok: true as const }))
+    renderEditor({
+      inputType: "file",
+      cacheMode: "direct",
+      format: "csv",
+      mode: "scan",
+      path: "quotes.csv",
+      arguments: { schema: { policy_id: "Int64" } },
+      code: "",
+    }, onUpdate)
+
+    expect(await screen.findByRole("button", { name: "Cache as Parquet" })).toBeEnabled()
+    expect(screen.queryByText(/Data Input requires cache mode/)).not.toBeInTheDocument()
+    expect(onUpdate).not.toHaveBeenCalledWith("cacheMode", expect.anything())
+  })
+
   it("recovers a failed bounded-schema fetch without changing the path", async () => {
     vi.mocked(fetchSchema).mockRejectedValueOnce(new Error("broken CSV"))
     renderEditor({
       inputType: "file",
-      cacheMode: "direct",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -373,13 +454,10 @@ describe("DataInputEditor", () => {
       records: [{ old: true }],
     })
 
-    const provider = await screen.findByLabelText("Provider")
+    const provider = await screen.findByRole("radiogroup", { name: "Provider" })
     expect(
-      Array.from((provider as HTMLSelectElement).options).map(
-        (option) => option.text,
-      ),
+      within(provider).getAllByRole("radio").map((option) => option.textContent),
     ).toEqual([
-      "Select a provider...",
       "File",
       "Database",
       "Lakehouse",
@@ -387,21 +465,19 @@ describe("DataInputEditor", () => {
       "Inline",
     ])
 
-    fireEvent.change(provider, { target: { value: "database" } })
+    fireEvent.click(within(provider).getByRole("radio", { name: "Database" }))
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df",
       inputType: "database",
-      cacheMode: "snapshot",
       format: "database",
       arguments: {},
       query: "",
     })
   })
 
-  it("preserves provider fields and cache mode when the format changes", async () => {
+  it("preserves provider fields when the format changes", async () => {
     const { onReplaceConfig } = renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -416,9 +492,32 @@ describe("DataInputEditor", () => {
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df.filter(pl.col('x') > 0)",
       inputType: "file",
-      cacheMode: "snapshot",
       format: "json",
       mode: "read",
+      arguments: {},
+      path: "quotes.csv",
+    })
+  })
+
+  it("switches to Parquet without authoring a cache-mode field", async () => {
+    const { onReplaceConfig } = renderEditor({
+      inputType: "file",
+      format: "csv",
+      mode: "scan",
+      path: "quotes.csv",
+      arguments: { separator: "|" },
+      code: "df",
+    })
+
+    fireEvent.change(await screen.findByLabelText("Format"), {
+      target: { value: "parquet" },
+    })
+
+    expect(onReplaceConfig).toHaveBeenCalledWith({
+      code: "df",
+      inputType: "file",
+      format: "parquet",
+      mode: "scan",
       arguments: {},
       path: "quotes.csv",
     })
@@ -427,17 +526,14 @@ describe("DataInputEditor", () => {
   it("shows database cache controls and clears the other locator atomically", async () => {
     const { onUpdate } = renderEditor({
       inputType: "database",
-      cacheMode: "snapshot",
       format: "database",
       connection: "WAREHOUSE_URI",
       query: "select * from quotes",
       arguments: {},
     })
 
-    expect(await screen.findByText("Snapshot cache")).toBeInTheDocument()
-    expect(screen.getByLabelText("Cache mode")).toHaveTextContent(
-      "snapshot (required)",
-    )
+    expect(await screen.findByRole("button", { name: "Cache as Parquet" })).toBeInTheDocument()
+    expect(screen.queryByLabelText("Cache mode")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Add argument" })).toBeEnabled()
 
     const uri = screen.getByLabelText("Credential-free URI")
@@ -452,7 +548,6 @@ describe("DataInputEditor", () => {
   it("keeps the Databricks picker separate from Polars formats", async () => {
     renderEditor({
       inputType: "databricks",
-      cacheMode: "snapshot",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       arguments: {},
@@ -460,16 +555,14 @@ describe("DataInputEditor", () => {
     })
 
     expect(await screen.findByText("SQL Warehouse")).toBeInTheDocument()
-    expect(screen.getByText("Snapshot cache")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Add argument" })).toBeEnabled()
-    expect(screen.getByLabelText("Polars code")).toHaveValue("df")
     expect(screen.queryByLabelText("Format")).not.toBeInTheDocument()
   })
 
   it("removes the optional Databricks SELECT clause when it is cleared", async () => {
     const config = {
       inputType: "databricks",
-      cacheMode: "snapshot",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       query: "SELECT id FROM quotes",
@@ -484,7 +577,6 @@ describe("DataInputEditor", () => {
 
     expect(onReplaceConfig).toHaveBeenCalledWith({
       inputType: "databricks",
-      cacheMode: "snapshot",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       arguments: {},
@@ -495,7 +587,6 @@ describe("DataInputEditor", () => {
   it("validates inline records and commits one parsed update on blur", async () => {
     const { onUpdate } = renderEditor({
       inputType: "inline",
-      cacheMode: "direct",
       format: "records",
       mode: "read",
       records: [],
@@ -512,13 +603,13 @@ describe("DataInputEditor", () => {
     fireEvent.change(records, { target: { value: '[{"a": 1}]' } })
     fireEvent.blur(records)
     expect(onUpdate).toHaveBeenCalledWith("records", [{ a: 1 }])
-    expect(screen.queryByText("Snapshot cache")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Cache mode")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeInTheDocument()
   })
 
   it("uses the admitted-eager profile for eager-only snapshot builds", async () => {
     renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "json",
       mode: "read",
       path: "quotes.json",
@@ -526,10 +617,8 @@ describe("DataInputEditor", () => {
       code: "",
     })
 
-    const build = await screen.findByRole("button", { name: "Build" })
-    expect(
-      screen.getByText(/snapshot builds are eager with memory admission/i),
-    ).toBeInTheDocument()
+    const build = await screen.findByRole("button", { name: "Cache as Parquet" })
+    expect(screen.queryByText(/snapshot builds are/i)).not.toBeInTheDocument()
     fireEvent.click(build)
 
     await waitFor(() =>
@@ -548,7 +637,6 @@ describe("DataInputEditor", () => {
   it("keeps unavailable formats visible but disables snapshot build", async () => {
     renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "excel",
       mode: "read",
       path: "quotes.xlsx",
@@ -559,6 +647,6 @@ describe("DataInputEditor", () => {
     expect(
       await screen.findByText(/Missing engine package.*fastexcel/i),
     ).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Build" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeDisabled()
   })
 })

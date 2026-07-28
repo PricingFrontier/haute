@@ -1,13 +1,14 @@
 import { CommittedTextArea, EditorLabel } from "../../components/form"
+import ToggleButtonGroup from "../../components/ToggleButtonGroup"
 import type { IoCapabilityGroup, IoFormatCapability } from "../../api/types"
-import { CodeEditor } from "./CodeEditor"
 import { WarehousePicker, CatalogTablePicker } from "./_DatabricksSelector"
-import InputCacheControls from "./_InputCacheControls"
+import InputSnapshotCacheButton from "./_InputSnapshotCacheButton"
 import IoFormatEditor, { IoArgumentsEditor } from "./_IoFormatEditor"
 import { useIoCapabilities } from "./_ioFormats"
 import { INPUT_STYLE, SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
+import { dataInputIsDirect } from "../../utils/dataInputMode"
 
 const INPUT_COMMON_KEYS = [
   "instanceOf",
@@ -22,7 +23,6 @@ const INPUT_COMMON_KEYS = [
 const DATABRICKS_KEYS = new Set([
   ...INPUT_COMMON_KEYS,
   "inputType",
-  "cacheMode",
   "http_path",
   "table",
   "query",
@@ -67,20 +67,9 @@ function inputBranchConfig(
         : []
     }),
   )
-  const currentCacheMode =
-    preserveProviderFields &&
-    typeof config.cacheMode === "string" &&
-    group.cache_modes.includes(config.cacheMode as "direct" | "snapshot")
-      ? config.cacheMode
-      : null
-  const cacheMode =
-    currentCacheMode ??
-    (group.cache_modes.includes("direct") ? "direct" : group.cache_modes[0])
-
   return {
     ...retainedCommonConfig(config),
     inputType: group.name,
-    cacheMode,
     ...(format ? { format: format.name } : {}),
     ...(capability?.modes[0] ? { mode: capability.modes[0] } : {}),
     arguments: {},
@@ -121,7 +110,11 @@ function formatAndModeReady(
   if (capability.modes.length === 0) return true
   const configuredMode = typeof config.mode === "string" ? config.mode : ""
   if (!configuredMode) return capability.modes.length === 1
-  return capability.modes.includes(configuredMode as "read" | "scan")
+  // The capability payload advertises only the default mode; the backend
+  // (resolve_input_mode) is the authority on availability and fails loudly,
+  // so a stored explicit mode is ready whenever it is in the closed
+  // vocabulary — membership here would wrongly block backend-valid `read`.
+  return configuredMode === "scan" || configuredMode === "read"
 }
 
 function databricksConfigurationErrors(config: Record<string, unknown>): string[] {
@@ -131,9 +124,6 @@ function databricksConfigurationErrors(config: Record<string, unknown>): string[
   )
   if (inactive.length > 0) {
     errors.push(`Unexpected configuration keys: ${inactive.join(", ")}.`)
-  }
-  if (config.cacheMode !== "snapshot") {
-    errors.push("Databricks requires snapshot cache mode.")
   }
   if (
     config.arguments !== undefined &&
@@ -178,7 +168,6 @@ export default function DataInputEditor({
   onUpdate,
   onReplaceConfig,
   accentColor,
-  errorLine,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -190,17 +179,16 @@ export default function DataInputEditor({
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
   const group = groups.find((candidate) => candidate.name === config.inputType)
   const format = group?.formats.find((candidate) => candidate.name === config.format)
-  const cacheMode = typeof config.cacheMode === "string" ? config.cacheMode : ""
-  const cacheModeReady =
+  // Config-driven, mirroring the runtime derivation: a stored `read`-mode
+  // Parquet input is snapshot-backed and needs the cache control too.
+  const requiresSnapshot =
     group !== undefined &&
-    group.cache_modes.includes(cacheMode as "direct" | "snapshot")
+    (group.name === "databricks" || format !== undefined) &&
+    !dataInputIsDirect(config)
   const requiredReady =
     group !== undefined &&
-    cacheModeReady &&
     providerFieldsReady(group, config) &&
     formatAndModeReady(group, format, config)
-  const showsSnapshotControls =
-    group?.cache_modes.includes("snapshot") === true && cacheMode === "snapshot"
   const databricksErrors =
     group?.name === "databricks" ? databricksConfigurationErrors(config) : []
   const schemaRequired =
@@ -244,60 +232,23 @@ export default function DataInputEditor({
       )}
 
       <div>
-        <EditorLabel>Provider</EditorLabel>
-        <select
-          aria-label="Provider"
-          value={group?.name ?? ""}
-          onChange={(event) => {
-            const next = groups.find((candidate) => candidate.name === event.target.value)
-            if (next) onReplaceConfig(inputBranchConfig(config, next))
-          }}
-          className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
-          style={INPUT_STYLE}
-        >
-          <option value="">Select a provider...</option>
-          {groups.map((candidate) => (
-            <option key={candidate.name} value={candidate.name}>
-              {candidate.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {group && (
-        <div>
-          <EditorLabel>Cache mode</EditorLabel>
-          {group.cache_modes.length === 1 ? (
-            <div
-              aria-label="Cache mode"
-              className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
-              style={INPUT_STYLE}
-            >
-              {group.cache_modes[0]} (required)
-            </div>
-          ) : (
-            <select
-              aria-label="Cache mode"
-              value={cacheMode}
-              onChange={(event) => onUpdate("cacheMode", event.target.value)}
-              className="mt-1 w-full px-2.5 py-1.5 text-xs rounded-lg"
-              style={INPUT_STYLE}
-            >
-              {cacheMode !== "" &&
-                !group.cache_modes.includes(
-                  cacheMode as "direct" | "snapshot",
-                ) && (
-                  <option value={cacheMode}>{cacheMode} (not available)</option>
-                )}
-              {group.cache_modes.map((mode) => (
-                <option key={mode} value={mode}>
-                  {mode}
-                </option>
-              ))}
-            </select>
-          )}
+        <EditorLabel as="div">Provider</EditorLabel>
+        <div className="mt-1">
+          <ToggleButtonGroup
+            value={group?.name ?? ""}
+            onChange={(name) => {
+              const next = groups.find((candidate) => candidate.name === name)
+              if (next) onReplaceConfig(inputBranchConfig(config, next))
+            }}
+            options={groups.map((candidate) => ({
+              key: candidate.name,
+              label: candidate.label,
+            }))}
+            accentColor={accentColor}
+            ariaLabel="Provider"
+          />
         </div>
-      )}
+      </div>
 
       {group?.name === "databricks" ? (
         <div className="space-y-3">
@@ -370,12 +321,9 @@ export default function DataInputEditor({
         />
       ) : null}
 
-      {showsSnapshotControls && group && (
-        <InputCacheControls
+      {requiresSnapshot && group && (
+        <InputSnapshotCacheButton
           config={config}
-          cacheable={
-            group.name === "databricks" || format?.input?.cached_read === true
-          }
           admittedEager={format?.input?.snapshot_build === "admitted_eager"}
           requiredReady={requiredReady}
         />
@@ -429,16 +377,6 @@ export default function DataInputEditor({
         </section>
       )}
 
-      <section>
-        <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-          Transforms the opened direct source or cached snapshot. Return <code>df</code>.
-        </p>
-        <CodeEditor
-          defaultValue={typeof config.code === "string" ? config.code : ""}
-          onChange={(value) => onUpdate("code", value)}
-          errorLine={errorLine}
-        />
-      </section>
     </div>
   )
 }

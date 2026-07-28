@@ -162,7 +162,6 @@ class TestDataInputValidationLogging:
             config={
                 "inputType": "database",
                 "format": "database",
-                "cacheMode": "snapshot",
                 "query": "select * from drivers",
                 "arguments": {},
             },

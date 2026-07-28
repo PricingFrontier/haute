@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from polars.exceptions import PolarsError
 
+from haute._api_input_schema import ApiInputSchemaError
 from haute._io import UnsupportedSourceFormatError
 from haute._json_safe import rows_to_json_safe
 from haute._logging import get_logger
@@ -134,7 +135,12 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
     from haute import graph_utils
     from haute.schemas import ColumnInfo
 
-    lf = graph_utils.read_source(str(target))
+    if target.suffix.casefold() == ".xml":
+        from haute._json_shred import _iter_xml_records
+
+        lf = pl.DataFrame(list(_iter_xml_records(target)), strict=False).lazy()
+    else:
+        lf = graph_utils.read_source(str(target))
 
     if target.suffix.lower() == ".parquet":
         from haute._polars_utils import read_parquet_metadata
@@ -248,6 +254,8 @@ async def get_schema(path: str) -> SchemaResponse:
                 "matches its file extension."
             ),
         ) from None
+    except ApiInputSchemaError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
     except ValueError as exc:
         # Raw ValueError text may embed absolute paths, tracebacks, or
         # git output — never safe to surface.  Log full detail

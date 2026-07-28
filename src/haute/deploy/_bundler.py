@@ -145,8 +145,8 @@ def collect_artifacts(
                 nid,
                 config,
                 pipeline_dir,
-                project_root,
                 artifacts,
+                project_root=project_root,
                 resources=resources,
                 snapshot_provenance=snapshot_provenance,
             )
@@ -185,61 +185,53 @@ def _collect_static_data_input(
     node_id: str,
     config: dict,
     pipeline_dir: Path,
-    project_root: Path,
     artifacts: dict[str, Path],
     *,
+    project_root: Path,
     resources: ExitStack | None,
     snapshot_provenance: dict[str, dict[str, Any]] | None,
 ) -> None:
-    """Collect a retained canonical Data Input without refreshing it.
+    """Collect a retained canonical Data Input for deployment.
 
-    Direct file/lakehouse inputs package their declared local source.  Snapshot
-    inputs package the exact generation selected by the shared cache store;
-    opening the generation verifies its pointer, signed metadata, identity and
-    parquet footer before it can enter a deploy bundle.
+    Direct file-backed Parquet scans bundle their canonical source. Every
+    other Data Input bundles a leased snapshot generation, keeping its exact
+    verified parquet and metadata files alive during bundle construction.
     """
-    from haute._input_providers import source_cache_identity
-    from haute._polars_io_registry import validate_data_input_config
-    from haute._sandbox import _get_project_root
-    from haute._source_cache import SourceCacheCorruptError, SourceCacheStore
+    from haute._polars_io_registry import data_input_is_direct, validate_data_input_config
+    from haute._source_cache import SourceCacheCorruptError
     from haute.errors import DeployError
 
     try:
         validated = validate_data_input_config(config)
-        provider = validated["inputType"]
-        cache_mode = validated["cacheMode"]
-        if provider == "inline":
-            return
-        if cache_mode == "snapshot":
-            if resources is None:
-                raise DeployError(
-                    f"Data Input node {node_id!r} requires a deploy resource owner "
-                    "to hold its snapshot generation lease.",
-                    node_id=node_id,
-                )
-            identity = source_cache_identity(validated, base_dir=pipeline_dir)
-            generation = resources.enter_context(
-                SourceCacheStore(_get_project_root()).lease(identity)
+        if data_input_is_direct(validated):
+            source_path = _resolve_direct_parquet_source(
+                node_id,
+                validated,
+                pipeline_dir,
+                project_root,
             )
-            artifacts[f"{node_id}__snapshot.parquet"] = generation.data_path
-            artifacts[f"{node_id}__snapshot.meta.json"] = generation.metadata_path
-            if snapshot_provenance is not None:
-                snapshot_provenance[node_id] = {
-                    "provider": identity.provider,
-                    **generation.metadata.to_dict(),
-                }
+            artifacts[_artifact_name(node_id, source_path)] = source_path
             return
-        if provider not in {"file", "lakehouse"}:
+
+        from haute._input_providers import source_cache_identity
+        from haute._sandbox import _get_project_root
+        from haute._source_cache import SourceCacheStore
+
+        if resources is None:
             raise DeployError(
-                f"Data Input node {node_id!r} cannot execute directly for deploy; "
-                "build a ready snapshot first.",
+                f"Data Input node {node_id!r} requires a deploy resource owner "
+                "to hold its snapshot generation lease.",
                 node_id=node_id,
             )
-        raw_path = str(validated["path"])
-        abs_path = _resolve_path(raw_path, pipeline_dir, project_root, node_id, "path")
-        _check_exists(abs_path, node_id, "dataInput (static)")
-        _verify_static_input_schema(node_id, validated, pipeline_dir)
-        artifacts[_artifact_name(node_id, abs_path)] = abs_path
+        identity = source_cache_identity(validated, base_dir=pipeline_dir)
+        generation = resources.enter_context(SourceCacheStore(_get_project_root()).lease(identity))
+        artifacts[f"{node_id}__snapshot.parquet"] = generation.data_path
+        artifacts[f"{node_id}__snapshot.meta.json"] = generation.metadata_path
+        if snapshot_provenance is not None:
+            snapshot_provenance[node_id] = {
+                "provider": identity.provider,
+                **generation.metadata.to_dict(),
+            }
     except DeployError:
         raise
     except (FileNotFoundError, SourceCacheCorruptError) as exc:
@@ -250,43 +242,48 @@ def _collect_static_data_input(
         ) from exc
     except Exception as exc:
         raise DeployError(
-            f"Data Input node {node_id!r} is not deployable: invalid provider "
-            "configuration or unsupported direct engine.",
+            f"Data Input node {node_id!r} is not deployable: invalid Data Input configuration.",
             node_id=node_id,
         ) from exc
 
 
-def _verify_static_input_schema(
+def _resolve_direct_parquet_source(
     node_id: str,
-    config: dict,
+    config: dict[str, Any],
     pipeline_dir: Path,
-) -> None:
-    """Validate a direct Data Input's canonical schema and readability.
+    project_root: Path,
+) -> Path:
+    """Resolve and prove a canonical direct Parquet source is readable."""
+    from haute._polars_io_registry import data_input_is_direct, validate_data_input_config
 
-    Schema construction alone is insufficient for formats such as CSV:
-    Polars can accept a declared schema without parsing a row, even when the
-    declaration is incompatible with the file. Resolve through the bounded
-    deploy profile, then force at most one row through the streaming engine so
-    an invalid schema or unreadable source fails before it enters the bundle.
-    """
-    from haute._execution_context import ExecutionProfile
-    from haute._input_providers import resolve_data_input
-    from haute._polars_utils import streaming_collect
-    from haute.errors import DeployError
-
-    try:
-        frame = resolve_data_input(
-            config, base_dir=pipeline_dir, profile=ExecutionProfile.DEPLOY_BATCH
+    validated = validate_data_input_config(config)
+    if not data_input_is_direct(validated):
+        raise DeployError(
+            f"Data Input node {node_id!r} has unsupported direct deployment configuration.",
+            node_id=node_id,
         )
-        frame.collect_schema()
-        streaming_collect(frame.head(1))
+    source_path = _resolve_path(
+        validated.get("path", ""), pipeline_dir, project_root, node_id, "path"
+    )
+    if not source_path.is_file():
+        raise DeployError(
+            f"Data Input node {node_id!r} direct Parquet source does not exist: {source_path}",
+            node_id=node_id,
+            field="path",
+            path=str(source_path),
+        )
+    try:
+        import polars as pl
+
+        pl.scan_parquet(source_path).collect_schema()
     except Exception as exc:
         raise DeployError(
-            f"Could not validate static Data Input node {node_id!r} against "
-            "its canonical provider, schema, and bounded-read contract.",
+            f"Data Input node {node_id!r} direct Parquet source is not readable: {source_path}",
             node_id=node_id,
-            error=str(exc),
+            field="path",
+            path=str(source_path),
         ) from exc
+    return source_path
 
 
 def _resolve_path(

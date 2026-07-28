@@ -120,11 +120,11 @@ describe("ApiInputEditor", () => {
     expect(screen.getByText("This node receives live API requests at deploy time")).toBeTruthy()
   })
 
-  it("FileBrowser renders the complete JSON-family extensions filter", () => {
+  it("FileBrowser renders all supported structured preview extensions", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} />)
     expect(screen.getByTestId("file-browser")).toBeTruthy()
-    expect(screen.getByTestId("extensions").textContent).toBe(".json,.jsonl,.ndjson")
-    expect(screen.getByText(".json, .jsonl, or .ndjson")).toBeTruthy()
+    expect(screen.getByTestId("extensions").textContent).toBe(".json,.jsonl,.ndjson,.xml")
+    expect(screen.getByText(".json, .jsonl, .ndjson, or .xml")).toBeTruthy()
   })
 
 
@@ -135,6 +135,11 @@ describe("ApiInputEditor", () => {
 
   it("cache button shown for .jsonl files", () => {
     render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.jsonl" }} />)
+    expect(screen.getByText("Cache as Parquet")).toBeTruthy()
+  })
+
+  it("cache button shown for .xml files", () => {
+    render(<ApiInputEditor {...DEFAULT_PROPS} config={{ path: "data/input.xml" }} />)
     expect(screen.getByText("Cache as Parquet")).toBeTruthy()
   })
 

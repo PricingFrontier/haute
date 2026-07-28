@@ -122,7 +122,6 @@ class TestStaticDataSourceSchemaDrift:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "direct",
                                 "path": str(bad_csv),
                                 "arguments": {
                                     "schema": {
@@ -177,7 +176,6 @@ class TestStaticDataSourceSchemaDrift:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "direct",
                                 "path": str(source_path),
                                 "arguments": {
                                     "schema": {
@@ -195,11 +193,13 @@ class TestStaticDataSourceSchemaDrift:
         with pytest.raises(DeployError, match="static_ds"):
             collect_artifacts(graph, [], tmp_path)
 
-    def test_static_plain_json_source_rejected_by_bounded_deploy_validation(
+    def test_static_json_source_without_snapshot_rejected_at_bundling(
         self,
         tmp_path: Path,
     ) -> None:
-        """Plain JSON static sources should fail before deployed batch scoring."""
+        """A snapshot-backed static source with no built snapshot fails before scoring."""
+        from contextlib import ExitStack
+
         from haute.deploy._bundler import collect_artifacts
 
         source_path = tmp_path / "static.json"
@@ -216,7 +216,6 @@ class TestStaticDataSourceSchemaDrift:
                                 "inputType": "file",
                                 "format": "json",
                                 "mode": "read",
-                                "cacheMode": "direct",
                                 "path": str(source_path),
                                 "arguments": {},
                             },
@@ -227,13 +226,12 @@ class TestStaticDataSourceSchemaDrift:
             }
         )
 
-        with pytest.raises(DeployError) as exc_info:
-            collect_artifacts(graph, [], tmp_path)
+        with ExitStack() as stack, pytest.raises(DeployError) as exc_info:
+            collect_artifacts(graph, [], tmp_path, resources=stack)
 
         message = str(exc_info.value).lower()
         assert "static_ds" in message
-        assert "json" in message
-        assert "bounded" in message
+        assert "ready, valid matching snapshot" in message
 
 
 # ===========================================================================

@@ -70,7 +70,6 @@ def _node(node_id: str, node_type: str, config: dict[str, object] | None = None)
             **config,
             "inputType": "file",
             "format": formats.get(suffix, suffix),
-            "cacheMode": "direct",
         }
     return {
         "id": node_id,

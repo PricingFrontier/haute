@@ -90,15 +90,12 @@
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
    download.
-   Every retained direct Data Input is validated through its canonical provider config,
-   resolved with the `DEPLOY_BATCH` profile, schema-checked, and read for at most one row
-   through the shared profiled `streaming_collect` helper before its source is admitted to
-   the bundle. Schema and dtype declarations live under the format-specific `arguments`
-   object; the removed top-level `expected_columns` and `schema_overrides` fields are not
-   compatibility paths. Snapshot sources acquire a `SourceCacheStore.lease()` that is
-   retained by `ResolvedDeploy` until dispatch completes, and record provider, identity,
-   generation, signature, checksum, row/column counts, and creation time as manifest
-   provenance.
+   A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
+   bundles its validated source file. Every other retained Data Input is snapshot-backed;
+   its ready snapshot acquires a `SourceCacheStore.lease()` that
+   is retained by `ResolvedDeploy` until dispatch completes, and records provider,
+   identity, generation, signature, checksum, row/column counts, and creation time as
+   manifest provenance.
 8. `infer_input_schema()` (call `collect_schema()` on the first input node's source;
    lazy readers avoid row collection, while the existing plain-JSON reader may parse
    eagerly) and
@@ -110,7 +107,7 @@
 
 **Validation (`_validators.py::validate_deploy`)** — called by `deploy()` after
 `resolve_config()`, before dispatch. Runs seven structural checks (output, inputs,
-source-ness, artefact existence, canonical Data Input direct/snapshot readiness, and non-empty input/output
+source-ness, artefact existence, canonical Data Input direct readability or snapshot readiness, and non-empty input/output
 schemas), rechecks the projected output-field invariant, then — if
 `config.test_quotes_dir` is configured — requires an existing directory containing at
 least one `*.json` file and pre-checks every quote's rows
@@ -196,8 +193,7 @@ directory before re-raising.
 
 **Runtime scoring (`_scorer.py::score_graph_lazy` → `score_graph`)**
 1. Resolve the graph's relative path configs against `graph.source_file`
-   (`_resolve_runtime_graph_paths`), rewrite retained `dataInput` direct paths or
-   snapshots to their bundled files (`_remap_bundled_data_inputs`), and attach bundled feature-contract paths to
+   (`_resolve_runtime_graph_paths`) and attach bundled feature-contract paths to
    `modelScore` node configs (`_attach_bundled_feature_contracts`). When a remapped
    native model has no bundled feature-contract sidecar, load that local model through
    the stat-gated deploy cache and attach its feature names plus any offset column as
@@ -212,7 +208,12 @@ directory before re-raising.
    `_build_node_fn` builder. `_intercept` returns a replacement `(func_name, fn,
    returns_frame)` tuple — or `None` to fall through to the base builder — for four node
    categories: `apiInput` or `dataInput` source in the live input set (inject the live `DataFrame`
-   directly); `externalFile` with a remapped bundled path (run its user code against the
+   directly); retained direct-Parquet `dataInput` nodes (remap their configured path to the
+   bundled source); retained snapshot-backed `dataInput` nodes with a bundled
+   `node_id__snapshot.parquet` (scan the leased parquet through a deploy-only interception
+   path while retaining the canonical config unchanged, user code,
+   preamble namespace, and executor post-processing);
+   `externalFile` with a remapped bundled path (run its user code against the
    loaded object, or passthrough if no code); `optimiserApply` either file-based-remapped
    or MLflow-sourced (`run`/`registered`, downloaded at request time); `modelScore` in three sub-cases (remapped
    model artefact present → score; contract bundled but no model artefact → validate

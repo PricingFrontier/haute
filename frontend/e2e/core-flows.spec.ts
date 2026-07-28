@@ -212,9 +212,12 @@ test.describe("core browser flows", () => {
     const original = readFileSync(gitMainPath, "utf8")
     const syncProbeImport = "import statistics as websocket_sync_probe"
     const editor = page.getByTestId("code-editor-wrapper").locator(".cm-content")
-    const updated = original.includes("import math")
-      ? original.replace("import math", `import math\n${syncProbeImport}`)
-      : original.replace("import haute", `import haute\n\n${syncProbeImport}`)
+    const constructorAnchor = original.match(/^pipeline\s*=\s*haute\.Pipeline\(.+$/m)?.[0]
+    if (!constructorAnchor) throw new Error("E2E pipeline fixture has no pipeline constructor")
+    const updated = original.replace(
+      constructorAnchor,
+      `${syncProbeImport}\n\n${constructorAnchor}`,
+    )
 
     try {
       writeFileSync(gitMainPath, updated, "utf8")

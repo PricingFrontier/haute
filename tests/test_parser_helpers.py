@@ -1124,7 +1124,6 @@ class TestResolveNodeConfig:
                         "inputType": "file",
                         "format": "parquet",
                         "mode": "scan",
-                        "cacheMode": "direct",
                         "path": "data.parquet",
                         "arguments": {},
                     },
@@ -1150,7 +1149,6 @@ class TestResolveNodeConfig:
                         "inputType": "file",
                         "format": "parquet",
                         "mode": "scan",
-                        "cacheMode": "direct",
                         "path": "data.parquet",
                         "arguments": {},
                     },
@@ -1242,7 +1240,6 @@ class TestResolveNodeConfig:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data.csv",
             "arguments": {},
         }
@@ -1269,7 +1266,6 @@ class TestResolveNodeConfig:
             "inputType": "file",
             "format": "parquet",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data.parquet",
             "arguments": {},
         }
@@ -1303,7 +1299,6 @@ class TestResolveNodeConfig:
             "inputType": "file",
             "format": "parquet",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data.parquet",
             "arguments": {},
         }
@@ -1385,7 +1380,6 @@ class TestResolveNodeConfig:
             "inputType": "file",
             "format": "parquet",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data.parquet",
             "arguments": {},
         }
@@ -1577,7 +1571,6 @@ class TestExtractDecoratedNodes:
                     "inputType": "file",
                     "format": "parquet",
                     "mode": "scan",
-                    "cacheMode": "direct",
                     "path": "data.parquet",
                     "arguments": {},
                 }

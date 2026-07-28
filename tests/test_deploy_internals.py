@@ -1610,12 +1610,59 @@ class TestScoreGraphOutputFields:
 
 
 class TestScoreGraphStaticDataSourceRemap:
-    def test_static_data_source_remap_uses_declared_schema(self, tmp_path):
-        """Static source artifact remaps should preserve dataInput schema config."""
+    def test_direct_parquet_source_uses_its_bundled_artifact(self, tmp_path):
+        """Direct Parquet remapping is deploy-only and keeps the config canonical."""
         from haute.deploy._scorer import score_graph
 
-        source_path = tmp_path / "lookup.csv"
-        source_path.write_text("quote_id,factor\n001,1.2\n", encoding="utf-8")
+        bundled_path = tmp_path / "lookup.parquet"
+        pl.DataFrame({"quote_id": ["001"], "factor": [1.2]}).write_parquet(bundled_path)
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "lookup",
+                        "data": {
+                            "label": "lookup",
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "path": "original.parquet",
+                                "arguments": {},
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {
+                            "label": "out",
+                            "nodeType": "output",
+                            "config": make_output_config(["quote_id", "factor"]),
+                        },
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "lookup", "target": "out"}],
+            }
+        )
+
+        result = score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(),
+            input_node_ids=[],
+            output_node_id="out",
+            artifact_paths={"lookup__original.parquet": str(bundled_path)},
+        )
+
+        assert result["quote_id"].to_list() == ["001"]
+        assert "cacheMode" not in graph.node_map["lookup"].data.config
+
+    def test_static_data_source_snapshot_preserves_canonical_config(self, tmp_path):
+        """Bundled snapshots serve parquet without rewriting the source config."""
+        from haute.deploy._scorer import score_graph
+
+        source_path = tmp_path / "lookup.snapshot.parquet"
+        pl.DataFrame({"quote_id": ["001"], "factor": [1.2]}).write_parquet(source_path)
         graph = _g(
             {
                 "nodes": [
@@ -1628,7 +1675,6 @@ class TestScoreGraphStaticDataSourceRemap:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "direct",
                                 "path": "lookup.csv",
                                 "arguments": {
                                     "schema_overrides": {
@@ -1657,14 +1703,15 @@ class TestScoreGraphStaticDataSourceRemap:
             input_df=pl.DataFrame(),
             input_node_ids=[],
             output_node_id="out",
-            artifact_paths={"lookup__lookup.csv": str(source_path)},
+            artifact_paths={"lookup__snapshot.parquet": str(source_path)},
         )
 
         assert result["quote_id"].to_list() == ["001"]
         assert result.schema["quote_id"] == pl.String
+        assert "cacheMode" not in graph.node_map["lookup"].data.config
 
-    def test_static_data_source_remap_receives_projected_columns(self, tmp_path):
-        """Bundled static sources should keep deploy output projection physical."""
+    def test_static_data_source_snapshot_receives_projected_columns(self, tmp_path):
+        """Bundled snapshots should keep deploy output projection physical."""
         from haute.deploy import _scorer
 
         graph = _g(
@@ -1677,10 +1724,9 @@ class TestScoreGraphStaticDataSourceRemap:
                             "nodeType": "dataInput",
                             "config": {
                                 "inputType": "file",
-                                "format": "parquet",
+                                "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "direct",
-                                "path": "lookup.parquet",
+                                "path": "lookup.csv",
                                 "arguments": {},
                             },
                         },
@@ -1697,27 +1743,18 @@ class TestScoreGraphStaticDataSourceRemap:
                 "edges": [{"id": "e1", "source": "lookup", "target": "out"}],
             }
         )
-        captured: dict[str, object] = {}
-
-        def fake_resolve_data_input(config, *, base_dir=None, profile=None, store=None):
-            captured["config"] = config
-            captured["profile"] = profile
-            return pl.DataFrame({"keep": [1], "unused": [2]}).lazy()
-
-        with patch(
-            "haute._input_providers.resolve_data_input", side_effect=fake_resolve_data_input
-        ):
-            result = _scorer.score_graph(
-                graph=graph,
-                input_df=pl.DataFrame(),
-                input_node_ids=[],
-                output_node_id="out",
-                artifact_paths={"lookup__lookup.parquet": str(tmp_path / "lookup.parquet")},
-                output_fields=["keep"],
-            )
+        snapshot_path = tmp_path / "lookup.snapshot.parquet"
+        pl.DataFrame({"keep": [1], "unused": [2]}).write_parquet(snapshot_path)
+        result = _scorer.score_graph(
+            graph=graph,
+            input_df=pl.DataFrame(),
+            input_node_ids=[],
+            output_node_id="out",
+            artifact_paths={"lookup__snapshot.parquet": str(snapshot_path)},
+            output_fields=["keep"],
+        )
 
         assert result.columns == ["keep"]
-        assert captured["profile"] == "deploy_live"
 
 
 class TestScoreGraphMissingOutput:
@@ -5031,6 +5068,60 @@ class TestLoadTestQuoteFileEdgeCases:
 
 class TestValidateDeployEdgeCases:
     """Additional edge cases for validate_deploy()."""
+
+    def test_direct_parquet_validation_does_not_require_snapshot(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A direct Parquet source is validated in place, without cache lookup."""
+        from haute.deploy._config import DeployConfig
+        from haute.deploy._validators import validate_deploy
+
+        source = tmp_path / "lookup.parquet"
+        pl.DataFrame({"factor": [1.2]}).write_parquet(source)
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "lookup",
+                        "data": {
+                            "nodeType": "dataInput",
+                            "config": {
+                                "inputType": "file",
+                                "format": "parquet",
+                                "mode": "scan",
+                                "path": "lookup.parquet",
+                                "arguments": {},
+                            },
+                        },
+                    },
+                    {
+                        "id": "out",
+                        "data": {"nodeType": "output", "config": make_output_config([])},
+                    },
+                ],
+                "edges": [{"id": "e1", "source": "lookup", "target": "out"}],
+            }
+        )
+        config = DeployConfig(pipeline_file=tmp_path / "pipeline.py", model_name="test")
+        resolved = _make_resolved(
+            config=config,
+            pruned_graph=graph,
+            input_node_ids=["lookup"],
+            output_node_id="out",
+            artifacts={"lookup__lookup.parquet": source},
+            input_schema={"factor": "Float64"},
+            output_schema={"factor": "Float64"},
+        )
+
+        def source_cache_must_not_run(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("direct Parquet validation must not access the source cache")
+
+        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+        monkeypatch.setattr(
+            "haute._input_providers.source_cache_identity", source_cache_must_not_run
+        )
+
+        validate_deploy(resolved)
 
     def test_output_node_missing_from_pruned_graph(self):
         """Validation must report an error when output_node_id is not in the pruned graph."""

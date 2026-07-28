@@ -98,7 +98,6 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
             inputSources={EMPTY}
             onDeleteInput={noop}
             upstreamColumns={EMPTY}
-            errorLine={null}
           />
         )
       case NODE_TYPES.RATING_STEP:
