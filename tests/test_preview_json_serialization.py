@@ -10,7 +10,7 @@ import pytest
 from haute._types import GraphNode, NodeData, PipelineGraph
 from haute.executor import PreviewProjectionError, execute_graph
 from haute.schemas import ColumnInfo, NodeResult
-from tests.conftest import make_file_input_config
+from tests.conftest import make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -21,7 +21,7 @@ def _source_node(nid: str, path: str) -> GraphNode:
         data=NodeData(
             label=nid,
             nodeType="dataInput",
-            config=make_file_input_config(path),
+            config=make_ready_file_input_config(path),
         ),
     )
 

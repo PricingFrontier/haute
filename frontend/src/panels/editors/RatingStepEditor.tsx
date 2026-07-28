@@ -1,10 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react"
-import { Code2, GitMerge, Plus, Search, Table2, X } from "lucide-react"
+import { GitMerge, Plus, Search, Table2, X } from "lucide-react"
 import { InputSourcesBar, INPUT_STYLE } from "./_shared"
 import type { InputSource, OnUpdateConfig } from "./_shared"
-import { CodeEditor } from "./CodeEditor"
 import ToggleButtonGroup from "../../components/ToggleButtonGroup"
-import { configField } from "../../utils/configField"
 import { withAlpha } from "../../utils/color"
 import { classifyBandingLevels } from "../../utils/banding"
 import type { RatingFactorColumn, RatingFactorDtype, RatingTable } from "./rating/ratingTableUtils"
@@ -52,7 +50,6 @@ function defaultBaseValue(operation: string): string {
 }
 
 function resolveInitialSection(config: Record<string, unknown>): RatingSection {
-  if (typeof config.code === "string" && config.code.trim()) return "code"
   if (Array.isArray(config.combinedOutputs) && config.combinedOutputs.length > 0) return "combined"
   return "tables"
 }
@@ -136,7 +133,6 @@ export default function RatingStepEditor({
   upstreamColumns = [],
   previewRows = [],
   accentColor,
-  errorLine,
   nodeId,
 }: {
   config: Record<string, unknown>
@@ -236,21 +232,12 @@ export default function RatingStepEditor({
       idx !== safeCombinedIdx && item.outputColumn.trim() === currentCombinedOutputName
     ))
   )
-  const code = configField(config, "code", "")
   const hasConfiguredCombined = combinedOutputColumns.length > 0
-  const hasConfiguredCode = code.trim().length > 0
   const combinedColumnInvalid = hasCombinedOutput && (combinedColumnBlank || combinedColumnDuplicate)
   const sectionOptions: { key: RatingSection; label: string; icon: ReactNode }[] = [
     { key: "tables", label: "Tables", icon: <Table2 size={13} /> },
     { key: "combined", label: hasConfiguredCombined ? "Combined set" : "Combined", icon: <GitMerge size={13} /> },
-    { key: "code", label: hasConfiguredCode ? "Code set" : "Code", icon: <Code2 size={13} /> },
   ]
-  const codeAvailableColumns = Array.from(new Set([
-    ...upstreamColumns.map(col => col.name),
-    ...tableOutputColumns,
-    ...combinedOutputColumns,
-  ]))
-
   useEffect(() => {
     setActiveSectionState(rememberedSection ?? resolveInitialSection(config))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the visible editor section only when switching rating nodes
@@ -863,26 +850,6 @@ export default function RatingStepEditor({
         </div>
       )}
 
-      {activeSection === "code" && (
-        <div className="px-0 py-1 flex flex-col gap-2">
-          <div className="flex items-center justify-between shrink-0">
-            <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: 'var(--text-muted)' }}>
-              Polars Code
-              <span className="ml-1.5 normal-case tracking-normal font-normal">(optional)</span>
-            </label>
-            <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
-              use <code className="px-0.5 rounded" style={{ background: 'var(--bg-hover)' }}>df</code> for rated data
-            </span>
-          </div>
-          <CodeEditor
-            defaultValue={code}
-            onChange={(value) => onUpdate("code", value)}
-            availableColumns={codeAvailableColumns}
-            placeholder=""
-            errorLine={errorLine}
-          />
-        </div>
-      )}
     </div>
   )
 }

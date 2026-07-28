@@ -246,6 +246,27 @@ class TestBundledPathsAreAbsolute:
         [(_name, resolved_path)] = artifacts.items()
         assert resolved_path.is_absolute(), f"Expected absolute path, got {resolved_path!r}"
 
+    def test_direct_parquet_is_bundled_without_source_cache(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The only direct input is packaged from its canonical Parquet source."""
+        pipeline_dir = tmp_path / "project"
+        pipeline_dir.mkdir()
+        source = pipeline_dir / "lookup.parquet"
+        pl.DataFrame({"a": [1]}).write_parquet(source)
+        graph = _make_datasource_graph("lookup", "lookup.parquet")
+
+        def source_cache_must_not_run(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("direct Parquet deployment must not access the source cache")
+
+        monkeypatch.setattr(
+            "haute._input_providers.source_cache_identity", source_cache_must_not_run
+        )
+
+        assert collect_artifacts(graph, [], pipeline_dir) == {"lookup__lookup.parquet": source}
+
     def test_collect_artifacts_resolves_against_pipeline_dir_not_cwd(
         self,
         tmp_path: Path,
@@ -425,6 +446,37 @@ class TestArtifactContainmentAndModelContracts:
 
 
 class TestSnapshotGenerationLease:
+    def test_inline_snapshot_is_packaged_with_its_leased_generation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Inline providers use the same snapshot artifact contract as files."""
+        from haute._input_providers import build_input_snapshot
+        from haute._source_cache import SourceCacheStore
+
+        config = {
+            "inputType": "inline",
+            "format": "records",
+            "mode": "read",
+            "cacheMode": "snapshot",
+            "records": [{"driver": "Ada"}],
+            "arguments": {},
+        }
+        graph = _g(
+            {"nodes": [{"id": "drivers", "data": {"nodeType": "dataInput", "config": config}}]}
+        )
+        store = SourceCacheStore(tmp_path)
+        generation = build_input_snapshot(config, store=store, base_dir=tmp_path)
+        monkeypatch.setattr("haute._sandbox._get_project_root", lambda: tmp_path)
+        resources = ExitStack()
+        try:
+            artifacts = collect_artifacts(graph, [], tmp_path, resources=resources)
+            assert artifacts["drivers__snapshot.parquet"] == generation.data_path
+            assert artifacts["drivers__snapshot.meta.json"] == generation.metadata_path
+        finally:
+            resources.close()
+
     def test_refresh_cannot_retire_generation_before_deploy_releases_it(
         self,
         tmp_path_factory: pytest.TempPathFactory,
@@ -436,15 +488,15 @@ class TestSnapshotGenerationLease:
         # Keep the root short enough for atomic metadata temp-file suffixes on
         # Windows when this test runs under an xdist worker.
         project_dir = tmp_path_factory.mktemp("lease")
-        source_path = project_dir / "drivers.parquet"
-        pl.DataFrame({"driver": ["old"]}).write_parquet(source_path)
+        source_path = project_dir / "drivers.csv"
+        pl.DataFrame({"driver": ["old"]}).write_csv(source_path)
         input_config = {
             "inputType": "file",
-            "format": "parquet",
+            "format": "csv",
             "mode": "scan",
             "cacheMode": "snapshot",
-            "path": "drivers.parquet",
-            "arguments": {},
+            "path": "drivers.csv",
+            "arguments": {"schema": {"driver": "String"}},
         }
         graph = _g(
             {
@@ -478,7 +530,7 @@ class TestSnapshotGenerationLease:
         )
         leased_path = artifacts["drivers__snapshot.parquet"]
 
-        pl.DataFrame({"driver": ["new"]}).write_parquet(source_path)
+        pl.DataFrame({"driver": ["new"]}).write_csv(source_path)
         second = build_input_snapshot(
             input_config,
             store=store,

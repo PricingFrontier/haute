@@ -122,7 +122,7 @@ class TestStaticDataSourceSchemaDrift:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "direct",
+                                "cacheMode": "snapshot",
                                 "path": str(bad_csv),
                                 "arguments": {
                                     "schema": {
@@ -177,7 +177,7 @@ class TestStaticDataSourceSchemaDrift:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "direct",
+                                "cacheMode": "snapshot",
                                 "path": str(source_path),
                                 "arguments": {
                                     "schema": {
@@ -216,7 +216,7 @@ class TestStaticDataSourceSchemaDrift:
                                 "inputType": "file",
                                 "format": "json",
                                 "mode": "read",
-                                "cacheMode": "direct",
+                                "cacheMode": "snapshot",
                                 "path": str(source_path),
                                 "arguments": {},
                             },

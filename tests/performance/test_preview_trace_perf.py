@@ -17,6 +17,7 @@ from haute.executor import _preview_cache, execute_graph
 from haute.schemas import NodeResult, TraceResponse
 from haute.trace import TraceResult, execute_trace, trace_result_to_dict
 from haute.trace import _cache as _trace_cache
+from tests.conftest import build_test_input_snapshot
 
 pytestmark = [pytest.mark.perf, pytest.mark.usefixtures("_widen_sandbox_root")]
 
@@ -37,7 +38,7 @@ def _edge(source: str, target: str) -> GraphEdge:
     return GraphEdge(id=f"e-{source}-{target}", source=source, target=target)
 
 
-def _direct_parquet_input(path: Path) -> dict[str, Any]:
+def _snapshot_parquet_input(path: Path) -> dict[str, Any]:
     return {
         "inputType": "file",
         "format": "parquet",
@@ -65,12 +66,13 @@ def _write_preview_trace_source(tmp_path: Path, rows: int = _ROW_LIMIT) -> Path:
 
 def _preview_trace_graph(tmp_path: Path) -> PipelineGraph:
     source_path = _write_preview_trace_source(tmp_path)
+    build_test_input_snapshot(_snapshot_parquet_input(source_path), base_dir=tmp_path)
     return PipelineGraph(
         nodes=[
             _node(
                 "source",
                 NodeType.DATA_INPUT,
-                _direct_parquet_input(source_path),
+                _snapshot_parquet_input(source_path),
             ),
             _node(
                 "features",
@@ -144,11 +146,12 @@ df = df.with_columns(
 
 def _linear_trace_graph(tmp_path: Path) -> tuple[PipelineGraph, str, str]:
     source_path = _write_preview_trace_source(tmp_path)
+    build_test_input_snapshot(_snapshot_parquet_input(source_path), base_dir=tmp_path)
     nodes = [
         _node(
             "source",
             NodeType.DATA_INPUT,
-            _direct_parquet_input(source_path),
+            _snapshot_parquet_input(source_path),
         )
     ]
     edges: list[GraphEdge] = []

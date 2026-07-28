@@ -117,7 +117,7 @@ Out of scope (owned by neighbouring components):
   skips the rewrite.
 - **Canonical data I/O generation.** `dataInput` emits
   `@pipeline.data_input(config="config/data_input/<name>.json")`, loads the
-  configured direct or snapshot-backed provider through the shared helper,
+  configured snapshot-backed provider through the shared helper,
   binds the result to `df`, runs optional user Polars code, then returns
   `df`. `dataOutput` emits
   `@pipeline.data_output(config="config/data_output/<name>.json")` with a

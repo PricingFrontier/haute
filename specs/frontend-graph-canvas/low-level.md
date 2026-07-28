@@ -241,10 +241,11 @@
     crossing — not every pixel of zoom — triggers a re-render. At full
     detail an api-input with ≥1 eligible frame renders the frame-row body:
     one relatively-positioned row per frame carrying a right-aligned
-    truncating mono name (full name as `title` tooltip) and that row's
-    labelled source `Handle` (id = the frame's raw label, a sole frame
-    included), absolutely positioned at the row's vertical midline with
-    its dot centred on the node's right border. The instance name is
+    truncating name in the same 13px semibold primary-text typography as
+    node names (full name as `title` tooltip) and that row's labelled
+    source `Handle` (id = the frame's raw label, a sole frame included),
+    absolutely positioned at the row's vertical midline with its dot
+    centred on the node's right border. The instance name is
     suppressed in that body; the trace-value pill, when active, renders
     above the rows. Zero eligible frames keeps the instance name, adds a
     muted "No emitted frames" line, and renders no source handle. At
@@ -255,7 +256,8 @@
     ids follow the visual top-to-bottom order in both modes, and the name
     span keeps its `api-input-body-label-<label>` test id. Edge-join nodes
     short-circuit to an entirely separate marker/pill render before the
-    LOD branches run.
+    LOD branches run; their status and warning dots sit inside the visible
+    marker ellipse rather than outside its right edge.
 12. **Node delete (`useNodeHandlers.handleDeleteNode`).** Calls
     `setNodesAndEdges` once (node filter + edge filter closed over the same
     call, one undo entry), nulls `selectedNode`/`previewData` if they

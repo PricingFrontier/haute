@@ -55,7 +55,25 @@ status, infer, build, and delete; there is no cancel endpoint because the underl
 blocking shred is not cooperatively cancellable.
 
 Source snapshot identities use the same canonical checked-input discipline. Their storage,
-lease, and publication behaviour is specified by the IO layer.
+lease, and publication behaviour is specified by the IO layer. A published
+current generation is durable until the user refreshes or clears that Data
+Input. Quota pressure rejects the incoming build with an actionable error; it
+never silently evicts another input's current snapshot. Users must clear an
+unused snapshot or raise the configured quota before retrying.
+
+Before Studio sends a preview that uses snapshot-mode Data Inputs, it checks
+each required snapshot through the existing status endpoint. A missing,
+corrupt, failed, or already-building snapshot starts or joins the existing
+visible job, waits for completion, and only then sends the preview. The
+orchestrator tries the lazy-sink build profile first and retries once with the
+admitted eager profile only when the server reports
+`snapshot_build_unsupported`. A ready snapshot is always used as published:
+stale freshness is visible to the user but never triggers a silent refresh.
+File-backed Parquet inputs do not participate because they scan their Parquet
+source directly and expose no cache action. Snapshot-mode execution itself
+remains offline and never contacts the provider; non-Studio callers receive
+the IO layer's explicit `input_snapshot_missing:` error when they have not
+built a required snapshot.
 
 ## Design rationale
 

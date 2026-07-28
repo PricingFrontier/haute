@@ -195,7 +195,7 @@ class TestMLflowSignatureLogged:
         / mlflow.catboost.log_model calls that a *signature* argument was
         passed, with inputs matching the training feature order.
         """
-        pytest.importorskip("mlflow", reason="mlflow optional dependency not installed")
+        pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
 
@@ -257,7 +257,7 @@ class TestMLflowSignatureLogged:
         not the diagnostic stack.
         """
         pytest.importorskip("catboost", reason="catboost optional dependency not installed")
-        pytest.importorskip("mlflow", reason="mlflow optional dependency not installed")
+        pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
         monkeypatch.delenv("DATABRICKS_HOST", raising=False)
         monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
         monkeypatch.setattr(

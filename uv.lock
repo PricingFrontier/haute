@@ -1195,6 +1195,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "joblib" },
     { name = "libcst" },
+    { name = "mlflow" },
     { name = "numpy" },
     { name = "openai" },
     { name = "orjson" },
@@ -1217,7 +1218,6 @@ dependencies = [
 databricks = [
     { name = "databricks-sdk" },
     { name = "databricks-sql-connector" },
-    { name = "mlflow" },
 ]
 
 [package.dev-dependencies]
@@ -1248,7 +1248,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.139.2,<0.140" },
     { name = "joblib", specifier = ">=1.5,<2" },
     { name = "libcst", specifier = ">=1.8.6,<2" },
-    { name = "mlflow", marker = "extra == 'databricks'", specifier = ">=3.11.0,<4" },
+    { name = "mlflow", specifier = ">=3.11.0,<4" },
     { name = "numpy", specifier = ">=2.0,<3" },
     { name = "openai", specifier = ">=1.55" },
     { name = "orjson", specifier = ">=3.11.7,<4" },

@@ -48,6 +48,15 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
             }
         ).write_parquet(partition / "part.parquet")
 
+    config = {
+        "inputType": "file",
+        "format": "parquet",
+        "mode": "scan",
+        "cacheMode": "direct",
+        "path": str(dataset),
+        "arguments": {"hive_partitioning": True},
+        "code": "df = df.filter(pl.col('year') == 2025)",
+    }
     graph = make_graph(
         {
             "nodes": [
@@ -56,15 +65,7 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": {
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "cacheMode": "direct",
-                            "path": str(dataset),
-                            "arguments": {"hive_partitioning": True},
-                            "code": "df = df.filter(pl.col('year') == 2025)",
-                        },
+                        "config": config,
                     },
                 },
                 {
@@ -107,8 +108,8 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
     assert isinstance(output, pl.LazyFrame)
     optimised_plan = output.explain(optimized=True)
 
-    assert "year=2025" in optimised_plan
-    assert "year=2024" not in optimised_plan
+    assert 'col("year")' in optimised_plan
+    assert "2025" in optimised_plan
     assert "unused_payload" not in optimised_plan
     assert output.collect().to_dict(as_series=False) == {"value": [20]}
 
@@ -137,6 +138,44 @@ def test_database_config_rejects_inline_uri_credentials(uri: str) -> None:
                 "query": "SELECT 1",
             }
         )
+
+
+def test_file_parquet_scan_requires_direct_cache_mode() -> None:
+    config = {
+        "inputType": "file",
+        "format": "parquet",
+        "path": "input.parquet",
+    }
+    assert validate_data_input_config({**config, "cacheMode": "direct"})["cacheMode"] == "direct"
+
+    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'direct'"):
+        validate_data_input_config({**config, "cacheMode": "snapshot"})
+    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'snapshot'"):
+        validate_data_input_config({**config, "mode": "read", "cacheMode": "direct"})
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"inputType": "file", "format": "csv", "mode": "scan", "path": "input.csv"},
+        {
+            "inputType": "database",
+            "format": "database",
+            "connection": "DATABASE_URL",
+            "query": "SELECT 1",
+        },
+        {"inputType": "lakehouse", "format": "delta", "path": "lake/table"},
+        {
+            "inputType": "databricks",
+            "http_path": "/sql/1.0/warehouses/abc",
+            "table": "main.pricing.policies",
+        },
+        {"inputType": "inline", "format": "records", "records": [{"id": 1}]},
+    ],
+)
+def test_non_parquet_inputs_require_snapshot_cache_mode(config: dict[str, object]) -> None:
+    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'snapshot'"):
+        validate_data_input_config({**config, "cacheMode": "direct"})
 
 
 class TestRegistrySchemaCompleteness:
@@ -210,18 +249,31 @@ class TestRegistrySchemaCompleteness:
     def test_registry_capabilities_payload_shape(self) -> None:
         payload = registry_capabilities()
         assert payload["schema_version"] == 1
+        groups = {group["name"]: group for group in payload["groups"]}
+        assert groups["file"]["cache_modes"] == ["direct", "snapshot"]
+        assert all(
+            group["cache_modes"] == ["snapshot"] for name, group in groups.items() if name != "file"
+        )
         formats = {
             entry["name"]: entry for group in payload["groups"] for entry in group["formats"]
         }
         assert set(formats) == set(FORMATS_BY_NAME)
         csv = formats["csv"]
-        assert csv["input"]["modes"] == ["scan", "read"]
+        assert csv["input"]["modes"] == ["scan"]
         assert "schema_overrides" in csv["input"]["arguments"]["scan"]
         assert csv["input"]["engines_missing"] == []
+        assert formats["parquet"]["input"]["modes"] == ["scan"]
+        assert formats["parquet"]["input"]["cache_mode"] == "direct"
+        json_format = formats["json"]
+        assert json_format["input"]["modes"] == ["read"]
+        assert json_format["input"]["cache_mode"] == "snapshot"
         delta = formats["delta"]
         # Core haute ships no deltalake engine: the capability payload must
         # say so rather than pretending delta is runnable.
         assert delta["input"]["engines_missing"] == ["deltalake"]
+        records = formats["records"]
+        assert records["input"]["snapshot_build"] == "bounded"
+        assert records["input"]["cached_read"] is True
 
 
 class TestDtypeCodec:

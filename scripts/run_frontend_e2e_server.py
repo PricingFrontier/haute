@@ -373,7 +373,7 @@ def _augment_starter_pipeline() -> None:
         '  "inputType": "file",\n'
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
-        '  "cacheMode": "direct",\n'
+        '  "cacheMode": "snapshot",\n'
         '  "path": "data/sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",
@@ -387,7 +387,7 @@ def _augment_starter_pipeline() -> None:
         '  "inputType": "file",\n'
         '  "format": "parquet",\n'
         '  "mode": "scan",\n'
-        '  "cacheMode": "direct",\n'
+        '  "cacheMode": "snapshot",\n'
         '  "path": "data/optimiser_sample.parquet",\n'
         '  "arguments": {}\n'
         "}\n",

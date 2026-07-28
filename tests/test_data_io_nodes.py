@@ -34,6 +34,7 @@ from haute.executor import (
     resolve_data_output_path,
     write_data_output,
 )
+from tests.conftest import build_test_input_snapshot
 
 ensure_registry_ready()
 
@@ -44,6 +45,12 @@ def _edge(src: str, tgt: str) -> GraphEdge:
 
 def _data_input_node(nid: str, config: dict) -> GraphNode:
     return GraphNode(id=nid, data=NodeData(label=nid, nodeType=NodeType.DATA_INPUT, config=config))
+
+
+def _ready_data_input_node(nid: str, config: dict) -> GraphNode:
+    """Create a source node after explicitly publishing its test snapshot."""
+    build_test_input_snapshot(config)
+    return _data_input_node(nid, config)
 
 
 def _data_output_node(nid: str, config: dict) -> GraphNode:
@@ -72,7 +79,7 @@ class TestExecuteSinkDataOutput:
 
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -110,7 +117,7 @@ class TestExecuteSinkDataOutput:
 
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -142,7 +149,7 @@ class TestExecuteSinkDataOutput:
         struct_frame.write_parquet(src_path)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -166,7 +173,7 @@ class TestExecuteSinkDataOutput:
         struct_frame.write_parquet(src_path)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -239,7 +246,7 @@ class TestExecuteSinkDataOutput:
         out_path.write_bytes(original)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -287,7 +294,7 @@ class TestExecuteSinkDataOutput:
         out_path.write_bytes(original)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -331,7 +338,7 @@ class TestExecuteSinkDataOutput:
         out_path.write_bytes(original)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -392,7 +399,7 @@ class TestExecuteSinkDataOutput:
         out_path.write_bytes(original)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -433,7 +440,7 @@ class TestExecuteSinkDataOutput:
         out_path.write_bytes(b"old")
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -469,7 +476,7 @@ class TestExecuteSinkDataOutput:
         out_path = haute_scratch / "result.parquet"
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -715,7 +722,7 @@ class TestExecuteSinkDataOutput:
         pl.DataFrame({"x": [1]}).write_parquet(src_path)
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -767,7 +774,7 @@ class TestExecuteSinkDataOutput:
         out_path = haute_scratch / f"out-{has_bom}.csv"
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -800,7 +807,7 @@ class TestExecuteSinkDataOutput:
         out_path = haute_scratch / "out.csv"
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -834,7 +841,7 @@ class TestExecuteSinkDataOutput:
         out_path = haute_scratch / "out.csv"
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -921,7 +928,7 @@ class TestExecuteSinkDataOutput:
         out_path = haute_scratch / f"empty-{include_header}.csv"
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -958,7 +965,7 @@ class TestExecuteSinkDataOutput:
         out_path = haute_scratch / "result.parquet"
         graph = PipelineGraph(
             nodes=[
-                _data_input_node(
+                _ready_data_input_node(
                     "din",
                     {
                         "inputType": "file",
@@ -1156,6 +1163,8 @@ class TestDataInputBuilder:
         *,
         required_output_columns: frozenset[str] | None = None,
     ):
+        if config:
+            build_test_input_snapshot(config)
         node = _data_input_node("din", config)
         ctx = NodeBuildContext(
             node=node,
@@ -1252,7 +1261,7 @@ class TestCodegenAndParseRoundTrip:
             {
                 "inputType": "file",
                 "format": "csv",
-                "cacheMode": "direct",
+                "cacheMode": "snapshot",
                 "path": "data/q.csv",
                 "code": "df = df.filter(pl.col('id') > 0)",
             },
@@ -1284,7 +1293,7 @@ class TestCodegenAndParseRoundTrip:
         din_config = {
             "inputType": "file",
             "format": "csv",
-            "cacheMode": "direct",
+            "cacheMode": "snapshot",
             "path": "data/q.csv",
             "arguments": {"separator": ";", "schema_overrides": {"id": "int64"}},
         }
@@ -1345,7 +1354,7 @@ class TestSidecarPersistence:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "direct",
+            "cacheMode": "snapshot",
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
             "_editorOnly": {"open": True},
@@ -1355,7 +1364,7 @@ class TestSidecarPersistence:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "direct",
+            "cacheMode": "snapshot",
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
         }
@@ -1364,7 +1373,7 @@ class TestSidecarPersistence:
         config = {
             "inputType": "inline",
             "format": "records",
-            "cacheMode": "direct",
+            "cacheMode": "snapshot",
             "records": [{"a": 1, "s": {"k": "v"}}],
             "arguments": {
                 "schema": {"a": "int64", "s": {"type": "Struct", "fields": {"k": "str"}}}

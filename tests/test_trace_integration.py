@@ -32,6 +32,7 @@ from tests.conftest import (
 from tests.conftest import (
     make_graph as _g,
 )
+from tests.conftest import make_ready_file_input_config
 from tests.conftest import (
     make_source_node as _source_node,
 )
@@ -1325,14 +1326,7 @@ class TestLiveSwitchTrace:
                     data=NodeData(
                         label="live_src",
                         nodeType="dataInput",
-                        config={
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "cacheMode": "direct",
-                            "path": str(p_live),
-                            "arguments": {},
-                        },
+                        config=make_ready_file_input_config(p_live),
                     ),
                 ),
                 GraphNode(
@@ -1340,14 +1334,7 @@ class TestLiveSwitchTrace:
                     data=NodeData(
                         label="batch_src",
                         nodeType="dataInput",
-                        config={
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "cacheMode": "direct",
-                            "path": str(p_batch),
-                            "arguments": {},
-                        },
+                        config=make_ready_file_input_config(p_batch),
                     ),
                 ),
                 GraphNode(
@@ -1399,14 +1386,7 @@ class TestLiveSwitchBranchChange:
                     data=NodeData(
                         label="live_src",
                         nodeType="dataInput",
-                        config={
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "cacheMode": "direct",
-                            "path": str(p_live),
-                            "arguments": {},
-                        },
+                        config=make_ready_file_input_config(p_live),
                     ),
                 ),
                 GraphNode(
@@ -1414,14 +1394,7 @@ class TestLiveSwitchBranchChange:
                     data=NodeData(
                         label="batch_src",
                         nodeType="dataInput",
-                        config={
-                            "inputType": "file",
-                            "format": "parquet",
-                            "mode": "scan",
-                            "cacheMode": "direct",
-                            "path": str(p_batch),
-                            "arguments": {},
-                        },
+                        config=make_ready_file_input_config(p_batch),
                     ),
                 ),
                 GraphNode(

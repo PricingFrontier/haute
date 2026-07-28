@@ -28,7 +28,7 @@ from haute.executor import execute_graph
 from haute.graph_utils import GraphEdge, PipelineGraph
 from haute.parser import parse_pipeline_source
 from haute.trace import execute_trace
-from tests.conftest import compile_node_code, make_output_config
+from tests.conftest import build_test_input_snapshot, compile_node_code, make_output_config
 from tests.conftest import make_graph as _g
 from tests.conftest import make_node as _node
 
@@ -456,6 +456,7 @@ class TestExploreGraphShape:
                 "edges": [_edge("src", "calc")],
             }
         )
+        build_test_input_snapshot(graph.node_map["src"].data.config)
 
         results = execute_graph(
             graph,

@@ -43,7 +43,7 @@ def _file_input_config(path: str) -> dict:
         "inputType": "file",
         "format": format_name,
         "mode": mode,
-        "cacheMode": "direct",
+        "cacheMode": "snapshot",
         "path": path,
         "arguments": {},
     }

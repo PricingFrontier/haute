@@ -184,8 +184,8 @@ function _ApiInputFrameRows({
         >
           <span
             data-testid={`api-input-body-label-${label}`}
-            className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-right font-mono text-[11px] leading-tight"
-            style={{ color: "var(--text-muted)", whiteSpace: "pre" }}
+            className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-right font-semibold text-[13px] leading-tight"
+            style={{ color: "var(--text-primary)", whiteSpace: "pre" }}
             title={label}
           >
             {label}
@@ -380,7 +380,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         />
         {nodeData._status && (
           <span
-            className={`pointer-events-none absolute -right-0.5 bottom-1 size-1.5 rounded-full ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
+            className={`pointer-events-none absolute right-[6px] bottom-[8px] size-1.5 rounded-full ${nodeData._status === "running" ? "animate-pulse-dot" : ""}`}
             style={{ backgroundColor: statusColors[nodeData._status] }}
             role="status"
             aria-label={`Node ${nodeData._status}`}
@@ -389,7 +389,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         )}
         {hasWarnings && nodeData._status !== "error" && (
           <span
-            className="pointer-events-none absolute -right-0.5 top-1 size-1.5 rounded-full"
+            className="pointer-events-none absolute right-[6px] top-[8px] size-1.5 rounded-full"
             style={{ backgroundColor: "var(--warning-strong)" }}
             role="status"
             aria-label="Node has schema warnings"

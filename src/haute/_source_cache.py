@@ -232,16 +232,6 @@ class _SourceCacheCoordination:
     verified_generations: set[_VerifiedGeneration] = field(default_factory=set)
 
 
-@dataclass(frozen=True, slots=True)
-class _EvictionCandidate:
-    identity_digest: str
-    generation_id: str
-    created_at: float
-    size_bytes: int
-    pointer_path: Path
-    generation_dir: Path
-
-
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -431,7 +421,7 @@ class SourceCacheStore:
             polars_schema = pl.scan_parquet(data_path).collect_schema()
             if (
                 parquet_metadata.num_rows != metadata.row_count
-                or arrow_schema.names != list(metadata.columns)
+                or arrow_schema.names != polars_schema.names()
                 or {name: str(dtype) for name, dtype in polars_schema.items()} != metadata.columns
             ):
                 raise ValueError("metadata schema or row count does not match snapshot")
@@ -523,51 +513,6 @@ class SourceCacheStore:
     def _generation_count(self) -> int:
         return sum(1 for _ in self.inputs_root.glob("*/generations/*/data.parquet"))
 
-    def _eviction_candidates(
-        self,
-        identity: SourceCacheIdentity,
-    ) -> list[_EvictionCandidate]:
-        candidates: list[_EvictionCandidate] = []
-        for identity_dir in self.inputs_root.iterdir():
-            digest = identity_dir.name
-            if digest == identity.digest or not identity_dir.is_dir() or identity_dir.is_symlink():
-                continue
-            pointer_path = identity_dir / "current.json"
-            try:
-                pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-                generation_id = _validate_generation_id(pointer["generation_id"])
-                if pointer.get("identity_digest") != digest:
-                    continue
-                if self._leases.get((digest, generation_id), 0) != 0:
-                    continue
-                generation_dir = identity_dir / "generations" / generation_id
-                data_path = generation_dir / "data.parquet"
-                metadata = json.loads((generation_dir / "meta.json").read_text(encoding="utf-8"))
-                created_at = metadata["created_at"]
-                if not isinstance(created_at, (int, float)):
-                    continue
-                size_bytes = data_path.stat().st_size
-            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-                continue
-            candidates.append(
-                _EvictionCandidate(
-                    identity_digest=digest,
-                    generation_id=generation_id,
-                    created_at=float(created_at),
-                    size_bytes=size_bytes,
-                    pointer_path=pointer_path,
-                    generation_dir=generation_dir,
-                )
-            )
-        return sorted(
-            candidates,
-            key=lambda candidate: (
-                candidate.created_at,
-                candidate.identity_digest,
-                candidate.generation_id,
-            ),
-        )
-
     def _admit_publication_within_quota(
         self,
         identity: SourceCacheIdentity,
@@ -595,56 +540,11 @@ class SourceCacheStore:
         if projected_bytes <= self.max_bytes and projected_count <= self.max_generations:
             return
 
-        acquired: list[tuple[threading.RLock, _EvictionCandidate]] = []
-        try:
-            for candidate in self._eviction_candidates(identity):
-                candidate_lock = self._identity_locks.setdefault(
-                    candidate.identity_digest,
-                    threading.RLock(),
-                )
-                if not candidate_lock.acquire(blocking=False):
-                    continue
-                if (
-                    self._leases.get(
-                        (candidate.identity_digest, candidate.generation_id),
-                        0,
-                    )
-                    != 0
-                ):
-                    candidate_lock.release()
-                    continue
-                try:
-                    pointer = json.loads(candidate.pointer_path.read_text(encoding="utf-8"))
-                    still_current = (
-                        pointer.get("identity_digest") == candidate.identity_digest
-                        and pointer.get("generation_id") == candidate.generation_id
-                    )
-                except (OSError, TypeError, ValueError, json.JSONDecodeError):
-                    still_current = False
-                if not still_current:
-                    candidate_lock.release()
-                    continue
-                acquired.append((candidate_lock, candidate))
-                projected_bytes -= candidate.size_bytes
-                projected_count -= 1
-                if projected_bytes <= self.max_bytes and projected_count <= self.max_generations:
-                    break
-
-            if projected_bytes > self.max_bytes or projected_count > self.max_generations:
-                raise SourceCacheQuotaExceededError(
-                    "source-cache generation exceeds the configured quota"
-                )
-
-            for _candidate_lock, candidate in acquired:
-                candidate.pointer_path.unlink(missing_ok=True)
-                self._forget_verified(
-                    candidate.identity_digest,
-                    candidate.generation_id,
-                )
-                shutil.rmtree(candidate.generation_dir)
-        finally:
-            for candidate_lock, _candidate in reversed(acquired):
-                candidate_lock.release()
+        raise SourceCacheQuotaExceededError(
+            "source-cache quota exceeded: existing snapshots are kept until "
+            "explicitly refreshed or cleared. Clear an unused Data Input "
+            "snapshot or raise the cache quota."
+        )
 
     def build(
         self,

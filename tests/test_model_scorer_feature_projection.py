@@ -17,7 +17,7 @@ from haute._model_scorer import (
     score_frame,
 )
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from tests.conftest import make_file_input_config, make_output_config
+from tests.conftest import make_file_input_config, make_output_config, make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -623,7 +623,7 @@ def test_lazy_batch_model_score_uses_downstream_required_output_projection(tmp_p
                 data=NodeData(
                     label="source",
                     nodeType="dataInput",
-                    config=make_file_input_config(data_path),
+                    config=make_ready_file_input_config(data_path),
                 ),
             ),
             GraphNode(
@@ -712,7 +712,7 @@ def test_lazy_batch_model_score_uses_declared_transform_contract_for_projection(
                 data=NodeData(
                     label="source",
                     nodeType="dataInput",
-                    config=make_file_input_config(data_path),
+                    config=make_ready_file_input_config(data_path),
                 ),
             ),
             GraphNode(
@@ -852,7 +852,7 @@ def test_lazy_batch_model_score_applies_stale_selected_columns_after_scoring(
                 data=NodeData(
                     label="source",
                     nodeType="dataInput",
-                    config=make_file_input_config(data_path),
+                    config=make_ready_file_input_config(data_path),
                 ),
             ),
             GraphNode(

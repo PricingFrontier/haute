@@ -38,6 +38,9 @@ from haute._ram_estimate import (
     estimate_source_rows,
 )
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
+from tests.conftest import build_test_input_snapshot
+
+pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,10 +61,21 @@ def _file_input_config(path: object, *, format: str | None = None) -> dict[str, 
         "inputType": "file",
         "format": format,
         "mode": "scan",
-        "cacheMode": "direct",
+        "cacheMode": "direct" if format == "parquet" else "snapshot",
         "path": path_string,
         "arguments": {},
     }
+
+
+def _ready_file_input_config(
+    path: object,
+    *,
+    format: str | None = None,
+) -> dict[str, object]:
+    config = _file_input_config(path, format=format)
+    if config["cacheMode"] == "snapshot":
+        build_test_input_snapshot(config)
+    return config
 
 
 def _databricks_input_config(table: str) -> dict[str, object]:
@@ -161,8 +175,11 @@ def test_source_metadata_propagates_programming_errors_but_marks_os_errors_unava
     tmp_path,
 ) -> None:
     path = tmp_path / "source.parquet"
-    path.touch()
-    node = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
+    pl.DataFrame({"value": [1]}).write_parquet(path)
+    node = _make_source_node(
+        node_type="dataInput",
+        config=_ready_file_input_config(path),
+    )
 
     with patch("haute._ram_estimate._detailed_parquet_metadata", side_effect=KeyError("bug")):
         with pytest.raises(KeyError, match="bug"):
@@ -212,7 +229,10 @@ def test_low_cardinality_wide_strings_use_expanded_probe_width(tmp_path) -> None
     path = tmp_path / "wide_dictionary.parquet"
     wide_value = "x" * 2048
     pl.DataFrame({"category": [wide_value] * 256}).write_parquet(path)
-    node = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
+    node = _make_source_node(
+        node_type="dataInput",
+        config=_ready_file_input_config(path),
+    )
 
     metadata = _detailed_source_metadata_for_node(node)
 
@@ -224,7 +244,10 @@ def test_low_cardinality_wide_strings_use_expanded_probe_width(tmp_path) -> None
 def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(tmp_path) -> None:
     path = tmp_path / "empty.parquet"
     pl.DataFrame(schema={"x": pl.Int64}).write_parquet(path)
-    source = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
+    source = _make_source_node(
+        node_type="dataInput",
+        config=_ready_file_input_config(path),
+    )
     graph = PipelineGraph(nodes=[source], edges=[])
 
     estimate = estimate_materialisation_boundary(graph, source.id)
@@ -236,7 +259,10 @@ def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(
 def test_materialisation_estimate_reads_each_source_metadata_once(tmp_path) -> None:
     path = tmp_path / "source.parquet"
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(path)
-    source = _make_source_node(node_type="dataInput", config=_file_input_config(str(path)))
+    source = _make_source_node(
+        node_type="dataInput",
+        config=_ready_file_input_config(path),
+    )
     target = _make_modelling_node()
     graph = PipelineGraph(
         nodes=[source, target],
@@ -373,7 +399,7 @@ class TestEstimateSourceRows:
 
         node = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) == 1000
@@ -404,13 +430,13 @@ class TestEstimateSourceRows:
             node_id="s1",
             label="small",
             node_type="dataInput",
-            config=_file_input_config(str(p1)),
+            config=_ready_file_input_config(p1),
         )
         n2 = _make_source_node(
             node_id="s2",
             label="big",
             node_type="dataInput",
-            config=_file_input_config(str(p2)),
+            config=_ready_file_input_config(p2),
         )
         graph = PipelineGraph(nodes=[n1, n2], edges=[])
         assert estimate_source_rows(graph) == 5000
@@ -473,7 +499,7 @@ class TestEstimateSafeTrainingRows:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -496,7 +522,7 @@ class TestEstimateSafeTrainingRows:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -541,7 +567,7 @@ class TestEstimateSafeTrainingRows:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -564,7 +590,7 @@ class TestEstimateSafeTrainingRows:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -587,7 +613,7 @@ class TestEstimateSafeTrainingRows:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -614,7 +640,7 @@ class TestEstimateSafeTrainingRows:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -648,12 +674,12 @@ class TestEstimateSafeTrainingRows:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
             node_type="dataInput",
-            config=_file_input_config(str(join_path)),
+            config=_ready_file_input_config(join_path),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -689,7 +715,7 @@ class TestEstimateSafeTrainingRows:
         pl.DataFrame({"a": range(20), "b": range(20)}).write_parquet(str(path))
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node(config={"exclude": "a"})
         graph = PipelineGraph(
@@ -727,12 +753,12 @@ class TestEstimateSafeTrainingRows:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
             node_type="dataInput",
-            config=_file_input_config(str(join_path)),
+            config=_ready_file_input_config(join_path),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -783,12 +809,12 @@ class TestEstimateSafeTrainingRows:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
             node_type="dataInput",
-            config=_file_input_config(str(join_path)),
+            config=_ready_file_input_config(join_path),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -843,12 +869,12 @@ class TestEstimateSafeTrainingRows:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
             node_type="dataInput",
-            config=_file_input_config(str(join_path)),
+            config=_ready_file_input_config(join_path),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -903,12 +929,12 @@ class TestEstimateSafeTrainingRows:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
             node_type="dataInput",
-            config=_file_input_config(str(join_path)),
+            config=_ready_file_input_config(join_path),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -963,12 +989,12 @@ class TestEstimateSafeTrainingRows:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
             node_type="dataInput",
-            config=_file_input_config(str(join_path)),
+            config=_ready_file_input_config(join_path),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -1022,12 +1048,12 @@ class TestEstimateSafeTrainingRows:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
             node_type="dataInput",
-            config=_file_input_config(str(join_path)),
+            config=_ready_file_input_config(join_path),
         )
         joined = _make_transform_node(
             node_id="joined",
@@ -1107,7 +1133,7 @@ class TestDetailedColumnResolution:
         src = _make_source_node(
             node_id="source",
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         projection = _make_transform_node(
             node_id="projection",
@@ -1161,7 +1187,7 @@ class TestDetailedColumnResolution:
         src = _make_source_node(
             node_id="source",
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         graph = PipelineGraph(nodes=[src], edges=[])
 
@@ -1252,7 +1278,7 @@ class TestDetailedEdgeJoinColumnResolution:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
@@ -1329,7 +1355,7 @@ class TestEdgeJoinKeyColumnsOnPath:
         base = _make_source_node(
             node_id="base",
             node_type="dataInput",
-            config=_file_input_config(str(base_path)),
+            config=_ready_file_input_config(base_path),
         )
         join = _make_source_node(
             node_id="join",
@@ -1640,12 +1666,12 @@ class TestEstimateSourceRowsEdgeCases:
         n1 = _make_source_node(
             node_id="s1",
             node_type="dataInput",
-            config=_file_input_config(str(p1)),
+            config=_ready_file_input_config(p1),
         )
         n2 = _make_source_node(
             node_id="s2",
             node_type="dataInput",
-            config=_file_input_config(str(p2)),
+            config=_ready_file_input_config(p2),
         )
         graph = PipelineGraph(nodes=[n1, n2], edges=[])
         assert estimate_source_rows(graph) == 3000
@@ -1667,7 +1693,7 @@ class TestEstimateSourceRowsEdgeCases:
 
         node = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         graph = PipelineGraph(nodes=[node], edges=[])
         assert estimate_source_rows(graph) == 42
@@ -1691,7 +1717,7 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1708,7 +1734,7 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1741,7 +1767,7 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -1758,7 +1784,7 @@ class TestEstimateSafeTrainingRowsEdgeCases:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)
@@ -2096,7 +2122,7 @@ class TestCountSourceRowsForNode:
         pl.DataFrame({"a": range(77)}).write_csv(str(path))
         node = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         result = _count_source_rows_for_node(node)
         assert result == 77
@@ -2107,13 +2133,13 @@ class TestCountSourceRowsForNode:
         path.write_text('{"a":1}\n{"a":2}\n{"a":3}\n', encoding="utf-8")
         node = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
 
         assert _count_source_rows_for_node(node) == 3
 
-    def test_data_input_existing_unsupported_file_returns_none(self, tmp_path) -> None:
-        """Existing flat files only provide row estimates for known tabular formats."""
+    def test_data_input_without_snapshot_returns_none(self, tmp_path) -> None:
+        """RAM estimation never falls back to reading an unbuilt provider source."""
         path = tmp_path / "notes.txt"
         path.write_text("not,a,supported,table\n", encoding="utf-8")
         node = _make_source_node(
@@ -2219,7 +2245,7 @@ class TestEstimateSafeTrainingRowsSchemaUnavailable:
 
         src = _make_source_node(
             node_type="dataInput",
-            config=_file_input_config(str(path)),
+            config=_ready_file_input_config(path),
         )
         target = _make_modelling_node()
         edge = GraphEdge(id="e1", source=src.id, target=target.id)

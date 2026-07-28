@@ -5,7 +5,7 @@ the development executor, with ``NodeBuildHooks`` to override specific
 node types for live scoring:
 
 - Injects live input DataFrames at apiInput source nodes
-- Remaps artifact paths for externalFile and static dataInput nodes
+- Remaps external-file artifacts and reads retained Data Input snapshots
 - Returns a single collected DataFrame from the output node
 """
 
@@ -416,42 +416,6 @@ def _bundled_contract_path(node_id: str, remap: dict[str, str]) -> str | None:
     return remap.get(f"{node_id}__{CONTRACT_FILENAME}")
 
 
-def _remap_bundled_data_inputs(graph: PipelineGraph, remap: Mapping[str, str]) -> PipelineGraph:
-    """Point retained Data Inputs at the artifacts selected during packaging."""
-    universal = {
-        "instanceOf",
-        "inputMapping",
-        "selected_columns",
-        "column_renames",
-        "categorical_levels",
-        "contract",
-        "code",
-    }
-    nodes: list[GraphNode] = []
-    changed = False
-    for node in graph.nodes:
-        if node.data.nodeType != NodeType.DATA_INPUT:
-            nodes.append(node)
-            continue
-        config = node.data.config
-        snapshot_path = remap.get(f"{node.id}__snapshot.parquet")
-        if snapshot_path is not None:
-            remapped_config = {key: value for key, value in config.items() if key in universal}
-            remapped_config.update(
-                inputType="file", format="parquet", cacheMode="direct", path=snapshot_path
-            )
-        else:
-            path = _remap_artifact(node.id, config, dict(remap), "path")
-            if path is None:
-                nodes.append(node)
-                continue
-            remapped_config = {**config, "path": path}
-        data = node.data.model_copy(update={"config": remapped_config})
-        nodes.append(node.model_copy(update={"data": data}))
-        changed = True
-    return graph.model_copy(update={"nodes": nodes}) if changed else graph
-
-
 def _validate_deploy_model_score_source(node: GraphNode, remap: dict[str, str]) -> None:
     """Reject a deploy modelScore that would become an identity passthrough."""
     if node.data.nodeType != NodeType.MODEL_SCORE:
@@ -668,10 +632,7 @@ def _score_graph_lazy(
 ) -> DeployScorePlan:
     """Construct the lazy score plan using an already-admitted context."""
     remap = artifact_paths or {}
-    graph = _attach_bundled_feature_contracts(
-        _remap_bundled_data_inputs(_resolve_runtime_graph_paths(graph), remap),
-        remap,
-    )
+    graph = _attach_bundled_feature_contracts(_resolve_runtime_graph_paths(graph), remap)
     relevant_node_ids = set(upstream_node_ids(output_node_id, graph.parents_of)) | {output_node_id}
     graph = _attach_bundled_model_contract_inputs(graph, remap, relevant_node_ids)
     node_by_id = {node.id: node for node in graph.nodes}
@@ -711,6 +672,61 @@ def _score_graph_lazy(
                 return input_lf
 
             return func_name, inject_input, True
+
+        # Intercept: retained Data Input snapshot or canonical direct Parquet
+        # source. The graph config remains canonical; only this deploy-only
+        # execution path reads the matching bundled artifact.
+        bundled_data_path: str | None = None
+        if node_type == NodeType.DATA_INPUT and remap:
+            if config.get("cacheMode") == "snapshot":
+                bundled_data_path = remap.get(f"{nid}__snapshot.parquet")
+            elif config.get("cacheMode") == "direct":
+                bundled_data_path = _remap_artifact(nid, config, remap, "path")
+        if bundled_data_path is not None:
+            _bundled_data_path = bundled_data_path
+            _code = str(config.get("code") or "").strip()
+            _preamble = build_kwargs.get("preamble_ns")
+            _profile = build_kwargs.get("execution_profile")
+            _required = build_kwargs.get("required_output_columns")
+
+            def bundled_snapshot_input(
+                _path: str = _bundled_data_path,
+                _config: dict[str, Any] = config,
+                _node_id: str = nid,
+                _code_value: str = _code,
+                _preamble_ns: dict[str, Any] | None = _preamble,
+                _execution_profile: str | None = _profile,
+                _required_columns: frozenset[str] | set[str] | None = _required,
+            ) -> _Frame:
+                from haute._builders import _source_scan_projection
+                from haute._io import _select_columns
+                from haute._user_exec import _exec_user_code
+
+                preserves_projection = projection.source_user_code_preserves_column_projection(
+                    _code_value
+                )
+                projected = _source_scan_projection(
+                    _execution_profile,
+                    _required_columns if preserves_projection else None,
+                    _config,
+                    node_id=_node_id,
+                )
+                frame = pl.scan_parquet(_path)
+                frame = _select_columns(
+                    frame,
+                    None if projected.columns is None else tuple(projected.columns),
+                    validate_columns=tuple(projected.validate_columns),
+                )
+                if _code_value:
+                    return _exec_user_code(
+                        _code_value,
+                        ["df"],
+                        (frame,),
+                        extra_ns=_preamble_ns,
+                    )
+                return frame
+
+            return func_name, bundled_snapshot_input, True
 
         # Intercept: externalFile with remapped artifact path
         if node_type == NodeType.EXTERNAL_FILE and remap:

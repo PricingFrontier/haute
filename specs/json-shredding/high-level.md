@@ -69,7 +69,7 @@ refreshing cache files. Schema inference can sniff a v2 config from a data file
 directly, sampling optionally, widening column types across every record seen and
 naming collision-free bare leaf keys as their own column names. Inferred table
 labels are readable identifiers derived from the source key names — the root
-table is `root`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
+table is `quote_info`, `$[:].proposer.claims[:]` becomes `claims`, and two levels
 sharing a key name qualify symmetrically (`a_items`/`b_items`) — never raw path
 strings, so an inferred schema is immediately valid under the label rule below
 and its labels read as the argument names they will become.

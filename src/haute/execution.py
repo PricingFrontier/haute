@@ -828,9 +828,9 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
       and JSON/JSONL. JSON-shape inputs prefer a valid per-frame parquet
       cache and otherwise shred that raw file directly; signing it prevents
       a stale preview from hiding either fresh direct data or a raw-file error.
-    * **dataInput** — direct local file/lakehouse inputs sign the configured
-      source path; snapshot inputs sign the active generation pointer, so only
-      an explicit refresh invalidates execution caches.
+    * **dataInput** — direct Parquet signs the configured source; snapshot-backed
+      inputs sign the active generation pointer, so only an explicit refresh
+      invalidates execution caches.
     * **everything else** — the per-node config path fields shared with
       :func:`_local_runtime_input_path_fields`: ``externalFile`` paths,
       ``modelScore`` feature-contract paths, and file-sourced
@@ -845,30 +845,25 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
             return {"path": _runtime_path_from_graph_config(graph, raw_path)}
         return {}
     if node_type == NodeType.DATA_INPUT:
-        input_type = config.get("inputType")
-        if config.get("cacheMode") == "snapshot":
-            try:
-                from haute._input_providers import source_cache_identity
-                from haute._sandbox import _get_project_root
-                from haute._source_cache import SourceCacheStore
-
-                base_dir = (
-                    Path(graph.source_file).resolve().parent
-                    if graph.source_file
-                    else _get_project_root()
-                )
-                identity = source_cache_identity(config, base_dir=base_dir)
-                pointer = (
-                    SourceCacheStore(_get_project_root()).identity_path(identity) / "current.json"
-                )
-                return {"snapshot_pointer": pointer}
-            except (TypeError, ValueError):
-                return {}
-        if input_type in {"file", "lakehouse"}:
+        if config.get("cacheMode") == "direct":
             raw_path = config.get("path")
             if isinstance(raw_path, str) and raw_path:
                 return {"path": _runtime_path_from_graph_config(graph, raw_path)}
-        return {}
+            return {}
+        try:
+            from haute._builders import _configured_pipeline_dir
+            from haute._input_providers import source_cache_identity
+            from haute._sandbox import _get_project_root
+            from haute._source_cache import SourceCacheStore
+
+            identity = source_cache_identity(
+                config,
+                base_dir=_cache_pipeline_dir(graph) or _configured_pipeline_dir(),
+            )
+            pointer = SourceCacheStore(_get_project_root()).identity_path(identity) / "current.json"
+            return {"snapshot_pointer": pointer}
+        except (TypeError, ValueError):
+            return {}
     paths: dict[str, Path] = {}
     for path_field in _local_runtime_input_path_fields(node):
         raw = config.get(path_field)

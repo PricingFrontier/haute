@@ -111,9 +111,11 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
    uv pip install --python .venv-coreonly/bin/python pytest pytest-asyncio httpx
    .venv-coreonly/bin/python -m pytest tests/test_optional_dependency_matrix.py -q
    ```
-   This is the lane that proves haute imports and runs with **no**
-   MLflow/Databricks extras — i.e. that lazy-loading of optional deps actually
-   holds. The `--python 3.12` matches CI's interpreter; the direct
+   This is the lane that proves haute imports and runs with core MLflow but
+   **no Databricks SQL connector**. MLflow itself depends transitively on
+   `databricks-sdk`; the optional Haute extra adds the SQL connector and pins
+   the supported Databricks client versions. The `--python 3.12` matches CI's
+   interpreter; the direct
    `.venv-coreonly/bin/python -m pytest` call avoids the `uv run` re-sync trap.
 8. **`optional-deps-present-smoke`** →
    `uv run pytest tests/test_optional_dependency_extras.py -q` (dev group

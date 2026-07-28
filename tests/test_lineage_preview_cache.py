@@ -12,7 +12,7 @@ from haute._cache import (
     selected_live_switch_path,
 )
 from haute.projection import prepare_graph
-from tests.conftest import make_edge, make_graph
+from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -266,7 +266,9 @@ def test_lineage_key_rejects_a_prepared_graph_that_does_not_match_the_original()
 
 def _graph_with_source_path(path: Path):
     graph = _graph()
-    return _replace_node_config(graph, "source", path=str(path))
+    graph = _replace_node_config(graph, "source", path=str(path))
+    build_test_input_snapshot(graph.node_map["source"].data.config)
+    return graph
 
 
 def test_preview_consumer_reuses_target_after_downstream_only_edit(

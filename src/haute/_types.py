@@ -131,7 +131,7 @@ class DataInputDatabaseConfig(_DataInputCommon, total=False):
 class DataInputLakehouseConfig(_DataInputPolarsCommon, total=False):
     inputType: Required[Literal["lakehouse"]]
     format: Required[Literal["delta", "iceberg"]]
-    cacheMode: Required[Literal["direct", "snapshot"]]
+    cacheMode: Required[Literal["snapshot"]]
     path: Required[str]
 
 
@@ -146,7 +146,7 @@ class DataInputDatabricksConfig(_DataInputCommon, total=False):
 class DataInputInlineConfig(_DataInputPolarsCommon, total=False):
     inputType: Required[Literal["inline"]]
     format: Required[Literal["records"]]
-    cacheMode: Required[Literal["direct"]]
+    cacheMode: Required[Literal["snapshot"]]
     records: Required[list[dict[str, Any]]]
 
 

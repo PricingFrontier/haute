@@ -1242,7 +1242,7 @@ class TestResolveNodeConfig:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "direct",
+            "cacheMode": "snapshot",
             "path": "data.csv",
             "arguments": {},
         }

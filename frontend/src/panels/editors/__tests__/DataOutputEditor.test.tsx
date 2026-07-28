@@ -43,7 +43,7 @@ const groups: IoCapabilityGroup[] = [
     label: "File",
     input_available: true,
     output_available: true,
-    cache_modes: ["direct", "snapshot"],
+    cache_modes: ["snapshot"],
     input_fields: [],
     output_fields: [
       { name: "path", label: "Path", kind: "path", required: true },
@@ -129,7 +129,7 @@ const groups: IoCapabilityGroup[] = [
     label: "Lakehouse",
     input_available: true,
     output_available: true,
-    cache_modes: ["direct", "snapshot"],
+    cache_modes: ["snapshot"],
     input_fields: [],
     output_fields: [
       {
@@ -173,7 +173,7 @@ const groups: IoCapabilityGroup[] = [
     label: "Inline",
     input_available: true,
     output_available: false,
-    cache_modes: ["direct"],
+    cache_modes: ["snapshot"],
     input_fields: [],
     output_fields: [],
     formats: [],

@@ -457,6 +457,59 @@ def test_runtime_input_identity_is_composed_with_structural_node_config(
     assert (graph_fingerprint(changed), changed_runtime) != (graph_fingerprint(graph), runtime)
 
 
+def test_database_snapshot_pointer_uses_configured_pipeline_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime identity signs the same relative SQLite snapshot that execution opens."""
+    from haute._input_providers import source_cache_identity
+    from haute._sandbox import _get_project_root, set_project_root
+    from haute._source_cache import SourceCacheStore
+
+    monkeypatch.chdir(tmp_path)
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+    try:
+        pipeline_dir = tmp_path / "rating"
+        pipeline_dir.mkdir()
+        (pipeline_dir / "main.py").write_text("# pipeline\n", encoding="utf-8")
+        (tmp_path / "haute.toml").write_text(
+            '[project]\npipeline = "rating/main.py"\n',
+            encoding="utf-8",
+        )
+        config = {
+            "inputType": "database",
+            "format": "database",
+            "cacheMode": "snapshot",
+            "uri": "sqlite:///pricing.sqlite",
+            "query": "SELECT 1",
+            "arguments": {},
+        }
+        graph = PipelineGraph(
+            nodes=[_node("database", node_type=NodeType.DATA_INPUT, config=config)],
+        )
+        identity = source_cache_identity(config, base_dir=pipeline_dir)
+        pointer = SourceCacheStore(tmp_path).identity_path(identity) / "current.json"
+        pointer.parent.mkdir(parents=True, exist_ok=True)
+        pointer.write_text('{"generation":"first"}', encoding="utf-8")
+
+        first = dataframe_graph_input_fingerprint(
+            graph,
+            target_node_id="database",
+            source="live",
+        )
+        pointer.write_text('{"generation":"second-and-longer"}', encoding="utf-8")
+        second = dataframe_graph_input_fingerprint(
+            graph,
+            target_node_id="database",
+            source="live",
+        )
+
+        assert second != first
+    finally:
+        set_project_root(original_root)
+
+
 def test_model_contract_key_routes_through_the_checked_value_projection(monkeypatch) -> None:
     import haute._model_scorer as scorer
 

@@ -105,9 +105,15 @@ test.describe("data input/output nodes", () => {
     const optionLabels = await formatSelect.locator("option").allTextContents()
     expect(optionLabels.some((t) => /Text lines \(unstable\)/.test(t))).toBe(true)
     await expect(formatSelect.locator('option[value="delta"]')).toHaveCount(0)
+    await expect(page.getByLabel("Mode")).toHaveCount(0)
+    await expect(page.getByRole("button", { name: "Cache as Parquet" })).toHaveCount(0)
 
     // The saved path round-tripped through sidecar + codegen + parse.
     await expect(page.getByLabel(/path/i).first()).toHaveValue("data/sample.parquet")
+
+    await formatSelect.selectOption("csv")
+    await expect(page.getByLabel("Mode")).toHaveCount(0)
+    await expect(page.getByRole("button", { name: "Cache as Parquet" })).toBeVisible()
 
     await providerSelect.selectOption("lakehouse")
     await expect(formatSelect.locator('option[value="delta"]')).toContainText("Delta Lake")

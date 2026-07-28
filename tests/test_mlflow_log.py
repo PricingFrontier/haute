@@ -979,7 +979,7 @@ class TestLogExperiment:
         native file being present in the run's top-level artifact list —
         is locked in against future refactors of the logging path.
         """
-        pytest.importorskip("mlflow", reason="mlflow optional dependency not installed")
+        pytest.importorskip("mlflow", reason="core mlflow dependency is unavailable")
         import mlflow
 
         from haute._mlflow_io import _find_model_artifact

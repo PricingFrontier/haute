@@ -49,6 +49,7 @@ import pytest
 from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
 from haute.executor import _preview_cache, execute_graph
 from haute.trace import _cache as _trace_cache
+from tests.conftest import make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -63,14 +64,7 @@ def _source_node(nid: str, path: str) -> GraphNode:
         data=NodeData(
             label=nid,
             nodeType="dataInput",
-            config={
-                "inputType": "file",
-                "format": "parquet",
-                "mode": "scan",
-                "cacheMode": "direct",
-                "path": path,
-                "arguments": {},
-            },
+            config=make_ready_file_input_config(path),
         ),
     )
 

@@ -328,6 +328,7 @@ export interface IoInputCapability {
   modes: ("scan" | "read")[]
   arguments: Record<string, string[]>
   engines_missing: string[]
+  cache_mode: "direct" | "snapshot"
   direct_bounded: boolean
   needs_schema_when_bounded: boolean
   snapshot_build: "bounded" | "admitted_eager" | "unsupported"

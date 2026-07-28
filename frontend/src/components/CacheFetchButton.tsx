@@ -16,6 +16,12 @@ export type BaseCacheStatus = {
 
 type ProgressPayload = { active: boolean; rows?: number; elapsed?: number; phase?: string }
 
+export const PARQUET_CACHE_LABELS = {
+  fetchLabel: "Cache as Parquet",
+  refreshLabel: "Refresh Cache",
+  pendingLabel: "Processing...",
+} as const
+
 export type CacheFetchButtonProps<TStatus extends BaseCacheStatus> = {
   /** The key that identifies the resource (path, table name, etc.). */
   resourceKey: string

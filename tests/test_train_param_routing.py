@@ -27,7 +27,7 @@ import pytest
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
-from tests.conftest import make_edge, make_file_input_config, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph, make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 
@@ -92,7 +92,7 @@ def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(data_path),
+                        "config": make_ready_file_input_config(data_path),
                     },
                 },
                 {

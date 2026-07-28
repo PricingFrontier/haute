@@ -295,7 +295,7 @@ candidate; cross-process publishers and mid-swap process death are not covered.
    `levels` map. Only the root level defaults `emit=True`.
 4. Label assignment — inferred `label`s are B4-valid identifiers, never raw
    table paths (`path`/`displayPath` still carry the path). The root level is
-   labelled `root`; every other level is labelled by its innermost array key
+   labelled `quote_info`; every other level is labelled by its innermost array key
    through `derive_identifier_label(raw)` (`_api_input_schema.py`): the
    `_sanitize_func_name` character pipeline (strip; spaces/hyphens → `_`;
    ASCII alnum/underscore kept; other ASCII dropped; non-ASCII reversibly
@@ -306,7 +306,7 @@ candidate; cross-process publishers and mid-swap process death are not covered.
    is re-labelled with the underscore-join of ALL its level keys (object
    hops and array keys, each through `derive_identifier_label`) — so
    `$[:].a.items[:]` and `$[:].b.items[:]` become `a_items`/`b_items`, not
-   `items`/`items_2`; the root's join is empty so it keeps `root`. Any
+   `items`/`items_2`; the root's join is empty so it keeps `quote_info`. Any
    labels still colliding after qualification take deterministic numeric
    suffixes (`_2`, `_3`, …) in the sorted order, first occurrence keeping
    its label. The closure property — inference output passes
@@ -465,7 +465,7 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   B4 rejections instead. Inference label derivation is pinned in the `infer` suites:
   `derive_identifier_label` character/repair cases (spaces, punctuation,
   digit-leading, hard keyword, empty, non-ASCII `_x<hex>_` encoding), root →
-  `root`, innermost-key labelling, symmetric collision qualification
+  `quote_info`, innermost-key labelling, symmetric collision qualification
   (`a_items`/`b_items`), the numeric-suffix backstop, and the closure
   property that inferred output passes `validate_v2_schema` unchanged.
 - `tests/test_json_cache_routes.py` — API integration tests for the build/status/

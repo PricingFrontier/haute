@@ -28,7 +28,11 @@ from haute import errors as haute_errors
 from haute._contracts import get_column_contract
 from haute._registry import NODE_REGISTRY
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
-from tests.conftest import write_data_input_config, write_node_config
+from tests.conftest import (
+    make_ready_file_input_config,
+    write_data_input_config,
+    write_node_config,
+)
 from tests.fixtures.expected_contracts import (
     ALL_NODE_KINDS,
     ALLOWED_OPAQUE_NODE_TYPES,
@@ -705,7 +709,11 @@ class TestExecutorAssertsContractsAtBoundaries:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_INPUT, path=str(pq)),
+                _node(
+                    "src",
+                    NodeType.DATA_INPUT,
+                    **make_ready_file_input_config(pq),
+                ),
                 _node(
                     "band",
                     NodeType.BANDING,
@@ -747,7 +755,11 @@ class TestExecutorAssertsContractsAtBoundaries:
         # forgets to create it — executor must notice.
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_INPUT, path=str(pq)),
+                _node(
+                    "src",
+                    NodeType.DATA_INPUT,
+                    **make_ready_file_input_config(pq),
+                ),
                 _node(
                     "t",
                     NodeType.POLARS,
@@ -788,7 +800,11 @@ class TestExecutorAssertsContractsAtBoundaries:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_INPUT, path=str(pq)),
+                _node(
+                    "src",
+                    NodeType.DATA_INPUT,
+                    **make_ready_file_input_config(pq),
+                ),
                 _node(
                     "t",
                     NodeType.POLARS,
@@ -843,7 +859,11 @@ class TestExecutorAssertsContractsAtBoundaries:
 
         graph = PipelineGraph(
             nodes=[
-                _node("src", NodeType.DATA_INPUT, path=str(pq)),
+                _node(
+                    "src",
+                    NodeType.DATA_INPUT,
+                    **make_ready_file_input_config(pq),
+                ),
                 _node(
                     "band",
                     NodeType.BANDING,
@@ -888,7 +908,11 @@ class TestContractOverheadBenchmark:
         this is a realistic shape for a scoring pipeline.
         """
         nodes: list[GraphNode] = [
-            _node("src", NodeType.DATA_INPUT, path=data_path),
+            _node(
+                "src",
+                NodeType.DATA_INPUT,
+                **make_ready_file_input_config(data_path),
+            ),
         ]
         edges: list[GraphEdge] = []
         prev = "src"

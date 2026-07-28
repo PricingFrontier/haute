@@ -95,14 +95,16 @@ Out of scope (owned by neighbouring components, linked where they exist):
   instance name and adds a muted "No emitted frames" hint. Visibility
   mirrors runtime eligibility — `emit: true`, at least one selected
   column, and a valid (non-blank, non-duplicate) raw label — and a long
-  name truncates with the full name available as a tooltip.
+  name truncates with the full name available as a tooltip. Frame labels
+  use the same semibold primary-text typography as node names.
 - **Visual state.** Nodes show: a selection border; a dashed border for
   submodel instances; a "LIVE" badge on live-switch nodes when the active
   data source is live; a status dot for ok/error/running; a warning dot for
   schema warnings (suppressed when status is error); trace-active/dimmed/
   hover-dimmed opacity and glow; and, in the read-only comparison view, a
   diff ring (solid glow for added/removed/changed, dashed outline for
-  moved-only).
+  moved-only). Edge-join status and warning dots stay within the visible
+  marker ellipse.
 - **Submodel nodes** show a package icon, a live child-node count, the
   backing file path (when set), and hidden per-port handles that mirror the
   submodel's stored `inputPorts`/`outputPorts` so edges into/out of the

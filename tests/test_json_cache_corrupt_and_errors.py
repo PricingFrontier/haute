@@ -227,7 +227,7 @@ def test_infer_then_build_scalar_array_end_to_end(client: TestClient, tmp_path: 
     tables = infer.json()["tables"]
     labels_by_path = {t["path"]: t["label"] for t in tables}
     assert labels_by_path == {
-        "$[:]": "root",
+        "$[:]": "quote_info",
         "$[:].coverages[:]": "coverages",
     }
     for t in tables:
@@ -262,8 +262,8 @@ def test_ndjson_alias_infers_and_builds_end_to_end(client: TestClient, tmp_path:
     assert build.status_code == 200, build.text
     assert build.json()["row_count"] == 2
     assert build.json()["columns"] == {
-        "root.id": "Int64",
-        "root.kind": "String",
+        "quote_info.id": "Int64",
+        "quote_info.kind": "String",
     }
 
 
@@ -287,10 +287,10 @@ def test_inferred_string_widening_builds_mixed_json_scalars(
         json={"path": "data.json", "volatile_schema": config},
     )
     assert build.status_code == 200, build.text
-    assert build.json()["columns"] == {"root.code": "String"}
+    assert build.json()["columns"] == {"quote_info.code": "String"}
 
     from haute._json_flatten import _json_cache_dir
     from haute._json_shred import load_per_port_cache
 
     frames = load_per_port_cache(_json_cache_dir(data_path, "working"), config)
-    assert frames["root"].collect()["code"].to_list() == ["100", "A1", "true"]
+    assert frames["quote_info"].collect()["code"].to_list() == ["100", "A1", "true"]

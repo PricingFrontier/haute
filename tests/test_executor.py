@@ -10,7 +10,7 @@ import pytest
 
 from haute._execution_context import ExecutionProfile
 from haute._user_exec import _exec_user_code
-from haute.errors import BoundedMemoryUnsupportedError, LiveSwitchScenarioError
+from haute.errors import LiveSwitchScenarioError
 from haute.executor import (
     PreambleError,
     _build_node_fn,
@@ -21,6 +21,10 @@ from haute.executor import (
 )
 from tests.conftest import (
     make_edge as _edge,
+)
+from tests.conftest import (
+    build_test_input_snapshot,
+    make_ready_file_input_config,
 )
 from tests.conftest import (
     make_graph as _g,
@@ -62,6 +66,13 @@ def _source_node(nid: str, path: str = "data.parquet"):
 def _file_input_config(path: str, **extra: object) -> dict[str, object]:
     node = _source_node("input", path)
     return {**node.data.config, **extra}
+
+
+def _ready_source_node(nid: str, path: str = "data.parquet"):
+    """Build a file source node whose snapshot has been explicitly published."""
+    node = _source_node(nid, path)
+    build_test_input_snapshot(node.data.config)
+    return node
 
 
 def _file_output_config(path: str, format_name: str) -> dict[str, object]:
@@ -286,7 +297,7 @@ class TestBuildNodeFn:
         p = tmp_path / f"data.{ext}"
         getattr(pl.DataFrame({col: values}), write_method)(p)
 
-        node = _source_node("src", str(p))
+        node = _ready_source_node("src", str(p))
         name, fn, is_source = _build_node_fn(node)
         assert is_source is True
         result = fn()
@@ -328,7 +339,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(str(p), code="df = df.filter(pl.col('x') > 1)"),
+                    "config": make_ready_file_input_config(str(p), code="df = df.filter(pl.col('x') > 1)"),
                 },
             }
         )
@@ -347,7 +358,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(str(p), code="df = df.select('a')"),
+                    "config": make_ready_file_input_config(str(p), code="df = df.select('a')"),
                 },
             }
         )
@@ -366,7 +377,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(str(p), code=""),
+                    "config": make_ready_file_input_config(str(p), code=""),
                 },
             }
         )
@@ -384,7 +395,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(str(p)),
+                    "config": make_ready_file_input_config(str(p)),
                 },
             }
         )
@@ -415,7 +426,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(
+                    "config": make_ready_file_input_config(
                         str(p), contract="opaque", code="df = df.limit(1)"
                     ),
                 },
@@ -446,7 +457,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(
+                    "config": make_ready_file_input_config(
                         str(p), code="df = df.filter(pl.col('segment') == 'A').select('quote_id')"
                     ),
                 },
@@ -474,7 +485,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(str(p), column_renames={"raw_premium": "premium"}),
+                    "config": make_ready_file_input_config(str(p), column_renames={"raw_premium": "premium"}),
                 },
             }
         )
@@ -488,7 +499,10 @@ class TestBuildNodeFn:
         assert is_source is True
         assert fn().collect_schema().names() == ["raw_premium", "unused"]
 
-    def test_data_source_builder_rejects_json_in_bounded_profile(self, tmp_path):
+    def test_data_source_builder_uses_published_json_snapshot_in_bounded_profile(
+        self,
+        tmp_path,
+    ):
         p = tmp_path / "data.json"
         pl.DataFrame({"quote_id": [1]}).write_json(p)
         node = _n(
@@ -497,7 +511,7 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": _file_input_config(str(p)),
+                    "config": make_ready_file_input_config(str(p)),
                 },
             }
         )
@@ -508,8 +522,11 @@ class TestBuildNodeFn:
         )
 
         assert is_source is True
-        with pytest.raises(BoundedMemoryUnsupportedError, match="format=json"):
-            fn()
+        with patch.object(pl, "read_json", wraps=pl.read_json) as read_json:
+            result = fn().collect()
+
+        read_json.assert_not_called()
+        assert result.to_dicts() == [{"quote_id": 1}]
 
     def test_data_source_builder_rejects_empty_path_in_bounded_profile(self):
         node = _n(
@@ -834,7 +851,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -853,7 +870,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') + 1)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -871,7 +888,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t", "df = df.with_columns(z=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -889,7 +906,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("bad", "df = df.select('nonexistent_column')"),
                 ],
                 "edges": [_edge("src", "bad")],
@@ -906,7 +923,7 @@ class TestExecuteGraph:
         p = tmp_path / "big.parquet"
         pl.DataFrame({"x": list(range(100))}).write_parquet(p)
 
-        graph = _g({"nodes": [_source_node("s", str(p))], "edges": []})
+        graph = _g({"nodes": [_ready_source_node("s", str(p))], "edges": []})
         results = execute_graph(graph, row_limit=5)
         assert results["s"].row_count == 5
 
@@ -917,7 +934,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("a", str(p)),
+                    _ready_source_node("a", str(p)),
                     _transform_node("b"),
                     _transform_node("c"),
                 ],
@@ -935,7 +952,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("a", str(p)),
+                    _ready_source_node("a", str(p)),
                     _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
                     _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
                 ],
@@ -963,7 +980,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("a", str(p)),
+                    _ready_source_node("a", str(p)),
                     _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
                     _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
                 ],
@@ -992,7 +1009,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     # Select a column that doesn't exist - triggers ColumnNotFoundError at collect
                     _transform_node("bad", code="df = df.select('nonexistent_col')"),
                 ],
@@ -1016,7 +1033,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("mid", code="df = df.select('nonexistent_col')"),
                     _transform_node("leaf", code="df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
@@ -1039,7 +1056,7 @@ class TestExecuteGraph:
 
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p))],
+                "nodes": [_ready_source_node("src", str(p))],
                 "edges": [],
             }
         )
@@ -1055,7 +1072,7 @@ class TestExecuteGraph:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t", code="df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -1075,7 +1092,7 @@ class TestExecuteGraph:
             {"a": pl.Series([], dtype=pl.Int64), "b": pl.Series([], dtype=pl.Utf8)}
         ).write_parquet(p)
 
-        graph = _g({"nodes": [_source_node("src", str(p))], "edges": []})
+        graph = _g({"nodes": [_ready_source_node("src", str(p))], "edges": []})
         results = execute_graph(graph)
         assert results["src"].status == "ok"
         assert results["src"].row_count == 0
@@ -1114,7 +1131,7 @@ class TestDataSourceUserCode:
                             "data": {
                                 "label": "src",
                                 "nodeType": "dataInput",
-                                "config": _file_input_config(str(p), code="df = df.limit(10)"),
+                                "config": make_ready_file_input_config(str(p), code="df = df.limit(10)"),
                             },
                         }
                     ),
@@ -1141,7 +1158,7 @@ class TestDataSourceUserCode:
                             "data": {
                                 "label": "src",
                                 "nodeType": "dataInput",
-                                "config": _file_input_config(str(src), code="df = df.limit(10)"),
+                                "config": make_ready_file_input_config(str(src), code="df = df.limit(10)"),
                             },
                         }
                     ),
@@ -1177,7 +1194,7 @@ class TestDataSourceUserCode:
                             "data": {
                                 "label": "src",
                                 "nodeType": "dataInput",
-                                "config": _file_input_config(str(p)),
+                                "config": make_ready_file_input_config(str(p)),
                             },
                         }
                     ),
@@ -1232,7 +1249,7 @@ def _make_sink_graph(tmp_path, *, src_data=None):
     graph = _g(
         {
             "nodes": [
-                _source_node("src", str(src_path)),
+                _ready_source_node("src", str(src_path)),
                 _n(
                     {
                         "id": "sink",
@@ -1259,7 +1276,7 @@ class TestExecuteSink:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(src_path)),
+                    _ready_source_node("src", str(src_path)),
                     _n(
                         {
                             "id": "sink",
@@ -1289,7 +1306,7 @@ class TestExecuteSink:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(src_path)),
+                    _ready_source_node("src", str(src_path)),
                     _n(
                         {
                             "id": "sink",
@@ -1310,14 +1327,14 @@ class TestExecuteSink:
         assert result.execution_metrics is not None
         assert "output_row_count" in result.execution_metrics.stage_elapsed_ms
 
-    def test_plain_json_source_rejected_by_default_bounded_sink_context(self, tmp_path):
+    def test_plain_json_snapshot_runs_in_default_bounded_sink_context(self, tmp_path):
         src_path = tmp_path / "in.json"
         out_path = tmp_path / "out.parquet"
         pl.DataFrame({"a": [10]}).write_json(src_path)
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(src_path)),
+                    _ready_source_node("src", str(src_path)),
                     _n(
                         {
                             "id": "sink",
@@ -1334,10 +1351,11 @@ class TestExecuteSink:
         )
 
         with patch.object(pl, "read_json", wraps=pl.read_json) as read_json:
-            with pytest.raises(BoundedMemoryUnsupportedError, match="format=json"):
-                write_data_output(graph, output_node_id="sink")
+            result = write_data_output(graph, output_node_id="sink")
 
         read_json.assert_not_called()
+        assert result.status == "ok"
+        assert pl.read_parquet(out_path).to_dicts() == [{"a": 10}]
 
     def test_missing_sink_raises(self):
         graph = _g({"nodes": [], "edges": []})
@@ -1387,7 +1405,7 @@ class TestExecuteSink:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(src)),
+                    _ready_source_node("src", str(src)),
                     _n(
                         {
                             "id": "sink",
@@ -1416,8 +1434,8 @@ class TestExecuteSink:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("s1", str(src1)),
-                    _source_node("s2", str(src2)),
+                    _ready_source_node("s1", str(src1)),
+                    _ready_source_node("s2", str(src2)),
                     _n(
                         {
                             "id": "join",
@@ -1510,8 +1528,8 @@ class TestExecuteSink:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("live_src", str(live_src)),
-                    _source_node("batch_src", str(batch_src)),
+                    _ready_source_node("live_src", str(live_src)),
+                    _ready_source_node("batch_src", str(batch_src)),
                     _n(
                         {
                             "id": "sw",
@@ -1611,11 +1629,11 @@ class TestInstanceAliasInjection:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src_a", str(src_a)),
-                    _source_node("src_b", str(src_b)),
+                    _ready_source_node("src_a", str(src_a)),
+                    _ready_source_node("src_b", str(src_b)),
                     _transform_node("joiner", "df = src_a.join(src_b, on='k')"),
-                    _source_node("alt_a", str(alt_a)),
-                    _source_node("alt_b", str(alt_b)),
+                    _ready_source_node("alt_a", str(alt_a)),
+                    _ready_source_node("alt_b", str(alt_b)),
                     _n(
                         {
                             "id": "joiner_inst",
@@ -1665,8 +1683,8 @@ class TestLiveSwitch:
         return _g(
             {
                 "nodes": [
-                    _source_node("live_src", str(p1)),
-                    _source_node("batch_src", str(p2)),
+                    _ready_source_node("live_src", str(p1)),
+                    _ready_source_node("batch_src", str(p2)),
                     _n(
                         {
                             "id": "switch",
@@ -1846,7 +1864,7 @@ class TestSelectedColumns:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _n(
                         {
                             "id": "t",
@@ -1880,7 +1898,7 @@ class TestSelectedColumns:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _n(
                         {
                             "id": "t",
@@ -1904,7 +1922,7 @@ class TestSelectedColumns:
         p = tmp_path / "src_sel.parquet"
         pl.DataFrame({"a": [1], "b": [2], "c": [3]}).write_parquet(p)
 
-        src = _source_node("src", str(p))
+        src = _ready_source_node("src", str(p))
         src.data.config["selected_columns"] = ["a", "c"]
 
         graph = _g({"nodes": [src], "edges": []})
@@ -1919,7 +1937,7 @@ class TestSelectedColumns:
         p = tmp_path / "prop.parquet"
         pl.DataFrame({"a": [1], "b": [2], "c": [3]}).write_parquet(p)
 
-        src = _source_node("src", str(p))
+        src = _ready_source_node("src", str(p))
         src.data.config["selected_columns"] = ["a"]
 
         graph = _g(
@@ -1942,7 +1960,7 @@ class TestSelectedColumns:
         p = tmp_path / "inv.parquet"
         pl.DataFrame({"a": [1], "b": [2]}).write_parquet(p)
 
-        src = _source_node("src", str(p))
+        src = _ready_source_node("src", str(p))
         src.data.config["selected_columns"] = ["a", "nonexistent"]
 
         graph = _g({"nodes": [src], "edges": []})
@@ -1963,7 +1981,7 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("bad", code="df = df.select('no_such_column')"),
                 ],
                 "edges": [_edge("src", "bad")],
@@ -1981,7 +1999,7 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t1", code="df = 1 / 0"),
                     _transform_node("t2"),
                     _transform_node("t3"),
@@ -2007,7 +2025,7 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("bad", code="df = 1 / 0"),
                 ],
                 "edges": [_edge("src", "bad")],
@@ -2025,7 +2043,7 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("bad", code="df = df.filter(pl.col('x') >"),
                 ],
                 "edges": [_edge("src", "bad")],
@@ -2044,7 +2062,7 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("a"),
                     _transform_node("b"),
                 ],
@@ -2069,8 +2087,8 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src1", str(p1)),
-                    _source_node("src2", str(p2)),
+                    _ready_source_node("src1", str(p1)),
+                    _ready_source_node("src2", str(p2)),
                 ],
                 "edges": [],
             }
@@ -2087,7 +2105,7 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t"),
                 ],
                 "edges": [
@@ -2118,7 +2136,7 @@ class TestExecuteGraphErrorPaths:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -2281,7 +2299,7 @@ class TestPreviewCachePartialHit:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
                     _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
                 ],
@@ -2355,7 +2373,7 @@ class TestPreviewCachePartialHit:
 
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p))],
+                "nodes": [_ready_source_node("src", str(p))],
                 "edges": [],
             }
         )
@@ -2401,7 +2419,7 @@ class TestRequestedPreviewProjection:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
                     _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
                 ],
@@ -2461,7 +2479,7 @@ df = df.with_columns(
 """
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "nodes": [_ready_source_node("src", str(p)), _transform_node("t", code)],
                 "edges": [_edge("src", "t")],
             }
         )
@@ -2490,7 +2508,7 @@ df = df.with_columns(
         _preview_cache.clear()
         p = tmp_path / "wide.parquet"
         pl.DataFrame({"a": [1], "b": [2]}).write_parquet(p)
-        graph = _g({"nodes": [_source_node("src", str(p))], "edges": []})
+        graph = _g({"nodes": [_ready_source_node("src", str(p))], "edges": []})
 
         first = execute_graph(
             graph,
@@ -2555,7 +2573,7 @@ df = df.with_columns(
         )
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p)), score_node],
+                "nodes": [_ready_source_node("src", str(p)), score_node],
                 "edges": [_edge("src", "score")],
             }
         )
@@ -2630,8 +2648,8 @@ df = df.with_columns(
         graph = _g(
             {
                 "nodes": [
-                    _source_node("policies", str(policies_path)),
-                    _source_node("competitor_scoring", str(competitor_path)),
+                    _ready_source_node("policies", str(policies_path)),
+                    _ready_source_node("competitor_scoring", str(competitor_path)),
                     join_node,
                 ],
                 "edges": [
@@ -2741,8 +2759,8 @@ df = df.with_columns(
         graph = _g(
             {
                 "nodes": [
-                    _source_node("join_policy_data", str(joined_policy_path)),
-                    _source_node("quoted_premiums", str(quoted_premiums_path)),
+                    _ready_source_node("join_policy_data", str(joined_policy_path)),
+                    _ready_source_node("quoted_premiums", str(quoted_premiums_path)),
                     join_node,
                 ],
                 "edges": [
@@ -2862,8 +2880,8 @@ df = df.with_columns(
         graph = _g(
             {
                 "nodes": [
-                    _source_node("join_policy_data", str(joined_policy_path)),
-                    _source_node("quoted_premiums", str(quoted_premiums_path)),
+                    _ready_source_node("join_policy_data", str(joined_policy_path)),
+                    _ready_source_node("quoted_premiums", str(quoted_premiums_path)),
                     join_node,
                 ],
                 "edges": [
@@ -2974,8 +2992,8 @@ df = df.with_columns(
         graph = _g(
             {
                 "nodes": [
-                    _source_node("policies", str(left_path)),
-                    _source_node("lookup", str(right_path)),
+                    _ready_source_node("policies", str(left_path)),
+                    _ready_source_node("lookup", str(right_path)),
                     join_node,
                 ],
                 "edges": [
@@ -3050,8 +3068,8 @@ df = df.with_columns(
         graph = _g(
             {
                 "nodes": [
-                    _source_node("optimiser_input", str(optimiser_input_path)),
-                    _source_node("age_veh_banding", str(banding_source_path)),
+                    _ready_source_node("optimiser_input", str(optimiser_input_path)),
+                    _ready_source_node("age_veh_banding", str(banding_source_path)),
                     optimiser_node,
                 ],
                 "edges": [
@@ -3127,7 +3145,7 @@ df = df.with_columns(
 
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1]}).write_parquet(p)
-        graph = _g({"nodes": [_source_node("src", str(p))], "edges": []})
+        graph = _g({"nodes": [_ready_source_node("src", str(p))], "edges": []})
 
         with patch("haute.executor._eager_execute") as mock_execute:
             with pytest.raises(PreviewProjectionError, match="empty names"):
@@ -3188,14 +3206,14 @@ class TestPreviewCacheInvalidation:
 
         graph1 = _g(
             {
-                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "nodes": [_ready_source_node("src", str(p)), _transform_node("t", code)],
                 "edges": [_edge("src", "t")],
                 "preamble": "FACTOR = 2\n",
             }
         )
         graph2 = _g(
             {
-                "nodes": [_source_node("src", str(p)), _transform_node("t", code)],
+                "nodes": [_ready_source_node("src", str(p)), _transform_node("t", code)],
                 "edges": [_edge("src", "t")],
                 "preamble": "FACTOR = 3\n",
             }
@@ -3226,7 +3244,7 @@ class TestPreviewCacheInvalidation:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') * FACTOR)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -3259,7 +3277,7 @@ class TestPreviewCacheInvalidation:
 
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p))],
+                "nodes": [_ready_source_node("src", str(p))],
                 "edges": [],
             }
         )
@@ -3522,7 +3540,7 @@ class TestPreambleLockConcurrency:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(data_path)),
+                    _ready_source_node("src", str(data_path)),
                     _transform_node("t", "df = df.with_columns(y=add_one('x'))"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -3632,7 +3650,7 @@ class TestMaxPreviewRowsTruncation:
 
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p))],
+                "nodes": [_ready_source_node("src", str(p))],
                 "edges": [],
             }
         )
@@ -3663,7 +3681,7 @@ class TestMaxPreviewRowsTruncation:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -3694,7 +3712,7 @@ class TestMaxPreviewRowsTruncation:
 
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p))],
+                "nodes": [_ready_source_node("src", str(p))],
                 "edges": [],
             }
         )
@@ -3738,7 +3756,7 @@ class TestEmptyDataFrameFullPipeline:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t1", "df = df.with_columns(z=pl.col('x') + 1)"),
                     _transform_node("t2", "df = df.with_columns(w=pl.col('z') * pl.col('y'))"),
                 ],
@@ -3781,8 +3799,8 @@ class TestEmptyDataFrameFullPipeline:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("empty_src", str(p_empty)),
-                    _source_node("full_src", str(p_full)),
+                    _ready_source_node("empty_src", str(p_empty)),
+                    _ready_source_node("full_src", str(p_full)),
                     _n(
                         {
                             "id": "join",
@@ -3829,7 +3847,7 @@ class TestEmptyDataFrameFullPipeline:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p_src)),
+                    _ready_source_node("src", str(p_src)),
                     _n(
                         {
                             "id": "sink",
@@ -4020,7 +4038,7 @@ class TestPreambleFailureIsolation:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _transform_node("t1", "df = df.with_columns(y=pl.col('x') + 1)"),
                     _transform_node("t2", "df = df.filter(pl.col('x') > 0)"),
                 ],
@@ -4064,8 +4082,8 @@ class TestPreambleFailureIsolation:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("live_src", str(p1)),
-                    _source_node("batch_src", str(p2)),
+                    _ready_source_node("live_src", str(p1)),
+                    _ready_source_node("batch_src", str(p2)),
                     _n(
                         {
                             "id": "sw",
@@ -4123,7 +4141,7 @@ class TestPreambleFailureIsolation:
         graph = _g(
             {
                 "nodes": [
-                    _source_node("src", str(p)),
+                    _ready_source_node("src", str(p)),
                     _n(
                         {
                             "id": "sink",

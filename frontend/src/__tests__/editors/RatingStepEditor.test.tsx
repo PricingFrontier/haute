@@ -6,7 +6,7 @@
  * adding/removing tables, operation select for 2+ tables, rebuild button.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render as rtlRender, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react"
+import { render as rtlRender, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import RatingStepEditor from "../../panels/editors/RatingStepEditor"
 import type { SimpleNode, SimpleEdge } from "../../panels/editors/_shared"
 import { GraphProvider } from "../../panels/GraphContext"
@@ -26,10 +26,6 @@ function render(
       {element}
     </GraphProvider>,
   )
-}
-
-function getCodeEditorText(container: HTMLElement) {
-  return container.querySelector(".cm-content")?.textContent ?? ""
 }
 
 // Helpers
@@ -300,7 +296,6 @@ describe("RatingStepEditor", () => {
     expect(screen.getByRole("radiogroup", { name: "Rating section" })).toBeTruthy()
     expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
     expect(screen.getByRole("radio", { name: /Combined/ })).toBeTruthy()
-    expect(screen.getByRole("radio", { name: /Code/ })).toBeTruthy()
 
     fireEvent.click(screen.getByRole("radio", { name: /Combined/ }))
     expect(screen.getByRole("radio", { name: /Combined/ })).toHaveAttribute("aria-checked", "true")
@@ -327,7 +322,7 @@ describe("RatingStepEditor", () => {
       { allNodes: [] },
     )
 
-    expect(screen.getByRole("radio", { name: /Code set/ })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
 
     fireEvent.click(screen.getByRole("radio", { name: /Tables/ }))
     expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
@@ -387,8 +382,7 @@ describe("RatingStepEditor", () => {
       { allNodes: [] },
     )
 
-    expect(screen.getByRole("radio", { name: /Code set/ })).toHaveAttribute("aria-checked", "true")
-    expect(screen.getByText("Polars Code")).toBeTruthy()
+    expect(screen.getByRole("radio", { name: /Tables/ })).toHaveAttribute("aria-checked", "true")
   })
 
   it("'Select at least one factor' shown when no factors", () => {
@@ -884,44 +878,6 @@ describe("RatingStepEditor", () => {
         expect.objectContaining({ outputColumn: "combined_4" }),
       ]),
     }))
-  })
-
-  it("renders a Polars Code box in code mode", async () => {
-    const { container } = render(
-      <RatingStepEditor
-        config={{ code: "df = df.with_columns(pl.lit(1).alias('x'))" }}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    expect(screen.getByText("Polars Code")).toBeTruthy()
-    expect(screen.getByRole("radio", { name: /Code set/ })).toBeTruthy()
-    expect(screen.getByTestId("code-editor-wrapper")).toBeTruthy()
-    await waitFor(() => expect(getCodeEditorText(container)).toContain("df = df.with_columns"))
-    expect(getCodeEditorText(container)).not.toContain("apply_rating_step_from_config")
-  })
-
-  it("does not synthesize rating scaffold in an empty code box", () => {
-    const { container } = render(
-      <RatingStepEditor
-        config={{}}
-        onUpdate={vi.fn()}
-        inputSources={[]}
-        upstreamColumns={[{ name: "age", dtype: "Float64" }]}
-        accentColor="#14b8a6"
-      />,
-      { allNodes: [] }
-    )
-
-    fireEvent.click(screen.getByRole("radio", { name: /Code/ }))
-    const editorText = getCodeEditorText(container)
-    expect(screen.getByTestId("code-editor-wrapper")).toBeTruthy()
-    expect(editorText).not.toContain("apply_rating_step_from_config")
-    expect(editorText).not.toContain("return df")
   })
 
   it("rebuild button shown when factors selected", () => {

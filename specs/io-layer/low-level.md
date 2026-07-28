@@ -49,13 +49,20 @@ relationship is recorded in `specs/ownership.toml`.
    unknown arguments, and missing required provider fields.
 2. `source_cache_identity()` canonicalises the logical source. Database named connections
    retain only the environment reference; Databricks retains fixed host/token references and
-   excludes `batch_size`.
-3. Direct file/lakehouse/inline execution calls `read_polars_input()`.
-4. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
+   excludes `batch_size`; inline records contribute only a canonical content digest and row
+   count, never raw record values. Relative file/lakehouse locators and raw SQLite URIs are
+   anchored to the configured pipeline directory consistently for build, execution
+   fingerprinting, and RAM metadata inspection.
+3. File-backed Parquet with effective mode `scan` requires `cacheMode: "direct"`.
+   Every other canonical Data Input requires `cacheMode: "snapshot"`. Validation rejects
+   mismatches; it does not normalise or migrate them.
+4. Direct Parquet resolution anchors the configured path and returns the registry's
+   `scan_parquet` lazy scan without creating or consulting a source snapshot.
+5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a
    `SourceCacheBuildContext`, and calls `SourceCacheStore.build()`.
-5. Snapshot execution calls `resolve_data_input()`, opens a lease, creates a Parquet scan,
+6. Snapshot execution calls `resolve_data_input()`, opens a lease, creates a Parquet scan,
    and attaches lease release to execution cleanup or an explicit callable scan-plan token.
-6. `resolve_data_input_from_config()` is the generated-code sidecar entry point.
+7. `resolve_data_input_from_config()` is the generated-code sidecar entry point.
 
 ### Snapshot publication
 
@@ -65,7 +72,8 @@ relationship is recorded in `specs/ownership.toml`.
    every batch and written against one schema.
 4. Publication computes artifact integrity evidence, reads footer/schema/row counts, writes
    canonical `meta.json`, and validates the staged generation.
-5. Quota admission may evict the oldest unleased current generation of another identity.
+5. Quota admission rejects the incoming publication when projected byte/count limits would
+   be exceeded; it never evicts another identity's current generation.
 6. The staging directory is atomically renamed and `current.json` is atomically replaced.
 7. Locally leased old generations survive until the final lease release.
 
@@ -112,13 +120,19 @@ Before publication, quota accounting totals every published Parquet plus every
 retained staging byte except the staging tree being admitted, then adds the
 new artifact and generation count. The old current generation for the same
 identity is subtracted only if locally unleased because successful pointer
-replacement makes it reclaimable. If the projection still exceeds byte or
-count limits, candidates are the oldest current generations of other
-identities. Admission takes each candidate's identity lock without waiting,
-rechecks that it is still current and unleased, and subtracts it provisionally.
-Nothing is evicted unless the resulting projection fits; otherwise admission
-raises and leaves all pointers/generations unchanged. On success the selected
-pointers and generation directories are removed before the new staging rename.
+replacement makes it reclaimable. No current generation for another identity
+is an eviction candidate. If the projection still exceeds byte or count limits,
+admission raises an actionable quota error and leaves every pointer/generation
+unchanged.
+
+Snapshot-mode execution never contacts the configured provider. If no current
+snapshot exists, resolution raises `PolarsIoConfigError` with the stable
+`input_snapshot_missing:` prefix and an instruction to build the snapshot (or
+run a Studio preview, which ensures it before execution).
+
+Direct mode is not a general compatibility path. It is valid only for a file-backed
+Parquet scan, which already has the lazy, schema-bearing execution shape that a snapshot
+would duplicate.
 
 ### SQLite builder
 
@@ -203,7 +217,8 @@ overwrite is an HTTP 409; registered data sinks keep their documented overwrite 
    Arrow names, and Polars schema. Proven structural/integrity failures become
    `SourceCacheCorruptError`; a missing pointer remains “not built,” and
    transient `OSError` is propagated rather than mislabeled corruption. No
-   direct-provider fallback is attempted for a requested snapshot.
+   provider fallback is attempted for a requested snapshot; the only direct
+   execution path is canonical file-backed Parquet.
 4. SQLite validates safe locator, existing regular file, and read-only query
    before connection. It begins the read transaction and completes one
    all-column storage-class query before the data cursor emits any batch, so an
@@ -239,7 +254,7 @@ failure sections above are the maintained answers.
   immutable generations, leases, corruption, quota, same-identity single flight,
   age-gated staging reclamation, quota-visible staging, digest memoization, non-destructive
   generation startup, and transient OS failures.
-- `tests/test_input_providers.py` covers direct/snapshot parity, offline cached reads,
+- `tests/test_input_providers.py` covers direct-Parquet and offline snapshot reads,
   provider identities, execution-lifetime leases, SQLite empty/mixed storage classes,
   typed conversion failures, and missing database rejection.
 - `tests/test_polars_io_registry.py`, `tests/test_polars_io_interface_contracts.py`, and

@@ -18,7 +18,7 @@ from haute._polars_io_registry import (
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "direct",
+            "cacheMode": "snapshot",
             "path": "data/input.csv",
             "arguments": {"schema": {"id": "int64"}},
             "code": "df = df.filter(pl.col('id') > 0)",
@@ -46,7 +46,7 @@ from haute._polars_io_registry import (
         {
             "inputType": "inline",
             "format": "records",
-            "cacheMode": "direct",
+            "cacheMode": "snapshot",
             "records": [{"id": 1}],
         },
     ],
@@ -92,7 +92,7 @@ def test_valid_data_output_branches(config: dict[str, object]) -> None:
             {
                 "inputType": "file",
                 "format": "csv",
-                "cacheMode": "direct",
+                "cacheMode": "snapshot",
                 "path": "input.csv",
                 "query": "SELECT 1",
             },
@@ -102,20 +102,10 @@ def test_valid_data_output_branches(config: dict[str, object]) -> None:
             {
                 "inputType": "file",
                 "format": "delta",
-                "cacheMode": "direct",
+                "cacheMode": "snapshot",
                 "path": "lake",
             },
             "belongs to group 'lakehouse'",
-        ),
-        (
-            {
-                "inputType": "database",
-                "format": "database",
-                "cacheMode": "direct",
-                "connection": "DATABASE_URL",
-                "query": "SELECT 1",
-            },
-            "requires cacheMode 'snapshot'",
         ),
         (
             {
@@ -142,10 +132,10 @@ def test_valid_data_output_branches(config: dict[str, object]) -> None:
             {
                 "inputType": "inline",
                 "format": "records",
-                "cacheMode": "snapshot",
+                "cacheMode": "invalid",
                 "records": [],
             },
-            "requires cacheMode 'direct'",
+            "requires cacheMode 'snapshot'",
         ),
         (
             {
@@ -169,6 +159,53 @@ def test_valid_data_output_branches(config: dict[str, object]) -> None:
 )
 def test_invalid_data_input_branch_fails(config: dict[str, object], message: str) -> None:
     with pytest.raises(PolarsIoConfigError, match=message):
+        validate_data_input_config(config)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {
+            "inputType": "file",
+            "format": "parquet",
+            "cacheMode": "direct",
+            "path": "input.parquet",
+        },
+        {
+            "inputType": "database",
+            "format": "database",
+            "cacheMode": "direct",
+            "connection": "DATABASE_URL",
+            "query": "SELECT 1",
+        },
+        {
+            "inputType": "lakehouse",
+            "format": "delta",
+            "cacheMode": "direct",
+            "path": "lake",
+        },
+        {
+            "inputType": "databricks",
+            "cacheMode": "direct",
+            "http_path": "/sql/1.0/warehouses/abc",
+            "table": "main.pricing.policies",
+        },
+        {
+            "inputType": "inline",
+            "format": "records",
+            "cacheMode": "direct",
+            "records": [{"id": 1}],
+        },
+    ],
+    ids=["file", "database", "lakehouse", "databricks", "inline"],
+)
+def test_direct_cache_mode_is_rejected_for_every_provider(
+    config: dict[str, object],
+) -> None:
+    with pytest.raises(
+        PolarsIoConfigError,
+        match="Data Input requires cacheMode 'snapshot'",
+    ):
         validate_data_input_config(config)
 
 

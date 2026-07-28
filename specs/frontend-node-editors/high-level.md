@@ -58,8 +58,11 @@ backend API modules own validation and persistence.
   and execution settings rather than preview/trace metadata.
 - Data Input groups providers as File, Database, Lakehouse, Databricks, and
   Inline and derives every supported field, format, mode, dependency,
-  direct/snapshot choice, and cache control from the backend capability
-  contract. Its optional Polars editor transforms the direct or cached source.
+  snapshot build class, and cache control from the backend capability
+  contract. A single available read mode is not rendered. Cache mode is also
+  not presented as a choice: file-backed Parquet scans directly and has no
+  cache action; every other input uses the shared Cache-as-Parquet control.
+  Its optional Polars editor transforms the resolved frame.
   Data Output presents only writable groups/modes, never Databricks or a Polars
   editor, resolves the actual destination, and keeps per-node write,
   collision-confirmation, and terminal state across panel remounts. Inactive

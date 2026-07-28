@@ -486,6 +486,33 @@ def _source_scoped_metadata(
     )
 
 
+def _data_input_parquet_artifact(config: Mapping[str, Any]) -> tuple[int, Path]:
+    """Return the row count and Parquet artifact used by a Data Input."""
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import source_cache_identity
+    from haute._polars_io_registry import (
+        anchor_config_source_path,
+        validate_data_input_config,
+    )
+    from haute._sandbox import _get_project_root
+    from haute._source_cache import SourceCacheStore
+
+    base_dir = _configured_pipeline_dir()
+    validated = validate_data_input_config(config)
+    if validated["cacheMode"] == "direct":
+        anchored = anchor_config_source_path(validated, base_dir)
+        path = Path(str(anchored["path"]))
+        row_count, _ = _parquet_metadata(str(path))
+        return row_count, path
+
+    identity = source_cache_identity(
+        validated,
+        base_dir=base_dir,
+    )
+    generation = SourceCacheStore(_get_project_root()).open_generation(identity)
+    return generation.metadata.row_count, generation.data_path
+
+
 def _count_source_rows_for_node(node: GraphNode) -> int | None:
     """Row count for a single source node (parquet metadata or line count)."""
     config = node.data.config
@@ -507,27 +534,8 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
             return None
 
         if node_type == NodeType.DATA_INPUT:
-            if config.get("cacheMode") == "snapshot":
-                from haute._input_providers import source_cache_identity
-                from haute._sandbox import _get_project_root
-                from haute._source_cache import SourceCacheStore
-
-                identity = source_cache_identity(config, base_dir=_get_project_root())
-                generation = SourceCacheStore(_get_project_root()).open_generation(identity)
-                return generation.metadata.row_count
-            if config.get("inputType") not in {"file", "lakehouse"}:
-                return None
-            path = config.get("path", "")
-            if path and Path(path).exists():
-                fmt = config.get("format")
-                if fmt == "parquet":
-                    rows, _ = _parquet_metadata(path)
-                    return rows
-                if fmt == "csv":
-                    return _csv_row_count(path)
-                if fmt == "ndjson":
-                    return _jsonl_row_count(path)
-            return None
+            row_count, _ = _data_input_parquet_artifact(config)
+            return row_count
     except (OSError, TypeError, ValueError) as exc:
         logger.warning("source_row_count_failed", node_id=node.id, error=str(exc))
         return None
@@ -557,24 +565,11 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
             return None
 
         if node_type == NodeType.DATA_INPUT:
-            if config.get("cacheMode") == "snapshot":
-                from haute._input_providers import source_cache_identity
-                from haute._sandbox import _get_project_root
-                from haute._source_cache import SourceCacheStore
-
-                identity = source_cache_identity(config, base_dir=_get_project_root())
-                generation = SourceCacheStore(_get_project_root()).open_generation(identity)
-                return _source_scoped_metadata(
-                    _detailed_parquet_metadata(str(generation.data_path)),
-                    node.id,
-                )
-            if (
-                config.get("inputType") in {"file", "lakehouse"}
-                and Path(path).exists()
-                and config.get("format") == "parquet"
-            ):
-                return _source_scoped_metadata(_detailed_parquet_metadata(path), node.id)
-            return None
+            _, snapshot_path = _data_input_parquet_artifact(config)
+            return _source_scoped_metadata(
+                _detailed_parquet_metadata(str(snapshot_path)),
+                node.id,
+            )
     except (OSError, TypeError, ValueError) as exc:
         logger.warning("source_metadata_failed", node_id=node.id, error=str(exc))
         return None

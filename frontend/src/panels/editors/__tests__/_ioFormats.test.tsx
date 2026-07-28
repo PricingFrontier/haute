@@ -20,7 +20,7 @@ function capabilities(label: string): IoCapabilitiesResponse {
         label,
         input_available: true,
         output_available: true,
-        cache_modes: ["direct"],
+        cache_modes: ["snapshot"],
         input_fields: [],
         output_fields: [],
         formats: [],

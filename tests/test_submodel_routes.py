@@ -28,11 +28,12 @@ def _isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _data_input_config(path: str) -> dict[str, object]:
     suffix = Path(path).suffix.casefold()
+    format_name = "csv" if suffix == ".csv" else "parquet"
     return {
         "inputType": "file",
-        "format": "csv" if suffix == ".csv" else "parquet",
+        "format": format_name,
         "mode": "scan",
-        "cacheMode": "direct",
+        "cacheMode": "snapshot" if format_name == "csv" else "direct",
         "path": path,
         "arguments": {},
     }

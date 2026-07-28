@@ -26,8 +26,6 @@ from haute._logging import get_logger
 from haute._node_apply import _DEFAULT_SCENARIO_STEPS
 from haute._polars_io_registry import (
     PolarsIoConfigError,
-    format_for_config,
-    resolve_input_mode,
     validate_data_input_config,
 )
 from haute._polars_utils import DEFAULT_STREAMING_CHUNK_SIZE, streaming_collect
@@ -1585,7 +1583,7 @@ def _data_input_code(node: GraphNode) -> str:
 def _validate_chunkable_input(node: GraphNode) -> None:
     """Prove that a canonical Data Input can feed bounded record batches."""
     try:
-        config = validate_data_input_config(node.data.config)
+        validate_data_input_config(node.data.config)
         code = _data_input_code(node)
         if code and not is_chunk_local_polars_code(code, frame_names=("df",)):
             raise ChunkPlanUnsupportedError(
@@ -1594,32 +1592,9 @@ def _validate_chunkable_input(node: GraphNode) -> None:
                 node_type=node.data.nodeType.value,
             )
 
-        # Every published snapshot has the same immutable Parquet execution
-        # shape, regardless of the provider or original source format.
-        if config["cacheMode"] == "snapshot":
-            return
-
-        fmt = format_for_config(config)
-        mode = resolve_input_mode(fmt, config)
-        if fmt.source_kind == "inline":
-            return
-        if mode != "scan" or not fmt.bounded_read:
-            raise ChunkPlanUnsupportedError(
-                "Direct chunked Data Input requires a bounded lazy scan; "
-                "build a snapshot for eager-only formats.",
-                node_id=node.id,
-                node_type=node.data.nodeType.value,
-                format=fmt.name,
-                mode=mode,
-            )
-        arguments = config.get("arguments") or {}
-        if fmt.needs_schema_when_bounded and "schema" not in arguments:
-            raise ChunkPlanUnsupportedError(
-                "Direct chunked Data Input requires a full declared schema for this format.",
-                node_id=node.id,
-                node_type=node.data.nodeType.value,
-                format=fmt.name,
-            )
+        # Both canonical forms are bounded Parquet scans: either the configured
+        # direct file or an immutable published snapshot.
+        return
     except ChunkPlanUnsupportedError:
         raise
     except (PolarsIoConfigError, TypeError, ValueError) as exc:
@@ -1713,9 +1688,11 @@ def _assert_runner_shape(
 def _source_lazy_frame(node: GraphNode) -> pl.LazyFrame:
     _validate_chunkable_input(node)
     try:
+        from haute._builders import _configured_pipeline_dir
+
         return resolve_data_input(
             node.data.config,
-            base_dir=Path.cwd(),
+            base_dir=_configured_pipeline_dir(),
             profile=ExecutionProfile.CHUNKED_MAP_REDUCE,
         )
     except (PolarsIoConfigError, TypeError, ValueError) as exc:

@@ -39,13 +39,16 @@ class TestIoCapabilitiesEndpoint:
         assert databricks.output_available is False
         assert databricks.formats == []
         assert databricks.cache_modes == ["snapshot"]
+        assert payload.groups[0].cache_modes == ["direct", "snapshot"]
+        assert all(group.cache_modes == ["snapshot"] for group in payload.groups[1:])
 
     def test_csv_capability_shape(self, client: TestClient) -> None:
         payload = IoCapabilitiesResponse.model_validate(client.get("/api/io-capabilities").json())
         file_group = next(group for group in payload.groups if group.name == "file")
         csv = next(fmt for fmt in file_group.formats if fmt.name == "csv")
         assert csv.input is not None and csv.output is not None
-        assert csv.input.modes == ["scan", "read"]
+        assert csv.input.modes == ["scan"]
+        assert csv.input.cache_mode == "snapshot"
         assert csv.input.direct_bounded is True
         assert csv.input.snapshot_build == "bounded"
         assert csv.input.cached_read is True
@@ -79,6 +82,12 @@ class TestIoCapabilitiesEndpoint:
         assert database.input.engines_missing == []
         records = formats["records"]
         assert records.group == "inline"
+        assert records.input is not None
+        assert records.input.snapshot_build == "bounded"
+        assert records.input.cached_read is True
+        parquet = formats["parquet"]
+        assert parquet.input is not None
+        assert parquet.input.cache_mode == "direct"
         lines = formats["lines"]
         assert lines.unstable is True
 

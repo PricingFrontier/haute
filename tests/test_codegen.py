@@ -64,7 +64,7 @@ def _file_input_config(
         "inputType": "file",
         "format": format_name or resolved_format,
         "mode": mode or resolved_mode,
-        "cacheMode": "direct",
+        "cacheMode": "snapshot",
         "path": path,
         "arguments": arguments or {},
     }

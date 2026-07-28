@@ -59,7 +59,7 @@ describe("ColumnsTab", () => {
     expect(onUpdate).toHaveBeenCalledWith("selected_columns", ["a", "c"])
   })
 
-  it("reverts to empty list when all columns re-selected", () => {
+  it("ticking the last remaining box back on restores implicit all", () => {
     const onUpdate = vi.fn()
     render(
       <ColumnsTab
@@ -91,7 +91,7 @@ describe("ColumnsTab", () => {
     expect(onUpdate).toHaveBeenCalledWith("selected_columns", [])
   })
 
-  it("select none button keeps first column", () => {
+  it("None unticks every box without touching config", () => {
     const onUpdate = vi.fn()
     render(
       <ColumnsTab
@@ -102,7 +102,88 @@ describe("ColumnsTab", () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: /^None$/i }))
-    expect(onUpdate).toHaveBeenCalledWith("selected_columns", ["a"])
+    screen.getAllByRole("checkbox").forEach((checkbox) => {
+      expect(checkbox).not.toBeChecked()
+    })
+    expect(screen.getByText("0 / 3")).toBeInTheDocument()
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Select at least one column to apply.",
+    )
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("first tick after None commits exactly that column", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ColumnsTab
+        config={{}}
+        onUpdate={onUpdate}
+        availableColumns={COLUMNS}
+        columns={COLUMNS}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: /^None$/i }))
+    fireEvent.click(screen.getByText("b"))
+
+    expect(onUpdate).toHaveBeenCalledOnce()
+    expect(onUpdate).toHaveBeenCalledWith("selected_columns", ["b"])
+  })
+
+  it("unticking the final committed column enters draft, not select-all", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ColumnsTab
+        config={{ selected_columns: ["a"] }}
+        onUpdate={onUpdate}
+        availableColumns={COLUMNS}
+        columns={[COLUMNS[0]]}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("a"))
+
+    screen.getAllByRole("checkbox").forEach((checkbox) => {
+      expect(checkbox).not.toBeChecked()
+    })
+    expect(screen.getByRole("status")).toBeInTheDocument()
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("re-creating the identical selection does not re-commit", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ColumnsTab
+        config={{ selected_columns: ["a"] }}
+        onUpdate={onUpdate}
+        availableColumns={COLUMNS}
+        columns={[COLUMNS[0]]}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("a"))
+    fireEvent.click(screen.getByText("a"))
+
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("does not mistake a stale selection plus one current column for all", () => {
+    const onUpdate = vi.fn()
+    render(
+      <ColumnsTab
+        config={{ selected_columns: ["missing"] }}
+        onUpdate={onUpdate}
+        availableColumns={COLUMNS.slice(0, 2)}
+        columns={[]}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("a"))
+
+    expect(onUpdate).toHaveBeenCalledWith(
+      "selected_columns",
+      ["missing", "a"],
+    )
   })
 
   it("shows empty state when no columns available", () => {

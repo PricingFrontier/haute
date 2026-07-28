@@ -4,6 +4,7 @@ import importlib.util
 import json
 import re
 import sys
+import tomllib
 import types
 from collections.abc import Callable
 from pathlib import Path
@@ -489,3 +490,18 @@ def test_vite_defines_app_version_from_package_metadata_without_fallback() -> No
     assert re.search(r"__APP_VERSION__\s*:\s*JSON\.stringify\(appVersion\)", source)
     assert "throw new Error" in source
     assert 'appVersion = versionMatch ? versionMatch[1] : "0.1.0"' not in source
+
+
+def test_mlflow_is_core_and_databricks_extra_only_adds_databricks_sdks() -> None:
+    root = Path(__file__).resolve().parents[1]
+    with (root / "pyproject.toml").open("rb") as handle:
+        project = tomllib.load(handle)["project"]
+
+    core_names = {requirement.split(">=", 1)[0] for requirement in project["dependencies"]}
+    databricks_names = {
+        requirement.split(">=", 1)[0]
+        for requirement in project["optional-dependencies"]["databricks"]
+    }
+
+    assert "mlflow" in core_names
+    assert databricks_names == {"databricks-sdk", "databricks-sql-connector"}

@@ -84,6 +84,16 @@ vi.mock("../LazyNodeEditors", async () => {
   }
 })
 
+vi.mock("../editors/shared/PolarsCodePanel", () => ({
+  default: ({ hint }: { hint: React.ReactNode }) => (
+    <div data-testid="PolarsCodePanel">
+      <span>Polars Code</span>
+      <span data-testid="polars-hint">{hint}</span>
+      <textarea data-testid="code-editor" />
+    </div>
+  ),
+}))
+
 function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
   return {
     id: "node_1",
@@ -282,6 +292,48 @@ describe("NodePanel", () => {
   it("renders DataInputEditor for dataInput nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "In", description: "", nodeType: "dataInput", config: {} } }) })
     expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
+  })
+
+  it.each([
+    ["dataInput", "the opened input snapshot"],
+    ["externalFile", "loaded file, assign to"],
+    ["ratingStep", "use"],
+    ["modelScore", "Post-processing Code (optional)"],
+  ])("shows the Polars tab and shared code panel for %s nodes", (nodeType, hint) => {
+    renderPanel({ node: makeNode({ data: { label: "Code node", description: "", nodeType, config: {} } }) })
+
+    expect(screen.getByRole("button", { name: /^config$/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /^polars$/i })).toBeInTheDocument()
+    expect(screen.queryByTestId("code-editor")).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+
+    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+    expect(screen.getByTestId("polars-hint")).toHaveTextContent(hint)
+    expect(screen.getByTestId("code-editor")).toBeInTheDocument()
+  })
+
+  it("returns to Config when switching between Polars-tab nodes", () => {
+    const first = makeNode({
+      id: "input_1",
+      data: { label: "First input", description: "", nodeType: "dataInput", config: {} },
+    })
+    const { rerender, props } = renderPanel({ node: first })
+    fireEvent.click(screen.getByRole("button", { name: /^polars$/i }))
+    expect(screen.getByTestId("PolarsCodePanel")).toBeInTheDocument()
+
+    const second = makeNode({
+      id: "input_2",
+      data: { label: "Second input", description: "", nodeType: "dataInput", config: {} },
+    })
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <NodePanel {...props} node={second} />
+      </GraphProvider>,
+    )
+
+    expect(screen.getByTestId("DataInputEditor")).toBeInTheDocument()
+    expect(screen.queryByTestId("PolarsCodePanel")).not.toBeInTheDocument()
   })
 
   it("renders DataOutputEditor for dataOutput nodes", () => {

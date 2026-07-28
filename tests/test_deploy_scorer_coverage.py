@@ -364,10 +364,10 @@ class TestScoreGraphStaticDataSourceRemap:
                             "nodeType": "dataInput",
                             "config": {
                                 "inputType": "file",
-                                "format": "parquet",
+                                "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "direct",
-                                "path": "original/factors.parquet",
+                                "cacheMode": "snapshot",
+                                "path": "original/factors.csv",
                                 "arguments": {},
                             },
                         },
@@ -405,7 +405,7 @@ class TestScoreGraphStaticDataSourceRemap:
         )
 
         input_df = pl.DataFrame({"x": [1.0]})
-        remap = {"static_ds__factors.parquet": str(ds_path)}
+        remap = {"static_ds__snapshot.parquet": str(ds_path)}
 
         result = score_graph(
             graph=graph,

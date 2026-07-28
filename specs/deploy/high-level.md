@@ -95,7 +95,7 @@ names the node and asks for an API Input.
 (output/input nodes present in the pruned graph, input nodes are true sources, artefacts
 exist on disk, schemas are non-empty, configured `output_fields` are distinct non-empty
 column names present in the inferred output schema, and every retained Data Input has a
-validated, deploy-ready direct source or snapshot). When `test_quotes.dir` is configured,
+validated, deploy-ready direct Parquet source or snapshot). When `test_quotes.dir` is configured,
 the path must exist, be a directory, and contain at least one `*.json` quote; otherwise
 validation fails rather than silently disabling the gate. Every quote is scored through the
 resolved graph. Test-quote files may be plain input rows or "golden" rows with an
@@ -111,9 +111,10 @@ copies; `optimiserApply` nodes configured from an MLflow run or registered model
 that artefact at request time. This is the same
 scoring path used by pre-deploy dry-runs, golden test-quote validation, the generated
 FastAPI container, and the MLflow `pyfunc` model — deploy has exactly one scoring engine,
-not one per target. Retained `dataInput` nodes are remapped through the
-canonical provider configuration to the exact bundled direct file or leased
-snapshot selected during resolution. `dataOutput` is a scoring pass-through
+not one per target. Retained snapshot-backed `dataInput` nodes scan the exact immutable
+generation bundled during resolution. A canonical direct Parquet input bundles and scans
+that configured Parquet file without first copying it through the source cache.
+`dataOutput` is a scoring pass-through
 and its writer is never invoked; persistence-only branches outside the served
 output's ancestry are pruned.
 

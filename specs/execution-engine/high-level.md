@@ -111,13 +111,13 @@ running heavy work in a child process the parent can kill on timeout or memory l
   database output, instead uses `streaming_collect` and therefore materialises the
   result DataFrame before writing; it still refuses Polars' non-streaming broad-collect
   fallback for bounded profiles.
-- **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A data input
-  executes either through its provider's declared direct capability or from a
-  validated leased snapshot generation; graph execution never builds/refreshes a
-  snapshot or performs a remote-provider fetch for snapshot-only modes. Optional
-  input code runs exactly once through `_exec_user_code` after provider resolution.
-  Source identity, mode, generation/signature, and code participate in fingerprints
-  without resolved secrets.
+- **`dataInput` and `dataOutput` are the sole tabular I/O node types.** A file-backed
+  Parquet Data Input is scanned directly. Every other data input executes from a
+  validated leased snapshot generation; graph execution never builds or refreshes a
+  snapshot. Optional input code runs exactly once through `_exec_user_code` after
+  provider resolution. Direct source signatures or snapshot generation pointers,
+  together with source identity, mode, and code, participate in fingerprints without
+  resolved secrets.
 - **Output publication is explicit and contained.** `dataOutput` is preview
   pass-through; only `write_data_output` persists it. Local files stage to a unique
   contained same-filesystem sibling, validate completion, and replace atomically.

@@ -178,6 +178,9 @@ class TestInferenceIgnoresObjectBranching:
     def test_flat_record_one_root_table(self, tmp_path: Path) -> None:
         schema = infer_v2_schema_from_data(_write(tmp_path, [{"a": 1, "b": "x"}]))
         assert _table_paths(schema) == {"$[:]"}
+        root = next(table for table in schema["tables"] if table["path"] == "$[:]")
+        assert root["label"] == "quote_info"
+        assert root["emit"] is True
 
     def test_object_nesting_does_not_mint_tables(self, tmp_path: Path) -> None:
         # quote_metadata + policy_details are 1-1 objects: SAME relational level.

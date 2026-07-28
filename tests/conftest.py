@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from haute._config_io import config_path_for_node
+from haute._execution_context import ExecutionProfile
 from haute._sandbox import _get_project_root, set_project_root
 from haute.executor import _preview_cache
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
@@ -184,15 +185,45 @@ def _clear_dual_cache_session():
 
 
 @pytest.fixture()
-def _widen_sandbox_root():
+def _widen_sandbox_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     """Allow tests to load files from temp directories.
 
     Sets the sandbox project root to ``/`` for the duration of each test
     so that ``validate_project_path`` accepts paths in ``/tmp``.
+    Source snapshots still need writable project-local storage, so stores
+    opened against that synthetic filesystem root are redirected to this
+    test's temp directory.
     Restores the original root afterwards.
     """
+    from haute._source_cache import SourceCacheStore
+
     original = _get_project_root()
-    set_project_root(Path("/"))
+    widened_root = Path("/").resolve()
+    # Keep this root short enough for the generation + atomic-write suffixes
+    # to remain below Windows' traditional path limit.
+    cache_root = Path(tempfile.mkdtemp(prefix="sc-", dir=tmp_path.parent))
+    original_store_init = SourceCacheStore.__init__
+
+    def init_with_writable_cache(
+        self: SourceCacheStore,
+        root: str | Path,
+        *,
+        max_bytes: int | None = None,
+        max_generations: int | None = None,
+    ) -> None:
+        resolved_root = Path(root).resolve()
+        original_store_init(
+            self,
+            cache_root if resolved_root == widened_root else resolved_root,
+            max_bytes=max_bytes,
+            max_generations=max_generations,
+        )
+
+    monkeypatch.setattr(SourceCacheStore, "__init__", init_with_writable_cache)
+    set_project_root(widened_root)
     yield
     set_project_root(original)
 
@@ -240,11 +271,40 @@ def make_file_input_config(path: object, **extra: object) -> dict[str, object]:
         "inputType": "file",
         "format": format_name,
         "mode": mode,
-        "cacheMode": "direct",
+        "cacheMode": "direct" if format_name == "parquet" and mode == "scan" else "snapshot",
         "path": path_text,
         "arguments": {},
         **extra,
     }
+
+
+def build_test_input_snapshot(
+    config: dict[str, object],
+    *,
+    base_dir: str | Path | None = None,
+    profile: ExecutionProfile = ExecutionProfile.PREVIEW_EAGER,
+) -> None:
+    """Prepare a runtime test input, building only snapshot-backed sources."""
+    from haute._builders import _configured_pipeline_dir
+    from haute._input_providers import build_input_snapshot
+    from haute._source_cache import SourceCacheStore
+
+    if config.get("cacheMode") == "direct":
+        return
+    build_input_snapshot(
+        config,
+        store=SourceCacheStore(_get_project_root()),
+        base_dir=base_dir if base_dir is not None else _configured_pipeline_dir(),
+        profile=profile,
+    )
+
+
+def make_ready_file_input_config(path: object, **extra: object) -> dict[str, object]:
+    """Build and return a canonical file input config ready for runtime use."""
+    config = make_file_input_config(path, **extra)
+    if config["cacheMode"] == "snapshot":
+        build_test_input_snapshot(config)
+    return config
 
 
 def make_file_output_config(
@@ -338,7 +398,7 @@ def write_data_input_config(
             "inputType": "file",
             "format": format_name,
             "mode": mode,
-            "cacheMode": "direct",
+            "cacheMode": "direct" if format_name == "parquet" and mode == "scan" else "snapshot",
             "path": path,
             "arguments": {},
         },

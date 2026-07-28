@@ -7,7 +7,7 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from tests.conftest import make_edge, make_file_input_config, make_graph
+from tests.conftest import make_edge, make_file_input_config, make_graph, make_ready_file_input_config
 
 _OPAQUE_PROJECTION_ERROR = "User-code projection requires a concrete node contract"
 
@@ -72,7 +72,7 @@ def _make_avg_top_5_competitor_join_graph(
                     "data": {
                         "label": "policies",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(policies_path),
+                        "config": make_ready_file_input_config(policies_path),
                     },
                 },
                 {
@@ -80,7 +80,7 @@ def _make_avg_top_5_competitor_join_graph(
                     "data": {
                         "label": "competitor_insights",
                         "nodeType": "dataInput",
-                        "config": make_file_input_config(competitor_path),
+                        "config": make_ready_file_input_config(competitor_path),
                     },
                 },
                 {
@@ -206,7 +206,7 @@ def _make_optimiser_estimate_graph(
             "data": {
                 "label": "optimiser_input",
                 "nodeType": "dataInput",
-                "config": make_file_input_config(
+                "config": make_ready_file_input_config(
                     optimiser_input_path,
                     contract="opaque",
                     code=(
@@ -235,7 +235,7 @@ def _make_optimiser_estimate_graph(
                 "data": {
                     "label": "age_veh_banding",
                     "nodeType": "dataInput",
-                    "config": make_file_input_config(banding_path),
+                    "config": make_ready_file_input_config(banding_path),
                 },
             },
         )

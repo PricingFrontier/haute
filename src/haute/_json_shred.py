@@ -1962,7 +1962,7 @@ def infer_v2_schema_from_data(
                 }
                 for opath in col_paths
             ]
-        base_label = "root" if not level else derive_identifier_label(level[-1][0])
+        base_label = "quote_info" if not level else derive_identifier_label(level[-1][0])
         table_entries.append(
             (
                 level,

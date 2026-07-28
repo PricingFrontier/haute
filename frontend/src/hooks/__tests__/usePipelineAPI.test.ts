@@ -11,6 +11,11 @@ import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import type { PipelineEdge } from "../../types/node"
+import type {
+  InputCacheJobStatusResponse,
+  InputCacheSnapshotResponse,
+  JobStatus,
+} from "../../api/types"
 import { NODE_TYPES } from "../../utils/nodeTypes"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 
@@ -18,6 +23,9 @@ vi.mock("../../api/client", () => ({
   loadPipeline: vi.fn(),
   previewNode: vi.fn(),
   savePipeline: vi.fn(),
+  buildInputCache: vi.fn(),
+  getInputCacheJob: vi.fn(),
+  getInputCacheStatus: vi.fn(),
   ApiError: class ApiError extends Error {
     status: number
     detail?: string
@@ -64,12 +72,24 @@ vi.mock("../../utils/makePreviewData", () => ({
   })),
 }))
 
-import { ApiError, ApiTimeoutError, loadPipeline, previewNode, savePipeline } from "../../api/client"
+import {
+  ApiError,
+  ApiTimeoutError,
+  buildInputCache,
+  getInputCacheJob,
+  getInputCacheStatus,
+  loadPipeline,
+  previewNode,
+  savePipeline,
+} from "../../api/client"
 import { resolveGraphFromRefs } from "../../utils/buildGraph"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 const mockLoad = vi.mocked(loadPipeline)
 const mockPreview = vi.mocked(previewNode)
 const mockSave = vi.mocked(savePipeline)
+const mockBuildInputCache = vi.mocked(buildInputCache)
+const mockGetInputCacheJob = vi.mocked(getInputCacheJob)
+const mockGetInputCacheStatus = vi.mocked(getInputCacheStatus)
 const mockResolveGraphFromRefs = vi.mocked(resolveGraphFromRefs)
 
 function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {}) {
@@ -153,6 +173,61 @@ function makeSubmodelPortNode(id = "port_in__source"): Node {
   } as unknown as Node
 }
 
+function makeSnapshotInput(id = "snapshot-input"): Node {
+  const node = makeNode(id, NODE_TYPES.DATA_INPUT)
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      config: {
+        inputType: "file",
+        cacheMode: "snapshot",
+        format: "parquet",
+        mode: "scan",
+        path: `${id}.parquet`,
+      },
+    },
+  }
+}
+
+function inputCacheSnapshot(
+  state: InputCacheSnapshotResponse["state"],
+  freshness: InputCacheSnapshotResponse["freshness"] = "unknown",
+): InputCacheSnapshotResponse {
+  return {
+    schema_version: 1,
+    identity_digest: "snapshot-identity",
+    state,
+    freshness,
+    generation: null,
+  }
+}
+
+function inputCacheJob(
+  status: JobStatus,
+  message = "",
+): InputCacheJobStatusResponse {
+  return {
+    schema_version: 1,
+    job_id: "snapshot-job",
+    identity_digest: "snapshot-identity",
+    status,
+    terminal_reason: status === "completed" || status === "running" ? null : status,
+    message,
+    refresh: false,
+    build_class: "bounded",
+    progress: {
+      phase: status === "completed" ? "completed" : status === "running" ? "building" : "failed",
+      rows: 1,
+      batches: 1,
+      bytes: 100,
+      elapsed_seconds: 0.1,
+    },
+    snapshot: status === "completed" ? inputCacheSnapshot("ready", "fresh") : null,
+    error_code: status === "completed" || status === "running" ? null : "build_failed",
+  }
+}
+
 describe("usePipelineAPI", () => {
   beforeEach(() => {
     vi.useRealTimers()
@@ -170,6 +245,9 @@ describe("usePipelineAPI", () => {
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
     mockPreview.mockReset()
+    mockBuildInputCache.mockReset()
+    mockGetInputCacheJob.mockReset()
+    mockGetInputCacheStatus.mockReset()
     mockResolveGraphFromRefs.mockReset()
     mockResolveGraphFromRefs.mockImplementation((graphRef, parentGraphRef, submodelsRef, preambleRef) => {
       if (parentGraphRef.current) {
@@ -727,6 +805,130 @@ describe("usePipelineAPI", () => {
     // Should show loading state immediately
     expect(result.current.previewData?.status).toBe("loading")
   })
+
+  it("builds a missing input snapshot before sending the preview", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
+    mockBuildInputCache.mockResolvedValue({
+      schema_version: 1,
+      job_id: "snapshot-job",
+      identity_digest: "snapshot-identity",
+      status: "running",
+      joined: false,
+    })
+    mockGetInputCacheJob.mockResolvedValue(inputCacheJob("completed"))
+    mockPreview.mockResolvedValue({
+      node_id: "target",
+      status: "ok",
+      columns: [{ name: "a", dtype: "f64" }],
+      preview: [{ a: 1 }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const input = makeSnapshotInput()
+    const target = makeNode("target")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [input, target],
+      edges: [makeEdge(input.id, target.id)],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(target, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    expect(mockBuildInputCache).toHaveBeenCalledOnce()
+    expect(mockGetInputCacheJob).toHaveBeenCalledWith("snapshot-job", {
+      signal: expect.any(AbortSignal),
+    })
+    expect(mockBuildInputCache.mock.invocationCallOrder[0])
+      .toBeLessThan(mockPreview.mock.invocationCallOrder[0])
+    expect(mockGetInputCacheJob.mock.invocationCallOrder[0])
+      .toBeLessThan(mockPreview.mock.invocationCallOrder[0])
+    expect(useToastStore.getState().toasts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "info",
+          text: "Building input snapshot…",
+        }),
+      ]),
+    )
+  })
+
+  it("blocks preview and surfaces an input snapshot build failure", async () => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
+    mockBuildInputCache.mockResolvedValue({
+      schema_version: 1,
+      job_id: "snapshot-job",
+      identity_digest: "snapshot-identity",
+      status: "running",
+      joined: false,
+    })
+    mockGetInputCacheJob.mockResolvedValue(
+      inputCacheJob("error", "Snapshot quota is exhausted."),
+    )
+    const input = makeSnapshotInput()
+    const target = makeNode("target")
+    const params = makeParams()
+    params.graphRef.current = {
+      nodes: [input, target],
+      edges: [makeEdge(input.id, target.id)],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(target, { debounceMs: 0 })
+    })
+
+    await waitFor(() => {
+      expect(result.current.previewData?.status).toBe("error")
+      expect(result.current.previewData?.error).toBe(
+        "Snapshot quota is exhausted.",
+      )
+    })
+    expect(result.current.previewBusy).toBe(false)
+    expect(mockPreview).not.toHaveBeenCalled()
+  })
+
+  it.each(["fresh", "stale"] as const)(
+    "uses a ready %s input snapshot without rebuilding",
+    async (freshness) => {
+      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockGetInputCacheStatus.mockResolvedValue(
+        inputCacheSnapshot("ready", freshness),
+      )
+      mockPreview.mockResolvedValue({
+        node_id: "target",
+        status: "ok",
+        columns: [],
+        preview: [],
+        row_count: 0,
+        column_count: 0,
+      })
+      const input = makeSnapshotInput()
+      const target = makeNode("target")
+      const params = makeParams()
+      params.graphRef.current = {
+        nodes: [input, target],
+        edges: [makeEdge(input.id, target.id)],
+      }
+      const { result } = renderHook(() => usePipelineAPI(params))
+      await waitFor(() => expect(result.current.loading).toBe(false))
+
+      act(() => {
+        result.current.fetchPreview(target, { debounceMs: 0 })
+      })
+
+      await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+      expect(mockBuildInputCache).not.toHaveBeenCalled()
+      expect(mockPreview).toHaveBeenCalledOnce()
+    },
+  )
 
   it.each([
     NODE_TYPES.SUBMODEL,

@@ -39,6 +39,7 @@ from haute.routes._optimiser_service import (
 )
 from haute.routes.optimiser import _build_artifact_payload
 from tests.conftest import make_edge, make_graph
+from tests.conftest import build_test_input_snapshot
 from tests.optimiser_fixtures import frontier_result as _frontier_result
 from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
 
@@ -95,9 +96,14 @@ def scored_data(tmp_path) -> str:
     return _make_scored_data(tmp_path)
 
 
-def _direct_parquet_data_input(path: str, **extra: object) -> dict[str, object]:
-    """Return the persisted canonical configuration for a direct parquet input."""
-    return {
+def _snapshot_parquet_data_input(
+    path: str,
+    *,
+    ready: bool = True,
+    **extra: object,
+) -> dict[str, object]:
+    """Return a parquet input config, publishing its snapshot when requested."""
+    config: dict[str, object] = {
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
@@ -106,6 +112,11 @@ def _direct_parquet_data_input(path: str, **extra: object) -> dict[str, object]:
         "arguments": {},
         **extra,
     }
+    if ready:
+        build_test_input_snapshot(config)
+    return config
+
+
 
 
 @contextmanager
@@ -147,7 +158,7 @@ def _make_optimiser_graph(data_path: str, config: dict | None = None) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(data_path),
+                        "config": _snapshot_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -175,7 +186,7 @@ def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "left",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(left_path),
+                        "config": _snapshot_parquet_data_input(left_path),
                     },
                 },
                 {
@@ -183,7 +194,7 @@ def _make_estimate_projection_impossible_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "right",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(right_path),
+                        "config": _snapshot_parquet_data_input(right_path),
                     },
                 },
                 {
@@ -243,7 +254,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "left",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(left_path),
+                        "config": _snapshot_parquet_data_input(left_path),
                     },
                 },
                 {
@@ -251,7 +262,7 @@ def _make_auto_range_runtime_projectable_graph(left_path: str, right_path: str) 
                     "data": {
                         "label": "right",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(right_path),
+                        "config": _snapshot_parquet_data_input(right_path),
                     },
                 },
                 {
@@ -919,7 +930,7 @@ class TestSolveRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(scored_data),
+                            "config": _snapshot_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -1823,7 +1834,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(scored_path)),
+                            "config": _snapshot_parquet_data_input(str(scored_path)),
                         },
                     },
                     {
@@ -1842,7 +1853,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "unused_parent",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(extra_path)),
+                            "config": _snapshot_parquet_data_input(str(extra_path)),
                         },
                     },
                     {
@@ -2297,7 +2308,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(
+                            "config": _snapshot_parquet_data_input(
                                 str(source_path), contract="opaque"
                             ),
                         },
@@ -2476,7 +2487,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -2608,7 +2619,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -2737,7 +2748,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(
+                            "config": _snapshot_parquet_data_input(
                                 str(source_path), contract="opaque"
                             ),
                         },
@@ -2831,7 +2842,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(
+                            "config": _snapshot_parquet_data_input(
                                 str(source_path), contract="opaque"
                             ),
                         },
@@ -3074,7 +3085,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(
+                            "config": _snapshot_parquet_data_input(
                                 str(source_path), contract="opaque"
                             ),
                         },
@@ -3175,7 +3186,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3274,7 +3285,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3366,7 +3377,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3450,7 +3461,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3550,7 +3561,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -3764,7 +3775,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "left",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(left_path)),
+                            "config": _snapshot_parquet_data_input(str(left_path)),
                         },
                     },
                     {
@@ -3772,7 +3783,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "right",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(right_path)),
+                            "config": _snapshot_parquet_data_input(str(right_path)),
                         },
                     },
                     {
@@ -3993,7 +4004,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -4342,7 +4353,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -4364,7 +4375,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "banding",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(banding_path)),
+                            "config": _snapshot_parquet_data_input(str(banding_path)),
                         },
                     },
                     {
@@ -4510,7 +4521,7 @@ class TestEstimateRoute:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -4727,7 +4738,7 @@ def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(data_path),
+                        "config": _snapshot_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -4735,7 +4746,7 @@ def _make_ratebook_graph(data_path: str, banding_data_path: str) -> dict:
                     "data": {
                         "label": "banding",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(banding_data_path),
+                        "config": _snapshot_parquet_data_input(banding_data_path),
                     },
                 },
                 {
@@ -4780,7 +4791,7 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(data_path),
+                        "config": _snapshot_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -4799,7 +4810,7 @@ def _make_ratebook_intermediate_graph(data_path: str, banding_data_path: str) ->
                     "data": {
                         "label": "banding",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(banding_data_path),
+                        "config": _snapshot_parquet_data_input(banding_data_path),
                     },
                 },
                 {
@@ -5201,7 +5212,7 @@ def _make_expander_graph(data_path: str) -> dict:
                     "data": {
                         "label": "source",
                         "nodeType": "dataInput",
-                        "config": _direct_parquet_data_input(data_path),
+                        "config": _snapshot_parquet_data_input(data_path),
                     },
                 },
                 {
@@ -6691,7 +6702,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(scored_data),
+                            "config": _snapshot_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6699,7 +6710,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "side source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(scored_data),
+                            "config": _snapshot_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6806,7 +6817,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(scored_data),
+                            "config": _snapshot_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6814,7 +6825,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "side source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(scored_data),
+                            "config": _snapshot_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6898,7 +6909,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(scored_data),
+                            "config": _snapshot_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -6973,7 +6984,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(scored_data),
+                            "config": _snapshot_parquet_data_input(scored_data),
                         },
                     },
                     {
@@ -7278,7 +7289,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "source",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(source_path)),
+                            "config": _snapshot_parquet_data_input(str(source_path)),
                         },
                     },
                     {
@@ -7297,7 +7308,7 @@ class TestExecutePipelineArgs:
                         "data": {
                             "label": "banding",
                             "nodeType": "dataInput",
-                            "config": _direct_parquet_data_input(str(banding_path)),
+                            "config": _snapshot_parquet_data_input(str(banding_path)),
                         },
                     },
                     {

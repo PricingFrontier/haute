@@ -279,7 +279,7 @@ def _config_node(node_id: str, label: str) -> GraphNode:
                 "inputType": "file",
                 "format": "csv",
                 "mode": "scan",
-                "cacheMode": "direct",
+                "cacheMode": "snapshot",
                 "path": f"{node_id}.csv",
                 "arguments": {},
             },

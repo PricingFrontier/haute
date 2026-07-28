@@ -1,4 +1,4 @@
-"""Smoke contracts for environments with MLflow / Databricks extras installed."""
+"""Smoke contracts for core MLflow with the Databricks extra installed."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ def _module_available(module_name: str) -> bool:
         return False
 
 
-_HAS_OPTIONAL_EXTRAS = all(
+_HAS_DATABRICKS_EXTRA = all(
     _module_available(module_name) for module_name in ("mlflow", "databricks.sdk", "databricks.sql")
 )
 
 pytestmark = pytest.mark.skipif(
-    not _HAS_OPTIONAL_EXTRAS,
-    reason="This smoke file is for CI lanes with MLflow and Databricks extras installed.",
+    not _HAS_DATABRICKS_EXTRA,
+    reason="This smoke file is for CI lanes with the Databricks extra installed.",
 )
 
 

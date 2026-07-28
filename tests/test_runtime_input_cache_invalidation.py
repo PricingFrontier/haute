@@ -1,6 +1,6 @@
 """C4 — preview/trace cache keys must cover runtime file inputs.
 
-Re-exporting a dataInput CSV, replacing an external file or a model
+Re-exporting a direct dataInput Parquet, replacing an external file or a model
 artifact, and rebuilding the apiInput JSON cache all happen out-of-band
 (there is no in-GUI upload), so the graph JSON — and therefore the
 structural fingerprint — does not change.  Before the fix the preview
@@ -73,6 +73,10 @@ def _write_csv(path: Path, values: list[int]) -> None:
     pl.DataFrame({"x": values}).write_csv(path)
 
 
+def _write_parquet(path: Path, values: list[int]) -> None:
+    pl.DataFrame({"x": values}).write_parquet(path)
+
+
 def _bump_mtime(path: Path, seconds: float = 5.0) -> None:
     """Deterministically advance *path*'s mtime.
 
@@ -85,14 +89,12 @@ def _bump_mtime(path: Path, seconds: float = 5.0) -> None:
     os.utime(path, (stat.st_atime + seconds, stat.st_mtime + seconds))
 
 
-def _csv_graph(path: Path):
-    return _g({"nodes": [_csv_input_node("src", path)], "edges": []})
+def _parquet_graph(path: Path):
+    return _g({"nodes": [_parquet_input_node("src", path)], "edges": []})
 
 
-def _csv_input_node(nid: str, path: Path):
-    node = _source_node(nid, str(path))
-    node.data.config["format"] = "csv"
-    return node
+def _parquet_input_node(nid: str, path: Path):
+    return _source_node(nid, str(path))
 
 
 def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path) -> None:
@@ -107,10 +109,10 @@ def test_graph_input_fingerprint_uses_canonical_json(monkeypatch, tmp_path: Path
 
     monkeypatch.setattr(_cache, "canonical_json", recording_canonical_json)
     first = execution.dataframe_graph_input_fingerprint(
-        _csv_graph(tmp_path / "source.csv"), target_node_id=None, source="live"
+        _parquet_graph(tmp_path / "source.parquet"), target_node_id=None, source="live"
     )
     second = execution.dataframe_graph_input_fingerprint(
-        _csv_graph(tmp_path / "source.csv"), target_node_id=None, source="live"
+        _parquet_graph(tmp_path / "source.parquet"), target_node_id=None, source="live"
     )
 
     assert seen
@@ -193,16 +195,16 @@ def _json_api_input_graph(data: Path):
 
 @pytest.mark.usefixtures("_widen_sandbox_root")
 class TestPreviewRuntimeFileInvalidation:
-    def test_datasource_csv_overwrite_recomputes_preview(self, tmp_path):
-        """Re-exporting data.csv (same path, new rows) must not serve stale rows."""
-        p = tmp_path / "data.csv"
-        _write_csv(p, [1, 2])
-        graph = _csv_graph(p)
+    def test_direct_parquet_overwrite_recomputes_preview(self, tmp_path):
+        """Re-exporting direct Parquet at the same path must not serve stale rows."""
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [1, 2])
+        graph = _parquet_graph(p)
 
         results1 = execute_graph(graph)
         assert [row["x"] for row in results1["src"].preview] == [1, 2]
 
-        _write_csv(p, [5, 6])
+        _write_parquet(p, [5, 6])
         _bump_mtime(p)
 
         results2 = execute_graph(graph)
@@ -310,9 +312,9 @@ class TestPreviewRuntimeFileInvalidation:
     def test_vanished_datasource_file_errors_loudly(self, tmp_path):
         """A deleted dataInput file must error like execution does — never
         serve the stale ok frame cached while the file still existed."""
-        p = tmp_path / "data.csv"
-        _write_csv(p, [1, 2])
-        graph = _csv_graph(p)
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [1, 2])
+        graph = _parquet_graph(p)
 
         results1 = execute_graph(graph)
         assert results1["src"].status == "ok"
@@ -375,12 +377,12 @@ class TestPreviewRuntimeFileInvalidation:
 
 class TestTraceRuntimeInputInvalidation:
     def test_trace_recomputes_after_datasource_edit(self, tmp_path):
-        p = tmp_path / "data.csv"
-        _write_csv(p, [10])
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [10])
         graph = _g(
             {
                 "nodes": [
-                    _csv_input_node("src", p),
+                    _parquet_input_node("src", p),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -390,7 +392,7 @@ class TestTraceRuntimeInputInvalidation:
         result1 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
         assert result1.output_value == 20
 
-        _write_csv(p, [50])
+        _write_parquet(p, [50])
         _bump_mtime(p)
 
         result2 = execute_trace(graph, row_index=0, target_node_id="t", column="y")
@@ -475,12 +477,12 @@ class TestTraceRuntimeInputInvalidation:
         preview reuse and re-executes the DAG on every cold trace."""
         import haute.trace as trace_mod
 
-        p = tmp_path / "data.csv"
-        _write_csv(p, [7])
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [7])
         graph = _g(
             {
                 "nodes": [
-                    _csv_input_node("src", p),
+                    _parquet_input_node("src", p),
                     _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
@@ -560,9 +562,9 @@ class TestStatGatedFingerprintMemo:
         return calls
 
     def test_unchanged_file_is_hashed_once_across_previews(self, tmp_path, hash_calls):
-        p = tmp_path / "data.csv"
-        _write_csv(p, [1, 2])
-        graph = _csv_graph(p)
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [1, 2])
+        graph = _parquet_graph(p)
         key = str(p.resolve())
 
         execute_graph(graph)
@@ -571,7 +573,7 @@ class TestStatGatedFingerprintMemo:
         execute_graph(graph)
         assert hash_calls.get(key) == 1, "unchanged stat must not re-hash content"
 
-        _write_csv(p, [5, 6])
+        _write_parquet(p, [5, 6])
         _bump_mtime(p)
 
         execute_graph(graph)
@@ -584,15 +586,15 @@ class TestStatGatedFingerprintMemo:
             dataframe_paths_input_fingerprint,
         )
 
-        p = tmp_path / "data.csv"
-        _write_csv(p, [1, 2])
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [1, 2])
         key = str(p.resolve())
 
         dataframe_paths_input_fingerprint({"source": str(p)})
         dataframe_paths_input_fingerprint({"source": str(p)})
         assert hash_calls.get(key) == 1
 
-        graph = _csv_graph(p)
+        graph = _parquet_graph(p)
         dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
         dataframe_graph_input_fingerprint(graph, target_node_id=None, source="test")
         assert hash_calls.get(key) == 1
@@ -601,9 +603,9 @@ class TestStatGatedFingerprintMemo:
         """Pinned semantics: mtime is digest material (like the sink path's
         ``_runtime_path_fingerprint``), so a touch recomputes even though
         the bytes are unchanged.  Deliberate: simplest correct stat-gate."""
-        p = tmp_path / "data.csv"
-        _write_csv(p, [1, 2])
-        graph = _csv_graph(p)
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [1, 2])
+        graph = _parquet_graph(p)
 
         execute_graph(graph)
         fp_before = _preview_cache.most_recent_key
@@ -619,16 +621,16 @@ class TestStatGatedFingerprintMemo:
         """Pinned semantics: a rewrite that restores both bytes and stat is
         below the stat gate's resolution and serves the cached entry —
         correct, because the bytes are identical."""
-        p = tmp_path / "data.csv"
-        _write_csv(p, [1, 2])
-        graph = _csv_graph(p)
+        p = tmp_path / "data.parquet"
+        _write_parquet(p, [1, 2])
+        graph = _parquet_graph(p)
         key = str(p.resolve())
 
         results1 = execute_graph(graph)
         fp_before = _preview_cache.most_recent_key
         stat = p.stat()
 
-        _write_csv(p, [1, 2])  # identical bytes
+        _write_parquet(p, [1, 2])  # identical bytes
         os.utime(p, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # restore stat exactly
 
         results2 = execute_graph(graph)

@@ -177,7 +177,17 @@ export function MlflowStatusBadge() {
 
 // ─── FileBrowser ──────────────────────────────────────────────────
 
-export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath?: string; onSelect: (path: string) => void; extensions?: string }) {
+export function FileBrowser({
+  currentPath,
+  onSelect,
+  extensions,
+  showSelectionSummary = true,
+}: {
+  currentPath?: string
+  onSelect: (path: string) => void
+  extensions?: string
+  showSelectionSummary?: boolean
+}) {
   const [dir, setDir] = useState(() => {
     if (!currentPath) return "."
     const lastSlash = currentPath.lastIndexOf("/")
@@ -238,7 +248,7 @@ export function FileBrowser({ currentPath, onSelect, extensions }: { currentPath
 
   return (
     <div>
-      {selectedPath && (
+      {showSelectionSummary && selectedPath && (
         <div className="mb-2 px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'var(--success-soft)', border: '1px solid var(--success-border)' }}>
           <Check size={14} style={{ color: 'var(--success)' }} className="shrink-0" />
           <span className="text-xs font-mono truncate" style={{ color: 'var(--success-hover)' }}>{selectedPath}</span>

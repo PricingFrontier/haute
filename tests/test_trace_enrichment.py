@@ -29,7 +29,7 @@ from haute.trace import (
     execute_trace,
 )
 from tests.conftest import make_edge as _edge
-from tests.conftest import make_file_input_config
+from tests.conftest import make_file_input_config, make_ready_file_input_config
 from tests.conftest import make_graph as _g
 from tests.conftest import make_source_node as _source_node
 from tests.conftest import make_transform_node as _transform_node
@@ -1668,7 +1668,7 @@ class TestLiveSwitch:
                     data=NodeData(
                         label="live_src",
                         nodeType="dataInput",
-                        config=make_file_input_config(p_live),
+                        config=make_ready_file_input_config(p_live),
                     ),
                 ),
                 GraphNode(
@@ -1676,7 +1676,7 @@ class TestLiveSwitch:
                     data=NodeData(
                         label="batch_src",
                         nodeType="dataInput",
-                        config=make_file_input_config(p_batch),
+                        config=make_ready_file_input_config(p_batch),
                     ),
                 ),
                 GraphNode(
@@ -1750,19 +1750,19 @@ class TestLiveSwitch:
                 GraphNode(
                     id="a",
                     data=NodeData(
-                        label="a", nodeType="dataInput", config=make_file_input_config(p_a)
+                        label="a", nodeType="dataInput", config=make_ready_file_input_config(p_a)
                     ),
                 ),
                 GraphNode(
                     id="b",
                     data=NodeData(
-                        label="b", nodeType="dataInput", config=make_file_input_config(p_b)
+                        label="b", nodeType="dataInput", config=make_ready_file_input_config(p_b)
                     ),
                 ),
                 GraphNode(
                     id="c",
                     data=NodeData(
-                        label="c", nodeType="dataInput", config=make_file_input_config(p_c)
+                        label="c", nodeType="dataInput", config=make_ready_file_input_config(p_c)
                     ),
                 ),
                 GraphNode(
