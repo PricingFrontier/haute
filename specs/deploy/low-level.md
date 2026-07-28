@@ -90,9 +90,9 @@
    canonical `<node>__feature_contract.json` key and override an adjacent downloaded
    contract. MLflow artifact identifiers reject absolute and `..`-containing forms before
    download.
-   A retained file-backed Parquet input has canonical `cacheMode = "direct"` and bundles
-   its validated source file. Every other retained Data Input has canonical
-   `cacheMode = "snapshot"`; its ready snapshot acquires a `SourceCacheStore.lease()` that
+   A retained file-backed Parquet input is derived direct (`data_input_is_direct`) and
+   bundles its validated source file. Every other retained Data Input is snapshot-backed;
+   its ready snapshot acquires a `SourceCacheStore.lease()` that
    is retained by `ResolvedDeploy` until dispatch completes, and records provider,
    identity, generation, signature, checksum, row/column counts, and creation time as
    manifest provenance.
@@ -211,7 +211,7 @@ directory before re-raising.
    directly); retained direct-Parquet `dataInput` nodes (remap their configured path to the
    bundled source); retained snapshot-backed `dataInput` nodes with a bundled
    `node_id__snapshot.parquet` (scan the leased parquet through a deploy-only interception
-   path while retaining the canonical `cacheMode = "snapshot"` config, user code,
+   path while retaining the canonical config unchanged, user code,
    preamble namespace, and executor post-processing);
    `externalFile` with a remapped bundled path (run its user code against the
    loaded object, or passthrough if no code); `optimiserApply` either file-based-remapped

@@ -850,7 +850,7 @@ class TestParserConfigLoadWarning:
         config_dir.mkdir(parents=True)
         (config_dir / "src.json").write_text(
             '{"inputType":"file","format":"parquet","mode":"scan",'
-            '"cacheMode":"direct","path":"d.parquet","arguments":{}}'
+            '"path":"d.parquet","arguments":{}}'
         )
         (pipeline_dir / "main.py").write_text(
             "import haute\nimport polars as pl\n\n"

@@ -20,11 +20,11 @@ from haute.executor import (
     write_data_output,
 )
 from tests.conftest import (
-    make_edge as _edge,
-)
-from tests.conftest import (
     build_test_input_snapshot,
     make_ready_file_input_config,
+)
+from tests.conftest import (
+    make_edge as _edge,
 )
 from tests.conftest import (
     make_graph as _g,
@@ -316,7 +316,6 @@ class TestBuildNodeFn:
                     "nodeType": "dataInput",
                     "config": {
                         "inputType": "databricks",
-                        "cacheMode": "snapshot",
                         "http_path": "/sql/1.0/warehouses/test",
                         "table": "cat.sch.tbl",
                         "arguments": {},
@@ -339,7 +338,9 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": make_ready_file_input_config(str(p), code="df = df.filter(pl.col('x') > 1)"),
+                    "config": make_ready_file_input_config(
+                        str(p), code="df = df.filter(pl.col('x') > 1)"
+                    ),
                 },
             }
         )
@@ -485,7 +486,9 @@ class TestBuildNodeFn:
                 "data": {
                     "label": "src",
                     "nodeType": "dataInput",
-                    "config": make_ready_file_input_config(str(p), column_renames={"raw_premium": "premium"}),
+                    "config": make_ready_file_input_config(
+                        str(p), column_renames={"raw_premium": "premium"}
+                    ),
                 },
             }
         )
@@ -1131,7 +1134,9 @@ class TestDataSourceUserCode:
                             "data": {
                                 "label": "src",
                                 "nodeType": "dataInput",
-                                "config": make_ready_file_input_config(str(p), code="df = df.limit(10)"),
+                                "config": make_ready_file_input_config(
+                                    str(p), code="df = df.limit(10)"
+                                ),
                             },
                         }
                     ),
@@ -1158,7 +1163,9 @@ class TestDataSourceUserCode:
                             "data": {
                                 "label": "src",
                                 "nodeType": "dataInput",
-                                "config": make_ready_file_input_config(str(src), code="df = df.limit(10)"),
+                                "config": make_ready_file_input_config(
+                                    str(src), code="df = df.limit(10)"
+                                ),
                             },
                         }
                     ),

@@ -352,7 +352,6 @@ describe("DataInputEditor", () => {
   it("scans Parquet directly without one-option mode or cache controls", async () => {
     renderEditor({
       inputType: "file",
-      cacheMode: "direct",
       format: "parquet",
       mode: "scan",
       path: "quotes.parquet",
@@ -374,7 +373,6 @@ describe("DataInputEditor", () => {
   it("uses the capability schema requirement and preserves other arguments when adopting it", async () => {
     const { onUpdate } = renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -395,7 +393,7 @@ describe("DataInputEditor", () => {
     })
   })
 
-  it("rejects a non-snapshot config without migrating it", async () => {
+  it("tolerates a leftover cacheMode key and never migrates it", async () => {
     const onUpdate = vi.fn(() => ({ ok: true as const }))
     renderEditor({
       inputType: "file",
@@ -407,19 +405,15 @@ describe("DataInputEditor", () => {
       code: "",
     }, onUpdate)
 
-    expect(
-      await screen.findByText("Data Input requires cache mode snapshot."),
-    ).toBeInTheDocument()
-    expect(onUpdate).not.toHaveBeenCalledWith("cacheMode", "snapshot")
-    expect(screen.getByRole("button", { name: "Cache as Parquet" })).toBeDisabled()
-    expect(buildInputCache).not.toHaveBeenCalled()
+    expect(await screen.findByRole("button", { name: "Cache as Parquet" })).toBeEnabled()
+    expect(screen.queryByText(/Data Input requires cache mode/)).not.toBeInTheDocument()
+    expect(onUpdate).not.toHaveBeenCalledWith("cacheMode", expect.anything())
   })
 
   it("recovers a failed bounded-schema fetch without changing the path", async () => {
     vi.mocked(fetchSchema).mockRejectedValueOnce(new Error("broken CSV"))
     renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -459,17 +453,15 @@ describe("DataInputEditor", () => {
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df",
       inputType: "database",
-      cacheMode: "snapshot",
       format: "database",
       arguments: {},
       query: "",
     })
   })
 
-  it("preserves provider fields and cache mode when the format changes", async () => {
+  it("preserves provider fields when the format changes", async () => {
     const { onReplaceConfig } = renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -484,7 +476,6 @@ describe("DataInputEditor", () => {
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df.filter(pl.col('x') > 0)",
       inputType: "file",
-      cacheMode: "snapshot",
       format: "json",
       mode: "read",
       arguments: {},
@@ -492,10 +483,9 @@ describe("DataInputEditor", () => {
     })
   })
 
-  it("authors the strict direct policy when switching to Parquet", async () => {
+  it("switches to Parquet without authoring a cache-mode field", async () => {
     const { onReplaceConfig } = renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "csv",
       mode: "scan",
       path: "quotes.csv",
@@ -510,7 +500,6 @@ describe("DataInputEditor", () => {
     expect(onReplaceConfig).toHaveBeenCalledWith({
       code: "df",
       inputType: "file",
-      cacheMode: "direct",
       format: "parquet",
       mode: "scan",
       arguments: {},
@@ -521,7 +510,6 @@ describe("DataInputEditor", () => {
   it("shows database cache controls and clears the other locator atomically", async () => {
     const { onUpdate } = renderEditor({
       inputType: "database",
-      cacheMode: "snapshot",
       format: "database",
       connection: "WAREHOUSE_URI",
       query: "select * from quotes",
@@ -544,7 +532,6 @@ describe("DataInputEditor", () => {
   it("keeps the Databricks picker separate from Polars formats", async () => {
     renderEditor({
       inputType: "databricks",
-      cacheMode: "snapshot",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       arguments: {},
@@ -560,7 +547,6 @@ describe("DataInputEditor", () => {
   it("removes the optional Databricks SELECT clause when it is cleared", async () => {
     const config = {
       inputType: "databricks",
-      cacheMode: "snapshot",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       query: "SELECT id FROM quotes",
@@ -575,7 +561,6 @@ describe("DataInputEditor", () => {
 
     expect(onReplaceConfig).toHaveBeenCalledWith({
       inputType: "databricks",
-      cacheMode: "snapshot",
       http_path: "/sql/1.0/warehouses/abc",
       table: "catalog.schema.quotes",
       arguments: {},
@@ -586,7 +571,6 @@ describe("DataInputEditor", () => {
   it("validates inline records and commits one parsed update on blur", async () => {
     const { onUpdate } = renderEditor({
       inputType: "inline",
-      cacheMode: "snapshot",
       format: "records",
       mode: "read",
       records: [],
@@ -610,7 +594,6 @@ describe("DataInputEditor", () => {
   it("uses the admitted-eager profile for eager-only snapshot builds", async () => {
     renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "json",
       mode: "read",
       path: "quotes.json",
@@ -638,7 +621,6 @@ describe("DataInputEditor", () => {
   it("keeps unavailable formats visible but disables snapshot build", async () => {
     renderEditor({
       inputType: "file",
-      cacheMode: "snapshot",
       format: "excel",
       mode: "read",
       path: "quotes.xlsx",

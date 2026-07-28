@@ -31,16 +31,12 @@ function snapshotConfigs(nodes: Node[]): Record<string, unknown>[] {
       return []
     }
     const config = data.config as Record<string, unknown>
+    // Mirrors the backend derivation (data_input_is_direct): a file-backed
+    // Parquet scan reads directly; every other input executes from a snapshot.
     const directParquet =
       config.inputType === "file" &&
       config.format === "parquet" &&
       (config.mode === undefined || config.mode === "scan")
-    const expectedCacheMode = directParquet ? "direct" : "snapshot"
-    if (config.cacheMode !== expectedCacheMode) {
-      throw new Error(
-        `Data Input node ${JSON.stringify(node.id)} requires cacheMode ${JSON.stringify(expectedCacheMode)}.`,
-      )
-    }
     if (directParquet) return []
     return [config]
   })

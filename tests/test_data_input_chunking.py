@@ -79,7 +79,6 @@ def test_direct_parquet_input_is_chunked_without_a_snapshot(
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": str(path),
         "arguments": {},
     }
@@ -100,7 +99,6 @@ def test_snapshot_ndjson_input_and_row_local_editor_code_are_chunked(
     config: dict[str, object] = {
         "inputType": "file",
         "format": "ndjson",
-        "cacheMode": "snapshot",
         "path": str(path),
         "code": (
             "df = df.filter(pl.col('id') % 2 == 0)"
@@ -134,7 +132,6 @@ def test_cached_eager_only_format_runs_from_published_parquet_snapshot(
         "inputType": "file",
         "format": "json",
         "mode": "read",
-        "cacheMode": "snapshot",
         "path": str(path),
     }
     build_input_snapshot(
@@ -157,6 +154,7 @@ def test_noncanonical_direct_format_is_rejected_before_execution(tmp_path: Path)
         "inputType": "file",
         "format": "json",
         "mode": "read",
+        # The removed stored field: any value is rejected before execution.
         "cacheMode": "direct",
         "path": str(tmp_path / "input.json"),
     }

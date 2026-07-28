@@ -53,9 +53,10 @@ relationship is recorded in `specs/ownership.toml`.
    count, never raw record values. Relative file/lakehouse locators and raw SQLite URIs are
    anchored to the configured pipeline directory consistently for build, execution
    fingerprinting, and RAM metadata inspection.
-3. File-backed Parquet with effective mode `scan` requires `cacheMode: "direct"`.
-   Every other canonical Data Input requires `cacheMode: "snapshot"`. Validation rejects
-   mismatches; it does not normalise or migrate them.
+3. `data_input_is_direct()` derives the execution mode: file-backed Parquet with
+   effective mode `scan` is direct; every other canonical Data Input is snapshot-backed.
+   No cache-mode field is stored — validation rejects a config still carrying the removed
+   `cacheMode` field as inactive; nothing is normalised or migrated.
 4. Direct Parquet resolution anchors the configured path and returns the registry's
    `scan_parquet` lazy scan without creating or consulting a source snapshot.
 5. Snapshot creation calls `build_input_snapshot()`, selects a provider builder, creates a

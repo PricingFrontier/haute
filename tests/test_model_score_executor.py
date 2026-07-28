@@ -11,7 +11,11 @@ import pytest
 from haute._mlflow_io import ScoringModel, _artifact_cache_path
 from haute.executor import _build_node_fn, execute_graph
 from haute.graph_utils import GraphNode, NodeData, PipelineGraph
-from tests.conftest import make_edge, make_file_input_config, make_graph, make_ready_file_input_config
+from tests.conftest import (
+    make_edge,
+    make_graph,
+    make_ready_file_input_config,
+)
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 

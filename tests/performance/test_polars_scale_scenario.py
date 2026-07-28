@@ -51,7 +51,6 @@ def _snapshot_parquet_input(path: Path, **extra: Any) -> dict[str, Any]:
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": str(path),
         "arguments": {},
         **extra,

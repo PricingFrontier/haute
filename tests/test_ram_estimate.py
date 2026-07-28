@@ -10,6 +10,7 @@ import polars as pl
 import pytest
 from structlog.testing import capture_logs
 
+from haute._polars_io_registry import data_input_is_direct
 from haute._polars_utils import read_parquet_metadata
 from haute._ram_estimate import (
     MaterialisationEstimate,
@@ -61,7 +62,6 @@ def _file_input_config(path: object, *, format: str | None = None) -> dict[str, 
         "inputType": "file",
         "format": format,
         "mode": "scan",
-        "cacheMode": "direct" if format == "parquet" else "snapshot",
         "path": path_string,
         "arguments": {},
     }
@@ -73,7 +73,7 @@ def _ready_file_input_config(
     format: str | None = None,
 ) -> dict[str, object]:
     config = _file_input_config(path, format=format)
-    if config["cacheMode"] == "snapshot":
+    if not data_input_is_direct(config):
         build_test_input_snapshot(config)
     return config
 
@@ -81,7 +81,6 @@ def _ready_file_input_config(
 def _databricks_input_config(table: str) -> dict[str, object]:
     return {
         "inputType": "databricks",
-        "cacheMode": "snapshot",
         "http_path": "/sql/1.0/warehouses/test",
         "table": table,
         "arguments": {},

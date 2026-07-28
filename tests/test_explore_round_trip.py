@@ -40,7 +40,6 @@ def _explore_graph(overview: dict) -> PipelineGraph:
                         "inputType": "file",
                         "format": "parquet",
                         "mode": "scan",
-                        "cacheMode": "direct",
                         "path": "data.parquet",
                         "arguments": {},
                     },

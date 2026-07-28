@@ -38,8 +38,7 @@ from haute.routes._optimiser_service import (
     _optimiser_solve_required_columns_by_node,
 )
 from haute.routes.optimiser import _build_artifact_payload
-from tests.conftest import make_edge, make_graph
-from tests.conftest import build_test_input_snapshot
+from tests.conftest import build_test_input_snapshot, make_edge, make_graph
 from tests.optimiser_fixtures import frontier_result as _frontier_result
 from tests.optimiser_fixtures import poll_frontier_until_done as _poll_frontier_until_done
 
@@ -107,7 +106,6 @@ def _snapshot_parquet_data_input(
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": path,
         "arguments": {},
         **extra,
@@ -115,8 +113,6 @@ def _snapshot_parquet_data_input(
     if ready:
         build_test_input_snapshot(config)
     return config
-
-
 
 
 @contextmanager

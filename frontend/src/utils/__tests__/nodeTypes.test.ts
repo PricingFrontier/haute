@@ -8,7 +8,7 @@ describe("canonical data IO node types", () => {
   })
 
   it("uses complete canonical defaults", () => {
-    expect(NODE_TYPE_META[NODE_TYPES.DATA_INPUT].defaultConfig).toEqual({ inputType: "file", cacheMode: "direct", format: "parquet", mode: "scan", path: "", arguments: {}, code: "" })
+    expect(NODE_TYPE_META[NODE_TYPES.DATA_INPUT].defaultConfig).toEqual({ inputType: "file", format: "parquet", mode: "scan", path: "", arguments: {}, code: "" })
     expect(NODE_TYPE_META[NODE_TYPES.DATA_OUTPUT].defaultConfig).toEqual({ outputType: "file", format: "parquet", mode: "sink", path: "", arguments: {} })
   })
 

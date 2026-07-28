@@ -336,8 +336,29 @@ def _reject_inactive_fields(
             raise PolarsIoConfigError(f"Field {field!r} is not valid for {discriminant} {value!r}.")
 
 
+def data_input_is_direct(config: Mapping[str, Any]) -> bool:
+    """THE derivation of a Data Input's execution mode — never stored in config.
+
+    A file-backed Parquet scan already has the lazy, schema-bearing execution
+    shape a snapshot would duplicate, so it is read directly from its
+    configured source. Every other canonical input executes from a published
+    snapshot generation. An absent ``mode`` means the format's default, which
+    for Parquet is ``scan``.
+    """
+    return (
+        config.get("inputType") == "file"
+        and config.get("format") == "parquet"
+        and config.get("mode") in (None, "scan")
+    )
+
+
 def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Strictly validate one persisted canonical ``dataInput`` config."""
+    """Strictly validate one persisted canonical ``dataInput`` config.
+
+    The removed ``cacheMode`` field has no compatibility path: direct-versus-
+    snapshot execution is derived by :func:`data_input_is_direct`, so a config
+    still carrying the field is rejected as an inactive field.
+    """
     result = dict(config)
     input_type = result.get("inputType")
     if input_type not in {"file", "database", "lakehouse", "databricks", "inline"}:
@@ -346,21 +367,15 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
     common = {
         "inputType",
         "format",
-        "cacheMode",
         "arguments",
         "code",
     } | _IO_UNIVERSAL_KEYS
     polars_common = common | {"mode"}
     if input_type == "databricks":
-        if result.get("cacheMode") != "snapshot":
-            raise PolarsIoConfigError(
-                "Data Input requires cacheMode 'snapshot' for this input configuration."
-            )
         _reject_inactive_fields(
             result,
             allowed={
                 "inputType",
-                "cacheMode",
                 "http_path",
                 "table",
                 "query",
@@ -401,17 +416,6 @@ def validate_data_input_config(config: Mapping[str, Any]) -> dict[str, Any]:
             f"Format {fmt.name!r} belongs to group {group!r}, not inputType {input_type!r}."
         )
     mode = resolve_input_mode(fmt, result) if input_type != "database" else None
-    expected_cache_mode = (
-        "direct"
-        if input_type == "file" and fmt.name == "parquet" and mode == "scan"
-        else "snapshot"
-    )
-    if result.get("cacheMode") != expected_cache_mode:
-        if expected_cache_mode == "direct":
-            raise PolarsIoConfigError("Data Input file/parquet scan requires cacheMode 'direct'.")
-        raise PolarsIoConfigError(
-            "Data Input requires cacheMode 'snapshot' for this input configuration."
-        )
     if input_type == "file":
         _reject_inactive_fields(
             result, allowed=polars_common | {"path"}, discriminant="inputType", value=input_type

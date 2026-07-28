@@ -271,7 +271,6 @@ def make_file_input_config(path: object, **extra: object) -> dict[str, object]:
         "inputType": "file",
         "format": format_name,
         "mode": mode,
-        "cacheMode": "direct" if format_name == "parquet" and mode == "scan" else "snapshot",
         "path": path_text,
         "arguments": {},
         **extra,
@@ -287,9 +286,10 @@ def build_test_input_snapshot(
     """Prepare a runtime test input, building only snapshot-backed sources."""
     from haute._builders import _configured_pipeline_dir
     from haute._input_providers import build_input_snapshot
+    from haute._polars_io_registry import data_input_is_direct
     from haute._source_cache import SourceCacheStore
 
-    if config.get("cacheMode") == "direct":
+    if data_input_is_direct(config):
         return
     build_input_snapshot(
         config,
@@ -301,8 +301,10 @@ def build_test_input_snapshot(
 
 def make_ready_file_input_config(path: object, **extra: object) -> dict[str, object]:
     """Build and return a canonical file input config ready for runtime use."""
+    from haute._polars_io_registry import data_input_is_direct
+
     config = make_file_input_config(path, **extra)
-    if config["cacheMode"] == "snapshot":
+    if not data_input_is_direct(config):
         build_test_input_snapshot(config)
     return config
 
@@ -398,7 +400,6 @@ def write_data_input_config(
             "inputType": "file",
             "format": format_name,
             "mode": mode,
-            "cacheMode": "direct" if format_name == "parquet" and mode == "scan" else "snapshot",
             "path": path,
             "arguments": {},
         },

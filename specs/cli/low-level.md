@@ -73,7 +73,8 @@ writes `.env.example`, writes starter tests, writes CI workflow files for the ch
 (pruning a *different* provider's stale files first on `--force`), installs a pre-commit hook into
 `.githooks/` and — if inside a git repo — `.git/hooks/`, and appends `.gitignore` guard entries via
 `haute._gitignore_guard.ensure_gitignore_guards`. A pre-existing root `main.py` is deleted and
-reported so the configured `rating/main.py` is unambiguous. The generated pipeline declares only
+reported: `uv init` recreates that placeholder whenever it runs and the project's real entry
+point is `rating/main.py`, so the root file is treated as a tooling artifact, not user content. The generated pipeline declares only
 `haute.Pipeline(name)` and therefore parses with zero nodes; its starter test checks that parse and
 name contract without requiring execution data. Init creates neither `prompts/` nor node sidecars.
 

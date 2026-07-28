@@ -30,10 +30,11 @@ to [server API](../server-api/high-level.md).
 
 ## Behaviour
 
-`dataInput` configurations select exactly one provider. File-backed Parquet in scan mode
-requires `cacheMode: "direct"`; every other file format and every database, lakehouse,
-Databricks, or inline input requires `cacheMode: "snapshot"`. These are strict canonical
-combinations, not migration aliases: a mismatched cache mode is invalid. Inline records
+`dataInput` configurations select exactly one provider. There is no stored cache-mode
+field: `data_input_is_direct` derives the execution mode, so a file-backed Parquet scan
+reads directly and every other file format and every database, lakehouse, Databricks, or
+inline input is snapshot-backed. A config still carrying the removed `cacheMode` field is
+rejected as an inactive field, never migrated. Inline records
 use a bounded snapshot build whose identity contains a digest of the logical records
 rather than their raw values. `dataOutput` configurations select a registered file,
 lakehouse, or database sink. Unknown fields, unsupported arguments, unavailable engines,
@@ -49,7 +50,8 @@ credential-name policy plus resolved in-process secret values before logging.
 Snapshot identity includes source semantics: provider, canonical locator, validated query,
 format/mode, and source arguments that can affect returned rows or schema. Databricks
 `batch_size` is excluded because it changes fetch partitioning, not logical source data.
-`code` and `cacheMode` are excluded because they do not change the acquired source bytes.
+`code` is excluded because it does not change the acquired source bytes; the derived
+direct-versus-snapshot execution mode is not part of the config at all.
 
 A snapshot build writes a unique staging directory, validates the Parquet artifact and
 metadata, admits it against byte/count quotas, atomically publishes an immutable generation,
@@ -68,8 +70,9 @@ against the store byte quota. Publication and leases are coordinated within one 
 while published immutable generations may be read by another process.
 
 Registry input capabilities advertise `scan` whenever a format has a scanner;
-reader-only formats advertise `read`, and declare the one canonical cache mode for that
-provider/format. Stored `read` configurations remain valid and executable even when the
+reader-only formats advertise `read`, and declare the derived execution mode
+(`cache_mode`) for that provider/format so the editor knows whether to render the cache
+control. Stored `read` configurations remain valid and executable even when the
 current capability payload advertises only `scan`.
 
 SQLite snapshots open an existing database in read-only URI mode and start a read

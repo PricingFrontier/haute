@@ -197,13 +197,13 @@ def _collect_static_data_input(
     other Data Input bundles a leased snapshot generation, keeping its exact
     verified parquet and metadata files alive during bundle construction.
     """
-    from haute._polars_io_registry import validate_data_input_config
+    from haute._polars_io_registry import data_input_is_direct, validate_data_input_config
     from haute._source_cache import SourceCacheCorruptError
     from haute.errors import DeployError
 
     try:
         validated = validate_data_input_config(config)
-        if validated["cacheMode"] == "direct":
+        if data_input_is_direct(validated):
             source_path = _resolve_direct_parquet_source(
                 node_id,
                 validated,
@@ -254,10 +254,10 @@ def _resolve_direct_parquet_source(
     project_root: Path,
 ) -> Path:
     """Resolve and prove a canonical direct Parquet source is readable."""
-    from haute._polars_io_registry import validate_data_input_config
+    from haute._polars_io_registry import data_input_is_direct, validate_data_input_config
 
     validated = validate_data_input_config(config)
-    if validated["cacheMode"] != "direct":
+    if not data_input_is_direct(validated):
         raise DeployError(
             f"Data Input node {node_id!r} has unsupported direct deployment configuration.",
             node_id=node_id,

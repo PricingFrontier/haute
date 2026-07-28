@@ -22,7 +22,6 @@ const INPUT_COMMON_KEYS = [
 const DATABRICKS_KEYS = new Set([
   ...INPUT_COMMON_KEYS,
   "inputType",
-  "cacheMode",
   "http_path",
   "table",
   "query",
@@ -70,7 +69,6 @@ function inputBranchConfig(
   return {
     ...retainedCommonConfig(config),
     inputType: group.name,
-    cacheMode: capability?.cache_mode ?? group.cache_modes[0],
     ...(format ? { format: format.name } : {}),
     ...(capability?.modes[0] ? { mode: capability.modes[0] } : {}),
     arguments: {},
@@ -176,15 +174,10 @@ export default function DataInputEditor({
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
   const group = groups.find((candidate) => candidate.name === config.inputType)
   const format = group?.formats.find((candidate) => candidate.name === config.format)
-  const expectedCacheMode =
-    format?.input?.cache_mode ??
-    (group?.name === "databricks" ? "snapshot" : undefined)
-  const cacheModeConfigured =
-    expectedCacheMode !== undefined && config.cacheMode === expectedCacheMode
-  const requiresSnapshot = expectedCacheMode === "snapshot"
+  const requiresSnapshot =
+    format?.input?.cache_mode === "snapshot" || group?.name === "databricks"
   const requiredReady =
     group !== undefined &&
-    cacheModeConfigured &&
     providerFieldsReady(group, config) &&
     formatAndModeReady(group, format, config)
   const databricksErrors =
@@ -226,20 +219,6 @@ export default function DataInputEditor({
           }}
         >
           Unknown Data Input provider {JSON.stringify(config.inputType)}.
-        </section>
-      )}
-
-      {group && expectedCacheMode !== undefined && !cacheModeConfigured && (
-        <section
-          aria-label="Configuration errors"
-          className="rounded-lg p-2 text-[11px]"
-          style={{
-            background: "var(--danger-soft)",
-            border: "1px solid var(--danger-border)",
-            color: "var(--danger-text)",
-          }}
-        >
-          Data Input requires cache mode {expectedCacheMode}.
         </section>
       )}
 

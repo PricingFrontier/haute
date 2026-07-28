@@ -38,7 +38,6 @@ def _node(node_id: str, node_type: str, config: dict[str, object] | None = None)
             **config,
             "inputType": "file",
             "format": formats.get(suffix, suffix),
-            "cacheMode": "snapshot",
         }
     return {
         "id": node_id,
@@ -537,7 +536,8 @@ def test_chunk_plan_requires_a_row_or_byte_budget(tmp_path: Path) -> None:
         )
 
 
-def test_chunk_plan_rejects_json_sources_for_bounded_chunking():
+def test_chunk_plan_accepts_snapshot_backed_json_sources():
+    """JSON inputs are snapshot-backed, so their canonical chunk form is a Parquet scan."""
     graph = make_graph(
         {
             "nodes": [
@@ -548,15 +548,17 @@ def test_chunk_plan_rejects_json_sources_for_bounded_chunking():
         }
     )
 
-    with pytest.raises(ChunkPlanUnsupportedError, match="bounded lazy scan"):
-        chunk_plan(
-            ChunkPlanRequest(
-                graph=graph,
-                target_node_id="out",
-                chunk_size=10,
-                required_columns_by_node={"out": {"quote_id"}},
-            )
+    plan = chunk_plan(
+        ChunkPlanRequest(
+            graph=graph,
+            target_node_id="out",
+            chunk_size=10,
+            required_columns_by_node={"out": {"quote_id"}},
         )
+    )
+
+    assert plan.source_node_id == "source"
+    assert plan.chunk_size == 10
 
 
 def test_chunk_plan_requires_explicit_model_score_batch_reuse(tmp_path):

@@ -84,7 +84,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -122,7 +121,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -154,7 +152,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -178,7 +175,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -251,7 +247,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -299,7 +294,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -343,7 +337,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -404,7 +397,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -445,7 +437,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -481,7 +472,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -727,7 +717,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -779,7 +768,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -812,7 +800,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -846,7 +833,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -933,7 +919,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -970,7 +955,6 @@ class TestExecuteSinkDataOutput:
                     {
                         "inputType": "file",
                         "format": "parquet",
-                        "cacheMode": "direct",
                         "path": str(src_path),
                     },
                 ),
@@ -1198,7 +1182,6 @@ class TestDataInputBuilder:
             {
                 "inputType": "file",
                 "format": "parquet",
-                "cacheMode": "direct",
                 "path": str(path),
             }
         )
@@ -1213,7 +1196,6 @@ class TestDataInputBuilder:
             {
                 "inputType": "file",
                 "format": "parquet",
-                "cacheMode": "direct",
                 "path": str(path),
                 "code": "df = df.filter(pl.col('id') > 1).select('id')",
             }
@@ -1231,7 +1213,6 @@ class TestDataInputBuilder:
                 "inputType": "file",
                 "format": "parquet",
                 "mode": "scan",
-                "cacheMode": "direct",
                 "path": str(path),
                 "arguments": {},
             },
@@ -1261,7 +1242,6 @@ class TestCodegenAndParseRoundTrip:
             {
                 "inputType": "file",
                 "format": "csv",
-                "cacheMode": "snapshot",
                 "path": "data/q.csv",
                 "code": "df = df.filter(pl.col('id') > 0)",
             },
@@ -1293,7 +1273,6 @@ class TestCodegenAndParseRoundTrip:
         din_config = {
             "inputType": "file",
             "format": "csv",
-            "cacheMode": "snapshot",
             "path": "data/q.csv",
             "arguments": {"separator": ";", "schema_overrides": {"id": "int64"}},
         }
@@ -1354,7 +1333,6 @@ class TestSidecarPersistence:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "snapshot",
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
             "_editorOnly": {"open": True},
@@ -1364,7 +1342,6 @@ class TestSidecarPersistence:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "snapshot",
             "path": "data/q.csv",
             "arguments": {"separator": ";"},
         }
@@ -1373,7 +1350,6 @@ class TestSidecarPersistence:
         config = {
             "inputType": "inline",
             "format": "records",
-            "cacheMode": "snapshot",
             "records": [{"a": 1, "s": {"k": "v"}}],
             "arguments": {
                 "schema": {"a": "int64", "s": {"type": "Struct", "fields": {"k": "str"}}}

@@ -207,7 +207,6 @@ def _make_datasource_graph(node_id: str, raw_path: str):
                             "inputType": "file",
                             "format": "parquet",
                             "mode": "scan",
-                            "cacheMode": "direct",
                             "path": raw_path,
                             "arguments": {},
                         },
@@ -459,7 +458,6 @@ class TestSnapshotGenerationLease:
             "inputType": "inline",
             "format": "records",
             "mode": "read",
-            "cacheMode": "snapshot",
             "records": [{"driver": "Ada"}],
             "arguments": {},
         }
@@ -494,7 +492,6 @@ class TestSnapshotGenerationLease:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "snapshot",
             "path": "drivers.csv",
             "arguments": {"schema": {"driver": "String"}},
         }

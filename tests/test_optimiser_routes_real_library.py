@@ -39,7 +39,11 @@ from haute.routes._optimiser_limits import (
     FrontierComputeBudgetExceededError,
     enforce_frontier_compute_budget,
 )
-from tests.conftest import make_edge, make_file_input_config, make_graph, make_ready_file_input_config
+from tests.conftest import (
+    make_edge,
+    make_graph,
+    make_ready_file_input_config,
+)
 from tests.optimiser_fixtures import run_frontier_and_wait
 
 if TYPE_CHECKING:

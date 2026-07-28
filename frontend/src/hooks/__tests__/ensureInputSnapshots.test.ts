@@ -37,7 +37,6 @@ function dataInput(id: string): Node {
         format: "csv",
         mode: "scan",
         path: `${id}.csv`,
-        cacheMode: "snapshot",
       },
     },
   }
@@ -106,7 +105,6 @@ describe("ensureInputSnapshots", () => {
     expect(buildInputCache).toHaveBeenCalledWith({
       schema_version: 1,
       config: expect.objectContaining({
-        cacheMode: "snapshot",
         path: "quotes.csv",
       }),
       refresh: false,
@@ -180,7 +178,7 @@ describe("ensureInputSnapshots", () => {
       position: { x: 0, y: 0 },
       data: {
         nodeType: NODE_TYPES.POLARS,
-        config: { cacheMode: "snapshot" },
+        config: {},
       },
     }
 
@@ -197,7 +195,6 @@ describe("ensureInputSnapshots", () => {
       format: "parquet",
       mode: "scan",
       path: "direct.parquet",
-      cacheMode: "direct",
     }
 
     await ensureInputSnapshots([direct])
@@ -206,34 +203,19 @@ describe("ensureInputSnapshots", () => {
     expect(buildInputCache).not.toHaveBeenCalled()
   })
 
-  it("rejects a non-canonical direct Data Input instead of ignoring it", async () => {
-    const invalid = dataInput("invalid")
-    invalid.data.config = {
-      ...(invalid.data.config as Record<string, unknown>),
-      cacheMode: "direct",
-    }
-
-    await expect(ensureInputSnapshots([invalid])).rejects.toThrow(
-      'Data Input node "invalid" requires cacheMode "snapshot".',
-    )
-    expect(getInputCacheStatus).not.toHaveBeenCalled()
-    expect(buildInputCache).not.toHaveBeenCalled()
-  })
-
-  it("rejects snapshot mode for Parquet instead of migrating it", async () => {
-    const invalid = dataInput("invalid")
-    invalid.data.config = {
+  it("treats Parquet in read mode as snapshot-backed", async () => {
+    const readMode = dataInput("read-mode")
+    readMode.data.config = {
       inputType: "file",
       format: "parquet",
-      mode: "scan",
-      path: "invalid.parquet",
-      cacheMode: "snapshot",
+      mode: "read",
+      path: "read-mode.parquet",
     }
+    vi.mocked(getInputCacheStatus).mockResolvedValueOnce(snapshot("ready"))
 
-    await expect(ensureInputSnapshots([invalid])).rejects.toThrow(
-      'Data Input node "invalid" requires cacheMode "direct".',
-    )
-    expect(getInputCacheStatus).not.toHaveBeenCalled()
+    await ensureInputSnapshots([readMode])
+
+    expect(getInputCacheStatus).toHaveBeenCalledTimes(1)
     expect(buildInputCache).not.toHaveBeenCalled()
   })
 })

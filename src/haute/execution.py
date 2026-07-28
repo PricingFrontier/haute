@@ -845,7 +845,9 @@ def _runtime_file_signature_paths(graph: PipelineGraph, node: GraphNode) -> dict
             return {"path": _runtime_path_from_graph_config(graph, raw_path)}
         return {}
     if node_type == NodeType.DATA_INPUT:
-        if config.get("cacheMode") == "direct":
+        from haute._polars_io_registry import data_input_is_direct
+
+        if data_input_is_direct(config):
             raw_path = config.get("path")
             if isinstance(raw_path, str) and raw_path:
                 return {"path": _runtime_path_from_graph_config(graph, raw_path)}

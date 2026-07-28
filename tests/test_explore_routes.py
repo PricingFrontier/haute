@@ -76,7 +76,6 @@ def _explore_graph(
                             "inputType": "file",
                             "format": "parquet",
                             "mode": "scan",
-                            "cacheMode": "direct",
                             "path": data_path,
                             "arguments": {},
                         },

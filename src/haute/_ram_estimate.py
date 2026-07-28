@@ -486,12 +486,18 @@ def _source_scoped_metadata(
     )
 
 
-def _data_input_parquet_artifact(config: Mapping[str, Any]) -> tuple[int, Path]:
-    """Return the row count and Parquet artifact used by a Data Input."""
+def _data_input_parquet_artifact(config: Mapping[str, Any]) -> tuple[int | None, Path]:
+    """Return the Parquet artifact used by a Data Input, with a free row count.
+
+    Snapshot generations carry their row count in verified metadata; a direct
+    Parquet source returns ``None`` so callers touch the footer only when they
+    actually need the count — each caller reads source metadata at most once.
+    """
     from haute._builders import _configured_pipeline_dir
     from haute._input_providers import source_cache_identity
     from haute._polars_io_registry import (
         anchor_config_source_path,
+        data_input_is_direct,
         validate_data_input_config,
     )
     from haute._sandbox import _get_project_root
@@ -499,11 +505,9 @@ def _data_input_parquet_artifact(config: Mapping[str, Any]) -> tuple[int, Path]:
 
     base_dir = _configured_pipeline_dir()
     validated = validate_data_input_config(config)
-    if validated["cacheMode"] == "direct":
+    if data_input_is_direct(validated):
         anchored = anchor_config_source_path(validated, base_dir)
-        path = Path(str(anchored["path"]))
-        row_count, _ = _parquet_metadata(str(path))
-        return row_count, path
+        return None, Path(str(anchored["path"]))
 
     identity = source_cache_identity(
         validated,
@@ -534,7 +538,9 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
             return None
 
         if node_type == NodeType.DATA_INPUT:
-            row_count, _ = _data_input_parquet_artifact(config)
+            row_count, artifact_path = _data_input_parquet_artifact(config)
+            if row_count is None:
+                row_count, _ = _parquet_metadata(str(artifact_path))
             return row_count
     except (OSError, TypeError, ValueError) as exc:
         logger.warning("source_row_count_failed", node_id=node.id, error=str(exc))

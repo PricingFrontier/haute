@@ -295,11 +295,14 @@ def validate_deploy(resolved: ResolvedDeploy) -> None:
         if node.data.nodeType != NodeType.DATA_INPUT:
             continue
         try:
-            from haute._polars_io_registry import validate_data_input_config
+            from haute._polars_io_registry import (
+                data_input_is_direct,
+                validate_data_input_config,
+            )
             from haute._sandbox import _get_project_root
 
             config = validate_data_input_config(node.data.config)
-            if config["cacheMode"] == "direct":
+            if data_input_is_direct(config):
                 from haute.deploy._bundler import _resolve_direct_parquet_source
 
                 project_root = (

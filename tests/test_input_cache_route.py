@@ -17,7 +17,6 @@ def _file_config(path: str = "input.csv") -> dict[str, Any]:
         "inputType": "file",
         "format": "csv",
         "mode": "scan",
-        "cacheMode": "snapshot",
         "path": path,
         "arguments": {"schema": {"id": "int64", "value": "str"}},
     }
@@ -134,7 +133,6 @@ def test_cache_status_rejects_lakehouse_path_outside_project_root(
                 "inputType": "lakehouse",
                 "format": "delta",
                 "mode": "scan",
-                "cacheMode": "snapshot",
                 "path": "../outside-delta-table",
                 "arguments": {},
             },
@@ -163,7 +161,6 @@ def test_cache_status_rejects_raw_sqlite_paths_outside_project_root(
             "config": {
                 "inputType": "database",
                 "format": "database",
-                "cacheMode": "snapshot",
                 "uri": uri,
                 "query": "SELECT 1",
             },
@@ -580,7 +577,6 @@ def test_secret_bearing_config_is_rejected_without_echo(
             "config": {
                 "inputType": "database",
                 "format": "database",
-                "cacheMode": "snapshot",
                 "uri": "postgresql://alice:do-not-echo@db.example/pricing",
                 "query": "SELECT 1",
             },
@@ -603,7 +599,6 @@ def test_unsupported_database_scheme_is_rejected_before_job_creation(
             "config": {
                 "inputType": "database",
                 "format": "database",
-                "cacheMode": "snapshot",
                 "uri": "postgresql://db.example/pricing",
                 "query": "SELECT 1",
             },

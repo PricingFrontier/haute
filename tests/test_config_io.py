@@ -106,7 +106,6 @@ class TestSaveAndLoad:
             "inputType": "file",
             "format": "parquet",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data/input.parquet",
             "arguments": {},
         }
@@ -697,7 +696,6 @@ class TestLoadErrorProtection:
                 "inputType": "file",
                 "format": "parquet",
                 "mode": "scan",
-                "cacheMode": "direct",
                 "path": "data/real.parquet",
                 "arguments": {},
             },
@@ -749,7 +747,6 @@ class TestFindConfigByFuncName:
             "inputType": "file",
             "format": "parquet",
             "mode": "scan",
-            "cacheMode": "direct",
             "path": "data.parquet",
             "arguments": {},
         }

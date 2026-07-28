@@ -692,7 +692,6 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             node_config=("arguments", "records"),
             user_code=("code",),
             source_selection=(
-                "cacheMode",
                 "connection",
                 "format",
                 "http_path",

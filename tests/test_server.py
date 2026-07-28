@@ -33,7 +33,6 @@ def _file_input_config(path: str) -> dict:
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": path,
         "arguments": {},
     }

@@ -32,7 +32,6 @@ def test_file_snapshot_is_offline(
         "inputType": "file",
         "format": "csv",
         "mode": "scan",
-        "cacheMode": "snapshot",
         "path": "input.csv",
         "arguments": {"schema": {"id": "int64", "value": "str"}},
     }
@@ -59,7 +58,6 @@ def test_missing_snapshot_is_reported_as_a_config_error(tmp_path: Path) -> None:
         "inputType": "file",
         "format": "csv",
         "mode": "scan",
-        "cacheMode": "snapshot",
         "path": "input.csv",
         "arguments": {"schema": {"id": "int64"}},
     }
@@ -74,7 +72,6 @@ def test_direct_parquet_reads_the_anchored_source_without_a_snapshot(tmp_path: P
     config = {
         "inputType": "file",
         "format": "parquet",
-        "cacheMode": "direct",
         "path": "input.parquet",
     }
 
@@ -95,7 +92,6 @@ def test_eager_only_file_snapshot_requires_admitted_eager_profile(tmp_path: Path
         "inputType": "file",
         "format": "json",
         "mode": "read",
-        "cacheMode": "snapshot",
         "path": "input.json",
     }
     store = SourceCacheStore(tmp_path)
@@ -123,7 +119,6 @@ def test_inline_snapshot_builds_resolves_and_redacts_records(tmp_path: Path) -> 
     config = {
         "inputType": "inline",
         "format": "records",
-        "cacheMode": "snapshot",
         "records": [{"customer_secret": "top-secret-value", "id": 1}],
     }
     changed_records = {
@@ -156,7 +151,6 @@ def test_database_uses_bounded_sqlite_snapshot_and_cached_read_is_offline(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies ORDER BY id",
         "arguments": {"batch_size": 1},
@@ -185,7 +179,6 @@ def test_empty_database_query_publishes_schema_bearing_snapshot(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies",
     }
@@ -216,7 +209,6 @@ def test_database_snapshot_uses_one_declared_schema_across_batches(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "connection": "HAUTE_TEST_DATABASE_URL",
         "query": "SELECT id, value FROM policies ORDER BY id",
         "arguments": {"batch_size": 1},
@@ -237,7 +229,6 @@ def test_database_snapshot_rejects_missing_sqlite_without_creating_it(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT id FROM policies",
     }
@@ -259,7 +250,6 @@ def test_database_snapshot_uses_runtime_storage_class_for_datetime(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT occurred_at FROM events",
         "arguments": {"batch_size": 1},
@@ -284,7 +274,6 @@ def test_database_snapshot_rejects_incompatible_runtime_storage_classes_before_o
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT value FROM values_table",
         "arguments": {"batch_size": 1},
@@ -307,7 +296,6 @@ def test_empty_database_expression_fails_with_typed_schema_error(
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": f"sqlite:///{database.as_posix()}",
         "query": "SELECT value + 1 AS next_value FROM values_table",
     }
@@ -325,7 +313,6 @@ def test_raw_sqlite_uri_is_resolved_relative_to_pipeline_base(tmp_path: Path) ->
     config = {
         "inputType": "database",
         "format": "database",
-        "cacheMode": "snapshot",
         "uri": "sqlite:///pricing.sqlite",
         "query": "SELECT id FROM policies",
     }
@@ -342,12 +329,11 @@ def test_non_snapshot_execution_is_rejected_before_connector_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("HAUTE_TEST_DATABASE_URL", "sqlite:///does-not-matter.sqlite")
-    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'snapshot'"):
+    with pytest.raises(PolarsIoConfigError, match="input_snapshot_missing"):
         resolve_data_input(
             {
                 "inputType": "database",
                 "format": "database",
-                "cacheMode": "direct",
                 "connection": "HAUTE_TEST_DATABASE_URL",
                 "query": "SELECT 1",
             }
@@ -360,7 +346,6 @@ def test_databricks_identity_is_query_distinct_and_contains_no_resolved_secrets(
     monkeypatch.setenv("DATABRICKS_TOKEN", "top-secret-token")
     base = {
         "inputType": "databricks",
-        "cacheMode": "snapshot",
         "http_path": "/sql/1.0/warehouses/abc",
         "table": "main.pricing.policies",
     }
@@ -375,7 +360,6 @@ def test_databricks_identity_is_query_distinct_and_contains_no_resolved_secrets(
 def test_databricks_identity_excludes_fetch_batch_size() -> None:
     base = {
         "inputType": "databricks",
-        "cacheMode": "snapshot",
         "http_path": "/sql/1.0/warehouses/abc",
         "table": "main.pricing.policies",
     }
@@ -396,11 +380,11 @@ def test_identity_excludes_post_snapshot_code(tmp_path: Path) -> None:
         "arguments": {"schema": {"id": "int64"}},
     }
     head = source_cache_identity(
-        {**common, "cacheMode": "snapshot", "code": "df = df.head(1)"},
+        {**common, "code": "df = df.head(1)"},
         base_dir=tmp_path,
     )
     tail = source_cache_identity(
-        {**common, "cacheMode": "snapshot", "code": "df = df.tail(1)"},
+        {**common, "code": "df = df.tail(1)"},
         base_dir=tmp_path,
     )
     assert head.digest == tail.digest
@@ -415,7 +399,6 @@ def test_lakehouse_freshness_is_unknown_without_a_provider_version_token(
         "inputType": "lakehouse",
         "format": "delta",
         "mode": "scan",
-        "cacheMode": "snapshot",
         "path": "lake/policies",
     }
 
@@ -433,7 +416,6 @@ def test_snapshot_reader_lease_survives_refresh_until_execution_context_closes(
         "inputType": "file",
         "format": "ndjson",
         "mode": "scan",
-        "cacheMode": "snapshot",
         "path": "input.ndjson",
     }
     store = SourceCacheStore(tmp_path)
@@ -469,7 +451,6 @@ def test_derived_snapshot_plan_retains_lease_without_execution_context(
         "inputType": "file",
         "format": "ndjson",
         "mode": "scan",
-        "cacheMode": "snapshot",
         "path": "input.ndjson",
     }
     store = SourceCacheStore(tmp_path)

@@ -24,13 +24,13 @@ from haute.trace import (
 from tests.conftest import (
     make_edge as _edge,
 )
-from tests.conftest import make_file_input_config, make_ready_file_input_config
 from tests.conftest import (
     make_graph as _g,
 )
 from tests.conftest import (
     make_node as _n,
 )
+from tests.conftest import make_ready_file_input_config
 from tests.conftest import (
     make_source_node as _source_node,
 )

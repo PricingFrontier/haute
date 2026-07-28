@@ -19,6 +19,7 @@ from haute._polars_io_registry import (
     IoFormat,
     PolarsIoConfigError,
     allowed_arguments,
+    data_input_is_direct,
     input_callable_key,
     output_callable_key,
     read_polars_input,
@@ -52,7 +53,6 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
         "inputType": "file",
         "format": "parquet",
         "mode": "scan",
-        "cacheMode": "direct",
         "path": str(dataset),
         "arguments": {"hive_partitioning": True},
         "code": "df = df.filter(pl.col('year') == 2025)",
@@ -133,25 +133,24 @@ def test_database_config_rejects_inline_uri_credentials(uri: str) -> None:
             {
                 "inputType": "database",
                 "format": "database",
-                "cacheMode": "snapshot",
                 "uri": uri,
                 "query": "SELECT 1",
             }
         )
 
 
-def test_file_parquet_scan_requires_direct_cache_mode() -> None:
+def test_file_parquet_scan_is_derived_direct_and_stored_cache_mode_is_rejected() -> None:
     config = {
         "inputType": "file",
         "format": "parquet",
         "path": "input.parquet",
     }
-    assert validate_data_input_config({**config, "cacheMode": "direct"})["cacheMode"] == "direct"
+    assert validate_data_input_config(config) == config
+    assert data_input_is_direct(config)
+    assert not data_input_is_direct({**config, "mode": "read"})
 
-    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'direct'"):
-        validate_data_input_config({**config, "cacheMode": "snapshot"})
-    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'snapshot'"):
-        validate_data_input_config({**config, "mode": "read", "cacheMode": "direct"})
+    with pytest.raises(PolarsIoConfigError, match="Field 'cacheMode' is not valid"):
+        validate_data_input_config({**config, "cacheMode": "direct"})
 
 
 @pytest.mark.parametrize(
@@ -173,9 +172,9 @@ def test_file_parquet_scan_requires_direct_cache_mode() -> None:
         {"inputType": "inline", "format": "records", "records": [{"id": 1}]},
     ],
 )
-def test_non_parquet_inputs_require_snapshot_cache_mode(config: dict[str, object]) -> None:
-    with pytest.raises(PolarsIoConfigError, match="requires cacheMode 'snapshot'"):
-        validate_data_input_config({**config, "cacheMode": "direct"})
+def test_non_parquet_inputs_are_derived_snapshot_backed(config: dict[str, object]) -> None:
+    assert validate_data_input_config(config) == config
+    assert not data_input_is_direct(config)
 
 
 class TestRegistrySchemaCompleteness:

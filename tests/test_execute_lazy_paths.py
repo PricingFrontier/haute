@@ -31,7 +31,6 @@ def test_resolve_graph_paths_rewrites_inputs_but_not_outputs() -> None:
                     "inputType": "file",
                     "format": "parquet",
                     "mode": "scan",
-                    "cacheMode": "direct",
                     "path": "data/source.parquet",
                     "arguments": {},
                 },

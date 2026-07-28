@@ -181,10 +181,9 @@ function makeSnapshotInput(id = "snapshot-input"): Node {
       ...node.data,
       config: {
         inputType: "file",
-        cacheMode: "snapshot",
-        format: "parquet",
+        format: "csv",
         mode: "scan",
-        path: `${id}.parquet`,
+        path: `${id}.csv`,
       },
     },
   }

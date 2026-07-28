@@ -22,7 +22,6 @@ import InputSnapshotCacheButton from "../_InputSnapshotCacheButton"
 
 const config = {
   inputType: "file",
-  cacheMode: "snapshot",
   format: "csv",
   mode: "scan",
   path: "quotes.csv",

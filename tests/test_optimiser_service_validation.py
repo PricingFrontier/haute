@@ -37,7 +37,11 @@ from haute.routes._optimiser_service import (
     _optional_positive_int,
 )
 from haute.schemas import OptimiserFrontierAutoRangeRequest, OptimiserSolveRequest
-from tests.conftest import make_edge, make_file_input_config, make_graph, make_ready_file_input_config
+from tests.conftest import (
+    make_edge,
+    make_graph,
+    make_ready_file_input_config,
+)
 
 _TERMINAL_STATUSES = {"completed", "error", "contract_error", "cancelled", "memory_limited"}
 

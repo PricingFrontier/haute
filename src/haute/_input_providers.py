@@ -27,6 +27,7 @@ from haute._polars_io_registry import (
     PolarsIoConfigError,
     _snapshot_build,
     anchor_config_source_path,
+    data_input_is_direct,
     format_for_config,
     read_polars_input,
     resolve_input_mode,
@@ -194,7 +195,7 @@ def input_snapshot_build_class(
 ) -> BuildClass:
     """Return the declared build class without contacting the provider."""
     validated = validate_data_input_config(config)
-    if validated["cacheMode"] == "direct":
+    if data_input_is_direct(validated):
         raise PolarsIoConfigError("Direct Parquet Data Input does not support snapshot builds.")
     _, build_class = _snapshot_builder(validated, base_dir=base_dir, profile=profile)
     return build_class
@@ -214,7 +215,7 @@ def build_input_snapshot(
 ) -> SourceCacheGeneration:
     """Explicitly build or refresh one shared input snapshot."""
     validated = validate_data_input_config(config)
-    if validated["cacheMode"] == "direct":
+    if data_input_is_direct(validated):
         raise PolarsIoConfigError("Direct Parquet Data Input does not support snapshot builds.")
     identity = source_cache_identity(validated, base_dir=base_dir)
     builder, build_class = _snapshot_builder(validated, base_dir=base_dir, profile=profile)
@@ -244,7 +245,7 @@ def resolve_data_input(
 ) -> pl.LazyFrame:
     """Resolve canonical direct Parquet or an already-published snapshot."""
     validated = validate_data_input_config(config)
-    if validated["cacheMode"] == "direct":
+    if data_input_is_direct(validated):
         anchored = _resolved_config_path(validated, base_dir)
         return read_polars_input(anchored, profile=profile)
 

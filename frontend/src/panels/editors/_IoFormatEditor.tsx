@@ -411,7 +411,6 @@ export default function IoFormatEditor({
     "arguments",
     ...fields.map((field) => field.name),
   ])
-  if (direction === "input") knownKeys.add("cacheMode")
   if (!(direction === "input" && group.name === "database")) {
     knownKeys.add("mode")
   }

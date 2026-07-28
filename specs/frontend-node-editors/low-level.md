@@ -121,11 +121,12 @@ and commits one fresh active branch for a provider change. Data Input provider
 choices are an accent-coloured `radiogroup` of toggle buttons in backend
 capability order; an unknown or not-yet-selected provider leaves every toggle
 inactive while retaining the explicit configuration error for unknown values.
-Each format capability declares its canonical cache mode. File-backed Parquet
-is authored with `cacheMode: "direct"`; every other branch is authored with
-`cacheMode: "snapshot"`. Cache mode is never rendered as a user choice and a
-mismatched configuration is shown as invalid rather than migrated by the
-editor. A mode selector is rendered only when the capability advertises more
+Each format capability declares its derived execution mode (`cache_mode`),
+which only selects the editor surface: file-backed Parquet scans directly and
+renders no cache control; every other branch renders the shared
+Cache-as-Parquet control. No cache-mode field is authored or stored, and a
+leftover `cacheMode` key is never migrated by the editor — the backend rejects
+it as an inactive field. A mode selector is rendered only when the capability advertises more
 than one mode; an explicitly stored `scan` does not make a one-option selector
 visible.
 

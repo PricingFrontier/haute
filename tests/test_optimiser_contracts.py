@@ -17,7 +17,12 @@ from haute.executor import _build_node_fn
 from haute.routes._job_store import JobStore
 from haute.routes._optimiser_service import OptimiserSolveService
 from haute.schemas import OptimiserFrontierRequest
-from tests.conftest import make_edge, make_file_input_config, make_graph, make_node, make_ready_file_input_config
+from tests.conftest import (
+    make_edge,
+    make_graph,
+    make_node,
+    make_ready_file_input_config,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 

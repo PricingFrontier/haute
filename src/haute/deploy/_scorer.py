@@ -678,10 +678,12 @@ def _score_graph_lazy(
         # execution path reads the matching bundled artifact.
         bundled_data_path: str | None = None
         if node_type == NodeType.DATA_INPUT and remap:
-            if config.get("cacheMode") == "snapshot":
-                bundled_data_path = remap.get(f"{nid}__snapshot.parquet")
-            elif config.get("cacheMode") == "direct":
+            from haute._polars_io_registry import data_input_is_direct
+
+            if data_input_is_direct(config):
                 bundled_data_path = _remap_artifact(nid, config, remap, "path")
+            else:
+                bundled_data_path = remap.get(f"{nid}__snapshot.parquet")
         if bundled_data_path is not None:
             _bundled_data_path = bundled_data_path
             _code = str(config.get("code") or "").strip()

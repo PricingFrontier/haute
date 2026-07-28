@@ -116,7 +116,6 @@ def _graph() -> PipelineGraph:
                 config={
                     "inputType": "file",
                     "format": "parquet",
-                    "cacheMode": "direct",
                     "mode": "scan",
                     "path": "input.parquet",
                 },
@@ -480,7 +479,6 @@ def test_database_snapshot_pointer_uses_configured_pipeline_directory(
         config = {
             "inputType": "database",
             "format": "database",
-            "cacheMode": "snapshot",
             "uri": "sqlite:///pricing.sqlite",
             "query": "SELECT 1",
             "arguments": {},

@@ -58,7 +58,6 @@ def _node(node_id: str, node_type: str, config: dict[str, object] | None = None)
             **config,
             "inputType": "file",
             "format": formats.get(suffix, suffix),
-            "cacheMode": "snapshot",
         }
     return {
         "id": node_id,
@@ -769,13 +768,21 @@ def test_chunk_local_polars_guard_accepts_row_local_and_rejects_global() -> None
             lambda tmp_path: make_graph(
                 {
                     "nodes": [
-                        _node("source", "dataInput", {"path": str(tmp_path / "data.json")}),
+                        _node(
+                            "source",
+                            "dataInput",
+                            {
+                                "path": str(tmp_path / "data.json"),
+                                # The removed stored field: rejected, never migrated.
+                                "cacheMode": "snapshot",
+                            },
+                        ),
                         _node("out", "output", make_output_config(["quote_id"])),
                     ],
                     "edges": [make_edge("source", "out").model_dump()],
                 }
             ),
-            "bounded lazy scan",
+            "not valid for bounded chunk execution",
             {"node_id": "source", "node_type": "dataInput"},
             id="unsupported-source",
         ),

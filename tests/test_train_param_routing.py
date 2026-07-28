@@ -27,7 +27,7 @@ import pytest
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
-from tests.conftest import make_edge, make_file_input_config, make_graph, make_ready_file_input_config
+from tests.conftest import make_edge, make_graph, make_ready_file_input_config
 
 pytestmark = pytest.mark.usefixtures("_widen_sandbox_root")
 

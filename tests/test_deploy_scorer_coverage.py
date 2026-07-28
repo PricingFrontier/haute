@@ -366,7 +366,6 @@ class TestScoreGraphStaticDataSourceRemap:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "snapshot",
                                 "path": "original/factors.csv",
                                 "arguments": {},
                             },

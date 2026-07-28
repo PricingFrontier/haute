@@ -87,7 +87,6 @@ class TestNodeBuildContextProperties:
             "inputType": "file",
             "format": "csv",
             "mode": "scan",
-            "cacheMode": "snapshot",
             "path": "data.csv",
             "arguments": {},
         }

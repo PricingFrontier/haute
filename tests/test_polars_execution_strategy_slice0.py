@@ -7,7 +7,11 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
-from tests.conftest import make_edge, make_file_input_config, make_graph, make_ready_file_input_config
+from tests.conftest import (
+    make_edge,
+    make_graph,
+    make_ready_file_input_config,
+)
 
 _OPAQUE_PROJECTION_ERROR = "User-code projection requires a concrete node contract"
 

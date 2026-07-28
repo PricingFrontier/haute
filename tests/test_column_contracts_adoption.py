@@ -59,7 +59,6 @@ def _node(nid: str, nt: NodeType, **cfg: Any) -> GraphNode:
             "inputType": "file",
             "format": "parquet",
             "mode": "scan",
-            "cacheMode": "direct",
             "arguments": {},
             **cfg,
         }

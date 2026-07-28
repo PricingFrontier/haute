@@ -1628,7 +1628,6 @@ class TestScoreGraphStaticDataSourceRemap:
                                 "inputType": "file",
                                 "format": "parquet",
                                 "mode": "scan",
-                                "cacheMode": "direct",
                                 "path": "original.parquet",
                                 "arguments": {},
                             },
@@ -1656,7 +1655,7 @@ class TestScoreGraphStaticDataSourceRemap:
         )
 
         assert result["quote_id"].to_list() == ["001"]
-        assert graph.node_map["lookup"].data.config["cacheMode"] == "direct"
+        assert "cacheMode" not in graph.node_map["lookup"].data.config
 
     def test_static_data_source_snapshot_preserves_canonical_config(self, tmp_path):
         """Bundled snapshots serve parquet without rewriting the source config."""
@@ -1676,7 +1675,6 @@ class TestScoreGraphStaticDataSourceRemap:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "snapshot",
                                 "path": "lookup.csv",
                                 "arguments": {
                                     "schema_overrides": {
@@ -1710,7 +1708,7 @@ class TestScoreGraphStaticDataSourceRemap:
 
         assert result["quote_id"].to_list() == ["001"]
         assert result.schema["quote_id"] == pl.String
-        assert graph.node_map["lookup"].data.config["cacheMode"] == "snapshot"
+        assert "cacheMode" not in graph.node_map["lookup"].data.config
 
     def test_static_data_source_snapshot_receives_projected_columns(self, tmp_path):
         """Bundled snapshots should keep deploy output projection physical."""
@@ -1728,7 +1726,6 @@ class TestScoreGraphStaticDataSourceRemap:
                                 "inputType": "file",
                                 "format": "csv",
                                 "mode": "scan",
-                                "cacheMode": "snapshot",
                                 "path": "lookup.csv",
                                 "arguments": {},
                             },
@@ -5092,7 +5089,6 @@ class TestValidateDeployEdgeCases:
                                 "inputType": "file",
                                 "format": "parquet",
                                 "mode": "scan",
-                                "cacheMode": "direct",
                                 "path": "lookup.parquet",
                                 "arguments": {},
                             },

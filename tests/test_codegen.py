@@ -64,7 +64,6 @@ def _file_input_config(
         "inputType": "file",
         "format": format_name or resolved_format,
         "mode": mode or resolved_mode,
-        "cacheMode": "snapshot",
         "path": path,
         "arguments": arguments or {},
     }
@@ -76,7 +75,6 @@ def _file_input_config(
 def _databricks_input_config(*, code: str | None = None) -> dict:
     config = {
         "inputType": "databricks",
-        "cacheMode": "snapshot",
         "http_path": "/sql/1.0/warehouses/test",
         "table": "catalog.schema.tbl",
         "arguments": {},

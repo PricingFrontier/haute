@@ -88,7 +88,6 @@ def _data_input_graph(path: str) -> PipelineGraph:
                         "inputType": "file",
                         "format": "csv",
                         "mode": "scan",
-                        "cacheMode": "snapshot",
                         "path": path,
                         "arguments": {},
                     },
