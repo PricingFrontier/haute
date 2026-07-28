@@ -203,6 +203,21 @@ describe("ensureInputSnapshots", () => {
     expect(buildInputCache).not.toHaveBeenCalled()
   })
 
+  it("skips direct Parquet with a blank mode", async () => {
+    const direct = dataInput("blank-mode")
+    direct.data.config = {
+      inputType: "file",
+      format: "parquet",
+      mode: "",
+      path: "blank-mode.parquet",
+    }
+
+    await ensureInputSnapshots([direct])
+
+    expect(getInputCacheStatus).not.toHaveBeenCalled()
+    expect(buildInputCache).not.toHaveBeenCalled()
+  })
+
   it("treats Parquet in read mode as snapshot-backed", async () => {
     const readMode = dataInput("read-mode")
     readMode.data.config = {

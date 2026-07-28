@@ -342,13 +342,14 @@ def data_input_is_direct(config: Mapping[str, Any]) -> bool:
     A file-backed Parquet scan already has the lazy, schema-bearing execution
     shape a snapshot would duplicate, so it is read directly from its
     configured source. Every other canonical input executes from a published
-    snapshot generation. An absent ``mode`` means the format's default, which
-    for Parquet is ``scan``.
+    snapshot generation. An absent or blank ``mode`` means the format's
+    default — the same unset rule as :func:`resolve_input_mode` — which for
+    Parquet is ``scan``.
     """
     return (
         config.get("inputType") == "file"
         and config.get("format") == "parquet"
-        and config.get("mode") in (None, "scan")
+        and config.get("mode") in (None, "", "scan")
     )
 
 

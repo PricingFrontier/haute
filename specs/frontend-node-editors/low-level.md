@@ -121,12 +121,14 @@ and commits one fresh active branch for a provider change. Data Input provider
 choices are an accent-coloured `radiogroup` of toggle buttons in backend
 capability order; an unknown or not-yet-selected provider leaves every toggle
 inactive while retaining the explicit configuration error for unknown values.
-Each format capability declares its derived execution mode (`cache_mode`),
-which only selects the editor surface: file-backed Parquet scans directly and
+The editor derives its cache surface from the config through the shared
+`dataInputIsDirect` predicate (`frontend/src/utils/dataInputMode.ts`), which
+mirrors the backend's `data_input_is_direct`: a file-backed Parquet scan
 renders no cache control; every other branch renders the shared
-Cache-as-Parquet control. No cache-mode field is authored or stored, and a
-leftover `cacheMode` key is never migrated by the editor — the backend rejects
-it as an inactive field. A mode selector is rendered only when the capability advertises more
+Cache-as-Parquet control. The capability payload still reports each format's
+derived `cache_mode` for contract completeness. No cache-mode field is
+authored or stored, and a leftover `cacheMode` key is never migrated by the
+editor — the backend rejects it as an inactive field. A mode selector is rendered only when the capability advertises more
 than one mode; an explicitly stored `scan` does not make a one-option selector
 visible.
 
@@ -146,7 +148,8 @@ the same `CacheFetchButton` presentation and Cache-as-Parquet labels used by
 Quote Input to the input-cache API. Missing snapshots offer `Cache as Parquet`
 and a not-cached hint, while ready snapshots offer `Refresh Cache` with
 generation statistics and a clear action. Direct Parquet renders no cache
-control. Snapshot build classification is execution metadata and is not shown
+control; a stored `read`-mode Parquet input is snapshot-backed and renders
+the cache control like any other snapshot input. Snapshot build classification is execution metadata and is not shown
 as technical diagnostic copy in the editor. Builds use `lazy_sink`, except admitted-eager formats use
 `preview_eager`, and refresh a ready snapshot. The adapter polls jobs to a
 terminal result, allows the active button action to cancel the current job,

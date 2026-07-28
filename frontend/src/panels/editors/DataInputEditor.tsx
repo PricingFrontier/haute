@@ -8,6 +8,7 @@ import { useIoCapabilities } from "./_ioFormats"
 import { INPUT_STYLE, SchemaPreview } from "./_shared"
 import type { OnReplaceConfig, OnUpdateConfig } from "./_shared"
 import { useSchemaFetch } from "../../hooks/useSchemaFetch"
+import { dataInputIsDirect } from "../../utils/dataInputMode"
 
 const INPUT_COMMON_KEYS = [
   "instanceOf",
@@ -174,8 +175,12 @@ export default function DataInputEditor({
   const groups = (capabilities?.groups ?? []).filter((group) => group.input_available)
   const group = groups.find((candidate) => candidate.name === config.inputType)
   const format = group?.formats.find((candidate) => candidate.name === config.format)
+  // Config-driven, mirroring the runtime derivation: a stored `read`-mode
+  // Parquet input is snapshot-backed and needs the cache control too.
   const requiresSnapshot =
-    format?.input?.cache_mode === "snapshot" || group?.name === "databricks"
+    group !== undefined &&
+    (group.name === "databricks" || format !== undefined) &&
+    !dataInputIsDirect(config)
   const requiredReady =
     group !== undefined &&
     providerFieldsReady(group, config) &&

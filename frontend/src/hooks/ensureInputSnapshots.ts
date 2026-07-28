@@ -6,6 +6,7 @@ import {
   getInputCacheStatus,
 } from "../api/client"
 import { TERMINAL_JOB_STATUSES } from "../api/types"
+import { dataInputIsDirect } from "../utils/dataInputMode"
 import { NODE_TYPES } from "../utils/nodeTypes"
 
 const POLL_INTERVAL_MS = 800
@@ -31,13 +32,7 @@ function snapshotConfigs(nodes: Node[]): Record<string, unknown>[] {
       return []
     }
     const config = data.config as Record<string, unknown>
-    // Mirrors the backend derivation (data_input_is_direct): a file-backed
-    // Parquet scan reads directly; every other input executes from a snapshot.
-    const directParquet =
-      config.inputType === "file" &&
-      config.format === "parquet" &&
-      (config.mode === undefined || config.mode === "scan")
-    if (directParquet) return []
+    if (dataInputIsDirect(config)) return []
     return [config]
   })
 }

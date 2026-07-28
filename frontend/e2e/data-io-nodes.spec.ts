@@ -36,7 +36,6 @@ test.describe("data input/output nodes", () => {
               inputType: "file",
               format: "parquet",
               mode: "scan",
-              cacheMode: "direct",
               path: "data/sample.parquet",
               arguments: {},
             },

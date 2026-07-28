@@ -196,6 +196,8 @@ def test_cache_mode_field_is_rejected_for_every_provider(
     [
         ({"inputType": "file", "format": "parquet", "mode": "scan", "path": "p.parquet"}, True),
         ({"inputType": "file", "format": "parquet", "path": "p.parquet"}, True),
+        ({"inputType": "file", "format": "parquet", "mode": "", "path": "p.parquet"}, True),
+        ({"inputType": "file", "format": "parquet", "mode": None, "path": "p.parquet"}, True),
         ({"inputType": "file", "format": "parquet", "mode": "read", "path": "p.parquet"}, False),
         ({"inputType": "file", "format": "csv", "mode": "scan", "path": "p.csv"}, False),
         ({"inputType": "lakehouse", "format": "delta", "path": "lake"}, False),
@@ -206,6 +208,8 @@ def test_cache_mode_field_is_rejected_for_every_provider(
     ids=[
         "parquet-scan",
         "parquet-default-mode",
+        "parquet-blank-mode",
+        "parquet-null-mode",
         "parquet-read",
         "csv",
         "lakehouse",
