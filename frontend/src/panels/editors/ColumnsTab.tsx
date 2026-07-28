@@ -176,11 +176,6 @@ export default function ColumnsTab({ config, onUpdate, availableColumns, columns
         nameSuffix={(name) => !allColumnNames.has(name) ? "(not found)" : null}
       />
 
-      {draft === null && !isAllSelected && (
-        <p className="text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-          Deselected columns will be dropped via <code className="font-mono">.select()</code> on this node's output.
-        </p>
-      )}
     </div>
   )
 }

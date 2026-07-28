@@ -114,7 +114,7 @@ describe("ColumnsTab", () => {
 
   it("first tick after None commits exactly that column", () => {
     const onUpdate = vi.fn()
-    render(
+    const { rerender } = render(
       <ColumnsTab
         config={{}}
         onUpdate={onUpdate}
@@ -128,6 +128,19 @@ describe("ColumnsTab", () => {
 
     expect(onUpdate).toHaveBeenCalledOnce()
     expect(onUpdate).toHaveBeenCalledWith("selected_columns", ["b"])
+
+    rerender(
+      <ColumnsTab
+        config={{ selected_columns: ["b"] }}
+        onUpdate={onUpdate}
+        availableColumns={COLUMNS}
+        columns={[]}
+      />,
+    )
+    expect(screen.getByText("a")).toBeInTheDocument()
+    expect(screen.getByText("b")).toBeInTheDocument()
+    expect(screen.getByText("c")).toBeInTheDocument()
+    expect(screen.queryByText(/Preview or run/)).not.toBeInTheDocument()
   })
 
   it("unticking the final committed column enters draft, not select-all", () => {
@@ -227,7 +240,7 @@ describe("ColumnsTab", () => {
     expect(screen.getByText("2 / 3")).toBeInTheDocument()
   })
 
-  it("shows hint text when columns are deselected", () => {
+  it("does not show implementation detail when columns are deselected", () => {
     render(
       <ColumnsTab
         config={{ selected_columns: ["a"] }}
@@ -236,6 +249,6 @@ describe("ColumnsTab", () => {
         columns={COLUMNS.filter((c) => c.name === "a")}
       />,
     )
-    expect(screen.getByText(/Deselected columns will be dropped/)).toBeInTheDocument()
+    expect(screen.queryByText(/\.select\(\)/)).not.toBeInTheDocument()
   })
 })

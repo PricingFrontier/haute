@@ -164,12 +164,13 @@ Registry-defined input paths are browser-only, matching Preview Data. Output
 destinations may additionally enable committed manual entry because their
 target file need not exist yet.
 
-**Shared Polars tab.** Known non-instance Data Input, External File, Rating
-Step, and Model Score nodes expose `Config`, `Polars`, then (when applicable)
-`Columns` tabs. Their supplementary code is rendered only in the shared
-`PolarsCodePanel`; switching nodes returns to Config. The panel retains the
-node's code, error line, input sources and upstream columns, while its hint is
-node-specific React content so code-formatted variable names remain semantic.
+**Shared Polars tab.** Known non-instance Data Input, External File, Scenario
+Expander, Rating Step, and Model Score nodes expose `Config`, `Polars`, then
+(when applicable) `Columns` tabs. Their supplementary code is rendered only in
+the shared `PolarsCodePanel`; Config retains only the node-specific settings,
+and switching nodes returns to Config. The panel retains the node's code, error
+line, input sources and upstream columns, while its hint is node-specific React
+content so code-formatted variable names remain semantic.
 
 **Column-selection draft semantics.** `selected_columns: []` remains the
 committed sentinel for all columns. The Columns tab's None action instead
@@ -178,6 +179,12 @@ holds an editor-local zero-selection draft, unticks every row, shows a
 Re-ticking a column resumes commits; selecting every available column
 normalises back to the empty all-columns sentinel. Value-equal selections do
 not commit, and an external config change invalidates an obsolete local draft.
+A config update that changes only `selected_columns` invalidates the
+post-filter `_columns` result but retains `_availableColumns`: selection cannot
+change the pre-filter schema, and retaining it keeps the selector stable while
+the refreshed preview is pending. Other config edits continue to clear both
+column caches. The pane communicates selection through checkbox state and the
+selected-count summary; it does not expose the internal `.select()` operation.
 
 **Banding/Rating classification and canonical formats.** `utils/banding.ts`
 classifies only plain objects with recognised continuous, categorical, or

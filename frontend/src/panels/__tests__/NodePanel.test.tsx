@@ -5,13 +5,14 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   dataInputEditorProps: [] as Record<string, unknown>[],
   dataOutputEditorProps: [] as Record<string, unknown>[],
+  columnsTabProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
 }))
@@ -72,7 +73,10 @@ vi.mock("../LazyNodeEditors", async () => {
   OptimiserApplyEditor: () => <div data-testid="OptimiserApplyEditor" />,
   ConstantEditor: () => <div data-testid="ConstantEditor" />,
   SubmodelEditor: () => <div data-testid="SubmodelEditor" />,
-  ColumnsTab: () => <div data-testid="ColumnsTab" />,
+  ColumnsTab: (props: Record<string, unknown>) => {
+    columnsTabProps.push(props)
+    return <div data-testid="ColumnsTab" />
+  },
   ModellingConfig: (props: Record<string, unknown>) => {
     modellingConfigProps.push(props)
     return <div data-testid="ModellingConfig" />
@@ -169,6 +173,7 @@ describe("NodePanel", () => {
     bandingEditorProps.length = 0
     dataInputEditorProps.length = 0
     dataOutputEditorProps.length = 0
+    columnsTabProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
   })
@@ -226,6 +231,46 @@ describe("NodePanel", () => {
     expect(updatedData._availableColumns).toBeUndefined()
     expect(updatedData._schemaWarnings).toBeUndefined()
   })
+
+  it.each([
+    ["an ordinary checkbox selection", ["quote_id"]],
+    ["All", []],
+  ])(
+    "retains the pre-filter schema when %s updates selected_columns",
+    (_action, selectedColumns) => {
+      const availableColumns = [
+        { name: "quote_id", dtype: "String" },
+        { name: "premium", dtype: "Float64" },
+      ]
+      const node = makeNode({
+        data: {
+          label: "Transform",
+          description: "",
+          nodeType: "polars",
+          config: {},
+          _columns: availableColumns,
+          _availableColumns: availableColumns,
+          _schemaWarnings: [],
+        },
+      })
+      const onUpdateNode = vi.fn(
+        (_nodeId: string, _data: Record<string, unknown>) => ({ ok: true as const }),
+      )
+      renderPanel({ node, onUpdateNode })
+      fireEvent.click(screen.getByRole("button", { name: /^columns$/i }))
+      const onUpdate = columnsTabProps.at(-1)?.onUpdate as (
+        key: string,
+        value: unknown,
+      ) => void
+
+      onUpdate("selected_columns", selectedColumns)
+
+      const updatedData = onUpdateNode.mock.calls.at(-1)?.[1] as Record<string, unknown>
+      expect(updatedData.config).toEqual({ selected_columns: selectedColumns })
+      expect(updatedData._availableColumns).toEqual(availableColumns)
+      expect(updatedData._columns).toBeUndefined()
+    },
+  )
 
   it("renders TransformEditor for transform nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "T", description: "", nodeType: "polars", config: {} } }) })
@@ -297,6 +342,7 @@ describe("NodePanel", () => {
   it.each([
     ["dataInput", "the opened input snapshot"],
     ["externalFile", "loaded file, assign to"],
+    ["scenarioExpander", "expanded data"],
     ["ratingStep", "use"],
     ["modelScore", "Post-processing Code (optional)"],
   ])("shows the Polars tab and shared code panel for %s nodes", (nodeType, hint) => {

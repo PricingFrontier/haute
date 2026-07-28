@@ -72,6 +72,7 @@ const NO_COLUMNS_TAB = new Set<string>([
 const POLARS_TAB_TYPES = new Set<string>([
   NODE_TYPES.DATA_INPUT,
   NODE_TYPES.EXTERNAL_FILE,
+  NODE_TYPES.SCENARIO_EXPANDER,
   NODE_TYPES.RATING_STEP,
   NODE_TYPES.MODEL_SCORE,
 ])
@@ -79,6 +80,7 @@ const POLARS_TAB_TYPES = new Set<string>([
 const POLARS_TAB_HINTS: Record<string, React.ReactNode> = {
   [NODE_TYPES.DATA_INPUT]: <><code>df</code> = the opened input snapshot</>,
   [NODE_TYPES.EXTERNAL_FILE]: <><code>obj</code> = loaded file, assign to <code>df</code></>,
+  [NODE_TYPES.SCENARIO_EXPANDER]: <>use <code>df</code> for expanded data</>,
   [NODE_TYPES.RATING_STEP]: <>use <code>df</code> for rated data</>,
   [NODE_TYPES.MODEL_SCORE]: <>Post-processing Code (optional)</>,
 }
@@ -641,6 +643,8 @@ function UnknownNodeTypeDiagnostic({
 
 // Cached preview-result fields cleared on user config edits.  Listing the
 // keys explicitly (rather than stripping every leading-underscore field)
+// lets selected_columns-only edits preserve `_availableColumns`: that
+// pre-filter schema remains valid while the post-filter preview is stale.
 // preserves selection/trace state — `_status`, `_traceActive`, etc. — which
 // are intentionally NOT invalidated by a config change.  Adding a new cached
 // field to ``HauteNodeData`` will not surface here automatically — the choice
@@ -653,9 +657,13 @@ const CACHED_PREVIEW_KEYS: readonly (keyof HauteNodeData)[] = [
   "_columnsSource",
 ]
 
-function clearCachedResultShape(data: HauteNodeData): HauteNodeData {
+function clearCachedResultShape(
+  data: HauteNodeData,
+  { preserveAvailableColumns = false }: { preserveAvailableColumns?: boolean } = {},
+): HauteNodeData {
   const next = { ...data }
   for (const key of CACHED_PREVIEW_KEYS) {
+    if (preserveAvailableColumns && key === "_availableColumns") continue
     delete next[key]
   }
   return next
@@ -707,7 +715,19 @@ export default function NodePanel({
     const newConfig = typeof keyOrUpdates === "string"
       ? { ...currentConfig, [keyOrUpdates]: value }
       : { ...currentConfig, ...keyOrUpdates }
-    return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: newConfig }))
+    const changedKeys =
+      typeof keyOrUpdates === "string"
+        ? [keyOrUpdates]
+        : Object.keys(keyOrUpdates)
+    const selectionOnlyUpdate =
+      changedKeys.length === 1 && changedKeys[0] === "selected_columns"
+    return onUpdateNode(
+      currentNode.id,
+      clearCachedResultShape(
+        { ...currentNode.data, config: newConfig },
+        { preserveAvailableColumns: selectionOnlyUpdate },
+      ),
+    )
   }, [onUpdateNode])
 
   const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
@@ -874,7 +894,6 @@ export default function NodePanel({
             inputSources={inputSources}
             onDeleteInput={onDeleteEdge}
             upstreamColumns={upstreamColumns}
-            errorLine={errorLine}
           />
         )
 
