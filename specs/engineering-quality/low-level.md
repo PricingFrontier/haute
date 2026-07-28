@@ -274,6 +274,7 @@
 - `tests/test_decoupling_contracts.py` — separation contracts for tracing, EventBus/file-watcher integration, and logging conventions.
 - `tests/test_dry_fixes.py` — DRY response/model inheritance and optimiser finalize contracts across online/ratebook/frontier paths.
 - `tests/test_dry_refactors.py` — shared exception hierarchy, dispatch-table parity, transport resolution, dead-code removal, typed-node lookup, and shared code compilation.
+- `tests/test_frontend_e2e_server.py` — browser-harness contracts for augmenting the blank scaffold with a complete, executable fixture graph.
 - `tests/test_performance_docs.py` — documentation contracts for Python/Polars/frontend/memory performance workflows and links.
 - `tests/test_property.py` — Hypothesis properties for sanitisation, topology, path resolution, banding/rating, codegen/parser round-trips, fingerprints, config, validation, and cache invariants.
 - `tests/test_repository_hygiene.py` — repository artifact/path, dependency-import, subprocess, encoding, sanitizer, and persistence-path hygiene.
