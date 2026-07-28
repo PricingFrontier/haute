@@ -359,8 +359,9 @@ describe("usePipelineAPI — gap tests", () => {
       expect(mockPreview).not.toHaveBeenCalled()
 
       await act(async () => {
-        vi.advanceTimersByTime(1)
-        await Promise.resolve()
+        // The async advance interleaves the debounce timer with the
+        // snapshot-ensure microtask chain that now precedes the request.
+        await vi.advanceTimersByTimeAsync(1)
       })
       expect(mockPreview).toHaveBeenCalledTimes(1)
     })

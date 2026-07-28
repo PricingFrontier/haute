@@ -73,7 +73,7 @@ def test_inference_labels_root_and_children_without_replacing_paths(tmp_path: Pa
     )
     tables = _tables_by_path(schema)
 
-    _assert_inferred_identity(tables["$[:]"], path="$[:]", label="root")
+    _assert_inferred_identity(tables["$[:]"], path="$[:]", label="quote_info")
     _assert_inferred_identity(
         tables["$[:].proposer.claims[:]"],
         path="$[:].proposer.claims[:]",
@@ -130,7 +130,7 @@ def test_inference_uses_deterministic_numeric_suffixes_as_the_final_backstop(
     )
 
     assert [(table["path"], table["label"]) for table in schema["tables"]] == [
-        ("$[:]", "root"),
+        ("$[:]", "quote_info"),
         ("$[:].a_b_items[:]", "a_b_items"),
         ("$[:].a_b.items[:]", "a_b_items_2"),
         ("$[:].a.b.items[:]", "a_b_items_3"),

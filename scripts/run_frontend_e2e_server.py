@@ -367,7 +367,11 @@ def _augment_starter_pipeline() -> None:
         source = source.rstrip() + _QUOTES_API_INPUT_BLOCK
     main_path.write_text(source, encoding="utf-8")
 
-    raw_rows_config_path = E2E_PROJECT_DIR / "rating" / "config" / "data_input" / "raw_rows.json"
+    # The blank `haute init` scaffold creates no node sidecars or their
+    # directories; this augmentation owns the data_input tree it writes into.
+    data_input_config_dir = E2E_PROJECT_DIR / "rating" / "config" / "data_input"
+    data_input_config_dir.mkdir(parents=True, exist_ok=True)
+    raw_rows_config_path = data_input_config_dir / "raw_rows.json"
     raw_rows_config_path.write_text(
         "{\n"
         '  "inputType": "file",\n'
@@ -378,9 +382,7 @@ def _augment_starter_pipeline() -> None:
         "}\n",
         encoding="utf-8",
     )
-    optimiser_rows_config_path = (
-        E2E_PROJECT_DIR / "rating" / "config" / "data_input" / "browser_optimiser_rows.json"
-    )
+    optimiser_rows_config_path = data_input_config_dir / "browser_optimiser_rows.json"
     optimiser_rows_config_path.write_text(
         "{\n"
         '  "inputType": "file",\n'

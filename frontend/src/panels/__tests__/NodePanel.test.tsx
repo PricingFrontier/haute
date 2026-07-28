@@ -24,6 +24,13 @@ vi.mock("../LazyNodeEditors", async () => {
   )
   return {
   LazyEditorBoundary: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  PolarsCodePanel: ({ hint }: { hint: React.ReactNode }) => (
+    <div data-testid="PolarsCodePanel">
+      <span>Polars Code</span>
+      <span data-testid="polars-hint">{hint}</span>
+      <textarea data-testid="code-editor" />
+    </div>
+  ),
   TransformEditor: (props: Record<string, unknown>) => {
     transformEditorProps.push(props)
     return (

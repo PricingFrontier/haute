@@ -25,6 +25,7 @@ import {
   ColumnsTab,
   ModellingConfig,
   OptimiserConfig,
+  PolarsCodePanel,
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
@@ -34,7 +35,6 @@ import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
 import { CommittedTextField } from "../components/form"
-import PolarsCodePanel from "./editors/shared/PolarsCodePanel"
 
 type NodePanelProps = {
   node: SimpleNode | null
