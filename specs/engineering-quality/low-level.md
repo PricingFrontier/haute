@@ -154,8 +154,12 @@
    waits for its readiness URL. The harness preserves the same-origin Vite
    proxy and real HttpOnly-cookie bootstrap used by the product; it never
    exports a browser-readable session-token variable or adds a browser bearer
-   header. Its out-of-browser readiness probe uses the supported non-browser
-   token header. `HAUTE_E2E_BACKEND_PORT`, `HAUTE_E2E_FRONTEND_PORT`, and
+   header. Its generated fixture explicitly owns the deterministic
+   `raw_rows` → `enriched` → `priced` core graph and sidecars after invoking
+   the blank `haute init` scaffold; browser coverage must not depend on product
+   scaffolding to supply test nodes. Its out-of-browser readiness probe uses
+   the supported non-browser token header. `HAUTE_E2E_BACKEND_PORT`,
+   `HAUTE_E2E_FRONTEND_PORT`, and
    `HAUTE_E2E_READINESS_PORT` may select alternate loopback ports when a
    developer already has Haute running; the harness and Playwright config
    validate and share those values.
