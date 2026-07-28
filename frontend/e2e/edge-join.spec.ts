@@ -75,7 +75,12 @@ function seedPipeline(): void {
       format: "csv",
       mode: "scan",
       path: "data/lookup.csv",
-      arguments: {},
+      arguments: {
+        schema: {
+          id: "int64",
+          lookup_value: "str",
+        },
+      },
     }, null, 2)}\n`,
     "utf8",
   )

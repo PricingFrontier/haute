@@ -465,8 +465,9 @@ def _xml_element_value(element: ET.Element) -> Any:
 def _iter_xml_records(data_path: Path) -> Iterator[dict[str, Any]]:
     """Yield records from a single XML document.
 
-    A container whose children all share one element name is treated like a
-    JSON root array. Otherwise the document root itself is one record.
+    An attribute-free container whose children all share one element name is
+    treated like a JSON root array. Otherwise the document root itself is one
+    record so root attributes are never discarded.
     """
     raw = data_path.read_bytes()
     upper = raw.upper()
@@ -478,7 +479,7 @@ def _iter_xml_records(data_path: Path) -> Iterator[dict[str, Any]]:
         raise ApiInputSchemaError(f"Invalid XML in data file: {exc}") from exc
 
     children = list(root)
-    if children:
+    if children and not root.attrib:
         child_names = {_xml_local_name(child.tag) for child in children}
         if len(child_names) == 1:
             converted = [_xml_element_value(child) for child in children]

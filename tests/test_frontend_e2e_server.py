@@ -37,6 +37,11 @@ def test_blank_scaffold_is_augmented_with_complete_browser_graph(
 
     run_frontend_e2e_server._augment_starter_pipeline()
 
+    source = pipeline_path.read_text(encoding="utf-8")
+    assert source.index("import polars as pl") < source.index(
+        'pipeline = haute.Pipeline("browser_fixture")'
+    )
+
     graph = parse_pipeline_file(pipeline_path)
     assert {node.id for node in graph.nodes} == {
         "raw_rows",

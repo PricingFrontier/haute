@@ -89,32 +89,38 @@ test.describe("data input/output nodes", () => {
     await expect(page.locator(".react-flow__node-default")).toHaveCount(0)
 
     await expect(wideIn).toBeVisible()
+    const nodePanel = page.getByTestId("node-panel")
     await expect(async () => {
       await wideIn.click({ force: true })
-      await expect(page.getByTestId("node-panel")).toBeVisible({ timeout: 2_000 })
+      await expect(nodePanel).toBeVisible({ timeout: 2_000 })
     }).toPass({ timeout: 15_000 })
 
     // The editor renders the saved config and capability-driven selectors.
     // File formats stay scoped to File; Lakehouse formats appear only after
     // selecting that provider.
-    const providerSelect = page.getByLabel("Provider")
-    await expect(providerSelect).toHaveValue("file")
-    const formatSelect = page.getByLabel(/format/i).first()
+    const providerGroup = nodePanel.getByRole("radiogroup", { name: "Provider" })
+    await expect(providerGroup.getByRole("radio", { name: "File" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    )
+    const formatSelect = nodePanel.getByLabel(/format/i).first()
     await expect(formatSelect).toHaveValue("parquet")
     const optionLabels = await formatSelect.locator("option").allTextContents()
     expect(optionLabels.some((t) => /Text lines \(unstable\)/.test(t))).toBe(true)
     await expect(formatSelect.locator('option[value="delta"]')).toHaveCount(0)
-    await expect(page.getByLabel("Mode")).toHaveCount(0)
-    await expect(page.getByRole("button", { name: "Cache as Parquet" })).toHaveCount(0)
+    await expect(nodePanel.getByLabel("Mode")).toHaveCount(0)
+    await expect(nodePanel.getByRole("button", { name: "Cache as Parquet" })).toHaveCount(0)
 
     // The saved path round-tripped through sidecar + codegen + parse.
-    await expect(page.getByLabel(/path/i).first()).toHaveValue("data/sample.parquet")
+    const pathPicker = nodePanel.getByTestId("path-picker")
+    await expect(pathPicker.getByText("data/sample.parquet", { exact: true })).toBeVisible()
+    await expect(pathPicker.getByRole("button", { name: "change" })).toBeVisible()
 
     await formatSelect.selectOption("csv")
-    await expect(page.getByLabel("Mode")).toHaveCount(0)
-    await expect(page.getByRole("button", { name: "Cache as Parquet" })).toBeVisible()
+    await expect(nodePanel.getByLabel("Mode")).toHaveCount(0)
+    await expect(nodePanel.getByRole("button", { name: "Cache as Parquet" })).toBeVisible()
 
-    await providerSelect.selectOption("lakehouse")
+    await providerGroup.getByRole("radio", { name: "Lakehouse" }).click()
     await expect(formatSelect.locator('option[value="delta"]')).toContainText("Delta Lake")
     await expect(formatSelect.locator('option[value="lines"]')).toHaveCount(0)
   })

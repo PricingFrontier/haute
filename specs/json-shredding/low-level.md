@@ -59,8 +59,9 @@ Submodel graph expansion and boundary rewiring are owned by
   `bool`, `date`) mapped to Polars `DataType` classes.
 - `_iter_xml_records(data_path)` — rejects DTD/entity declarations, parses one XML
   document, strips element/attribute namespaces, maps attributes and child elements
-  to the common object/list/scalar record shape, and promotes repeated homogeneous
-  object children of the root to top-level records. Mixed content and field-name
+  to the common object/list/scalar record shape, and promotes homogeneous object
+  children of an attribute-free root to top-level records. An attributed root stays
+  one record so its attributes are never discarded. Mixed content and field-name
   collisions raise `ApiInputSchemaError`.
 
 **`_jsonpath.py`**

@@ -52,9 +52,6 @@ READINESS_URL = f"http://{READINESS_HOST}:{READINESS_PORT}/ready"
 _BROWSER_CORE_BLOCK = """
 
 
-import polars as pl
-
-
 @pipeline.data_input(config="config/data_input/raw_rows.json")
 def raw_rows() -> pl.LazyFrame:
     \"\"\"Deterministic browser source independent of the product scaffold.\"\"\"
@@ -409,6 +406,15 @@ def _augment_starter_pipeline() -> None:
         'Path(__file__).parent.parent / "data" / "sample.parquet"',
     )
     if "def raw_rows(" not in source:
+        if "import polars as pl" not in source:
+            constructor_marker = "pipeline = haute.Pipeline("
+            if constructor_marker not in source:
+                raise RuntimeError("Browser fixture scaffold has no pipeline constructor")
+            source = source.replace(
+                constructor_marker,
+                f"import polars as pl\n\n{constructor_marker}",
+                1,
+            )
         source = source.rstrip() + _BROWSER_CORE_BLOCK
     if "def browser_model(" not in source:
         source = source.rstrip() + _BROWSER_MODEL_BLOCK

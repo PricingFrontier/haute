@@ -157,8 +157,11 @@
    header. Its generated fixture explicitly owns the deterministic
    `raw_rows` → `enriched` → `priced` core graph and sidecars after invoking
    the blank `haute init` scaffold; browser coverage must not depend on product
-   scaffolding to supply test nodes. Its out-of-browser readiness probe uses
-   the supported non-browser token header. `HAUTE_E2E_BACKEND_PORT`,
+   scaffolding to supply test nodes. The fixture keeps all standard imports
+   before the pipeline constructor so the parser retains externally inserted
+   preamble code and websocket file sync can refresh the Imports editor. Its
+   out-of-browser readiness probe uses the supported non-browser token header.
+   `HAUTE_E2E_BACKEND_PORT`,
    `HAUTE_E2E_FRONTEND_PORT`, and
    `HAUTE_E2E_READINESS_PORT` may select alternate loopback ports when a
    developer already has Haute running; the harness and Playwright config
