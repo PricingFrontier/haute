@@ -59,6 +59,48 @@ describe("TrainingProgress", () => {
     expect(container.textContent).toContain("0.1235")
   })
 
+  it("renders the authoritative bounded loss-history snapshot and truncation label", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({
+          train_loss_history: [
+            { iteration: 40, train_rmse: 0.8, eval_rmse: 0.9 },
+            { iteration: 50, train_rmse: 0.7, eval_rmse: 0.85 },
+          ],
+          train_loss_history_truncated: true,
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Loss Curve")).toBeInTheDocument()
+    expect(
+      screen.getByText("Showing latest retained loss-history window."),
+    ).toBeInTheDocument()
+  })
+
+  it("does not synthesize a chart from the latest loss poll", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({ train_loss: { train_rmse: 0.7 } })}
+      />,
+    )
+
+    expect(screen.queryByText("Loss Curve")).toBeNull()
+  })
+
+  it("shows an estimate only when the store supplies one", () => {
+    const rendered = render(
+      <TrainingProgress
+        trainProgress={makeProgress()}
+        estimatedRemainingSeconds={45}
+      />,
+    )
+    expect(screen.getByText("Estimated remaining: 45s")).toBeInTheDocument()
+
+    rendered.rerender(<TrainingProgress trainProgress={makeProgress()} />)
+    expect(screen.queryByText(/Estimated remaining/)).toBeNull()
+  })
+
   it("renders memory-pressure diagnostics from structured progress metrics", () => {
     render(
       <TrainingProgress

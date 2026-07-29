@@ -72,6 +72,95 @@ def _completed_train_result() -> object:
     )
 
 
+def _cross_validation_response_payload() -> dict[str, object]:
+    folds = [
+        {
+            "schema_version": 1,
+            "fold_index": 0,
+            "train_rows": 8,
+            "validation_rows": 2,
+            "metrics": {"rmse": 1.0},
+        },
+        {
+            "schema_version": 1,
+            "fold_index": 1,
+            "train_rows": 8,
+            "validation_rows": 2,
+            "metrics": {"rmse": 3.0},
+        },
+    ]
+    return {
+        "schema_version": 1,
+        "strategy": "random",
+        "fold_count": 2,
+        "fit_count": 3,
+        "folds": folds,
+        "metrics": {
+            "rmse": {
+                "mean": 2.0,
+                "population_std": 1.0,
+                "min": 1.0,
+                "max": 3.0,
+                "fold_count": 2,
+                "total_validation_rows": 4,
+            }
+        },
+        "plan_sha256": "a" * 64,
+        "results_sha256": "b" * 64,
+        "fold_plan_path": "outputs/model.cv-fold-plan.json",
+        "fold_results_path": "outputs/model.cv-fold-results.json",
+        "report_path": "outputs/model.cv-report.json",
+    }
+
+
+class TestCrossValidationResponseContract:
+    def test_completed_response_accepts_bounded_report(self) -> None:
+        from haute.schemas import TrainResponse
+
+        response = TrainResponse(
+            status="completed",
+            cross_validation=_cross_validation_response_payload(),
+        )
+
+        assert response.cross_validation is not None
+        assert response.cross_validation.fit_count == 3
+        assert [fold.fold_index for fold in response.cross_validation.folds] == [0, 1]
+
+    @pytest.mark.parametrize(
+        ("mutate", "message"),
+        [
+            (
+                lambda payload: payload.update(fold_count=11, fit_count=12),
+                "less than or equal to 10",
+            ),
+            (
+                lambda payload: payload["folds"].reverse(),
+                "ascending",
+            ),
+            (
+                lambda payload: payload["metrics"]["rmse"].update(total_validation_rows=5),
+                "total_validation_rows",
+            ),
+            (
+                lambda payload: payload["folds"][0]["metrics"].update(mae=1.0),
+                "metric names",
+            ),
+            (
+                lambda payload: payload.update(plan_sha256="not-a-digest"),
+                "plan_sha256",
+            ),
+        ],
+    )
+    def test_completed_response_rejects_malformed_report(self, mutate, message: str) -> None:
+        from haute.schemas import TrainResponse
+
+        payload = _cross_validation_response_payload()
+        mutate(payload)
+
+        with pytest.raises(ValueError, match=message):
+            TrainResponse(status="completed", cross_validation=payload)
+
+
 def _inline_route_service(monkeypatch: pytest.MonkeyPatch):
     """Install an inline-protocol route service and retain launched supervisors."""
     from haute.routes.modelling import _store
@@ -1570,6 +1659,36 @@ class TestValidateConfig:
                 "params": {"iterations": 10},
             }
         )
+
+    @pytest.mark.parametrize(
+        "cross_validation",
+        [
+            {"schema_version": 2, "strategy": "random", "fold_count": 3, "seed": 7},
+            {"schema_version": 1, "strategy": "random", "fold_count": True, "seed": 7},
+            {
+                "schema_version": 1,
+                "strategy": "group",
+                "fold_count": 3,
+                "seed": 7,
+            },
+        ],
+    )
+    def test_invalid_cross_validation_fails_before_job_creation(
+        self, cross_validation: dict[str, object]
+    ) -> None:
+        with pytest.raises(HTTPException) as raised:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "loss_function": "RMSE",
+                    "cross_validation": cross_validation,
+                }
+            )
+
+        assert raised.value.status_code == 400
+        assert "cross_validation" in str(raised.value.detail)
 
     def test_valid_glm_config_passes(self):
         TrainService._validate_config(

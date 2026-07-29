@@ -254,6 +254,59 @@ class TestExplicitObjectiveRequired:
         assert kwargs["loss_function"] is None
 
 
+class TestCrossValidationConfig:
+    def test_canonical_config_is_threaded_into_training_job_kwargs(self):
+        config = {
+            "target": "y",
+            "loss_function": "RMSE",
+            "cross_validation": {
+                "schema_version": 1,
+                "strategy": "group",
+                "fold_count": 4,
+                "seed": 17,
+                "group_column": "policy_id",
+            },
+        }
+
+        kwargs = build_training_job_kwargs(config, data="d.parquet")
+
+        assert kwargs["cross_validation"] == config["cross_validation"]
+
+    @pytest.mark.parametrize(
+        "cross_validation",
+        [
+            {"schema_version": 2, "strategy": "random", "fold_count": 3, "seed": 42},
+            {"schema_version": 1, "strategy": "random", "fold_count": True, "seed": 42},
+            {"schema_version": 1, "strategy": "random", "fold_count": 11, "seed": 42},
+            {"schema_version": 1, "strategy": "group", "fold_count": 3, "seed": 42},
+            {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "fold_count": 3,
+                "seed": 42,
+                "date_column": "",
+            },
+            {
+                "schema_version": 1,
+                "strategy": "random",
+                "fold_count": 3,
+                "seed": 42,
+                "group_column": "policy_id",
+            },
+        ],
+    )
+    def test_invalid_config_fails_during_canonical_build(self, cross_validation):
+        with pytest.raises(TrainingConfigError, match="cross.validation"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "cross_validation": cross_validation,
+                },
+                data="d.parquet",
+            )
+
+
 class TestDefaultMetricsDerivation:
     """The default reported-metric list must follow the training objective —
     hardcoded ['gini', 'rmse'] gives a Poisson/Tweedie model squared-error

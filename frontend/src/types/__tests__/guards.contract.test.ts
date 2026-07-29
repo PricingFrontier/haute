@@ -85,6 +85,47 @@ function featureSelectionFixture(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function crossValidationFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    schema_version: 1,
+    strategy: "random",
+    fold_count: 2,
+    fit_count: 3,
+    folds: [
+      {
+        schema_version: 1,
+        fold_index: 0,
+        train_rows: 8,
+        validation_rows: 2,
+        metrics: { rmse: 1 },
+      },
+      {
+        schema_version: 1,
+        fold_index: 1,
+        train_rows: 8,
+        validation_rows: 2,
+        metrics: { rmse: 3 },
+      },
+    ],
+    metrics: {
+      rmse: {
+        mean: 2,
+        population_std: 1,
+        min: 1,
+        max: 3,
+        fold_count: 2,
+        total_validation_rows: 4,
+      },
+    },
+    plan_sha256: "a".repeat(64),
+    results_sha256: "b".repeat(64),
+    fold_plan_path: "outputs/model.cv-fold-plan.json",
+    fold_results_path: "outputs/model.cv-fold-results.json",
+    report_path: "outputs/model.cv-report.json",
+    ...overrides,
+  }
+}
+
 function executionMetricsFixture() {
   return {
     schema_version: 1,
@@ -707,6 +748,69 @@ describe("API response guards", () => {
     expect(parsed.diagnostics_errors?.[0].diagnostic).toBe("shap")
   })
 
+  it("retains a strict bounded cross-validation report", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+    const parsed = parseTrainResponse({
+      ...fixture,
+      cross_validation: crossValidationFixture(),
+    })
+
+    expect(parsed.cross_validation?.fit_count).toBe(3)
+    expect(parsed.cross_validation?.metrics.rmse.mean).toBe(2)
+    expect(parsed.cross_validation?.folds.map((fold) => fold.fold_index)).toEqual([0, 1])
+  })
+
+  it.each([
+    crossValidationFixture({ schema_version: 2 }),
+    crossValidationFixture({ fold_count: 11, fit_count: 12 }),
+    crossValidationFixture({
+      folds: [
+        crossValidationFixture().folds[1],
+        crossValidationFixture().folds[0],
+      ],
+    }),
+    crossValidationFixture({
+      folds: [
+        {
+          ...crossValidationFixture().folds[0],
+          metrics: { rmse: 1, mae: 1 },
+        },
+        crossValidationFixture().folds[1],
+      ],
+    }),
+    crossValidationFixture({
+      metrics: {
+        rmse: {
+          mean: 2,
+          population_std: 1,
+          min: 1,
+          max: 3,
+          fold_count: 2,
+          total_validation_rows: 5,
+        },
+      },
+    }),
+    crossValidationFixture({ plan_sha256: "not-a-digest" }),
+    crossValidationFixture({
+      folds: [
+        {
+          ...crossValidationFixture().folds[0],
+          metrics: { rmse: Number.POSITIVE_INFINITY },
+        },
+        crossValidationFixture().folds[1],
+      ],
+    }),
+  ])("rejects malformed present cross-validation reports", (crossValidation) => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+
+    expect(() =>
+      parseTrainResponse({
+        ...fixture,
+        cross_validation: crossValidation,
+      }),
+    ).toThrow(/cross.validation/i)
+  })
+
   it("preserves per-feature PDP diagnostic errors", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
 
@@ -768,6 +872,61 @@ describe("API response guards", () => {
 
     expect(parsed.result?.status).toBe("completed")
     expect(parsed.train_loss.learn).toBe(0.1)
+  })
+
+  it("retains the authoritative live loss-history snapshot and truncation flag", () => {
+    const parsed = parseTrainStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
+      train_loss_history: [
+        { iteration: 20, train_rmse: 0.9, eval_rmse: 1.1 },
+        { iteration: 30, train_rmse: 0.8, eval_rmse: 1.0 },
+      ],
+      train_loss_history_truncated: true,
+    })
+
+    expect(parsed.train_loss_history).toEqual([
+      { iteration: 20, train_rmse: 0.9, eval_rmse: 1.1 },
+      { iteration: 30, train_rmse: 0.8, eval_rmse: 1.0 },
+    ])
+    expect(parsed.train_loss_history_truncated).toBe(true)
+  })
+
+  it("leaves absent live loss history absent", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>(
+      "train_status_response",
+    )
+    delete fixture.train_loss_history
+    delete fixture.train_loss_history_truncated
+    const parsed = parseTrainStatusResponse(fixture)
+
+    expect(parsed.train_loss_history).toBeUndefined()
+    expect(parsed.train_loss_history_truncated).toBeUndefined()
+  })
+
+  it.each([
+    [{ iteration: "20", train_rmse: 0.9 }],
+    [{ iteration: 20, train_rmse: "0.9" }],
+    [null],
+  ])("rejects a malformed present live loss-history snapshot", (history) => {
+    expect(() =>
+      parseTrainStatusResponse({
+        ...loadUiContractFixture<Record<string, unknown>>(
+          "train_status_response",
+        ),
+        train_loss_history: history,
+      }),
+    ).toThrow(/train_loss_history/i)
+  })
+
+  it("rejects a non-Boolean live loss-history truncation flag", () => {
+    expect(() =>
+      parseTrainStatusResponse({
+        ...loadUiContractFixture<Record<string, unknown>>(
+          "train_status_response",
+        ),
+        train_loss_history_truncated: "yes",
+      }),
+    ).toThrow(/train_loss_history_truncated/i)
   })
 
   it("preserves structured terminal training error detail", () => {

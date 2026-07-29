@@ -10,37 +10,32 @@ specified in [modelling](../modelling/high-level.md).
 
 | Package | State | Priority | Outcome |
 |---|---|---:|---|
-| MOD-M04 | Planned | P2 | Add reproducible bounded cross-validation as a product-scoped feature. |
+| — | — | — | No active modelling roadmap package remains. |
 
 ## Planned improvements
 
-### MOD-M04 — Splits and cross-validation
-**Why:** The split-leakage contract is complete, but multi-fit cross-validation
-is a net-new modelling workflow whose fold identity, cancellation, resource
-ownership, and result shape must be explicit before fits are multiplied.
-
-**Plan:** Deliver this in two independent phases. First define a versioned,
-reproducible fold-plan artifact and a single-fold train/evaluate contract for
-random, group, and temporal strategies. Then add bounded sequential
-orchestration and aggregate/per-fold reporting after the supervised training
-worker can own multiple fits under one admission lease and cancellation token.
-Hyperparameter search is not part of this package and requires a separate
-product contract.
-
-**Acceptance:** Fold plans are reproducible, reject leakage and invalid folds,
-preserve group/temporal ordering, and round-trip through the declared artifact
-schema. Orchestration proves a fixed fit bound, deterministic result ordering,
-whole-run cancellation, admission release, and aggregate metrics derived from
-the exact persisted per-fold results.
-
-**Dependencies:** Delivered training/evaluation and lifecycle contracts
-(formerly MOD-M01–MOD-M03, MOD-M06), plus an explicit multi-fit extension of
-the supervised child-worker protocol.
-
-**Evidence:** `src/haute/modelling`; `tests/test_modelling.py`; `specs/modelling/high-level.md`.
+There are no active modelling roadmap packages.
 
 ## Delivered outcomes
 
+- `MOD-M10` presents supported modelling nodes as Target, Features, Params,
+  Split, and Train panes with per-node memory, plain setup-tab labels, an
+  accessible active-training indicator, and click-time validation beneath
+  Train. CatBoost and GLM share the role-aware feature browser and atomic
+  dependency cleanup; CatBoost has a single algorithm-neutral, conflict-safe
+  JSON-object hyperparameter editor that preserves access to arbitrary current
+  and future parameters; live progress retains the backend loss window and
+  derives a bounded browser ETA. The present-tense contract and focused evidence live in
+  [the modelling/optimiser UI specification](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
+- `MOD-M04` provides strict version-1 random/group/temporal fold plans, a
+  two-to-ten-fold bound, sequential same-child orchestration, whole-run
+  cancellation, exact persisted-result aggregation, a final ordinary fit, and
+  rollback-capable five-artifact publication. The additive completed response
+  and result summary expose aggregate and ordered fold metrics. Contracts and
+  evidence live in
+  [the modelling specification](../modelling/high-level.md#bounded-cross-validation),
+  `tests/test_cross_validation.py`, `tests/test_training_cross_validation.py`,
+  and the worker/route/frontend contract suites.
 - `MOD-M05` keeps the existing Fortran-contiguous `Float32` CatBoost handoff.
   The recorded 2026-07-27 opt-in 100,000-row × 32-feature run measured direct
   `Pool` construction at 484,300 ns median versus 23,716,000 ns for
@@ -70,10 +65,9 @@ the supervised child-worker protocol.
   `tests/test_offset_scoring.py`, `tests/test_modelling.py`,
   `tests/test_train_service_coverage.py`, and
   `tests/test_modelling_export.py`.
-- The split-leakage half of `MOD-M04` (temporal/group ordering, null-date
-  rejection, holdout recency) and the redundant-pass/PDP-bounding half of
-  `MOD-M05` are also delivered. The remaining CV work is deliberately
-  separated above as a net-new product feature rather than audit debt.
+- The split-leakage behavior (temporal/group ordering, null-date rejection,
+  holdout recency) and the redundant-pass/PDP-bounding half of `MOD-M05` are
+  also delivered.
 - `MOD-M07` returns a pollable job handle before preparation, uses one
   idempotent cancellation token across preparation and fitting, preserves a
   terminal race winner, and reports GPU-memory rejection as an actionable

@@ -23,7 +23,22 @@ from haute._worker_protocol import (
     validate_result_manifest,
 )
 from haute.errors import PreambleError
-from haute.modelling._training_job import TrainResult, model_contract_filename
+from haute.modelling._cross_validation import (
+    CV_SCHEMA_VERSION,
+    CrossValidationFoldResult,
+    FoldResultsArtifact,
+    aggregate_fold_results,
+    file_sha256,
+    generate_fold_plan,
+    save_cross_validation_report,
+    save_fold_plan,
+    save_fold_results,
+)
+from haute.modelling._training_job import (
+    TrainResult,
+    cross_validation_artifact_filenames,
+    model_contract_filename,
+)
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import (
     TrainingArtifactPublicationError,
@@ -103,6 +118,70 @@ class _SuccessfulTrainingJob:
         )
 
 
+def _cv_report_payload(output_dir: Path, model_name: str) -> dict[str, object]:
+    names = cross_validation_artifact_filenames(model_name)
+    plan_path = output_dir / names["fold_plan"]
+    fold_results_path = output_dir / names["fold_results"]
+    report_path = output_dir / names["report"]
+    plan = generate_fold_plan(
+        {
+            "schema_version": CV_SCHEMA_VERSION,
+            "strategy": "random",
+            "fold_count": 2,
+            "seed": 7,
+        },
+        "c" * 64,
+        4,
+    )
+    save_fold_plan(plan, plan_path)
+    plan_sha256 = file_sha256(plan_path)
+    fold_results = FoldResultsArtifact(
+        CV_SCHEMA_VERSION,
+        plan_sha256,
+        tuple(
+            CrossValidationFoldResult(
+                CV_SCHEMA_VERSION,
+                fold_index,
+                plan.fold_counts[fold_index][0],
+                plan.fold_counts[fold_index][1],
+                {"rmse": metric},
+            )
+            for fold_index, metric in enumerate((1.0, 3.0))
+        ),
+    )
+    save_fold_results(fold_results, fold_results_path)
+    results_sha256 = file_sha256(fold_results_path)
+    report = aggregate_fold_results(
+        plan,
+        fold_results,
+        ["rmse"],
+        results_sha256=results_sha256,
+    )
+    save_cross_validation_report(report, report_path)
+
+    return {
+        "schema_version": CV_SCHEMA_VERSION,
+        "strategy": "random",
+        "fold_count": 2,
+        "fit_count": 3,
+        "folds": [fold.to_plain_data() for fold in report.folds],
+        "metrics": report.metrics,
+        "plan_sha256": plan_sha256,
+        "results_sha256": results_sha256,
+        "fold_plan_path": str(plan_path),
+        "fold_results_path": str(fold_results_path),
+        "report_path": str(report_path),
+    }
+
+
+class _SuccessfulCrossValidationTrainingJob(_SuccessfulTrainingJob):
+    def run(self, progress, on_iteration, **kwargs):
+        result = super().run(progress, on_iteration, **kwargs)
+        cross_validation = _cv_report_payload(self.output_dir, self.name)
+        result.cross_validation = cross_validation
+        return result
+
+
 def _request(tmp_path: Path) -> WorkerRequest:
     return WorkerRequest(
         "job-1",
@@ -146,6 +225,31 @@ def _staged_training_manifest(tmp_path: Path) -> tuple[Path, Path, WorkerResultM
     return artifact_root, staged_output, manifest
 
 
+def _staged_cv_training_manifest(tmp_path: Path) -> tuple[Path, Path, WorkerResultManifest]:
+    artifact_root, staged_output, ordinary = _staged_training_manifest(tmp_path)
+    cross_validation = _cv_report_payload(staged_output, "quoted")
+    artifacts = list(ordinary.artifacts)
+    for kind, response_field in (
+        ("cv_fold_plan", "fold_plan_path"),
+        ("cv_fold_results", "fold_results_path"),
+        ("cv_report", "report_path"),
+    ):
+        path = Path(str(cross_validation[response_field]))
+        artifacts.append(
+            build_artifact_manifest(
+                artifact_root=artifact_root,
+                path=path,
+                kind=kind,
+                lifetime="staged",
+            )
+        )
+    return (
+        artifact_root,
+        staged_output,
+        WorkerResultManifest(metadata={}, artifacts=tuple(artifacts)),
+    )
+
+
 def _dispersion_request(tmp_path: Path, **overrides: object) -> WorkerRequest:
     payload: object = {
         "job_kwargs": {
@@ -182,6 +286,33 @@ def test_training_entrypoint_stages_model_contract_and_plain_result(tmp_path: Pa
     }
     assert [event.sequence for event in queue.events] == [0, 1]
     assert [event.kind for event in queue.events] == ["progress", "iteration"]
+
+
+def test_training_entrypoint_stages_complete_cross_validation_set(
+    tmp_path: Path,
+) -> None:
+    queue = _ForwardingQueue()
+    runtime = WorkerRuntime(queue, str(tmp_path / "artifacts"))
+
+    with patch(
+        "haute.modelling.TrainingJob",
+        _SuccessfulCrossValidationTrainingJob,
+    ):
+        result = _run_training_process_job(runtime, _request(tmp_path))
+
+    assert isinstance(result, WorkerResultManifest)
+    assert {artifact.kind for artifact in result.artifacts} == {
+        "model",
+        "feature_contract",
+        "cv_fold_plan",
+        "cv_fold_results",
+        "cv_report",
+    }
+    response = result.metadata["response"]
+    cross_validation = response["cross_validation"]
+    assert cross_validation["fold_plan_path"] == "output/quoted.cv-fold-plan.json"
+    assert cross_validation["fold_results_path"] == "output/quoted.cv-fold-results.json"
+    assert cross_validation["report_path"] == "output/quoted.cv-report.json"
 
 
 @pytest.mark.parametrize(
@@ -405,6 +536,169 @@ def test_train_service_publishes_validated_pair_and_cleans_parent_state(
     assert (output_dir / model_contract_filename("quoted")).exists()
     assert not prepared.exists()
     assert released == [True]
+    assert not list(output_dir.glob(".haute-training-*"))
+
+
+def test_train_service_publishes_one_complete_cross_validation_run(
+    tmp_path: Path,
+) -> None:
+    launches: list[frozenset[str]] = []
+
+    def recording_runner(function, request, **kwargs):
+        launches.append(kwargs["artifact_kinds"])
+        return _inline_protocol_runner(function, request, **kwargs)
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=recording_runner)
+    output_dir = tmp_path / "outputs"
+    prepared = tmp_path / "prepared.parquet"
+    prepared.write_bytes(b"prepared")
+    released: list[bool] = []
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+        admission_release=lambda: released.append(True),
+    )
+    job_id = store.create_job(
+        {
+            "status": "running",
+            "job_type": "training",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
+    )
+    config = {
+        "name": "quoted",
+        "target": "y",
+        "algorithm": "catboost",
+        "loss_function": "RMSE",
+        "output_dir": str(output_dir),
+        "cross_validation": {
+            "schema_version": 1,
+            "strategy": "random",
+            "fold_count": 2,
+            "seed": 7,
+        },
+    }
+
+    with patch(
+        "haute.modelling.TrainingJob",
+        _SuccessfulCrossValidationTrainingJob,
+    ):
+        thread = service._launch_background(
+            job_id,
+            "quoted",
+            config,
+            {"iterations": 2},
+            str(prepared),
+            None,
+            10,
+            execution_context=context,
+        )
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
+
+    job = store.require_job(job_id)
+    assert job["status"] == "completed"
+    report = job["result"].cross_validation
+    assert report is not None
+    names = cross_validation_artifact_filenames("quoted")
+    assert report.fold_plan_path == str((output_dir / names["fold_plan"]).resolve())
+    assert report.fold_results_path == str((output_dir / names["fold_results"]).resolve())
+    assert report.report_path == str((output_dir / names["report"]).resolve())
+    assert len(launches) == 1
+    assert launches[0] == {
+        "model",
+        "feature_contract",
+        "cv_fold_plan",
+        "cv_fold_results",
+        "cv_report",
+    }
+    assert released == [True]
+    assert not prepared.exists()
+    assert not list(output_dir.glob(".haute-training-*"))
+
+
+@pytest.mark.parametrize(
+    "mutate_response",
+    [
+        pytest.param(
+            lambda payload: payload.__setitem__(
+                "fold_plan_path",
+                payload["report_path"],
+            ),
+            id="manifest-path",
+        ),
+        pytest.param(
+            lambda payload: payload.__setitem__("plan_sha256", "d" * 64),
+            id="artifact-digest",
+        ),
+    ],
+)
+def test_train_service_rejects_cross_validation_response_artifact_mismatch(
+    tmp_path: Path,
+    mutate_response,
+) -> None:
+    def mismatched_runner(function, request, **kwargs):
+        result = _inline_protocol_runner(function, request, **kwargs)
+        metadata = dict(result.metadata)
+        response = dict(metadata["response"])
+        cross_validation = dict(response["cross_validation"])
+        mutate_response(cross_validation)
+        response["cross_validation"] = cross_validation
+        metadata["response"] = response
+        return WorkerResultManifest(metadata=metadata, artifacts=result.artifacts)
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=mismatched_runner)
+    output_dir = tmp_path / "outputs"
+    prepared = tmp_path / "prepared.parquet"
+    prepared.write_bytes(b"prepared")
+    context = ExecutionContext(
+        operation="training_pipeline",
+        profile=ExecutionProfile.TRAINING_PREP,
+    )
+    job_id = store.create_job(
+        {
+            "status": "running",
+            "job_type": "training",
+            "start_time": time.monotonic(),
+            "timeout": 60,
+        }
+    )
+    config = {
+        "name": "quoted",
+        "target": "y",
+        "algorithm": "catboost",
+        "loss_function": "RMSE",
+        "output_dir": str(output_dir),
+        "cross_validation": {
+            "schema_version": 1,
+            "strategy": "random",
+            "fold_count": 2,
+            "seed": 7,
+        },
+    }
+
+    with patch(
+        "haute.modelling.TrainingJob",
+        _SuccessfulCrossValidationTrainingJob,
+    ):
+        thread = service._launch_background(
+            job_id,
+            "quoted",
+            config,
+            {"iterations": 2},
+            str(prepared),
+            None,
+            10,
+            execution_context=context,
+        )
+        assert thread is not None
+        thread.join_and_raise(timeout=10)
+
+    assert store.require_job(job_id)["status"] == "contract_error"
+    assert not output_dir.joinpath("quoted.cbm").exists()
     assert not list(output_dir.glob(".haute-training-*"))
 
 
@@ -767,6 +1061,12 @@ def test_publication_rolls_back_pair_when_second_staged_artifact_fails(
     final_contract = output_root / model_contract_filename("quoted")
     final_model.write_bytes(b"old-model")
     final_contract.write_bytes(b"old-contract")
+    stale_cv_paths = [
+        output_root / filename
+        for filename in cross_validation_artifact_filenames("quoted").values()
+    ]
+    for index, path in enumerate(stale_cv_paths):
+        path.write_bytes(f"old-cv-{index}".encode())
     original_replace = os.replace
     staged_contract = staged_output / model_contract_filename("quoted")
 
@@ -787,10 +1087,211 @@ def test_publication_rolls_back_pair_when_second_staged_artifact_fails(
 
     assert final_model.read_bytes() == b"old-model"
     assert final_contract.read_bytes() == b"old-contract"
+    assert [path.read_bytes() for path in stale_cv_paths] == [
+        b"old-cv-0",
+        b"old-cv-1",
+        b"old-cv-2",
+    ]
     assert not (output_root / ".quoted.cbm.job-1.haute-backup").exists()
     assert not (output_root / f".{final_contract.name}.job-1.haute-backup").exists()
     assert not (staged_output / "quoted.cbm").exists()
     assert staged_contract.exists()
+
+
+def test_ordinary_publication_retires_stale_cross_validation_companions(
+    tmp_path: Path,
+) -> None:
+    artifact_root, _staged_output, manifest = _staged_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+    output_root.mkdir()
+    stale_cv_paths = [
+        output_root / filename
+        for filename in cross_validation_artifact_filenames("quoted").values()
+    ]
+    for path in stale_cv_paths:
+        path.write_bytes(b"stale")
+
+    published = _publish_training_artifacts(
+        manifest,
+        artifact_root=artifact_root,
+        output_root=output_root,
+        job_id="job-1",
+        expected_model_name="quoted",
+    )
+
+    assert set(published) == {"model", "feature_contract"}
+    assert not any(path.exists() for path in stale_cv_paths)
+
+
+def test_publication_publishes_complete_cross_validation_set(tmp_path: Path) -> None:
+    artifact_root, _staged_output, manifest = _staged_cv_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+
+    published = _publish_training_artifacts(
+        manifest,
+        artifact_root=artifact_root,
+        output_root=output_root,
+        job_id="job-1",
+        expected_model_name="quoted",
+    )
+
+    assert set(published) == {
+        "model",
+        "feature_contract",
+        "cv_fold_plan",
+        "cv_fold_results",
+        "cv_report",
+    }
+    assert file_sha256(published["cv_fold_plan"])
+    assert file_sha256(published["cv_fold_results"])
+    assert file_sha256(published["cv_report"])
+
+
+def test_publication_rejects_incomplete_cross_validation_set(tmp_path: Path) -> None:
+    artifact_root, _staged_output, complete = _staged_cv_training_manifest(tmp_path)
+    malformed = WorkerResultManifest(
+        metadata={},
+        artifacts=tuple(
+            artifact for artifact in complete.artifacts if artifact.kind != "cv_report"
+        ),
+    )
+
+    with pytest.raises(
+        WorkerProtocolError,
+        match="exactly one model and feature contract",
+    ):
+        _publish_training_artifacts(
+            malformed,
+            artifact_root=artifact_root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+
+def test_publication_rejects_malformed_cross_validation_contents(tmp_path: Path) -> None:
+    artifact_root, staged_output, complete = _staged_cv_training_manifest(tmp_path)
+    report_path = staged_output / cross_validation_artifact_filenames("quoted")["report"]
+    report_path.write_text("{}", encoding="utf-8")
+    malformed_report = build_artifact_manifest(
+        artifact_root=artifact_root,
+        path=report_path,
+        kind="cv_report",
+        lifetime="staged",
+    )
+    malformed = WorkerResultManifest(
+        metadata={},
+        artifacts=tuple(
+            malformed_report if artifact.kind == "cv_report" else artifact
+            for artifact in complete.artifacts
+        ),
+    )
+
+    with pytest.raises(WorkerProtocolError, match="cross-validation artifact"):
+        _publish_training_artifacts(
+            malformed,
+            artifact_root=artifact_root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+
+def test_publication_rejects_fold_results_not_linked_to_exact_plan_file(
+    tmp_path: Path,
+) -> None:
+    artifact_root, staged_output, complete = _staged_cv_training_manifest(tmp_path)
+    plan_path = staged_output / cross_validation_artifact_filenames("quoted")["fold_plan"]
+    plan_path.write_text(plan_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    changed_plan = build_artifact_manifest(
+        artifact_root=artifact_root,
+        path=plan_path,
+        kind="cv_fold_plan",
+        lifetime="staged",
+    )
+    malformed = WorkerResultManifest(
+        metadata={},
+        artifacts=tuple(
+            changed_plan if artifact.kind == "cv_fold_plan" else artifact
+            for artifact in complete.artifacts
+        ),
+    )
+
+    with pytest.raises(WorkerProtocolError, match="cross-validation artifact"):
+        _publish_training_artifacts(
+            malformed,
+            artifact_root=artifact_root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+
+def test_publication_rejects_noncanonical_cross_validation_filename(
+    tmp_path: Path,
+) -> None:
+    artifact_root, staged_output, complete = _staged_cv_training_manifest(tmp_path)
+    original = next(artifact for artifact in complete.artifacts if artifact.kind == "cv_report")
+    original_path = artifact_root / original.relative_path
+    wrong_path = staged_output / "other.cv-report.json"
+    original_path.replace(wrong_path)
+    wrong = build_artifact_manifest(
+        artifact_root=artifact_root,
+        path=wrong_path,
+        kind="cv_report",
+        lifetime="staged",
+    )
+    malformed = WorkerResultManifest(
+        metadata={},
+        artifacts=tuple(
+            wrong if artifact.kind == "cv_report" else artifact for artifact in complete.artifacts
+        ),
+    )
+
+    with pytest.raises(WorkerProtocolError, match="requested model name"):
+        _publish_training_artifacts(
+            malformed,
+            artifact_root=artifact_root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+        )
+
+
+def test_publication_rolls_back_all_cross_validation_artifacts(
+    tmp_path: Path,
+) -> None:
+    artifact_root, staged_output, manifest = _staged_cv_training_manifest(tmp_path)
+    output_root = tmp_path / "outputs"
+    output_root.mkdir()
+    old_contents: dict[str, bytes] = {}
+    for artifact in manifest.artifacts:
+        final = output_root / Path(artifact.relative_path).name
+        old_contents[artifact.kind] = f"old-{artifact.kind}".encode()
+        final.write_bytes(old_contents[artifact.kind])
+
+    failing_source = staged_output / cross_validation_artifact_filenames("quoted")["report"]
+    original_replace = os.replace
+
+    def fail_final_publication(source: Path | str, destination: Path | str) -> None:
+        if Path(source) == failing_source:
+            raise OSError("report cannot be published")
+        original_replace(source, destination)
+
+    with patch("haute.routes._train_service.os.replace", side_effect=fail_final_publication):
+        with pytest.raises(OSError, match="report cannot be published"):
+            _publish_training_artifacts(
+                manifest,
+                artifact_root=artifact_root,
+                output_root=output_root,
+                job_id="job-1",
+                expected_model_name="quoted",
+            )
+
+    for artifact in manifest.artifacts:
+        final = output_root / Path(artifact.relative_path).name
+        assert final.read_bytes() == old_contents[artifact.kind]
+        assert not (output_root / f".{final.name}.job-1.haute-backup").exists()
 
 
 def test_windows_publication_retries_transient_contention_and_publishes_pair(

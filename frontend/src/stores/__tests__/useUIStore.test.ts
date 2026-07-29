@@ -15,6 +15,7 @@ function reset() {
     ratingStepEditorSections: {},
     explorePanes: {},
     explorePreviewPanes: {},
+    modellingPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
@@ -229,6 +230,23 @@ describe("useUIStore", () => {
       expect(useUIStore.getState().explorePreviewPanes).toEqual({
         explore_1: "charts",
         explore_2: "relationships",
+      })
+    })
+  })
+
+  describe("modellingPanes", () => {
+    it("defaults to an empty lookup", () => {
+      expect(useUIStore.getState().modellingPanes).toEqual({})
+    })
+
+    it("remembers panes independently by modelling node", () => {
+      useUIStore.getState().setModellingPane("model_1", "features")
+      useUIStore.getState().setModellingPane("model_2", "train")
+      useUIStore.getState().setModellingPane("model_1", "params")
+
+      expect(useUIStore.getState().modellingPanes).toEqual({
+        model_1: "params",
+        model_2: "train",
       })
     })
   })

@@ -317,7 +317,97 @@ browser without a server or JS bundle.
   error mapping.
 - A model becomes visible at its configured final path only after the parent validates
   staged size/digest evidence and publishes the model plus per-model feature contract.
-  Cancellation, crash, malformed result, or pre-commit publication failure preserves the
-  prior pair and removes prepared/staged files. A post-commit backup or staging cleanup
-  error is logged without relabelling the already durable model as failed. Dispersion
+A CV run publishes those two files and all three CV JSON artifacts as one set.
+An ordinary replacement of the same model removes any prior CV companions in
+that same rollback-capable publication transaction, so a stale report can
+never appear to describe the newly deployed non-CV model.
+Cancellation, crash, malformed result, or pre-commit publication failure preserves the
+prior set and removes prepared/staged files. A post-commit backup or staging cleanup
+error is logged without relabelling the already durable model as failed. Dispersion
   publishes bounded scalar metadata and no artifact.
+
+## Bounded cross-validation
+
+**Configuration and fit bound.** Cross-validation is opt-in through a top-level
+`cross_validation` object. Its only accepted format is schema version 1:
+`schema_version=1`, `strategy` (`random`, `group`, or `temporal`), `fold_count` (an
+integer from 2 through 10), `seed` (an integer, used by random/group plans), and the
+strategy key (`group_column` or `date_column`) where required. An absent object keeps
+the existing single-fit behaviour. Unknown versions, Boolean/inexact fold counts,
+unknown strategies, missing/empty keys, strategy-inapplicable keys, and fold counts
+outside the bound fail during the existing cheap config validation, before a job is
+created. A cross-validation run performs exactly `fold_count` validation fits followed
+by one ordinary final fit using the node's existing `split` config, so the hard bound
+is 11 fits and the completed response still owns the same deployable model,
+feature-contract, diagnostics, and scoring semantics as a non-CV run. Hyperparameter
+search remains out of scope.
+
+**Fold-plan artifact.** Before the first fit, the supervised training child writes and
+round-trips a canonical version-1 fold-plan JSON artifact. It records the strategy,
+fold count, eligible row count (after the existing null-target filter), seed/key
+configuration, the SHA-256 identity of the exact prepared parquet, one compact
+validation-fold assignment per eligible source row, and deterministic per-fold row
+counts. The artifact is structurally strict: unknown/missing fields, an assignment
+outside the strategy's vocabulary, a row-count mismatch, an absent/empty fold, a
+source-identity mismatch, or summary counts that disagree with assignments are
+contract errors.
+
+- Random plans apply the declared NumPy seed to source-row positions, divide the
+  resulting permutation into non-empty validation folds, and use every other row for
+  that fold's training set.
+- Group plans canonicalise the configured key values, order whole groups by a seeded
+  SHA-256 key, and assign them round-robin. A group is never split between validation
+  folds, every fold contains at least one group, and fewer groups than folds is
+  rejected.
+- Temporal plans reject a missing key, null/unparseable dates, or fewer than
+  `fold_count + 1` distinct dates. Equal dates stay together. Ordered distinct dates
+  are divided into one initial training block and `fold_count` subsequent validation
+  blocks; fold `i` trains on every earlier block, validates on block `i`, and does not
+  inspect later rows. Thus every training date is strictly earlier than its fold's
+  validation dates.
+
+Loading a plan validates the persisted schema and digest-linked source before a
+single-fold fit can consume it. A single-fold result has its own version-1 contract:
+fold identity, train/validation row counts, and the configured finite metric mapping.
+It contains no deployable model path and never becomes an independent admitted job.
+
+**Sequential orchestration and reporting.** All fold fits run one at a time inside the
+same supervised spawn child that owns the final fit. The parent holds one admission
+lease and one idempotent cancellation token for the whole run; no fold acquires or
+releases admission, starts another process, or outlives cancellation. A cancellation
+checkpoint runs before plan work, before and after every fold, during each fit through
+the existing callback/context, before persistence/aggregation, and before the final
+fit. Result order is always ascending fold index regardless of timing.
+
+The child persists a version-1 fold-results JSON artifact, reloads that exact artifact,
+and derives the report only from the reloaded results. The version-1 report records the
+fold-plan and fold-results SHA-256 digests, ordered fold summaries, and for every
+configured metric its validation-row-weighted mean and population standard deviation,
+minimum, maximum, fold count, and total validation rows. Missing, extra, non-finite, or
+inconsistently named configured metrics fail the run rather than being silently
+dropped. The plan, exact fold results, aggregate report, final native model, and final
+feature contract are one staged publication set: the parent validates every declared
+path/size/digest, strictly reloads the three linked CV artifacts, and requires the
+completed response to match their exact contents before atomically publishing or
+rolling back the whole set. Cancellation, worker failure, malformed artifacts, a
+response/artifact mismatch, or a lost terminal race publishes none of them.
+
+`TrainResponse.cross_validation` is additive and absent for ordinary runs. For a CV
+completion it carries the bounded report plus the three final artifact paths; status
+continues to carry it only inside the terminal result. Fold fits do not append their
+iteration losses to the live loss-history stream: only the final ordinary fit emits
+iteration samples, so existing live/completed loss charts keep one coherent meaning.
+The modelling result summary displays the aggregate metric rows and ordered per-fold
+rows when the report is present. This package adds no cross-validation config pane;
+the dedicated UI remains a separate product contract.
+
+**Regression evidence.** Focused split/artifact tests prove deterministic generation,
+strict round-trip validation, random disjointness, group non-leakage, temporal
+expanding-window ordering/tie retention, source mismatch, and every invalid-fold
+case. Training/orchestration tests prove the 11-fit ceiling, single active fit,
+ascending results, same-token cancellation of current and queued folds, final-fit
+compatibility, exact persisted-result aggregation, digest linkage, and cleanup.
+Worker/service/route tests prove one child and admission lease, terminal-race
+preservation, strict response/artifact agreement, atomic five-artifact
+publication/rollback, additive response parsing, and release on every terminal path.
+Export tests prove live/script parity for the canonical config.

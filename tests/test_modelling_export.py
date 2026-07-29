@@ -248,6 +248,27 @@ class TestSplitConfiguration:
         assert "'group_column': 'policy_id'" in script
         compile(script, "<test>", "exec")
 
+    def test_cross_validation_config_is_exported_without_drift(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "cross_validation": {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "fold_count": 4,
+                "seed": 42,
+                "date_column": "event_date",
+            },
+        }
+
+        script = generate_training_script(config, "d.parquet")
+
+        assert "cross_validation=" in script
+        assert "'schema_version': 1" in script
+        assert "'strategy': 'temporal'" in script
+        assert "'fold_count': 4" in script
+        assert "'date_column': 'event_date'" in script
+        compile(script, "<test>", "exec")
+
     def test_default_split_dict_used_when_not_provided(self):
         script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
         assert repr(DEFAULT_SPLIT_DICT) in script

@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
+import useNodeResultsStore from "../../stores/useNodeResultsStore"
 
 const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
@@ -173,7 +174,14 @@ function eligibleApiInputTable(label: string) {
 describe("NodePanel", () => {
   beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1920, writable: true, configurable: true })
-    useUIStore.setState({ nodePanelWidth: 600, paletteOpen: true, explorePanes: {}, explorePreviewPanes: {} })
+    useUIStore.setState({
+      nodePanelWidth: 600,
+      paletteOpen: true,
+      explorePanes: {},
+      explorePreviewPanes: {},
+      modellingPanes: {},
+    })
+    useNodeResultsStore.setState({ trainJobs: {} })
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
@@ -476,6 +484,142 @@ describe("NodePanel", () => {
   it("renders ModellingConfig for modelling nodes", () => {
     renderPanel({ node: makeNode({ data: { label: "ML", description: "", nodeType: "modelling", config: {} } }) })
     expect(screen.getByTestId("ModellingConfig")).toBeInTheDocument()
+  })
+
+  it("shows five modelling panes only for supported configured algorithms", () => {
+    const supported = makeNode({
+      id: "model_1",
+      data: {
+        label: "ML",
+        description: "",
+        nodeType: "modelling",
+        config: { algorithm: "catboost", loss_function: "RMSE" },
+      },
+    })
+    const rendered = renderPanel({ node: supported })
+    const tablist = screen.getByRole("tablist", { name: "Modelling panes" })
+
+    expect(within(tablist).getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "Target",
+      "Features",
+      "Params",
+      "Split",
+      "Train",
+    ])
+    expect(modellingConfigProps.at(-1)?.activePane).toBe("target")
+
+    rendered.unmount()
+    renderPanel({
+      node: makeNode({
+        id: "model_1",
+        data: {
+          label: "ML",
+          description: "",
+          nodeType: "modelling",
+          config: {},
+        },
+      }),
+    })
+    expect(screen.queryByRole("tablist", { name: "Modelling panes" })).toBeNull()
+
+    cleanup()
+    renderPanel({
+      node: makeNode({
+        id: "model_1",
+        data: {
+          label: "ML",
+          description: "",
+          nodeType: "modelling",
+          config: { algorithm: "xgboost" },
+        },
+      }),
+    })
+    expect(screen.queryByRole("tablist", { name: "Modelling panes" })).toBeNull()
+  })
+
+  it("remembers the active modelling pane by node", () => {
+    renderPanel({
+      node: makeNode({
+        id: "model_1",
+        data: {
+          label: "ML",
+          description: "",
+          nodeType: "modelling",
+          config: { algorithm: "glm", family: "poisson", all_factors: true },
+        },
+      }),
+    })
+
+    fireEvent.click(screen.getByRole("tab", { name: "Features" }))
+
+    expect(useUIStore.getState().modellingPanes.model_1).toBe("features")
+    expect(modellingConfigProps.at(-1)?.activePane).toBe("features")
+  })
+
+  it("keeps every setup tab plain regardless of configuration completeness", () => {
+    const cases = [
+      { algorithm: "catboost" },
+      { algorithm: "glm", family: "poisson" },
+      {
+        algorithm: "glm",
+        family: "poisson",
+        all_factors: true,
+        regularization: "elastic_net",
+      },
+    ]
+
+    cases.forEach((config, index) => {
+      const rendered = renderPanel({
+        node: makeNode({
+          id: `model_${index}`,
+          data: {
+            label: "ML",
+            description: "",
+            nodeType: "modelling",
+            config: { ...config },
+          },
+        }),
+      })
+      for (const pane of ["Target", "Features", "Params", "Split"]) {
+        expect(screen.getByRole("tab", { name: pane })).not.toHaveAccessibleDescription()
+      }
+      expect(screen.queryByText("Needs attention")).not.toBeInTheDocument()
+      expect(modellingConfigProps.at(-1)).not.toHaveProperty("objectiveIssue")
+      rendered.unmount()
+    })
+  })
+
+  it("marks Train while this node has an active job", () => {
+    useNodeResultsStore.setState({
+      trainJobs: {
+        model_1: {
+          jobId: "job_1",
+          nodeId: "model_1",
+          nodeLabel: "ML",
+          progress: null,
+          error: null,
+          configHash: "hash",
+          source: "live",
+          structuralVersion: 0,
+        },
+      },
+    })
+    renderPanel({
+      node: makeNode({
+        id: "model_1",
+        data: {
+          label: "ML",
+          description: "",
+          nodeType: "modelling",
+          config: { algorithm: "catboost", loss_function: "RMSE" },
+        },
+      }),
+    })
+
+    expect(screen.getByRole("tab", { name: "Train" })).toHaveAccessibleDescription(
+      "Training is running",
+    )
+    expect(screen.getByText("Running")).toBeVisible()
   })
 
   it("renders OptimiserConfig for optimiser nodes", () => {

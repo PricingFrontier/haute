@@ -22,6 +22,22 @@ from haute.modelling._algorithms import (
     _malloc_trim,
     resolve_loss_function,
 )
+from haute.modelling._cross_validation import (
+    CV_SCHEMA_VERSION,
+    CrossValidationConfig,
+    CrossValidationFoldResult,
+    FoldPlan,
+    FoldResultsArtifact,
+    aggregate_fold_results,
+    file_sha256,
+    generate_fold_plan,
+    load_cross_validation_report,
+    load_fold_plan,
+    load_fold_results,
+    save_cross_validation_report,
+    save_fold_plan,
+    save_fold_results,
+)
 from haute.modelling._metrics import compute_metrics
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
@@ -54,6 +70,15 @@ def model_contract_filename(model_name: str) -> str:
     return f"{model_name}.{CONTRACT_FILENAME}"
 
 
+def cross_validation_artifact_filenames(model_name: str) -> dict[str, str]:
+    """Return the canonical names of the three CV publication artifacts."""
+    return {
+        "fold_plan": f"{model_name}.cv-fold-plan.json",
+        "fold_results": f"{model_name}.cv-fold-results.json",
+        "report": f"{model_name}.cv-report.json",
+    }
+
+
 def _remove_temp_parquet(path: str | None, *, context: str) -> bool:
     """Unlink a run-owned temp parquet; loud on failure, silent if absent.
 
@@ -77,6 +102,25 @@ def _remove_temp_parquet(path: str | None, *, context: str) -> bool:
             exc_info=True,
         )
         return False
+
+
+def _remove_cross_validation_artifact(path: Path) -> None:
+    """Unlink a run-owned CV JSON artifact; loud on failure, silent if absent.
+
+    Removal failures are logged instead of raising so cleanup running inside
+    exception handling can never mask the in-flight error.
+    """
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as cleanup_exc:
+        logger.warning(
+            "cross_validation_artifact_cleanup_failed",
+            path=str(path),
+            error=str(cleanup_exc),
+            exc_info=True,
+        )
 
 
 # Mapping used by the feature-contract artifact and the MLflow signature.
@@ -207,6 +251,7 @@ class TrainResult:
     # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
+    cross_validation: dict[str, Any] | None = None
 
 
 @dataclass
@@ -337,6 +382,9 @@ class TrainingJob:
         monotone_constraints: dict[str, int] | None = None,
         feature_weights: dict[str, float] | None = None,
         categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
+        cross_validation: Mapping[str, Any] | CrossValidationConfig | None = None,
+        fold_plan: FoldPlan | None = None,
+        fold_index: int | None = None,
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | pl.LazyFrame | None = data
@@ -362,6 +410,38 @@ class TrainingJob:
         self.offset = offset
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
+        if cross_validation is None:
+            self.cross_validation = None
+        elif isinstance(cross_validation, CrossValidationConfig):
+            self.cross_validation = cross_validation
+        else:
+            self.cross_validation = CrossValidationConfig.from_plain_data(cross_validation)
+        if (fold_plan is None) != (fold_index is None):
+            raise ValueError("fold_plan and fold_index must be supplied together")
+        if fold_plan is not None:
+            assert fold_index is not None
+            if self.cross_validation is not None:
+                raise ValueError(
+                    "internal fold jobs cannot also have public cross_validation config"
+                )
+            if not 0 <= fold_index < fold_plan.config.fold_count:
+                raise ValueError("fold_index is outside fold_plan")
+        self.fold_plan = fold_plan
+        self.fold_index = fold_index
+        cv_key = (
+            self.cross_validation.group_column
+            if self.cross_validation and self.cross_validation.strategy == "group"
+            else self.cross_validation.date_column
+            if self.cross_validation and self.cross_validation.strategy == "temporal"
+            else None
+        )
+        if cv_key:
+            if cv_key in self.feature_columns:
+                raise ValueError("cross-validation key cannot be an explicit feature column")
+            if self.algorithm == "glm" and cv_key in (self.params.get("terms") or {}):
+                raise ValueError("cross-validation key cannot be a GLM term")
+            if cv_key not in self.id_columns:
+                self.id_columns.append(cv_key)
         from haute.modelling._feature_contract import normalise_categorical_levels
 
         self._declared_categorical_levels = normalise_categorical_levels(
@@ -406,6 +486,14 @@ class TrainingJob:
         TrainResult
             Metrics, feature importances, model path, and split sizes.
         """
+
+        if self.cross_validation is not None:
+            return self._run_cross_validation(
+                progress=progress,
+                on_iteration=on_iteration,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+            )
 
         def _report(msg: str, frac: float) -> None:
             if check_cancelled is not None:
@@ -596,6 +684,260 @@ class TrainingJob:
         for path in candidates:
             if _remove_temp_parquet(path, context="training_run_abort"):
                 logger.warning("training_temp_parquet_removed_after_abort", path=path)
+
+    def _run_cross_validation(
+        self,
+        *,
+        progress: Callable[[str, float], None] | None,
+        on_iteration: IterationCallback | None,
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+    ) -> TrainResult:
+        """Run bounded fold fits then one ordinary final fit from one prepared source."""
+        assert self.cross_validation is not None
+        config = self.cross_validation
+
+        def checkpoint(label: str) -> None:
+            if check_cancelled is not None:
+                check_cancelled()
+            _training_checkpoint(execution_context, label=label)
+
+        # Source preparation reuses the ordinary per-fit fractions, which restart
+        # inside every fold band; clamp to a running maximum so the run-level
+        # progress never moves backwards.
+        progress_floor = 0.0
+
+        def report(message: str, fraction: float) -> None:
+            nonlocal progress_floor
+            checkpoint("before_cross_validation_progress")
+            progress_floor = max(progress_floor, fraction)
+            if progress is not None:
+                progress(message, progress_floor)
+            checkpoint("after_cross_validation_progress")
+
+        prepared: _PreparedData | None = None
+        created_artifacts: list[Path] = []
+        try:
+            checkpoint("before_cross_validation_plan")
+            report("Cross-validation: preparing source", 0.0)
+            prepared = self._prepare_data(report, execution_context=execution_context)
+            # External parquet sources normally keep null target filtering fused into
+            # split writing.  CV needs one stable eligible source for the plan and
+            # every fold, so materialise that filtered view once when necessary.
+            if prepared.target_null_count and not prepared.owns_tmp:
+                clean = tempfile.NamedTemporaryFile(
+                    suffix=".parquet", prefix="haute_cv_clean_", delete=False
+                )
+                clean.close()
+                try:
+                    from haute._polars_utils import bounded_sink
+
+                    bounded_sink(
+                        pl.scan_parquet(prepared.data_path).filter(
+                            pl.col(self.target).is_not_null()
+                        ),
+                        clean.name,
+                        fast_checkpoint=True,
+                    )
+                except BaseException:
+                    _remove_temp_parquet(clean.name, context="cross_validation_clean_source")
+                    raise
+                prepared = _PreparedData(
+                    data_path=clean.name,
+                    owns_tmp=True,
+                    features=prepared.features,
+                    cat_features=prepared.cat_features,
+                    total_rows=prepared.total_rows,
+                    feature_dtypes=prepared.feature_dtypes,
+                    categorical_levels=prepared.categorical_levels,
+                    target_dtype=prepared.target_dtype,
+                    target_null_count=0,
+                    offset_dtype=prepared.offset_dtype,
+                )
+
+            key = config.group_column if config.strategy == "group" else config.date_column
+            if config.strategy == "random":
+                plan_input: int | pl.Series = prepared.total_rows
+            else:
+                assert key is not None
+                plan_input = _training_streaming_collect(
+                    pl.scan_parquet(prepared.data_path).select(key),
+                    stage_name="cross_validation_key_collect",
+                    execution_context=execution_context,
+                ).to_series(0)
+            source_digest = file_sha256(prepared.data_path)
+            plan = generate_fold_plan(config, source_digest, plan_input)
+            artifact_names = cross_validation_artifact_filenames(self.name)
+            output_dir = Path(self.output_dir).resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            plan_path = output_dir / artifact_names["fold_plan"]
+            results_path = output_dir / artifact_names["fold_results"]
+            report_path = output_dir / artifact_names["report"]
+            if any(path.exists() for path in (plan_path, results_path, report_path)):
+                raise ValueError("cross-validation artifact paths already exist")
+            save_fold_plan(plan, plan_path)
+            created_artifacts.append(plan_path)
+            plan = load_fold_plan(plan_path, source_sha256=source_digest)
+            plan_digest = file_sha256(plan_path)
+            checkpoint("after_cross_validation_plan")
+
+            fold_results: list[CrossValidationFoldResult] = []
+            with tempfile.TemporaryDirectory(prefix="haute_cv_folds_") as fold_root:
+                for fold_index in range(config.fold_count):
+                    checkpoint(f"before_cross_validation_fold_{fold_index}")
+                    report(
+                        f"Cross-validation: fold {fold_index + 1}/{config.fold_count}",
+                        fold_index / (config.fold_count + 1),
+                    )
+                    fold_job = self._new_cross_validation_job(
+                        name=f"{self.name}.cv-fold-{fold_index}",
+                        data=prepared.data_path,
+                        output_dir=fold_root,
+                        fold_plan=plan,
+                        fold_index=fold_index,
+                        mlflow_experiment=None,
+                    )
+                    # Fold iteration events are cancellation checkpoints only; the
+                    # final fit is the sole source of externally visible loss history.
+                    current_fold = fold_index
+
+                    def fold_progress(message: str, fraction: float) -> None:
+                        report(
+                            (
+                                f"Cross-validation: fold "
+                                f"{current_fold + 1}/{config.fold_count}: {message}"
+                            ),
+                            (current_fold + fraction) / (config.fold_count + 1),
+                        )
+
+                    def fold_iteration(
+                        _iteration: int,
+                        _total_iterations: int,
+                        _metrics: dict[str, float],
+                    ) -> None:
+                        checkpoint(f"cross_validation_fold_{current_fold}_iteration")
+
+                    fold_result = fold_job.run(
+                        progress=fold_progress,
+                        on_iteration=(
+                            fold_iteration
+                            if check_cancelled is not None or execution_context is not None
+                            else None
+                        ),
+                        check_cancelled=check_cancelled,
+                        execution_context=execution_context,
+                    )
+                    expected_train, expected_validation = plan.fold_counts[fold_index]
+                    if (fold_result.train_rows, fold_result.validation_rows) != (
+                        expected_train,
+                        expected_validation,
+                    ):
+                        raise ValueError("fold result row counts disagree with fold plan")
+                    if set(fold_result.metrics) != set(self.metrics):
+                        raise ValueError("fold metrics do not exactly match configured metrics")
+                    fold_results.append(
+                        CrossValidationFoldResult(
+                            CV_SCHEMA_VERSION,
+                            fold_index,
+                            fold_result.train_rows,
+                            fold_result.validation_rows,
+                            dict(fold_result.metrics),
+                        )
+                    )
+                    checkpoint(f"after_cross_validation_fold_{fold_index}")
+
+            checkpoint("before_cross_validation_results_persist")
+            artifact = FoldResultsArtifact(CV_SCHEMA_VERSION, plan_digest, tuple(fold_results))
+            save_fold_results(artifact, results_path)
+            created_artifacts.append(results_path)
+            loaded_results = load_fold_results(results_path)
+            results_digest = file_sha256(results_path)
+            report_artifact = aggregate_fold_results(
+                plan, loaded_results, self.metrics, results_sha256=results_digest
+            )
+            save_cross_validation_report(report_artifact, report_path)
+            created_artifacts.append(report_path)
+            report_artifact = load_cross_validation_report(report_path)
+            checkpoint("after_cross_validation_results_persist")
+
+            plan.assert_source_digest(file_sha256(prepared.data_path))
+            report("Cross-validation: final fit", config.fold_count / (config.fold_count + 1))
+            final_job = self._new_cross_validation_job(
+                name=self.name,
+                data=prepared.data_path,
+                output_dir=self.output_dir,
+                fold_plan=None,
+                fold_index=None,
+                mlflow_experiment=self.mlflow_experiment,
+            )
+            result = final_job.run(
+                progress=lambda message, fraction: report(
+                    f"Cross-validation: final fit: {message}",
+                    (config.fold_count + fraction) / (config.fold_count + 1),
+                ),
+                on_iteration=on_iteration,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+            )
+            result.cross_validation = {
+                "schema_version": CV_SCHEMA_VERSION,
+                "strategy": config.strategy,
+                "fold_count": config.fold_count,
+                "fit_count": config.fold_count + 1,
+                "folds": [item.to_plain_data() for item in report_artifact.folds],
+                "metrics": report_artifact.metrics,
+                "plan_sha256": plan_digest,
+                "results_sha256": results_digest,
+                "fold_plan_path": str(plan_path),
+                "fold_results_path": str(results_path),
+                "report_path": str(report_path),
+            }
+            checkpoint("after_cross_validation_final_fit")
+            return result
+        except BaseException:
+            for path in created_artifacts:
+                _remove_cross_validation_artifact(path)
+            raise
+        finally:
+            self._cleanup_owned_temp_parquets(prepared, None)
+
+    def _new_cross_validation_job(
+        self,
+        *,
+        name: str,
+        data: str,
+        output_dir: str,
+        fold_plan: FoldPlan | None,
+        fold_index: int | None,
+        mlflow_experiment: str | None,
+    ) -> TrainingJob:
+        """Clone this immutable-in-practice job configuration for one CV fit."""
+        return TrainingJob(
+            name=name,
+            data=data,
+            target=self.target,
+            weight=self.weight,
+            exclude=list(self.exclude),
+            feature_columns=list(self.feature_columns),
+            fold_column=self.fold_column,
+            id_columns=list(self.id_columns),
+            algorithm=self.algorithm,
+            task=self.task,
+            params=dict(self.params),
+            split=self.split_config,
+            metrics=list(self.metrics),
+            mlflow_experiment=mlflow_experiment,
+            model_name=self.model_name,
+            output_dir=output_dir,
+            loss_function=self.loss_function,
+            variance_power=self.variance_power,
+            offset=self.offset,
+            monotone_constraints=self.monotone_constraints,
+            feature_weights=self.feature_weights,
+            categorical_levels=self._declared_categorical_levels,
+            fold_plan=fold_plan,
+            fold_index=fold_index,
+        )
 
     # ------------------------------------------------------------------
     # Pipeline sub-methods
@@ -790,20 +1132,32 @@ class TrainingJob:
         if target_null_count > 0:
             split_lf = split_lf.filter(pl.col(self.target).is_not_null())
 
-        # Compute mask -- for temporal/group we need a small scan
-        mask_df = None
-        if self.split_config.strategy in ("temporal", "group"):
-            col = self.split_config.date_column or self.split_config.group_column
-            mask_df = _training_streaming_collect(
-                split_lf.select(col),
-                stage_name="training_split_key_collect",
-                execution_context=execution_context,
-            )
-        mask = split_mask(total_rows, self.split_config, df=mask_df)
-        del mask_df
+        if self.fold_plan is not None:
+            assert self.fold_index is not None
+            self.fold_plan.assert_source_digest(file_sha256(data_path))
+            if total_rows != self.fold_plan.row_count:
+                raise ValueError("fold plan row count does not match prepared source")
+            mask = pl.Series("_partition", self.fold_plan.partition_mask(self.fold_index))
+        else:
+            # Compute mask -- for temporal/group we need a small scan
+            mask_df = None
+            if self.split_config.strategy in ("temporal", "group"):
+                col = self.split_config.date_column or self.split_config.group_column
+                mask_df = _training_streaming_collect(
+                    split_lf.select(col),
+                    stage_name="training_split_key_collect",
+                    execution_context=execution_context,
+                )
+            mask = split_mask(total_rows, self.split_config, df=mask_df)
+            del mask_df
         n_train = int((mask == PARTITION_TRAIN).sum())
         n_validation = int((mask == PARTITION_VALIDATION).sum())
         n_holdout = int((mask == PARTITION_HOLDOUT).sum())
+        if self.fold_plan is not None:
+            assert self.fold_index is not None
+            expected = self.fold_plan.fold_counts[self.fold_index]
+            if (n_train, n_validation) != expected or n_holdout:
+                raise ValueError("fold partition counts disagree with fold plan")
         _mem_checkpoint(
             f"split mask (train={n_train:,} val={n_validation:,} holdout={n_holdout:,})"
         )

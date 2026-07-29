@@ -16,14 +16,11 @@ function formatMb(mb: number): string {
 }
 
 export type TrainingActionsAndResultsProps = {
-  target: string
-  /** Label of the required training objective still unset ("loss function" /
-   * "distribution family"), or null when set. Gates the Train button: the
-   * backend rejects an unset objective rather than training under a library
-   * default, so submission is blocked here with the reason shown. */
-  missingObjective?: string | null
+  /** Validation messages to reveal after an invalid training attempt. */
+  validationMessages?: readonly string[]
   training: boolean
   trainProgress: TrainProgress | null
+  estimatedRemainingSeconds?: number | null
   trainResult: TrainResult | null
   isStale: boolean
   ramEstimate: TrainEstimate | null
@@ -41,10 +38,10 @@ export type TrainingActionsAndResultsProps = {
 }
 
 export function TrainingActionsAndResults({
-  target,
-  missingObjective = null,
+  validationMessages = [],
   training,
   trainProgress,
+  estimatedRemainingSeconds = null,
   trainResult,
   isStale,
   ramEstimate,
@@ -114,7 +111,7 @@ export function TrainingActionsAndResults({
         <span style={{ color: "var(--warning)" }}>Config changed since last training</span>
           <button
             onClick={onTrain}
-            disabled={training || submitting || !target || !!missingObjective}
+            disabled={training || submitting}
             className="ml-auto px-2 py-0.5 rounded text-[11px] font-medium"
             style={{ background: MODEL_COLORS.accentSoft, color: MODEL_COLORS.accent }}
           >
@@ -192,17 +189,34 @@ export function TrainingActionsAndResults({
       <div className="pt-2" style={{ borderTop: "1px solid var(--border)" }}>
         <button
           onClick={onTrain}
-          disabled={busy || !target || !!missingObjective}
+          disabled={busy}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors"
           style={{
             background: busy ? "var(--chrome-hover)" : MODEL_COLORS.accent,
             color: busy ? "var(--text-muted)" : "var(--text-on-accent)",
-            opacity: !target || missingObjective ? 0.5 : 1,
+            opacity: busy ? 0.6 : 1,
           }}
         >
           {trainIcon}
           {trainLabel}
         </button>
+        {validationMessages.length > 0 && !busy && (
+          <div
+            role="alert"
+            className="mt-2 flex items-start gap-2 rounded-lg px-3 py-2 text-xs"
+            style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}
+          >
+            <AlertTriangle size={12} className="mt-0.5 shrink-0" style={{ color: "var(--warning-strong)" }} />
+            <div className="min-w-0" style={{ color: "var(--warning)" }}>
+              <div className="font-medium">Complete before training</div>
+              <ul className="mt-1 list-disc space-y-1 pl-4">
+                {validationMessages.map((message) => (
+                  <li key={message}>{message}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
         {training && (
           <button
             type="button"
@@ -222,16 +236,10 @@ export function TrainingActionsAndResults({
             {cancelling ? "Cancelling..." : "Cancel training"}
           </button>
         )}
-        {missingObjective && !busy && (
-          <div className="flex items-center gap-2 mt-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--warning-soft-subtle)", border: "1px solid var(--warning-border)" }}>
-            <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />
-            <span style={{ color: "var(--warning)" }}>{missingObjective} required before training</span>
-          </div>
-        )}
       </div>
 
       {/* Live Training Progress */}
-      {trainProgress && <TrainingProgressPanel trainProgress={trainProgress} />}
+      {trainProgress && <TrainingProgressPanel trainProgress={trainProgress} estimatedRemainingSeconds={estimatedRemainingSeconds} />}
 
       {/* Completion badge — results are in the preview panel below */}
       {trainResult && trainResult.status !== "error" && !training && !submitting && (

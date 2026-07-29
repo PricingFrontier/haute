@@ -1423,6 +1423,130 @@ class TrainingFeatureSelectionDiagnosticPayload(BaseModel):
         return self
 
 
+def _strict_finite_metric_mapping(value: Any, *, field: str) -> dict[str, float]:
+    if not isinstance(value, dict) or not value:
+        raise ValueError(f"{field} must be a non-empty object")
+    metrics: dict[str, float] = {}
+    for name, raw_value in value.items():
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{field} names must be non-empty strings")
+        if (
+            isinstance(raw_value, bool)
+            or not isinstance(raw_value, int | float)
+            or not math.isfinite(float(raw_value))
+        ):
+            raise ValueError(f"{field}.{name} must be a finite number")
+        metrics[name] = float(raw_value)
+    return metrics
+
+
+class CrossValidationFoldResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    fold_index: int = Field(strict=True, ge=0, le=9)
+    train_rows: int = Field(strict=True, ge=1)
+    validation_rows: int = Field(strict=True, ge=1)
+    metrics: dict[str, float]
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def _validate_metrics(cls, value: Any) -> dict[str, float]:
+        return _strict_finite_metric_mapping(value, field="fold metrics")
+
+
+class CrossValidationMetricSummaryPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mean: float
+    population_std: float = Field(ge=0)
+    min: float
+    max: float
+    fold_count: int = Field(strict=True, ge=2, le=10)
+    total_validation_rows: int = Field(strict=True, ge=1)
+
+    @field_validator("mean", "population_std", "min", "max", mode="before")
+    @classmethod
+    def _validate_finite_number(cls, value: Any) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError("cross-validation summary values must be finite numbers")
+        return float(value)
+
+    @model_validator(mode="after")
+    def _validate_range(self) -> CrossValidationMetricSummaryPayload:
+        if self.min > self.max:
+            raise ValueError("cross-validation metric min must not exceed max")
+        return self
+
+
+class CrossValidationReportPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    strategy: Literal["random", "group", "temporal"]
+    fold_count: int = Field(strict=True, ge=2, le=10)
+    fit_count: int = Field(strict=True, ge=3, le=11)
+    folds: list[CrossValidationFoldResultPayload] = Field(min_length=2, max_length=10)
+    metrics: dict[str, CrossValidationMetricSummaryPayload] = Field(min_length=1)
+    plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    results_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fold_plan_path: str = Field(min_length=1)
+    fold_results_path: str = Field(min_length=1)
+    report_path: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_report(self) -> CrossValidationReportPayload:
+        if len(self.folds) != self.fold_count:
+            raise ValueError("fold_count must equal the number of folds")
+        if self.fit_count != self.fold_count + 1:
+            raise ValueError("fit_count must equal fold_count + 1")
+        if [fold.fold_index for fold in self.folds] != list(range(self.fold_count)):
+            raise ValueError("cross-validation folds must be complete and ascending")
+
+        metric_names = set(self.metrics)
+        if any(set(fold.metrics) != metric_names for fold in self.folds):
+            raise ValueError("fold metric names must exactly match report metric names")
+        total_validation_rows = sum(fold.validation_rows for fold in self.folds)
+        for name, summary in self.metrics.items():
+            if summary.fold_count != self.fold_count:
+                raise ValueError(f"{name} fold_count must equal report fold_count")
+            if summary.total_validation_rows != total_validation_rows:
+                raise ValueError(f"{name} total_validation_rows must equal the fold row total")
+            values = [fold.metrics[name] for fold in self.folds]
+            weights = [fold.validation_rows for fold in self.folds]
+            weighted_mean = (
+                sum(value * weight for value, weight in zip(values, weights, strict=True))
+                / total_validation_rows
+            )
+            weighted_variance = (
+                sum(
+                    weight * (value - weighted_mean) ** 2
+                    for value, weight in zip(values, weights, strict=True)
+                )
+                / total_validation_rows
+            )
+            expected = {
+                "mean": weighted_mean,
+                "population_std": math.sqrt(weighted_variance),
+                "min": min(values),
+                "max": max(values),
+            }
+            for field, expected_value in expected.items():
+                actual_value = getattr(summary, field)
+                if not math.isclose(
+                    actual_value,
+                    expected_value,
+                    rel_tol=1e-12,
+                    abs_tol=1e-12,
+                ):
+                    raise ValueError(f"{name} {field} does not match the persisted fold results")
+        return self
+
+
 class TrainResponse(BaseModel):
     status: Literal["started", "completed", "error"]
     job_id: str | None = None
@@ -1458,6 +1582,16 @@ class TrainResponse(BaseModel):
     warning: str | None = None
     total_source_rows: int | None = None
     feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None
+    cross_validation: CrossValidationReportPayload | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _validate_cross_validation_status(self) -> TrainResponse:
+        if self.cross_validation is not None and self.status != "completed":
+            raise ValueError("cross_validation is present only for completed training")
+        return self
 
 
 class TrainStatusResponse(BaseModel):

@@ -7,9 +7,10 @@
 | `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `SplitConfig`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` profile-likelihood estimation; `_resolve_glm_terms()` term resolution. |
-| `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare data, split, train, compute metrics, save artifacts, and optionally log to MLflow; also defines `TrainResult` and the intermediate stage types. |
-| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`). |
-| `src/haute/modelling/_split.py` | `SplitConfig`, `split_data`/`split_mask` for random/temporal/group strategies, and partition constants. |
+| `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare data, split, train, compute metrics, save artifacts, optionally run bounded sequential CV, and optionally log to MLflow; also defines `TrainResult` and the intermediate stage types. |
+| `src/haute/modelling/_cross_validation.py` | Strict version-1 CV config, fold-plan/result/report codecs, deterministic random/group/temporal plan generation, digest linkage and validation-row-weighted aggregation. |
+| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_cross_validation_config`, `training_objective_issue`, `default_metrics`). |
+| `src/haute/modelling/_split.py` | `SplitConfig`, `split_data`/`split_mask` for random/temporal/group strategies, ordinary partition constants, and the internal future-row CV partition. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
@@ -43,6 +44,11 @@
   `validation_size`, `holdout_size`, `seed`, `date_column`/`cutoff_date` (temporal),
   `group_column` (group). `__post_init__` validates `0 <= size < 1`,
   `validation_size + holdout_size < 1`, and that strategy-specific fields are present.
+- **`CrossValidationConfig` / `FoldPlan` / `FoldResultsArtifact` /
+  `CrossValidationReport`** (`_cross_validation.py`, frozen dataclasses) — the bounded version-1
+  CV contract. Both mapping parsing and direct construction enforce 2–10 folds and exact
+  strategy keys. Canonical finite JSON links the prepared parquet, plan, exact persisted fold
+  results, and validation-row-weighted report by SHA-256.
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
   `feature_types`, `categorical_features`, `categorical_levels`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
@@ -62,7 +68,8 @@
   `split_config` (parsed from dict/`SplitConfig`/default), `metrics` (defaulted via
   `default_metrics()` when omitted), `mlflow_experiment`, `model_name`, `output_dir`,
   `loss_function`, `variance_power`, `offset`, `monotone_constraints`,
-  `feature_weights`, and a normalised `_declared_categorical_levels`. A contract-dtype
+  `feature_weights`, optional `cross_validation`, and a normalised
+  `_declared_categorical_levels`. A contract-dtype
   snapshot (`_contract_feature_dtypes`, `_contract_categorical_levels`,
   `_contract_target_dtype`, `_contract_offset_dtype`) is populated inside `_prepare_data`
   and consumed by `_save_artifacts` and `_log_to_mlflow`.
@@ -573,6 +580,12 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
   validation branch, worker-side failure mapping, cancellation).
 - `test_modelling_export.py` — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules.
+- `tests/test_cross_validation.py` — deterministic random/group/temporal plan
+  generation, strict artifact round trips, digest linkage, invalid-fold
+  rejection, and validation-row-weighted aggregation.
+- `tests/test_training_cross_validation.py` — bounded sequential orchestration,
+  internal fold partitioning, final-fit compatibility, whole-run cancellation,
+  and artifact cleanup.
 - `test_train_config_builder.py` — unit tests for the config→kwargs builder,
   including regression coverage for the GLM-vs-CatBoost key-routing bugs it was written
   to prevent, and the Negative Binomial `theta` gate (unset fails loud, top-level
@@ -637,3 +650,59 @@ Under the [prerelease canonical-only format contract](../README.md#approved-chan
 training reads and writes only the current run-scoped feature contract and artifact layout. It
 does not probe for, warn about, or interpret a historical shared contract path. Result and CLI
 field names describe their current meaning rather than retaining an obsolete name.
+
+## Bounded cross-validation
+
+The product behaviour and regression evidence are defined in
+[the high-level contract](high-level.md#bounded-cross-validation). Delivery seams:
+
+- `src/haute/modelling/_cross_validation.py` owns
+  `CrossValidationConfig`, the strict version-1 `FoldPlan`/
+  `CrossValidationFoldResult`/`CrossValidationReport` artifact codecs, plan
+  generation/validation for random/group/temporal strategies, the maximum fold/fit
+  constants, and validation-row-weighted aggregation. JSON writers use canonical
+  finite data and same-directory atomic replacement; readers reject unknown keys and
+  versions rather than coercing them.
+- `src/haute/modelling/_training_job.py` accepts the optional canonical
+  `cross_validation` mapping. Its outer `run` path prepares one source, persists and
+  reloads the plan, then invokes ordinary `TrainingJob` instances sequentially with an
+  internal plan/fold selector and one shared cancellation/context capability. Fold
+  instances write only temporary model/contract pairs; the orchestrator persists their
+  versioned metric results, reloads them for aggregation, deletes fold temporaries,
+  and performs the original split/final fit under the requested model name. The final
+  `TrainResult` gains an optional bounded CV report and artifact paths. The ordinary
+  path remains unchanged when the option is absent.
+- `_split.py` owns the internal unused partition label for future temporal rows;
+  the plan-to-mask adapter is `FoldPlan.partition_mask` in `_cross_validation.py`.
+  Random/group folds use train/validation only; temporal folds map later blocks to
+  unused, never to holdout, so diagnostic selection cannot inspect the future.
+- `_train_config.py` is the sole parser/router for the public
+  `cross_validation` mapping and passes its canonical version to `TrainingJob` for both
+  live training and script export. CV group/date keys join required-column projection,
+  final feature exclusion, and the existing `split` metadata reason without changing
+  the node's ordinary `split` object.
+- `_run_training_process_job` in `routes/_train_service.py` emits one protocol request
+  and one child for the entire run. It manifests the three optional CV JSON artifacts
+  in addition to the final model/feature contract. Fold progress is scaled across the
+  bounded fit count, while fold iteration callbacks are used only for cancellation;
+  only the final fit forwards loss iterations.
+- `_publish_training_artifacts` accepts exactly either the ordinary two-artifact set or
+  the CV five-artifact set. It verifies the requested model stem and canonical
+  companion filenames, path containment, declared digest/size, strict CV artifact
+  round trips and digest links, and exact response-to-artifact agreement before replacing
+  every destination in one rollback-capable critical section. An ordinary replacement
+  also retires any canonical CV companions from the prior model generation through the
+  same backup/restore transaction. `IsolatedSupervisorThread`
+  permits the five known kinds but no other training artifact.
+- `src/haute/schemas.py` defines strict bounded CV payload models and the optional
+  `TrainResponse.cross_validation`. The frontend/store runtime types and guards retain
+  that additive terminal field, and `SummaryTab` renders aggregate and ordered fold
+  metrics. No live status field or separate route is added.
+
+Focused tests live in `tests/test_cross_validation.py` for plan/artifact/aggregation
+semantics and `tests/test_training_cross_validation.py` for orchestration, with
+integration coverage in
+`tests/test_training_worker_protocol.py`, `tests/test_train_service_coverage.py`,
+`tests/test_modelling_routes.py`, `tests/test_modelling_export.py`, and the narrow
+frontend guard/summary suites for integration, cancellation, admission, publication,
+and response evidence.

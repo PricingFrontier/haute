@@ -1,95 +1,127 @@
 /**
- * Frontend mirror of the backend `training_objective_issue`
- * (src/haute/modelling/_train_config.py). Returns the first incomplete part
- * of the training objective, or null when the objective is fully specified.
+ * Frontend mirror of the backend's target/objective validation.
  *
- * An unset objective parameter must gate the Train button, never fall through
- * to a library/literal failover (CatBoost RMSE, GLM gaussian, Tweedie power
- * 1.5, Negative Binomial theta 1.0, elastic-net collapsing to Ridge at
- * l1_ratio=0, auto-terms over every column). `field` is a short noun phrase
- * for the button hint; `message` is
- * the full explanation shown below the disabled button. This must stay in
- * step with the backend so a config that passes the UI also passes the route.
+ * The backend remains authoritative. This helper aggregates every currently
+ * applicable issue so an invalid Train press can show one complete banner
+ * without sending a request. Configuration panes and tabs never consume these
+ * issues or reveal them proactively.
  */
 
-export type ObjectiveIssue = { field: string; message: string }
+export type TrainingConfigurationIssueCode =
+  | "training-target"
+  | "glm-family"
+  | "glm-tweedie-variance-power"
+  | "glm-negbin-theta"
+  | "glm-factor-selection"
+  | "glm-elastic-net-l1-ratio"
+  | "catboost-loss-function"
+  | "catboost-tweedie-variance-power"
 
-export function trainingObjectiveIssue(
+export type TrainingConfigurationIssue = {
+  code: TrainingConfigurationIssueCode
+  message: string
+}
+
+export function trainingConfigurationIssues(
   config: Record<string, unknown>,
-): ObjectiveIssue | null {
-  const algorithm = String(config.algorithm ?? "catboost").toLowerCase()
+): TrainingConfigurationIssue[] {
+  const issues: TrainingConfigurationIssue[] = []
+  const target = config.target
+  if (typeof target !== "string" || target.trim() === "") {
+    issues.push({
+      code: "training-target",
+      message: "Select a target column.",
+    })
+  }
 
+  const algorithm = String(config.algorithm ?? "catboost").toLowerCase()
   if (algorithm === "glm") {
     const family = config.family
     if (!family) {
-      return {
-        field: "distribution family",
+      issues.push({
+        code: "glm-family",
         message:
           "Choose a GLM distribution family (e.g. Poisson for claim counts, " +
           "Gamma for severity) — an unset family would silently train a " +
           "gaussian model.",
+      })
+    } else {
+      const normalizedFamily = String(family).toLowerCase()
+      const varPower = config.var_power
+      if (
+        normalizedFamily === "tweedie"
+        && (varPower === undefined || varPower === null)
+      ) {
+        issues.push({
+          code: "glm-tweedie-variance-power",
+          message:
+            "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
+            "value would silently fit at power 1.5.",
+        })
+      }
+      const theta = config.theta
+      if (
+        normalizedFamily === "negbinomial"
+        && (theta === undefined || theta === null)
+      ) {
+        issues.push({
+          code: "glm-negbin-theta",
+          message:
+            "Set the Negative Binomial dispersion (theta), or estimate it from " +
+            "the data — an unset value would silently fit at theta=1.0.",
+        })
       }
     }
-    const varPower = config.var_power
-    if (String(family).toLowerCase() === "tweedie" && varPower === undefined) {
-      return {
-        field: "Tweedie variance power",
-        message:
-          "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
-          "value would silently fit at power 1.5.",
-      }
-    }
-    const theta = config.theta
-    if (String(family).toLowerCase() === "negbinomial" && theta === undefined) {
-      return {
-        field: "Neg. Binomial dispersion (theta)",
-        message:
-          "Set the Negative Binomial dispersion (theta), or estimate it from " +
-          "the data — an unset value would silently fit at theta=1.0.",
-      }
-    }
-    const terms = config.terms as Record<string, unknown> | undefined
-    const allFactors = config.all_factors
-    const hasTerms = !!terms && Object.keys(terms).length > 0
-    if (!hasTerms && !allFactors) {
-      return {
-        field: "factor selection",
+
+    const terms = config.terms
+    const hasTerms = (
+      terms !== null
+      && typeof terms === "object"
+      && !Array.isArray(terms)
+      && Object.keys(terms).length > 0
+    )
+    if (!hasTerms && !config.all_factors) {
+      issues.push({
+        code: "glm-factor-selection",
         message:
           "Add factors or tick 'All features' — an empty factor set would " +
           "silently auto-build a term for every column.",
-      }
+      })
     }
-    const regularization = config.regularization
-    const l1Ratio = config.l1_ratio
-    if (String(regularization ?? "").toLowerCase() === "elastic_net" && l1Ratio === undefined) {
-      return {
-        field: "elastic-net L1 ratio",
+
+    if (
+      String(config.regularization ?? "").toLowerCase() === "elastic_net"
+      && (config.l1_ratio === undefined || config.l1_ratio === null)
+    ) {
+      issues.push({
+        code: "glm-elastic-net-l1-ratio",
         message:
           "Set the elastic-net L1 ratio (0 fits Ridge, 1 fits LASSO) — an " +
           "unset value would silently fit pure Ridge.",
-      }
+      })
     }
-    return null
+    return issues
   }
 
   const lossFunction = config.loss_function
   if (!lossFunction) {
-    return {
-      field: "loss function",
+    issues.push({
+      code: "catboost-loss-function",
       message:
         "Choose a training loss (e.g. Poisson for claim counts, RMSE for a " +
         "squared-error regression) — an unset loss would silently train " +
         "under the library default.",
-    }
-  }
-  const variancePower = config.variance_power
-  if (String(lossFunction) === "Tweedie" && variancePower === undefined) {
-    return {
-      field: "Tweedie variance power",
+    })
+  } else if (
+    String(lossFunction) === "Tweedie"
+    && (config.variance_power === undefined || config.variance_power === null)
+  ) {
+    issues.push({
+      code: "catboost-tweedie-variance-power",
       message:
         "Set the Tweedie variance power (1=Poisson, 2=Gamma) — an unset " +
         "value would silently train at power 1.5.",
-    }
+    })
   }
-  return null
+  return issues
 }

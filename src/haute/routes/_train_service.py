@@ -64,8 +64,10 @@ from haute.graph_utils import NodeType
 from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
 from haute.modelling._split import DEFAULT_SPLIT_DICT
 from haute.modelling._train_config import (
+    TrainingConfigError,
     build_train_params,
     build_training_job_kwargs,
+    parse_cross_validation_config,
     training_objective_issue,
 )
 from haute.routes._background_jobs import (
@@ -86,6 +88,7 @@ from haute.routes._job_lifecycle import (
 )
 from haute.routes._job_store import JobStore
 from haute.schemas import (
+    CrossValidationReportPayload,
     DispersionEstimateRequest,
     DispersionEstimateResponse,
     TrainingFeatureSelectionDiagnosticPayload,
@@ -101,6 +104,15 @@ _DEFAULT_DEPTH = 6  # CatBoost tree depth for VRAM estimation
 _TRAINING_JOB_TYPE = "training"
 _DISPERSION_JOB_TYPE = "dispersion_estimate"
 _JOB_TYPE_KEY = "job_type"
+_ORDINARY_TRAINING_ARTIFACT_KINDS = frozenset({"model", "feature_contract"})
+_CROSS_VALIDATION_ARTIFACT_PATHS = {
+    "cv_fold_plan": "fold_plan_path",
+    "cv_fold_results": "fold_results_path",
+    "cv_report": "report_path",
+}
+_TRAINING_ARTIFACT_KINDS = frozenset(
+    _ORDINARY_TRAINING_ARTIFACT_KINDS | set(_CROSS_VALIDATION_ARTIFACT_PATHS)
+)
 
 # Row cap for dispersion estimation. The profile search runs ~10-30 IRLS
 # fits, so the estimate samples the training frame (seeded, deterministic —
@@ -331,6 +343,19 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
         if isinstance(split_col, str) and split_col:
             columns.add(split_col)
 
+    cross_validation = config.get("cross_validation")
+    if isinstance(cross_validation, dict):
+        strategy = cross_validation.get("strategy")
+        cv_key = (
+            cross_validation.get("group_column")
+            if strategy == "group"
+            else cross_validation.get("date_column")
+            if strategy == "temporal"
+            else None
+        )
+        if isinstance(cv_key, str) and cv_key:
+            columns.add(cv_key)
+
     columns.update(_string_list_config(config, "id_columns"))
     return columns
 
@@ -364,6 +389,13 @@ def _training_metadata_reasons(config: Mapping[str, Any]) -> dict[str, str]:
             add(split.get("date_column"), "split")
         elif strategy == "group":
             add(split.get("group_column"), "split")
+    cross_validation = config.get("cross_validation")
+    if isinstance(cross_validation, dict):
+        strategy = cross_validation.get("strategy")
+        if strategy == "temporal":
+            add(cross_validation.get("date_column"), "split")
+        elif strategy == "group":
+            add(cross_validation.get("group_column"), "split")
     return reasons
 
 
@@ -733,9 +765,15 @@ def _training_response_payload(
     *,
     job_id: str,
     model_path: str,
+    cross_validation: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     loss_history, loss_history_truncated = _bounded_loss_history(
         train_result.loss_history,
+    )
+    cross_validation_payload = (
+        CrossValidationReportPayload.model_validate(cross_validation)
+        if cross_validation is not None
+        else None
     )
     response = TrainResponse(
         status="completed",
@@ -768,6 +806,7 @@ def _training_response_payload(
         glm_fit_statistics=train_result.glm_fit_statistics,
         glm_regularization_path=train_result.glm_regularization_path,
         diagnostics_errors=train_result.diagnostics_errors,
+        cross_validation=cross_validation_payload,
     )
     _assert_json_finite(response)
     return response.model_dump(mode="json")
@@ -847,10 +886,30 @@ def _run_training_process_job(
             kind="feature_contract",
             lifetime="staged",
         )
+        artifacts = [model_manifest, contract_manifest]
+        response_cross_validation: dict[str, Any] | None = None
+        if train_result.cross_validation is not None:
+            if not isinstance(train_result.cross_validation, dict):
+                raise ValueError("Training cross_validation result must be an object")
+            response_cross_validation = dict(train_result.cross_validation)
+            for kind, response_field in _CROSS_VALIDATION_ARTIFACT_PATHS.items():
+                raw_path = response_cross_validation.get(response_field)
+                if not isinstance(raw_path, str) or not raw_path:
+                    raise ValueError(f"Training cross_validation result has no {response_field}")
+                artifact = build_artifact_manifest(
+                    artifact_root=staged_output.parent,
+                    path=Path(raw_path).resolve(),
+                    kind=kind,
+                    lifetime="staged",
+                )
+                artifacts.append(artifact)
+                response_cross_validation[response_field] = artifact.relative_path
+
         response = _training_response_payload(
             train_result,
             job_id=request.request_id,
             model_path=model_manifest.relative_path,
+            cross_validation=response_cross_validation,
         )
         return WorkerResultManifest(
             metadata={
@@ -860,7 +919,7 @@ def _run_training_process_job(
                     terminal_reason="completed",
                 ),
             },
-            artifacts=(model_manifest, contract_manifest),
+            artifacts=tuple(artifacts),
         )
     except Exception as exc:
         known = _known_training_worker_failure(
@@ -1064,6 +1123,49 @@ def _replace_training_artifact(source: Path, destination: Path) -> None:
             time.sleep(_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS)
 
 
+def _validate_cross_validation_artifact_contents(
+    staged_and_final: Mapping[str, tuple[Path, Path]],
+) -> dict[str, Any]:
+    """Validate the complete digest-linked CV artifact set before publication."""
+    from haute.modelling._cross_validation import (
+        aggregate_fold_results,
+        file_sha256,
+        load_cross_validation_report,
+        load_fold_plan,
+        load_fold_results,
+    )
+
+    try:
+        plan_path = staged_and_final["cv_fold_plan"][0]
+        results_path = staged_and_final["cv_fold_results"][0]
+        report_path = staged_and_final["cv_report"][0]
+        plan = load_fold_plan(plan_path)
+        results = load_fold_results(results_path)
+        report = load_cross_validation_report(report_path)
+        if results.plan_sha256 != file_sha256(plan_path):
+            raise ValueError("fold results do not link to the exact persisted fold plan")
+        expected_report = aggregate_fold_results(
+            plan,
+            results,
+            tuple(report.metrics),
+            results_sha256=file_sha256(results_path),
+        )
+        if expected_report.to_plain_data() != report.to_plain_data():
+            raise ValueError(
+                "cross-validation report does not match the persisted plan and fold results"
+            )
+        return {
+            **report.to_plain_data(),
+            "strategy": plan.config.strategy,
+            "fold_count": plan.config.fold_count,
+            "fit_count": plan.config.fold_count + 1,
+        }
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise WorkerProtocolError(
+            f"Training cross-validation artifact set is malformed: {exc}"
+        ) from exc
+
+
 def _publish_training_artifacts(
     manifest: WorkerResultManifest,
     *,
@@ -1071,8 +1173,9 @@ def _publish_training_artifacts(
     output_root: Path,
     job_id: str,
     expected_model_name: str,
+    expected_cross_validation: CrossValidationReportPayload | None = None,
 ) -> dict[str, Path]:
-    """Publish a validated model/contract pair with same-filesystem rollback."""
+    """Publish an ordinary pair or complete CV set with same-filesystem rollback."""
     by_kind: dict[str, WorkerArtifactManifest] = {}
     for artifact in manifest.artifacts:
         if artifact.kind in by_kind:
@@ -1080,19 +1183,40 @@ def _publish_training_artifacts(
         if artifact.lifetime != "staged":
             raise WorkerProtocolError("Training artifacts must have staged lifetime")
         by_kind[artifact.kind] = artifact
-    if set(by_kind) != {"model", "feature_contract"}:
+    artifact_kinds = set(by_kind)
+    if artifact_kinds not in (
+        set(_ORDINARY_TRAINING_ARTIFACT_KINDS),
+        set(_TRAINING_ARTIFACT_KINDS),
+    ):
         raise WorkerProtocolError(
-            "Training completion requires exactly one model and feature contract"
+            "Training completion requires exactly one model and feature contract, "
+            "with either no cross-validation artifacts or the complete three-artifact set"
+        )
+    if expected_cross_validation is not None and artifact_kinds == set(
+        _ORDINARY_TRAINING_ARTIFACT_KINDS
+    ):
+        raise WorkerProtocolError(
+            "Training response declares cross-validation without its artifact set"
         )
 
     root = artifact_root.resolve()
     destination_root = output_root.resolve()
     staged_and_final: dict[str, tuple[Path, Path]] = {}
-    for kind, artifact in by_kind.items():
-        relative = Path(artifact.relative_path)
+    ordered_kinds = (
+        "model",
+        "feature_contract",
+        "cv_fold_plan",
+        "cv_fold_results",
+        "cv_report",
+    )
+    for kind in ordered_kinds:
+        selected_artifact = by_kind.get(kind)
+        if selected_artifact is None:
+            continue
+        relative = Path(selected_artifact.relative_path)
         if len(relative.parts) != 2 or relative.parts[0] != "output":
             raise WorkerProtocolError(
-                f"Training artifact {artifact.relative_path!r} is not in the staged output"
+                f"Training artifact {selected_artifact.relative_path!r} is not in the staged output"
             )
         staged = (root / relative).resolve()
         final = (destination_root / relative.name).resolve()
@@ -1100,7 +1224,10 @@ def _publish_training_artifacts(
             raise WorkerProtocolError("Training artifact destination escapes output root")
         staged_and_final[kind] = (staged, final)
 
-    from haute.modelling._training_job import model_contract_filename
+    from haute.modelling._training_job import (
+        cross_validation_artifact_filenames,
+        model_contract_filename,
+    )
 
     model_staged, _model_final = staged_and_final["model"]
     contract_staged, _contract_final = staged_and_final["feature_contract"]
@@ -1108,12 +1235,49 @@ def _publish_training_artifacts(
         raise WorkerProtocolError("Training model filename does not match the requested name")
     if contract_staged.name != model_contract_filename(model_staged.stem):
         raise WorkerProtocolError("Training model and feature contract filenames do not match")
+    cv_names = cross_validation_artifact_filenames(expected_model_name)
+    obsolete_finals: tuple[Path, ...] = ()
+    if artifact_kinds == set(_TRAINING_ARTIFACT_KINDS):
+        expected_cv_names = {
+            "cv_fold_plan": cv_names["fold_plan"],
+            "cv_fold_results": cv_names["fold_results"],
+            "cv_report": cv_names["report"],
+        }
+        for kind, expected_name in expected_cv_names.items():
+            staged, _final = staged_and_final[kind]
+            if staged.name != expected_name:
+                raise WorkerProtocolError(
+                    f"Training {kind} filename does not match the requested model name"
+                )
+        artifact_response = _validate_cross_validation_artifact_contents(staged_and_final)
+        if expected_cross_validation is not None:
+            expected_response = expected_cross_validation.model_dump(mode="json")
+            for kind, response_field in _CROSS_VALIDATION_ARTIFACT_PATHS.items():
+                if expected_response.pop(response_field) != by_kind[kind].relative_path:
+                    raise WorkerProtocolError(
+                        "Training cross-validation response path does not match "
+                        f"the staged {kind} manifest"
+                    )
+            if expected_response != artifact_response:
+                raise WorkerProtocolError(
+                    "Training cross-validation response does not match the staged artifact contents"
+                )
+    else:
+        obsolete_finals = tuple(
+            (destination_root / filename).resolve() for filename in cv_names.values()
+        )
+        if any(not path.is_relative_to(destination_root) for path in obsolete_finals):
+            raise WorkerProtocolError("Training artifact destination escapes output root")
     destination_root.mkdir(parents=True, exist_ok=True)
 
     backups: dict[Path, Path] = {}
     published: list[Path] = []
     try:
-        for _staged, final in staged_and_final.values():
+        managed_finals = [
+            *(final for _staged, final in staged_and_final.values()),
+            *obsolete_finals,
+        ]
+        for final in managed_finals:
             if final.exists() or final.is_symlink():
                 backup = final.with_name(f".{final.name}.{job_id}.haute-backup")
                 if backup.exists() or backup.is_symlink():
@@ -1959,6 +2123,10 @@ class TrainService:
         objective_issue = training_objective_issue(config)
         if objective_issue is not None:
             raise HTTPException(status_code=400, detail=objective_issue)
+        try:
+            parse_cross_validation_config(config.get("cross_validation"))
+        except TrainingConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""
@@ -2523,6 +2691,24 @@ class TrainService:
                 raise WorkerProtocolError(
                     "Training response model path does not match the staged model manifest"
                 )
+            artifacts_by_kind = {artifact.kind: artifact for artifact in result.artifacts}
+            if staged_response.cross_validation is None:
+                if any(kind in artifacts_by_kind for kind in _CROSS_VALIDATION_ARTIFACT_PATHS):
+                    raise WorkerProtocolError(
+                        "Training response omits declared cross-validation artifacts"
+                    )
+            else:
+                for kind, response_field in _CROSS_VALIDATION_ARTIFACT_PATHS.items():
+                    artifact = artifacts_by_kind.get(kind)
+                    if (
+                        artifact is None
+                        or getattr(staged_response.cross_validation, response_field)
+                        != artifact.relative_path
+                    ):
+                        raise WorkerProtocolError(
+                            "Training cross-validation response path does not match "
+                            f"the staged {kind} manifest"
+                        )
             execution_metrics = result.metadata.get("execution_metrics")
             if not isinstance(execution_metrics, dict):
                 raise WorkerProtocolError("Training execution metrics must be an object")
@@ -2540,9 +2726,17 @@ class TrainService:
                     output_root=output_root,
                     job_id=job_id,
                     expected_model_name=str(job_kwargs["name"]),
+                    expected_cross_validation=staged_response.cross_validation,
                 )
                 artifact_publication_committed.set()
                 response_fields["model_path"] = str(published["model"])
+                if staged_response.cross_validation is not None:
+                    cross_validation_fields = staged_response.cross_validation.model_dump(
+                        mode="json"
+                    )
+                    for kind, response_field in _CROSS_VALIDATION_ARTIFACT_PATHS.items():
+                        cross_validation_fields[response_field] = str(published[kind])
+                    response_fields["cross_validation"] = cross_validation_fields
                 response = TrainResponse.model_validate(response_fields)
                 _assert_json_finite(response)
                 committed = self._lifecycle.transition(
@@ -2575,7 +2769,7 @@ class TrainService:
                 _run_training_process_job,
                 request,
                 artifact_root=artifact_root,
-                artifact_kinds=frozenset({"model", "feature_contract"}),
+                artifact_kinds=_TRAINING_ARTIFACT_KINDS,
                 max_artifact_size_bytes=_max_training_artifact_bytes(),
                 config=worker_config,
                 on_progress=on_progress,

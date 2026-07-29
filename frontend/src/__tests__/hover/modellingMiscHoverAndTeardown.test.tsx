@@ -18,7 +18,7 @@
  *
  *   1. Migrates the last 12 inline `.currentTarget.style.*` sites in the
  *      modelling subpanels (NodePalette, ModellingConfig,
- *      FeatureBrowser, FeatureAndAlgorithmConfig) plus the 6 GitPanel
+ *      FeatureBrowser, and the former combined modelling editor) plus the 6 GitPanel
  *      call-sites that use `hoverHandlers`/`hoverBg`.
  *   2. Deletes the entire `frontend/src/utils/hoverHandlers.ts` module —
  *      including its two factory functions (`hoverHandlers()` and
@@ -124,7 +124,7 @@ const SCOPE_FILES = [
   "panels/NodePalette.tsx",
   "panels/ModellingConfig.tsx",
   "panels/modelling/FeatureBrowser.tsx",
-  "panels/modelling/FeatureAndAlgorithmConfig.tsx",
+  "panels/modelling/CommonFeatureConfig.tsx",
   "panels/GitPanel.tsx",
 ].map((rel) => ({ rel, abs: path.join(SRC_ROOT, rel) }))
 

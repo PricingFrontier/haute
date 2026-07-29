@@ -628,6 +628,37 @@ export interface TrainFeatureSelection {
   excluded_columns: TrainFeatureSelectionCollection<TrainFeatureSelectionExcludedColumn>
 }
 
+export interface CrossValidationFoldResult {
+  schema_version: 1
+  fold_index: number
+  train_rows: number
+  validation_rows: number
+  metrics: Record<string, number>
+}
+
+export interface CrossValidationMetricSummary {
+  mean: number
+  population_std: number
+  min: number
+  max: number
+  fold_count: number
+  total_validation_rows: number
+}
+
+export interface CrossValidationReport {
+  schema_version: 1
+  strategy: "random" | "group" | "temporal"
+  fold_count: number
+  fit_count: number
+  folds: CrossValidationFoldResult[]
+  metrics: Record<string, CrossValidationMetricSummary>
+  plan_sha256: string
+  results_sha256: string
+  fold_plan_path: string
+  fold_results_path: string
+  report_path: string
+}
+
 export interface TrainResponse {
   status: string
   job_id?: string | null
@@ -663,6 +694,7 @@ export interface TrainResponse {
   glm_regularization_path?: GlmRegularizationPath | null
   diagnostics_errors?: TrainDiagnosticsError[]
   feature_selection?: TrainFeatureSelection | null
+  cross_validation?: CrossValidationReport | null
 }
 
 export interface TrainStatusResponse {
@@ -672,7 +704,7 @@ export interface TrainStatusResponse {
   iteration: number
   total_iterations: number
   train_loss: Record<string, number>
-  train_loss_history?: Record<string, number>[]
+  train_loss_history?: Array<{ iteration: number; [key: string]: number }>
   train_loss_history_truncated?: boolean
   elapsed_seconds: number
   result?: TrainResponse | null

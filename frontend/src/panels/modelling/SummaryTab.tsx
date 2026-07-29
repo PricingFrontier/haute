@@ -38,6 +38,10 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
   const diagSet = result.diagnostics_set ?? "validation"
   const diagLabel = diagSet === "holdout" ? "Holdout" : diagSet === "train" ? "Train" : "Validation"
   const diagnosticsErrors = result.diagnostics_errors ?? []
+  const crossValidation = result.cross_validation ?? null
+  const crossValidationMetricNames = crossValidation
+    ? Object.keys(crossValidation.metrics).sort()
+    : []
 
   return (
     <div className="flex gap-6 flex-wrap">
@@ -183,6 +187,101 @@ export function SummaryTab({ result, jobId, mlflowBackend, config }: SummaryTabP
             )}
           </div>
         </div>
+      )}
+
+      {crossValidation && (
+        <section
+          aria-label="Cross-validation results"
+          className="w-full min-w-0 space-y-3"
+        >
+          <div>
+            <h3
+              className="text-[11px] font-bold uppercase tracking-[0.08em]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Cross-validation
+            </h3>
+            <p className="mt-0.5 text-xs" style={{ color: "var(--text-secondary)" }}>
+              {crossValidation.strategy} · {crossValidation.fold_count} folds ·{" "}
+              {crossValidation.fit_count} fits
+            </p>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table
+              aria-label="Cross-validation aggregate metrics"
+              className="w-full text-xs font-mono"
+            >
+              <thead>
+                <tr style={{ color: "var(--text-muted)" }}>
+                  <th className="py-1 pr-3 text-left font-medium">Metric</th>
+                  <th className="px-2 py-1 text-right font-medium">Mean</th>
+                  <th className="px-2 py-1 text-right font-medium">Population std</th>
+                  <th className="px-2 py-1 text-right font-medium">Min</th>
+                  <th className="px-2 py-1 text-right font-medium">Max</th>
+                  <th className="pl-2 py-1 text-right font-medium">Validation rows</th>
+                </tr>
+              </thead>
+              <tbody>
+                {crossValidationMetricNames.map((name) => {
+                  const summary = crossValidation.metrics[name]
+                  return (
+                    <tr key={name} style={{ color: "var(--text-primary)" }}>
+                      <th className="py-1 pr-3 text-left font-medium">{name}</th>
+                      <td className="px-2 py-1 text-right">{fmt(summary.mean)}</td>
+                      <td className="px-2 py-1 text-right">{fmt(summary.population_std)}</td>
+                      <td className="px-2 py-1 text-right">{fmt(summary.min)}</td>
+                      <td className="px-2 py-1 text-right">{fmt(summary.max)}</td>
+                      <td className="pl-2 py-1 text-right">
+                        {summary.total_validation_rows.toLocaleString()}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table
+              aria-label="Cross-validation fold metrics"
+              className="w-full text-xs font-mono"
+            >
+              <thead>
+                <tr style={{ color: "var(--text-muted)" }}>
+                  <th className="py-1 pr-3 text-left font-medium">Fold</th>
+                  <th className="px-2 py-1 text-right font-medium">Train rows</th>
+                  <th className="px-2 py-1 text-right font-medium">Validation rows</th>
+                  {crossValidationMetricNames.map((name) => (
+                    <th key={name} className="pl-2 py-1 text-right font-medium">
+                      {name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {crossValidation.folds.map((fold) => (
+                  <tr key={fold.fold_index} style={{ color: "var(--text-primary)" }}>
+                    <th className="py-1 pr-3 text-left font-medium">
+                      {fold.fold_index + 1}
+                    </th>
+                    <td className="px-2 py-1 text-right">
+                      {fold.train_rows.toLocaleString()}
+                    </td>
+                    <td className="px-2 py-1 text-right">
+                      {fold.validation_rows.toLocaleString()}
+                    </td>
+                    {crossValidationMetricNames.map((name) => (
+                      <td key={name} className="pl-2 py-1 text-right">
+                        {fmt(fold.metrics[name])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       {/* MLflow export */}

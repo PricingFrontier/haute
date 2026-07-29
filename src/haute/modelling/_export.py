@@ -84,6 +84,8 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
 
     parts.append(f"    split={kwargs['split']!r},")
     parts.append(f"    metrics={kwargs['metrics']!r},")
+    if kwargs.get("cross_validation") is not None:
+        parts.append(f"    cross_validation={kwargs['cross_validation']!r},")
 
     if kwargs["loss_function"]:
         parts.append(f"    loss_function={kwargs['loss_function']!r},")

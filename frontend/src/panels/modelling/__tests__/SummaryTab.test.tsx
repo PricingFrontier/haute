@@ -125,4 +125,59 @@ describe("SummaryTab", () => {
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
     expect(screen.getByText("Holdout")).toBeInTheDocument()
   })
+
+  it("shows bounded aggregate and ordered per-fold cross-validation results", () => {
+    const result = makeTrainResult({
+      cross_validation: {
+        schema_version: 1,
+        strategy: "group",
+        fold_count: 2,
+        fit_count: 3,
+        folds: [
+          {
+            schema_version: 1,
+            fold_index: 0,
+            train_rows: 8,
+            validation_rows: 2,
+            metrics: { rmse: 1 },
+          },
+          {
+            schema_version: 1,
+            fold_index: 1,
+            train_rows: 8,
+            validation_rows: 2,
+            metrics: { rmse: 3 },
+          },
+        ],
+        metrics: {
+          rmse: {
+            mean: 2,
+            population_std: 1,
+            min: 1,
+            max: 3,
+            fold_count: 2,
+            total_validation_rows: 4,
+          },
+        },
+        plan_sha256: "a".repeat(64),
+        results_sha256: "b".repeat(64),
+        fold_plan_path: "outputs/model.cv-fold-plan.json",
+        fold_results_path: "outputs/model.cv-fold-results.json",
+        report_path: "outputs/model.cv-report.json",
+      },
+    })
+
+    render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
+
+    expect(screen.getByText("Cross-validation")).toBeInTheDocument()
+    expect(screen.getByText("group · 2 folds · 3 fits")).toBeInTheDocument()
+    const aggregate = screen.getByRole("table", { name: "Cross-validation aggregate metrics" })
+    expect(within(aggregate).getByText("rmse")).toBeInTheDocument()
+    expect(within(aggregate).getByText("2.0000")).toBeInTheDocument()
+    const folds = screen.getByRole("table", { name: "Cross-validation fold metrics" })
+    expect(within(folds).getAllByRole("row").slice(1).map((row) => row.textContent)).toEqual([
+      "1821.0000",
+      "2823.0000",
+    ])
+  })
 })

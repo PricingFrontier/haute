@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { SplitAndMetricsConfig } from "../SplitAndMetricsConfig"
 import type { SplitAndMetricsConfigProps } from "../SplitAndMetricsConfig"
 
@@ -16,16 +16,8 @@ const COLUMNS = [
 
 function makeProps(overrides: Partial<SplitAndMetricsConfigProps> = {}): SplitAndMetricsConfigProps {
   return {
-    config: {},
-    onUpdate: vi.fn(),
     columns: COLUMNS,
-    target: "loss_amount",
-    weight: "",
-    exclude: [],
     split: { strategy: "random", validation_size: 0.2, holdout_size: 0, seed: 42 },
-    mlflowOpen: false,
-    monotonicOpen: false,
-    toggleSection: vi.fn(),
     onSplitUpdate: vi.fn(),
     ...overrides,
   }
@@ -83,57 +75,4 @@ describe("SplitAndMetricsConfig", () => {
     expect(onSplitUpdate).toHaveBeenCalledWith("validation_size", 0.3)
   })
 
-  it("MLflow section toggles on click", () => {
-    const toggleSection = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ toggleSection })} />)
-    fireEvent.click(screen.getByText("MLflow Logging"))
-    expect(toggleSection).toHaveBeenCalledWith("modelling.mlflow")
-  })
-
-  it("shows MLflow fields when mlflowOpen is true", () => {
-    render(<SplitAndMetricsConfig {...makeProps({ mlflowOpen: true })} />)
-    expect(screen.getByText("Experiment path")).toBeInTheDocument()
-    expect(screen.getByText(/Model name/)).toBeInTheDocument()
-  })
-
-  it("monotonic constraints section toggles on click", () => {
-    const toggleSection = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ toggleSection })} />)
-    fireEvent.click(screen.getByText("Monotonic Constraints"))
-    expect(toggleSection).toHaveBeenCalledWith("modelling.monotonic")
-  })
-
-  it("shows monotonic constraint rows only for numeric features", () => {
-    render(<SplitAndMetricsConfig {...makeProps({ monotonicOpen: true })} />)
-    // Int64 and Float64 are eligible; target, Date, Boolean, and String are not.
-    expect(screen.getByText("age")).toBeInTheDocument()
-    expect(screen.getByText("exposure")).toBeInTheDocument()
-    expect(screen.queryByText("group_id")).not.toBeInTheDocument()
-    expect(screen.queryByText("date_col")).not.toBeInTheDocument()
-    expect(screen.queryByText("is_active")).not.toBeInTheDocument()
-  })
-
-  it("writes +1 constraints and removes a key when reset to zero", () => {
-    const onUpdate = vi.fn()
-    const { rerender } = render(<SplitAndMetricsConfig {...makeProps({ monotonicOpen: true, onUpdate })} />)
-
-    fireEvent.click(within(screen.getByText("age").parentElement!).getByText("+1"))
-    expect(onUpdate).toHaveBeenCalledWith("monotone_constraints", { age: 1 })
-
-    rerender(<SplitAndMetricsConfig {...makeProps({
-      monotonicOpen: true,
-      onUpdate,
-      config: { monotone_constraints: { age: 1 } },
-    })} />)
-    fireEvent.click(within(screen.getByText("age").parentElement!).getByText("0"))
-    expect(onUpdate).toHaveBeenLastCalledWith("monotone_constraints", null)
-  })
-
-  it("row limit input calls onUpdate", () => {
-    const onUpdate = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ onUpdate })} />)
-    const rowLimitInput = screen.getByPlaceholderText("All rows")
-    fireEvent.change(rowLimitInput, { target: { value: "50000" } })
-    expect(onUpdate).toHaveBeenCalledWith("row_limit", 50000)
-  })
 })

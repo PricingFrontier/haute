@@ -107,7 +107,10 @@ beforeEach(() => {
   })
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 // ═════════════════════════════════════════════════════════════════
 // GLMTargetConfig
@@ -169,13 +172,15 @@ describe("GLMTargetConfig", () => {
     })
   })
 
-  it("shows Tweedie variance power slider only when family=tweedie", () => {
+  it("gates Tweedie variance power when family=tweedie and the value is null", () => {
     const { unmount } = render(<GLMTargetConfig config={baseConfig} onUpdate={onUpdate} columns={defaultColumns} />)
     expect(screen.queryByText(/Variance power/)).toBeNull()
     unmount()
 
-    render(<GLMTargetConfig config={{ ...baseConfig, family: "tweedie" }} onUpdate={onUpdate} columns={defaultColumns} />)
+    render(<GLMTargetConfig config={{ ...baseConfig, family: "tweedie", var_power: null }} onUpdate={onUpdate} columns={defaultColumns} />)
     expect(screen.getByText(/Variance power/)).toBeTruthy()
+    expect(screen.getByRole("button", { name: /Set variance power/ })).toBeTruthy()
+    expect(screen.queryByRole("slider")).toBeNull()
   })
 
   it("shows the theta field only when family=negbinomial, empty by default", () => {
@@ -329,7 +334,10 @@ describe("GLMFactorConfig", () => {
     },
   }
 
-  beforeEach(() => baseProps.onUpdate.mockReset())
+  beforeEach(() => {
+    baseProps.onUpdate.mockReset()
+    vi.stubGlobal("confirm", vi.fn(() => true))
+  })
 
   // ── Empty state ──
 
@@ -424,8 +432,60 @@ describe("GLMFactorConfig", () => {
     render(<GLMFactorConfig {...withFactors} />)
     const removeAge = screen.getByTitle("Remove age")
     fireEvent.click(removeAge)
-    expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", {
-      region: { type: "categorical" },
+    expect(baseProps.onUpdate).toHaveBeenCalledWith({
+      terms: {
+        region: { type: "categorical" },
+      },
+    })
+  })
+
+  it("cancels or atomically cleans dependencies when a selected factor is removed", () => {
+    const config = {
+      ...withFactors.config,
+      monotone_constraints: { age: 1, region: -1 },
+      interactions: [
+        { factors: ["age", "region"], include_main: true },
+        { factors: ["region", "severity"], include_main: false },
+      ],
+    }
+    const confirmMock = vi.mocked(confirm)
+    render(<GLMFactorConfig {...withFactors} config={config} />)
+
+    confirmMock.mockReturnValueOnce(false)
+    fireEvent.click(screen.getByTitle("Remove age"))
+    expect(baseProps.onUpdate).not.toHaveBeenCalled()
+
+    confirmMock.mockReturnValueOnce(true)
+    fireEvent.click(screen.getByTitle("Remove age"))
+    expect(baseProps.onUpdate).toHaveBeenCalledWith({
+      terms: { region: { type: "categorical" } },
+      monotone_constraints: { region: -1 },
+      interactions: [
+        { factors: ["region", "severity"], include_main: false },
+      ],
+    })
+  })
+
+  it("confirms and cleans features lost when all_factors narrows to explicit terms", () => {
+    const config = {
+      ...baseProps.config,
+      all_factors: true,
+      terms: { age: { type: "linear" } },
+      monotone_constraints: { region: -1, severity: 1 },
+      interactions: [
+        { factors: ["age", "region"], include_main: true },
+      ],
+    }
+    const confirmMock = vi.mocked(confirm)
+    render(<GLMFactorConfig {...baseProps} config={config} />)
+
+    confirmMock.mockReturnValueOnce(true)
+    fireEvent.click(screen.getByRole("checkbox", { name: /All features/ }))
+
+    expect(baseProps.onUpdate).toHaveBeenCalledWith({
+      all_factors: null,
+      monotone_constraints: null,
+      interactions: [],
     })
   })
 
@@ -562,6 +622,31 @@ describe("GLMFactorConfig", () => {
     expect(baseProps.onUpdate).toHaveBeenCalledWith("terms", { age: { type: "ns", df: 4 } })
   })
 
+  it("atomically cleans dependencies when JSON removes an explicit term", () => {
+    const config = {
+      ...withFactors.config,
+      monotone_constraints: { age: 1, region: -1 },
+      interactions: [
+        { factors: ["age", "region"], include_main: true },
+      ],
+    }
+    render(<GLMFactorConfig {...withFactors} config={config} />)
+    fireEvent.click(screen.getByRole("button", { name: "JSON" }))
+    const textarea = document.querySelector("textarea")!
+    fireEvent.change(textarea, {
+      target: {
+        value: JSON.stringify({ region: { type: "categorical" } }),
+      },
+    })
+    fireEvent.blur(textarea)
+
+    expect(baseProps.onUpdate).toHaveBeenCalledWith({
+      terms: { region: { type: "categorical" } },
+      monotone_constraints: { region: -1 },
+      interactions: [],
+    })
+  })
+
   it("pasting JSON from Atelier adds those factors", () => {
     render(<GLMFactorConfig {...baseProps} />)
     fireEvent.click(screen.getByRole("button", { name: "JSON" }))
@@ -671,7 +756,7 @@ describe("GLMRegularizationConfig", () => {
     expect(screen.queryByText(/L1 ratio/)).toBeNull()
     unmount()
 
-    render(<GLMRegularizationConfig config={{ regularization: "elastic_net" }} onUpdate={onUpdate} />)
+    render(<GLMRegularizationConfig config={{ regularization: "elastic_net", l1_ratio: null }} onUpdate={onUpdate} />)
     fireEvent.click(screen.getByText("Regularization"))
     expect(screen.getAllByText(/L1 ratio/).length).toBeGreaterThan(0)
   })
@@ -941,20 +1026,52 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(onUpdate).toHaveBeenCalledWith("algorithm", "glm")
   })
 
-  it("GLM config renders target, factors, regularization sections", () => {
-    render(
+  it("GLM config routes target, features, and regularization to exclusive panes", () => {
+    const config = {
+      _nodeId: "n1",
+      algorithm: "glm",
+      target: "claim_count",
+      weight: "exposure",
+      family: "poisson",
+    }
+    const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
-          config={{ _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }}
+          config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
+          activePane="target"
         />
       </GraphProvider>,
     )
-    // GLM-specific sections
     expect(screen.getByText("Target & Weight")).toBeTruthy()
     expect(screen.getByText("Family")).toBeTruthy()
+    expect(screen.queryByText("Factors")).toBeNull()
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig
+          config={config}
+          onUpdate={vi.fn()}
+          upstreamColumns={defaultColumns}
+          activePane="features"
+        />
+      </GraphProvider>,
+    )
+    expect(screen.getByText("Features")).toBeTruthy()
     expect(screen.getByText("Factors")).toBeTruthy()
+    expect(screen.queryByText("Family")).toBeNull()
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig
+          config={config}
+          onUpdate={vi.fn()}
+          upstreamColumns={defaultColumns}
+          activePane="params"
+        />
+      </GraphProvider>,
+    )
     expect(screen.getByText("Regularization")).toBeTruthy()
 
     // Should NOT have CatBoost-specific sections
@@ -962,17 +1079,39 @@ describe("ModellingConfig (GLM routing)", () => {
     expect(screen.queryByRole("button", { name: "classification" })).toBeNull()
   })
 
-  it("GLM config still renders shared sections (split, train actions)", () => {
-    render(
+  it("GLM config routes the shared split and train sections", () => {
+    const config = {
+      _nodeId: "n1",
+      algorithm: "glm",
+      target: "claim_count",
+      weight: "exposure",
+      family: "poisson",
+      terms: { age: { type: "linear" } },
+    }
+    const { rerender } = render(
       <GraphProvider allNodes={[]} edges={[]}>
         <ModellingConfig
-          config={{ _nodeId: "n1", algorithm: "glm", target: "claim_count", weight: "exposure", family: "poisson" }}
+          config={config}
           onUpdate={vi.fn()}
           upstreamColumns={defaultColumns}
+          activePane="split"
         />
       </GraphProvider>,
     )
-    // Shared sections
+    expect(screen.getByText("Split Strategy")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: /Train Model/ })).toBeNull()
+
+    rerender(
+      <GraphProvider allNodes={[]} edges={[]}>
+        <ModellingConfig
+          config={config}
+          onUpdate={vi.fn()}
+          upstreamColumns={defaultColumns}
+          activePane="train"
+        />
+      </GraphProvider>,
+    )
     expect(screen.getByRole("button", { name: /Train Model/ })).toBeTruthy()
+    expect(screen.queryByText("Split Strategy")).toBeNull()
   })
 })

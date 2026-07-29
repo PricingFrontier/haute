@@ -1648,12 +1648,289 @@ export function parseTrainFeatureSelection(value: unknown): NonNullable<TrainRes
   }
 }
 
+const CROSS_VALIDATION_REPORT_FIELDS = [
+  "schema_version",
+  "strategy",
+  "fold_count",
+  "fit_count",
+  "folds",
+  "metrics",
+  "plan_sha256",
+  "results_sha256",
+  "fold_plan_path",
+  "fold_results_path",
+  "report_path",
+] as const
+
+function expectCrossValidationKeys(
+  obj: Record<string, unknown>,
+  field: string,
+  expected: readonly string[],
+): void {
+  const actual = Object.keys(obj).sort()
+  const wanted = [...expected].sort()
+  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
+    throw new Error(`parseTrainResponse: cross-validation ${field} has unexpected or missing fields`)
+  }
+}
+
+function expectCrossValidationInteger(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum?: number,
+): number {
+  if (
+    typeof value !== "number"
+    || !Number.isSafeInteger(value)
+    || value < minimum
+    || (maximum !== undefined && value > maximum)
+  ) {
+    throw new Error(`parseTrainResponse: cross-validation ${field} is outside its integer bound`)
+  }
+  return value
+}
+
+function expectCrossValidationNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`parseTrainResponse: cross-validation ${field} must be finite`)
+  }
+  return value
+}
+
+function parseCrossValidationMetrics(
+  value: unknown,
+  field: string,
+): Record<string, number> {
+  const obj = expectPlainObject("parseTrainResponse", value, field)
+  const entries = Object.entries(obj)
+  if (entries.length === 0 || entries.some(([name]) => name.length === 0)) {
+    throw new Error(`parseTrainResponse: cross-validation ${field} must contain named metrics`)
+  }
+  return Object.fromEntries(
+    entries.map(([name, metric]) => [
+      name,
+      expectCrossValidationNumber(metric, `${field}.${name}`),
+    ]),
+  )
+}
+
+function parseCrossValidationReport(
+  value: unknown,
+): NonNullable<TrainResponse["cross_validation"]> {
+  const obj = expectPlainObject("parseTrainResponse", value, "field `cross_validation`")
+  expectCrossValidationKeys(obj, "report", CROSS_VALIDATION_REPORT_FIELDS)
+  const schemaVersion = expectSchemaVersionOne(
+    "parseTrainResponse",
+    obj.schema_version,
+    "field `cross_validation.schema_version`",
+  )
+  const strategy = expectStringLiteral(
+    "parseTrainResponse",
+    obj.strategy,
+    "field `cross_validation.strategy`",
+    ["random", "group", "temporal"] as const,
+  )
+  const foldCount = expectCrossValidationInteger(obj.fold_count, "fold_count", 2, 10)
+  const fitCount = expectCrossValidationInteger(obj.fit_count, "fit_count", 3, 11)
+  if (fitCount !== foldCount + 1) {
+    throw new Error("parseTrainResponse: cross-validation fit_count must equal fold_count + 1")
+  }
+
+  if (!Array.isArray(obj.folds) || obj.folds.length !== foldCount) {
+    throw new Error("parseTrainResponse: cross-validation folds must match fold_count")
+  }
+  const folds = obj.folds.map((fold, index) => {
+    const foldObj = expectPlainObject(
+      "parseTrainResponse",
+      fold,
+      `field \`cross_validation.folds[${index}]\``,
+    )
+    expectCrossValidationKeys(
+      foldObj,
+      `fold ${index}`,
+      ["schema_version", "fold_index", "train_rows", "validation_rows", "metrics"],
+    )
+    const foldIndex = expectCrossValidationInteger(
+      foldObj.fold_index,
+      `folds[${index}].fold_index`,
+      0,
+      9,
+    )
+    if (foldIndex !== index) {
+      throw new Error("parseTrainResponse: cross-validation folds must be complete and ascending")
+    }
+    return {
+      schema_version: expectSchemaVersionOne(
+        "parseTrainResponse",
+        foldObj.schema_version,
+        `field \`cross_validation.folds[${index}].schema_version\``,
+      ),
+      fold_index: foldIndex,
+      train_rows: expectCrossValidationInteger(
+        foldObj.train_rows,
+        `folds[${index}].train_rows`,
+        1,
+      ),
+      validation_rows: expectCrossValidationInteger(
+        foldObj.validation_rows,
+        `folds[${index}].validation_rows`,
+        1,
+      ),
+      metrics: parseCrossValidationMetrics(
+        foldObj.metrics,
+        `folds[${index}].metrics`,
+      ),
+    }
+  })
+
+  const rawMetrics = expectPlainObject(
+    "parseTrainResponse",
+    obj.metrics,
+    "field `cross_validation.metrics`",
+  )
+  if (Object.keys(rawMetrics).length === 0) {
+    throw new Error("parseTrainResponse: cross-validation report metrics must not be empty")
+  }
+  const metrics = Object.fromEntries(
+    Object.entries(rawMetrics).map(([name, rawSummary]) => {
+      if (name.length === 0) {
+        throw new Error("parseTrainResponse: cross-validation metric names must not be empty")
+      }
+      const summary = expectPlainObject(
+        "parseTrainResponse",
+        rawSummary,
+        `field \`cross_validation.metrics.${name}\``,
+      )
+      expectCrossValidationKeys(
+        summary,
+        `metric ${name}`,
+        ["mean", "population_std", "min", "max", "fold_count", "total_validation_rows"],
+      )
+      const parsed = {
+        mean: expectCrossValidationNumber(summary.mean, `metrics.${name}.mean`),
+        population_std: expectCrossValidationNumber(
+          summary.population_std,
+          `metrics.${name}.population_std`,
+        ),
+        min: expectCrossValidationNumber(summary.min, `metrics.${name}.min`),
+        max: expectCrossValidationNumber(summary.max, `metrics.${name}.max`),
+        fold_count: expectCrossValidationInteger(
+          summary.fold_count,
+          `metrics.${name}.fold_count`,
+          2,
+          10,
+        ),
+        total_validation_rows: expectCrossValidationInteger(
+          summary.total_validation_rows,
+          `metrics.${name}.total_validation_rows`,
+          1,
+        ),
+      }
+      if (parsed.population_std < 0 || parsed.min > parsed.max) {
+        throw new Error(`parseTrainResponse: cross-validation metric ${name} has invalid bounds`)
+      }
+      return [name, parsed]
+    }),
+  )
+
+  const metricNames = Object.keys(metrics).sort()
+  const totalValidationRows = folds.reduce(
+    (total, fold) => total + fold.validation_rows,
+    0,
+  )
+  const close = (left: number, right: number) => (
+    Math.abs(left - right) <= 1e-12 * Math.max(1, Math.abs(left), Math.abs(right))
+  )
+  for (const fold of folds) {
+    const foldMetricNames = Object.keys(fold.metrics).sort()
+    if (
+      foldMetricNames.length !== metricNames.length
+      || foldMetricNames.some((name, index) => name !== metricNames[index])
+    ) {
+      throw new Error(
+        "parseTrainResponse: cross-validation fold metric names must match report metrics",
+      )
+    }
+  }
+  for (const name of metricNames) {
+    const summary = metrics[name]
+    if (
+      summary.fold_count !== foldCount
+      || summary.total_validation_rows !== totalValidationRows
+    ) {
+      throw new Error(
+        "parseTrainResponse: cross-validation metric counts disagree with folds",
+      )
+    }
+    const values = folds.map((fold) => fold.metrics[name])
+    const weightedMean = folds.reduce(
+      (total, fold) => total + fold.metrics[name] * fold.validation_rows,
+      0,
+    ) / totalValidationRows
+    const weightedVariance = folds.reduce(
+      (total, fold) => (
+        total + fold.validation_rows * (fold.metrics[name] - weightedMean) ** 2
+      ),
+      0,
+    ) / totalValidationRows
+    if (
+      !close(summary.mean, weightedMean)
+      || !close(summary.population_std, Math.sqrt(weightedVariance))
+      || !close(summary.min, Math.min(...values))
+      || !close(summary.max, Math.max(...values))
+    ) {
+      throw new Error(
+        "parseTrainResponse: cross-validation aggregate disagrees with fold results",
+      )
+    }
+  }
+
+  const digest = (raw: unknown, field: string) => {
+    const parsed = expectString("parseTrainResponse", raw, field)
+    if (!/^[0-9a-f]{64}$/.test(parsed)) {
+      throw new Error(`parseTrainResponse: cross-validation ${field} is not a SHA-256 digest`)
+    }
+    return parsed
+  }
+  const path = (raw: unknown, field: string) => {
+    const parsed = expectString("parseTrainResponse", raw, field)
+    if (parsed.length === 0) {
+      throw new Error(`parseTrainResponse: cross-validation ${field} must not be empty`)
+    }
+    return parsed
+  }
+
+  return {
+    schema_version: schemaVersion,
+    strategy,
+    fold_count: foldCount,
+    fit_count: fitCount,
+    folds,
+    metrics,
+    plan_sha256: digest(obj.plan_sha256, "plan_sha256"),
+    results_sha256: digest(obj.results_sha256, "results_sha256"),
+    fold_plan_path: path(obj.fold_plan_path, "fold_plan_path"),
+    fold_results_path: path(obj.fold_results_path, "fold_results_path"),
+    report_path: path(obj.report_path, "report_path"),
+  }
+}
+
 export function parseTrainResponse(value: unknown): TrainResponse {
   const obj = expectPlainObject("parseTrainResponse", value)
   const rawRegularization = optionalNullableObject("parseTrainResponse", obj, "glm_regularization_path")
+  const status = expectStringLiteral("parseTrainResponse", obj.status, "field `status`", ["started", "completed", "error"])
+  const crossValidation = obj.cross_validation === undefined || obj.cross_validation === null
+    ? null
+    : parseCrossValidationReport(obj.cross_validation)
+  if (crossValidation !== null && status !== "completed") {
+    throw new Error(
+      "parseTrainResponse: cross-validation is present only for completed training",
+    )
+  }
 
   return {
-    status: expectStringLiteral("parseTrainResponse", obj.status, "field `status`", ["started", "completed", "error"]),
+    status,
     job_id: optionalNullableString("parseTrainResponse", obj, "job_id"),
     metrics: optionalNumberRecord("parseTrainResponse", obj, "metrics"),
     feature_importance: optionalArray("parseTrainResponse", obj, "feature_importance", parseFeatureImportanceRow),
@@ -1693,6 +1970,7 @@ export function parseTrainResponse(value: unknown): TrainResponse {
     feature_selection: obj.feature_selection === undefined || obj.feature_selection === null
       ? null
       : parseTrainFeatureSelection(obj.feature_selection),
+    cross_validation: crossValidation,
   }
 }
 
@@ -1705,6 +1983,17 @@ export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
     iteration: optionalNumber("parseTrainStatusResponse", obj, "iteration"),
     total_iterations: optionalNumber("parseTrainStatusResponse", obj, "total_iterations"),
     train_loss: optionalNumberRecord("parseTrainStatusResponse", obj, "train_loss"),
+    train_loss_history: obj.train_loss_history === undefined
+      ? undefined
+      : parseArray(
+        "parseTrainStatusResponse",
+        obj.train_loss_history,
+        "field `train_loss_history`",
+        parseLossHistoryEntry,
+      ),
+    train_loss_history_truncated: obj.train_loss_history_truncated === undefined
+      ? undefined
+      : expectBoolean("parseTrainStatusResponse", obj.train_loss_history_truncated, "field `train_loss_history_truncated`"),
     elapsed_seconds: optionalNumber("parseTrainStatusResponse", obj, "elapsed_seconds"),
     result: obj.result === undefined || obj.result === null ? null : parseTrainResponse(obj.result),
     warning: optionalNullableString("parseTrainStatusResponse", obj, "warning"),

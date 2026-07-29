@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from haute.modelling._cross_validation import CrossValidationConfig
 from haute.modelling._split import DEFAULT_SPLIT_DICT
 
 # GLM config keys live at the top level of the modelling-node config (not
@@ -42,6 +43,16 @@ GLM_CONFIG_KEYS: tuple[str, ...] = (
 
 class TrainingConfigError(ValueError):
     """Raised when a modelling node config cannot produce a training job."""
+
+
+def parse_cross_validation_config(raw: Any) -> dict[str, Any] | None:
+    """Validate and canonicalise the optional public cross-validation object."""
+    if raw is None:
+        return None
+    try:
+        return CrossValidationConfig.from_plain_data(raw).to_plain_data()
+    except (TypeError, ValueError) as exc:
+        raise TrainingConfigError(f"Invalid cross_validation config: {exc}") from exc
 
 
 def default_metrics(
@@ -197,6 +208,7 @@ def build_training_job_kwargs(
     family = params.get("family") if algorithm == "glm" else None
     loss_function = None if algorithm == "glm" else config.get("loss_function")
     variance_power = config.get("var_power") if algorithm == "glm" else config.get("variance_power")
+    cross_validation = parse_cross_validation_config(config.get("cross_validation"))
 
     return {
         "name": config.get("name", default_name),
@@ -222,4 +234,5 @@ def build_training_job_kwargs(
         "monotone_constraints": config.get("monotone_constraints") or None,
         "feature_weights": config.get("feature_weights") or None,
         "categorical_levels": config.get("categorical_levels") or None,
+        "cross_validation": cross_validation,
     }

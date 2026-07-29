@@ -6,12 +6,14 @@ import type { TrainProgress } from "../../stores/useNodeResultsStore"
 import { MODEL_COLORS } from "../../theme/colors"
 import { formatElapsed } from "../../utils/formatValue"
 import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSummary"
+import { LossChart } from "./LossChart"
 
 type TrainingProgressProps = {
   trainProgress: TrainProgress
+  estimatedRemainingSeconds?: number | null
 }
 
-export function TrainingProgress({ trainProgress }: TrainingProgressProps) {
+export function TrainingProgress({ trainProgress, estimatedRemainingSeconds = null }: TrainingProgressProps) {
   return (
     <div className="px-3 py-2.5 rounded-lg text-xs space-y-2" style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}>
       {/* Progress bar */}
@@ -40,6 +42,16 @@ export function TrainingProgress({ trainProgress }: TrainingProgressProps) {
               {name}: <span style={{ color: "var(--text-primary)" }}>{value.toFixed(4)}</span>
             </span>
           ))}
+        </div>
+      )}
+
+      {estimatedRemainingSeconds != null && (
+        <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>Estimated remaining: {formatElapsed(estimatedRemainingSeconds)}</div>
+      )}
+      {trainProgress.train_loss_history && (
+        <div>
+          {trainProgress.train_loss_history_truncated && <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>Showing latest retained loss-history window.</p>}
+          <LossChart lossHistory={trainProgress.train_loss_history} />
         </div>
       )}
 

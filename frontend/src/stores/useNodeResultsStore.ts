@@ -15,14 +15,84 @@ import { create } from "zustand"
 import useGraphStore from "./useGraphStore"
 import type { PreviewData } from "../panels/DataPreview"
 import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
-import type { FrontierSelectResponse, FrontierData, JobStatus, ExecutionMetrics, ExploreCacheReport, ExploreStatusResponse, OptimiserSolveResult } from "../api/types"
+import type {
+  CrossValidationReport,
+  ExecutionMetrics,
+  ExploreCacheReport,
+  ExploreStatusResponse,
+  FrontierData,
+  FrontierSelectResponse,
+  JobStatus,
+  OptimiserSolveResult,
+} from "../api/types"
 import type { ColumnInfo } from "../types/node"
+import { TERMINAL_JOB_STATUSES } from "../api/types"
 
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
 export const MAX_CACHED_TRAIN_RESULTS = 8
 export const MAX_CACHED_EXPLORE_RESULTS = 8
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
+
+type TrainEstimateSample = {
+  iteration: number
+  elapsedSeconds: number
+  totalIterations: number
+}
+
+export function nextTrainEstimate(
+  previous: TrainEstimateSample[],
+  progress: TrainProgress,
+): {
+  samples: TrainEstimateSample[]
+  estimatedRemainingSeconds: number | null
+} {
+  if (TERMINAL_JOB_STATUSES.has(progress.status)) {
+    return { samples: [], estimatedRemainingSeconds: null }
+  }
+
+  const sample = {
+    iteration: progress.iteration,
+    elapsedSeconds: progress.elapsed_seconds,
+    totalIterations: progress.total_iterations,
+  }
+  const validSample =
+    Number.isFinite(sample.iteration)
+    && Number.isFinite(sample.elapsedSeconds)
+    && Number.isFinite(sample.totalIterations)
+    && sample.iteration > 0
+    && sample.elapsedSeconds > 0
+    && sample.totalIterations > sample.iteration
+  if (!validSample) {
+    return { samples: previous, estimatedRemainingSeconds: null }
+  }
+
+  const prior = previous.at(-1)
+  if (!prior) return { samples: [sample], estimatedRemainingSeconds: null }
+  if (
+    sample.iteration <= prior.iteration
+    || sample.elapsedSeconds <= prior.elapsedSeconds
+  ) {
+    return { samples: previous, estimatedRemainingSeconds: null }
+  }
+
+  const rate =
+    (sample.iteration - prior.iteration)
+    / (sample.elapsedSeconds - prior.elapsedSeconds)
+  const remaining = (sample.totalIterations - sample.iteration) / rate
+  const estimatedRemainingSeconds =
+    Number.isFinite(rate)
+    && rate > 0
+    && Number.isFinite(remaining)
+    && remaining > 0
+      ? remaining
+      : null
+
+  return {
+    samples: [prior, sample],
+    estimatedRemainingSeconds,
+  }
+}
 
 // Result caches use entry-count LRU deliberately: preview payloads are already
 // bounded by backend row/column limits, and byte-accurate browser-side accounting
@@ -74,6 +144,7 @@ export type TrainResult = {
   glm_fit_statistics?: Record<string, number>
   glm_regularization_path?: { selected_alpha?: number; n_nonzero?: number }
   diagnostics_errors?: { diagnostic: string; error: string; error_type: string }[]
+  cross_validation?: CrossValidationReport | null
 }
 
 export type TrainProgress = {
@@ -83,6 +154,8 @@ export type TrainProgress = {
   iteration: number
   total_iterations: number
   train_loss: Record<string, number>
+  train_loss_history?: Array<{ iteration: number; [key: string]: number }>
+  train_loss_history_truncated?: boolean
   elapsed_seconds: number
   result?: TrainResult
   warning?: string | null
@@ -151,6 +224,9 @@ interface ActiveTrainJob {
   configHash: string
   source: string
   structuralVersion: number
+  /** The only two samples retained for the browser-derived ETA. */
+  estimateSamples?: TrainEstimateSample[]
+  estimatedRemainingSeconds?: number | null
 }
 
 interface CachedExploreResult {
@@ -938,7 +1014,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   startTrainJob: (nodeId, jobId, nodeLabel, configHash, source, structuralVersion) =>
     set((s) => {
-      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash, source, structuralVersion }
+      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash, source, structuralVersion, estimateSamples: [], estimatedRemainingSeconds: null }
       const cached = s.trainResults[nodeId]
       if (cached && cached.result.status !== "error") {
         cacheModellingPreview(nodeId, cached, nextJob)
@@ -955,8 +1031,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
+      const estimate = nextTrainEstimate(job.estimateSamples ?? [], progress)
       return {
-        trainJobs: { ...s.trainJobs, [nodeId]: { ...job, progress } },
+        trainJobs: { ...s.trainJobs, [nodeId]: { ...job, progress, estimateSamples: estimate.samples, estimatedRemainingSeconds: estimate.estimatedRemainingSeconds } },
       }
     }),
 

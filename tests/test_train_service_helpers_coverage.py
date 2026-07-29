@@ -70,6 +70,40 @@ class TestTrainingRequiredMetadataColumns:
         )
         assert {"y", "w", "o", "f", "pid"} <= cols
 
+    @pytest.mark.parametrize(
+        ("cross_validation", "column"),
+        [
+            (
+                {
+                    "schema_version": 1,
+                    "strategy": "group",
+                    "fold_count": 3,
+                    "seed": 7,
+                    "group_column": "household",
+                },
+                "household",
+            ),
+            (
+                {
+                    "schema_version": 1,
+                    "strategy": "temporal",
+                    "fold_count": 3,
+                    "seed": 7,
+                    "date_column": "valuation_date",
+                },
+                "valuation_date",
+            ),
+        ],
+    )
+    def test_cross_validation_key_is_required_metadata(
+        self, cross_validation: dict[str, object], column: str
+    ) -> None:
+        cols = _training_required_metadata_columns(
+            {"target": "y", "cross_validation": cross_validation}
+        )
+
+        assert cols == {"y", column}
+
 
 class TestTrainingMetadataReasons:
     @pytest.mark.parametrize(
@@ -95,6 +129,36 @@ class TestTrainingMetadataReasons:
         )
 
         assert reasons == {"shared": "target"}
+
+    def test_cross_validation_key_uses_split_reason_and_role_precedence(self) -> None:
+        reasons = _training_metadata_reasons(
+            {
+                "target": "shared",
+                "cross_validation": {
+                    "schema_version": 1,
+                    "strategy": "group",
+                    "fold_count": 3,
+                    "seed": 7,
+                    "group_column": "shared",
+                },
+            }
+        )
+
+        assert reasons == {"shared": "target"}
+
+        reasons = _training_metadata_reasons(
+            {
+                "target": "y",
+                "cross_validation": {
+                    "schema_version": 1,
+                    "strategy": "temporal",
+                    "fold_count": 3,
+                    "seed": 7,
+                    "date_column": "asof",
+                },
+            }
+        )
+        assert reasons == {"y": "target", "asof": "split"}
 
 
 class TestTrainingRequiredColumnsByNode:
