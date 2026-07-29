@@ -67,7 +67,8 @@ describe("configPanels DRY guard", () => {
   it("both panels call the shared useStaleConfigEstimate hook", () => {
     // The reviewer gate for item #67 requires 2+ callers, so both panels
     // must flow through the shared hook (even if the endpoint differs).
-    expect(modellingSrc).toMatch(/\buseStaleConfigEstimate\s*\(/)
-    expect(optimiserSrc).toMatch(/\buseStaleConfigEstimate\s*\(/)
+    const hookCall = /\buseStaleConfigEstimate(?:<[^>]+>)?\s*\(/
+    expect(modellingSrc).toMatch(hookCall)
+    expect(optimiserSrc).toMatch(hookCall)
   })
 })

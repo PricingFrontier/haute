@@ -66,6 +66,16 @@ class _ForwardingQueue:
         self.put(pickle.loads(payload))
 
 
+def _write_scratch_text(path: Path, text: str) -> None:
+    """Write test data to a path whose caller derives it from tmp_path."""
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_scratch_bytes(path: Path, content: bytes) -> None:
+    """Write test data to a path whose caller derives it from tmp_path."""
+    path.write_bytes(content)
+
+
 def _inline_protocol_runner(
     function,
     request,
@@ -433,7 +443,7 @@ def test_publication_rejects_malformed_or_incomplete_evaluation_set(
     root, output, manifest, expected = _staged_training_manifest(tmp_path)
     if kind == "evaluation_report":
         path = output / evaluation_artifact_filenames("quoted")["report"]
-        path.write_text("{}", encoding="utf-8")
+        _write_scratch_text(path, "{}")
         changed = build_artifact_manifest(
             artifact_root=root, path=path, kind=kind, lifetime="staged"
         )
@@ -456,7 +466,7 @@ def test_publication_rejects_malformed_or_incomplete_evaluation_set(
 def test_publication_rejects_results_not_linked_to_exact_evaluation_plan(tmp_path: Path) -> None:
     root, output, manifest, expected = _staged_training_manifest(tmp_path)
     plan = output / evaluation_artifact_filenames("quoted")["plan"]
-    plan.write_text(plan.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    _write_scratch_text(plan, plan.read_text(encoding="utf-8") + "\n")
     changed = build_artifact_manifest(
         artifact_root=root, path=plan, kind="evaluation_plan", lifetime="staged"
     )
@@ -481,7 +491,7 @@ def test_publication_retires_stale_tuning_companions(tmp_path: Path) -> None:
     destination.mkdir()
     stale = [destination / name for name in tuning_artifact_filenames("quoted").values()]
     for path in stale:
-        path.write_bytes(b"stale")
+        _write_scratch_bytes(path, b"stale")
     _publish_training_artifacts(
         manifest,
         artifact_root=root,
@@ -528,7 +538,7 @@ def test_publication_rolls_back_all_evaluation_artifacts(tmp_path: Path) -> None
 def test_publication_requires_tuning_artifacts_all_or_nothing(tmp_path: Path) -> None:
     root, output, manifest, expected = _staged_training_manifest(tmp_path)
     tuning = output / tuning_artifact_filenames("quoted")["plan"]
-    tuning.write_text("{}", encoding="utf-8")
+    _write_scratch_text(tuning, "{}")
     artifact = build_artifact_manifest(
         artifact_root=root, path=tuning, kind="tuning_plan", lifetime="staged"
     )
@@ -581,8 +591,8 @@ def test_cancel_before_publication_preserves_durable_artifacts(
     output = tmp_path / "outputs"
     output.mkdir()
     model, contract = output / "quoted.cbm", output / model_contract_filename("quoted")
-    model.write_bytes(b"old-model")
-    contract.write_bytes(b"old-contract")
+    _write_scratch_bytes(model, b"old-model")
+    _write_scratch_bytes(contract, b"old-contract")
     store = JobStore()
     service: TrainService
 
@@ -948,7 +958,7 @@ def test_train_service_keeps_completed_status_when_post_commit_cleanup_is_denied
 def test_parent_worker_cleanup_reports_all_failures_once(tmp_path: Path) -> None:
     service = TrainService(JobStore())
     prepared, artifact_root = tmp_path / "prepared.parquet", tmp_path / "artifacts"
-    prepared.write_bytes(b"prepared")
+    _write_scratch_bytes(prepared, b"prepared")
     artifact_root.mkdir()
 
     def fail_admission_release() -> None:
@@ -1034,7 +1044,7 @@ def test_train_service_publication_wins_late_cancel_and_records_elapsed(tmp_path
     store = JobStore()
     service = TrainService(store, protocol_runner=_inline_protocol_runner)
     output, prepared = tmp_path / "outputs", tmp_path / "prepared.parquet"
-    prepared.write_bytes(b"prepared")
+    _write_scratch_bytes(prepared, b"prepared")
     job_id = store.create_job(
         {
             "status": "running",

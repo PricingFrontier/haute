@@ -6,6 +6,7 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import optuna
 import pytest
 
 from haute.modelling._evaluation import (
@@ -232,7 +233,6 @@ def test_conditions_are_known_acyclic_and_possible() -> None:
 
 
 def test_seeded_sequential_optuna_suggestions_are_reproducible_and_conditional() -> None:
-    optuna = pytest.importorskip("optuna")
     config = parse()
 
     def sequence() -> list[dict[str, object]]:

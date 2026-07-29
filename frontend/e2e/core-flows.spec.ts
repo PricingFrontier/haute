@@ -77,6 +77,8 @@ test.describe("core browser flows", () => {
     await expect(modelNode).toBeVisible()
     await modelNode.click()
 
+    const modellingPanes = page.getByRole("tablist", { name: "Modelling panes" })
+    await modellingPanes.getByRole("tab", { name: "Train", exact: true }).click()
     const trainButton = page.getByRole("button", { name: /Train Model/i })
     await expect(trainButton).toBeVisible()
     await trainButton.click()
@@ -85,7 +87,9 @@ test.describe("core browser flows", () => {
       page.getByText(/Model trained — results in preview panel below/i),
     ).toBeVisible({ timeout: 120_000 })
     await expect(page.getByText("Model Info")).toBeVisible()
-    await expect(page.getByText(/Train rows/i)).toBeVisible()
+    await expect(
+      page.getByRole("columnheader", { name: "Development rows", exact: true }),
+    ).toBeVisible()
     const modelResultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await expect(modelResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()
 
