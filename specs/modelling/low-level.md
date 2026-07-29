@@ -725,7 +725,7 @@ The implementation seams are:
   digest links and response/artifact agreement before atomically replacing the whole
   generation. A non-tuned replacement retires stale tuning companions in that same
   rollback-capable transaction.
-- `schemas.py` and `frontend/src/types/guards.ts` independently enforce the strict
+- `schemas.py` and `frontend/src/types/trainGuards.ts` independently enforce the strict
   terminal response: completed runs require evaluation, row/fit counts and artifact
   digests must agree, selection/trial aggregates must recompute from persisted fits,
   and the deterministic tuning winner/improvement must be correct. The frontend store

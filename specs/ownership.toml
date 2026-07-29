@@ -84,16 +84,16 @@ consumers = ["frontend-assistant-ui", "frontend-modelling-optimiser-ui", "fronte
 reason = "Global UI state is consumed by the assistant and by modelling pane selection hosted in node-editor chrome."
 
 [[shared_file]]
-path = "frontend/src/types/guards.ts"
-primary = "frontend-shared"
-consumers = ["frontend-modelling-optimiser-ui"]
-reason = "Shared UI owns the JSON trust boundary; modelling consumes strict live-history and CV result parsing."
-
-[[shared_file]]
 path = "frontend/src/types/node.ts"
 primary = "frontend-shared"
 consumers = ["frontend-graph-canvas"]
 reason = "Shared UI owns canonical node-data types consumed at the canvas boundary."
+
+[[shared_file]]
+path = "frontend/src/types/trainGuards.ts"
+primary = "frontend-shared"
+consumers = ["frontend-modelling-optimiser-ui"]
+reason = "Shared UI owns the lazy training JSON trust boundary; modelling consumes strict live-history and evaluation/tuning result parsing."
 
 [[shared_file]]
 path = "frontend/src/utils/banding.ts"

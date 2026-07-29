@@ -13,7 +13,7 @@
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
 | `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers and stale-aware data-input column fetching. |
-| `frontend/src/api/types.ts`, `frontend/src/types/guards.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned API types and strict JSON response parsing consumed by modelling progress/results. |
+| `frontend/src/api/types.ts`, `frontend/src/types/trainGuards.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned API types and dynamically loaded strict JSON response parsing consumed by modelling progress/results. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned result/job state and per-node modelling-pane memory consumed by the modelling workflow. |
 | `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
 | `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/task/loss/metric controls, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
@@ -252,7 +252,7 @@ The behavioural contract is defined in
   `PreviewPanelTabs.tsx` owns that visible and assistive indicator semantics without changing
   roving focus or layout
   ([frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes)).
-- `api/types.ts`, `types/guards.ts`, and the train-progress store type share the backend status
+- `api/types.ts`, `types/trainGuards.ts`, and the train-progress store type share the backend status
   contract. `parseTrainStatusResponse` strictly retains present history/truncation and leaves
   absent history absent. `parseTrainResponse` rejects retired result fields and strictly
   recomputes evaluation/tuning counts, weighted aggregates, digest links, winner and improvement

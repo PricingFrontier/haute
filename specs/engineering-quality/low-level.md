@@ -168,9 +168,11 @@
    validate and share those values.
    `frontend/scripts/check-bundle-size.mjs` counts the production entry and
    modulepreload chunks against a default 247 KiB initial-JavaScript gzip
-   ceiling. That is the smallest whole-KiB ceiling above the measured merged
-   246.2 KiB bundle, retaining less than 1 KiB of headroom while still catching
-   accidental eager imports; CI may override it only through the documented
+   ceiling. The measured bundle is approximately 244.1 KiB after moving the
+   modelling training response parsers into a dynamically imported
+   `types/trainGuards.ts` chunk. The checker classifies that chunk as lazy-only
+   and fails if it becomes a startup modulepreload; CI may override the ceiling
+   only through the documented
    `HAUTE_BUNDLE_MAX_INITIAL_GZIP_KIB` environment variable.
    User-triggered surfaces such as the Ctrl+K `NodeSearch` palette remain
    dynamically imported so their implementation is excluded from that initial

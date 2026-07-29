@@ -21,7 +21,10 @@ panel instead of a blank white screen.
 
 In scope:
 - The typed HTTP client (`api/`) and the runtime response parsers that
-  guard the JSON/DOM boundary. This includes the bundle-split companion
+  guard the JSON/DOM boundary. The client dynamically loads the modelling
+  training parsers from `types/trainGuards.ts` only for train/status/estimate
+  responses, keeping that large contract outside the initial bundle. This also
+  includes the bundle-split companion
   `api/dispersion.ts` (GLM dispersion-estimation endpoints), which lives
   outside `api/client.ts` so code reachable only from a lazy-loaded panel
   stays out of the initial JS bundle while sharing the client's exported
@@ -251,7 +254,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   assistant panel's endpoints (including its status/session/history parsers and
   fully validating SSE reader, the same feature-owned local-parsing rule
   `api/dispersion.ts` follows) rather than growing `client.ts`
-  unconditionally.
+  unconditionally. Large response parsers can preserve the same boundary
+  independently: `client.ts` dynamically imports `types/trainGuards.ts` from
+  its modelling train/status/estimate methods, and the bundle checker treats
+  that parser chunk as lazy-only and rejects a startup modulepreload.
 - **A cached result's staleness key is `configHash` + `source` +
   `structuralVersion`, never `configHash` alone.** `CachedExploreResult`
   already tracked all three; solve/train results and
