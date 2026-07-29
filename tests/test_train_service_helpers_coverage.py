@@ -1,7 +1,7 @@
 """Coverage tests for TrainService pure column-demand helpers.
 
 Restores per-file coverage after the multi-frame merge added column-demand
-edge/error arms (`_string_list_config` validation; split-strategy column
+edge/error arms (`_string_list_config` validation; evaluation-strategy column
 derivation) that the route-level and engine tests do not reach directly.
 These are pure functions, so they are exercised by direct call.
 """
@@ -43,18 +43,37 @@ class TestStringListConfig:
 
 
 class TestTrainingRequiredMetadataColumns:
-    def test_non_dict_split_is_skipped(self) -> None:
-        assert _training_required_metadata_columns({"target": "y", "split": "nonsense"}) == {"y"}
+    def test_non_dict_evaluation_is_skipped(self) -> None:
+        assert _training_required_metadata_columns({"target": "y", "evaluation": "nonsense"}) == {
+            "y"
+        }
 
-    def test_temporal_split_adds_date_column(self) -> None:
+    def test_temporal_evaluation_adds_date_column(self) -> None:
         cols = _training_required_metadata_columns(
-            {"target": "y", "split": {"strategy": "temporal", "date_column": "asof"}}
+            {
+                "target": "y",
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "temporal",
+                    "date_column": "asof",
+                    "validation": {"method": "none"},
+                },
+            }
         )
         assert {"y", "asof"} <= cols
 
-    def test_group_split_adds_group_column(self) -> None:
+    def test_group_evaluation_adds_group_column(self) -> None:
         cols = _training_required_metadata_columns(
-            {"target": "y", "split": {"strategy": "group", "group_column": "policy"}}
+            {
+                "target": "y",
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "group",
+                    "group_column": "policy",
+                    "seed": 42,
+                    "validation": {"method": "none"},
+                },
+            }
         )
         assert {"y", "policy"} <= cols
 
@@ -71,15 +90,18 @@ class TestTrainingRequiredMetadataColumns:
         assert {"y", "w", "o", "f", "pid"} <= cols
 
     @pytest.mark.parametrize(
-        ("cross_validation", "column"),
+        ("evaluation", "column"),
         [
             (
                 {
                     "schema_version": 1,
                     "strategy": "group",
-                    "fold_count": 3,
                     "seed": 7,
                     "group_column": "household",
+                    "validation": {
+                        "method": "cross_validation",
+                        "fold_count": 3,
+                    },
                 },
                 "household",
             ),
@@ -87,59 +109,82 @@ class TestTrainingRequiredMetadataColumns:
                 {
                     "schema_version": 1,
                     "strategy": "temporal",
-                    "fold_count": 3,
-                    "seed": 7,
                     "date_column": "valuation_date",
+                    "validation": {
+                        "method": "cross_validation",
+                        "fold_count": 3,
+                        "window": "expanding",
+                    },
                 },
                 "valuation_date",
             ),
         ],
     )
-    def test_cross_validation_key_is_required_metadata(
-        self, cross_validation: dict[str, object], column: str
+    def test_cross_validation_method_key_is_required_metadata(
+        self, evaluation: dict[str, object], column: str
     ) -> None:
-        cols = _training_required_metadata_columns(
-            {"target": "y", "cross_validation": cross_validation}
-        )
+        cols = _training_required_metadata_columns({"target": "y", "evaluation": evaluation})
 
         assert cols == {"y", column}
 
 
 class TestTrainingMetadataReasons:
     @pytest.mark.parametrize(
-        ("split", "column"),
+        ("evaluation", "column"),
         [
-            ({"strategy": "temporal", "date_column": "asof"}, "asof"),
-            ({"strategy": "group", "group_column": "policy"}, "policy"),
+            (
+                {
+                    "schema_version": 1,
+                    "strategy": "temporal",
+                    "date_column": "asof",
+                    "validation": {"method": "none"},
+                },
+                "asof",
+            ),
+            (
+                {
+                    "schema_version": 1,
+                    "strategy": "group",
+                    "group_column": "policy",
+                    "seed": 42,
+                    "validation": {"method": "none"},
+                },
+                "policy",
+            ),
         ],
     )
-    def test_split_columns_are_explained(self, split, column) -> None:
-        reasons = _training_metadata_reasons({"target": "y", "split": split})
+    def test_evaluation_columns_are_explained(self, evaluation, column) -> None:
+        reasons = _training_metadata_reasons({"target": "y", "evaluation": evaluation})
 
-        assert reasons == {"y": "target", column: "split"}
+        assert reasons == {"y": "target", column: "evaluation"}
 
-    def test_non_mapping_split_is_ignored_and_role_precedence_is_stable(self) -> None:
+    def test_non_mapping_evaluation_is_ignored_and_role_precedence_is_stable(
+        self,
+    ) -> None:
         reasons = _training_metadata_reasons(
             {
                 "target": "shared",
                 "weight": "shared",
                 "id_columns": ["shared"],
-                "split": "invalid",
+                "evaluation": "invalid",
             }
         )
 
         assert reasons == {"shared": "target"}
 
-    def test_cross_validation_key_uses_split_reason_and_role_precedence(self) -> None:
+    def test_evaluation_key_respects_role_precedence(self) -> None:
         reasons = _training_metadata_reasons(
             {
                 "target": "shared",
-                "cross_validation": {
+                "evaluation": {
                     "schema_version": 1,
                     "strategy": "group",
-                    "fold_count": 3,
                     "seed": 7,
                     "group_column": "shared",
+                    "validation": {
+                        "method": "cross_validation",
+                        "fold_count": 3,
+                    },
                 },
             }
         )
@@ -149,16 +194,19 @@ class TestTrainingMetadataReasons:
         reasons = _training_metadata_reasons(
             {
                 "target": "y",
-                "cross_validation": {
+                "evaluation": {
                     "schema_version": 1,
                     "strategy": "temporal",
-                    "fold_count": 3,
-                    "seed": 7,
                     "date_column": "asof",
+                    "validation": {
+                        "method": "cross_validation",
+                        "fold_count": 3,
+                        "window": "expanding",
+                    },
                 },
             }
         )
-        assert reasons == {"y": "target", "asof": "split"}
+        assert reasons == {"y": "target", "asof": "evaluation"}
 
 
 class TestTrainingRequiredColumnsByNode:
@@ -214,14 +262,32 @@ class TestTrainingFeatureSelection:
                 "algorithm": "catboost",
                 "target": "target",
                 "id_columns": ["policy_id"],
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "group",
+                    "group_column": "household_id",
+                    "seed": 42,
+                    "validation": {"method": "single", "size": 0.2},
+                },
                 "exclude": ["ignored"],
             },
-            ["feature_b", "target", "policy_id", "feature_a", "ignored"],
+            [
+                "feature_b",
+                "target",
+                "policy_id",
+                "household_id",
+                "feature_a",
+                "ignored",
+            ],
         )
 
         assert diagnostic.mode == "all_except"
         assert diagnostic.features.items == ["feature_b", "feature_a"]
         assert diagnostic.feature_count == 2
+        assert (
+            "household_id",
+            "evaluation",
+        ) in [(item.column, item.reason) for item in diagnostic.retained_metadata.items]
 
     def test_glm_terms_follow_schema_order_and_missing_columns_fail_before_execution(self) -> None:
         diagnostic = _build_training_feature_selection(

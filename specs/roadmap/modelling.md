@@ -8,34 +8,66 @@ specified in [modelling](../modelling/high-level.md).
 
 ## Priorities
 
-| Package | State | Priority | Outcome |
-|---|---|---:|---|
-| — | — | — | No active modelling roadmap package remains. |
+There are no active modelling improvement packages.
 
 ## Planned improvements
 
-There are no active modelling roadmap packages.
+No further modelling improvement is planned after delivery of the unified
+evaluation and bounded-tuning packages. New work should be added only with a
+reproduced correctness, performance, or workflow gap.
 
 ## Delivered outcomes
 
+- `MOD-M12` adds optional strict version-1 bounded CatBoost tuning on the exact
+  persisted development-only evaluation plan. A seeded sequential Optuna 4.x
+  TPE sampler evaluates the fixed baseline plus sampled trials under one
+  admission/cancellation lifecycle, enforces the 5–50 trial and 200
+  trial-fit bounds, selects the metric-directed winner deterministically,
+  derives the final tree count from validation evidence, and performs only one
+  deployable final fit. Digest-linked plan/trials/report artifacts, the
+  completed response, model card, MLflow run, exported script, progress UI,
+  Summary surface, and **Use best as fixed parameters** action share the same
+  strict contract. Evidence lives in
+  [the modelling specification](../modelling/high-level.md#bounded-deterministic-catboost-tuning),
+  `tests/test_tuning.py`, `tests/test_training_tuning.py`,
+  `tests/test_training_response_evaluation.py`, and the worker/route/frontend
+  contract suites.
+- `MOD-M11` replaces the public `split` and `cross_validation` configuration
+  with one strict version-1 `evaluation` object. It reserves the final test
+  before deriving development-only single or cross-validation fits, persists
+  exact deterministic random/group/temporal membership, reuses the same plan
+  for selection and tuning, and performs one final fit on all development
+  rows. The preflight preview, result labels, transactional artifacts, live
+  training, export, MLflow, backend schemas, and frontend guards use the same
+  development/validation/final-test vocabulary. Evidence lives in
+  [the modelling specification](../modelling/high-level.md#unified-evaluation-and-bounded-tuning),
+  `tests/test_evaluation.py`, `tests/test_train_evaluation_config.py`,
+  `tests/test_training_evaluation.py`, and
+  `tests/test_training_response_evaluation.py`.
 - `MOD-M10` presents supported modelling nodes as Target, Features, Params,
   Split, and Train panes with per-node memory, plain setup-tab labels, an
   accessible active-training indicator, and click-time validation beneath
   Train. CatBoost and GLM share the role-aware feature browser and atomic
-  dependency cleanup; CatBoost has a single algorithm-neutral, conflict-safe
-  JSON-object hyperparameter editor that preserves access to arbitrary current
-  and future parameters; live progress retains the backend loss window and
-  derives a bounded browser ETA. The present-tense contract and focused evidence live in
+  dependency cleanup. CatBoost begins Params with a Fixed/Tune strategy choice:
+  Fixed shows its algorithm-neutral JSON-object parameter editor, while Tune
+  shows bounded tuning controls and compact search-space JSON. Both autosave
+  top-level objects accepted by their frontend parser and preserve locally
+  rejected per-node drafts for click-time Train validation; fixed parameters
+  retain access to arbitrary current and future CatBoost keys, while detailed
+  tuning semantics remain backend-authoritative.
+  Live progress retains the backend loss window and derives a bounded browser
+  ETA. The present-tense contract and focused evidence live in
   [the modelling/optimiser UI specification](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
-- `MOD-M04` provides strict version-1 random/group/temporal fold plans, a
-  two-to-ten-fold bound, sequential same-child orchestration, whole-run
-  cancellation, exact persisted-result aggregation, a final ordinary fit, and
-  rollback-capable five-artifact publication. The additive completed response
-  and result summary expose aggregate and ordered fold metrics. Contracts and
+- `MOD-M04` delivered bounded two-to-ten-fold cross-validation with sequential
+  same-child orchestration, whole-run cancellation, exact persisted-result
+  aggregation, a final ordinary fit, and rollback-capable publication.
+  `MOD-M11` absorbed that capability into the unified `evaluation` contract as
+  its `cross_validation` validation method, and the standalone fold-plan
+  orchestrator has since been removed outright. The present-tense contract and
   evidence live in
-  [the modelling specification](../modelling/high-level.md#bounded-cross-validation),
-  `tests/test_cross_validation.py`, `tests/test_training_cross_validation.py`,
-  and the worker/route/frontend contract suites.
+  [the modelling specification](../modelling/high-level.md#unified-evaluation-and-bounded-tuning),
+  `tests/test_evaluation.py`, `tests/test_training_evaluation.py`, and the
+  worker/route/frontend contract suites.
 - `MOD-M05` keeps the existing Fortran-contiguous `Float32` CatBoost handoff.
   The recorded 2026-07-27 opt-in 100,000-row × 32-feature run measured direct
   `Pool` construction at 484,300 ns median versus 23,716,000 ns for
@@ -46,9 +78,9 @@ There are no active modelling roadmap packages.
   `tests/performance/test_catboost_contiguity_perf.py` and the repository
   performance harness retain the workload and decision gate.
 - `MOD-M09` selects monotonicity as the sole additional cross-algorithm lever.
-  Both algorithms now reject malformed directions, absent/non-selected names,
-  and non-numeric features after final feature/term selection; the editor
-  offers only selected numeric inputs. Warm start, class-imbalance controls,
+  Both algorithms reject malformed directions, absent/non-selected names, and
+  non-numeric features after final feature/term selection; the editor offers
+  only selected numeric inputs. Warm start, class-imbalance controls,
   arbitrary metric/passthrough editors, and feature-weight UI are deliberately
   not productised because they lack a shared supported contract. Backend and
   editor regressions pin the accepted lever and unsupported cases.
@@ -65,9 +97,9 @@ There are no active modelling roadmap packages.
   `tests/test_offset_scoring.py`, `tests/test_modelling.py`,
   `tests/test_train_service_coverage.py`, and
   `tests/test_modelling_export.py`.
-- The split-leakage behavior (temporal/group ordering, null-date rejection,
-  holdout recency) and the redundant-pass/PDP-bounding half of `MOD-M05` are
-  also delivered.
+- The split-leakage behaviour (temporal/group ordering, null-date rejection,
+  final-test recency) and the redundant-pass/PDP-bounding half of `MOD-M05`
+  are also delivered.
 - `MOD-M07` returns a pollable job handle before preparation, uses one
   idempotent cancellation token across preparation and fitting, preserves a
   terminal race winner, and reports GPU-memory rejection as an actionable

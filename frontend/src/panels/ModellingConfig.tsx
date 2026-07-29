@@ -24,7 +24,10 @@ import {
   executionTerminalReasonFromError,
 } from "../utils/executionDiagnostics"
 import { buildGraph } from "../utils/buildGraph"
-import { trainingConfigurationIssues } from "../utils/trainingObjective"
+import {
+  trainingConfigurationIssues,
+  type TrainingConfigurationIssue,
+} from "../utils/trainingObjective"
 import type { OnUpdateConfig } from "./editors"
 import { useGraph } from "./useGraph"
 import { CommonFeatureConfig } from "./modelling/CommonFeatureConfig"
@@ -34,7 +37,12 @@ import { GLMTargetConfig } from "./modelling/GLMTargetConfig"
 import {
   HyperparametersConfig,
 } from "./modelling/HyperparametersConfig"
-import { formatHyperparameters } from "./modelling/hyperparameters"
+import {
+  formatHyperparameters,
+  formatTuningSearchSpace,
+  parseHyperparameters,
+  parseTuningSearchSpace,
+} from "./modelling/hyperparameters"
 import { SplitAndMetricsConfig } from "./modelling/SplitAndMetricsConfig"
 import { TargetAndTaskConfig } from "./modelling/TargetAndTaskConfig"
 import { TrainingActionsAndResults } from "./modelling/TrainingActionsAndResults"
@@ -56,6 +64,14 @@ const CATBOOST_DEFAULT_PARAMS: Record<string, unknown> = {
 }
 
 const CATBOOST_RESERVED_PARAM_KEYS = ["task_type"] as const
+const CATBOOST_RESERVED_PARAM_HELP =
+  "GPU training is configured in the Train pane."
+const DEFAULT_EVALUATION: Record<string, unknown> = {
+  schema_version: 1,
+  strategy: "random",
+  seed: 42,
+  validation: { method: "single", size: 0.2 },
+}
 
 const TRAIN_INPUT_STYLE = {
   background: "var(--bg-input)",
@@ -108,7 +124,10 @@ function AlgorithmGateway({ onUpdate }: { onUpdate: OnUpdateConfig }) {
         <button
           key={option.id}
           type="button"
-          onClick={() => onUpdate("algorithm", option.id)}
+          onClick={() => onUpdate({
+            algorithm: option.id,
+            evaluation: DEFAULT_EVALUATION,
+          })}
           className="w-full rounded-lg px-3 py-3 text-left algorithm-gateway-btn"
         >
           <span className="block text-xs font-semibold">{option.name}</span>
@@ -137,6 +156,7 @@ type TrainPaneProps = {
   cancelling: boolean
   onTrain: () => void
   onCancel: () => void
+  tuningEnabled: boolean
 }
 
 function TrainPane({
@@ -152,6 +172,7 @@ function TrainPane({
   cancelling,
   onTrain,
   onCancel,
+  tuningEnabled,
 }: TrainPaneProps) {
   const rowLimit = typeof config.row_limit === "number" ? config.row_limit : null
   const [validationRevealed, setValidationRevealed] = useState(false)
@@ -263,6 +284,7 @@ function TrainPane({
         terminalReason={cachedResult?.terminalStatus?.terminal_reason ?? null}
         submitting={submitting}
         cancelling={cancelling}
+        tuningEnabled={tuningEnabled}
         onTrain={requestTrain}
         onCancel={onCancel}
       />
@@ -292,29 +314,78 @@ export default function ModellingConfig({
   // Drafts live above the Params pane.  They deliberately survive a Params
   // unmount for this node, while a newly seen node starts from its own params.
   const [paramDrafts, setParamDrafts] = useState<Record<string, string>>({})
+  const [searchSpaceDrafts, setSearchSpaceDrafts] = useState<Record<string, string>>({})
 
   const algorithm = String(config.algorithm ?? "").toLowerCase()
   const params = configField<Record<string, unknown>>(config, "params", {})
   const target = configField(config, "target", "")
   const weight = configField(config, "weight", "")
   const exclude = configField<string[]>(config, "exclude", [])
-  const split = configField<Record<string, unknown>>(config, "split", {
-    strategy: "random",
-    validation_size: 0.2,
-    holdout_size: 0,
-    seed: 42,
-  })
+  const evaluation = configField<Record<string, unknown>>(
+    config,
+    "evaluation",
+    DEFAULT_EVALUATION,
+  )
+  const tuning = (
+    config.tuning !== null
+    && typeof config.tuning === "object"
+    && !Array.isArray(config.tuning)
+  )
+    ? config.tuning as Record<string, unknown>
+    : null
   const task = configField(config, "task", "regression")
   const metrics = configField<string[]>(config, "metrics", task === "regression" ? ["gini", "rmse"] : ["auc", "logloss"])
-  const validationIssues = trainingConfigurationIssues(config)
-  const hasTrainingConfigurationIssues = validationIssues.length > 0
-  const validationMessages = validationIssues.map((issue) => issue.message)
   const paramsProjection = formatHyperparameters(
     params,
     CATBOOST_DEFAULT_PARAMS,
     CATBOOST_RESERVED_PARAM_KEYS,
   )
   const paramDraft = paramDrafts[nodeId] ?? paramsProjection
+  const tuningSearchSpace = (
+    tuning?.search_space !== null
+    && typeof tuning?.search_space === "object"
+    && !Array.isArray(tuning.search_space)
+  )
+    ? tuning.search_space
+    : {}
+  const searchSpaceDraft = searchSpaceDrafts[nodeId]
+    ?? formatTuningSearchSpace(tuningSearchSpace as Record<string, unknown>)
+  let paramDraftIssue: TrainingConfigurationIssue | null = null
+  if (algorithm === "catboost" && !tuning) {
+    try {
+      parseHyperparameters(
+        paramDraft,
+        CATBOOST_RESERVED_PARAM_KEYS,
+        CATBOOST_RESERVED_PARAM_HELP,
+      )
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Invalid JSON"
+      paramDraftIssue = {
+        code: "catboost-params",
+        message: `Parameters JSON is invalid: ${detail}`,
+      }
+    }
+  }
+  let searchSpaceDraftIssue: TrainingConfigurationIssue | null = null
+  if (tuning) {
+    try {
+      parseTuningSearchSpace(searchSpaceDraft)
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : "Invalid JSON"
+      searchSpaceDraftIssue = {
+        code: "tuning-config",
+        message: `Search space JSON is invalid: ${detail}`,
+      }
+    }
+  }
+  const configuredValidationIssues = trainingConfigurationIssues(config)
+  const validationIssues = [
+    ...configuredValidationIssues,
+    ...(paramDraftIssue ? [paramDraftIssue] : []),
+    ...(searchSpaceDraftIssue ? [searchSpaceDraftIssue] : []),
+  ]
+  const hasTrainingConfigurationIssues = validationIssues.length > 0
+  const validationMessages = validationIssues.map((issue) => issue.message)
 
   const graph = useCallback(
     () => buildGraph(allNodes, edges, submodels, preamble),
@@ -334,9 +405,11 @@ export default function ModellingConfig({
     { source: activeSource, structuralVersion },
     { toastLabel: "RAM estimate failed" },
   )
-  const onSplitUpdate = useCallback(
-    (key: string, value: unknown) => onUpdate("split", { ...split, [key]: value }),
-    [onUpdate, split],
+  const onEvaluationChange = useCallback(
+    (nextEvaluation: Record<string, unknown>) => (
+      onUpdate("evaluation", nextEvaluation)
+    ),
+    [onUpdate],
   )
   const onEstimateDispersion = useCallback(
     (param: DispersionParam) => runDispersionEstimate({
@@ -373,7 +446,41 @@ export default function ModellingConfig({
       const message = errorMessage(error)
       completeTrainJob(
         nodeId,
-        { status: "error", metrics: {}, feature_importance: [], model_path: "", train_rows: 0, validation_rows: 0, error: message },
+        {
+          status: "error",
+          job_id: null,
+          diagnostic_metrics: {},
+          final_test_metrics: {},
+          feature_importance: [],
+          model_path: "",
+          development_rows: 0,
+          final_test_rows: 0,
+          diagnostics_set: "development",
+          features: [],
+          cat_features: [],
+          error: message,
+          best_iteration: null,
+          loss_history: [],
+          loss_history_truncated: false,
+          double_lift: [],
+          shap_summary: [],
+          feature_importance_loss: [],
+          ave_per_feature: [],
+          residuals_histogram: [],
+          residuals_stats: {},
+          actual_vs_predicted: [],
+          lorenz_curve: [],
+          lorenz_curve_perfect: [],
+          pdp_data: [],
+          warning: null,
+          total_source_rows: null,
+          glm_coefficients: [],
+          glm_relativities: [],
+          glm_fit_statistics: {},
+          glm_regularization_path: null,
+          diagnostics_errors: [],
+          feature_selection: null,
+        },
         failureStatus(error, message),
       )
     } finally {
@@ -405,8 +512,9 @@ export default function ModellingConfig({
   const splitPane = (
     <SplitAndMetricsConfig
       columns={upstreamColumns}
-      split={split}
-      onSplitUpdate={onSplitUpdate}
+      evaluation={evaluation}
+      onEvaluationChange={onEvaluationChange}
+      preview={estimate.estimate?.evaluation_preview ?? null}
     />
   )
   const trainPane = (
@@ -424,6 +532,7 @@ export default function ModellingConfig({
       cancelling={cancelling}
       onTrain={onTrain}
       onCancel={onCancel}
+      tuningEnabled={tuning !== null}
     />
   )
 
@@ -440,10 +549,17 @@ export default function ModellingConfig({
           params={params}
           defaultParams={CATBOOST_DEFAULT_PARAMS}
           reservedKeys={CATBOOST_RESERVED_PARAM_KEYS}
-          reservedKeysHelp="GPU training is configured in the Train pane."
+          reservedKeysHelp={CATBOOST_RESERVED_PARAM_HELP}
           onUpdate={onUpdate}
           draft={paramDraft}
           setDraft={(value) => setParamDrafts((current) => ({ ...current, [nodeId]: value }))}
+          tuning={tuning}
+          evaluation={evaluation}
+          metrics={metrics}
+          searchSpaceDraft={searchSpaceDraft}
+          setSearchSpaceDraft={(value) => setSearchSpaceDrafts(
+            (current) => ({ ...current, [nodeId]: value }),
+          )}
         />
       )
     } else if (activePane === "split") {

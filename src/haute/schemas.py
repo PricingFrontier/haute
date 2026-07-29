@@ -1346,7 +1346,7 @@ TrainingFeatureExclusionReason = Literal[
     "offset",
     "fold",
     "identifier",
-    "split",
+    "evaluation",
     "configured_exclusion",
     "not_selected",
     "not_in_formula",
@@ -1440,124 +1440,419 @@ def _strict_finite_metric_mapping(value: Any, *, field: str) -> dict[str, float]
     return metrics
 
 
-class CrossValidationFoldResultPayload(BaseModel):
+class _StrictPublicTrainingPayload(BaseModel):
+    """Base class for persisted public training/evaluation artifacts."""
+
     model_config = ConfigDict(extra="forbid")
 
+
+def _finite_number(value: Any, *, field: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(f"{field} must be a finite number")
+    return float(value)
+
+
+def _finite_json_object(value: Any, *, field: str) -> dict[str, Any]:
+    def validate(item: Any, path: str) -> None:
+        if item is None or isinstance(item, bool | str | int):
+            return
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError(f"{path} must be finite JSON")
+            return
+        if isinstance(item, list):
+            for index, child in enumerate(item):
+                validate(child, f"{path}[{index}]")
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if not isinstance(key, str):
+                    raise ValueError(f"{path} keys must be strings")
+                validate(child, f"{path}.{key}")
+            return
+        raise ValueError(f"{path} must contain only JSON values")
+
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object")
+    validate(value, field)
+    return value
+
+
+class EvaluationFitPayload(_StrictPublicTrainingPayload):
     schema_version: Literal[1]
-    fold_index: int = Field(strict=True, ge=0, le=9)
+    fit_index: int = Field(strict=True, ge=0, le=9)
     train_rows: int = Field(strict=True, ge=1)
     validation_rows: int = Field(strict=True, ge=1)
     metrics: dict[str, float]
+    best_iteration: int | None = Field(default=None, strict=True, ge=0)
 
     @field_validator("metrics", mode="before")
     @classmethod
     def _validate_metrics(cls, value: Any) -> dict[str, float]:
-        return _strict_finite_metric_mapping(value, field="fold metrics")
+        return _strict_finite_metric_mapping(value, field="evaluation fit metrics")
 
 
-class CrossValidationMetricSummaryPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class EvaluationMetricSummaryPayload(_StrictPublicTrainingPayload):
     mean: float
-    population_std: float = Field(ge=0)
+    stddev: float = Field(ge=0)
     min: float
     max: float
-    fold_count: int = Field(strict=True, ge=2, le=10)
-    total_validation_rows: int = Field(strict=True, ge=1)
+    fit_count: int = Field(strict=True, ge=1)
+    validation_rows: int = Field(strict=True, ge=1)
 
-    @field_validator("mean", "population_std", "min", "max", mode="before")
+    @field_validator("mean", "stddev", "min", "max", mode="before")
     @classmethod
-    def _validate_finite_number(cls, value: Any) -> float:
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int | float)
-            or not math.isfinite(float(value))
-        ):
-            raise ValueError("cross-validation summary values must be finite numbers")
-        return float(value)
+    def _validate_finite(cls, value: Any) -> float:
+        return _finite_number(value, field="evaluation summary value")
 
     @model_validator(mode="after")
-    def _validate_range(self) -> CrossValidationMetricSummaryPayload:
+    def _validate_range(self) -> EvaluationMetricSummaryPayload:
         if self.min > self.max:
-            raise ValueError("cross-validation metric min must not exceed max")
+            raise ValueError("evaluation metric min must not exceed max")
         return self
 
 
-class CrossValidationReportPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class EvaluationSummaryPayload(_StrictPublicTrainingPayload):
+    development_rows: int = Field(strict=True, ge=1)
+    test_rows: int = Field(strict=True, ge=0)
+    validation_fit_count: int = Field(strict=True, ge=0, le=10)
+    development_group_count: int | None = Field(default=None, strict=True, ge=1)
+    test_group_count: int | None = Field(default=None, strict=True, ge=0)
+    development_date_count: int | None = Field(default=None, strict=True, ge=1)
+    test_date_count: int | None = Field(default=None, strict=True, ge=0)
 
+
+class EvaluationReportPayload(_StrictPublicTrainingPayload):
     schema_version: Literal[1]
     strategy: Literal["random", "group", "temporal"]
-    fold_count: int = Field(strict=True, ge=2, le=10)
-    fit_count: int = Field(strict=True, ge=3, le=11)
-    folds: list[CrossValidationFoldResultPayload] = Field(min_length=2, max_length=10)
-    metrics: dict[str, CrossValidationMetricSummaryPayload] = Field(min_length=1)
+    validation_method: Literal["none", "single", "cross_validation"]
+    validation_fit_count: int = Field(strict=True, ge=0, le=10)
+    fit_count: int = Field(strict=True, ge=1, le=201)
+    development_rows: int = Field(strict=True, ge=1)
+    final_test_rows: int = Field(strict=True, ge=0)
+    selection_fits: list[EvaluationFitPayload] = Field(max_length=10)
+    selection_metrics: dict[str, EvaluationMetricSummaryPayload]
     plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     results_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    fold_plan_path: str = Field(min_length=1)
-    fold_results_path: str = Field(min_length=1)
+    plan_path: str = Field(min_length=1)
+    results_path: str = Field(min_length=1)
     report_path: str = Field(min_length=1)
+    summary: EvaluationSummaryPayload
 
     @model_validator(mode="after")
-    def _validate_report(self) -> CrossValidationReportPayload:
-        if len(self.folds) != self.fold_count:
-            raise ValueError("fold_count must equal the number of folds")
-        if self.fit_count != self.fold_count + 1:
-            raise ValueError("fit_count must equal fold_count + 1")
-        if [fold.fold_index for fold in self.folds] != list(range(self.fold_count)):
-            raise ValueError("cross-validation folds must be complete and ascending")
-
-        metric_names = set(self.metrics)
-        if any(set(fold.metrics) != metric_names for fold in self.folds):
-            raise ValueError("fold metric names must exactly match report metric names")
-        total_validation_rows = sum(fold.validation_rows for fold in self.folds)
-        for name, summary in self.metrics.items():
-            if summary.fold_count != self.fold_count:
-                raise ValueError(f"{name} fold_count must equal report fold_count")
-            if summary.total_validation_rows != total_validation_rows:
-                raise ValueError(f"{name} total_validation_rows must equal the fold row total")
-            values = [fold.metrics[name] for fold in self.folds]
-            weights = [fold.validation_rows for fold in self.folds]
-            weighted_mean = (
+    def _validate_report(self) -> EvaluationReportPayload:
+        expected_validation_count = (
+            0
+            if self.validation_method == "none"
+            else 1
+            if self.validation_method == "single"
+            else self.validation_fit_count
+        )
+        if self.validation_fit_count != expected_validation_count:
+            raise ValueError("validation_fit_count is inconsistent with validation_method")
+        if self.validation_method == "cross_validation" and not (
+            2 <= self.validation_fit_count <= 10
+        ):
+            raise ValueError("cross-validation requires 2 to 10 selection fits")
+        if len(self.selection_fits) != self.validation_fit_count:
+            raise ValueError("validation_fit_count must equal the number of selection_fits")
+        if [fit.fit_index for fit in self.selection_fits] != list(range(self.validation_fit_count)):
+            raise ValueError("selection fit indices must be contiguous and ascending")
+        if self.summary.development_rows != self.development_rows:
+            raise ValueError("summary development_rows must equal report development_rows")
+        if self.summary.test_rows != self.final_test_rows:
+            raise ValueError("summary test_rows must equal report final_test_rows")
+        if self.summary.validation_fit_count != self.validation_fit_count:
+            raise ValueError("summary validation_fit_count must equal report validation_fit_count")
+        strategy_counts = {
+            "group": (
+                self.summary.development_group_count,
+                self.summary.test_group_count,
+            ),
+            "temporal": (
+                self.summary.development_date_count,
+                self.summary.test_date_count,
+            ),
+        }
+        active_counts = strategy_counts.get(self.strategy)
+        all_counts = (
+            self.summary.development_group_count,
+            self.summary.test_group_count,
+            self.summary.development_date_count,
+            self.summary.test_date_count,
+        )
+        if active_counts is None:
+            if any(value is not None for value in all_counts):
+                raise ValueError("random evaluation summary must not contain group/date counts")
+        else:
+            if any(value is None for value in active_counts):
+                raise ValueError(f"{self.strategy} evaluation summary requires its strategy counts")
+            inactive_counts = all_counts[2:] if self.strategy == "group" else all_counts[:2]
+            if any(value is not None for value in inactive_counts):
+                raise ValueError(
+                    f"{self.strategy} evaluation summary has incompatible strategy counts"
+                )
+            if bool(self.final_test_rows) != bool(active_counts[1]):
+                raise ValueError("evaluation summary test count disagrees with final_test_rows")
+        metric_names = set(self.selection_metrics)
+        if self.validation_fit_count == 0:
+            if metric_names:
+                raise ValueError("selection_metrics must be empty without validation")
+            return self
+        if not metric_names:
+            raise ValueError("selection_metrics are required when validation is enabled")
+        if any(set(fit.metrics) != metric_names for fit in self.selection_fits):
+            raise ValueError("selection fit metric names must exactly match selection_metrics")
+        total_rows = sum(fit.validation_rows for fit in self.selection_fits)
+        for name, summary in self.selection_metrics.items():
+            if summary.fit_count != self.validation_fit_count:
+                raise ValueError(f"{name} fit_count must equal validation_fit_count")
+            if summary.validation_rows != total_rows:
+                raise ValueError(f"{name} validation_rows must equal selection fit row total")
+            values = [fit.metrics[name] for fit in self.selection_fits]
+            weights = [fit.validation_rows for fit in self.selection_fits]
+            mean = (
                 sum(value * weight for value, weight in zip(values, weights, strict=True))
-                / total_validation_rows
+                / total_rows
             )
-            weighted_variance = (
+            variance = (
                 sum(
-                    weight * (value - weighted_mean) ** 2
+                    weight * (value - mean) ** 2
                     for value, weight in zip(values, weights, strict=True)
                 )
-                / total_validation_rows
+                / total_rows
             )
-            expected = {
-                "mean": weighted_mean,
-                "population_std": math.sqrt(weighted_variance),
+            for field, expected in {
+                "mean": mean,
+                "stddev": math.sqrt(variance),
                 "min": min(values),
                 "max": max(values),
-            }
-            for field, expected_value in expected.items():
-                actual_value = getattr(summary, field)
+            }.items():
                 if not math.isclose(
-                    actual_value,
-                    expected_value,
+                    getattr(summary, field), expected, rel_tol=1e-12, abs_tol=1e-12
+                ):
+                    raise ValueError(f"{name} {field} does not match the persisted selection fits")
+        return self
+
+
+class TuningTrialPayload(_StrictPublicTrainingPayload):
+    schema_version: Literal[1]
+    trial_index: int = Field(strict=True, ge=0, le=199)
+    label: Literal["baseline", "sampled"]
+    sampled_params: dict[str, Any]
+    resolved_params: dict[str, Any]
+    fits: list[EvaluationFitPayload] = Field(min_length=1, max_length=10)
+    aggregate_metrics: dict[str, float]
+    objective: float
+    elapsed_seconds: float = Field(ge=0)
+
+    @field_validator("aggregate_metrics", mode="before")
+    @classmethod
+    def _validate_aggregate_metrics(cls, value: Any) -> dict[str, float]:
+        return _strict_finite_metric_mapping(value, field="trial aggregate metrics")
+
+    @field_validator("sampled_params", "resolved_params", mode="before")
+    @classmethod
+    def _validate_params(cls, value: Any, info: Any) -> dict[str, Any]:
+        return _finite_json_object(value, field=info.field_name)
+
+    @field_validator("objective", "elapsed_seconds", mode="before")
+    @classmethod
+    def _validate_finite(cls, value: Any, info: Any) -> float:
+        return _finite_number(value, field=info.field_name)
+
+
+class TuningReportPayload(_StrictPublicTrainingPayload):
+    schema_version: Literal[1]
+    plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    trials_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluation_plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    metric: str = Field(min_length=1)
+    direction: Literal["maximize", "minimize"]
+    baseline_objective: float
+    winner_trial_index: int = Field(strict=True, ge=0, le=199)
+    winner_objective: float
+    improvement: float = Field(ge=0)
+    best_sampled_params: dict[str, Any]
+    final_params: dict[str, Any]
+    final_tree_count: int = Field(strict=True, ge=1)
+    trial_count: int = Field(strict=True, ge=5, le=50)
+    trial_fit_count: int = Field(strict=True, ge=5, le=200)
+    total_fit_count: int = Field(strict=True, ge=6, le=201)
+    trials: list[TuningTrialPayload] = Field(min_length=5, max_length=50)
+    plan_path: str = Field(min_length=1)
+    trials_path: str = Field(min_length=1)
+    report_path: str = Field(min_length=1)
+
+    @field_validator("baseline_objective", "winner_objective", "improvement", mode="before")
+    @classmethod
+    def _validate_finite(cls, value: Any, info: Any) -> float:
+        return _finite_number(value, field=info.field_name)
+
+    @field_validator("best_sampled_params", "final_params", mode="before")
+    @classmethod
+    def _validate_params(cls, value: Any, info: Any) -> dict[str, Any]:
+        return _finite_json_object(value, field=info.field_name)
+
+    @model_validator(mode="after")
+    def _validate_report(self) -> TuningReportPayload:
+        from haute.modelling._tuning import metric_direction
+
+        try:
+            expected_direction = metric_direction(self.metric)
+        except ValueError as exc:
+            raise ValueError(f"tuning metric direction is unsupported: {exc}") from exc
+        if self.direction != expected_direction:
+            raise ValueError(
+                f"tuning metric direction must be {expected_direction} for {self.metric!r}"
+            )
+        if len(self.trials) != self.trial_count:
+            raise ValueError("trial_count must equal the number of trials")
+        if [trial.trial_index for trial in self.trials] != list(range(self.trial_count)):
+            raise ValueError("trial indices must be contiguous and ascending")
+        baseline = self.trials[0]
+        if baseline.label != "baseline" or baseline.sampled_params:
+            raise ValueError("trial 0 must be the baseline with empty sampled_params")
+        if any(trial.label != "sampled" or not trial.sampled_params for trial in self.trials[1:]):
+            raise ValueError("trials after baseline must contain sampled parameters")
+        for trial in self.trials:
+            expected_resolved = dict(baseline.resolved_params)
+            expected_resolved.update(trial.sampled_params)
+            if trial.resolved_params != expected_resolved:
+                raise ValueError(
+                    "trial resolved parameters must equal baseline plus sampled parameters"
+                )
+        if any(
+            set(trial.aggregate_metrics) != set(baseline.aggregate_metrics) for trial in self.trials
+        ):
+            raise ValueError("trial aggregate metric names must exactly match")
+        fit_count = len(baseline.fits)
+        if any(
+            len(trial.fits) != fit_count
+            or [fit.fit_index for fit in trial.fits] != list(range(fit_count))
+            for trial in self.trials
+        ):
+            raise ValueError("each tuning trial must use the same contiguous evaluation fits")
+        aggregate_metric_names = set(baseline.aggregate_metrics)
+        for trial in self.trials:
+            if any(set(fit.metrics) != aggregate_metric_names for fit in trial.fits):
+                raise ValueError("tuning trial fit metric names must match aggregate metrics")
+            total_validation_rows = sum(fit.validation_rows for fit in trial.fits)
+            for name, aggregate in trial.aggregate_metrics.items():
+                weighted_mean = (
+                    sum(fit.metrics[name] * fit.validation_rows for fit in trial.fits)
+                    / total_validation_rows
+                )
+                if not math.isclose(
+                    aggregate,
+                    weighted_mean,
                     rel_tol=1e-12,
                     abs_tol=1e-12,
                 ):
-                    raise ValueError(f"{name} {field} does not match the persisted fold results")
+                    raise ValueError(
+                        f"trial aggregate metric {name!r} does not match its validation fits"
+                    )
+        if self.metric not in baseline.aggregate_metrics:
+            raise ValueError("tuning metric must be present in aggregate_metrics")
+        if any(
+            not math.isclose(
+                trial.aggregate_metrics[self.metric], trial.objective, rel_tol=1e-12, abs_tol=1e-12
+            )
+            for trial in self.trials
+        ):
+            raise ValueError("trial objective must equal its aggregate metric")
+        if not math.isclose(
+            self.baseline_objective, baseline.objective, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ValueError("baseline_objective must equal the baseline objective")
+        winner = (
+            max(self.trials, key=lambda trial: (trial.objective, -trial.trial_index))
+            if self.direction == "maximize"
+            else min(self.trials, key=lambda trial: (trial.objective, trial.trial_index))
+        )
+        if self.winner_trial_index != winner.trial_index or not math.isclose(
+            self.winner_objective, winner.objective, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ValueError("winner must be selected deterministically from trial objectives")
+        if self.best_sampled_params != winner.sampled_params:
+            raise ValueError(
+                "best sampled parameters must equal the winning trial sampled parameters"
+            )
+        iteration_ceiling = winner.resolved_params.get("iterations", 1000)
+        if (
+            isinstance(iteration_ceiling, bool)
+            or not isinstance(iteration_ceiling, int)
+            or iteration_ceiling <= 0
+            or any(fit.best_iteration is None for fit in winner.fits)
+        ):
+            raise ValueError(
+                "winning trial must retain a positive iteration ceiling and "
+                "best_iteration for every fit"
+            )
+        weighted_tree_counts = sorted(
+            (
+                fit.best_iteration + 1,
+                fit.validation_rows,
+            )
+            for fit in winner.fits
+            if fit.best_iteration is not None
+        )
+        threshold = sum(rows for _, rows in weighted_tree_counts) / 2
+        cumulative = 0
+        selected_tree_count = weighted_tree_counts[-1][0]
+        for tree_count, rows in weighted_tree_counts:
+            cumulative += rows
+            if cumulative >= threshold:
+                selected_tree_count = tree_count
+                break
+        expected_tree_count = min(selected_tree_count, iteration_ceiling)
+        expected_final_params = dict(winner.resolved_params)
+        for key in (
+            "early_stopping_rounds",
+            "od_pval",
+            "od_type",
+            "od_wait",
+            "use_best_model",
+        ):
+            expected_final_params.pop(key, None)
+        expected_final_params["iterations"] = expected_tree_count
+        if (
+            self.final_tree_count != expected_tree_count
+            or self.final_params != expected_final_params
+        ):
+            raise ValueError(
+                "final parameter projection must be derived from the winning validation fits"
+            )
+        expected_improvement = (
+            winner.objective - baseline.objective
+            if self.direction == "maximize"
+            else baseline.objective - winner.objective
+        )
+        if not math.isclose(self.improvement, expected_improvement, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValueError("improvement must equal winner versus baseline")
+        if self.trial_fit_count != sum(len(trial.fits) for trial in self.trials):
+            raise ValueError("trial_fit_count must equal all trial fits")
+        if self.total_fit_count != self.trial_fit_count + 1:
+            raise ValueError("total_fit_count must equal trial_fit_count + final fit")
         return self
 
 
 class TrainResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: Literal["started", "completed", "error"]
     job_id: str | None = None
-    metrics: dict[str, float] = Field(default_factory=dict)
+    diagnostic_metrics: dict[str, float] = Field(default_factory=dict)
+    final_test_metrics: dict[str, float] = Field(default_factory=dict)
     feature_importance: list[dict[str, Any]] = Field(default_factory=list)
     model_path: str = ""
-    train_rows: int = 0
-    validation_rows: int = 0
-    holdout_rows: int = 0
-    holdout_metrics: dict[str, float] = Field(default_factory=dict)
-    diagnostics_set: str = "validation"  # "train" | "validation" | "holdout"
+    development_rows: int = Field(default=0, strict=True, ge=0)
+    final_test_rows: int = Field(default=0, strict=True, ge=0)
+    diagnostics_set: Literal["development", "final_test"] = "development"
     features: list[str] = Field(default_factory=list)
     cat_features: list[str] = Field(default_factory=list)
     error: str | None = None
@@ -1582,15 +1877,63 @@ class TrainResponse(BaseModel):
     warning: str | None = None
     total_source_rows: int | None = None
     feature_selection: TrainingFeatureSelectionDiagnosticPayload | None = None
-    cross_validation: CrossValidationReportPayload | None = Field(
+    evaluation: EvaluationReportPayload | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    tuning: TuningReportPayload | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
 
+    @field_validator("diagnostic_metrics", "final_test_metrics", mode="before")
+    @classmethod
+    def _validate_public_metrics(cls, value: Any, info: Any) -> dict[str, float]:
+        # Non-completed responses serialise their empty defaults, so a dumped
+        # response must re-validate; completed-status non-emptiness lives in
+        # the model validator below.
+        if value == {}:
+            return {}
+        return _strict_finite_metric_mapping(value, field=info.field_name)
+
     @model_validator(mode="after")
-    def _validate_cross_validation_status(self) -> TrainResponse:
-        if self.cross_validation is not None and self.status != "completed":
-            raise ValueError("cross_validation is present only for completed training")
+    def _validate_evaluation_status(self) -> TrainResponse:
+        if self.status != "completed":
+            if self.evaluation is not None or self.tuning is not None:
+                raise ValueError("evaluation and tuning are present only for completed training")
+            return self
+        if self.evaluation is None:
+            raise ValueError("completed training requires evaluation")
+        if not self.diagnostic_metrics:
+            raise ValueError("completed training requires diagnostic_metrics")
+        if self.development_rows != self.evaluation.development_rows:
+            raise ValueError("development_rows must equal evaluation development_rows")
+        if self.final_test_rows != self.evaluation.final_test_rows:
+            raise ValueError("final_test_rows must equal evaluation final_test_rows")
+        if self.final_test_rows:
+            if self.diagnostic_metrics != self.final_test_metrics:
+                raise ValueError(
+                    "diagnostic_metrics must equal final_test_metrics when a final test exists"
+                )
+            if self.diagnostics_set != "final_test":
+                raise ValueError(
+                    "completed training diagnostics_set must be final_test when a test exists"
+                )
+        else:
+            if self.final_test_metrics:
+                raise ValueError("final_test_metrics must be empty without a final test")
+            if self.diagnostics_set != "development":
+                raise ValueError(
+                    "completed training diagnostics_set must be development without a test"
+                )
+        if self.tuning is None:
+            if self.evaluation.fit_count != self.evaluation.validation_fit_count + 1:
+                raise ValueError("evaluation fit_count must equal validation_fit_count + final fit")
+        else:
+            if self.evaluation.fit_count != self.tuning.total_fit_count:
+                raise ValueError("evaluation fit_count must equal tuning total_fit_count")
+            if self.tuning.evaluation_plan_sha256 != self.evaluation.plan_sha256:
+                raise ValueError("tuning evaluation plan digest must match evaluation")
         return self
 
 
@@ -1612,12 +1955,201 @@ class TrainStatusResponse(BaseModel):
     error_code: str | None = None
     http_status_code: int | None = None
     error_detail: Any | None = None
+    phase: (
+        Literal[
+            "planning",
+            "trial_fit",
+            "trial_complete",
+            "final_fit",
+            "publication",
+            "completed",
+        ]
+        | None
+    ) = None
+    trial_index: int | None = Field(default=None, strict=True, ge=1)
+    trial_count: int | None = Field(default=None, strict=True, ge=5, le=50)
+    fold_index: int | None = Field(default=None, strict=True, ge=1)
+    fold_count: int | None = Field(default=None, strict=True, ge=1, le=10)
+    completed_fits: int | None = Field(default=None, strict=True, ge=0)
+    total_fits: int | None = Field(default=None, strict=True, ge=1, le=201)
+    best_objective: float | None = None
+
+    @field_validator("best_objective", mode="before")
+    @classmethod
+    def _validate_best_objective(cls, value: Any) -> float | None:
+        return None if value is None else _finite_number(value, field="best_objective")
+
+    @model_validator(mode="after")
+    def _validate_tuning_progress(self) -> TrainStatusResponse:
+        values = (
+            self.phase,
+            self.trial_index,
+            self.trial_count,
+            self.fold_index,
+            self.fold_count,
+            self.completed_fits,
+            self.total_fits,
+            self.best_objective,
+        )
+        if self.phase is None:
+            if any(value is not None for value in values[1:]):
+                raise ValueError("tuning progress fields require phase")
+            return self
+        if any(
+            value is None
+            for value in (
+                self.trial_count,
+                self.fold_count,
+                self.completed_fits,
+                self.total_fits,
+            )
+        ):
+            raise ValueError("tuning progress count fields are required with phase")
+        assert self.trial_count is not None
+        assert self.fold_count is not None
+        assert self.completed_fits is not None and self.total_fits is not None
+        if self.phase == "trial_fit":
+            if self.trial_index is None or self.fold_index is None:
+                raise ValueError("trial_fit tuning progress requires trial and fold indices")
+        elif self.phase == "trial_complete":
+            if self.trial_index is None or self.fold_index is not None:
+                raise ValueError("trial_complete progress requires only a trial index")
+        elif self.trial_index is not None or self.fold_index is not None:
+            raise ValueError(f"{self.phase} progress must not contain trial/fold indices")
+        if (self.trial_index is not None and self.trial_index > self.trial_count) or (
+            self.fold_index is not None and self.fold_index > self.fold_count
+        ):
+            raise ValueError("tuning progress index must be within its count")
+        if self.completed_fits > self.total_fits:
+            raise ValueError("tuning progress completed_fits must not exceed total_fits")
+        if self.total_fits != self.trial_count * self.fold_count + 1:
+            raise ValueError(
+                "tuning progress total_fits must equal trial_count * fold_count + final fit"
+            )
+        return self
 
 
 class TrainEstimateRequest(BaseModel):
     graph: Graph
     node_id: str
     source: str = "live"
+
+
+class EvaluationDateRangePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start: str = Field(min_length=1)
+    end: str = Field(min_length=1)
+
+
+class EvaluationPreviewPayload(BaseModel):
+    """Bounded, result-free summary of the exact preflight evaluation plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    strategy: Literal["random", "group", "temporal"]
+    validation_method: Literal["none", "single", "cross_validation"]
+    development_rows: int = Field(strict=True, ge=1)
+    final_test_rows: int = Field(strict=True, ge=0)
+    validation_fit_count: int = Field(strict=True, ge=0, le=10)
+    min_selection_train_rows: int | None = Field(
+        default=None,
+        strict=True,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
+    max_selection_train_rows: int | None = Field(
+        default=None,
+        strict=True,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
+    min_selection_validation_rows: int | None = Field(
+        default=None,
+        strict=True,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
+    max_selection_validation_rows: int | None = Field(
+        default=None,
+        strict=True,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
+    development_group_count: int | None = Field(
+        default=None,
+        strict=True,
+        ge=1,
+        exclude_if=lambda value: value is None,
+    )
+    final_test_group_count: int | None = Field(
+        default=None,
+        strict=True,
+        ge=0,
+        exclude_if=lambda value: value is None,
+    )
+    development_date_range: EvaluationDateRangePayload | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    final_test_date_range: EvaluationDateRangePayload | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def _validate_preview_shape(self) -> EvaluationPreviewPayload:
+        min_train_rows = self.min_selection_train_rows
+        max_train_rows = self.max_selection_train_rows
+        min_validation_rows = self.min_selection_validation_rows
+        max_validation_rows = self.max_selection_validation_rows
+        selection_bounds = (
+            min_train_rows,
+            max_train_rows,
+            min_validation_rows,
+            max_validation_rows,
+        )
+        if self.validation_method == "none":
+            if self.validation_fit_count != 0 or any(
+                value is not None for value in selection_bounds
+            ):
+                raise ValueError("no-validation preview must not contain selection bounds")
+        else:
+            if self.validation_method == "single" and self.validation_fit_count != 1:
+                raise ValueError("single-validation preview requires exactly one fit")
+            if self.validation_method == "cross_validation" and not (
+                2 <= self.validation_fit_count <= 10
+            ):
+                raise ValueError("cross-validation preview requires 2 to 10 fits")
+            if any(value is None for value in selection_bounds):
+                raise ValueError("validated preview requires all selection row bounds")
+            if (
+                min_train_rows is None
+                or max_train_rows is None
+                or min_validation_rows is None
+                or max_validation_rows is None
+            ):
+                raise ValueError("validated preview requires all selection row bounds")
+            if min_train_rows > max_train_rows or min_validation_rows > max_validation_rows:
+                raise ValueError("evaluation preview minimums must not exceed maximums")
+
+        if self.strategy == "group":
+            if self.development_group_count is None or self.final_test_group_count is None:
+                raise ValueError("group preview requires group counts")
+            if bool(self.final_test_rows) != bool(self.final_test_group_count):
+                raise ValueError("group final-test rows and group count must agree")
+        elif self.development_group_count is not None or self.final_test_group_count is not None:
+            raise ValueError("only group preview may contain group counts")
+
+        if self.strategy == "temporal":
+            if self.development_date_range is None:
+                raise ValueError("temporal preview requires a development date range")
+            if bool(self.final_test_rows) != bool(self.final_test_date_range):
+                raise ValueError("temporal final-test rows and date range must agree")
+        elif self.development_date_range is not None or self.final_test_date_range is not None:
+            raise ValueError("only temporal preview may contain date ranges")
+        return self
 
 
 class TrainEstimateResponse(BaseModel):
@@ -1633,6 +2165,10 @@ class TrainEstimateResponse(BaseModel):
     gpu_vram_estimated_mb: float | None = None
     gpu_vram_available_mb: float | None = None
     gpu_warning: str | None = None
+    evaluation_preview: EvaluationPreviewPayload | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class DispersionEstimateRequest(BaseModel):

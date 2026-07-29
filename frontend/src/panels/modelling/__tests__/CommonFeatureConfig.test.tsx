@@ -46,7 +46,7 @@ describe("CommonFeatureConfig", () => {
           target: "target",
           weight: "weight",
           exclude: ["missing_feature"],
-          split: { strategy: "temporal", date_column: "date" },
+          evaluation: { strategy: "temporal", date_column: "date" },
         }}
         onUpdate={onUpdate}
         columns={columns}

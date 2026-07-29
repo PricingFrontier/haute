@@ -67,4 +67,26 @@ describe("nextTrainEstimate", () => {
       estimatedRemainingSeconds: null,
     })
   })
+
+  it("derives tuning ETA from increasing completed fit counts", () => {
+    const tuning = (completed_fits: number, elapsed_seconds: number): TrainProgress => ({
+      ...progress(0, elapsed_seconds, {
+        phase: "trial_fit",
+        trial_index: 2,
+        trial_count: 5,
+        fold_index: 1,
+        fold_count: 2,
+        completed_fits,
+        total_fits: 11,
+        best_objective: 0.4,
+      }),
+      iteration: 0,
+      total_iterations: 0,
+    })
+
+    const first = nextTrainEstimate([], tuning(2, 10))
+    expect(first.estimatedRemainingSeconds).toBeNull()
+    const second = nextTrainEstimate(first.samples, tuning(4, 20))
+    expect(second.estimatedRemainingSeconds).toBe(35)
+  })
 })

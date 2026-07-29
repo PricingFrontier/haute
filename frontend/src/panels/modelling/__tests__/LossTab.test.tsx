@@ -1,16 +1,14 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 import { LossTab } from "../LossTab"
-import type { TrainResult } from "../../../stores/useNodeResultsStore"
+import { makeTrainResult } from "../../../test-utils/factories"
 
-const baseResult: TrainResult = {
-  status: "completed",
-  metrics: {},
+const baseResult = makeTrainResult({
   feature_importance: [],
   model_path: "",
-  train_rows: 10,
-  validation_rows: 5,
-}
+  development_rows: 10,
+  final_test_rows: 5,
+})
 
 afterEach(cleanup)
 

@@ -21,7 +21,7 @@ const columns: ModellingColumn[] = [
 ]
 
 describe("feature-selection transitions", () => {
-  it("treats only the active split key, plus metadata roles, as non-features", () => {
+  it("treats only the active evaluation key, plus metadata roles, as non-features", () => {
     const base = {
       target: "target",
       weight: "weight",
@@ -33,7 +33,7 @@ describe("feature-selection transitions", () => {
     expect(
       roleColumns({
         ...base,
-        split: {
+        evaluation: {
           strategy: "temporal",
           date_column: "date",
           group_column: "group",
@@ -43,7 +43,7 @@ describe("feature-selection transitions", () => {
     expect(
       roleColumns({
         ...base,
-        split: {
+        evaluation: {
           strategy: "group",
           date_column: "date",
           group_column: "group",
@@ -53,7 +53,7 @@ describe("feature-selection transitions", () => {
     expect(
       roleColumns({
         ...base,
-        split: {
+        evaluation: {
           strategy: "random",
           date_column: "date",
           group_column: "group",
@@ -63,8 +63,7 @@ describe("feature-selection transitions", () => {
     expect(
       roleColumns({
         ...base,
-        split: { strategy: "random" },
-        cross_validation: {
+        evaluation: {
           strategy: "temporal",
           date_column: "date",
         },

@@ -38,6 +38,71 @@ export function parseHyperparameters(
   return projection
 }
 
+function isScalarJsonValue(value: unknown): boolean {
+  return (
+    value === null
+    || typeof value === "string"
+    || typeof value === "number"
+    || typeof value === "boolean"
+  )
+}
+
+function formatSearchSpaceValue(value: unknown, depth: number): string {
+  const indent = "  ".repeat(depth)
+  const childIndent = "  ".repeat(depth + 1)
+
+  if (Array.isArray(value)) {
+    if (value.every(isScalarJsonValue)) {
+      return `[${value.map((item) => JSON.stringify(item)).join(", ")}]`
+    }
+    return [
+      "[",
+      value
+        .map((item) => `${childIndent}${formatSearchSpaceValue(item, depth + 1)}`)
+        .join(",\n"),
+      `${indent}]`,
+    ].join("\n")
+  }
+
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+    if (entries.length === 0) return "{}"
+    return [
+      "{",
+      entries
+        .map(
+          ([key, item]) => (
+            `${childIndent}${JSON.stringify(key)}: ${formatSearchSpaceValue(item, depth + 1)}`
+          ),
+        )
+        .join(",\n"),
+      `${indent}}`,
+    ].join("\n")
+  }
+
+  const encoded = JSON.stringify(value)
+  if (encoded === undefined) {
+    throw new Error("Search space values must be valid JSON")
+  }
+  return encoded
+}
+
+export function formatTuningSearchSpace(
+  searchSpace: Record<string, unknown>,
+): string {
+  return formatSearchSpaceValue(searchSpace, 0)
+}
+
+export function parseTuningSearchSpace(
+  draft: string,
+): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(draft)
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Search space JSON must be an object.")
+  }
+  return parsed as Record<string, unknown>
+}
+
 export function mergeReservedKeys(
   latestParams: Record<string, unknown>,
   projection: Record<string, unknown>,

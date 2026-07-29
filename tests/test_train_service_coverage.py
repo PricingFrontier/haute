@@ -337,6 +337,14 @@ class TestExecuteAndSinkProjection:
 # start() — GLM config merge + keep-columns (lines 272-273, 287-291)
 # ---------------------------------------------------------------------------
 
+# Minimal canonical evaluation object — public configs must supply exactly one.
+MINIMAL_EVALUATION = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {"method": "single", "size": 0.2},
+}
+
 
 class TestStartGlmMergeAndKeepColumns:
     def _glm_graph(self):
@@ -351,6 +359,7 @@ class TestStartGlmMergeAndKeepColumns:
             "feature_columns": ["x1"],
             "exclude": ["junk", "x1"],
             "params": {"iterations": 3},
+            "evaluation": MINIMAL_EVALUATION,
         }
         graph = make_graph(
             {
@@ -933,6 +942,7 @@ class TestStartExecutionContextLifecycle:
             "algorithm": "catboost",
             "loss_function": "RMSE",
             "params": {"iterations": 2},
+            "evaluation": MINIMAL_EVALUATION,
         }
         graph = make_graph(
             {
@@ -1116,22 +1126,25 @@ class TestStringListConfig:
 
 
 class TestRequiredMetadataColumns:
-    def test_non_dict_split_is_ignored(self):
-        """A non-dict split value skips the split-column block (219->229)."""
+    def test_non_dict_evaluation_is_ignored(self):
+        """A non-dict evaluation value skips the evaluation-column block."""
         from haute.routes._train_service import _training_required_metadata_columns
 
         cols = _training_required_metadata_columns(
-            {"target": "y", "split": "random", "id_columns": ["pid"]}
+            {"target": "y", "evaluation": "random", "id_columns": ["pid"]}
         )
-        # target + id_columns survive; the string split contributes no column.
+        # target + id_columns survive; the malformed evaluation adds no column.
         assert cols == {"y", "pid"}
 
-    def test_temporal_split_adds_date_column(self):
-        """A temporal split contributes its date_column to the keep set."""
+    def test_temporal_evaluation_adds_date_column(self):
+        """A temporal evaluation contributes its date_column to the keep set."""
         from haute.routes._train_service import _training_required_metadata_columns
 
         cols = _training_required_metadata_columns(
-            {"target": "y", "split": {"strategy": "temporal", "date_column": "asof"}}
+            {
+                "target": "y",
+                "evaluation": {"strategy": "temporal", "date_column": "asof"},
+            }
         )
         assert cols == {"y", "asof"}
 
@@ -1237,6 +1250,7 @@ class TestStartCategoricalLevelsMerge:
             "loss_function": "RMSE",
             "categorical_levels": {"region": ["north", "south"]},
             "params": {"iterations": 2},
+            "evaluation": MINIMAL_EVALUATION,
         }
         graph = make_graph(
             {
@@ -1333,6 +1347,7 @@ def _launch_config():
         "algorithm": "catboost",
         "loss_function": "RMSE",
         "params": {"iterations": 1},
+        "evaluation": MINIMAL_EVALUATION,
     }
 
 

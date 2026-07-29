@@ -8,7 +8,8 @@ import ExecutionDiagnosticsSummary from "../../components/ExecutionDiagnosticsSu
 import type { ExecutionMetrics } from "../../api/types"
 
 // The backend's bytes_per_row already includes full phase-model overhead
-// (split, pools, CatBoost internals, diagnostics, CV).  No extra multiplier.
+// (evaluation partitions, pools, CatBoost internals, diagnostics, tuning).
+// No extra multiplier.
 const TRAINING_OVERHEAD = 1.0
 
 function formatMb(mb: number): string {
@@ -33,6 +34,7 @@ export type TrainingActionsAndResultsProps = {
   /** True while the short start request is waiting for its cancellable job handle. */
   submitting?: boolean
   cancelling?: boolean
+  tuningEnabled?: boolean
   onTrain: () => void
   onCancel: () => void
 }
@@ -53,6 +55,7 @@ export function TrainingActionsAndResults({
   terminalReason = null,
   submitting = false,
   cancelling = false,
+  tuningEnabled = false,
   onTrain,
   onCancel,
 }: TrainingActionsAndResultsProps) {
@@ -97,10 +100,12 @@ export function TrainingActionsAndResults({
       ? <Loader2 size={14} className="animate-spin" />
       : <Play size={14} />
   const trainLabel = submitting
-    ? "Preparing training data..."
+    ? `Preparing ${tuningEnabled ? "tuning" : "training"} data...`
     : training
       ? (trainProgress?.message || "Training...")
-      : "Train Model"
+      : tuningEnabled
+        ? "Tune & Train"
+        : "Train Model"
 
   return (
     <>

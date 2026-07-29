@@ -37,7 +37,7 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     ----------
     config : dict
         Modelling node configuration containing algorithm, target, weight,
-        exclude, params, split, metrics, mlflow_experiment, model_name,
+        exclude, params, evaluation, tuning, metrics, mlflow_experiment, model_name,
         loss_function, variance_power, offset, monotone_constraints,
         feature_weights, etc.
     data_path : str
@@ -82,10 +82,10 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     if kwargs["params"]:
         parts.append(f"    params={kwargs['params']!r},")
 
-    parts.append(f"    split={kwargs['split']!r},")
+    parts.append(f"    evaluation={kwargs['evaluation']!r},")
     parts.append(f"    metrics={kwargs['metrics']!r},")
-    if kwargs.get("cross_validation") is not None:
-        parts.append(f"    cross_validation={kwargs['cross_validation']!r},")
+    if kwargs["tuning"] is not None:
+        parts.append(f"    tuning={kwargs['tuning']!r},")
 
     if kwargs["loss_function"]:
         parts.append(f"    loss_function={kwargs['loss_function']!r},")
@@ -113,7 +113,8 @@ def generate_training_script(config: dict[str, Any], data_path: str) -> str:
     parts.append('if __name__ == "__main__":')
     parts.append("    result = job.run()")
     parts.append('    print(f"Model saved to: {result.model_path}")')
-    parts.append("    for name, value in result.metrics.items():")
+    parts.append("    reported_metrics = result.final_test_metrics or result.metrics")
+    parts.append("    for name, value in reported_metrics.items():")
     parts.append('        print(f"  {name}: {value:.4f}")')
     parts.append("")
 

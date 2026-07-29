@@ -7,17 +7,15 @@ type Interaction = { factors?: string[]; [key: string]: unknown }
 
 /** Columns with an active modelling role cannot also be trainable features. */
 export function roleColumns(config: Record<string, unknown>): Set<string> {
-  const split = configField<Record<string, unknown>>(config, "split", {})
-  const splitStrategy = configField(split, "strategy", "random")
-  const crossValidation = configField<Record<string, unknown>>(
+  const evaluation = configField<Record<string, unknown>>(
     config,
-    "cross_validation",
+    "evaluation",
     {},
   )
-  const crossValidationStrategy = configField(
-    crossValidation,
+  const evaluationStrategy = configField(
+    evaluation,
     "strategy",
-    "",
+    "random",
   )
   const values: unknown[] = [
     config.target,
@@ -27,14 +25,8 @@ export function roleColumns(config: Record<string, unknown>): Set<string> {
     ...(Array.isArray(config.id_columns) ? config.id_columns : []),
   ]
 
-  if (splitStrategy === "temporal") values.push(split.date_column)
-  if (splitStrategy === "group") values.push(split.group_column)
-  if (crossValidationStrategy === "temporal") {
-    values.push(crossValidation.date_column)
-  }
-  if (crossValidationStrategy === "group") {
-    values.push(crossValidation.group_column)
-  }
+  if (evaluationStrategy === "temporal") values.push(evaluation.date_column)
+  if (evaluationStrategy === "group") values.push(evaluation.group_column)
 
   return new Set(
     values.filter(

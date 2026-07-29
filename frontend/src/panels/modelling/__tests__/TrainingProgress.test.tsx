@@ -101,6 +101,28 @@ describe("TrainingProgress", () => {
     expect(screen.queryByText(/Estimated remaining/)).toBeNull()
   })
 
+  it("renders tuning trial, fold, fit count, and best objective", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({
+          phase: "trial_fit",
+          trial_index: 7,
+          trial_count: 20,
+          fold_index: 2,
+          fold_count: 5,
+          completed_fits: 31,
+          total_fits: 101,
+          best_objective: 0.4172,
+          total_iterations: 0,
+        })}
+      />,
+    )
+
+    expect(screen.getByText(
+      "Trial 7 of 20 · Fold 2 of 5 · 31 of 101 fits · Best objective 0.4172",
+    )).toBeInTheDocument()
+  })
+
   it("renders memory-pressure diagnostics from structured progress metrics", () => {
     render(
       <TrainingProgress

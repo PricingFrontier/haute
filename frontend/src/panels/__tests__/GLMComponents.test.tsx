@@ -21,6 +21,7 @@ import { GraphProvider } from "../GraphContext"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
+import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -77,18 +78,15 @@ function makeGlmRelativities() {
 }
 
 function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
-  return {
-    status: "ok",
-    metrics: { gini: 0.35, poisson_deviance: 1.42 },
+  return makeCanonicalTrainResult({
+    final_test_metrics: { gini: 0.35, poisson_deviance: 1.42 },
     feature_importance: [
       { feature: "age", importance: 0.6 },
       { feature: "region", importance: 0.4 },
     ],
     model_path: "/models/glm_model.rsglm",
-    train_rows: 8000,
-    validation_rows: 2000,
     ...overrides,
-  }
+  })
 }
 
 beforeEach(() => {
@@ -958,7 +956,7 @@ describe("SummaryTab (GLM extensions)", () => {
       glm_fit_statistics: { aic: 5432.1, bic: 5478.9, deviance: 4200.3, null_deviance: 5100.0 },
     })
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
-    expect(screen.getByText("Fit Statistics")).toBeTruthy()
+    expect(screen.getByText("Fit statistics")).toBeTruthy()
     expect(screen.getByText("aic")).toBeTruthy()
     expect(screen.getByText("5432.1000")).toBeTruthy()
     expect(screen.getByText("bic")).toBeTruthy()
@@ -968,7 +966,7 @@ describe("SummaryTab (GLM extensions)", () => {
   it("hides fit statistics when not present", () => {
     const result = makeTrainResult()
     render(<SummaryTab result={result} jobId="j1" mlflowBackend={null} config={{}} />)
-    expect(screen.queryByText("Fit Statistics")).toBeNull()
+    expect(screen.queryByText("Fit statistics")).toBeNull()
   })
 
   it("shows regularization info when present", () => {
@@ -1023,7 +1021,13 @@ describe("ModellingConfig (GLM routing)", () => {
       </GraphProvider>,
     )
     fireEvent.click(screen.getByText("GLM"))
-    expect(onUpdate).toHaveBeenCalledWith("algorithm", "glm")
+    expect(onUpdate).toHaveBeenCalledWith({
+      algorithm: "glm",
+      evaluation: expect.objectContaining({
+        schema_version: 1,
+        strategy: "random",
+      }),
+    })
   })
 
   it("GLM config routes target, features, and regularization to exclusive panes", () => {
@@ -1098,7 +1102,7 @@ describe("ModellingConfig (GLM routing)", () => {
         />
       </GraphProvider>,
     )
-    expect(screen.getByText("Split Strategy")).toBeTruthy()
+    expect(screen.getByText("How is the data structured?")).toBeTruthy()
     expect(screen.queryByRole("button", { name: /Train Model/ })).toBeNull()
 
     rerender(
@@ -1112,6 +1116,6 @@ describe("ModellingConfig (GLM routing)", () => {
       </GraphProvider>,
     )
     expect(screen.getByRole("button", { name: /Train Model/ })).toBeTruthy()
-    expect(screen.queryByText("Split Strategy")).toBeNull()
+    expect(screen.queryByText("How is the data structured?")).toBeNull()
   })
 })

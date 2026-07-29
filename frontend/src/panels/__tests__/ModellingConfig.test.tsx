@@ -9,6 +9,7 @@ import type { ModellingPane } from "../../stores/useUIStore"
 import type { TrainResult } from "../../stores/useNodeResultsStore"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
+import { makeTrainResult as makeCanonicalTrainResult } from "../../test-utils/factories"
 
 // ── Mocks ────────────────────────────────────────────────────────
 
@@ -57,18 +58,29 @@ type ConfigOverrides = Partial<Parameters<typeof ModellingConfig>[0]> & {
 
 function defaultProps(overrides: ConfigOverrides = {}) {
   // Strip graph-context keys — they flow via `<GraphProvider>` in tests, not props.
-  const { allNodes, edges, submodels, preamble, ...rest } = overrides
+  const { allNodes, edges, submodels, preamble, config, ...rest } = overrides
   void allNodes; void edges; void submodels; void preamble
+  const evaluation = {
+    schema_version: 1,
+    strategy: "random",
+    seed: 42,
+    test: { size: 0.2 },
+    validation: { method: "single", size: 0.2 },
+  }
+  const defaultConfig = {
+    _nodeId: "node_1",
+    target: "loss_ratio",
+    task: "regression",
+    algorithm: "catboost",
+    loss_function: "RMSE",
+    evaluation,
+  }
   return {
-    // The backend requires an explicit objective, so the shared default is a
-    // complete configuration that can exercise successful training paths.
-    config: {
-      _nodeId: "node_1",
-      target: "loss_ratio",
-      task: "regression",
-      algorithm: "catboost",
-      loss_function: "RMSE",
-    },
+    // An explicit test config stays exact (for gateway/invalid-state tests)
+    // while still receiving the canonical evaluation default when omitted.
+    config: config === undefined
+      ? defaultConfig
+      : { ...config, evaluation: config.evaluation ?? evaluation },
     onUpdate: vi.fn(),
     upstreamColumns: defaultColumns,
     activePane: defaultPane,
@@ -88,18 +100,15 @@ function renderConfig(overrides: ConfigOverrides = {}) {
 }
 
 function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
-  return {
-    status: "ok",
-    metrics: { gini: 0.45, rmse: 0.12 },
+  return makeCanonicalTrainResult({
+    final_test_metrics: { gini: 0.45, rmse: 0.12 },
     feature_importance: [
       { feature: "age", importance: 0.6 },
       { feature: "region", importance: 0.4 },
     ],
     model_path: "/models/catboost_model.cbm",
-    train_rows: 8000,
-    validation_rows: 2000,
     ...overrides,
-  }
+  })
 }
 
 // ── Setup / teardown ─────────────────────────────────────────────
@@ -244,7 +253,13 @@ describe("ModellingConfig", () => {
     it("clicking CatBoost in picker sets algorithm and shows full config", () => {
       const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("CatBoost"))
-      expect(props.onUpdate).toHaveBeenCalledWith("algorithm", "catboost")
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "catboost",
+        evaluation: expect.objectContaining({
+          schema_version: 1,
+          strategy: "random",
+        }),
+      })
     })
 
     it("loss function shows regression losses as toggle buttons for regression task", () => {
@@ -331,7 +346,7 @@ describe("ModellingConfig", () => {
       expect(parsed).toEqual({ iterations: 500, depth: 8 })
     })
 
-    it("applying JSON commits arbitrary algorithm parameters", () => {
+    it("autosaves arbitrary algorithm parameters", () => {
       const { props } = renderConfig()
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(textarea, {
@@ -339,7 +354,6 @@ describe("ModellingConfig", () => {
           value: '{"grow_policy":"Lossguide","max_leaves":64,"custom":{"enabled":true}}',
         },
       })
-      fireEvent.click(screen.getByRole("button", { name: "Apply" }))
       expect(props.onUpdate).toHaveBeenCalledWith("params", {
         grow_policy: "Lossguide",
         max_leaves: 64,
@@ -347,14 +361,11 @@ describe("ModellingConfig", () => {
       })
     })
 
-    it("invalid JSON shows error and does not commit", () => {
+    it("invalid JSON stays local without an inline error or commit", () => {
       const { props } = renderConfig()
       const textarea = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(textarea, { target: { value: "{bad json" } })
-      fireEvent.click(screen.getByRole("button", { name: "Apply" }))
-      // Error message text varies by JS engine — just check the border uses the danger token.
-      expect(screen.getByRole("alert")).toBeTruthy()
-      // onUpdate should not have been called with params
+      expect(screen.queryByRole("alert")).toBeNull()
       expect(props.onUpdate).not.toHaveBeenCalledWith("params", expect.anything())
     })
 
@@ -375,53 +386,68 @@ describe("ModellingConfig", () => {
 
   describe("Split/Eval section", () => {
     beforeEach(() => { defaultPane = "split" })
-    it("renders split strategy buttons (random, temporal, group)", () => {
+    it("renders the three data-structure choices", () => {
       renderConfig()
-      expect(screen.getByRole("button", { name: "random" })).toBeTruthy()
-      expect(screen.getByRole("button", { name: "temporal" })).toBeTruthy()
-      expect(screen.getByRole("button", { name: "group" })).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Random rows" })).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Respect time order" })).toBeTruthy()
+      expect(screen.getByRole("button", { name: "Keep entities together" })).toBeTruthy()
     })
 
-    it("random split shows validation, holdout, and seed inputs", () => {
+    it("random evaluation shows validation, final-test, and seed inputs", () => {
       renderConfig()
-      expect(screen.getByText("Validation")).toBeTruthy()
-      expect(screen.getByText("Holdout")).toBeTruthy()
-      expect(screen.getByText("Seed")).toBeTruthy()
-      expect(screen.getByDisplayValue("0.2")).toBeTruthy()
-      expect(screen.getByDisplayValue("42")).toBeTruthy()
+      expect(screen.getByLabelText("Validation fraction")).toHaveValue(0.2)
+      expect(screen.getByLabelText("Final test fraction")).toHaveValue(0.2)
+      expect(screen.getByLabelText("Evaluation seed")).toHaveValue(42)
     })
 
-    it("changing split strategy to temporal calls handleSplitUpdate", () => {
+    it("changing the data structure commits canonical temporal evaluation", () => {
       const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "temporal" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("split", expect.objectContaining({ strategy: "temporal" }))
+      fireEvent.click(screen.getByRole("button", { name: "Respect time order" }))
+      expect(props.onUpdate).toHaveBeenCalledWith(
+        "evaluation",
+        expect.objectContaining({ strategy: "temporal" }),
+      )
     })
 
-    it("temporal split shows date column and cutoff date", () => {
+    it("temporal evaluation shows date and boundary controls", () => {
       renderConfig({
         config: {
           _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "temporal", validation_size: 0.2, seed: 42 },
+          evaluation: {
+            schema_version: 1,
+            strategy: "temporal",
+            date_column: "",
+            validation: { method: "single", start: "" },
+            test: { start: "" },
+          },
         },
       })
       expect(screen.getByText("Date column")).toBeTruthy()
-      expect(screen.getByText("Cutoff date")).toBeTruthy()
+      expect(screen.getByText("Validation starts")).toBeTruthy()
+      expect(screen.getByText("Final test starts")).toBeTruthy()
     })
 
-    it("group split shows group column and test size", () => {
+    it("group evaluation shows the entity column", () => {
       renderConfig({
         config: {
           _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "group", validation_size: 0.2, seed: 42 },
+          evaluation: {
+            schema_version: 1,
+            strategy: "group",
+            group_column: "",
+            seed: 42,
+            validation: { method: "single", size: 0.2 },
+            test: { size: 0.2 },
+          },
         },
       })
-      expect(screen.getByText("Group column")).toBeTruthy()
+      expect(screen.getByText("Entity column")).toBeTruthy()
     })
 
     it("metrics checkboxes for regression render correctly", () => {
@@ -799,7 +825,7 @@ describe("ModellingConfig", () => {
         const store = useNodeResultsStore.getState()
         const cached = store.trainResults.node_1
         expect(cached).toBeTruthy()
-        expect(cached.result.status).toBe("ok")
+        expect(cached.result.status).toBe("completed")
       })
     })
   })
@@ -829,7 +855,19 @@ describe("ModellingConfig", () => {
     })
 
     it("does not show staleness warning when config hash matches", () => {
-      const config = { _nodeId: "node_1", target: "loss_ratio", task: "regression", algorithm: "catboost" }
+      const config = {
+        _nodeId: "node_1",
+        target: "loss_ratio",
+        task: "regression",
+        algorithm: "catboost",
+        evaluation: {
+          schema_version: 1,
+          strategy: "random",
+          seed: 42,
+          test: { size: 0.2 },
+          validation: { method: "single", size: 0.2 },
+        },
+      }
       const hash = hashConfig(config)
 
       useNodeResultsStore.setState({
@@ -1162,7 +1200,13 @@ describe("ModellingConfig", () => {
     it("clicking GLM in picker sets algorithm to glm", () => {
       const { props } = renderConfig({ config: { _nodeId: "node_1", target: "loss_ratio", task: "regression" } })
       fireEvent.click(screen.getByText("GLM"))
-      expect(props.onUpdate).toHaveBeenCalledWith("algorithm", "glm")
+      expect(props.onUpdate).toHaveBeenCalledWith({
+        algorithm: "glm",
+        evaluation: expect.objectContaining({
+          schema_version: 1,
+          strategy: "random",
+        }),
+      })
     })
   })
 
@@ -1316,24 +1360,35 @@ describe("ModellingConfig", () => {
 
   describe("Split strategy selection", () => {
     beforeEach(() => { defaultPane = "split" })
-    it("clicking group split calls onUpdate with group strategy", () => {
+    it("clicking grouped evaluation calls onUpdate with group strategy", () => {
       const { props } = renderConfig()
-      fireEvent.click(screen.getByRole("button", { name: "group" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("split", expect.objectContaining({ strategy: "group" }))
+      fireEvent.click(screen.getByRole("button", { name: "Keep entities together" }))
+      expect(props.onUpdate).toHaveBeenCalledWith(
+        "evaluation",
+        expect.objectContaining({ strategy: "group" }),
+      )
     })
 
-    it("clicking random split after temporal reverts strategy", () => {
+    it("clicking random rows after temporal reverts strategy", () => {
       const { props } = renderConfig({
         config: {
           _nodeId: "node_1",
           target: "loss_ratio",
           task: "regression",
           algorithm: "catboost",
-          split: { strategy: "temporal", validation_size: 0.2, seed: 42 },
+          evaluation: {
+            schema_version: 1,
+            strategy: "temporal",
+            date_column: "date",
+            validation: { method: "single", start: "2025-01-01" },
+          },
         },
       })
-      fireEvent.click(screen.getByRole("button", { name: "random" }))
-      expect(props.onUpdate).toHaveBeenCalledWith("split", expect.objectContaining({ strategy: "random" }))
+      fireEvent.click(screen.getByRole("button", { name: "Random rows" }))
+      expect(props.onUpdate).toHaveBeenCalledWith(
+        "evaluation",
+        expect.objectContaining({ strategy: "random" }),
+      )
     })
   })
 
@@ -1360,12 +1415,11 @@ describe("ModellingConfig", () => {
       }
     })
 
-    it("keeps dirty invalid JSON across navigation but resets the draft for a different node", () => {
+    it("keeps invalid fixed JSON across navigation but resets the draft for a different node", () => {
       const { rerender, props } = renderConfig({ activePane: "params" })
       const json = screen.getByLabelText("CatBoost hyperparameters JSON")
       fireEvent.change(json, { target: { value: "{invalid" } })
-      fireEvent.click(screen.getByRole("button", { name: "Apply" }))
-      expect(screen.getByRole("alert")).toBeTruthy()
+      expect(screen.queryByRole("alert")).toBeNull()
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="params" /></GraphProvider>)
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue("{invalid")
@@ -1373,17 +1427,82 @@ describe("ModellingConfig", () => {
       expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue(JSON.stringify({ depth: 8 }, null, 2))
     })
 
-    it("merges Apply exactly, Revert restores the projection, and Train owns GPU, row limit, and MLflow", () => {
+    it("surfaces an invalid fixed-parameter draft only when Train is pressed", () => {
+      const { rerender, props } = renderConfig({ activePane: "params" })
+
+      fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), {
+        target: { value: "{invalid" },
+      })
+      expect(screen.queryByRole("alert")).toBeNull()
+
+      rerender(
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig {...props} activePane="train" />
+        </GraphProvider>,
+      )
+      const trainButton = screen.getByRole("button", { name: "Train Model" })
+      expect(screen.queryByRole("alert")).toBeNull()
+
+      fireEvent.click(trainButton)
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Parameters JSON is invalid",
+      )
+      expect(mockTrainModel).not.toHaveBeenCalled()
+    })
+
+    it("surfaces an invalid tuning search-space draft only when Tune & Train is pressed", () => {
+      const tuning = {
+        schema_version: 1,
+        trial_count: 20,
+        seed: 42,
+        metric: "gini",
+        search_space: { depth: [4, 6, 8, 10] },
+      }
+      const { rerender, props } = renderConfig({
+        activePane: "params",
+        config: {
+          _nodeId: "node_1",
+          target: "loss_ratio",
+          task: "regression",
+          algorithm: "catboost",
+          loss_function: "RMSE",
+          metrics: ["gini"],
+          tuning,
+        },
+      })
+
+      fireEvent.change(screen.getByLabelText("CatBoost search space JSON"), {
+        target: { value: "{invalid" },
+      })
+      expect(screen.queryByRole("alert")).toBeNull()
+
+      rerender(
+        <GraphProvider allNodes={[]} edges={[]}>
+          <ModellingConfig {...props} activePane="train" />
+        </GraphProvider>,
+      )
+      const trainButton = screen.getByRole("button", { name: "Tune & Train" })
+      expect(screen.queryByRole("alert")).toBeNull()
+
+      fireEvent.click(trainButton)
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Search space JSON is invalid",
+      )
+      expect(mockTrainModel).not.toHaveBeenCalled()
+    })
+
+    it("autosaves fixed params exactly while Train owns GPU, row limit, and MLflow", () => {
       const { rerender, props } = renderConfig({ activePane: "params", config: { _nodeId: "node_1", algorithm: "catboost", params: { depth: 6, task_type: "GPU" } } })
       fireEvent.change(screen.getByLabelText("CatBoost hyperparameters JSON"), { target: { value: '{"iterations":200,"custom":true}' } })
-      fireEvent.click(screen.getByRole("button", { name: "Apply" }))
       expect(props.onUpdate).toHaveBeenCalledWith("params", {
         iterations: 200,
         custom: true,
         task_type: "GPU",
       })
-      fireEvent.click(screen.getByRole("button", { name: "Revert" }))
-      expect(screen.getByLabelText("CatBoost hyperparameters JSON")).toHaveValue(JSON.stringify({ depth: 6 }, null, 2))
+      expect(screen.queryByRole("button", { name: "Apply" })).toBeNull()
+      expect(screen.queryByRole("button", { name: "Revert" })).toBeNull()
       rerender(<GraphProvider allNodes={[]} edges={[]}><ModellingConfig {...props} activePane="train" /></GraphProvider>)
       expect(screen.getByRole("checkbox", { name: /GPU training/ })).toBeTruthy()
       expect(screen.getByLabelText("Row limit")).toBeTruthy()

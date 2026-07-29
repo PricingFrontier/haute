@@ -15,8 +15,9 @@ results are supplied by API and result-store layers.
 
 ## Behaviour
 
-- Modelling config selects an algorithm, feature/target/split/metric options and algorithm-specific
-  controls, including GLM factors, regularisation and dispersion estimation. Training submission
+- Modelling config selects an algorithm, feature/target/evaluation/metric options and
+  algorithm-specific controls, including GLM factors, regularisation, dispersion
+  estimation and optional CatBoost tuning. Training submission
   records the returned job handle immediately, keeps an explicit Cancel control visible through
   preparation and fitting, and shows progress, estimates, failures and result actions. An
   insufficient-GPU estimate or terminal 507 asks the user to select CPU and retry (or reduce the
@@ -101,27 +102,47 @@ strip; it never falls through to CatBoost. Pane ownership:
 - **Features** — both algorithms get the same always-expanded include/exclude browser with a
   case-insensitive name-substring filter, upstream dtype labels, and the existing explicit
   not-found treatment/removal for stale exclusions. Columns consumed as target, weight, offset,
-  or active split/metadata roles are not presented as trainable features. GLM then adds its
+  or active evaluation/metadata roles are not presented as trainable features. GLM then adds its
   factor/term editor below the common browser. Monotonic constraints move here as a collapsible
   sub-section for both algorithms and offer only final selected numeric features: included
   CatBoost features, or included GLM `terms` (all included features when `all_factors` is true).
   Any action that removes final selected features (single/bulk exclusion, GLM term removal, or
   narrowing from `all_factors`) is one confirmed atomic change: it also removes affected monotone
   constraints, explicit terms, and interactions; Cancel preserves every field.
-- **Params** — CatBoost gets one algorithm-neutral JSON-object editor and no parameter-specific
-  fields. This keeps the complete CatBoost parameter surface available without making the
-  frontend duplicate or lag the algorithm library's evolving catalogue. An empty stored
-  non-GPU projection displays the familiar CatBoost UI defaults as the editable draft; otherwise
-  every stored key is shown. The editor validates only JSON syntax and top-level object shape,
-  so arbitrary current or future CatBoost parameter keys and nested JSON values round-trip
-  unchanged. A valid Apply replaces the complete non-GPU projection, while the Train-pane GPU
-  `task_type` is merged from the latest stored object; Revert restores the stored projection.
-  An invalid or dirty draft never updates config and survives navigation away from and back to
-  Params for that node. The editor component accepts algorithm label/default/reserved-key inputs
+- **Params** — immediately below the Hyperparameters heading, CatBoost shows a
+  Target-style **Parameter strategy** radio group with **Fixed parameters** and
+  **Tune parameters** choices. Exactly one strategy body is visible. Fixed parameters
+  shows only the algorithm-neutral **Parameters JSON** object editor; Tune parameters
+  instead shows Trial count, Seed, Selection metric and **Search space JSON**. Neither
+  JSON editor has Apply/Revert controls or an inline explanatory block. A syntactically
+  valid top-level object updates its corresponding config automatically, except that a
+  fixed-parameter object containing the Train-owned `task_type` key is rejected. Invalid,
+  non-object, or reserved-key drafts remain local for that node and contribute only to the
+  ordinary click-time Train validation banner while their strategy is selected. This preserves
+  the complete CatBoost parameter surface without duplicating the algorithm library's evolving
+  catalogue. An empty stored non-GPU projection displays the familiar CatBoost UI defaults as
+  the editable fixed draft; arbitrary current or future keys and nested JSON values round-trip
+  unchanged, and the Train-pane GPU `task_type` remains merged from the latest stored object.
+  Search-space candidate arrays render on one line per parameter while nested conditional objects
+  remain indented. Selecting Tune parameters seeds editable candidate lists for `depth`,
+  `learning_rate`, and `l2_leaf_reg`. When `evaluation.test` is absent and validation is enabled,
+  the same update adds a 20% random/group test or an empty temporal test start for the user to
+  complete; it never rewrites an existing evaluation choice. Selecting Fixed parameters removes
+  tuning without changing the last valid fixed Parameters JSON.
+  The editor component accepts algorithm label/default/reserved-key inputs
   so another algorithm with a `params` object can reuse it without bespoke controls. GLM Params
   retains the regularisation controls because GLM's canonical editable fields live at the node
   top level rather than in `config.params`.
-- **Split** — the split strategy and its per-strategy fields and allocation bar, and nothing else.
+- **Split** — one canonical version-1 evaluation workflow. It asks how data is
+  structured (Random rows, Keep entities together, Respect time order), how candidates
+  are validated (Single validation, Cross-validation, No validation), and whether an
+  untouched final test is reserved. Random/group forms use source-relative validation
+  and test sizes plus a deterministic seed; group additionally selects its entity
+  column. Temporal forms select a date column and explicit validation/test starts;
+  temporal CV is expanding-window only. Once relevant fields are valid, a neutral
+  estimate preview shows development/final-test counts, validation fit count and row
+  bounds, plus group counts or date ranges. The pane uses only **development data**,
+  **validation**, and **final test** terminology.
 - **Train** — the GPU toggle (CatBoost only, still stored as the GPU task-type parameter), row
   limit beside the RAM/VRAM estimate it modulates, MLflow experiment/model-name logging fields,
   staleness banner, Train/Cancel actions, click-time validation banner, live progress, completion
@@ -129,38 +150,54 @@ strip; it never falls through to CatBoost. Pane ownership:
   backgrounds, typography and spacing as the rest of the modelling editor; labels never collapse
   into input placeholders. The setup panes and their tabs never expose missing-field warnings:
   Target is labelled only `Target`, and Features/Params are equally free of attention badges.
-  Train remains enabled while idle. An invalid Train or Re-train press sends no request and
-  reveals one banner directly beneath the main Train button listing all currently missing
-  target/objective items. The banner is absent before that press and disappears once the
-  configuration is complete; a second press then starts training. Live progress renders the
+  Train remains enabled while idle. With tuning enabled the action reads **Tune &
+  Train**. Before the first invalid Train or Re-train attempt, the validation banner is absent.
+  An invalid press sends no request, latches validation presentation on, and reveals one banner
+  directly beneath the main Train button listing every current frontend Train-guard issue,
+  including an invalid JSON draft for the selected parameter strategy. Once revealed, the banner
+  tracks the current non-empty issue list. Reaching an empty list hides the banner and resets the
+  reveal state, so a later invalid configuration again waits for a Train press; a valid press
+  starts training. Live progress renders the
   backend's existing bounded `train_loss_history` snapshot and
   `train_loss_history_truncated` state rather than reconstructing iterations from polls; a
   truncated chart is labelled as the latest retained window. A browser-derived estimated time
   remaining uses successive distinct increasing `(iteration, elapsed_seconds)` samples for the
   current job. It is hidden until two valid samples exist, on a duplicate/stalled or
   non-monotonic update, when iteration/total/rate is non-finite or non-positive, and after
-  completion; a new job clears the estimator. No new backend response field is introduced.
+  completion; a new job clears the estimator. Tuning progress instead displays phase,
+  trial/fold indices, completed/total fits and best objective, and derives ETA only
+  from enough completed increasing fit durations.
 
 Cross-pane signalling is intentionally limited to active work. `NodePanel` derives only the
 active-job descriptor, and the Train tab shows that accessible indicator while a job is running
 so progress is visible from any pane. Configuration completeness never changes a tab's visible
 or assistive label.
 
-**Non-goals.** No hyperparameter-tuning engine or tuning-mode UI; no cross-validation
-configuration pane (the versioned backend contract is configured outside this pane set, while its
-completed report is shown in the result summary); no run history/comparison (MLflow is the system
-of record); no EDA readouts in the editor (the explore
-node owns those); no collapsed-header summaries; no importance-threshold exclusion actions; no
-algorithm switching or in-place algorithm migration; no backend route, training config schema, or
-codegen change — pane state is browser-only.
+**Completed results.** Summary shows final-test metrics first when present, then the
+selection score and variability, baseline improvement, winning/final parameters,
+fit count/elapsed time and a bounded top-trial table. **Use best as fixed
+parameters** asks for confirmation, atomically writes the reported fixed-parameter
+projection and disables tuning; an asynchronous result never mutates node config
+automatically.
 
-**Failure and compatibility semantics.** The frontend aggregates its backend-mirroring
-target/objective checks only when Train is requested. An invalid press is stopped locally and
-shows the banner beneath the button; the backend remains authoritative and still rejects an
-incomplete request if reached. Cancellation, terminal-race, GPU-VRAM 507 and estimate-failure
-behaviour are unchanged. A malformed present live-history entry fails at the runtime response
-boundary exactly like malformed completed-result history; absent history produces no chart and is
-never synthesized from latest-loss polls. Under the
+**Non-goals.** No GLM structural-model tuning; no multi-objective, parallel,
+distributed or nested-CV tuning; no parameter-specific form builder; no run
+history/comparison (MLflow is the system
+of record); no EDA readouts in the editor (the explore
+node owns those); no collapsed-header summaries; no importance-threshold exclusion actions; and no
+algorithm switching or in-place algorithm migration.
+
+**Failure and compatibility semantics.** The frontend continuously derives its training-guard
+target, objective, evaluation and bounded-tuning issues, plus any invalid draft for the selected
+CatBoost parameter strategy. The Train pane keeps those messages hidden until an invalid Train or
+Re-train press, suppresses that request, and then reflects the current non-empty issue list beneath
+the button. Resolving the complete list resets that reveal state. The backend remains authoritative
+for the full configuration and candidate/conditional search-space contract and still rejects an
+invalid request if reached.
+Cancellation, terminal-race, GPU-VRAM 507 and estimate-failure behaviour are unchanged. A
+malformed present live-history entry fails at the runtime response boundary exactly like malformed
+completed-result history; absent history produces no chart and is never synthesized from
+latest-loss polls. Under the
 [prerelease canonical-only format contract](../README.md#approved-change-contract--prerelease-canonical-only-formats),
 the `modelling.features`/`modelling.mlflow` section keys cease to be read or written; the generic
 section store and any inert in-memory entries need no migration. The `modelling.monotonic` key
@@ -173,10 +210,12 @@ algorithms and the unsupported-algorithm diagnostic; the common filtered/dtype-l
 include/exclude browser for CatBoost and GLM;
 role/final-selection-aware monotonic candidates and confirmed dependent cleanup; exact atomic
 dependent-cleanup/cancel semantics; unset-only algorithm selection, read-only selected-algorithm
-context, and the absence of an in-place change action; arbitrary params JSON round trips,
-default-draft presentation, invalid/non-object draft navigation/revert, and GPU task-type merge;
-plain setup-tab labels, click-time-only aggregate validation beneath Train, authoritative bounded
-live-history rendering including truncation; and time-remaining
+context, and the absence of an in-place change action; mutually exclusive fixed/tuned Params
+bodies, arbitrary params JSON round trips, valid fixed/search-space autosave, compact default
+draft presentation, invalid/non-object/reserved-key draft persistence without Apply/Revert or
+inline warnings, selected-strategy click-time validation, and GPU task-type merge; plain setup-tab
+labels, click-time-only aggregate validation beneath Train, authoritative bounded live-history
+rendering including truncation; and time-remaining
 show/hide/reset behaviour for valid, insufficient, duplicate/stalled, non-monotonic, terminal, and
 new-job samples. `frontend/src/panels/__tests__/NodePanel.test.tsx`,
 `frontend/src/stores/__tests__/useUIStore.test.ts`, and

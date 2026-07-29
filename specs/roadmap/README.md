@@ -25,7 +25,7 @@ currently startable package.
 | [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | — |
 | [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | — |
 | [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | — |
-| [Modelling](modelling.md) | Training/scoring correctness, lifecycle, performance, capability | — |
+| [Modelling](modelling.md) | Evaluation/splitting, tuning, training/scoring correctness, lifecycle | — |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 | [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | — |
 | [Rating](rating.md) | Key canonicalisation and persisted table round trips | — |

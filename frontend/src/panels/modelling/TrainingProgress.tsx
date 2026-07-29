@@ -14,6 +14,22 @@ type TrainingProgressProps = {
 }
 
 export function TrainingProgress({ trainProgress, estimatedRemainingSeconds = null }: TrainingProgressProps) {
+  const tuningParts: string[] = []
+  if (trainProgress.phase) {
+    if (trainProgress.trial_index != null && trainProgress.trial_count != null) {
+      tuningParts.push(`Trial ${trainProgress.trial_index} of ${trainProgress.trial_count}`)
+    }
+    if (trainProgress.fold_index != null && trainProgress.fold_count != null) {
+      tuningParts.push(`Fold ${trainProgress.fold_index} of ${trainProgress.fold_count}`)
+    }
+    if (trainProgress.completed_fits != null && trainProgress.total_fits != null) {
+      tuningParts.push(`${trainProgress.completed_fits} of ${trainProgress.total_fits} fits`)
+    }
+    if (trainProgress.best_objective != null) {
+      tuningParts.push(`Best objective ${trainProgress.best_objective.toFixed(4)}`)
+    }
+  }
+
   return (
     <div className="px-3 py-2.5 rounded-lg text-xs space-y-2" style={{ background: "var(--model-accent-soft)", border: "1px solid var(--accent-soft-hover)" }}>
       {/* Progress bar */}
@@ -31,7 +47,15 @@ export function TrainingProgress({ trainProgress, estimatedRemainingSeconds = nu
       </div>
 
       {/* Iteration + loss stats */}
-      {trainProgress.total_iterations > 0 && (
+      {tuningParts.length > 0 && (
+        <div
+          className="text-[11px] font-mono"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          {tuningParts.join(" · ")}
+        </div>
+      )}
+      {!trainProgress.phase && trainProgress.total_iterations > 0 && (
         <div className="flex gap-4 text-[11px] font-mono" style={{ color: "var(--text-secondary)" }}>
           <span>
             Round <span style={{ color: "var(--text-primary)" }}>{trainProgress.iteration}</span>

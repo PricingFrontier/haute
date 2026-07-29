@@ -14,8 +14,11 @@ export type TrainingConfigurationIssueCode =
   | "glm-negbin-theta"
   | "glm-factor-selection"
   | "glm-elastic-net-l1-ratio"
+  | "catboost-params"
   | "catboost-loss-function"
   | "catboost-tweedie-variance-power"
+  | "evaluation-config"
+  | "tuning-config"
 
 export type TrainingConfigurationIssue = {
   code: TrainingConfigurationIssueCode
@@ -32,6 +35,163 @@ export function trainingConfigurationIssues(
       code: "training-target",
       message: "Select a target column.",
     })
+  }
+
+  const evaluation = (
+    config.evaluation !== null
+    && typeof config.evaluation === "object"
+    && !Array.isArray(config.evaluation)
+  )
+    ? config.evaluation as Record<string, unknown>
+    : null
+  const validation = (
+    evaluation?.validation !== null
+    && typeof evaluation?.validation === "object"
+    && !Array.isArray(evaluation.validation)
+  )
+    ? evaluation.validation as Record<string, unknown>
+    : null
+  const strategy = evaluation?.strategy
+  const method = validation?.method
+  const configuredTest = evaluation?.test
+  const hasConfiguredTest = configuredTest !== undefined && configuredTest !== null
+  const test = (
+    hasConfiguredTest
+    && typeof configuredTest === "object"
+    && !Array.isArray(configuredTest)
+  )
+    ? configuredTest as Record<string, unknown>
+    : null
+  const temporalValidationTimestamp = (
+    typeof validation?.start === "string"
+    && validation.start.length > 0
+  )
+    ? Date.parse(validation.start)
+    : Number.NaN
+  const temporalTestTimestamp = (
+    typeof test?.start === "string"
+    && test.start.length > 0
+  )
+    ? Date.parse(test.start)
+    : Number.NaN
+  const validTest = (
+    !hasConfiguredTest
+    || (
+      test !== null
+      && (
+        strategy === "temporal"
+          ? Number.isFinite(temporalTestTimestamp)
+          : typeof test.size === "number"
+            && Number.isFinite(test.size)
+            && test.size > 0
+            && test.size < 1
+      )
+    )
+  )
+  const validTemporalBoundaryOrder = (
+    strategy !== "temporal"
+    || method !== "single"
+    || !hasConfiguredTest
+    || (
+      Number.isFinite(temporalValidationTimestamp)
+      && Number.isFinite(temporalTestTimestamp)
+      && temporalValidationTimestamp < temporalTestTimestamp
+    )
+  )
+  const validEvaluation = (
+    evaluation?.schema_version === 1
+    && ["random", "group", "temporal"].includes(String(strategy))
+    && validTest
+    && validTemporalBoundaryOrder
+    && (
+      strategy === "temporal"
+        ? typeof evaluation.date_column === "string"
+          && evaluation.date_column.length > 0
+        : Number.isInteger(evaluation.seed)
+    )
+    && (
+      strategy !== "group"
+      || (
+        typeof evaluation.group_column === "string"
+        && evaluation.group_column.length > 0
+      )
+    )
+    && (
+      method === "none"
+      || (
+        method === "single"
+        && (
+          strategy === "temporal"
+            ? Number.isFinite(temporalValidationTimestamp)
+            : typeof validation?.size === "number"
+              && Number.isFinite(validation.size)
+              && validation.size > 0
+              && validation.size < 1
+        )
+      )
+      || (
+        method === "cross_validation"
+        && Number.isInteger(validation?.fold_count)
+        && Number(validation?.fold_count) >= 2
+        && Number(validation?.fold_count) <= 10
+        && (strategy !== "temporal" || validation?.window === "expanding")
+      )
+    )
+  )
+  if (!validEvaluation) {
+    issues.push({
+      code: "evaluation-config",
+      message:
+        "Complete the evaluation workflow: data structure, validation, and " +
+        "any required group/date fields.",
+    })
+  }
+
+  const tuning = (
+    config.tuning !== null
+    && typeof config.tuning === "object"
+    && !Array.isArray(config.tuning)
+  )
+    ? config.tuning as Record<string, unknown>
+    : null
+  if (tuning) {
+    const metrics = Array.isArray(config.metrics) ? config.metrics : []
+    const searchSpace = (
+      tuning.search_space !== null
+      && typeof tuning.search_space === "object"
+      && !Array.isArray(tuning.search_space)
+    )
+      ? tuning.search_space as Record<string, unknown>
+      : null
+    const trialCount = Number(tuning.trial_count)
+    const validationFitCount = method === "cross_validation"
+      ? Number(validation?.fold_count)
+      : method === "single"
+        ? 1
+        : 0
+    const validTuning = (
+      String(config.algorithm ?? "").toLowerCase() === "catboost"
+      && tuning.schema_version === 1
+      && Number.isInteger(tuning.trial_count)
+      && trialCount >= 5
+      && trialCount <= 50
+      && Number.isInteger(tuning.seed)
+      && typeof tuning.metric === "string"
+      && metrics.includes(tuning.metric)
+      && searchSpace !== null
+      && Object.keys(searchSpace).length >= 1
+      && Object.keys(searchSpace).length <= 32
+      && validationFitCount > 0
+      && trialCount * validationFitCount <= 200
+    )
+    if (!validTuning) {
+      issues.push({
+        code: "tuning-config",
+        message:
+          "Complete tuning: 5–50 trials, a configured selection metric, a " +
+          "non-empty search space, and at most 200 trial-validation fits.",
+      })
+    }
   }
 
   const algorithm = String(config.algorithm ?? "catboost").toLowerCase()
