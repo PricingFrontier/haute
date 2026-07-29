@@ -1,5 +1,29 @@
 import "@testing-library/jest-dom/vitest"
 
+// Canary: the test environment's localStorage must be jsdom's real Storage.
+// Node >= 22.4 can inject its own file-less localStorage stub (no .clear) onto
+// globalThis (default-on from Node 25), and the jsdom environment skips window
+// keys already present there — so the stub silently shadows the real thing.
+// Guarded by `test.execArgv: ["--no-experimental-webstorage"]` in
+// vitest.config.ts; if this throws, that pin (or its successor) has stopped
+// holding.
+if (typeof localStorage.clear !== "function") {
+  throw new Error(
+    "localStorage is not a real Storage (no .clear) — Node's experimental " +
+      "web-storage stub is shadowing jsdom's. Check the " +
+      '`--no-experimental-webstorage` pin in vitest.config.ts test.execArgv.',
+  )
+}
+localStorage.setItem("__storage_canary__", "ok")
+if (localStorage.getItem("__storage_canary__") !== "ok") {
+  throw new Error(
+    "localStorage set/get round-trip failed — the test environment's Storage " +
+      "is not functional. Check the `--no-experimental-webstorage` pin in " +
+      "vitest.config.ts test.execArgv.",
+  )
+}
+localStorage.removeItem("__storage_canary__")
+
 Object.defineProperty(globalThis, "__APP_VERSION__", {
   configurable: true,
   value: "999.0.0-test",
