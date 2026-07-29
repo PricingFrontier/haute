@@ -1,9 +1,9 @@
 # Haute engineering roadmap
 
 This folder is the single source of truth for planned engineering
-improvements. Each component roadmap contains the problem, implementation
-direction, acceptance criteria, dependencies, and current code/test evidence
-needed to take one package through delivery.
+improvements. Each active component roadmap contains the problem,
+implementation direction, acceptance criteria, dependencies, and current
+code/test evidence needed to take one package through delivery.
 
 Shipped behaviour remains defined by code, tests, and the component
 specifications. `Reverify` packages came from older evidence and must be
@@ -15,22 +15,11 @@ currently startable package.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | Session fidelity, authoring feedback, provider/model workflow | — |
+| [Assistant](assistant.md) | Library-owned capabilities, agent operations, recipes, safety, evaluation | `ASSIST-A04` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
-| [Caching](caching.md) | Fingerprint completeness, invalidation, lifetime, concurrency | — |
-| [Deploy and platform](deploy-platform.md) | Deployment paths, scaffolding, platform/resource boundaries | — |
-| [Engineering quality](engineering-quality.md) | Invariants, oracles, fixtures, CI, types, documentation truth | — |
-| [Execution engine](execution-engine.md) | Execution boundary, projection, memory, faults, metrics | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E09` |
-| [Frontend and canvas](frontend-canvas.md) | Cache/sync correctness, journeys, visibility, accessibility | — |
-| [Git integration](git-integration.md) | Mutation safety, history integrity, performance, feedback | — |
-| [I/O layer](io-layer.md) | Input/output correctness, formats, caches, editor workflow | — |
 | [Modelling](modelling.md) | Training/scoring correctness, lifecycle, performance, capability | `MOD-M04` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
-| [Pipeline authoring](pipeline-authoring.md) | Parser, code generation, standalone and DSL contracts | — |
-| [Rating](rating.md) | Key canonicalisation and persisted table round trips | — |
-| [Security and supply chain](security-supply-chain.md) | Trust boundaries and dependency risk | — |
-| [Tracing and explainability](tracing-explainability.md) | Evaluation fidelity, row correlation, waterfall honesty | — |
 
 ## Working protocol
 

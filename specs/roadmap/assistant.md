@@ -1,6 +1,6 @@
 # Assistant roadmap
 
-## Product direction
+## Scope
 
 The Haute assistant is an agent for building Haute pipelines and answering
 questions about how the installed Haute library works.
@@ -18,6 +18,151 @@ This direction extends the existing [assistant](../assistant/high-level.md) and
 [assistant UI](../frontend-assistant-ui/high-level.md) components. It does not
 replace the parser, execution engine, transactional save service, or graph
 update channel.
+
+## Priorities
+
+| Package | State | Priority | Outcome |
+|---|---|---:|---|
+| `ASSIST-A04` | Planned | P1 | Make the installed library the versioned source of truth for agent capabilities. |
+| `ASSIST-A05` | Planned | P1 | Expose shared typed query, plan, validate, apply, and verify operations through a machine-readable CLI. |
+| `ASSIST-A06` | Planned | P2 | Package deterministic recipes and executable examples for representative Haute pipeline work. |
+| `ASSIST-A07` | Planned | P1 | Enforce project revision, approval, provider-egress, and sensitive-context boundaries. |
+| `ASSIST-A08` | Planned | P2 | Measure real-model pipeline quality, recovery, privacy, and compatibility against semantic tasks. |
+
+## Planned improvements
+
+### ASSIST-A04 — Library-owned capability registry
+
+**Why:** The current assistant catalog derives top-level vocabulary but still
+duplicates model-facing knowledge and omits important nested semantics,
+defaults, constraints, port behaviour, risks, and installed capability facts.
+That representation can drift from the library it describes.
+
+**Plan:** Add one versioned Python capability registry derived from canonical
+node, config, validation, format, and execution definitions. Supplement only
+non-derivable semantic guidance as colocated, completeness-checked metadata.
+Expose a manifest schema, protocol version, capability hash, resolved node
+descriptors, operation descriptors, and dynamic installed capabilities.
+
+**Acceptance:** Every supported node and agent-callable operation has a closed,
+versioned descriptor; derived facts agree with runtime validators; unknown or
+unsupported capabilities fail by stable code; installing a newer Haute version
+immediately changes the reported manifest without an external prompt update.
+
+**Dependencies:** Existing node/config registries, validation services, input
+format registry, packaging metadata, and assistant provider-neutral tool
+contracts.
+
+**Evidence:** `src/haute/assistant/_catalog.py`;
+`src/haute/assistant/_tools.py`; `src/haute/_types.py`;
+`src/haute/_config_validation.py`; `tests/test_assistant_catalog.py`;
+`tests/test_assistant_tools.py`.
+
+### ASSIST-A05 — Shared agent operations and machine-readable CLI
+
+**Why:** An agent needs a stable way to query Haute and build pipelines without
+parsing human terminal prose, spawning the in-app server, editing source
+silently, or depending on assistant-only implementations.
+
+**Plan:** Define a shared typed Python application-service layer for capability
+queries and pipeline inspect/plan/dry-run/apply/verify operations. Let the
+in-app assistant call it directly and add non-interactive, schema-versioned CLI
+adapters for external agents. Preserve existing public commands and add new
+machine-readable commands and aliases compatibly.
+
+**Acceptance:** Agent CLI commands accept structured input, emit versioned
+results on stdout and logs on stderr, expose stable errors and revisions, never
+prompt in machine mode, and produce the same semantic results as direct Python
+and in-app calls. Mutations use the existing transactional save and broadcast
+paths and leave no unrelated graph changes.
+
+**Dependencies:** ASSIST-A04, existing CLI handler architecture, parser,
+transactional save service, graph operations, revision contract from
+ASSIST-A07, and frontend/backend API boundaries.
+
+**Evidence:** `src/haute/cli`; `src/haute/assistant/_ops.py`;
+`src/haute/assistant/_tools.py`; `src/haute/routes/_save_pipeline.py`;
+`tests/test_cli_architecture.py`; `tests/test_assistant_integration.py`.
+
+### ASSIST-A06 — Deterministic recipes and executable examples
+
+**Why:** The packaged examples currently teach only a few structural shapes and
+are parse-oriented rather than complete runnable pricing scenarios. The agent
+needs progressive, trustworthy worked practice without making recipes a second
+mutation vocabulary.
+
+**Plan:** Add optional versioned recipe planners that expand into canonical
+primitive operations. Replace parse-only examples with discoverable project
+bundles containing source, sidecars, synthetic data, expected graphs/schemas,
+golden inputs/outputs, boundary cases, paired user prompts, and semantic
+assertions.
+
+**Acceptance:** Recipes cannot bypass primitive validation or approval policy;
+every packaged bundle loads from installed wheel and source distributions;
+representative examples parse, run, trace, and dry-run as applicable; pricing
+semantics receive the review required by the decision below.
+
+**Dependencies:** ASSIST-A04, ASSIST-A05, installed package-resource support,
+execution/trace services, and pricing-domain review.
+
+**Evidence:** `src/haute/assistant/_assets.py`;
+`src/haute/assistant/assets/examples`;
+`src/haute/assistant/assets/authoring_guide.md`;
+`tests/test_assistant_assets.py`; `scripts/package_smoke_check.py`.
+
+### ASSIST-A07 — Revision, authority, privacy, and project context
+
+**Why:** Transactional writes prevent partial saves but do not prove that a
+model acted on the state it inspected. Read tools may also expose provider-bound
+rows, configuration, code, or project knowledge without sufficiently explicit
+trust and retention boundaries.
+
+**Plan:** Introduce the canonical project snapshot revision, operation risk
+metadata, deterministic capability policy, approval protocol, schema-only
+defaults, provider trust/egress policy, typed redaction, bounded consented
+profiling, and separate transcript/provider/audit/durable-state
+representations. Define the smallest tracked and validated project-context
+schema after resolving the remaining schema question.
+
+**Acceptance:** Stale plans are rejected before writing; high-risk actions
+cannot execute without the required concrete confirmation; provider-bound data
+obeys declared trust and sensitivity policy; credentials and restricted fields
+never enter model-visible output; read-only help remains available independently
+of mutation readiness with explicit saved-state provenance.
+
+**Dependencies:** ASSIST-A04, ASSIST-A05, project/path security, session
+persistence, git/save readiness, provider configuration, and the tracked
+project-context schema decision.
+
+**Evidence:** `src/haute/assistant/_config.py`;
+`src/haute/assistant/_session.py`; `src/haute/assistant/_tools.py`;
+`frontend/src/stores/useAssistantStore.ts`; `tests/test_assistant_config.py`;
+`tests/test_assistant_session_persistence.py`.
+
+### ASSIST-A08 — Semantic and adversarial evaluation harness
+
+**Why:** Scripted-provider tests strongly cover mechanics but do not measure
+whether supported models produce correct, minimal, privacy-preserving Haute
+changes across representative pricing tasks.
+
+**Plan:** Run pinned provider/model configurations in isolated temporary
+projects and score graph semantics, postconditions, unrelated diffs,
+clarification, recovery, privacy, prompt injection, latency, tool use, and
+cross-version compatibility. Reuse ASSIST-A06 bundles as executable task
+fixtures and keep live-provider evaluation outside deterministic unit tests.
+
+**Acceptance:** The harness produces attributable results by Haute, capability
+manifest, prompt, provider, and model version; assertions target semantic
+outcomes rather than exact prose or tool order; adversarial cases cover
+sensitive values, embedded instructions, interruption, stale state, and
+unauthorized actions.
+
+**Dependencies:** ASSIST-A04 through ASSIST-A07, approved provider credentials,
+isolated project fixtures, and pricing review for domain-bearing golden tasks.
+
+**Evidence:** `tests/test_assistant_loop.py`;
+`tests/test_assistant_providers.py`; `tests/test_assistant_integration.py`;
+`tests/test_assistant_assets.py`.
 
 ## Core principle
 
