@@ -122,23 +122,11 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Priorities",
     "## Planned improvements",
 )
-_EXPECTED_COMPONENT_ROADMAPS = (
+_EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
     "background-jobs-api",
-    "caching",
-    "deploy-platform",
-    "engineering-quality",
-    "execution-engine",
     "explore-eda",
-    "frontend-canvas",
-    "git-integration",
-    "io-layer",
-    "modelling",
     "optimiser",
-    "pipeline-authoring",
-    "rating",
-    "security-supply-chain",
-    "tracing-explainability",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
     r"^###\s+([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\b",
@@ -251,9 +239,9 @@ def test_internal_engineering_docs_are_excluded_from_public_mkdocs_site() -> Non
     assert "\n  - Roadmap:" not in config
 
 
-def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
+def test_active_component_roadmaps_are_flat_complete_and_self_contained() -> None:
     expected_markdown = {"README.md"} | {
-        f"{component}.md" for component in _EXPECTED_COMPONENT_ROADMAPS
+        f"{component}.md" for component in _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
     }
     roadmap_markdown = {
         path.relative_to(ROADMAP_ROOT).as_posix() for path in ROADMAP_ROOT.rglob("*.md")
@@ -263,7 +251,7 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
     component_files = {
         path.stem: path for path in ROADMAP_ROOT.glob("*.md") if path.name != ROADMAP_INDEX.name
     }
-    assert tuple(sorted(component_files)) == _EXPECTED_COMPONENT_ROADMAPS
+    assert tuple(sorted(component_files)) == _EXPECTED_ACTIVE_COMPONENT_ROADMAPS
 
     index = ROADMAP_INDEX.read_text(encoding="utf-8")
     start_with: dict[str, str] = {}
@@ -284,6 +272,9 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         assert f"({component}.md)" in index
 
         package_ids = _COMPONENT_PACKAGE_HEADING.findall(text)
+        assert package_ids, (
+            f"{path.relative_to(ROOT)} has no active or deferred work package and should be removed"
+        )
         priorities = headings["Priorities"]
         priority_rows = (
             _markdown_table_records(
@@ -300,16 +291,10 @@ def test_component_roadmaps_are_flat_complete_and_self_contained() -> None:
         assert not delivered_rows, (
             f"{path.relative_to(ROOT)} retains delivered package priorities: {delivered_rows}"
         )
-        all_packages_deferred = (
-            bool(package_ids)
-            and bool(priority_rows)
-            and all(_DEFERRED_ROADMAP_STATE.match(row["state"]) for row in priority_rows)
+        all_packages_deferred = bool(priority_rows) and all(
+            _DEFERRED_ROADMAP_STATE.match(row["state"]) for row in priority_rows
         )
-        if not package_ids:
-            assert "There are no active" in text, (
-                f"{path.relative_to(ROOT)} has no work packages without declaring that state"
-            )
-        if not package_ids or all_packages_deferred:
+        if all_packages_deferred:
             assert start_with.get(component) == "—", (
                 f"{component} has no non-deferred package, so its Start with cell must be —"
             )
