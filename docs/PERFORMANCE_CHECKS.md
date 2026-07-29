@@ -74,6 +74,44 @@ The default artifact directory is `.cache/perf`. A completed run writes:
 - `.cache/perf/perf-report.md`
 - `.cache/perf/perf-junit.xml`
 
+## Retained Performance Decisions
+
+Linux RSS-sampler setup remains uncached. Sampling occurs at coarse admitted
+stage boundaries rather than in a row or solver loop, and no representative
+profile has shown its setup cost to be material. Reconsider that decision only
+if a real-Linux profile measures sampler setup p95 above 1 ms in a
+representative run.
+
+The last retained tracing baseline was captured on 2026-07-23 using Windows 10,
+Python 3.11.13, and Polars 1.39.3:
+
+| Shape | Total | Correlation | Serialization/validation |
+|---|---:|---:|---:|
+| Linear cold trace, 9 steps | 40.342 ms | 8.983 ms | 0.299 ms |
+| Join cold trace, 6 steps | 40.772 ms | 6.090 ms | 0.161 ms |
+| Join with full-preview reuse | 10.353 ms | 4.055 ms | 0.164 ms |
+| Join trace-cache hit | 14.181 ms | 8.158 ms | 0.162 ms |
+| Multi-frame correlation only | — | 1.525 ms | — |
+
+The corresponding browser p95 was 302.8 ms for a 24-step linear payload and
+389.4 ms for a 16-step join/multi-frame payload. Both were below the 500 ms
+exceptional-latency threshold. Serialization was at most 0.3 ms in these
+shapes, so payload projection, a client trace cache, and a weakened
+runtime-input fingerprint were not justified. Future optimisation must add
+reproducible evidence for its target shape and preserve trace/export semantics.
+
+The backend baseline command was:
+
+```powershell
+uv run python scripts/run_perf_suite.py --output-dir .cache/perf/tracing --pytest-target tests/performance/test_preview_trace_perf.py
+```
+
+The frontend baseline command, run from `frontend/`, was:
+
+```powershell
+npm run test:e2e:benchmark -- trace-render.benchmark.spec.ts
+```
+
 ## Frontend Benchmarks
 
 Frontend benchmark specs are tagged with `@benchmark` and excluded from the
