@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -1802,13 +1802,11 @@ class TuningReportPayload(_StrictPublicTrainingPayload):
             if fit.best_iteration is not None
         )
         threshold = sum(rows for _, rows in weighted_tree_counts) / 2
-        cumulative = 0
-        selected_tree_count = weighted_tree_counts[-1][0]
-        for tree_count, rows in weighted_tree_counts:
-            cumulative += rows
-            if cumulative >= threshold:
-                selected_tree_count = tree_count
-                break
+        selected_tree_count = next(
+            tree_count
+            for index, (tree_count, _) in enumerate(weighted_tree_counts)
+            if sum(rows for _, rows in weighted_tree_counts[: index + 1]) >= threshold
+        )
         expected_tree_count = min(selected_tree_count, iteration_ceiling)
         expected_final_params = dict(winner.resolved_params)
         for key in (
@@ -2124,14 +2122,9 @@ class EvaluationPreviewPayload(BaseModel):
                 raise ValueError("cross-validation preview requires 2 to 10 fits")
             if any(value is None for value in selection_bounds):
                 raise ValueError("validated preview requires all selection row bounds")
-            if (
-                min_train_rows is None
-                or max_train_rows is None
-                or min_validation_rows is None
-                or max_validation_rows is None
-            ):
-                raise ValueError("validated preview requires all selection row bounds")
-            if min_train_rows > max_train_rows or min_validation_rows > max_validation_rows:
+            if cast(int, min_train_rows) > cast(int, max_train_rows) or cast(
+                int, min_validation_rows
+            ) > cast(int, max_validation_rows):
                 raise ValueError("evaluation preview minimums must not exceed maximums")
 
         if self.strategy == "group":

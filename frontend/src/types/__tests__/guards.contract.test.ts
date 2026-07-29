@@ -45,16 +45,18 @@ import {
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseSolveOptimiserResponse,
-  parseTrainEstimateResponse,
-  parseTrainFeatureSelection,
-  parseTrainResponse,
-  parseTrainStatusResponse,
   parseExecutionStrategyDiagnostic,
   parseUtilityDeleteResponse,
   parseUtilityListResponse,
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
 } from "../guards"
+import {
+  parseTrainEstimateResponse,
+  parseTrainFeatureSelection,
+  parseTrainResponse,
+  parseTrainStatusResponse,
+} from "../trainGuards"
 
 function executionStrategyFixture(overrides: Record<string, unknown> = {}) {
   return {

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import pickle
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -40,6 +42,16 @@ from haute.modelling._training_job import (
     model_contract_filename,
     tuning_artifact_filenames,
 )
+from haute.modelling._tuning import (
+    TuningConfig,
+    TuningPlanArtifact,
+    TuningTrialResult,
+    TuningTrialsArtifact,
+    build_tuning_report,
+    save_tuning_plan,
+    save_tuning_report,
+    save_tuning_trials,
+)
 from haute.routes._job_store import JobStore
 from haute.routes._train_service import (
     TrainingArtifactPublicationError,
@@ -47,9 +59,11 @@ from haute.routes._train_service import (
     _publish_training_artifacts,
     _run_dispersion_process_job,
     _run_training_process_job,
+    _validate_evaluation_artifact_contents,
+    _validate_tuning_artifact_contents,
     _worker_timing,
 )
-from haute.schemas import EvaluationReportPayload
+from haute.schemas import EvaluationReportPayload, TuningReportPayload
 
 
 class _ForwardingQueue:
@@ -158,6 +172,101 @@ def _published_evaluation(payload: dict[str, object]) -> EvaluationReportPayload
     return EvaluationReportPayload.model_validate(data)
 
 
+def _tuning_payload(
+    output_dir: Path,
+    model_name: str,
+    *,
+    evaluation_plan_sha256: str,
+) -> dict[str, object]:
+    """Write a canonical tuning triplet linked to an evaluation plan."""
+    names = tuning_artifact_filenames(model_name)
+    plan_path = output_dir / names["plan"]
+    trials_path = output_dir / names["trials"]
+    report_path = output_dir / names["report"]
+    evaluation = EvaluationConfig.from_plain_data(
+        {
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 7,
+            "validation": {"method": "cross_validation", "fold_count": 2},
+            "test": {"size": 0.2},
+        }
+    )
+    base_params = {"iterations": 100, "depth": 6}
+    config = TuningConfig.from_plain_data(
+        {
+            "schema_version": 1,
+            "trial_count": 5,
+            "seed": 7,
+            "metric": "rmse",
+            "search_space": {"depth": [5, 7]},
+        },
+        algorithm="catboost",
+        base_params=base_params,
+        evaluation=evaluation,
+        configured_metrics=["rmse"],
+    )
+    plan = TuningPlanArtifact.create(
+        config=config,
+        base_params=base_params,
+        evaluation_plan_sha256=evaluation_plan_sha256,
+        sampler="TPESampler",
+        sampler_version="4.9.0",
+    )
+    save_tuning_plan(plan, plan_path)
+    objectives = (1.0, 0.5, 0.7, 0.8, 0.9)
+    sampled_depths: tuple[int | None, ...] = (None, 5, 7, 5, 7)
+    trial_results = tuple(
+        TuningTrialResult(
+            schema_version=1,
+            trial_index=index,
+            label="baseline" if index == 0 else "sampled",
+            sampled_params={} if depth is None else {"depth": depth},
+            resolved_params={
+                **base_params,
+                **({} if depth is None else {"depth": depth}),
+            },
+            fits=(
+                EvaluationFitResult(1, 0, 6, 2, {"rmse": objective}, 9),
+                EvaluationFitResult(1, 1, 6, 2, {"rmse": objective}, 11),
+            ),
+            aggregate_metrics={"rmse": objective},
+            objective=objective,
+            elapsed_seconds=0.1,
+        )
+        for index, (objective, depth) in enumerate(zip(objectives, sampled_depths, strict=True))
+    )
+    trials = TuningTrialsArtifact(
+        schema_version=1,
+        plan_sha256=file_sha256(plan_path),
+        evaluation_plan_sha256=evaluation_plan_sha256,
+        trials=trial_results,
+    )
+    save_tuning_trials(trials, trials_path)
+    report = build_tuning_report(
+        plan,
+        trials,
+        trials_sha256=file_sha256(trials_path),
+        final_params={"iterations": 10, "depth": 5},
+        final_tree_count=10,
+    )
+    save_tuning_report(report, report_path)
+    return {
+        **report.to_plain_data(),
+        "trials": [trial.to_plain_data() for trial in trials.trials],
+        "plan_path": str(plan_path),
+        "trials_path": str(trials_path),
+        "report_path": str(report_path),
+    }
+
+
+def _published_tuning(payload: dict[str, object]) -> TuningReportPayload:
+    data = dict(payload)
+    for field in ("plan_path", "trials_path", "report_path"):
+        data[field] = f"output/{Path(str(data[field])).name}"
+    return TuningReportPayload.model_validate(data)
+
+
 class _SuccessfulTrainingJob:
     def __init__(self, **kwargs) -> None:
         self.output_dir = Path(kwargs["output_dir"])
@@ -187,6 +296,31 @@ class _SuccessfulTrainingJob:
             loss_history=[{"iteration": 1.0, "loss": 0.5}],
             evaluation=_evaluation_payload(self.output_dir, self.name),
         )
+
+
+class _SuccessfulTunedTrainingJob(_SuccessfulTrainingJob):
+    def run(self, progress, on_iteration, **kwargs):
+        result = super().run(progress, on_iteration, **kwargs)
+        evaluation = dict(result.evaluation or {})
+        tuning = _tuning_payload(
+            self.output_dir,
+            self.name,
+            evaluation_plan_sha256=str(evaluation["plan_sha256"]),
+        )
+        evaluation["fit_count"] = tuning["total_fit_count"]
+        kwargs["on_tuning_progress"](
+            {
+                "phase": "trial_fit",
+                "trial_index": 1,
+                "trial_count": 5,
+                "fold_index": 1,
+                "fold_count": 2,
+                "completed_fits": 0,
+                "total_fits": 11,
+                "best_objective": None,
+            }
+        )
+        return replace(result, evaluation=evaluation, tuning=tuning)
 
 
 def _request(tmp_path: Path) -> WorkerRequest:
@@ -261,6 +395,39 @@ def _staged_training_manifest(tmp_path: Path):
     )
 
 
+def _staged_tuned_training_manifest(tmp_path: Path):
+    root, output, manifest, expected_evaluation = _staged_training_manifest(tmp_path)
+    payload = _tuning_payload(
+        output,
+        "quoted",
+        evaluation_plan_sha256=expected_evaluation.plan_sha256,
+    )
+    tuning_paths = {
+        "tuning_plan": payload["plan_path"],
+        "tuning_trials": payload["trials_path"],
+        "tuning_report": payload["report_path"],
+    }
+    tuning_artifacts = tuple(
+        build_artifact_manifest(
+            artifact_root=root,
+            path=Path(str(path)),
+            kind=kind,
+            lifetime="staged",
+        )
+        for kind, path in tuning_paths.items()
+    )
+    return (
+        root,
+        output,
+        WorkerResultManifest(
+            metadata={},
+            artifacts=(*manifest.artifacts, *tuning_artifacts),
+        ),
+        expected_evaluation.model_copy(update={"fit_count": int(payload["total_fit_count"])}),
+        _published_tuning(payload),
+    )
+
+
 def _launch(service: TrainService, store: JobStore, tmp_path: Path, output_dir: Path):
     prepared = tmp_path / "prepared.parquet"
     prepared.write_bytes(b"prepared")
@@ -313,6 +480,38 @@ def test_training_entrypoint_stages_complete_evaluation_and_public_response(tmp_
     assert response["evaluation"]["plan_path"] == "output/quoted.evaluation-plan.json"
     assert "tuning" not in response
     assert [event.kind for event in queue.events] == ["progress", "iteration"]
+
+
+@pytest.mark.parametrize(
+    ("evaluation", "tuning", "message"),
+    [
+        (None, None, "evaluation result must be an object"),
+        ({"plan_path": ""}, None, "evaluation result has no plan_path"),
+        ("canonical", [], "tuning result must be an object"),
+        ("canonical", {"plan_path": ""}, "tuning result has no plan_path"),
+    ],
+)
+def test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts(
+    tmp_path: Path,
+    evaluation: object,
+    tuning: object,
+    message: str,
+) -> None:
+    class IncompleteArtifactJob(_SuccessfulTrainingJob):
+        def run(self, progress, on_iteration, **kwargs):
+            result = super().run(progress, on_iteration, **kwargs)
+            selected_evaluation = result.evaluation if evaluation == "canonical" else evaluation
+            return replace(result, evaluation=selected_evaluation, tuning=tuning)
+
+    with patch("haute.modelling.TrainingJob", IncompleteArtifactJob):
+        result = _run_training_process_job(
+            WorkerRuntime(_ForwardingQueue(), str(tmp_path / "artifacts")),
+            _request(tmp_path),
+        )
+
+    assert isinstance(result, WorkerFailurePayload)
+    assert result.error_type == "ValueError"
+    assert message in result.message
 
 
 @pytest.mark.parametrize(
@@ -388,6 +587,33 @@ def test_train_service_publishes_complete_evaluation_run(tmp_path: Path) -> None
     assert not prepared.exists() and not list(output_dir.glob(".haute-training-*"))
 
 
+def test_train_service_publishes_complete_tuned_run_and_terminal_progress(tmp_path: Path) -> None:
+    store = JobStore()
+    service = TrainService(store, protocol_runner=_inline_protocol_runner)
+    output_dir = tmp_path / "outputs"
+
+    with patch("haute.modelling.TrainingJob", _SuccessfulTunedTrainingJob):
+        job_id, prepared = _launch(service, store, tmp_path, output_dir)
+
+    job = store.require_job(job_id)
+    assert job["status"] == "completed"
+    assert job["phase"] == "completed"
+    assert job["trial_count"] == 5
+    assert job["fold_count"] == 2
+    assert job["completed_fits"] == job["total_fits"] == 11
+    assert job["best_objective"] == pytest.approx(0.5)
+    assert job["result"].tuning is not None
+    assert job["result"].tuning.winner_trial_index == 1
+    assert job["result"].tuning.evaluation_plan_sha256 == job["result"].evaluation.plan_sha256
+    for path in (
+        job["result"].tuning.plan_path,
+        job["result"].tuning.trials_path,
+        job["result"].tuning.report_path,
+    ):
+        assert Path(path).is_file()
+    assert not prepared.exists() and not list(output_dir.glob(".haute-training-*"))
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -414,6 +640,79 @@ def test_train_service_rejects_evaluation_response_artifact_mismatch(
     assert store.require_job(job_id)["status"] == "contract_error"
 
 
+def test_train_service_rejects_schema_invalid_completed_response(tmp_path: Path) -> None:
+    def invalid_response_runner(function, request, **kwargs):
+        result = _inline_protocol_runner(function, request, **kwargs)
+        metadata = dict(result.metadata)
+        response = dict(metadata["response"])
+        response["development_rows"] = int(response["development_rows"]) + 1
+        metadata["response"] = response
+        return WorkerResultManifest(metadata=metadata, artifacts=result.artifacts)
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=invalid_response_runner)
+    with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+        job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
+
+    assert store.require_job(job_id)["status"] == "contract_error"
+    assert "malformed" in store.require_job(job_id)["message"].lower()
+
+
+def test_train_service_rejects_tuning_artifacts_omitted_by_response(tmp_path: Path) -> None:
+    def undeclared_tuning_runner(function, request, **kwargs):
+        result = _inline_protocol_runner(function, request, **kwargs)
+        source = next(
+            artifact for artifact in result.artifacts if artifact.kind == "evaluation_plan"
+        )
+        undeclared = type(source)(
+            kind="tuning_plan",
+            relative_path=source.relative_path,
+            size_bytes=source.size_bytes,
+            sha256=source.sha256,
+            lifetime=source.lifetime,
+        )
+        return WorkerResultManifest(
+            metadata=result.metadata,
+            artifacts=(*result.artifacts, undeclared),
+        )
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=undeclared_tuning_runner)
+    with patch("haute.modelling.TrainingJob", _SuccessfulTrainingJob):
+        job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
+
+    assert store.require_job(job_id)["status"] == "contract_error"
+    assert "omits declared tuning artifacts" in store.require_job(job_id)["message"]
+
+
+def test_train_service_rejects_tuning_response_manifest_path_mismatch(tmp_path: Path) -> None:
+    def mismatched_tuning_runner(function, request, **kwargs):
+        result = _inline_protocol_runner(function, request, **kwargs)
+        report = next(artifact for artifact in result.artifacts if artifact.kind == "tuning_report")
+        mismatched = type(report)(
+            kind=report.kind,
+            relative_path="output/not-the-tuning-report.json",
+            size_bytes=report.size_bytes,
+            sha256=report.sha256,
+            lifetime=report.lifetime,
+        )
+        return WorkerResultManifest(
+            metadata=result.metadata,
+            artifacts=tuple(
+                mismatched if artifact.kind == "tuning_report" else artifact
+                for artifact in result.artifacts
+            ),
+        )
+
+    store = JobStore()
+    service = TrainService(store, protocol_runner=mismatched_tuning_runner)
+    with patch("haute.modelling.TrainingJob", _SuccessfulTunedTrainingJob):
+        job_id, _prepared = _launch(service, store, tmp_path, tmp_path / "outputs")
+
+    assert store.require_job(job_id)["status"] == "contract_error"
+    assert "tuning response path" in store.require_job(job_id)["message"].lower()
+
+
 def test_publication_validates_evaluation_digests_and_canonical_paths(tmp_path: Path) -> None:
     root, output, manifest, expected = _staged_training_manifest(tmp_path)
     published = _publish_training_artifacts(
@@ -434,6 +733,246 @@ def test_publication_validates_evaluation_digests_and_canonical_paths(tmp_path: 
     assert file_sha256(published["evaluation_plan"]) == expected.plan_sha256
     assert file_sha256(published["evaluation_results"]) == expected.results_sha256
     assert published["evaluation_report"].exists()
+
+
+def test_publication_validates_tuning_digests_and_canonical_paths(tmp_path: Path) -> None:
+    root, _output, manifest, expected_evaluation, expected_tuning = _staged_tuned_training_manifest(
+        tmp_path
+    )
+
+    published = _publish_training_artifacts(
+        manifest,
+        artifact_root=root,
+        output_root=tmp_path / "outputs",
+        job_id="job-1",
+        expected_model_name="quoted",
+        expected_evaluation=expected_evaluation,
+        expected_tuning=expected_tuning,
+    )
+
+    assert set(published) == {
+        "model",
+        "feature_contract",
+        "evaluation_plan",
+        "evaluation_results",
+        "evaluation_report",
+        "tuning_plan",
+        "tuning_trials",
+        "tuning_report",
+    }
+    assert file_sha256(published["tuning_plan"]) == expected_tuning.plan_sha256
+    assert file_sha256(published["tuning_trials"]) == expected_tuning.trials_sha256
+    assert published["tuning_report"].is_file()
+
+
+def test_publication_rejects_response_without_required_artifact_contracts(tmp_path: Path) -> None:
+    root, _output, manifest, expected_evaluation = _staged_training_manifest(tmp_path)
+    with pytest.raises(WorkerProtocolError, match="must declare evaluation"):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=None,  # type: ignore[arg-type] - runtime boundary guard
+        )
+
+    tuned_root, _tuned_output, _tuned_manifest, _tuned_evaluation, expected_tuning = (
+        _staged_tuned_training_manifest(tmp_path / "tuned")
+    )
+    assert tuned_root.is_dir()
+    with pytest.raises(WorkerProtocolError, match="tuning artifact set disagree"):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=expected_evaluation,
+            expected_tuning=expected_tuning,
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "relative_path", "message"),
+    [
+        (
+            "feature_contract",
+            "output/wrong.feature-contract.json",
+            "feature contract filenames",
+        ),
+        (
+            "evaluation_plan",
+            "output/wrong.evaluation-plan.json",
+            "evaluation_plan filename",
+        ),
+    ],
+)
+def test_publication_rejects_noncanonical_companion_filenames(
+    tmp_path: Path,
+    kind: str,
+    relative_path: str,
+    message: str,
+) -> None:
+    root, _output, manifest, expected_evaluation = _staged_training_manifest(tmp_path)
+    selected = next(artifact for artifact in manifest.artifacts if artifact.kind == kind)
+    changed = type(selected)(
+        kind=selected.kind,
+        relative_path=relative_path,
+        size_bytes=selected.size_bytes,
+        sha256=selected.sha256,
+        lifetime=selected.lifetime,
+    )
+    malformed = WorkerResultManifest(
+        metadata={},
+        artifacts=tuple(
+            changed if artifact.kind == kind else artifact for artifact in manifest.artifacts
+        ),
+    )
+
+    with pytest.raises(WorkerProtocolError, match=message):
+        _publish_training_artifacts(
+            malformed,
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=expected_evaluation,
+        )
+
+
+def test_publication_rejects_response_paths_and_digests_that_disagree(
+    tmp_path: Path,
+) -> None:
+    root, _output, manifest, expected_evaluation = _staged_training_manifest(tmp_path)
+    with pytest.raises(WorkerProtocolError, match="response path"):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=expected_evaluation.model_copy(
+                update={"plan_path": "output/not-the-plan.json"}
+            ),
+        )
+    with pytest.raises(WorkerProtocolError, match="staged artifact contents"):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=expected_evaluation.model_copy(update={"results_sha256": "e" * 64}),
+        )
+
+
+def test_publication_rejects_tuning_filename_path_and_digest_disagreement(
+    tmp_path: Path,
+) -> None:
+    root, _output, manifest, expected_evaluation, expected_tuning = _staged_tuned_training_manifest(
+        tmp_path
+    )
+    tuning_plan = next(
+        artifact for artifact in manifest.artifacts if artifact.kind == "tuning_plan"
+    )
+    wrong_filename = type(tuning_plan)(
+        kind=tuning_plan.kind,
+        relative_path="output/wrong.tuning-plan.json",
+        size_bytes=tuning_plan.size_bytes,
+        sha256=tuning_plan.sha256,
+        lifetime=tuning_plan.lifetime,
+    )
+    with pytest.raises(WorkerProtocolError, match="tuning_plan filename"):
+        _publish_training_artifacts(
+            WorkerResultManifest(
+                metadata={},
+                artifacts=tuple(
+                    wrong_filename if artifact.kind == "tuning_plan" else artifact
+                    for artifact in manifest.artifacts
+                ),
+            ),
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=expected_evaluation,
+            expected_tuning=expected_tuning,
+        )
+    with pytest.raises(WorkerProtocolError, match="tuning response path"):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=expected_evaluation,
+            expected_tuning=expected_tuning.model_copy(
+                update={"plan_path": "output/not-the-tuning-plan.json"}
+            ),
+        )
+    with pytest.raises(WorkerProtocolError, match="staged artifact contents"):
+        _publish_training_artifacts(
+            manifest,
+            artifact_root=root,
+            output_root=tmp_path / "outputs",
+            job_id="job-1",
+            expected_model_name="quoted",
+            expected_evaluation=expected_evaluation,
+            expected_tuning=expected_tuning.model_copy(update={"plan_sha256": "e" * 64}),
+        )
+
+
+def test_tuning_artifact_validation_rejects_wrong_evaluation_link(tmp_path: Path) -> None:
+    root, _output, manifest, _expected_evaluation, _expected_tuning = (
+        _staged_tuned_training_manifest(tmp_path)
+    )
+    staged_and_final = {
+        artifact.kind: (
+            root / artifact.relative_path,
+            tmp_path / "unused" / Path(artifact.relative_path).name,
+        )
+        for artifact in manifest.artifacts
+    }
+
+    with pytest.raises(WorkerProtocolError, match="does not link"):
+        _validate_tuning_artifact_contents(
+            staged_and_final,
+            evaluation_plan_sha256="f" * 64,
+        )
+
+
+def test_persisted_reports_must_match_their_source_artifacts(tmp_path: Path) -> None:
+    root, output, manifest, expected_evaluation, _expected_tuning = _staged_tuned_training_manifest(
+        tmp_path
+    )
+    staged_and_final = {
+        artifact.kind: (
+            root / artifact.relative_path,
+            tmp_path / "unused" / Path(artifact.relative_path).name,
+        )
+        for artifact in manifest.artifacts
+    }
+
+    evaluation_report = output / evaluation_artifact_filenames("quoted")["report"]
+    evaluation_data = json.loads(evaluation_report.read_text(encoding="utf-8"))
+    evaluation_data["metrics"]["rmse"]["stddev"] += 0.25
+    _write_scratch_text(evaluation_report, json.dumps(evaluation_data))
+    with pytest.raises(WorkerProtocolError, match="does not match"):
+        _validate_evaluation_artifact_contents(
+            staged_and_final,
+            response_fit_count=expected_evaluation.fit_count,
+        )
+
+    tuning_report = output / tuning_artifact_filenames("quoted")["report"]
+    tuning_data = json.loads(tuning_report.read_text(encoding="utf-8"))
+    tuning_data["trials_sha256"] = "d" * 64
+    _write_scratch_text(tuning_report, json.dumps(tuning_data))
+    with pytest.raises(WorkerProtocolError, match="does not match"):
+        _validate_tuning_artifact_contents(
+            staged_and_final,
+            evaluation_plan_sha256=expected_evaluation.plan_sha256,
+        )
 
 
 @pytest.mark.parametrize("kind", ["evaluation_report", "evaluation_results"])

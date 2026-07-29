@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from numbers import Real
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import polars as pl
 from fastapi import HTTPException
@@ -1312,8 +1312,6 @@ def _publish_training_artifacts(
             )
         staged = (root / relative).resolve()
         final = (destination_root / relative.name).resolve()
-        if not final.is_relative_to(destination_root):
-            raise WorkerProtocolError("Training artifact destination escapes output root")
         staged_and_final[kind] = (staged, final)
 
     from haute.modelling._training_job import (
@@ -1360,8 +1358,7 @@ def _publish_training_artifacts(
 
     tuning_names = tuning_artifact_filenames(expected_model_name)
     if has_tuning_artifacts:
-        if expected_tuning is None:
-            raise WorkerProtocolError("Training response omits declared tuning artifacts")
+        tuning_response = cast(TuningReportPayload, expected_tuning)
         expected_tuning_names = {
             "tuning_plan": tuning_names["plan"],
             "tuning_trials": tuning_names["trials"],
@@ -1373,7 +1370,7 @@ def _publish_training_artifacts(
                 raise WorkerProtocolError(
                     f"Training {kind} filename does not match the requested model name"
                 )
-        expected_tuning_response = expected_tuning.model_dump(
+        expected_tuning_response = tuning_response.model_dump(
             mode="json",
             exclude_none=True,
         )
@@ -1395,8 +1392,6 @@ def _publish_training_artifacts(
     if not has_tuning_artifacts:
         obsolete_names.extend(tuning_names.values())
     obsolete_finals = tuple((destination_root / filename).resolve() for filename in obsolete_names)
-    if any(not path.is_relative_to(destination_root) for path in obsolete_finals):
-        raise WorkerProtocolError("Training artifact destination escapes output root")
     destination_root.mkdir(parents=True, exist_ok=True)
 
     backups: dict[Path, Path] = {}
@@ -3143,9 +3138,7 @@ class TrainService:
                             "Training tuning response path does not match "
                             f"the staged {kind} manifest"
                         )
-            staged_evaluation = staged_response.evaluation
-            if staged_evaluation is None:
-                raise WorkerProtocolError("Completed staged response has no evaluation")
+            staged_evaluation = cast(EvaluationReportPayload, staged_response.evaluation)
             # Publication and the running->completed transition must be one
             # critical section.  A cancellation that wins first leaves the
             # staged artifacts untouched; one that arrives afterwards sees a

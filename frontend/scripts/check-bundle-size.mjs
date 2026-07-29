@@ -64,6 +64,7 @@ export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "ToggleButtonGroup",
   "EditorLabel",
   "banding",
+  "trainGuards",
 ]
 
 function fail(message) {

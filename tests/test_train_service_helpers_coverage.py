@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import pytest
 
+from haute.modelling._evaluation import EvaluationConfig, generate_evaluation_plan
 from haute.routes._train_service import (
     _build_training_feature_selection,
     _check_gpu_vram,
+    _evaluation_preview_payload,
     _job_elapsed_seconds,
     _string_list_config,
     _training_metadata_reasons,
@@ -20,6 +22,61 @@ from haute.routes._train_service import (
     _training_required_metadata_columns,
     _VramCheck,
 )
+
+
+class TestEvaluationPreviewPayload:
+    def test_no_validation_omits_selection_bounds(self) -> None:
+        config = EvaluationConfig.from_plain_data(
+            {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "none"},
+            }
+        )
+        plan = generate_evaluation_plan(
+            config,
+            source_sha256="a" * 64,
+            row_count=4,
+            task="regression",
+        )
+
+        assert _evaluation_preview_payload(plan) == {
+            "schema_version": 1,
+            "strategy": "random",
+            "validation_method": "none",
+            "development_rows": 4,
+            "final_test_rows": 0,
+            "validation_fit_count": 0,
+        }
+
+    def test_temporal_preview_requires_dates_and_omits_empty_test_range(self) -> None:
+        config = EvaluationConfig.from_plain_data(
+            {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "date_column": "as_of",
+                "validation": {"method": "none"},
+            }
+        )
+        dates = ["2024-03-01", "2024-01-01", "2024-02-01"]
+        plan = generate_evaluation_plan(
+            config,
+            source_sha256="b" * 64,
+            row_count=len(dates),
+            task="regression",
+            date_values=dates,
+        )
+
+        with pytest.raises(ValueError, match="requires exact date values"):
+            _evaluation_preview_payload(plan)
+
+        preview = _evaluation_preview_payload(plan, date_values=dates)
+        assert preview["development_date_range"] == {
+            "start": "2024-01-01",
+            "end": "2024-03-01",
+        }
+        assert "final_test_date_range" not in preview
 
 
 class TestStringListConfig:
