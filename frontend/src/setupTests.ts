@@ -1,18 +1,23 @@
 import "@testing-library/jest-dom/vitest"
 
-// Canary: the test environment's localStorage must be jsdom's real Storage.
-// Node >= 22.4 can inject its own file-less localStorage stub (no .clear) onto
-// globalThis (default-on from Node 25), and the jsdom environment skips window
-// keys already present there — so the stub silently shadows the real thing.
-// Guarded by `test.execArgv: ["--no-experimental-webstorage"]` in
-// vitest.config.ts; if this throws, that pin (or its successor) has stopped
-// holding.
-if (typeof localStorage.clear !== "function") {
-  throw new Error(
-    "localStorage is not a real Storage (no .clear) — Node's experimental " +
-      "web-storage stub is shadowing jsdom's. Check the " +
-      '`--no-experimental-webstorage` pin in vitest.config.ts test.execArgv.',
-  )
+// Canary: the test environment's web storage must be jsdom's real Storage.
+// Node >= 22.4 can inject its own file-less localStorage/sessionStorage stubs
+// onto globalThis (default-on from Node 25), and the jsdom environment skips
+// window keys already present there — so the stubs silently shadow the real
+// thing. `instanceof Storage` is the provenance check: jsdom always restores
+// the `Storage` class itself, so only jsdom-created storages pass, even if a
+// future Node stub grows a working `.clear`. Guarded by
+// `test.execArgv: ["--no-experimental-webstorage"]` in vitest.config.ts; if
+// this throws, that pin (or its successor) has stopped holding.
+for (const name of ["localStorage", "sessionStorage"] as const) {
+  const storage = globalThis[name]
+  if (!(storage instanceof Storage) || typeof storage.clear !== "function") {
+    throw new Error(
+      `${name} is not jsdom's real Storage — Node's experimental web-storage ` +
+        "stub is shadowing it. Check the `--no-experimental-webstorage` pin " +
+        "in vitest.config.ts test.execArgv.",
+    )
+  }
 }
 localStorage.setItem("__storage_canary__", "ok")
 if (localStorage.getItem("__storage_canary__") !== "ok") {
