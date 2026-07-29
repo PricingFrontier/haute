@@ -463,21 +463,143 @@ These are architectural workstreams, not a priority or delivery order.
 - General actuarial, regulatory, or legal advice unrelated to building or
   explaining Haute pipelines.
 
-## Open design questions
+## Design decisions
 
-- What should the final CLI command taxonomy be while preserving existing
-  command compatibility?
-- Should higher-level recipes be mandatory for complex domain nodes or an
-  optional convenience over primitive operations?
-- Which operations may auto-apply, and which always require approval?
-- What constitutes the authoritative project revision across source, sidecars,
-  project context, and referenced artifacts?
-- Which project knowledge schema should Haute own?
-- How should provider trust and egress policy be configured for arbitrary
-  OpenAI-compatible endpoints?
-- Which read operations are available on a dirty canvas, detached branch, or
-  submodel view?
-- Should the in-app assistant invoke the shared Python API directly while
-  external agents use the CLI, or should both use one protocol adapter?
-- Which executable examples and semantic evaluation tasks require formal
-  pricing-domain review?
+### CLI evolution is additive
+
+Existing public CLI commands and scripting behaviour remain compatible. New
+grouped and machine-readable commands are added alongside them. Existing
+commands may delegate to the same application services or become documented
+aliases, but they are not removed or silently reinterpreted.
+
+Any future deprecation follows an explicit compatibility policy. The exact
+names and grouping of the new commands remain a discoverability question, not
+an excuse to break current automation.
+
+### Primitive operations are canonical; recipes are optional
+
+Typed primitive operations are the complete, stable mutation vocabulary.
+Recipes are optional, preferred planners for common or complex intents. A
+recipe expands deterministically into ordinary primitive operations and cannot
+bypass their validation, revision checks, capability policy, or audit trail.
+
+An agent may use primitives directly for valid work that has no matching
+recipe. The absence of a recipe never authorizes raw source editing as a
+fallback.
+
+### Mutation authority is deterministic and risk-based
+
+The following actions may run without a separate approval step:
+
+- capability and documentation queries;
+- saved-state inspection;
+- schema-only inspection;
+- planning and dry-run validation;
+- additive, non-executable graph edits that are explicitly requested by the
+  user, stay within the stated node scope, and pass deterministic validation.
+
+Before executing a high-risk action, the assistant must show a concrete
+mutation diff or, for a sensitive read, a disclosure summary, and obtain
+explicit confirmation. High-risk actions include:
+
+- node or edge deletion;
+- executable code or preamble changes;
+- shared-submodel changes;
+- sensitive-data reads;
+- external writes;
+- model, ratebook, or optimiser artifact selection and version changes;
+- training, optimisation, deployment, or Git operations;
+- a change exceeding the library-defined mutation scope limit;
+- any operation outside the user's explicit scope.
+
+Project policy may require stricter approval but cannot weaken the library's
+high-risk classifications. A model, including a second reviewer model, never
+grants capabilities or authorizes a mutation.
+
+### Project revisions use a canonical snapshot manifest
+
+The authoritative project revision is a deterministic digest of a canonical
+snapshot manifest. The manifest includes:
+
+- pipeline source;
+- relevant sidecars;
+- tracked project knowledge that affected planning;
+- the installed capability manifest hash;
+- immutable identifiers or content digests for referenced artifacts;
+- any other declared input whose change could invalidate the proposed
+  operation.
+
+Large artifacts need not be copied or hashed repeatedly when an authoritative
+immutable digest already exists. A local monotonic workspace sequence may
+accompany the manifest digest for efficient change detection, but it does not
+replace content identity.
+
+Dry-run returns the exact base revision. Apply recomputes and compares it before
+writing. A graph fingerprint remains useful for display and canvas
+synchronisation but is not the sole concurrency token.
+
+### Provider trust and data egress are explicit
+
+A syntactically valid provider URL is not automatically trusted. Provider
+configuration must identify an explicit trust and egress policy.
+
+- Non-loopback provider endpoints require HTTPS.
+- The UI and status surfaces show the effective endpoint and trust class
+  without displaying credentials.
+- Schema-only inspection is the default.
+- Raw rows, sensitive configuration, executable source, and project knowledge
+  with restricted classifications require separately permitted egress and,
+  where applicable, user consent.
+- Credentials are scoped to the configured provider and are never included in
+  model-visible context or agent-facing command output.
+- Endpoint or policy changes invalidate cached consent and capability state.
+
+An OpenAI-compatible protocol describes wire behaviour; it does not establish
+that the endpoint is an approved recipient of project data.
+
+### Read-only assistance is independent of mutation readiness
+
+Library capability queries and documentation lookup are always available when
+the installation itself can serve them. Saved-state graph, config, and schema
+inspection may operate on dirty, detached, divergent, or otherwise
+mutation-disabled projects.
+
+Every result identifies the saved project revision it describes. When the
+browser has unsaved canvas state, the assistant must say that its result covers
+saved state. It may inspect unsaved state only when the UI deliberately
+provides a typed snapshot with separate provenance; it must never imply that a
+backend read saw browser-local changes.
+
+Submodel navigation does not disable read-only help. Reads declare their graph
+scope and follow the submodel capability supported by the installed library.
+Mutation remains subject to the normal graph-scope and revision rules.
+
+### One application layer supports multiple adapters
+
+The shared typed Python application-service layer is canonical. The in-app
+assistant calls it directly rather than spawning CLI subprocesses. External
+agents use the machine-readable CLI or another protocol adapter over the same
+services.
+
+Adapters own transport, serialization, authentication, and presentation only.
+They do not reimplement node semantics, recipes, validation, mutation, or
+revision handling.
+
+### Pricing review is proportional to semantic content
+
+Executable examples and evaluation tasks that encode actuarial or commercial
+pricing choices require pricing-domain review. This includes exposure
+treatment, rating defaults, premium composition, model validation, optimisation
+objectives or constraints, fairness claims, and governance conclusions.
+
+Purely mechanical fixtures, such as basic graph wiring or output-path syntax,
+require normal engineering review. Every example, regardless of reviewer, must
+still pass its executable assertions and packaging checks.
+
+## Remaining design questions
+
+- What exact grouped CLI command names and help hierarchy provide the clearest
+  agent and human experience while retaining the compatibility decision above?
+- What is the smallest useful first public schema for tracked project knowledge,
+  and how should organization-specific extensions compose with it without
+  weakening validation or provenance?
