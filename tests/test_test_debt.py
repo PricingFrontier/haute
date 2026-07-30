@@ -240,6 +240,13 @@ _EXPECTED_DEBT_IDS = {
     # other symlink-guard tests. See tests/test_files_routes.py
     # ::TestBrowseFilesUnresolvedCwd._symlinked_project.
     "e29ebc6050519fc5",
+    # macOS available-RAM source — the unmocked mach host_statistics64 probe
+    # can only observe genuine availability on darwin (the mocked tests cover
+    # every branch cross-platform); the real-probe available-not-total pin
+    # skips elsewhere by physical necessity, mirroring the win32-only ctypes
+    # site above. See tests/test_ram_estimate.py::TestAvailableRamDarwinPath
+    # ::test_darwin_real_probe_is_available_not_total.
+    "b3dc43c92ea52f10",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

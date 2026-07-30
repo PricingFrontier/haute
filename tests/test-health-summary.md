@@ -4,7 +4,7 @@ Generated deterministically from the live test-debt scanners and mutation target
 
 | Signal | Count / max survivor rate | Enforcement/source |
 | --- | ---: | --- |
-| Backend skip/skipif | 38 | Backend AST scanner |
+| Backend skip/skipif | 39 | Backend AST scanner |
 | Backend importorskip | 63 | Backend AST scanner |
 | Backend xfail | 1 | Backend AST scanner |
 | Backend flaky | 0 | Backend AST scanner (zero-budget fingerprint ratchet) |
