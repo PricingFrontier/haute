@@ -2010,6 +2010,131 @@ class TestAvailableRamPlatformPaths:
         assert result is None
 
 
+class _FakeLibSystem:
+    """Stand-in for the darwin libSystem CDLL used by the mach probe."""
+
+    def __init__(
+        self,
+        *,
+        free_pages: int = 2000,
+        inactive_pages: int = 1000,
+        page_size: int = 16384,
+        page_size_kern: int = 0,
+        statistics_kern: int = 0,
+    ) -> None:
+        self._free_pages = free_pages
+        self._inactive_pages = inactive_pages
+        self._page_size = page_size
+        self._page_size_kern = page_size_kern
+        self._statistics_kern = statistics_kern
+        self.mach_host_self = MagicMock(return_value=99)
+        self.mach_task_self = MagicMock(return_value=1)
+        self.mach_port_deallocate = MagicMock(return_value=0)
+
+    def host_page_size(self, host: object, page_size_ref: object) -> int:
+        page_size_ref._obj.value = self._page_size  # type: ignore[attr-defined]
+        return self._page_size_kern
+
+    def host_statistics64(
+        self,
+        host: object,
+        flavor: object,
+        stats_ref: object,
+        count_ref: object,
+    ) -> int:
+        stats = stats_ref._obj  # type: ignore[attr-defined]
+        stats.free_count = self._free_pages
+        stats.inactive_count = self._inactive_pages
+        return self._statistics_kern
+
+
+class TestAvailableRamDarwinPath:
+    def test_darwin_mach_free_plus_inactive_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """On darwin the mach probe returns (free + inactive) × page size."""
+        monkeypatch.setattr("sys.platform", "darwin")
+        fake = _FakeLibSystem(free_pages=2000, inactive_pages=1000, page_size=16384)
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch(
+                "os.sysconf",
+                side_effect=ValueError("unrecognized configuration name"),
+                create=True,
+            ),
+            patch("ctypes.CDLL", return_value=fake),
+        ):
+            assert available_ram_bytes() == 3000 * 16384
+        fake.mach_port_deallocate.assert_called_once()
+
+    def test_darwin_mach_statistics_failure_is_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failing host_statistics64 call is unavailable, with the port freed."""
+        monkeypatch.setattr("sys.platform", "darwin")
+        fake = _FakeLibSystem(statistics_kern=-308)
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=ValueError, create=True),
+            patch("ctypes.CDLL", return_value=fake),
+            capture_logs() as logs,
+        ):
+            assert available_ram_bytes() is None
+        fake.mach_port_deallocate.assert_called_once()
+        unavailable_log = next(
+            event for event in logs if event.get("event") == "available_ram_unavailable"
+        )
+        assert unavailable_log["darwin_attempted"] is True
+        assert "host_statistics64" in unavailable_log["darwin_error"]
+
+    def test_darwin_mach_page_size_failure_is_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("sys.platform", "darwin")
+        fake = _FakeLibSystem(page_size_kern=-1)
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=ValueError, create=True),
+            patch("ctypes.CDLL", return_value=fake),
+        ):
+            assert available_ram_bytes() is None
+        fake.mach_port_deallocate.assert_called_once()
+
+    def test_darwin_non_positive_mach_values_are_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Zero pages from mach are ignored instead of producing zero RAM."""
+        monkeypatch.setattr("sys.platform", "darwin")
+        fake = _FakeLibSystem(free_pages=0, inactive_pages=0)
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=ValueError, create=True),
+            patch("ctypes.CDLL", return_value=fake),
+        ):
+            assert available_ram_bytes() is None
+
+    def test_non_darwin_platform_does_not_probe_mach(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("sys.platform", "freebsd13")
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=AttributeError, create=True),
+            patch("ctypes.CDLL") as cdll,
+            capture_logs() as logs,
+        ):
+            assert available_ram_bytes() is None
+        cdll.assert_not_called()
+        unavailable_log = next(
+            event for event in logs if event.get("event") == "available_ram_unavailable"
+        )
+        assert unavailable_log["darwin_attempted"] is False
+        assert unavailable_log["darwin_error"] is None
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="real mach probe needs macOS")
+    def test_darwin_real_probe_returns_positive_int(self) -> None:
+        """The unmocked mach probe observes genuine availability on macOS."""
+        ram = available_ram_bytes()
+        assert isinstance(ram, int)
+        assert ram > 100 * 1024 * 1024
+
+
 # ---------------------------------------------------------------------------
 # available_vram_bytes — nvidia-smi parsing
 # ---------------------------------------------------------------------------

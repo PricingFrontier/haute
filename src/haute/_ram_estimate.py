@@ -202,11 +202,84 @@ def _clamp_available_ram_to_cgroup(host_available: int | None) -> int | None:
     return host_available if headroom is None else min(host_available, headroom)
 
 
+# <mach/host_info.h> flavor selecting struct vm_statistics64.
+_DARWIN_HOST_VM_INFO64 = 4
+
+
+def _darwin_available_ram_bytes() -> int:
+    """Return macOS available RAM via mach ``host_statistics64``.
+
+    Availability is ``(free_count + inactive_count) × page size`` — the
+    reclaimable set ``vm_stat`` reports, not total capacity.  The page size
+    comes from mach ``host_page_size`` so page units match the statistics on
+    Apple Silicon.  Raises on any mach failure so the caller records the error
+    instead of fabricating capacity.
+    """
+    import ctypes
+
+    class VMStatistics64(ctypes.Structure):
+        # struct vm_statistics64 from <mach/vm_statistics.h>; counts are pages.
+        _fields_ = [
+            ("free_count", ctypes.c_uint),
+            ("active_count", ctypes.c_uint),
+            ("inactive_count", ctypes.c_uint),
+            ("wire_count", ctypes.c_uint),
+            ("zero_fill_count", ctypes.c_uint64),
+            ("reactivations", ctypes.c_uint64),
+            ("pageins", ctypes.c_uint64),
+            ("pageouts", ctypes.c_uint64),
+            ("faults", ctypes.c_uint64),
+            ("cow_faults", ctypes.c_uint64),
+            ("lookups", ctypes.c_uint64),
+            ("hits", ctypes.c_uint64),
+            ("purges", ctypes.c_uint64),
+            ("purgeable_count", ctypes.c_uint),
+            ("speculative_count", ctypes.c_uint),
+            ("decompressions", ctypes.c_uint64),
+            ("compressions", ctypes.c_uint64),
+            ("swapins", ctypes.c_uint64),
+            ("swapouts", ctypes.c_uint64),
+            ("compressor_page_count", ctypes.c_uint),
+            ("throttled_count", ctypes.c_uint),
+            ("external_page_count", ctypes.c_uint),
+            ("internal_page_count", ctypes.c_uint),
+            ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+        ]
+
+    libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    libsystem.mach_host_self.restype = ctypes.c_uint
+    host = libsystem.mach_host_self()
+    try:
+        page_size = ctypes.c_size_t()
+        kern = libsystem.host_page_size(host, ctypes.byref(page_size))
+        if kern != 0:
+            raise OSError(f"host_page_size returned kern_return {kern}")
+        stats = VMStatistics64()
+        # mach sizes host_info buffers in integer_t (4-byte) words.
+        count = ctypes.c_uint(ctypes.sizeof(stats) // 4)
+        kern = libsystem.host_statistics64(
+            host,
+            _DARWIN_HOST_VM_INFO64,
+            ctypes.byref(stats),
+            ctypes.byref(count),
+        )
+        if kern != 0:
+            raise OSError(f"host_statistics64 returned kern_return {kern}")
+    finally:
+        libsystem.mach_port_deallocate(libsystem.mach_task_self(), host)
+
+    available_pages = int(stats.free_count) + int(stats.inactive_count)
+    if available_pages <= 0 or page_size.value <= 0:
+        raise ValueError("non-positive mach memory values")
+    return available_pages * int(page_size.value)
+
+
 def available_ram_bytes() -> int | None:
     """Return available system RAM in bytes, or ``None`` when unobservable.
 
-    - **Linux**: reads ``/proc/meminfo`` (most accurate).
-    - **macOS / POSIX**: ``os.sysconf`` page-based query.
+    - **Linux**: reads ``/proc/meminfo`` (most accurate), clamped to cgroup headroom.
+    - **POSIX with ``SC_AVPHYS_PAGES``**: ``os.sysconf`` page-based query.
+    - **macOS**: mach ``host_statistics64`` free + inactive pages via ctypes.
     - **Windows**: ``GlobalMemoryStatusEx`` via ctypes.
     No fallback capacity is fabricated: callers that require a physical-memory
     limit must fail admission or require an explicit configured budget.
@@ -215,6 +288,8 @@ def available_ram_bytes() -> int | None:
     sysconf_error: str | None = None
     sysconf_pages: int | None = None
     sysconf_page_size: int | None = None
+    darwin_attempted = False
+    darwin_error: str | None = None
     windows_attempted = False
     windows_error: str | None = None
 
@@ -238,6 +313,13 @@ def available_ram_bytes() -> int | None:
         sysconf_error = "non-positive sysconf memory values"
     except (AttributeError, OSError, ValueError) as exc:
         sysconf_error = str(exc)
+
+    if sys.platform == "darwin":
+        darwin_attempted = True
+        try:
+            return _clamp_available_ram_to_cgroup(_darwin_available_ram_bytes())
+        except (OSError, AttributeError, ValueError) as exc:
+            darwin_error = str(exc)
 
     if sys.platform == "win32":
         windows_attempted = True
@@ -273,6 +355,8 @@ def available_ram_bytes() -> int | None:
         sysconf_error=sysconf_error,
         sysconf_pages=sysconf_pages,
         sysconf_page_size=sysconf_page_size,
+        darwin_attempted=darwin_attempted,
+        darwin_error=darwin_error,
         windows_attempted=windows_attempted,
         windows_error=windows_error,
     )
