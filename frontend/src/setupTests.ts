@@ -1,10 +1,12 @@
 import "@testing-library/jest-dom/vitest"
 
 // Canary: the test environment's web storage must be jsdom's real Storage.
-// Node >= 22.4 can inject its own file-less localStorage/sessionStorage stubs
-// onto globalThis (default-on from Node 25), and the jsdom environment skips
-// window keys already present there — so the stubs silently shadow the real
-// thing. `instanceof Storage` is the provenance check: jsdom always restores
+// Node >= 22.4 can inject its own web-storage globals onto globalThis
+// (default-on from Node 25): an inert file-less localStorage stub, and a
+// real but process-global sessionStorage that leaks state across test files.
+// The jsdom environment skips window keys already present there, so both
+// silently shadow the real thing. `instanceof Storage` is the provenance
+// check: jsdom always restores
 // the `Storage` class itself, so only jsdom-created storages pass, even if a
 // future Node stub grows a working `.clear`. Guarded by
 // `test.execArgv: ["--no-experimental-webstorage"]` in vitest.config.ts; if
