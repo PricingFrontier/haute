@@ -420,8 +420,30 @@ other = os.environ.get(key)
 # or custom non-negative/readiness policies with deliberately different semantics.
 _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     # Credentials and external integration endpoints.
-    ("src/haute/_databricks_io.py", "<module>._get_credentials", "DATABRICKS_HOST", "os.getenv"),
-    ("src/haute/_databricks_io.py", "<module>._get_credentials", "DATABRICKS_TOKEN", "os.getenv"),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_HOST",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_TOKEN",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_CLIENT_ID",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_CLIENT_SECRET",
+        "os.getenv",
+    ),
     (
         "src/haute/deploy/_mlflow.py",
         "<module>._check_databricks_connectivity",
@@ -474,6 +496,18 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "src/haute/routes/databricks.py",
         "<module>._get_databricks_client",
         "DATABRICKS_TOKEN",
+        "os.getenv",
+    ),
+    (
+        "src/haute/routes/databricks.py",
+        "<module>._get_databricks_client",
+        "DATABRICKS_CLIENT_ID",
+        "os.getenv",
+    ),
+    (
+        "src/haute/routes/databricks.py",
+        "<module>._get_databricks_client",
+        "DATABRICKS_CLIENT_SECRET",
         "os.getenv",
     ),
     ("src/haute/routes/modelling.py", "<module>.mlflow_check", "DATABRICKS_HOST", "os.getenv"),

@@ -14,7 +14,7 @@ from haute._databricks_io import (
     FetchIntegrityError,
     _assert_no_rows_lost_after_retry,
     _canonical_table,
-    _get_credentials,
+    _connection_settings,
     _iter_databricks_batches,
     _validate_select_clause,
 )
@@ -22,26 +22,44 @@ from haute._execution_context import ExecutionProfile
 from haute._source_cache import SourceCacheBuildContext, SourceCacheIdentity, SourceCacheStore
 
 
-def test_get_credentials_normalises_host_and_uses_node_http_path(
+@pytest.fixture()
+def _no_ambient_databricks_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "DATABRICKS_HOST",
+        "DATABRICKS_TOKEN",
+        "DATABRICKS_CLIENT_ID",
+        "DATABRICKS_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_connection_settings_normalises_host_and_uses_node_http_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DATABRICKS_HOST", "https://workspace.example/")
     monkeypatch.setenv("DATABRICKS_TOKEN", "token")
-    assert _get_credentials("/sql/warehouse") == ("workspace.example", "token", "/sql/warehouse")
+    assert _connection_settings("/sql/warehouse") == (
+        "workspace.example",
+        {"access_token": "token"},
+        "/sql/warehouse",
+    )
 
 
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
 @pytest.mark.parametrize("missing", ["DATABRICKS_HOST", "DATABRICKS_TOKEN"])
-def test_get_credentials_reports_missing_values(
+def test_connection_settings_reports_missing_values(
     monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
     monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
     monkeypatch.setenv("DATABRICKS_TOKEN", "token")
     monkeypatch.delenv(missing)
     with pytest.raises(DatabricksConfigError, match=missing):
-        _get_credentials("/sql/warehouse")
+        _connection_settings("/sql/warehouse")
 
 
-def test_get_credentials_does_not_advertise_removed_http_path_fallback(
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_connection_settings_does_not_advertise_removed_http_path_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
@@ -49,10 +67,106 @@ def test_get_credentials_does_not_advertise_removed_http_path_fallback(
     monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/ignored")
 
     with pytest.raises(DatabricksConfigError) as exc_info:
-        _get_credentials(None)
+        _connection_settings(None)
 
     assert "DATABRICKS_HTTP_PATH" not in str(exc_info.value)
     assert "http_path on the Data Input node" in str(exc_info.value)
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_connection_settings_falls_back_to_service_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "sp-client")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+
+    host, auth_kwargs, http_path = _connection_settings("/sql/warehouse")
+
+    assert host == "workspace.example"
+    assert http_path == "/sql/warehouse"
+    assert "access_token" not in auth_kwargs
+    assert callable(auth_kwargs["credentials_provider"])
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_connection_settings_prefers_explicit_token_over_service_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "token")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "sp-client")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+
+    _, auth_kwargs, _ = _connection_settings("/sql/warehouse")
+
+    assert auth_kwargs == {"access_token": "token"}
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_connection_settings_rejects_incomplete_service_principal_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "sp-client")
+
+    with pytest.raises(DatabricksConfigError) as exc_info:
+        _connection_settings("/sql/warehouse")
+
+    message = str(exc_info.value)
+    assert "DATABRICKS_TOKEN" in message
+    assert "DATABRICKS_CLIENT_SECRET" in message
+    assert "sp-client" not in message
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_service_principal_provider_builds_sdk_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import types
+
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "sp-client")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+
+    recorded: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_config(**kwargs: object) -> object:
+        recorded.update(kwargs)
+        return "config"
+
+    stub = types.ModuleType("databricks.sdk.core")
+    stub.Config = fake_config  # type: ignore[attr-defined]
+    stub.oauth_service_principal = lambda config: sentinel  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", stub)
+
+    _, auth_kwargs, _ = _connection_settings("/sql/warehouse")
+    assert auth_kwargs["credentials_provider"]() is sentinel
+    assert recorded == {
+        "host": "https://workspace.example",
+        "client_id": "sp-client",
+        "client_secret": "sp-secret",
+    }
+
+
+@pytest.mark.usefixtures("_no_ambient_databricks_env")
+def test_service_principal_provider_reports_missing_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+
+    monkeypatch.setenv("DATABRICKS_HOST", "workspace.example")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "sp-client")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "sp-secret")
+    # A None entry makes `from databricks.sdk.core import …` raise ImportError
+    # deterministically, whether or not the SDK is installed locally.
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", None)
+
+    _, auth_kwargs, _ = _connection_settings("/sql/warehouse")
+    with pytest.raises(DatabricksConfigError, match=r"haute\[databricks\]"):
+        auth_kwargs["credentials_provider"]()
 
 
 @pytest.mark.parametrize(
@@ -119,7 +233,10 @@ def _stream(cursor: _Cursor, context: MagicMock) -> list[pa.Table]:
     connection.__enter__.return_value = connection
     with (
         patch("databricks.sql.connect", return_value=connection),
-        patch("haute._databricks_io._get_credentials", return_value=("host", "token", "/wh")),
+        patch(
+            "haute._databricks_io._connection_settings",
+            return_value=("host", {"access_token": "token"}, "/wh"),
+        ),
         patch("haute._databricks_io.time.sleep"),
     ):
         return list(
@@ -148,7 +265,10 @@ def test_iter_batches_checks_cancellation_before_connect_or_execute() -> None:
 
     with (
         patch("databricks.sql.connect", return_value=connection) as connect,
-        patch("haute._databricks_io._get_credentials", return_value=("host", "token", "/wh")),
+        patch(
+            "haute._databricks_io._connection_settings",
+            return_value=("host", {"access_token": "token"}, "/wh"),
+        ),
     ):
         with pytest.raises(RuntimeError, match="cancelled"):
             list(
@@ -202,7 +322,10 @@ def test_snapshot_builder_publishes_through_source_cache_store(tmp_path: Path) -
 
     with (
         patch("databricks.sql.connect", return_value=connection),
-        patch("haute._databricks_io._get_credentials", return_value=("host", "token", "/wh")),
+        patch(
+            "haute._databricks_io._connection_settings",
+            return_value=("host", {"access_token": "token"}, "/wh"),
+        ),
     ):
         generation = SourceCacheStore(tmp_path).build(
             identity,

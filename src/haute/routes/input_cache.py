@@ -82,7 +82,7 @@ def _provider_error_diagnostic(
     config: dict[str, Any],
 ) -> str:
     """Return a useful provider diagnostic without resolved credential material."""
-    secret_references = {"DATABRICKS_TOKEN"}
+    secret_references = {"DATABRICKS_TOKEN", "DATABRICKS_CLIENT_SECRET"}
     connection = config.get("connection")
     if isinstance(connection, str):
         secret_references.add(connection)
