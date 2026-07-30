@@ -384,6 +384,18 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
     return True
 
 
+def git_binary_available() -> bool:
+    """Return whether a git executable exists on PATH.
+
+    Distinguishes "no git installed" (some hosted containers) from "no
+    repository here" — every subprocess helper below raises
+    ``FileNotFoundError`` rather than a git exit code when the binary
+    itself is absent, so callers that would otherwise 500 check this
+    first.
+    """
+    return shutil.which("git") is not None
+
+
 def _is_git_repo(cwd: Path | None = None) -> bool:
     ok, _ = _run_git_ok("rev-parse", "--is-inside-work-tree", cwd=cwd)
     return ok
@@ -1170,6 +1182,9 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
     """Compute the working-branch readiness signal for a clone.
 
     state is one of:
+      - "git-unavailable" — no git binary on PATH (hosted containers without
+                      git); distinct from "no-repository" so the UI can say
+                      "git is not available here" instead of offering init
       - "no-repository" — the project has no Git repository
       - "unset"     — no working branch recorded
       - "detached"  — HEAD resolves but is not attached to a branch
@@ -1179,6 +1194,13 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
       - "ready"     — recorded branch is the current lineage and healthy
     """
     from haute._git_state import read_working_branch
+
+    if not git_binary_available():
+        return GitWorkingBranchResponse(
+            state="git-unavailable",
+            current_branch="",
+            identity_set=False,
+        )
 
     if not _is_git_repo(cwd):
         return GitWorkingBranchResponse(

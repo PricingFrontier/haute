@@ -1195,7 +1195,7 @@ export interface UtilityDeleteResponse {
 // Git types
 // ---------------------------------------------------------------------------
 
-export type WorkingBranchState = "no-repository" | "unset" | "detached" | "invalid" | "divergent" | "ready"
+export type WorkingBranchState = "git-unavailable" | "no-repository" | "unset" | "detached" | "invalid" | "divergent" | "ready"
 
 export interface GitWorkingBranchResponse {
   working_branch: string | null

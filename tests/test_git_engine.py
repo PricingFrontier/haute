@@ -551,6 +551,19 @@ class TestIdentity:
 
 
 class TestWorkingBranchStatus:
+    def test_git_binary_missing_reports_git_unavailable(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Hosted containers may lack git entirely; that must surface as its
+        # own state (the UI says "git unavailable"), not "no-repository"
+        # (which offers init) and not a 500 from FileNotFoundError.
+        import haute._git as git_module
+
+        monkeypatch.setattr(git_module.shutil, "which", lambda _name: None)
+        st = working_branch_status(repo, cwd=repo)
+        assert st.state == "git-unavailable"
+        assert st.identity_set is False
+
     def test_unset(self, repo: Path) -> None:
         st = working_branch_status(repo, cwd=repo)
         assert st.state == "unset"

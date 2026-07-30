@@ -1897,6 +1897,7 @@ class OptimiserMlflowLogResponse(MlflowLogResponse):
 # ---------------------------------------------------------------------------
 
 GitWorkingBranchState = Literal[
+    "git-unavailable",
     "no-repository",
     "unset",
     "detached",

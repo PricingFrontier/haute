@@ -2456,7 +2456,7 @@ export function parseUtilityDeleteResponse(value: unknown): UtilityDeleteRespons
   }
 }
 
-const WORKING_BRANCH_STATES = ["no-repository", "unset", "detached", "invalid", "divergent", "ready"] as const
+const WORKING_BRANCH_STATES = ["git-unavailable", "no-repository", "unset", "detached", "invalid", "divergent", "ready"] as const
 
 export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchResponse {
   const obj = expectPlainObject("parseGitWorkingBranchResponse", value)

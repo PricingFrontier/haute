@@ -78,6 +78,17 @@ export default function BranchIndicator() {
   const ready = status.state === "ready"
 
   if (!ready) {
+    if (status.state === "git-unavailable") {
+      return (
+        <span
+          data-testid="toolbar-branch-indicator"
+          data-branch-state="git-unavailable"
+          title="No git executable is available in this environment."
+        >
+          Git unavailable
+        </span>
+      )
+    }
     if (status.state === "no-repository") {
       return (
         <span

@@ -58,6 +58,14 @@ describe("BranchIndicator", () => {
     expect(loadStatus).toHaveBeenCalledOnce()
   })
 
+  it("shows a non-interactive label when no git executable exists", () => {
+    useGitStore.setState({ status: status({ state: "git-unavailable", working_branch: null }) })
+    render(<BranchIndicator />)
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveTextContent("Git unavailable")
+    expect(indicator).toHaveAttribute("data-branch-state", "git-unavailable")
+  })
+
   it("shows that Git has not been initialised when there is no repository", () => {
     useGitStore.setState({ status: status({ state: "no-repository", working_branch: null }) })
     render(<BranchIndicator />)
