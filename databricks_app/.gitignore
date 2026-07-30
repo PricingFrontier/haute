@@ -1,0 +1,3 @@
+# Built artefact vendored at deploy time by scripts/build_bundle.sh — never
+# committed; requirements.txt carries its sha256 instead.
+haute-*.whl

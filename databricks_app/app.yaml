@@ -1,0 +1,5 @@
+command: ["python", "app.py"]
+
+env:
+  - name: HAUTE_DISABLE_LOCAL_SESSION_AUTH
+    value: "1"

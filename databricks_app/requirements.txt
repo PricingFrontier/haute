@@ -1,0 +1,4 @@
+# Vendored wheel: copied into this directory by scripts/build_bundle.sh.
+# Databricks installs requirements with the app directory as cwd.
+# wheel-sha256: 9ebb9ebfaee7587d38fa6910314ee98e21a4b4f2ebc5051772afbbb7e505b589
+./haute-0.4.0-py3-none-any.whl[databricks]
