@@ -45,6 +45,7 @@ from haute._local_security import (
     websocket_rejection_reason,
 )
 from haute._logging import configure_logging, get_logger
+from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import (
     _ensure_pipeline_index,
     broadcast,
@@ -475,6 +476,9 @@ class _RequestIdMiddleware(BaseHTTPMiddleware):
         response.headers["x-request-id"] = rid
 
         kw = dict(method=method, path=path, status=status, duration_ms=duration_ms)
+        forwarded_user = request.scope.get(FORWARDED_USER_SCOPE_KEY)
+        if forwarded_user is not None:
+            kw["user"] = forwarded_user
         if status >= 500:
             logger.error("request_error", **kw)
         elif status >= 400:
