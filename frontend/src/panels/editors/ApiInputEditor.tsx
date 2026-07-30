@@ -1070,7 +1070,7 @@ function TableBlock({
             onClick={onConfirmAll}
             title="Confirm every not-yet-confirmed column (confirmed columns survive a re-infer)"
             className="text-[10px] font-semibold px-1.5 py-0.5 rounded flex items-center gap-1"
-            style={{ color: "var(--success)", border: "1px solid var(--success-border)" }}
+            style={{ color: "var(--column-confirm-text)", border: "1px solid var(--column-confirm-border)" }}
           >
             <Check size={9} />
             Confirm all
@@ -1228,7 +1228,7 @@ function OriginChip({
   const palette: Record<ColumnOrigin, { color: string; background: string }> = {
     inferred: { color: "var(--text-muted)", background: "var(--bg-input)" },
     inherited: { color: "var(--accent)", background: "var(--accent-soft)" },
-    manual: { color: "var(--success)", background: "var(--success-soft)" },
+    manual: { color: "var(--column-origin-manual-text)", background: "var(--column-origin-manual-bg)" },
   }
   return (
     <span
@@ -1372,7 +1372,7 @@ function ColumnRow({
           onClick={() => onUpdate({ status: "Confirmed" })}
           title="Confirm this column (a confirmed column survives a re-infer)"
         >
-          <Check size={10} style={{ color: "var(--success)" }} />
+          <Check size={10} style={{ color: "var(--column-confirm-text)" }} />
         </button>
       )}
       <button data-testid={`${testIdPrefix}-remove`} onClick={onRemove}>

@@ -111,9 +111,118 @@
   --danger-border: rgba(239,68,68,.20);
   --danger-border-strong: rgba(239,68,68,.30);
 
+  /* ── Success role tokens ──────────────────────────────────────────
+     Functional layer over the success intensity ladder above.  Call
+     sites reference these; the graded ladder steps (--success-soft*,
+     --success-border*, --success-hover) are private primitives (same
+     pattern as the --diff-* aliases below), enforced by the role-layer
+     gate in __tests__/cssColorTokenization.test.ts.  The base --success
+     hue is still referenced directly by numerous sites outside this
+     audit (e.g. status dots, git panel icons, toast accents, editor
+     state colours) — the hue anchor, to be role-tokenised as roles
+     emerge.
+     One token per interface element — elements that merely share a
+     shade today get separate tokens so their fates stay independent.
+     Components whose tones sit in a success/warning/danger map keep
+     per-component roles so the tones stay in alpha parity (the map's
+     real invariant) rather than being fused with lookalike elements
+     elsewhere. */
+
+  /* Trace step "added" marking: added-column tags, "+N added" counts,
+     added-row values (StepCard).  The text colour honours the
+     caller-overridable --color-added hook at the ALIAS layer, so every
+     call site inherits the override for free.  The hook's scope is
+     deliberately exactly this role: the matched chip and positive-delta
+     roles below used to sit behind it too and no longer do — an override
+     recolours added markings, nothing else.  (--color-modified, its
+     sibling for the "modified" marking, still lives at its StepCard call
+     site pending the warning-family PR.) */
+  --trace-added-text: var(--color-added, var(--success-hover));
+  --trace-added-bg: var(--success-soft-mid);
+
+  /* Trace detail chip, "matched" tone (TraceDetailChip's success tone,
+     whose only consumer is the matched rating-band status).  Same
+     shades as the added marking, deliberately separate role. */
+  --trace-chip-matched-text: var(--success-hover);
+  --trace-chip-matched-bg: var(--success-soft-mid);
+
+  /* Positive signed numeric delta text (model contributions, optimiser
+     lambda terms).  Call sites pair this with --danger-text for the
+     negative case until the danger family grows --delta-negative-text. */
+  --delta-positive-text: var(--success-hover);
+
+  /* Transient success flash line — inline confirmation text, no box
+     (e.g. "Trace copied as Markdown"). */
+  --flash-success-text: var(--success-hover);
+
+  /* Confirmation banner, success tone — icon + message in a tinted
+     rounded box: picker path confirmation, optimiser converged.  The
+     `success` qualifier is deliberate: banner-* is a TONE-QUALIFIED
+     family, and --banner-warning-* (e.g. the optimiser's did-not-
+     converge state) is expected to join it in the warning-family PR.
+     -data is the mono path/value text inside the banner; -action is an
+     inline banner control (the path picker's "change" button). */
+  --banner-success-bg: var(--success-soft);
+  --banner-success-border: var(--success-border);
+  --banner-success-text: var(--success);
+  --banner-success-data: var(--success-hover);
+  --banner-success-action: var(--success-hover);
+
+  /* Editor status badge (MlflowStatusBadge in editors/_shared), success
+     tone.  Its success/danger/warning tints deliberately share the .06
+     alpha tier so no tone shouts over the others — keep parity with the
+     danger/warning sides of the tone map when retuning. */
+  --editor-status-success-bg: var(--success-soft-subtle);
+  --editor-status-success-border: var(--success-border);
+  --editor-status-success-text: var(--success);
+
+  /* Training data-summary banner (modelling panel), ok state.  Pairs
+     with a warning state at the same .06 tint tier — keep parity. */
+  --train-summary-success-bg: var(--success-soft-subtle);
+  --train-summary-success-border: var(--success-soft-strong);
+  --train-summary-success-text: var(--success);
+
+  /* Training completion badge (modelling panel). */
+  --train-complete-bg: var(--success-soft-faint);
+  --train-complete-border: var(--success-border);
+  --train-complete-text: var(--success);
+
+  /* "Add mapping row" pill button (OutputEditor). */
+  --add-pill-text: var(--success);
+  --add-pill-border: var(--success-border);
+  --add-pill-bg: var(--success-soft);
+
+  /* Column-confirm affordances in ApiInputEditor: the per-column
+     confirm check and the "Confirm all" pill.  Column-scoped name so a
+     future unrelated confirm surface (e.g. a destructive confirm
+     dialog) cannot plausibly reach for it. */
+  --column-confirm-text: var(--success);
+  --column-confirm-border: var(--success-border);
+
+  /* ApiInput column-origin chip, "manual" variant.  "column-origin"
+     (the chip's domain term), not git-remote origin. */
+  --column-origin-manual-text: var(--success);
+  --column-origin-manual-bg: var(--success-soft);
+
+  /* Cache fetch button, cached state. */
+  --cache-ready-text: var(--success);
+  --cache-ready-border: var(--success-border-strong);
+  --cache-ready-bg: var(--success-soft);
+
+  /* Branch-restore affordance (BranchManager): icon/text colour at rest
+     and on hover, plus the icon-button hover fill.  Branch-scoped name —
+     "restore" alone would invite reuse by unrelated restore surfaces. */
+  --branch-restore-text: var(--success);
+  --branch-restore-hover-bg: var(--success-soft);
+
   /* Diff highlight (read-only comparison view, S11): added / removed / changed
-     components.  Aliased onto the semantic palette so they theme together. */
+     components.  Aliased onto the semantic palette so they theme together.
+     -soft is the added-state soft background behind comparison chips; the
+     family is intentionally partial — --diff-removed-soft and
+     --diff-changed-soft arrive with the danger and warning family PRs
+     (their call sites still use those families' primitives). */
   --diff-added: var(--success);
+  --diff-added-soft: var(--success-soft);
   --diff-removed: var(--danger);
   --diff-changed: var(--warning-strong);
   --diff-moved: var(--accent);

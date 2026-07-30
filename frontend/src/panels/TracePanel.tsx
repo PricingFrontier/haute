@@ -298,7 +298,7 @@ export default function TracePanel({ trace, onClose }: TracePanelProps) {
         style={{ background: "var(--bg-panel)" }}
       >
         {exportStatus === "copied" && (
-          <div role="status" className="text-[11px]" style={{ color: "var(--success-hover)" }}>
+          <div role="status" className="text-[11px]" style={{ color: "var(--flash-success-text)" }}>
             Trace copied as Markdown.
           </div>
         )}

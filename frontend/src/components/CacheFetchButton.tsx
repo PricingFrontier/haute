@@ -227,9 +227,9 @@ export function CacheFetchButton<TStatus extends BaseCacheStatus>({
         title={externalDisabled ? disabledReason : undefined}
         className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
         style={{
-          background: (building && cancelFetchFn) || hasStatusError ? 'var(--danger-soft)' : cache?.cached ? 'var(--success-soft)' : 'var(--accent-soft)',
-          border: (building && cancelFetchFn) || hasStatusError ? '1px solid var(--danger-border-strong)' : cache?.cached ? '1px solid var(--success-border-strong)' : '1px solid var(--accent)',
-          color: (building && cancelFetchFn) || hasStatusError ? 'var(--danger)' : cache?.cached ? 'var(--success)' : 'var(--accent)',
+          background: (building && cancelFetchFn) || hasStatusError ? 'var(--danger-soft)' : cache?.cached ? 'var(--cache-ready-bg)' : 'var(--accent-soft)',
+          border: (building && cancelFetchFn) || hasStatusError ? '1px solid var(--danger-border-strong)' : cache?.cached ? '1px solid var(--cache-ready-border)' : '1px solid var(--accent)',
+          color: (building && cancelFetchFn) || hasStatusError ? 'var(--danger)' : cache?.cached ? 'var(--cache-ready-text)' : 'var(--accent)',
         }}
       >
         {building ? (

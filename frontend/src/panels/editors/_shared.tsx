@@ -117,21 +117,21 @@ export function MlflowStatusBadge() {
         ? "warning"
         : "neutral"
   const background = tone === "success"
-    ? "var(--success-soft-subtle)"
+    ? "var(--editor-status-success-bg)"
     : tone === "danger"
       ? "var(--danger-soft-faint)"
       : tone === "warning"
         ? "var(--warning-soft-subtle)"
         : "var(--bg-panel)"
   const border = tone === "success"
-    ? "var(--success-border)"
+    ? "var(--editor-status-success-border)"
     : tone === "danger"
       ? "var(--danger-border)"
       : tone === "warning"
         ? "var(--warning-border)"
         : "var(--border)"
   const iconColor = tone === "success"
-    ? "var(--success)"
+    ? "var(--editor-status-success-text)"
     : tone === "danger"
       ? "var(--danger)"
       : tone === "warning"
@@ -249,9 +249,9 @@ export function FileBrowser({
   return (
     <div>
       {showSelectionSummary && selectedPath && (
-        <div className="mb-2 px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'var(--success-soft)', border: '1px solid var(--success-border)' }}>
-          <Check size={14} style={{ color: 'var(--success)' }} className="shrink-0" />
-          <span className="text-xs font-mono truncate" style={{ color: 'var(--success-hover)' }}>{selectedPath}</span>
+        <div className="mb-2 px-2.5 py-2 rounded-lg flex items-center gap-2" style={{ background: 'var(--banner-success-bg)', border: '1px solid var(--banner-success-border)' }}>
+          <Check size={14} style={{ color: 'var(--banner-success-text)' }} className="shrink-0" />
+          <span className="text-xs font-mono truncate" style={{ color: 'var(--banner-success-data)' }}>{selectedPath}</span>
         </div>
       )}
 
