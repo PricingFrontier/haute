@@ -671,6 +671,25 @@ class TrainingJob:
             )
             self._validate_columns(schema_df)
 
+            # The target's values must be able to serve the configured task.
+            # The train route runs the same gate before dispatching the fit
+            # worker; repeating it here covers the CLI and exported-script
+            # paths, and the shared function keeps the two from drifting.
+            from haute.modelling._target_check import training_target_task_issue
+
+            target_task_issue = training_target_task_issue(
+                pl.scan_parquet(data_path),
+                target=self.target,
+                task=self.task,
+                collect=lambda lf: _training_streaming_collect(
+                    lf,
+                    stage_name="training_target_task_check",
+                    execution_context=execution_context,
+                ),
+            )
+            if target_task_issue is not None:
+                raise ValueError(target_task_issue)
+
             # Null targets cannot be passed to trainers.  External parquet inputs
             # keep the filter fused into the split sink to avoid an extra wide
             # clean file; owned temp inputs are already materialized, so publish a
@@ -1090,6 +1109,22 @@ class TrainingJob:
             execution_context=execution_context,
         )
 
+    def _metric_stage_error(self, exc: ValueError, *, evaluation_set: str) -> ValueError:
+        """Wrap a mandatory metric failure with the user-model objects involved.
+
+        The library error alone ("continuous format is not supported") names
+        neither the target column nor the task nor a fix; this is a
+        user-facing boundary, so the wrapped message must carry all three.
+        """
+        metric_list = ", ".join(self.metrics)
+        return ValueError(
+            f"Could not evaluate the trained model on the {evaluation_set} data: {exc}. "
+            f"The metrics ({metric_list}) were computed against target column "
+            f"'{self.target}' with task '{self.task}'. Check that the target's values "
+            "match the task and metrics (AUC and log loss need a discrete 0/1 target), "
+            "then adjust the target column, the task, or the reported metrics."
+        )
+
     def _compute_metrics(
         self,
         split_result: _SplitResult,
@@ -1164,13 +1199,16 @@ class TrainingJob:
 
         # Primary metrics from the diagnostics set
         vp = self.variance_power
-        metrics = compute_metrics(
-            y_true,
-            y_pred,
-            w,
-            self.metrics,
-            variance_power=vp,
-        )
+        try:
+            metrics = compute_metrics(
+                y_true,
+                y_pred,
+                w,
+                self.metrics,
+                variance_power=vp,
+            )
+        except ValueError as exc:
+            raise self._metric_stage_error(exc, evaluation_set=diagnostics_set) from exc
 
         # When holdout is present, diagnostics were computed on holdout.
         # Also compute validation metrics separately so both are available.
@@ -1189,13 +1227,16 @@ class TrainingJob:
                 val_y_true = val_df[self.target].to_numpy()
                 val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
                 val_w = val_df[self.weight].to_numpy() if self.weight else None
-                metrics = compute_metrics(
-                    val_y_true,
-                    val_y_pred,
-                    val_w,
-                    self.metrics,
-                    variance_power=vp,
-                )
+                try:
+                    metrics = compute_metrics(
+                        val_y_true,
+                        val_y_pred,
+                        val_w,
+                        self.metrics,
+                        variance_power=vp,
+                    )
+                except ValueError as exc:
+                    raise self._metric_stage_error(exc, evaluation_set="validation") from exc
                 del val_df
 
         # Double-lift

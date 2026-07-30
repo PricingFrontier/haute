@@ -9,6 +9,7 @@
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` profile-likelihood estimation; `_resolve_glm_terms()` term resolution. |
 | `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare data, split, train, compute metrics, save artifacts, and optionally log to MLflow; also defines `TrainResult` and the intermediate stage types. |
 | `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`). |
+| `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task gate returning an actionable message (or nothing when the pairing is valid), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
 | `src/haute/modelling/_split.py` | `SplitConfig`, `split_data`/`split_mask` for random/temporal/group strategies, and partition constants. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
@@ -171,6 +172,11 @@
    projects away excluded columns while retaining explicit `feature_columns` even
    when a stale `exclude` entry also names them, and streams the result to a temp parquet with
    `bounded_sink`;
+   `training_target_task_issue` (`_target_check.py`) then validates the sunk parquet's
+   target column against the configured task — a classification task pointed at a
+   continuous (or otherwise non-classifiable) target removes the temp parquet and
+   rejects HTTP 422/`contract_error` with a message naming the target column and task,
+   before any fit worker is spawned;
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`), creates a same-filesystem
    staging root, and starts a daemon supervisor thread around a spawn child.
@@ -213,7 +219,10 @@
 
 1. **`_prepare_data`** — reuse an already-sunk parquet path directly, or collect a
    supplied DataFrame/LazyFrame and write it to a temp parquet; validate required
-   columns; count and, when the run owns the input, filter out null-target rows into a
+   columns and the target/task pairing (`training_target_task_issue` — a continuous or
+   non-classifiable target under `task="classification"` raises the same actionable
+   `ValueError` the route gate uses, covering the CLI and exported-script paths);
+   count and, when the run owns the input, filter out null-target rows into a
    second "clean" temp parquet; `_derive_features` (explicit `feature_columns`, or all
    columns minus target/weight/offset/fold/id/split-key columns/exclude, with
    categorical features detected from Polars dtype); snapshot feature dtypes,
@@ -235,7 +244,10 @@
    reloaded `.cbm` scores by name, not position), then fits.
 5. **`_compute_metrics`** — mandatory `algo.feature_importance(model)`; select the
    diagnostics partition by precedence holdout > validation > train; read it once;
-   compute primary metrics with offset-inclusive predictions; if the diagnostics set is
+   compute primary metrics with offset-inclusive predictions (a `ValueError` from
+   mandatory metric computation is re-raised with the evaluation set, target column,
+   task, and requested metric names wrapped around the library error, so a bare
+   sklearn message never crosses the worker boundary); if the diagnostics set is
    holdout, separately re-read validation to report both sets' metrics; then double
    lift, AvE-per-feature, optional SHAP / `LossFunctionChange` importance (each
    individually try/excepted into `diagnostics_errors`), residuals
@@ -503,9 +515,13 @@ rows/features) and retry.
   block via `_record_diag_error`; recorded in `diagnostics_errors`, never propagates to
   fail the whole run.
 - **`ValueError`** — the dominant validation error across the package: bad split
-  config, missing required columns, an empty training DataFrame, all-non-finite metric
+  config, missing required columns, a target/task mismatch
+  (`training_target_task_issue`), an empty training DataFrame, all-non-finite metric
   inputs, a missing offset column at predict time, GLM terms referencing absent
-  columns. `_run_training_process_job` maps a bare `ValueError` from
+  columns. A `ValueError` from mandatory metric computation in
+  `TrainingJob._compute_metrics` is re-raised as a `ValueError` naming the evaluation
+  set, target column, task, and requested metrics, chaining the original.
+  `_run_training_process_job` maps a bare `ValueError` from
   `TrainingJob.run()` to a `contract_error` failure payload (distinct from the
   catch-all `error`), and the parent supervisor persists that terminal reason.
 - **Execution-engine exceptions** (`ExecutionCancelledError`,
@@ -525,6 +541,14 @@ rows/features) and retry.
   CatBoost-flavoured exceptions (NaN/Inf hint, feature-count mismatch), prefixes
   `OSError` as a model-save failure, and otherwise falls back to
   `f"Training failed ({exc_type}): {msg}"`.
+- **Curated failure surfacing** — every failure payload the training/dispersion
+  entrypoints build (`_worker_failure_payload`) stamps its curated message on the
+  payload's `user_message` field (`_worker_protocol.WORKER_USER_MESSAGE_FIELD`); the
+  parent supervisor surfaces that field verbatim as the job's terminal message
+  instead of the "Isolated worker raised {type}: {message}" wrapper text, which is
+  retained only in the diagnostic `error` field. See
+  [background-jobs](../background-jobs/low-level.md) for the supervisor side of the
+  contract.
 - **`_record_diag_error`** is the single call site that converts an optional-diagnostic
   exception into a structured `diagnostics_errors` entry (`diagnostic`, `error`,
   `error_type`) plus a `logger.warning` — used identically for SHAP,
@@ -605,6 +629,11 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
+- `test_target_task_gate.py` — `training_target_task_issue` unit coverage (discrete
+  dtypes pass, integral floats pass, fractional floats and non-classifiable dtypes
+  gate with messages naming the target column, task, and call to action; regression
+  task untouched), the `TrainingJob._prepare_data` gate, and the metric-stage
+  `ValueError` context wrap.
 - Narrow, remediation-pinned regression suites: `test_training_memory_safety.py`,
   `test_training_temp_cleanup.py`, `test_training_split_streaming.py`,
   `test_training_null_target_fused_split.py`, `test_training_catboost_projection.py`,

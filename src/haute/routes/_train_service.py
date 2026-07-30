@@ -44,6 +44,7 @@ from haute._worker_isolation import worker_config_for_memory_policy
 from haute._worker_protocol import (
     WORKER_MAX_MESSAGE_LENGTH,
     WORKER_MAX_TRACEBACK_LENGTH,
+    WORKER_USER_MESSAGE_FIELD,
     WorkerArtifactManifest,
     WorkerFailurePayload,
     WorkerProgressEvent,
@@ -655,12 +656,18 @@ def _worker_failure_payload(
     remote_traceback = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))[
         :WORKER_MAX_TRACEBACK_LENGTH
     ]
+    payload_fields = dict(fields) if fields is not None else {"error": detail}
+    # Every payload built here carries a message the child has curated for the
+    # UI (via _friendly_error or an explicit gate); marking it user-facing lets
+    # the parent supervisor surface it verbatim instead of the
+    # "Isolated worker raised {type}: {message}" wrapper.
+    payload_fields.setdefault(WORKER_USER_MESSAGE_FIELD, detail)
     return WorkerFailurePayload(
         terminal_reason=terminal_reason,
         error_type=type(exc).__name__,
         message=detail,
         traceback=remote_traceback or type(exc).__name__,
-        fields=fields or {"error": detail},
+        fields=payload_fields,
     )
 
 
@@ -1381,6 +1388,11 @@ class TrainService:
                 required_columns_by_node=_training_required_columns_by_node(node_id, config),
                 execution_context=execution_context,
             )
+            self._validate_target_task_pairing(
+                tmp_parquet,
+                config,
+                execution_context=execution_context,
+            )
             execution_context.checkpoint(label="training_preparation_complete")
             feature_selection = self._store.require_job(job_id).get("feature_selection")
             launch_config = config
@@ -1426,6 +1438,36 @@ class TrainService:
                 if execution_context is not None:
                     execution_context.release_admission(preserve_primary_error=True)
                 self._training_jobs.release(job_id)
+
+    @staticmethod
+    def _validate_target_task_pairing(
+        tmp_parquet: str,
+        config: dict[str, Any],
+        *,
+        execution_context: ExecutionContext,
+    ) -> None:
+        """Gate a target whose materialised values cannot serve the configured task.
+
+        Runs on the sunk training parquet, after materialisation but before
+        the fit worker is dispatched, so a config/data mismatch (the
+        motivating case: a continuous target under a classification task)
+        fails with the target column and task named instead of surfacing a
+        context-free library error from inside the child. Removes the temp
+        parquet before raising — no later owner exists for it on this path.
+        """
+        from haute._polars_utils import streaming_collect
+        from haute.modelling._target_check import training_target_task_issue
+
+        issue = training_target_task_issue(
+            pl.scan_parquet(tmp_parquet),
+            target=str(config.get("target", "")),
+            task=str(config.get("task", "regression")),
+            collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
+        )
+        if issue is not None:
+            if Path(tmp_parquet).exists():
+                os.unlink(tmp_parquet)
+            raise HTTPException(status_code=422, detail=issue)
 
     def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:
         message, fields = _http_failure_job_parts(exc, job_id=job_id)

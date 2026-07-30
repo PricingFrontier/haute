@@ -121,6 +121,12 @@
   Version-1 bounds are: queue capacity 64; at most 10,000 delivered events;
   64 KiB per event; 4 MiB result metadata; 64 artifacts; 512-character identifiers
   and messages; 4,096-character relative paths; nesting depth 64.
+- **`WORKER_USER_MESSAGE_FIELD`** (`"user_message"`) — the curated-message contract
+  key. A failure payload whose `fields` carry this key vouches that the value is a
+  user-facing message: it names the user-model objects involved where the child
+  knows them, carries a call to action where one exists, and contains no filesystem
+  paths, secrets, or raw tracebacks. `IsolatedJobSupervisor` surfaces it verbatim as
+  the job's terminal message instead of the typed wrapper text.
 
 ### `_artifact_housekeeping.py`
 
@@ -314,9 +320,13 @@ primitive for supported direct callers and its focused tests. Both delegate to
 The thread executes one total outcome pipeline:
 
 1. `_produce_outcome` maps success or a typed `IsolatedWorkerError` to a
-   `_SupervisorOutcome`. Any other `BaseException` becomes an `error` outcome with a
-   bounded generic message plus `worker_error_class`/`supervisor_error_class`; the
-   original exception is retained as `exception_to_report`.
+   `_SupervisorOutcome`. A worker failure whose payload fields carry
+   `WORKER_USER_MESSAGE_FIELD` uses that curated string as the outcome message
+   rather than `str(exc)` ("Isolated worker raised …"); the wrapper text is kept in
+   the diagnostic `error` field. Any other `BaseException` becomes an `error`
+   outcome with a bounded generic message plus
+   `worker_error_class`/`supervisor_error_class`; the original exception is
+   retained as `exception_to_report`.
 2. `_finish_outcome` runs the parent completion/cleanup callback. A cleanup failure
    is retained as `cleanup_error`/`cleanup_error_class` without changing the worker
    outcome, and is logged with its job ID and traceback for operator diagnosis. In
@@ -439,7 +449,7 @@ the root itself are never removed.
 | `HTTPException(400)` | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
-| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
+| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
 | `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised to the awaiting route handler on response timeout; route code (`src/haute/routes/pipeline.py`, `json_cache.py`, `output_assemble.py`) catches it to build a 504 response. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 

@@ -37,6 +37,14 @@ from haute._worker_isolation import (
 )
 
 SCHEMA_VERSION = 1
+# Curated-message contract key. A failure payload whose ``fields`` carry this
+# key vouches that the value is a user-facing message: it names the user-model
+# objects involved (target column, task/objective, metric) where the child
+# knows them, carries a call to action where one exists, and contains no
+# filesystem paths, secrets, or raw tracebacks. The parent supervisor surfaces
+# it verbatim as the job's terminal message instead of the typed wrapper text
+# ("Isolated worker raised {type}: {message}").
+WORKER_USER_MESSAGE_FIELD = "user_message"
 WORKER_EVENT_QUEUE_CAPACITY = 64
 WORKER_MAX_EVENTS = 10_000
 WORKER_MAX_EVENT_BYTES = 64 * 1024

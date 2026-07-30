@@ -19,6 +19,7 @@ from haute._worker_isolation import (
     run_isolated_worker,
 )
 from haute._worker_protocol import (
+    WORKER_USER_MESSAGE_FIELD,
     WorkerFunction,
     WorkerProgressEvent,
     WorkerRequest,
@@ -373,7 +374,7 @@ class IsolatedJobSupervisor:
         except IsolatedWorkerError as exc:
             return _SupervisorOutcome(
                 terminal_reason=_coerce_worker_terminal_reason(exc.terminal_reason),
-                message=str(exc),
+                message=_worker_terminal_message(exc),
                 fields=_isolated_worker_failure_fields(exc),
             )
         except BaseException as exc:
@@ -487,6 +488,22 @@ def _unexpected_supervisor_outcome(
         fields=fields,
         exception_to_report=exc if report_exception else None,
     )
+
+
+def _worker_terminal_message(exc: IsolatedWorkerError) -> str:
+    """Prefer a child-curated user-facing message over the typed wrapper text.
+
+    A worker failure payload whose fields carry ``WORKER_USER_MESSAGE_FIELD``
+    vouches that the value is safe and informative to show verbatim; the
+    "Isolated worker raised {type}: {message}" wrapper stays in the diagnostic
+    ``error`` field (see ``_isolated_worker_failure_fields``).
+    """
+    fields = getattr(exc, "fields", None)
+    if isinstance(fields, Mapping):
+        user_message = fields.get(WORKER_USER_MESSAGE_FIELD)
+        if isinstance(user_message, str) and user_message:
+            return user_message
+    return str(exc)
 
 
 def _isolated_worker_failure_fields(exc: IsolatedWorkerError) -> dict[str, Any]:
