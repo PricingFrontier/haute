@@ -106,25 +106,13 @@ def _modelling_graph(data_path: str, config: dict[str, Any]) -> dict:
     return graph.model_dump()
 
 
-def _completed_train_result(model_path: str) -> object:
-    from haute.modelling._training_job import TrainResult
-
-    return TrainResult(
-        metrics={"rmse": 0.1, "gini": 0.5},
-        feature_importance=[],
-        model_path=model_path,
-        train_rows=48,
-        validation_rows=12,
-        features=["x1", "x2"],
-        cat_features=[],
-    )
-
-
 class _CapturingTrainingJob:
     """Stands in for TrainingJob; records constructor kwargs and the sunk frame.
 
     The training temp parquet is deleted by the worker's ``finally`` block, so
-    the frame must be read inside ``run()`` while the file still exists.
+    the frame must be read inside ``run()`` while the file still exists. The
+    successful-run behaviour (model, contract, evaluation artifacts, valid
+    completed result) is delegated to the shared worker-protocol stub.
     """
 
     captured: ClassVar[list[dict[str, Any]]] = []
@@ -132,27 +120,14 @@ class _CapturingTrainingJob:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
 
-    def run(
-        self,
-        progress: Any,
-        on_iteration: Any,
-        check_cancelled: Any = None,
-        execution_context: Any = None,
-    ) -> object:
+    def run(self, progress: Any, on_iteration: Any, **run_kwargs: Any) -> object:
+        from tests.test_training_worker_protocol import _SuccessfulTrainingJob
+
         type(self).captured.append(
             {"kwargs": self.kwargs, "frame": pl.read_parquet(self.kwargs["data"])}
         )
-        output_dir = Path(self.kwargs["output_dir"])
-        output_dir.mkdir(parents=True, exist_ok=True)
-        model_path = output_dir / f"{self.kwargs['name']}.cbm"
-        model_path.write_bytes(b"model")
-        from haute.modelling._training_job import model_contract_filename
-
-        (output_dir / model_contract_filename(self.kwargs["name"])).write_text(
-            '{"schema_version": 1}',
-            encoding="utf-8",
-        )
-        return _completed_train_result(str(model_path))
+        delegate = _SuccessfulTrainingJob(**self.kwargs)
+        return delegate.run(progress, on_iteration, **run_kwargs)
 
 
 @pytest.fixture()
@@ -239,7 +214,12 @@ class TestCatBoostParamRouting:
             "offset": "log_exposure",
             "loss_function": "Poisson",
             "params": {"iterations": 4, "depth": 2},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "metrics": ["rmse"],
         }
         graph = _modelling_graph(frequency_data, config)
@@ -247,8 +227,8 @@ class TestCatBoostParamRouting:
         status = _start_training(client, graph)
 
         assert status["status"] == "completed", status.get("message")
-        assert status["result"]["metrics"]
-        assert status["result"]["train_rows"] > 0
+        assert status["result"]["diagnostic_metrics"]
+        assert status["result"]["development_rows"] > 0
 
     def test_catboost_receives_only_catboost_params(
         self,
@@ -267,7 +247,12 @@ class TestCatBoostParamRouting:
             "offset": "log_exposure",
             "weight": "x2",
             "params": {"iterations": 4, "depth": 2},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "metrics": ["rmse"],
         }
         graph = _modelling_graph(frequency_data, config)
@@ -293,7 +278,12 @@ class TestCatBoostParamRouting:
             "algorithm": "catboost",
             "task": "regression",
             "params": {"iterations": 4, "depth": 2},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "metrics": ["rmse"],
             "mlflow_experiment": None,
             "model_name": None,
@@ -304,6 +294,7 @@ class TestCatBoostParamRouting:
             "monotone_constraints": None,
             "feature_weights": None,
             "categorical_levels": None,
+            "tuning": None,
         }
         staged_output = Path(kwargs["output_dir"])
         assert staged_output.name == "output"
@@ -331,7 +322,12 @@ class TestCatBoostParamRouting:
             "intercept": True,
             "offset": "log_exposure",
             "params": {},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "metrics": ["rmse"],
         }
         graph = _modelling_graph(frequency_data, config)
@@ -365,7 +361,12 @@ class TestCatBoostParamRouting:
             "terms": {"x1": {"type": "linear"}},
             "intercept": True,
             "params": {},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "metrics": ["rmse"],
         }
         graph = _modelling_graph(frequency_data, config)
@@ -407,7 +408,12 @@ class TestExportedScriptEquivalence:
             "terms": {"x1": {"type": "linear"}},
             "intercept": True,
             "params": {},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "metrics": ["rmse"],
             "output_dir": str(tmp_path / "outputs_live"),
         }
@@ -450,7 +456,12 @@ class TestRowLimitDownsample:
             "loss_function": "RMSE",
             "row_limit": row_limit,
             "params": {"iterations": 4, "depth": 2},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "metrics": ["rmse"],
         }
         return _modelling_graph(data_path, config)

@@ -5,17 +5,18 @@
 | File | Responsibility |
 |---|---|
 | `frontend/src/main.tsx` | Local-session bootstrap: establishes the browser-managed HttpOnly cookie before mounting `App` inside `StrictMode` + a root `ErrorBoundary`; renders an actionable reload state if the local backend is unavailable. |
-| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). |
+| `frontend/src/api/client.ts` | Typed `fetch()` wrapper: same-origin cookie credentials, single-flight `bootstrapHauteSession`, retry/backoff, timeout, abort handling, session-expiry event, and one function per backend endpoint. Exports `request`/`post` so split-chunk endpoint modules can reuse the same fetch machinery, and a raw-stream helper (cookie credentials + `ApiError` mapping, no JSON parse) for split modules with non-JSON transports — the assistant SSE stream (see [frontend-assistant-ui](../frontend-assistant-ui/low-level.md)). Modelling train/status/estimate methods dynamically import `types/trainGuards.ts` only after their response arrives so the large training contract stays out of the initial bundle. |
 | `frontend/src/api/dispersion.ts` | GLM dispersion-estimation endpoints (NB `theta` / Tweedie `var_power`): `estimateGlmDispersion`, `getDispersionStatus`, `cancelDispersion`, and `runDispersionEstimate` (starts + polls to completion, resolving with the estimated number). Split out of `client.ts` so its code — reachable only from the lazy-loaded modelling config panel — stays out of the initial JS bundle; built on `client.ts`'s exported `request`/`post` and owns its own runtime parsers (`parseDispersionEstimateResponse`, `parseDispersionStatusResponse`) rather than routing through `types/guards.ts`. |
-| `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`, including nullable directory sizes in `FileListItem`; re-exports canonical node/trace types and owns the runtime `JOB_STATUS_VALUES`, `FAILED_JOB_STATUSES`, and `TERMINAL_JOB_STATUSES` shared by guards and pollers. |
+| `frontend/src/api/types.ts` | Request/response TypeScript interfaces mirrored from `src/haute/schemas.py`, including nullable directory sizes and canonical evaluation/tuning reports and previews; re-exports canonical node/trace types and owns the runtime `JOB_STATUS_VALUES`, `FAILED_JOB_STATUSES`, and `TERMINAL_JOB_STATUSES` shared by guards and pollers. |
 | `frontend/src/types/node.ts` | Canonical persisted `PIPELINE_NODE_TYPES` vocabulary and `NodeTypeValue`; `HauteNodeData`/`PipelineFlowNode`/`SubmodelNodeData` shapes, `ColumnInfo`, `BackendNodeStatus`/`NodeStatus`, and the `nodeData()`/`effectiveNodeType()` accessors used everywhere a React Flow `Node.data` needs typed access. |
 | `frontend/src/types/trace.ts` | Trace playback shapes (`TraceStep`, `TraceResult`, per-node-type `TraceNodeDetail` variants) mirroring backend trace output. |
 | `frontend/src/types/banding.ts` | Banding-factor rule shapes shared between the banding node editor and its trace rendering. |
-| `frontend/src/types/guards.ts` | Runtime parsers (`parse*`) and type guards for concrete JSON API response shapes; the JSON/DOM trust boundary. `parseFileListResponse` accepts absent, numeric, or null `size` while retaining strict validation of every other field. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
-| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore result caches, column cache, derived-getter memoization, LRU eviction. |
+| `frontend/src/types/guards.ts` | Shared runtime parser primitives plus parsers (`parse*`) and type guards for eagerly used concrete JSON API response shapes; part of the JSON/DOM trust boundary. `parseFileListResponse` accepts absent, numeric, or null `size` while retaining strict validation of every other field. Generic transport helpers, the caller-generic `readJson<T>`, and split-module local parsers are explicit exceptions. |
+| `frontend/src/types/trainGuards.ts` | Dynamically imported runtime parsers for modelling train/status/estimate responses. Training parsing strictly retains authoritative live-history/truncation and validates complete evaluation/tuning reports, weighted fit evidence, deterministic winner/count links, and bounded evaluation previews while remaining outside the initial JavaScript graph. |
+| `frontend/src/stores/useNodeResultsStore.ts` | Zustand store: preview/solve/train/explore result caches, authoritative training history plus bounded ETA samples, column cache, derived-getter memoization, LRU eviction. |
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, MLflow status cache, data sources, file-listing cache. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
-| `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node UI selection memory, hover highlight, node search open flag. |
+| `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory, hover highlight, node search open flag. |
 | `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed hex `NODE_GROUP_COLORS` palette. |
 | `frontend/src/utils/formatBytes.ts` | Byte count → `B`/`KB`/`MB` string. |
 | `frontend/src/utils/formatTime.ts` | Unix timestamp → `HH:MM` / coarse relative-time label. |
@@ -357,7 +358,7 @@ same Vitest config.
   poll-to-terminal-failure paths, abort mid-poll rejecting with
   `DOMException("AbortError")` after awaiting `cancelDispersion`,
   and a completed-without-value rejection.
-- **`frontend/src/types/guards.ts`**
+- **`frontend/src/types/guards.ts` and `frontend/src/types/trainGuards.ts`**
   (`frontend/src/types/__tests__/guards.contract.test.ts`):
   contract tests exercising the parse functions against both valid and
   malformed payloads, asserting the exact thrown-error shape for the
@@ -524,3 +525,38 @@ compatibility wrappers. Settings/cache stores key remote work by safe
 identity digest and job id, not table spelling. Guard tests cover every union
 leg, order retention, unknown versions, readiness/freshness separation,
 error/redaction fields, and malformed-payload rejection.
+
+## Modelling config panes
+
+The observable behaviour is defined by
+[frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
+The following remain shared-infrastructure-owned:
+
+- `frontend/src/stores/useUIStore.ts` owns a `ModellingPane` five-value union plus
+  `modellingPanes: Record<nodeId, pane>` and its immutable setter, following the existing Explore
+  selection-memory pattern. It is browser UI state only and is not serialized into node config.
+- `frontend/src/api/types.ts`, `frontend/src/types/trainGuards.ts`, and the train-progress type used by
+  `frontend/src/stores/useNodeResultsStore.ts` share the backend's optional
+  `train_loss_history` and `train_loss_history_truncated` status fields.
+  `parseTrainStatusResponse` retains those fields and parses every present row through the same
+  finite-number/required-iteration contract as completed `loss_history`; malformed present data
+  throws, omitted history stays omitted, and no latest-loss reconstruction is invented.
+- `frontend/src/stores/useNodeResultsStore.ts` keeps each active job's latest status/history
+  snapshot unchanged and a bounded pair of distinct increasing iteration/elapsed samples for the
+  browser-derived remaining-time estimate. A sample is usable only when iteration and elapsed time
+  both increase and total iterations remain greater than the current iteration. Fewer than two
+  samples, duplicate/stalled or non-monotonic progress, invalid/non-positive rates, terminal
+  updates, and a new `startTrainJob` yield no estimate. Loss rows are never appended client-side;
+  backend truncation remains authoritative and bounded.
+
+`frontend/src/stores/useSettingsStore.ts` does not gain or remove a schema field: its section map is
+generic. The modelling feature/MLflow keys merely lose their consumers, any process-local entries
+become inert, and `modelling.monotonic` continues to use the existing API.
+
+`frontend/src/stores/__tests__/useUIStore.test.ts` proves independent node memory.
+`frontend/src/types/__tests__/guards.contract.test.ts` and
+`frontend/src/api/__tests__/client.contract.test.ts` prove history/truncation retention, omission,
+and strict malformed-row rejection.
+`frontend/src/__tests__/stores/useNodeResultsStore.test.ts` proves latest-snapshot (not append)
+semantics, every estimate show/hide case, terminal clearing, and reset on a replacement job for the
+same node. Consumer ownership is recorded in `ownership.toml`.

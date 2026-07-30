@@ -485,6 +485,28 @@ export interface MlflowCheckResponse {
   detail?: string
 }
 
+export interface EvaluationDateRange {
+  start: string
+  end: string
+}
+
+export interface EvaluationPreview {
+  schema_version: 1
+  strategy: "random" | "group" | "temporal"
+  validation_method: "none" | "single" | "cross_validation"
+  development_rows: number
+  final_test_rows: number
+  validation_fit_count: number
+  min_selection_train_rows?: number
+  max_selection_train_rows?: number
+  min_selection_validation_rows?: number
+  max_selection_validation_rows?: number
+  development_group_count?: number
+  final_test_group_count?: number
+  development_date_range?: EvaluationDateRange
+  final_test_date_range?: EvaluationDateRange
+}
+
 export interface TrainEstimate {
   total_rows: number | null
   safe_row_limit: number | null
@@ -498,6 +520,7 @@ export interface TrainEstimate {
   gpu_vram_estimated_mb: number | null
   gpu_vram_available_mb: number | null
   gpu_warning: string | null
+  evaluation_preview: EvaluationPreview | null
 }
 
 export type DispersionParam = "theta" | "var_power"
@@ -609,7 +632,7 @@ export interface TrainDiagnosticsError {
 
 export interface TrainFeatureSelectionExcludedColumn {
   column: string
-  reason: "target" | "weight" | "offset" | "fold" | "identifier" | "split" | "configured_exclusion" | "not_selected" | "not_in_formula"
+  reason: "target" | "weight" | "offset" | "fold" | "identifier" | "evaluation" | "configured_exclusion" | "not_selected" | "not_in_formula"
 }
 
 export interface TrainFeatureSelectionCollection<T> {
@@ -628,41 +651,123 @@ export interface TrainFeatureSelection {
   excluded_columns: TrainFeatureSelectionCollection<TrainFeatureSelectionExcludedColumn>
 }
 
+export interface EvaluationFit {
+  schema_version: 1
+  fit_index: number
+  train_rows: number
+  validation_rows: number
+  metrics: Record<string, number>
+  best_iteration: number | null
+}
+
+export interface EvaluationMetricSummary {
+  mean: number
+  stddev: number
+  min: number
+  max: number
+  fit_count: number
+  validation_rows: number
+}
+
+export interface EvaluationSummary {
+  development_rows: number
+  test_rows: number
+  validation_fit_count: number
+  development_group_count: number | null
+  test_group_count: number | null
+  development_date_count: number | null
+  test_date_count: number | null
+}
+
+export interface EvaluationReport {
+  schema_version: 1
+  strategy: "random" | "group" | "temporal"
+  validation_method: "none" | "single" | "cross_validation"
+  validation_fit_count: number
+  fit_count: number
+  development_rows: number
+  final_test_rows: number
+  selection_fits: EvaluationFit[]
+  selection_metrics: Record<string, EvaluationMetricSummary>
+  plan_sha256: string
+  results_sha256: string
+  plan_path: string
+  results_path: string
+  report_path: string
+  summary: EvaluationSummary
+}
+
+export interface TuningTrial {
+  schema_version: 1
+  trial_index: number
+  label: "baseline" | "sampled"
+  sampled_params: Record<string, unknown>
+  resolved_params: Record<string, unknown>
+  fits: EvaluationFit[]
+  aggregate_metrics: Record<string, number>
+  objective: number
+  elapsed_seconds: number
+}
+
+export interface TuningReport {
+  schema_version: 1
+  plan_sha256: string
+  trials_sha256: string
+  evaluation_plan_sha256: string
+  metric: string
+  direction: "maximize" | "minimize"
+  baseline_objective: number
+  winner_trial_index: number
+  winner_objective: number
+  improvement: number
+  best_sampled_params: Record<string, unknown>
+  final_params: Record<string, unknown>
+  final_tree_count: number
+  trial_count: number
+  trial_fit_count: number
+  total_fit_count: number
+  trials: TuningTrial[]
+  plan_path: string
+  trials_path: string
+  report_path: string
+}
+
 export interface TrainResponse {
-  status: string
-  job_id?: string | null
-  metrics?: Record<string, number>
-  feature_importance?: TrainFeatureImportanceRow[]
-  model_path?: string
-  train_rows?: number
-  validation_rows?: number
-  holdout_rows?: number
-  holdout_metrics?: Record<string, number>
-  diagnostics_set?: string
-  features?: string[]
-  cat_features?: string[]
-  error?: string | null
-  best_iteration?: number | null
-  loss_history?: Array<{ iteration: number; [key: string]: number }>
-  loss_history_truncated?: boolean
-  double_lift?: TrainDoubleLiftRow[]
-  shap_summary?: TrainShapSummaryRow[]
-  feature_importance_loss?: TrainFeatureImportanceRow[]
-  ave_per_feature?: TrainAvePerFeatureRow[]
-  residuals_histogram?: TrainResidualHistogramRow[]
-  residuals_stats?: Record<string, number>
-  actual_vs_predicted?: ActualVsPredictedRow[]
-  lorenz_curve?: LorenzCurvePoint[]
-  lorenz_curve_perfect?: LorenzCurvePoint[]
-  pdp_data?: PdpFeatureRow[]
-  warning?: string | null
-  total_source_rows?: number | null
-  glm_coefficients?: GlmCoefficientRow[]
-  glm_relativities?: GlmRelativityRow[]
-  glm_fit_statistics?: Record<string, number>
-  glm_regularization_path?: GlmRegularizationPath | null
-  diagnostics_errors?: TrainDiagnosticsError[]
-  feature_selection?: TrainFeatureSelection | null
+  status: "started" | "completed" | "error"
+  job_id: string | null
+  diagnostic_metrics: Record<string, number>
+  final_test_metrics: Record<string, number>
+  feature_importance: TrainFeatureImportanceRow[]
+  model_path: string
+  development_rows: number
+  final_test_rows: number
+  diagnostics_set: "development" | "final_test"
+  features: string[]
+  cat_features: string[]
+  error: string | null
+  best_iteration: number | null
+  loss_history: Array<{ iteration: number; [key: string]: number }>
+  loss_history_truncated: boolean
+  double_lift: TrainDoubleLiftRow[]
+  shap_summary: TrainShapSummaryRow[]
+  feature_importance_loss: TrainFeatureImportanceRow[]
+  ave_per_feature: TrainAvePerFeatureRow[]
+  residuals_histogram: TrainResidualHistogramRow[]
+  residuals_stats: Record<string, number>
+  actual_vs_predicted: ActualVsPredictedRow[]
+  lorenz_curve: LorenzCurvePoint[]
+  lorenz_curve_perfect: LorenzCurvePoint[]
+  pdp_data: PdpFeatureRow[]
+  warning: string | null
+  total_source_rows: number | null
+  glm_coefficients: GlmCoefficientRow[]
+  glm_relativities: GlmRelativityRow[]
+  glm_fit_statistics: Record<string, number>
+  glm_regularization_path: GlmRegularizationPath | null
+  diagnostics_errors: TrainDiagnosticsError[]
+  feature_selection: TrainFeatureSelection | null
+  evaluation?: EvaluationReport
+  tuning?: TuningReport
 }
 
 export interface TrainStatusResponse {
@@ -672,7 +777,7 @@ export interface TrainStatusResponse {
   iteration: number
   total_iterations: number
   train_loss: Record<string, number>
-  train_loss_history?: Record<string, number>[]
+  train_loss_history?: Array<{ iteration: number; [key: string]: number }>
   train_loss_history_truncated?: boolean
   elapsed_seconds: number
   result?: TrainResponse | null
@@ -683,6 +788,14 @@ export interface TrainStatusResponse {
   error_detail?: unknown
   execution_metrics?: ExecutionMetrics | null
   feature_selection?: TrainFeatureSelection | null
+  phase?: "planning" | "trial_fit" | "trial_complete" | "final_fit" | "publication" | "completed" | null
+  trial_index?: number | null
+  trial_count?: number | null
+  fold_index?: number | null
+  fold_count?: number | null
+  completed_fits?: number | null
+  total_fits?: number | null
+  best_objective?: number | null
 }
 
 // ---------------------------------------------------------------------------

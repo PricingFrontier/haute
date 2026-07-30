@@ -108,9 +108,6 @@ import type {
   SubmodelCreateResponse,
   SubmodelGraphResponse,
   TraceResponse,
-  TrainEstimate,
-  TrainResponse,
-  TrainStatusResponse,
   UtilityDeleteResponse,
   UtilityFile,
   UtilityListResponse,
@@ -151,17 +148,17 @@ export interface PipelineResponse {
   sources?: string[]
   active_source?: string
 }
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function typeName(value: unknown): string {
+export function typeName(value: unknown): string {
   if (value === null) return "null"
   if (Array.isArray(value)) return "array"
   return typeof value
 }
 
-function expectPlainObject(
+export function expectPlainObject(
   parser: string,
   value: unknown,
   field = "object",
@@ -175,35 +172,48 @@ function expectPlainObject(
   return value
 }
 
-function expectString(parser: string, value: unknown, field: string): string {
+export function expectString(parser: string, value: unknown, field: string): string {
   if (typeof value !== "string") {
     throw new Error(`${parser}: expected ${field} to be a string, got ${value === undefined ? "missing" : typeName(value)}`)
   }
   return value
 }
 
-function expectNumber(parser: string, value: unknown, field: string): number {
+export function expectNumber(parser: string, value: unknown, field: string): number {
   if (typeof value !== "number" || Number.isNaN(value)) {
     throw new Error(`${parser}: expected ${field} to be a number, got ${value === undefined ? "missing" : typeName(value)}`)
   }
   return value
 }
 
-function expectSchemaVersionOne(parser: string, value: unknown, field: string): 1 {
+export function expectSchemaVersionOne(parser: string, value: unknown, field: string): 1 {
   if (value !== 1) {
     throw new Error(`${parser}: expected ${field} to be 1, got ${value === undefined ? "missing" : typeName(value)}`)
   }
   return 1
 }
 
-function expectBoolean(parser: string, value: unknown, field: string): boolean {
+export function expectExactKeys(
+  parser: string,
+  obj: Record<string, unknown>,
+  field: string,
+  keys: readonly string[],
+): void {
+  const actual = Object.keys(obj).sort()
+  const expected = [...keys].sort()
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${parser}: ${field} has unexpected or missing fields`)
+  }
+}
+
+export function expectBoolean(parser: string, value: unknown, field: string): boolean {
   if (typeof value !== "boolean") {
     throw new Error(`${parser}: expected ${field} to be a boolean, got ${value === undefined ? "missing" : typeName(value)}`)
   }
   return value
 }
 
-function expectStringLiteral<T extends string>(
+export function expectStringLiteral<T extends string>(
   parser: string,
   value: unknown,
   field: string,
@@ -216,7 +226,7 @@ function expectStringLiteral<T extends string>(
   return parsed as T
 }
 
-function optionalString(
+export function optionalString(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -226,7 +236,7 @@ function optionalString(
   return value === undefined ? defaultValue : expectString(parser, value, `field \`${key}\``)
 }
 
-function optionalNumber(
+export function optionalNumber(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -236,7 +246,7 @@ function optionalNumber(
   return value === undefined ? defaultValue : expectNumber(parser, value, `field \`${key}\``)
 }
 
-function optionalBoolean(
+export function optionalBoolean(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -246,7 +256,7 @@ function optionalBoolean(
   return value === undefined ? defaultValue : expectBoolean(parser, value, `field \`${key}\``)
 }
 
-function optionalNullableString(
+export function optionalNullableString(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -258,7 +268,7 @@ function optionalNullableString(
   throw new Error(`${parser}: expected field \`${key}\` to be a string or null, got ${typeName(value)}`)
 }
 
-function optionalNullableNumber(
+export function optionalNullableNumber(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -270,7 +280,7 @@ function optionalNullableNumber(
   return expectNumber(parser, value, `field \`${key}\``)
 }
 
-function expectNullableString(
+export function expectNullableString(
   parser: string,
   value: unknown,
   field: string,
@@ -279,7 +289,7 @@ function expectNullableString(
   throw new Error(`${parser}: expected ${field} to be a string or null, got ${value === undefined ? "missing" : typeName(value)}`)
 }
 
-function expectNullableNumber(
+export function expectNullableNumber(
   parser: string,
   value: unknown,
   field: string,
@@ -288,7 +298,7 @@ function expectNullableNumber(
   return expectNumber(parser, value, field)
 }
 
-function expectArray(
+export function expectArray(
   parser: string,
   value: unknown,
   field: string,
@@ -299,7 +309,7 @@ function expectArray(
   return value
 }
 
-function parseArray<T>(
+export function parseArray<T>(
   parser: string,
   value: unknown,
   field: string,
@@ -308,7 +318,7 @@ function parseArray<T>(
   return expectArray(parser, value, field).map((item, index) => itemParser(item, `${field}[${index}]`))
 }
 
-function optionalArray<T>(
+export function optionalArray<T>(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -379,7 +389,7 @@ function parseNumberRecord(
   return result
 }
 
-function optionalNumberRecord(
+export function optionalNumberRecord(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -479,7 +489,7 @@ function optionalNestedArrayRecord<T>(
   return result
 }
 
-function optionalNullableObject(
+export function optionalNullableObject(
   parser: string,
   obj: Record<string, unknown>,
   key: string,
@@ -764,7 +774,7 @@ const STRATEGY_STATUS = {
 
 const DETAIL_STATES = ["available", "unavailable", "truncated"] as const
 
-function expectInteger(value: unknown, field: string, nonNegative = false): number {
+export function expectInteger(value: unknown, field: string, nonNegative = false): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || (nonNegative && value < 0)) {
     throw new Error(`execution strategy: expected ${field} to be a ${nonNegative ? "non-negative " : ""}integer`)
   }
@@ -863,7 +873,7 @@ export function parseExecutionStrategyDiagnostic(value: unknown): ExecutionStrat
   return { schema_version: 1, status, strategy, profile, boundedness, reason_code: reasonCode, detail_state: detailState, boundaries, reasons, provenance, ...(obj.blocking_node_id === undefined ? {} : { blocking_node_id: expectOptionalNullableDiagnosticString(obj, "blocking_node_id") }), ...(obj.blocking_operator === undefined ? {} : { blocking_operator: expectOptionalNullableDiagnosticString(obj, "blocking_operator") }), ...(remediation === undefined ? {} : { remediation }), ...(estimatedPeakBytes === undefined ? {} : { estimated_peak_bytes: estimatedPeakBytes }), ...(headroomBytes === undefined ? {} : { headroom_bytes: headroomBytes }), ...(assumptions === undefined ? {} : { assumptions }) }
 }
 
-function optionalExecutionMetrics(
+export function optionalExecutionMetrics(
   parser: string,
   obj: Record<string, unknown>,
   key = "execution_metrics",
@@ -1450,275 +1460,6 @@ export function parseInputCacheSnapshotResponse(value: unknown): InputCacheSnaps
 export function parseInputCacheJobStatusResponse(value: unknown): InputCacheJobStatusResponse { const p = "parseInputCacheJobStatusResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), identity_digest: expectString(p, obj.identity_digest, "field `identity_digest`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES), terminal_reason: expectNullableString(p, obj.terminal_reason, "field `terminal_reason`"), message: expectString(p, obj.message, "field `message`"), refresh: expectBoolean(p, obj.refresh, "field `refresh`"), build_class: expectStringLiteral(p, obj.build_class, "field `build_class`", BUILD_CLASSES), progress: parseInputCacheProgress(obj.progress, "field `progress`"), snapshot: obj.snapshot === null ? null : parseInputCacheSnapshotResponse(obj.snapshot), error_code: expectNullableString(p, obj.error_code, "field `error_code`") } }
 export function parseInputCacheCancelResponse(value: unknown): InputCacheCancelResponse { const p = "parseInputCacheCancelResponse"; const obj = expectPlainObject(p, value); return { schema_version: expectSchemaVersionOne(p, obj.schema_version, "field `schema_version`"), job_id: expectString(p, obj.job_id, "field `job_id`"), cancellation_requested: expectBoolean(p, obj.cancellation_requested, "field `cancellation_requested`"), status: expectStringLiteral(p, obj.status, "field `status`", JOB_STATUS_VALUES) } }
 
-function parseFeatureImportanceRow(value: unknown, field: string): NonNullable<TrainResponse["feature_importance"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
-    importance: expectNumber("parseTrainResponse", obj.importance, `${field}.importance`),
-  }
-}
-
-function parseDoubleLiftRow(value: unknown, field: string): NonNullable<TrainResponse["double_lift"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    decile: expectNumber("parseTrainResponse", obj.decile, `${field}.decile`),
-    actual: expectNumber("parseTrainResponse", obj.actual, `${field}.actual`),
-    predicted: expectNumber("parseTrainResponse", obj.predicted, `${field}.predicted`),
-    count: expectNumber("parseTrainResponse", obj.count, `${field}.count`),
-  }
-}
-
-function parseShapSummaryRow(value: unknown, field: string): NonNullable<TrainResponse["shap_summary"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
-    mean_abs_shap: expectNumber("parseTrainResponse", obj.mean_abs_shap, `${field}.mean_abs_shap`),
-  }
-}
-
-function parseAveBin(value: unknown, field: string): NonNullable<NonNullable<TrainResponse["ave_per_feature"]>[number]["bins"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    label: expectString("parseTrainResponse", obj.label, `${field}.label`),
-    exposure: expectNumber("parseTrainResponse", obj.exposure, `${field}.exposure`),
-    avg_actual: expectNumber("parseTrainResponse", obj.avg_actual, `${field}.avg_actual`),
-    avg_predicted: expectNumber("parseTrainResponse", obj.avg_predicted, `${field}.avg_predicted`),
-  }
-}
-
-function parseAvePerFeatureRow(value: unknown, field: string): NonNullable<TrainResponse["ave_per_feature"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
-    type: expectString("parseTrainResponse", obj.type, `${field}.type`),
-    bins: obj.bins === undefined ? [] : parseArray("parseTrainResponse", obj.bins, `${field}.bins`, parseAveBin),
-  }
-}
-
-function parseResidualHistogramRow(value: unknown, field: string): NonNullable<TrainResponse["residuals_histogram"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    bin_center: expectNumber("parseTrainResponse", obj.bin_center, `${field}.bin_center`),
-    count: expectNumber("parseTrainResponse", obj.count, `${field}.count`),
-    weighted_count: expectNumber("parseTrainResponse", obj.weighted_count, `${field}.weighted_count`),
-  }
-}
-
-function parseActualVsPredictedRow(value: unknown, field: string): NonNullable<TrainResponse["actual_vs_predicted"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    actual: expectNumber("parseTrainResponse", obj.actual, `${field}.actual`),
-    predicted: expectNumber("parseTrainResponse", obj.predicted, `${field}.predicted`),
-    weight: expectNumber("parseTrainResponse", obj.weight, `${field}.weight`),
-  }
-}
-
-function parseLorenzCurvePoint(value: unknown, field: string): NonNullable<TrainResponse["lorenz_curve"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    cum_weight_frac: expectNumber("parseTrainResponse", obj.cum_weight_frac, `${field}.cum_weight_frac`),
-    cum_actual_frac: expectNumber("parseTrainResponse", obj.cum_actual_frac, `${field}.cum_actual_frac`),
-  }
-}
-
-function parsePdpGridPoint(value: unknown, field: string): NonNullable<NonNullable<TrainResponse["pdp_data"]>[number]["grid"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  const rawValue = obj.value
-  if (typeof rawValue !== "string" && typeof rawValue !== "number") {
-    throw new Error(`parseTrainResponse: expected ${field}.value to be a string or number, got ${rawValue === undefined ? "missing" : typeName(rawValue)}`)
-  }
-  return {
-    value: rawValue,
-    avg_prediction: expectNumber("parseTrainResponse", obj.avg_prediction, `${field}.avg_prediction`),
-  }
-}
-
-function parsePdpFeatureRow(value: unknown, field: string): NonNullable<TrainResponse["pdp_data"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  const hasDiagnosticError = obj.error !== undefined || obj.error_type !== undefined
-  return {
-    feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
-    type: expectString("parseTrainResponse", obj.type, `${field}.type`),
-    grid: obj.grid === undefined ? [] : parseArray("parseTrainResponse", obj.grid, `${field}.grid`, parsePdpGridPoint),
-    ...(hasDiagnosticError
-      ? {
-          error: expectString("parseTrainResponse", obj.error, `${field}.error`),
-          error_type: expectString("parseTrainResponse", obj.error_type, `${field}.error_type`),
-        }
-      : {}),
-  }
-}
-
-function parseGlmCoefficientRow(value: unknown, field: string): NonNullable<TrainResponse["glm_coefficients"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
-    coefficient: expectNumber("parseTrainResponse", obj.coefficient, `${field}.coefficient`),
-    std_error: expectNumber("parseTrainResponse", obj.std_error, `${field}.std_error`),
-    z_value: expectNumber("parseTrainResponse", obj.z_value, `${field}.z_value`),
-    p_value: expectNumber("parseTrainResponse", obj.p_value, `${field}.p_value`),
-    significance: expectString("parseTrainResponse", obj.significance, `${field}.significance`),
-  }
-}
-
-function parseGlmRelativityRow(value: unknown, field: string): NonNullable<TrainResponse["glm_relativities"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    feature: expectString("parseTrainResponse", obj.feature, `${field}.feature`),
-    relativity: expectNumber("parseTrainResponse", obj.relativity, `${field}.relativity`),
-    ci_lower: obj.ci_lower === undefined ? undefined : expectNumber("parseTrainResponse", obj.ci_lower, `${field}.ci_lower`),
-    ci_upper: obj.ci_upper === undefined ? undefined : expectNumber("parseTrainResponse", obj.ci_upper, `${field}.ci_upper`),
-  }
-}
-
-function parseTrainDiagnosticsError(value: unknown, field: string): NonNullable<TrainResponse["diagnostics_errors"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  return {
-    diagnostic: expectString("parseTrainResponse", obj.diagnostic, `${field}.diagnostic`),
-    error: expectString("parseTrainResponse", obj.error, `${field}.error`),
-    error_type: expectString("parseTrainResponse", obj.error_type, `${field}.error_type`),
-  }
-}
-
-function parseLossHistoryEntry(value: unknown, field: string): NonNullable<TrainResponse["loss_history"]>[number] {
-  const obj = expectPlainObject("parseTrainResponse", value, field)
-  const iteration = expectNumber("parseTrainResponse", obj.iteration, `${field}.iteration`)
-  const result: NonNullable<TrainResponse["loss_history"]>[number] = { iteration }
-  for (const [key, item] of Object.entries(obj)) {
-    if (key === "iteration") continue
-    result[key] = expectNumber("parseTrainResponse", item, `${field}.${key}`)
-  }
-  return result
-}
-
-function parseTrainFeatureSelectionCollection<T>(
-  value: unknown,
-  field: string,
-  parseItem: (value: unknown, field: string) => T,
-): { state: "available" | "truncated"; total_count: number; items: T[] } {
-  const obj = expectPlainObject("parseTrainFeatureSelection", value, field)
-  const state = expectStringLiteral("parseTrainFeatureSelection", obj.state, `${field}.state`, ["available", "truncated"])
-  const items = expectArray("parseTrainFeatureSelection", obj.items, `${field}.items`).map((item, index) =>
-    parseItem(item, `${field}.items[${index}]`),
-  )
-  if (items.length > 128) throw new Error(`parseTrainFeatureSelection: ${field} exceeds its 128-item cap`)
-  const totalCount = expectInteger(obj.total_count, `${field}.total_count`, true)
-  if ((state === "available" && totalCount !== items.length) || (state === "truncated" && totalCount <= items.length)) {
-    throw new Error(`parseTrainFeatureSelection: ${field} count is inconsistent`)
-  }
-  return { state, total_count: totalCount, items }
-}
-
-export function parseTrainFeatureSelection(value: unknown): NonNullable<TrainResponse["feature_selection"]> {
-  const obj = expectPlainObject("parseTrainFeatureSelection", value)
-  if (expectInteger(obj.schema_version, "schema_version") !== 1) {
-    throw new Error("parseTrainFeatureSelection: unsupported schema_version")
-  }
-  const features = parseTrainFeatureSelectionCollection(obj.features, "features", (item, field) =>
-    expectString("parseTrainFeatureSelection", item, field),
-  )
-  const parseExcludedColumn = (item: unknown, field: string) => {
-    const itemObj = expectPlainObject("parseTrainFeatureSelection", item, field)
-    return {
-      column: expectString("parseTrainFeatureSelection", itemObj.column, `${field}.column`),
-      reason: expectStringLiteral("parseTrainFeatureSelection", itemObj.reason, `${field}.reason`, ["target", "weight", "offset", "fold", "identifier", "split", "configured_exclusion", "not_selected", "not_in_formula"]),
-    }
-  }
-  const retainedMetadata = parseTrainFeatureSelectionCollection(obj.retained_metadata, "retained_metadata", parseExcludedColumn)
-  const excludedColumns = parseTrainFeatureSelectionCollection(obj.excluded_columns, "excluded_columns", parseExcludedColumn)
-  if (new Set(features.items).size !== features.items.length) throw new Error("parseTrainFeatureSelection: feature names must be unique")
-  for (const [name, collection] of [["retained_metadata", retainedMetadata], ["excluded_columns", excludedColumns]] as const) {
-    if (new Set(collection.items.map((item) => item.column)).size !== collection.items.length) {
-      throw new Error(`parseTrainFeatureSelection: ${name} columns must be unique`)
-    }
-  }
-  const detailState = expectStringLiteral("parseTrainFeatureSelection", obj.detail_state, "detail_state", ["available", "truncated"])
-  const expectedDetailState = [features.state, retainedMetadata.state, excludedColumns.state].includes("truncated") ? "truncated" : "available"
-  if (detailState !== expectedDetailState) throw new Error("parseTrainFeatureSelection: detail_state is inconsistent")
-  const featureCount = expectInteger(obj.feature_count, "feature_count", true)
-  if (featureCount !== features.total_count) throw new Error("parseTrainFeatureSelection: feature_count is inconsistent")
-  return {
-    schema_version: 1,
-    mode: expectStringLiteral("parseTrainFeatureSelection", obj.mode, "mode", ["explicit", "all_except", "glm_terms"]),
-    feature_count: featureCount,
-    detail_state: detailState,
-    features,
-    retained_metadata: retainedMetadata,
-    excluded_columns: excludedColumns,
-  }
-}
-
-export function parseTrainResponse(value: unknown): TrainResponse {
-  const obj = expectPlainObject("parseTrainResponse", value)
-  const rawRegularization = optionalNullableObject("parseTrainResponse", obj, "glm_regularization_path")
-
-  return {
-    status: expectStringLiteral("parseTrainResponse", obj.status, "field `status`", ["started", "completed", "error"]),
-    job_id: optionalNullableString("parseTrainResponse", obj, "job_id"),
-    metrics: optionalNumberRecord("parseTrainResponse", obj, "metrics"),
-    feature_importance: optionalArray("parseTrainResponse", obj, "feature_importance", parseFeatureImportanceRow),
-    model_path: optionalString("parseTrainResponse", obj, "model_path"),
-    train_rows: optionalNumber("parseTrainResponse", obj, "train_rows"),
-    validation_rows: optionalNumber("parseTrainResponse", obj, "validation_rows"),
-    holdout_rows: optionalNumber("parseTrainResponse", obj, "holdout_rows"),
-    holdout_metrics: optionalNumberRecord("parseTrainResponse", obj, "holdout_metrics"),
-    diagnostics_set: optionalString("parseTrainResponse", obj, "diagnostics_set", "validation"),
-    features: optionalStringArray("parseTrainResponse", obj, "features"),
-    cat_features: optionalStringArray("parseTrainResponse", obj, "cat_features"),
-    error: optionalNullableString("parseTrainResponse", obj, "error"),
-    best_iteration: optionalNullableNumber("parseTrainResponse", obj, "best_iteration"),
-    loss_history: optionalArray("parseTrainResponse", obj, "loss_history", parseLossHistoryEntry),
-    double_lift: optionalArray("parseTrainResponse", obj, "double_lift", parseDoubleLiftRow),
-    shap_summary: optionalArray("parseTrainResponse", obj, "shap_summary", parseShapSummaryRow),
-    feature_importance_loss: optionalArray("parseTrainResponse", obj, "feature_importance_loss", parseFeatureImportanceRow),
-    ave_per_feature: optionalArray("parseTrainResponse", obj, "ave_per_feature", parseAvePerFeatureRow),
-    residuals_histogram: optionalArray("parseTrainResponse", obj, "residuals_histogram", parseResidualHistogramRow),
-    residuals_stats: optionalNumberRecord("parseTrainResponse", obj, "residuals_stats"),
-    actual_vs_predicted: optionalArray("parseTrainResponse", obj, "actual_vs_predicted", parseActualVsPredictedRow),
-    lorenz_curve: optionalArray("parseTrainResponse", obj, "lorenz_curve", parseLorenzCurvePoint),
-    lorenz_curve_perfect: optionalArray("parseTrainResponse", obj, "lorenz_curve_perfect", parseLorenzCurvePoint),
-    pdp_data: optionalArray("parseTrainResponse", obj, "pdp_data", parsePdpFeatureRow),
-    warning: optionalNullableString("parseTrainResponse", obj, "warning"),
-    total_source_rows: optionalNullableNumber("parseTrainResponse", obj, "total_source_rows"),
-    glm_coefficients: optionalArray("parseTrainResponse", obj, "glm_coefficients", parseGlmCoefficientRow),
-    glm_relativities: optionalArray("parseTrainResponse", obj, "glm_relativities", parseGlmRelativityRow),
-    glm_fit_statistics: optionalNumberRecord("parseTrainResponse", obj, "glm_fit_statistics"),
-    glm_regularization_path: rawRegularization === null
-      ? null
-      : {
-          selected_alpha: rawRegularization.selected_alpha === undefined ? undefined : expectNumber("parseTrainResponse", rawRegularization.selected_alpha, "field `glm_regularization_path.selected_alpha`"),
-          n_nonzero: rawRegularization.n_nonzero === undefined ? undefined : expectNumber("parseTrainResponse", rawRegularization.n_nonzero, "field `glm_regularization_path.n_nonzero`"),
-        },
-    diagnostics_errors: optionalArray("parseTrainResponse", obj, "diagnostics_errors", parseTrainDiagnosticsError),
-    feature_selection: obj.feature_selection === undefined || obj.feature_selection === null
-      ? null
-      : parseTrainFeatureSelection(obj.feature_selection),
-  }
-}
-
-export function parseTrainStatusResponse(value: unknown): TrainStatusResponse {
-  const obj = expectPlainObject("parseTrainStatusResponse", value)
-  return {
-    status: expectStringLiteral("parseTrainStatusResponse", obj.status, "field `status`", JOB_STATUS_VALUES),
-    progress: optionalNumber("parseTrainStatusResponse", obj, "progress"),
-    message: optionalString("parseTrainStatusResponse", obj, "message"),
-    iteration: optionalNumber("parseTrainStatusResponse", obj, "iteration"),
-    total_iterations: optionalNumber("parseTrainStatusResponse", obj, "total_iterations"),
-    train_loss: optionalNumberRecord("parseTrainStatusResponse", obj, "train_loss"),
-    elapsed_seconds: optionalNumber("parseTrainStatusResponse", obj, "elapsed_seconds"),
-    result: obj.result === undefined || obj.result === null ? null : parseTrainResponse(obj.result),
-    warning: optionalNullableString("parseTrainStatusResponse", obj, "warning"),
-    terminal_reason: optionalNullableString("parseTrainStatusResponse", obj, "terminal_reason"),
-    error_code: optionalNullableString("parseTrainStatusResponse", obj, "error_code"),
-    http_status_code: optionalNullableNumber("parseTrainStatusResponse", obj, "http_status_code"),
-    error_detail: obj.error_detail,
-    execution_metrics: optionalExecutionMetrics("parseTrainStatusResponse", obj, "execution_metrics"),
-    feature_selection: obj.feature_selection === undefined || obj.feature_selection === null
-      ? null
-      : parseTrainFeatureSelection(obj.feature_selection),
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Explore contracts
 // ---------------------------------------------------------------------------
@@ -1886,23 +1627,6 @@ export function parseMlflowCheckResponse(value: unknown): MlflowCheckResponse {
     backend: optionalString("parseMlflowCheckResponse", obj, "backend"),
     databricks_host: optionalString("parseMlflowCheckResponse", obj, "databricks_host"),
     detail: optionalString("parseMlflowCheckResponse", obj, "detail"),
-  }
-}
-
-export function parseTrainEstimateResponse(value: unknown): TrainEstimate {
-  const obj = expectPlainObject("parseTrainEstimateResponse", value)
-  return {
-    total_rows: optionalNullableNumber("parseTrainEstimateResponse", obj, "total_rows"),
-    safe_row_limit: optionalNullableNumber("parseTrainEstimateResponse", obj, "safe_row_limit"),
-    estimated_mb: optionalNumber("parseTrainEstimateResponse", obj, "estimated_mb"),
-    training_mb: optionalNumber("parseTrainEstimateResponse", obj, "training_mb"),
-    available_mb: optionalNumber("parseTrainEstimateResponse", obj, "available_mb"),
-    bytes_per_row: optionalNumber("parseTrainEstimateResponse", obj, "bytes_per_row"),
-    was_downsampled: optionalBoolean("parseTrainEstimateResponse", obj, "was_downsampled"),
-    warning: optionalNullableString("parseTrainEstimateResponse", obj, "warning"),
-    gpu_vram_estimated_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_estimated_mb"),
-    gpu_vram_available_mb: optionalNullableNumber("parseTrainEstimateResponse", obj, "gpu_vram_available_mb"),
-    gpu_warning: optionalNullableString("parseTrainEstimateResponse", obj, "gpu_warning"),
   }
 }
 

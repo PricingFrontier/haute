@@ -41,6 +41,43 @@ def _inject_job(store: JobStore, status: str, **extra) -> str:
     return store.create_job(fields)
 
 
+def _random_single_evaluation() -> dict:
+    return {
+        "schema_version": 1,
+        "strategy": "random",
+        "seed": 42,
+        "validation": {"method": "single", "size": 0.2},
+    }
+
+
+def _completed_train_result() -> dict:
+    return {
+        "status": "completed",
+        "diagnostic_metrics": {"rmse": 0.5},
+        "final_test_metrics": {},
+        "development_rows": 8,
+        "final_test_rows": 0,
+        "diagnostics_set": "development",
+        "evaluation": {
+            "schema_version": 1,
+            "strategy": "random",
+            "validation_method": "none",
+            "validation_fit_count": 0,
+            "fit_count": 1,
+            "development_rows": 8,
+            "final_test_rows": 0,
+            "selection_fits": [],
+            "selection_metrics": {},
+            "plan_sha256": "0" * 64,
+            "results_sha256": "1" * 64,
+            "plan_path": "evaluation-plan.json",
+            "results_path": "evaluation-results.json",
+            "report_path": "evaluation-report.json",
+            "summary": {"development_rows": 8, "test_rows": 0, "validation_fit_count": 0},
+        },
+    }
+
+
 # ============================================================================
 # 1. Double-start training — 409 Conflict
 # ============================================================================
@@ -56,11 +93,8 @@ class TestDoubleStartTraining:
     def test_409_when_job_already_running(self, client: TestClient) -> None:
         _inject_job(self._store, "running")
 
-        # The train endpoint requires a valid graph payload; it will check
-        # for concurrent jobs before doing any heavy validation.
-        # We send a minimal (invalid) graph — the concurrency check fires
-        # first because it is inside _check_no_concurrent_jobs which runs
-        # before pipeline execution.
+        # The train endpoint receives a valid, lightweight graph; the 409
+        # concurrency check still takes precedence over pipeline execution.
         payload = {
             "graph": {
                 "nodes": [
@@ -82,6 +116,7 @@ class TestDoubleStartTraining:
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 5},
+                                "evaluation": _random_single_evaluation(),
                             },
                         },
                     },
@@ -120,6 +155,7 @@ class TestDoubleStartTraining:
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 5},
+                                "evaluation": _random_single_evaluation(),
                             },
                         },
                     },
@@ -153,7 +189,7 @@ class TestPollCompletedJob:
             "completed",
             progress=1.0,
             message="Done",
-            result={"status": "completed", "metrics": {"rmse": 0.5}},
+            result=_completed_train_result(),
             elapsed_seconds=10.0,
         )
 
@@ -269,6 +305,7 @@ class TestExportScript:
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 100},
+                                "evaluation": _random_single_evaluation(),
                             },
                         },
                     },

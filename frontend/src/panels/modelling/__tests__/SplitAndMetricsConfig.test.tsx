@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { cleanup, fireEvent, render, screen } from "@testing-library/react"
+
 import { SplitAndMetricsConfig } from "../SplitAndMetricsConfig"
 import type { SplitAndMetricsConfigProps } from "../SplitAndMetricsConfig"
 
@@ -9,131 +10,167 @@ const COLUMNS = [
   { name: "loss_amount", dtype: "Float64" },
   { name: "date_col", dtype: "Date" },
   { name: "group_id", dtype: "Utf8" },
-  { name: "is_active", dtype: "Boolean" },
   { name: "age", dtype: "Int64" },
-  { name: "exposure", dtype: "Float64" },
 ]
 
-function makeProps(overrides: Partial<SplitAndMetricsConfigProps> = {}): SplitAndMetricsConfigProps {
+const DEFAULT_EVALUATION = {
+  schema_version: 1,
+  strategy: "random",
+  seed: 42,
+  test: { size: 0.2 },
+  validation: { method: "single", size: 0.2 },
+}
+
+function makeProps(
+  overrides: Partial<SplitAndMetricsConfigProps> = {},
+): SplitAndMetricsConfigProps {
   return {
-    config: {},
-    onUpdate: vi.fn(),
     columns: COLUMNS,
-    target: "loss_amount",
-    weight: "",
-    exclude: [],
-    split: { strategy: "random", validation_size: 0.2, holdout_size: 0, seed: 42 },
-    mlflowOpen: false,
-    monotonicOpen: false,
-    toggleSection: vi.fn(),
-    onSplitUpdate: vi.fn(),
+    evaluation: DEFAULT_EVALUATION,
+    onEvaluationChange: vi.fn(),
+    preview: null,
     ...overrides,
   }
 }
 
 describe("SplitAndMetricsConfig", () => {
-  it("renders split strategy buttons", () => {
+  it("asks the three canonical evaluation questions", () => {
     render(<SplitAndMetricsConfig {...makeProps()} />)
-    expect(screen.getByText("random")).toBeInTheDocument()
-    expect(screen.getByText("temporal")).toBeInTheDocument()
-    expect(screen.getByText("group")).toBeInTheDocument()
+
+    expect(screen.getByText("How is the data structured?")).toBeInTheDocument()
+    expect(screen.getByText("Random rows")).toBeInTheDocument()
+    expect(screen.getByText("Keep entities together")).toBeInTheDocument()
+    expect(screen.getByText("Respect time order")).toBeInTheDocument()
+    expect(screen.getByText("How should candidates be validated?")).toBeInTheDocument()
+    expect(screen.getByText("Reserve an untouched final test?")).toBeInTheDocument()
   })
 
-  it("highlights the active split strategy", () => {
+  it("highlights the active data structure", () => {
     render(<SplitAndMetricsConfig {...makeProps()} />)
-    const randomBtn = screen.getByText("random")
-    expect(randomBtn.style.color).toContain("var(--accent)")
+    expect(screen.getByText("Random rows")).toHaveAttribute("aria-pressed", "true")
   })
 
-  it("clicking a split strategy calls onSplitUpdate", () => {
-    const onSplitUpdate = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ onSplitUpdate })} />)
-    fireEvent.click(screen.getByText("temporal"))
-    expect(onSplitUpdate).toHaveBeenCalledWith("strategy", "temporal")
+  it("switches strategy as one canonical evaluation update", () => {
+    const onEvaluationChange = vi.fn()
+    render(
+      <SplitAndMetricsConfig
+        {...makeProps({ onEvaluationChange })}
+      />,
+    )
+
+    fireEvent.click(screen.getByText("Respect time order"))
+
+    expect(onEvaluationChange).toHaveBeenCalledWith({
+      schema_version: 1,
+      strategy: "temporal",
+      date_column: "",
+      test: { start: "" },
+      validation: { method: "single", start: "" },
+    })
   })
 
-  it("shows validation/holdout/seed inputs for random strategy", () => {
+  it("shows random validation, final-test and seed controls", () => {
     render(<SplitAndMetricsConfig {...makeProps()} />)
-    expect(screen.getByText("Validation")).toBeInTheDocument()
-    expect(screen.getByText("Holdout")).toBeInTheDocument()
-    expect(screen.getByText("Seed")).toBeInTheDocument()
+
+    expect(screen.getByLabelText("Validation fraction")).toHaveValue(0.2)
+    expect(screen.getByLabelText("Reserve final test")).toBeChecked()
+    expect(screen.getByLabelText("Final test fraction")).toHaveValue(0.2)
+    expect(screen.getByLabelText("Evaluation seed")).toHaveValue(42)
   })
 
-  it("shows date column and cutoff for temporal strategy", () => {
-    render(<SplitAndMetricsConfig {...makeProps({
-      split: { strategy: "temporal", date_column: "", cutoff_date: "" },
-    })} />)
-    expect(screen.getByText("Date column")).toBeInTheDocument()
-    expect(screen.getByText("Cutoff date")).toBeInTheDocument()
+  it("shows temporal boundary controls", () => {
+    render(
+      <SplitAndMetricsConfig
+        {...makeProps({
+          evaluation: {
+            schema_version: 1,
+            strategy: "temporal",
+            date_column: "date_col",
+            validation: { method: "single", start: "2025-01-01" },
+            test: { start: "2025-06-01" },
+          },
+        })}
+      />,
+    )
+
+    expect(screen.getByLabelText("Date column")).toHaveValue("date_col")
+    expect(screen.getByLabelText("Validation starts")).toHaveValue("2025-01-01")
+    expect(screen.getByLabelText("Final test starts")).toHaveValue("2025-06-01")
   })
 
-  it("shows group column for group strategy", () => {
-    render(<SplitAndMetricsConfig {...makeProps({
-      split: { strategy: "group", group_column: "", validation_size: 0.2, holdout_size: 0 },
-    })} />)
-    expect(screen.getByText("Group column")).toBeInTheDocument()
+  it("shows entity column for grouped data", () => {
+    render(
+      <SplitAndMetricsConfig
+        {...makeProps({
+          evaluation: {
+            schema_version: 1,
+            strategy: "group",
+            group_column: "group_id",
+            seed: 42,
+            validation: { method: "cross_validation", fold_count: 5 },
+          },
+        })}
+      />,
+    )
+
+    expect(screen.getByLabelText("Entity column")).toHaveValue("group_id")
+    expect(screen.getByLabelText("Fold count")).toHaveValue(5)
   })
 
-  it("changing validation size calls onSplitUpdate", () => {
-    const onSplitUpdate = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ onSplitUpdate })} />)
-    const inputs = screen.getAllByRole("spinbutton")
-    // First spinbutton is validation size
-    fireEvent.change(inputs[0], { target: { value: "0.3" } })
-    expect(onSplitUpdate).toHaveBeenCalledWith("validation_size", 0.3)
+  it("updates validation and final-test configuration without retired fields", () => {
+    const onEvaluationChange = vi.fn()
+    render(
+      <SplitAndMetricsConfig
+        {...makeProps({ onEvaluationChange })}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText("Validation fraction"), {
+      target: { value: "0.3" },
+    })
+    expect(onEvaluationChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_EVALUATION,
+      validation: { method: "single", size: 0.3 },
+    })
+
+    fireEvent.click(screen.getByLabelText("Reserve final test"))
+    const { test: _test, ...withoutTest } = DEFAULT_EVALUATION
+    void _test
+    expect(onEvaluationChange).toHaveBeenLastCalledWith(withoutTest)
   })
 
-  it("MLflow section toggles on click", () => {
-    const toggleSection = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ toggleSection })} />)
-    fireEvent.click(screen.getByText("MLflow Logging"))
-    expect(toggleSection).toHaveBeenCalledWith("modelling.mlflow")
+  it("shows the exact random evaluation preview", () => {
+    render(<SplitAndMetricsConfig {...makeProps({ preview: {
+      schema_version: 1, strategy: "random", validation_method: "cross_validation",
+      development_rows: 800, final_test_rows: 200, validation_fit_count: 5,
+      min_selection_train_rows: 600, max_selection_train_rows: 640,
+      min_selection_validation_rows: 160, max_selection_validation_rows: 200,
+    } })} />)
+
+    expect(screen.getByLabelText("Exact evaluation preview")).toHaveTextContent("Development rows: 800")
+    expect(screen.getByLabelText("Exact evaluation preview")).toHaveTextContent("Selection train rows: min 600, max 640")
   })
 
-  it("shows MLflow fields when mlflowOpen is true", () => {
-    render(<SplitAndMetricsConfig {...makeProps({ mlflowOpen: true })} />)
-    expect(screen.getByText("Experiment path")).toBeInTheDocument()
-    expect(screen.getByText(/Model name/)).toBeInTheDocument()
+  it("shows group counts in the exact evaluation preview", () => {
+    render(<SplitAndMetricsConfig {...makeProps({ preview: {
+      schema_version: 1, strategy: "group", validation_method: "single",
+      development_rows: 80, final_test_rows: 20, validation_fit_count: 1,
+      development_group_count: 8, final_test_group_count: 2,
+    } })} />)
+
+    expect(screen.getByLabelText("Exact evaluation preview")).toHaveTextContent("Development groups: 8")
+    expect(screen.getByLabelText("Exact evaluation preview")).toHaveTextContent("Final-test groups: 2")
   })
 
-  it("monotonic constraints section toggles on click", () => {
-    const toggleSection = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ toggleSection })} />)
-    fireEvent.click(screen.getByText("Monotonic Constraints"))
-    expect(toggleSection).toHaveBeenCalledWith("modelling.monotonic")
-  })
+  it("shows temporal ranges in the exact evaluation preview", () => {
+    render(<SplitAndMetricsConfig {...makeProps({ preview: {
+      schema_version: 1, strategy: "temporal", validation_method: "single",
+      development_rows: 90, final_test_rows: 10, validation_fit_count: 1,
+      development_date_range: { start: "2024-01-01", end: "2024-09-30" },
+      final_test_date_range: { start: "2024-10-01", end: "2024-12-31" },
+    } })} />)
 
-  it("shows monotonic constraint rows only for numeric features", () => {
-    render(<SplitAndMetricsConfig {...makeProps({ monotonicOpen: true })} />)
-    // Int64 and Float64 are eligible; target, Date, Boolean, and String are not.
-    expect(screen.getByText("age")).toBeInTheDocument()
-    expect(screen.getByText("exposure")).toBeInTheDocument()
-    expect(screen.queryByText("group_id")).not.toBeInTheDocument()
-    expect(screen.queryByText("date_col")).not.toBeInTheDocument()
-    expect(screen.queryByText("is_active")).not.toBeInTheDocument()
-  })
-
-  it("writes +1 constraints and removes a key when reset to zero", () => {
-    const onUpdate = vi.fn()
-    const { rerender } = render(<SplitAndMetricsConfig {...makeProps({ monotonicOpen: true, onUpdate })} />)
-
-    fireEvent.click(within(screen.getByText("age").parentElement!).getByText("+1"))
-    expect(onUpdate).toHaveBeenCalledWith("monotone_constraints", { age: 1 })
-
-    rerender(<SplitAndMetricsConfig {...makeProps({
-      monotonicOpen: true,
-      onUpdate,
-      config: { monotone_constraints: { age: 1 } },
-    })} />)
-    fireEvent.click(within(screen.getByText("age").parentElement!).getByText("0"))
-    expect(onUpdate).toHaveBeenLastCalledWith("monotone_constraints", null)
-  })
-
-  it("row limit input calls onUpdate", () => {
-    const onUpdate = vi.fn()
-    render(<SplitAndMetricsConfig {...makeProps({ onUpdate })} />)
-    const rowLimitInput = screen.getByPlaceholderText("All rows")
-    fireEvent.change(rowLimitInput, { target: { value: "50000" } })
-    expect(onUpdate).toHaveBeenCalledWith("row_limit", 50000)
+    expect(screen.getByLabelText("Exact evaluation preview")).toHaveTextContent("Development dates: 2024-01-01 to 2024-09-30")
+    expect(screen.getByLabelText("Exact evaluation preview")).toHaveTextContent("Final-test dates: 2024-10-01 to 2024-12-31")
   })
 })

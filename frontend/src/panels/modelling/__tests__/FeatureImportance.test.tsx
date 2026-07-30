@@ -2,17 +2,10 @@ import { describe, it, expect, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { FeatureImportance } from "../FeatureImportance"
 import type { TrainResult } from "../../../stores/useNodeResultsStore"
+import { makeTrainResult as makeCanonicalTrainResult } from "../../../test-utils/factories"
 
 function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
-  return {
-    status: "complete",
-    metrics: {},
-    feature_importance: [],
-    model_path: "/tmp/model.cbm",
-    train_rows: 1000,
-    validation_rows: 200,
-    ...overrides,
-  }
+  return makeCanonicalTrainResult({ feature_importance: [], ...overrides })
 }
 
 describe("FeatureImportance", () => {

@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/panels/DataPreview.tsx` | Virtualised preview table, frame selection, search, cell callbacks and value formatting. |
-| `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip. |
+| `frontend/src/panels/PreviewPanelFrame.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Resizable/collapsible frame and generic ARIA tab strip with optional visible/assistive per-tab indicators. |
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
@@ -145,3 +145,22 @@ helpers are exercised through these component tests rather than owning standalon
 
 Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
+
+## Modelling config panes
+
+The modelling pane behavior is defined by
+[frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
+`frontend/src/panels/PreviewPanelTabs.tsx` is the generic tab-strip owner and accepts one
+optional per-tab indicator descriptor with a semantic kind and accessible label. It renders a
+compact visible mark/text without relying on colour alone and includes the indicator meaning in
+the tab's accessible name or description. Callers that omit indicators render exactly as before.
+
+Indicators do not change the active key, enabled-tab list, click behavior, `aria-controls`,
+equal-width sizing, or the existing roving-focus contract: exactly one enabled tab is tabbable;
+Left/Right wrap, Home/End choose the boundaries, and disabled tabs are skipped. Updating only an
+indicator must not move focus or select a different tab.
+
+`frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` proves warning and active indicators,
+visible/non-colour-only output, assistive text, indicator-only rerenders, and unchanged mouse,
+disabled-tab, ARIA and Arrow/Home/End behavior. The modelling and node-editor components are
+recorded consumers in `specs/ownership.toml`.

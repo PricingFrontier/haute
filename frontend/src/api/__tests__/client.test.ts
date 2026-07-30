@@ -166,19 +166,19 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
   return {
     status: "started",
     job_id: "job-1",
-    metrics: {},
+    diagnostic_metrics: {},
+    final_test_metrics: {},
     feature_importance: [],
     model_path: "",
-    train_rows: 0,
-    validation_rows: 0,
-    holdout_rows: 0,
-    holdout_metrics: {},
-    diagnostics_set: "validation",
+    development_rows: 0,
+    final_test_rows: 0,
+    diagnostics_set: "development",
     features: [],
     cat_features: [],
     error: null,
     best_iteration: null,
     loss_history: [],
+    loss_history_truncated: false,
     double_lift: [],
     shap_summary: [],
     feature_importance_loss: [],
@@ -196,6 +196,7 @@ function makeTrainResponse(overrides: Record<string, unknown> = {}) {
     glm_fit_statistics: {},
     glm_regularization_path: null,
     diagnostics_errors: [],
+    feature_selection: null,
     ...overrides,
   }
 }
@@ -265,6 +266,7 @@ function makeTrainEstimateResponse(overrides: Record<string, unknown> = {}) {
     gpu_vram_estimated_mb: null,
     gpu_vram_available_mb: null,
     gpu_warning: null,
+    evaluation_preview: null,
     ...overrides,
   }
 }

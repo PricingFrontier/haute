@@ -65,7 +65,7 @@ function ResidualsHistogram({
   height,
 }: {
   data: { bin_center: number; count: number; weighted_count: number }[]
-  stats?: { mean: number; std: number; skew: number; min: number; max: number }
+  stats?: Record<string, number>
   width: number
   height: number
 }) {
@@ -156,11 +156,22 @@ function ResidualsHistogram({
       </ChartSvg>
 
       {/* Stats annotation */}
-      {stats && (
+      {stats && ["mean", "std", "skew"].some(name => Number.isFinite(stats[name])) && (
         <div className="flex gap-3 mt-1.5 text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
-          <span>Mean: <span style={{ color: "var(--text-primary)" }}>{stats.mean.toFixed(4)}</span></span>
-          <span>Std: <span style={{ color: "var(--text-primary)" }}>{stats.std.toFixed(4)}</span></span>
-          <span>Skew: <span style={{ color: "var(--text-primary)" }}>{stats.skew.toFixed(4)}</span></span>
+          {([
+            ["mean", "Mean"],
+            ["std", "Std"],
+            ["skew", "Skew"],
+          ] as const).map(([name, label]) => (
+            Number.isFinite(stats[name]) && (
+              <span key={name}>
+                {label}:{" "}
+                <span style={{ color: "var(--text-primary)" }}>
+                  {stats[name].toFixed(4)}
+                </span>
+              </span>
+            )
+          ))}
         </div>
       )}
     </div>

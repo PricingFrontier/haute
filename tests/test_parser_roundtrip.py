@@ -1646,6 +1646,23 @@ class TestExcludedTypeRoundTrips:
                             "target": "ClaimNb",
                             "algorithm": "catboost",
                             "task": "regression",
+                            "evaluation": {
+                                "schema_version": 1,
+                                "strategy": "random",
+                                "seed": 42,
+                                "test": {"size": 0.2},
+                                "validation": {
+                                    "method": "cross_validation",
+                                    "fold_count": 5,
+                                },
+                            },
+                            "tuning": {
+                                "schema_version": 1,
+                                "trial_count": 5,
+                                "seed": 42,
+                                "metric": "gini",
+                                "search_space": {"depth": [4, 6, 8]},
+                            },
                         },
                     ),
                 ),

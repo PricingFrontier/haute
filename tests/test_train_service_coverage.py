@@ -21,6 +21,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import (
+    ExecutionCancellationToken,
     ExecutionContext,
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
@@ -33,6 +34,7 @@ from haute._worker_protocol import (
 )
 from haute.errors import BoundedMemoryUnsupportedError, PreambleError
 from haute.projection import AllExcept
+from haute.routes._job_store import JobStore
 from haute.routes._train_service import TrainService
 from tests.conftest import make_edge, make_graph
 from tests.test_training_worker_protocol import _inline_protocol_runner, _SuccessfulTrainingJob
@@ -337,6 +339,14 @@ class TestExecuteAndSinkProjection:
 # start() — GLM config merge + keep-columns (lines 272-273, 287-291)
 # ---------------------------------------------------------------------------
 
+# Minimal canonical evaluation object — public configs must supply exactly one.
+MINIMAL_EVALUATION = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {"method": "single", "size": 0.2},
+}
+
 
 class TestStartGlmMergeAndKeepColumns:
     def _glm_graph(self):
@@ -351,6 +361,7 @@ class TestStartGlmMergeAndKeepColumns:
             "feature_columns": ["x1"],
             "exclude": ["junk", "x1"],
             "params": {"iterations": 3},
+            "evaluation": MINIMAL_EVALUATION,
         }
         graph = make_graph(
             {
@@ -933,6 +944,7 @@ class TestStartExecutionContextLifecycle:
             "algorithm": "catboost",
             "loss_function": "RMSE",
             "params": {"iterations": 2},
+            "evaluation": MINIMAL_EVALUATION,
         }
         graph = make_graph(
             {
@@ -1116,22 +1128,25 @@ class TestStringListConfig:
 
 
 class TestRequiredMetadataColumns:
-    def test_non_dict_split_is_ignored(self):
-        """A non-dict split value skips the split-column block (219->229)."""
+    def test_non_dict_evaluation_is_ignored(self):
+        """A non-dict evaluation value skips the evaluation-column block."""
         from haute.routes._train_service import _training_required_metadata_columns
 
         cols = _training_required_metadata_columns(
-            {"target": "y", "split": "random", "id_columns": ["pid"]}
+            {"target": "y", "evaluation": "random", "id_columns": ["pid"]}
         )
-        # target + id_columns survive; the string split contributes no column.
+        # target + id_columns survive; the malformed evaluation adds no column.
         assert cols == {"y", "pid"}
 
-    def test_temporal_split_adds_date_column(self):
-        """A temporal split contributes its date_column to the keep set."""
+    def test_temporal_evaluation_adds_date_column(self):
+        """A temporal evaluation contributes its date_column to the keep set."""
         from haute.routes._train_service import _training_required_metadata_columns
 
         cols = _training_required_metadata_columns(
-            {"target": "y", "split": {"strategy": "temporal", "date_column": "asof"}}
+            {
+                "target": "y",
+                "evaluation": {"strategy": "temporal", "date_column": "asof"},
+            }
         )
         assert cols == {"y", "asof"}
 
@@ -1237,6 +1252,7 @@ class TestStartCategoricalLevelsMerge:
             "loss_function": "RMSE",
             "categorical_levels": {"region": ["north", "south"]},
             "params": {"iterations": 2},
+            "evaluation": MINIMAL_EVALUATION,
         }
         graph = make_graph(
             {
@@ -1333,7 +1349,218 @@ def _launch_config():
         "algorithm": "catboost",
         "loss_function": "RMSE",
         "params": {"iterations": 1},
+        "evaluation": MINIMAL_EVALUATION,
     }
+
+
+def _evaluation_preview_request(**config_overrides: object):
+    from haute.schemas import TrainEstimateRequest
+
+    config = {
+        "target": "y",
+        "task": "regression",
+        "algorithm": "catboost",
+        "loss_function": "RMSE",
+        "metrics": ["rmse"],
+        "evaluation": MINIMAL_EVALUATION,
+        **config_overrides,
+    }
+    graph = make_graph(
+        {
+            "nodes": [
+                {
+                    "id": "train",
+                    "data": {
+                        "label": "train",
+                        "nodeType": "modelling",
+                        "config": config,
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    )
+    return TrainEstimateRequest(graph=graph, node_id="train")
+
+
+class TestEvaluationPreviewFailures:
+    def test_incomplete_or_invalid_config_has_no_preview(self) -> None:
+        service = TrainService(JobStore())
+        assert (
+            service.evaluation_preview(
+                _evaluation_preview_request(target=""),
+                row_limit=None,
+            )
+            is None
+        )
+        assert (
+            service.evaluation_preview(
+                _evaluation_preview_request(
+                    evaluation={
+                        "schema_version": 2,
+                        "strategy": "random",
+                        "seed": 42,
+                        "validation": {"method": "none"},
+                    }
+                ),
+                row_limit=None,
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        ("lazy_outputs", "message"),
+        [
+            ({}, "No training data arrived"),
+            ({"train": pl.LazyFrame({"x": [1.0]})}, "missing required column"),
+            ({"train": pl.LazyFrame({"y": [None]})}, "contains only null values"),
+        ],
+    )
+    def test_data_dependent_preview_errors_are_actionable_422s(
+        self,
+        lazy_outputs: dict[str, pl.LazyFrame],
+        message: str,
+    ) -> None:
+        from haute.routes import _train_service
+
+        context = _training_execution_context()
+        service = TrainService(JobStore())
+        with (
+            patch.object(
+                _train_service,
+                "create_admitted_execution_context",
+                return_value=context,
+            ),
+            patch.object(TrainService, "_compile_preamble", return_value=None),
+            patch.object(
+                _train_service,
+                "dataframe_graph_input_fingerprint",
+                return_value="fingerprint",
+            ),
+            patch.object(
+                _train_service,
+                "build_dataframe_execution_cache_request",
+                return_value=None,
+            ),
+            patch.object(
+                _train_service,
+                "execute_lazy_graph",
+                return_value=(lazy_outputs,),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service.evaluation_preview(
+                _evaluation_preview_request(),
+                row_limit=None,
+            )
+
+        assert exc_info.value.status_code == 422
+        assert message in str(exc_info.value.detail)
+
+    @pytest.mark.parametrize(
+        ("error", "message"),
+        [
+            (PreambleError("bad preamble", source_line=2), "bad preamble"),
+            (
+                BoundedMemoryUnsupportedError("unsafe lazy plan"),
+                "cannot run in bounded mode",
+            ),
+        ],
+    )
+    def test_preview_maps_public_and_bounded_execution_errors(
+        self,
+        error: BaseException,
+        message: str,
+    ) -> None:
+        from haute.routes import _train_service
+
+        context = _training_execution_context()
+        service = TrainService(JobStore())
+        with (
+            patch.object(
+                _train_service,
+                "create_admitted_execution_context",
+                return_value=context,
+            ),
+            patch.object(TrainService, "_compile_preamble", side_effect=error),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            service.evaluation_preview(
+                _evaluation_preview_request(),
+                row_limit=None,
+            )
+
+        assert exc_info.value.status_code == 422
+        assert message in str(exc_info.value.detail)
+
+
+class TestPreparationTerminalPaths:
+    def test_cancelled_preparation_transitions_and_releases_owner(self) -> None:
+        from haute.schemas import TrainRequest
+
+        store = JobStore()
+        service = TrainService(store)
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "job_type": "training",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
+        )
+        estimate_body = _evaluation_preview_request()
+        body = TrainRequest(
+            graph=estimate_body.graph,
+            node_id=estimate_body.node_id,
+            source=estimate_body.source,
+        )
+        token = ExecutionCancellationToken()
+        token.cancel()
+
+        service._prepare_and_launch_training(
+            job_id,
+            body,
+            "train",
+            body.graph.node_map["train"].data.config,
+            token,
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "cancelled"
+        assert job["message"] == "Cancelled"
+
+    def test_server_preparation_http_failure_is_terminal_error(self) -> None:
+        store = JobStore()
+        service = TrainService(store)
+        job_id = store.create_job(
+            {
+                "status": "running",
+                "job_type": "training",
+                "start_time": time.monotonic(),
+                "timeout": 60,
+            }
+        )
+
+        service._persist_preparation_http_failure(
+            job_id,
+            HTTPException(status_code=500, detail="preparation exploded"),
+        )
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert job["message"] == "preparation exploded"
+
+    def test_join_preparation_times_out_for_live_owner(self) -> None:
+        store = JobStore()
+        service = TrainService(store)
+        owner = MagicMock()
+        owner.is_alive.return_value = True
+        service._preparation_threads["job-1"] = owner
+
+        with pytest.raises(TimeoutError, match="still running"):
+            service._join_preparation("job-1", timeout=0.01)
+
+        owner.join.assert_called_once_with(timeout=0.01)
 
 
 class TestLaunchBackgroundWorker:
@@ -1663,6 +1890,108 @@ class TestProtocolCallbackValidation:
                         "fit",
                         "iteration",
                         {"iteration": 1, "total": 2, "metrics": {"loss": 0.5}},
+                    )
+                )
+        finally:
+            on_finished()
+
+    def test_training_tuning_progress_is_validated_and_monotonic(self, tmp_path: Path) -> None:
+        store, job_id, captured = self._capture_training_launch(tmp_path)
+        on_progress = captured["on_progress"]
+        on_finished = captured["on_finished"]
+        assert callable(on_progress)
+        assert callable(on_finished)
+        valid_fields = {
+            "phase": "trial_fit",
+            "trial_index": 1,
+            "trial_count": 5,
+            "fold_index": 1,
+            "fold_count": 2,
+            "completed_fits": 1,
+            "total_fits": 11,
+            "best_objective": 0.25,
+        }
+
+        try:
+            on_progress(
+                WorkerProgressEvent(
+                    1,
+                    1 / 11,
+                    "Tuning: trial_fit",
+                    "tuning",
+                    valid_fields,
+                )
+            )
+            job = store.require_job(job_id)
+            assert {
+                key: job[key]
+                for key in (
+                    "phase",
+                    "trial_index",
+                    "trial_count",
+                    "fold_index",
+                    "fold_count",
+                    "completed_fits",
+                    "total_fits",
+                    "best_objective",
+                )
+            } == valid_fields
+
+            with pytest.raises(WorkerProtocolError, match="fields are malformed"):
+                on_progress(
+                    WorkerProgressEvent(
+                        2,
+                        0.2,
+                        "bad keys",
+                        "tuning",
+                        {**valid_fields, "unexpected": True},
+                    )
+                )
+            with pytest.raises(WorkerProtocolError, match="fields are malformed"):
+                on_progress(
+                    WorkerProgressEvent(
+                        3,
+                        0.2,
+                        "invalid counts",
+                        "tuning",
+                        {**valid_fields, "trial_count": 4},
+                    )
+                )
+            with pytest.raises(WorkerProtocolError, match="completed_fits regressed"):
+                on_progress(
+                    WorkerProgressEvent(
+                        4,
+                        0.0,
+                        "regressed",
+                        "tuning",
+                        {**valid_fields, "completed_fits": 0},
+                    )
+                )
+            with pytest.raises(WorkerProtocolError, match="total_fits changed"):
+                on_progress(
+                    WorkerProgressEvent(
+                        5,
+                        2 / 13,
+                        "changed total",
+                        "tuning",
+                        {
+                            **valid_fields,
+                            "trial_count": 6,
+                            "completed_fits": 2,
+                            "total_fits": 13,
+                        },
+                    )
+                )
+
+            store.jobs.pop(job_id)
+            with pytest.raises(KeyError, match="disappeared during tuning"):
+                on_progress(
+                    WorkerProgressEvent(
+                        6,
+                        2 / 11,
+                        "missing job",
+                        "tuning",
+                        {**valid_fields, "completed_fits": 2},
                     )
                 )
         finally:

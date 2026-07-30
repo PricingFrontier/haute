@@ -27,6 +27,7 @@ from haute.schemas import (
     DispersionEstimateRequest,
     DispersionEstimateResponse,
     DispersionEstimateStatusResponse,
+    EvaluationPreviewPayload,
     ExportScriptRequest,
     ExportScriptResponse,
     LogExperimentRequest,
@@ -193,9 +194,9 @@ def cancel_dispersion(job_id: str) -> DispersionEstimateStatusResponse:
 def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
     """Estimate RAM and row requirements for training a modelling node.
 
-    Reads parquet metadata from ancestor source nodes to estimate
-    dataset size analytically.  Returns immediately — typically <100 ms.
-    Also estimates GPU VRAM if the node's params specify ``task_type: GPU``.
+    Reads ancestor metadata for the analytical RAM/VRAM estimate and, once
+    the evaluation configuration is complete, materialises only the bounded
+    target/evaluation-key projection needed for an exact partition preview.
     """
     graph = _prepare_runtime_graph(body.graph)
     body = body.model_copy(update={"graph": graph})
@@ -213,8 +214,8 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         logger.warning("estimate_failed", error=str(exc), node_id=body.node_id)
         return TrainEstimateResponse()
 
-    # estimated_bytes already includes all training phases (split, pools,
-    # CatBoost internals, diagnostics SHAP/PDP, CV if enabled).
+    # estimated_bytes already includes all training phases (evaluation
+    # partitions, pools, CatBoost internals, diagnostics, and bounded tuning).
     data_mb = ram_est.estimated_bytes / 1024**2
     training_mb = data_mb  # phase model already accounts for overhead
 
@@ -253,6 +254,16 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
                 " Switch task_type to CPU or reduce rows/features before starting GPU training."
             )
 
+    evaluation_preview = _train_service.evaluation_preview(
+        body,
+        row_limit=safe_limit,
+    )
+    evaluation_preview_payload = (
+        EvaluationPreviewPayload.model_validate(evaluation_preview)
+        if evaluation_preview is not None
+        else None
+    )
+
     return TrainEstimateResponse(
         total_rows=ram_est.total_rows,
         safe_row_limit=safe_limit,
@@ -265,6 +276,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
         gpu_vram_estimated_mb=vram_check.estimated_mb,
         gpu_vram_available_mb=vram_check.available_mb,
         gpu_warning=vram_check.warning,
+        evaluation_preview=evaluation_preview_payload,
     )
 
 
@@ -327,6 +339,11 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
     result: TrainResponse | None = job.get("result")
     if result is None:
         raise HTTPException(status_code=400, detail="Job has no result data")
+    if result.evaluation is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Completed training result has no evaluation report",
+        )
 
     config = job.get("config", {})
     node_label = job.get("node_label", "model")
@@ -361,7 +378,13 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             lorenz_curve=result.lorenz_curve,
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
-            holdout_metrics=result.holdout_metrics,
+            final_test_metrics=result.final_test_metrics,
+            selection_metrics={
+                name: summary.model_dump(mode="json")
+                for name, summary in result.evaluation.selection_metrics.items()
+            },
+            evaluation=result.evaluation.model_dump(mode="json"),
+            tuning=(result.tuning.model_dump(mode="json") if result.tuning is not None else None),
             diagnostics_set=result.diagnostics_set,
             # GLM diagnostics must reach MLflow too — dropping them meant a
             # GLM logged via this button lost its coefficients, relativities,
@@ -404,11 +427,10 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
         metadata = ModelCardMetadata(
             algorithm=config.get("algorithm", "catboost"),
             task=config.get("task", "regression"),
-            train_rows=result.train_rows,
-            validation_rows=result.validation_rows,
-            holdout_rows=result.holdout_rows,
+            development_rows=result.development_rows,
+            final_test_rows=result.final_test_rows,
             features=features,
-            split_config=config.get("split", {}),
+            evaluation_config=config.get("evaluation", {}),
             best_iteration=result.best_iteration,
             feature_types=feature_types,
             categorical_features=categorical_features,
@@ -418,21 +440,40 @@ async def mlflow_log(body: LogExperimentRequest) -> LogExperimentResponse:
             offset_type="Float64" if offset_name else "",
         )
 
+        final_params = (
+            result.tuning.final_params if result.tuning is not None else config.get("params", {})
+        )
+        artifact_paths = {
+            "evaluation_plan": result.evaluation.plan_path,
+            "evaluation_results": result.evaluation.results_path,
+            "evaluation_report": result.evaluation.report_path,
+        }
+        if result.tuning is not None:
+            artifact_paths.update(
+                {
+                    "tuning_plan": result.tuning.plan_path,
+                    "tuning_trials": result.tuning.trials_path,
+                    "tuning_report": result.tuning.report_path,
+                }
+            )
         log_result = await run_in_threadpool(
             log_experiment,
             experiment_name=experiment_name,
             run_name=node_label,
-            metrics=result.metrics,
+            metrics=result.final_test_metrics or result.diagnostic_metrics,
             params={
                 "algorithm": config.get("algorithm", "catboost"),
                 "task": config.get("task", "regression"),
                 "target": config.get("target", ""),
                 "weight": config.get("weight", ""),
+                "evaluation_strategy": config.get("evaluation", {}).get("strategy", ""),
+                **{f"param_{key}": value for key, value in final_params.items()},
             },
             diagnostics=diagnostics,
             metadata=metadata,
             model_path=result.model_path or None,
             model_name=model_name,
+            artifact_paths=artifact_paths,
         )
 
         return LogExperimentResponse(

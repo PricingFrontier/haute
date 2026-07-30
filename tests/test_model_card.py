@@ -17,10 +17,14 @@ def _minimal_kwargs() -> dict:
         "metadata": ModelCardMetadata(
             algorithm="catboost",
             task="regression",
-            train_rows=800,
-            validation_rows=200,
+            development_rows=1000,
             features=["x1", "x2"],
-            split_config={"strategy": "random", "validation_size": 0.2},
+            evaluation_config={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
         ),
     }
 
@@ -73,7 +77,7 @@ class TestModelCardOmitsEmptySections:
             "Residuals",
             "Actual vs Predicted",
             "Partial Dependence",
-            "Holdout Metrics",
+            "Final Test Metrics",
         ],
     )
     def test_section_omitted_when_empty(self, header):
@@ -149,17 +153,22 @@ class TestModelCardAllSections:
                     ],
                 },
             ],
-            holdout_metrics={"rmse": 0.15, "gini": 0.55},
-            diagnostics_set="validation",
+            final_test_metrics={"rmse": 0.15, "gini": 0.55},
+            diagnostics_set="development",
         )
         kwargs["metadata"] = ModelCardMetadata(
             algorithm="catboost",
             task="regression",
-            train_rows=800,
-            validation_rows=200,
-            holdout_rows=500,
+            development_rows=1000,
+            final_test_rows=500,
             features=["x1", "x2"],
-            split_config={"strategy": "random", "validation_size": 0.2},
+            evaluation_config={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "test": {"size": 0.2},
+                "validation": {"method": "single", "size": 0.2},
+            },
             best_iteration=50,
         )
         html = generate_model_card(**kwargs)
@@ -179,56 +188,81 @@ class TestModelCardAllSections:
         assert "Residuals" in html
         assert "Actual vs Predicted" in html
         assert "Partial Dependence" in html
-        assert "Holdout Metrics" in html
+        assert "Final Test Metrics" in html
 
 
-class TestModelCardHoldoutAndDiagnostics:
-    def test_validation_rows_label(self):
+class TestModelCardEvaluationAndDiagnostics:
+    def test_development_rows_label(self):
         html = generate_model_card(**_minimal_kwargs())
-        assert "Validation rows" in html
-        assert "Test rows" not in html
+        assert "Development rows" in html
+        assert "Final test rows" not in html
 
-    def test_holdout_rows_shown(self):
+    def test_final_test_rows_shown(self):
         kwargs = _minimal_kwargs()
         kwargs["metadata"] = ModelCardMetadata(
             algorithm="catboost",
             task="regression",
-            train_rows=800,
-            validation_rows=200,
-            holdout_rows=1000,
+            development_rows=1000,
+            final_test_rows=1000,
             features=["x1", "x2"],
-            split_config={"strategy": "random"},
+            evaluation_config={"strategy": "random"},
         )
         html = generate_model_card(**kwargs)
-        assert "Holdout rows" in html
+        assert "Final test rows" in html
         assert "1,000" in html
 
     def test_diagnostics_set_label(self):
         kwargs = _minimal_kwargs()
-        kwargs["diagnostics"] = ModelDiagnostics(diagnostics_set="holdout")
+        kwargs["diagnostics"] = ModelDiagnostics(diagnostics_set="final_test")
         html = generate_model_card(**kwargs)
         assert "Diagnostics computed on" in html
-        assert "Holdout" in html
+        assert "Final Test" in html
 
-    def test_holdout_metrics_hidden_when_diagnostics_is_holdout(self):
-        """When holdout IS the diagnostics set, don't show a separate holdout section."""
+    def test_final_test_metrics_hidden_when_they_are_the_diagnostics_set(self):
         kwargs = _minimal_kwargs()
         kwargs["diagnostics"] = ModelDiagnostics(
-            holdout_metrics={"rmse": 0.15},
-            diagnostics_set="holdout",
+            final_test_metrics={"rmse": 0.15},
+            diagnostics_set="final_test",
         )
         html = generate_model_card(**kwargs)
-        assert "Holdout Metrics" not in html
+        assert "Final Test Metrics" not in html
 
-    def test_holdout_metrics_shown_when_diagnostics_is_validation(self):
-        """When validation is diagnostics, holdout metrics shown separately."""
+    def test_final_test_metrics_shown_when_diagnostics_are_development(self):
         kwargs = _minimal_kwargs()
         kwargs["diagnostics"] = ModelDiagnostics(
-            holdout_metrics={"rmse": 0.15},
-            diagnostics_set="validation",
+            final_test_metrics={"rmse": 0.15},
+            diagnostics_set="development",
         )
         html = generate_model_card(**kwargs)
-        assert "Holdout Metrics" in html
+        assert "Final Test Metrics" in html
+
+
+def test_model_card_contains_the_tuning_summary() -> None:
+    kwargs = _minimal_kwargs()
+    kwargs["diagnostics"] = ModelDiagnostics(
+        tuning={
+            "metric": "gini",
+            "direction": "maximize",
+            "baseline_objective": 0.40,
+            "winner_trial_index": 3,
+            "winner_objective": 0.45,
+            "improvement": 0.05,
+            "trial_count": 10,
+            "total_fit_count": 51,
+            "final_tree_count": 87,
+            "best_sampled_params": {"depth": 7},
+            "final_params": {"depth": 7, "iterations": 87},
+        }
+    )
+
+    html = generate_model_card(**kwargs)
+
+    assert "Hyperparameter Tuning" in html
+    assert "Baseline gini" in html
+    assert "Winning gini" in html
+    assert "0.4500" in html
+    assert "51" in html
+    assert "depth" in html
 
 
 class TestModelCardEscaping:
@@ -262,8 +296,7 @@ class TestModelCardEscaping:
         kwargs["metadata"] = ModelCardMetadata(
             algorithm="<img src=x>",
             task="regression",
-            train_rows=100,
-            validation_rows=50,
+            development_rows=150,
         )
         html = generate_model_card(**kwargs)
         assert "<img src=x>" not in html
@@ -382,8 +415,7 @@ class TestModelCardBestIteration:
         kwargs["metadata"] = ModelCardMetadata(
             algorithm="catboost",
             task="regression",
-            train_rows=800,
-            validation_rows=200,
+            development_rows=1000,
             features=["x1"],
             best_iteration=42,
         )
