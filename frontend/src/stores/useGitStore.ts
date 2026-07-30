@@ -24,6 +24,12 @@ import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResp
 
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
+/** Tests that hold a mocked getWorkingBranch open forever leave the
+ *  single-flight stuck, starving every later loadStatus() in the same file. */
+export const resetGitStatusRequestForTests = () => {
+  statusInFlight = null
+}
+
 /** Which modal is open. */
 export type GitModalMode =
   | "select"

@@ -179,6 +179,7 @@ function reset() {
     nodes: [],
     edges: [],
     preamble: "",
+    submodels: {},
     lastSavedSnapshot: null,
     undoStack: [],
     redoStack: [],
