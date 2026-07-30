@@ -1115,14 +1115,17 @@ class TrainingJob:
         The library error alone ("continuous format is not supported") names
         neither the target column nor the task nor a fix; this is a
         user-facing boundary, so the wrapped message must carry all three.
+        The library detail goes last: worker failure messages are truncated
+        to a bounded length, and the call to action must survive that.
         """
         metric_list = ", ".join(self.metrics)
         return ValueError(
-            f"Could not evaluate the trained model on the {evaluation_set} data: {exc}. "
-            f"The metrics ({metric_list}) were computed against target column "
+            f"Could not evaluate the trained model on the {evaluation_set} data. The "
+            f"metrics ({metric_list}) were computed against target column "
             f"'{self.target}' with task '{self.task}'. Check that the target's values "
             "match the task and metrics (AUC and log loss need a discrete 0/1 target), "
-            "then adjust the target column, the task, or the reported metrics."
+            f"then adjust the target column, the task, or the reported metrics. "
+            f"Underlying error: {exc}"
         )
 
     def _compute_metrics(

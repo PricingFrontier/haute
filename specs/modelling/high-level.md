@@ -134,11 +134,15 @@ Invariants that always hold:
 - A classification task never trains against a continuous target. Once training data is
   materialised, the target column's values are checked against the task — in the train
   route before the fit worker is dispatched, and again inside `TrainingJob` itself so
-  the CLI and exported-script paths share the same gate. A float target with fractional
-  values (or a target whose type cannot serve as class labels) under
+  the CLI and exported-script paths share the same gate. A float or decimal target with
+  fractional values (or a target whose type cannot serve as class labels) under
   `task="classification"` is rejected with a message naming the target column and task
   and directing the user to choose a discrete target or switch the task to regression,
-  instead of failing later inside a metrics library with a context-free error.
+  instead of failing later inside a metrics library with a context-free error. The gate
+  keys on the configured task only — a classification-flavoured objective under a
+  regression task (e.g. a binomial GLM defaulting to AUC/log-loss metrics) is not
+  gated, because a binomial target may legitimately be a continuous proportion; that
+  path is covered by the metric-stage context wrap below.
 - Every trained model is saved together with a feature contract pinning its exact
   feature order, dtypes, categorical domains, target, and offset column. Any drift
   detected later (train vs. score) raises rather than producing a plausible-looking
@@ -318,8 +322,9 @@ browser without a server or JS bundle.
   message verbatim as the job's terminal message — the internal
   "Isolated worker raised {type}: …" wrapper text is never shown for a curated
   failure. Error types and bounded tracebacks stay in diagnostic fields; messages
-  carry domain context (target column, task, metrics) but never filesystem paths or
-  secrets.
+  carry domain context (target column, task, metrics) and never secrets or raw
+  tracebacks — a filesystem path appears only where the path itself is the
+  actionable object (a file-not-found or model-save failure).
 - A mandatory metric-evaluation failure names the evaluation set, target column, task,
   and requested metrics around the underlying library error, with the instruction to
   fix the target/task/metric pairing — a bare library message cannot reach the UI from

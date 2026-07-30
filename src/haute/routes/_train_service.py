@@ -677,7 +677,15 @@ def _known_training_worker_failure(
     bounded_memory_prefix: str,
 ) -> WorkerFailurePayload | None:
     if isinstance(exc, ExecutionCancelledError):
-        return _worker_failure_payload(exc, terminal_reason="cancelled")
+        # Match the preparation path's terminal message: the internal
+        # operation/job-id wording of str(exc) is diagnostics, not a
+        # user-facing message.
+        return _worker_failure_payload(
+            exc,
+            terminal_reason="cancelled",
+            message="Cancelled",
+            fields={"error": str(exc)},
+        )
     if isinstance(exc, ExecutionMemoryLimitExceededError):
         payload = exc.to_payload()
         return _worker_failure_payload(
@@ -1458,12 +1466,19 @@ class TrainService:
         from haute._polars_utils import streaming_collect
         from haute.modelling._target_check import training_target_task_issue
 
-        issue = training_target_task_issue(
-            pl.scan_parquet(tmp_parquet),
-            target=str(config.get("target", "")),
-            task=str(config.get("task", "regression")),
-            collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
-        )
+        try:
+            issue = training_target_task_issue(
+                pl.scan_parquet(tmp_parquet),
+                target=str(config.get("target", "")),
+                task=str(config.get("task", "regression")),
+                collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
+            )
+        except BaseException:
+            # A failure inside the scan itself (corrupt parquet, cancellation,
+            # memory pressure) must not orphan the multi-GB temp input either.
+            if Path(tmp_parquet).exists():
+                os.unlink(tmp_parquet)
+            raise
         if issue is not None:
             if Path(tmp_parquet).exists():
                 os.unlink(tmp_parquet)

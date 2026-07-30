@@ -13,6 +13,7 @@ worker boundary.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,6 +78,26 @@ class TestTrainingTargetTaskIssue:
     def test_missing_target_column_is_not_this_gates_job(self) -> None:
         data = pl.LazyFrame({"other": [1.5]})
         assert training_target_task_issue(data, target="sev", task="classification") is None
+
+    def test_all_null_target_defers_to_the_null_count_gate(self) -> None:
+        """A Null-typed column is a null-count problem, not a type problem."""
+        data = pl.LazyFrame({"flag": [None, None]})
+        assert training_target_task_issue(data, target="flag", task="classification") is None
+
+    def test_integral_decimal_flag_passes_classification(self) -> None:
+        data = pl.LazyFrame(
+            {"flag": pl.Series([Decimal("0"), Decimal("1")], dtype=pl.Decimal(3, 0))}
+        )
+        assert training_target_task_issue(data, target="flag", task="classification") is None
+
+    def test_fractional_decimal_gates_classification(self) -> None:
+        data = pl.LazyFrame(
+            {"sev": pl.Series([Decimal("123.45"), Decimal("6.70")], dtype=pl.Decimal(10, 2))}
+        )
+        issue = training_target_task_issue(data, target="sev", task="classification")
+        assert issue is not None
+        assert "'sev'" in issue
+        assert "continuous values" in issue
 
     def test_custom_collector_is_used_for_the_fractional_scan(self) -> None:
         data = pl.LazyFrame({"sev": [123.45]})
@@ -193,6 +214,99 @@ class TestPreDispatchServiceGate:
         )
         assert tmp_parquet.exists()
 
+    def test_validate_target_task_pairing_removes_parquet_when_the_scan_fails(
+        self, tmp_path: Path
+    ) -> None:
+        """A corrupt sunk parquet must not be orphaned by the gate itself."""
+        tmp_parquet = tmp_path / "train_input.parquet"
+        tmp_parquet.write_bytes(b"not a parquet file")
+        context = ExecutionContext(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+        )
+        with pytest.raises(Exception):  # noqa: B017 — any scan failure must clean up
+            TrainService._validate_target_task_pairing(
+                str(tmp_parquet),
+                {"target": "sev", "task": "classification"},
+                execution_context=context,
+            )
+        assert not tmp_parquet.exists()
+
+    def test_preparation_thread_gates_before_launching_the_fit_worker(self, tmp_path: Path) -> None:
+        """The route wiring: gate runs after sink, before _launch_background."""
+        from haute.routes._job_store import JobStore
+        from haute.schemas import TrainRequest
+
+        tmp_parquet = tmp_path / "train_input.parquet"
+        pl.DataFrame({"x1": [0.1, 0.2, 0.3], "sev": [123.45, 6.7, 8.9]}).write_parquet(tmp_parquet)
+        graph = {
+            "nodes": [
+                {
+                    "id": "source",
+                    "type": "custom",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "source",
+                        "nodeType": "dataInput",
+                        "config": {"path": "data.parquet"},
+                    },
+                },
+                {
+                    "id": "train",
+                    "type": "custom",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "Model Training 9",
+                        "nodeType": "modelling",
+                        "config": {
+                            "target": "sev",
+                            "task": "classification",
+                            "algorithm": "catboost",
+                            "loss_function": "Logloss",
+                            "params": {"iterations": 2},
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "source-train",
+                    "source": "source",
+                    "target": "train",
+                }
+            ],
+        }
+        store = JobStore()
+        service = TrainService(store)
+        body = TrainRequest.model_validate({"graph": graph, "node_id": "train"})
+        context = ExecutionContext(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+        )
+        launched: list[str] = []
+        with (
+            patch.object(service, "_compile_preamble", return_value=None),
+            patch.object(service, "_estimate_ram", return_value=(None, None, 3, 2)),
+            patch.object(service, "_check_gpu_vram_before_launch", return_value=None),
+            patch(
+                "haute.routes._train_service.create_admitted_execution_context",
+                return_value=context,
+            ),
+            patch.object(service, "_execute_and_sink", return_value=str(tmp_parquet)),
+            patch.object(
+                service, "_launch_background", side_effect=lambda *a, **k: launched.append("yes")
+            ),
+        ):
+            response = service.start(body)
+            service._join_preparation(response.job_id)
+
+        job = store.require_job(response.job_id)
+        assert job["status"] == "contract_error"
+        assert "'sev'" in job["message"]
+        assert "classification" in job["message"]
+        assert launched == []
+        assert not tmp_parquet.exists()
+
 
 class TestWorkerBoundaryUserMessage:
     def test_failure_payload_marks_curated_message_user_facing(self) -> None:
@@ -235,6 +349,34 @@ class TestWorkerBoundaryUserMessage:
         assert "Isolated worker raised" not in outcome.message
         # The typed wrapper text stays available for diagnostics.
         assert outcome.fields["error"].startswith("Isolated worker raised ValueError:")
+
+    def test_user_message_field_is_bounded_like_the_payload_message(self) -> None:
+        from haute._worker_protocol import WorkerProtocolError
+
+        with pytest.raises(WorkerProtocolError, match="fields.user_message"):
+            WorkerFailurePayload(
+                terminal_reason="error",
+                error_type="ValueError",
+                message="short",
+                traceback="tb",
+                fields={WORKER_USER_MESSAGE_FIELD: "x" * 600},
+            )
+
+    def test_worker_cancellation_surfaces_as_plain_cancelled(self) -> None:
+        """The internal operation/job-id wording of the cancellation exception
+        is diagnostics; the terminal message matches the preparation path."""
+        from haute._execution_context import ExecutionCancelledError
+        from haute.routes._train_service import _known_training_worker_failure
+
+        payload = _known_training_worker_failure(
+            ExecutionCancelledError("training_job", job_id="abc"),
+            bounded_memory_prefix="Training cannot run in bounded streaming mode",
+        )
+        assert payload is not None
+        assert payload.terminal_reason == "cancelled"
+        assert payload.message == "Cancelled"
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == "Cancelled"
+        assert "training_job" in payload.fields["error"]
 
     def test_supervisor_keeps_wrapper_for_uncurated_failures(self) -> None:
         payload = WorkerFailurePayload(

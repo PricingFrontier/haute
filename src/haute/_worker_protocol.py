@@ -41,8 +41,9 @@ SCHEMA_VERSION = 1
 # key vouches that the value is a user-facing message: it names the user-model
 # objects involved (target column, task/objective, metric) where the child
 # knows them, carries a call to action where one exists, and contains no
-# filesystem paths, secrets, or raw tracebacks. The parent supervisor surfaces
-# it verbatim as the job's terminal message instead of the typed wrapper text
+# secrets or raw tracebacks (a filesystem path appears only where the path
+# itself is the actionable object). The parent supervisor surfaces it verbatim
+# as the job's terminal message instead of the typed wrapper text
 # ("Isolated worker raised {type}: {message}").
 WORKER_USER_MESSAGE_FIELD = "user_message"
 WORKER_EVENT_QUEUE_CAPACITY = 64
@@ -229,6 +230,11 @@ class WorkerFailurePayload:
         _require_message(self.message, "message")
         _require_bounded_text(self.traceback, "traceback", WORKER_MAX_TRACEBACK_LENGTH)
         _validate_plain_data(self.fields, "fields")
+        # A curated user-facing message is promoted to the job's terminal
+        # message by the parent supervisor, so it carries the same bound as
+        # the payload message itself.
+        if type(self.fields) is dict and WORKER_USER_MESSAGE_FIELD in self.fields:
+            _require_message(self.fields[WORKER_USER_MESSAGE_FIELD], "fields.user_message")
         if len(pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL)) > WORKER_MAX_METADATA_BYTES:
             raise WorkerProtocolError("serialized failure payload exceeds byte limit")
 

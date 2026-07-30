@@ -124,9 +124,12 @@
 - **`WORKER_USER_MESSAGE_FIELD`** (`"user_message"`) — the curated-message contract
   key. A failure payload whose `fields` carry this key vouches that the value is a
   user-facing message: it names the user-model objects involved where the child
-  knows them, carries a call to action where one exists, and contains no filesystem
-  paths, secrets, or raw tracebacks. `IsolatedJobSupervisor` surfaces it verbatim as
-  the job's terminal message instead of the typed wrapper text.
+  knows them, carries a call to action where one exists, and contains no secrets or
+  raw tracebacks (a filesystem path appears only where the path itself is the
+  actionable object). `IsolatedJobSupervisor` surfaces it verbatim as the job's
+  terminal message instead of the typed wrapper text. Because it is promoted to the
+  terminal message, `WorkerFailurePayload.__post_init__` enforces the same
+  512-character message bound on it.
 
 ### `_artifact_housekeeping.py`
 

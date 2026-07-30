@@ -25,9 +25,13 @@ def _has_fractional_values(
     data: pl.LazyFrame,
     target: str,
     collect: Callable[[pl.LazyFrame], pl.DataFrame],
+    *,
+    cast_to_float: bool = False,
 ) -> bool:
     """Return whether any finite, non-null target value has a fractional part."""
     column = pl.col(target)
+    if cast_to_float:
+        column = column.cast(pl.Float64)
     frame = collect(data.select((column.is_finite() & (column != column.floor())).any()))
     return bool(frame.item())
 
@@ -42,11 +46,14 @@ def training_target_task_issue(
     """Return an actionable message when the target's values cannot serve the task.
 
     A classification task needs a target holding discrete class labels:
-    boolean, integer, string/categorical/enum, or a float column whose finite
-    values are all integral (a materialised 0/1 flag). A float target with
-    fractional values — or a target whose type cannot act as class labels at
-    all — must gate here, with the target column and task named, rather than
-    fall through to a library error stripped of that context.
+    boolean, integer, string/categorical/enum, or a float/decimal column
+    whose finite values are all integral (a materialised 0/1 flag). A
+    float/decimal target with fractional values — or a target whose type
+    cannot act as class labels at all — must gate here, with the target
+    column and task named, rather than fall through to a library error
+    stripped of that context. The gate keys on the configured task only; a
+    classification-flavoured objective under a regression task is covered by
+    the metric-stage context wrap in ``TrainingJob._compute_metrics``.
 
     ``collect`` lets callers route the one boolean fractional-values scan
     through their own (streaming, execution-context-aware) collector; the
@@ -61,16 +68,26 @@ def training_target_task_issue(
         return None
     dtype = schema[target]
     base_type = dtype.base_type()
+    if base_type == pl.Null:
+        # An all-null target is a null-count problem, not a type problem —
+        # TrainingJob._prepare_data's zero-non-null-rows gate owns that
+        # message, and it is more accurate than a dtype complaint here.
+        return None
     if base_type == pl.Boolean or dtype.is_integer():
         return None
     if base_type in (pl.String, pl.Categorical, pl.Enum):
         return None
-    if dtype.is_float():
+    if dtype.is_float() or base_type == pl.Decimal:
         if collect is None:
             from haute._polars_utils import streaming_collect
 
             collect = streaming_collect
-        if not _has_fractional_values(data, target, collect):
+        if not _has_fractional_values(
+            data,
+            target,
+            collect,
+            cast_to_float=base_type == pl.Decimal,
+        ):
             return None
         return (
             f"Target column '{target}' contains continuous values, but the training "
