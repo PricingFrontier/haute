@@ -148,9 +148,6 @@ import {
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
-  parseTrainEstimateResponse,
-  parseTrainResponse,
-  parseTrainStatusResponse,
   parseUtilityDeleteResponse,
   parseUtilityListResponse,
   parseUtilityReadResponse,
@@ -934,7 +931,7 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
   options?: { signal?: AbortSignal },
 ): Promise<T> {
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => parseTrainStatusResponse(data) as T)
+    .then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data) as T)
 }
 
 export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>(
@@ -945,7 +942,7 @@ export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>
     `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
     undefined,
     options,
-  ).then((data) => parseTrainStatusResponse(data) as T)
+  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data) as T)
 }
 
 export interface TrainModelArgs {
@@ -968,7 +965,7 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
-  ).then(parseTrainResponse)
+  ).then(async (data) => (await import("../types/trainGuards")).parseTrainResponse(data))
 }
 
 export function estimateTrainingRam(
@@ -976,7 +973,7 @@ export function estimateTrainingRam(
   options?: { signal?: AbortSignal },
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })
-    .then(parseTrainEstimateResponse)
+    .then(async (data) => (await import("../types/trainGuards")).parseTrainEstimateResponse(data))
 }
 
 export function logToMlflow(

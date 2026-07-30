@@ -153,10 +153,14 @@ _BROWSER_MODEL_CONFIG = """{
     "iterations": 4,
     "depth": 2
   },
-  "split": {
+  "evaluation": {
+    "schema_version": 1,
     "strategy": "random",
-    "validation_size": 0.2,
-    "seed": 42
+    "seed": 42,
+    "validation": {
+      "method": "single",
+      "size": 0.2
+    }
   },
   "metrics": [
     "gini",

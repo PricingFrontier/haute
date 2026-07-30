@@ -7,6 +7,7 @@ delegates to ``TrainService.start()``.
 from __future__ import annotations
 
 import gc
+import json
 import math
 import os
 import shutil
@@ -16,13 +17,14 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime
 from numbers import Real
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import polars as pl
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from haute._env import int_env
 from haute._execution_admission import (
@@ -62,10 +64,17 @@ from haute.execution import (
 )
 from haute.graph_utils import NodeType
 from haute.modelling._algorithms import ALGORITHM_REGISTRY, resolve_loss_function
-from haute.modelling._split import DEFAULT_SPLIT_DICT
+from haute.modelling._evaluation import (
+    EvaluationConfig,
+    EvaluationPlan,
+    generate_evaluation_plan,
+)
 from haute.modelling._train_config import (
+    TrainingConfigError,
     build_train_params,
     build_training_job_kwargs,
+    parse_evaluation_config,
+    parse_tuning_config,
     training_objective_issue,
 )
 from haute.routes._background_jobs import (
@@ -88,9 +97,13 @@ from haute.routes._job_store import JobStore
 from haute.schemas import (
     DispersionEstimateRequest,
     DispersionEstimateResponse,
+    EvaluationReportPayload,
+    TrainEstimateRequest,
     TrainingFeatureSelectionDiagnosticPayload,
     TrainRequest,
     TrainResponse,
+    TrainStatusResponse,
+    TuningReportPayload,
 )
 
 logger = get_logger(component="server.modelling.train")
@@ -101,6 +114,23 @@ _DEFAULT_DEPTH = 6  # CatBoost tree depth for VRAM estimation
 _TRAINING_JOB_TYPE = "training"
 _DISPERSION_JOB_TYPE = "dispersion_estimate"
 _JOB_TYPE_KEY = "job_type"
+_CORE_TRAINING_ARTIFACT_KINDS = frozenset({"model", "feature_contract"})
+_EVALUATION_ARTIFACT_PATHS = {
+    "evaluation_plan": "plan_path",
+    "evaluation_results": "results_path",
+    "evaluation_report": "report_path",
+}
+_TUNING_ARTIFACT_PATHS = {
+    "tuning_plan": "plan_path",
+    "tuning_trials": "trials_path",
+    "tuning_report": "report_path",
+}
+_EVALUATED_TRAINING_ARTIFACT_KINDS = frozenset(
+    _CORE_TRAINING_ARTIFACT_KINDS | set(_EVALUATION_ARTIFACT_PATHS)
+)
+_TRAINING_ARTIFACT_KINDS = frozenset(
+    _EVALUATED_TRAINING_ARTIFACT_KINDS | set(_TUNING_ARTIFACT_PATHS)
+)
 
 # Row cap for dispersion estimation. The profile search runs ~10-30 IRLS
 # fits, so the estimate samples the training frame (seeded, deterministic —
@@ -134,7 +164,7 @@ def _max_training_artifact_bytes() -> int:
 
 # Deterministic seed for the RAM/row-limit training downsample. A fixed
 # constant (rather than a config knob) keeps training reproducible by default
-# and matches the project-wide split-seed default (``SplitConfig.seed == 42``).
+# and matches the editor's default evaluation seed.
 _TRAINING_DOWNSAMPLE_SEED = 42
 
 
@@ -320,16 +350,16 @@ def _training_required_metadata_columns(config: Mapping[str, Any]) -> set[str]:
         if isinstance(aux_col, str) and aux_col:
             columns.add(aux_col)
 
-    split = config.get("split") or DEFAULT_SPLIT_DICT
-    if isinstance(split, dict):
-        strategy = split.get("strategy", "random")
-        split_col = None
+    evaluation = config.get("evaluation")
+    if isinstance(evaluation, dict):
+        strategy = evaluation.get("strategy")
+        evaluation_col = None
         if strategy == "temporal":
-            split_col = split.get("date_column")
+            evaluation_col = evaluation.get("date_column")
         elif strategy == "group":
-            split_col = split.get("group_column")
-        if isinstance(split_col, str) and split_col:
-            columns.add(split_col)
+            evaluation_col = evaluation.get("group_column")
+        if isinstance(evaluation_col, str) and evaluation_col:
+            columns.add(evaluation_col)
 
     columns.update(_string_list_config(config, "id_columns"))
     return columns
@@ -357,13 +387,13 @@ def _training_metadata_reasons(config: Mapping[str, Any]) -> dict[str, str]:
     add(config.get("fold_column"), "fold")
     for column in _string_list_config(config, "id_columns"):
         add(column, "identifier")
-    split = config.get("split") or DEFAULT_SPLIT_DICT
-    if isinstance(split, dict):
-        strategy = split.get("strategy", "random")
+    evaluation = config.get("evaluation")
+    if isinstance(evaluation, dict):
+        strategy = evaluation.get("strategy")
         if strategy == "temporal":
-            add(split.get("date_column"), "split")
+            add(evaluation.get("date_column"), "evaluation")
         elif strategy == "group":
-            add(split.get("group_column"), "split")
+            add(evaluation.get("group_column"), "evaluation")
     return reasons
 
 
@@ -733,21 +763,28 @@ def _training_response_payload(
     *,
     job_id: str,
     model_path: str,
+    evaluation: Mapping[str, Any],
+    tuning: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     loss_history, loss_history_truncated = _bounded_loss_history(
         train_result.loss_history,
     )
+    diagnostics_set: Literal["development", "final_test"] = train_result.diagnostics_set
+    diagnostic_metrics = (
+        train_result.final_test_metrics if diagnostics_set == "final_test" else train_result.metrics
+    )
+    evaluation_payload = EvaluationReportPayload.model_validate(evaluation)
+    tuning_payload = TuningReportPayload.model_validate(tuning) if tuning is not None else None
     response = TrainResponse(
         status="completed",
         job_id=job_id,
-        metrics=train_result.metrics,
+        diagnostic_metrics=diagnostic_metrics,
+        final_test_metrics=train_result.final_test_metrics,
         feature_importance=train_result.feature_importance,
         model_path=model_path,
-        train_rows=train_result.train_rows,
-        validation_rows=train_result.validation_rows,
-        holdout_rows=train_result.holdout_rows,
-        holdout_metrics=train_result.holdout_metrics,
-        diagnostics_set=train_result.diagnostics_set,
+        development_rows=train_result.development_rows,
+        final_test_rows=train_result.final_test_rows,
+        diagnostics_set=diagnostics_set,
         features=train_result.features,
         cat_features=train_result.cat_features,
         best_iteration=train_result.best_iteration,
@@ -768,9 +805,11 @@ def _training_response_payload(
         glm_fit_statistics=train_result.glm_fit_statistics,
         glm_regularization_path=train_result.glm_regularization_path,
         diagnostics_errors=train_result.diagnostics_errors,
+        evaluation=evaluation_payload,
+        tuning=tuning_payload,
     )
     _assert_json_finite(response)
-    return response.model_dump(mode="json")
+    return response.model_dump(mode="json", exclude_none=True)
 
 
 def _run_training_process_job(
@@ -825,6 +864,27 @@ def _run_training_process_job(
                 },
             )
 
+        def tuning_progress(fields: dict[str, Any]) -> None:
+            execution_context.checkpoint(label="training_tuning_progress")
+            completed = fields.get("completed_fits")
+            total = fields.get("total_fits")
+            fraction = (
+                min(max(float(completed) / float(total), 0.0), 1.0)
+                if isinstance(completed, int)
+                and not isinstance(completed, bool)
+                and isinstance(total, int)
+                and not isinstance(total, bool)
+                and total > 0
+                else 0.0
+            )
+            phase = fields.get("phase")
+            runtime.emit_progress(
+                progress=fraction,
+                message=f"Tuning: {phase}",
+                kind="tuning",
+                fields=fields,
+            )
+
         train_result = job.run(
             progress,
             iteration,
@@ -832,6 +892,7 @@ def _run_training_process_job(
                 label="training_cancel_checkpoint"
             ),
             execution_context=execution_context,
+            on_tuning_progress=tuning_progress,
         )
         model_path = Path(train_result.model_path).resolve()
         contract_path = model_path.parent / model_contract_filename(model_path.stem)
@@ -847,10 +908,47 @@ def _run_training_process_job(
             kind="feature_contract",
             lifetime="staged",
         )
+        artifacts = [model_manifest, contract_manifest]
+        if not isinstance(train_result.evaluation, dict):
+            raise ValueError("Training evaluation result must be an object")
+        response_evaluation = dict(train_result.evaluation)
+        for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
+            raw_path = response_evaluation.get(response_field)
+            if not isinstance(raw_path, str) or not raw_path:
+                raise ValueError(f"Training evaluation result has no {response_field}")
+            artifact = build_artifact_manifest(
+                artifact_root=staged_output.parent,
+                path=Path(raw_path).resolve(),
+                kind=kind,
+                lifetime="staged",
+            )
+            artifacts.append(artifact)
+            response_evaluation[response_field] = artifact.relative_path
+
+        response_tuning: dict[str, Any] | None = None
+        if train_result.tuning is not None:
+            if not isinstance(train_result.tuning, dict):
+                raise ValueError("Training tuning result must be an object")
+            response_tuning = dict(train_result.tuning)
+            for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
+                raw_path = response_tuning.get(response_field)
+                if not isinstance(raw_path, str) or not raw_path:
+                    raise ValueError(f"Training tuning result has no {response_field}")
+                artifact = build_artifact_manifest(
+                    artifact_root=staged_output.parent,
+                    path=Path(raw_path).resolve(),
+                    kind=kind,
+                    lifetime="staged",
+                )
+                artifacts.append(artifact)
+                response_tuning[response_field] = artifact.relative_path
+
         response = _training_response_payload(
             train_result,
             job_id=request.request_id,
             model_path=model_manifest.relative_path,
+            evaluation=response_evaluation,
+            tuning=response_tuning,
         )
         return WorkerResultManifest(
             metadata={
@@ -860,7 +958,7 @@ def _run_training_process_job(
                     terminal_reason="completed",
                 ),
             },
-            artifacts=(model_manifest, contract_manifest),
+            artifacts=tuple(artifacts),
         )
     except Exception as exc:
         known = _known_training_worker_failure(
@@ -1064,6 +1162,99 @@ def _replace_training_artifact(source: Path, destination: Path) -> None:
             time.sleep(_WINDOWS_ARTIFACT_REPLACE_RETRY_DELAY_SECONDS)
 
 
+def _validate_evaluation_artifact_contents(
+    staged_and_final: Mapping[str, tuple[Path, Path]],
+    *,
+    response_fit_count: int,
+) -> dict[str, Any]:
+    """Validate and reconstruct the digest-linked evaluation response."""
+    from haute.modelling._evaluation import (
+        EvaluationPlan,
+        aggregate_evaluation_results,
+        file_sha256,
+        load_evaluation_report,
+        load_evaluation_results,
+    )
+
+    try:
+        plan_path = staged_and_final["evaluation_plan"][0]
+        results_path = staged_and_final["evaluation_results"][0]
+        report_path = staged_and_final["evaluation_report"][0]
+        plan = EvaluationPlan.from_plain_data(json.loads(plan_path.read_bytes()))
+        plan_sha256 = file_sha256(plan_path)
+        results = load_evaluation_results(results_path, plan_sha256=plan_sha256)
+        results_sha256 = file_sha256(results_path)
+        report = load_evaluation_report(report_path)
+        expected_report = aggregate_evaluation_results(
+            plan,
+            results,
+            tuple(report.metrics),
+            results_sha256=results_sha256,
+        )
+        if expected_report.to_plain_data() != report.to_plain_data():
+            raise ValueError("evaluation report does not match the persisted plan and results")
+        return {
+            "schema_version": 1,
+            "strategy": plan.config.strategy,
+            "validation_method": plan.config.validation["method"],
+            "validation_fit_count": len(plan.validation_fits),
+            "fit_count": response_fit_count,
+            "development_rows": len(plan.development_positions),
+            "final_test_rows": len(plan.test_positions),
+            "selection_fits": [fit.to_plain_data() for fit in results.fits],
+            "selection_metrics": {
+                metric: dict(values) for metric, values in report.metrics.items()
+            },
+            "plan_sha256": plan_sha256,
+            "results_sha256": results_sha256,
+            "summary": dict(plan.summary),
+        }
+    except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise WorkerProtocolError(f"Training evaluation artifact set is malformed: {exc}") from exc
+
+
+def _validate_tuning_artifact_contents(
+    staged_and_final: Mapping[str, tuple[Path, Path]],
+    *,
+    evaluation_plan_sha256: str,
+) -> dict[str, Any]:
+    """Validate and reconstruct the digest-linked tuning response."""
+    from haute.modelling._evaluation import file_sha256
+    from haute.modelling._tuning import (
+        build_tuning_report,
+        load_tuning_plan,
+        load_tuning_report,
+        load_tuning_trials,
+    )
+
+    try:
+        plan_path = staged_and_final["tuning_plan"][0]
+        trials_path = staged_and_final["tuning_trials"][0]
+        report_path = staged_and_final["tuning_report"][0]
+        plan = load_tuning_plan(plan_path)
+        if plan.evaluation_plan_sha256 != evaluation_plan_sha256:
+            raise ValueError("tuning plan does not link to the evaluation plan")
+        plan_sha256 = file_sha256(plan_path)
+        trials = load_tuning_trials(trials_path, plan_sha256=plan_sha256)
+        trials_sha256 = file_sha256(trials_path)
+        report = load_tuning_report(report_path)
+        expected_report = build_tuning_report(
+            plan,
+            trials,
+            trials_sha256=trials_sha256,
+            final_params=report.final_params,
+            final_tree_count=report.final_tree_count,
+        )
+        if expected_report.to_plain_data() != report.to_plain_data():
+            raise ValueError("tuning report does not match the persisted plan and trials")
+        return {
+            **report.to_plain_data(),
+            "trials": [trial.to_plain_data() for trial in trials.trials],
+        }
+    except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise WorkerProtocolError(f"Training tuning artifact set is malformed: {exc}") from exc
+
+
 def _publish_training_artifacts(
     manifest: WorkerResultManifest,
     *,
@@ -1071,8 +1262,10 @@ def _publish_training_artifacts(
     output_root: Path,
     job_id: str,
     expected_model_name: str,
+    expected_evaluation: EvaluationReportPayload,
+    expected_tuning: TuningReportPayload | None = None,
 ) -> dict[str, Path]:
-    """Publish a validated model/contract pair with same-filesystem rollback."""
+    """Atomically publish one complete evaluation run and optional tuning set."""
     by_kind: dict[str, WorkerArtifactManifest] = {}
     for artifact in manifest.artifacts:
         if artifact.kind in by_kind:
@@ -1080,27 +1273,52 @@ def _publish_training_artifacts(
         if artifact.lifetime != "staged":
             raise WorkerProtocolError("Training artifacts must have staged lifetime")
         by_kind[artifact.kind] = artifact
-    if set(by_kind) != {"model", "feature_contract"}:
+    artifact_kinds = set(by_kind)
+    if artifact_kinds not in (
+        set(_EVALUATED_TRAINING_ARTIFACT_KINDS),
+        set(_TRAINING_ARTIFACT_KINDS),
+    ):
         raise WorkerProtocolError(
-            "Training completion requires exactly one model and feature contract"
+            "Training completion requires a model, feature contract, and complete "
+            "three-artifact evaluation set, with an optional complete tuning set"
         )
+    if expected_evaluation is None:
+        raise WorkerProtocolError("Training response must declare evaluation artifacts")
+    has_tuning_artifacts = set(_TUNING_ARTIFACT_PATHS) <= artifact_kinds
+    if (expected_tuning is None) != (not has_tuning_artifacts):
+        raise WorkerProtocolError("Training response and tuning artifact set disagree")
 
     root = artifact_root.resolve()
     destination_root = output_root.resolve()
     staged_and_final: dict[str, tuple[Path, Path]] = {}
-    for kind, artifact in by_kind.items():
-        relative = Path(artifact.relative_path)
+    ordered_kinds = (
+        "model",
+        "feature_contract",
+        "evaluation_plan",
+        "evaluation_results",
+        "evaluation_report",
+        "tuning_plan",
+        "tuning_trials",
+        "tuning_report",
+    )
+    for kind in ordered_kinds:
+        selected_artifact = by_kind.get(kind)
+        if selected_artifact is None:
+            continue
+        relative = Path(selected_artifact.relative_path)
         if len(relative.parts) != 2 or relative.parts[0] != "output":
             raise WorkerProtocolError(
-                f"Training artifact {artifact.relative_path!r} is not in the staged output"
+                f"Training artifact {selected_artifact.relative_path!r} is not in the staged output"
             )
         staged = (root / relative).resolve()
         final = (destination_root / relative.name).resolve()
-        if not final.is_relative_to(destination_root):
-            raise WorkerProtocolError("Training artifact destination escapes output root")
         staged_and_final[kind] = (staged, final)
 
-    from haute.modelling._training_job import model_contract_filename
+    from haute.modelling._training_job import (
+        evaluation_artifact_filenames,
+        model_contract_filename,
+        tuning_artifact_filenames,
+    )
 
     model_staged, _model_final = staged_and_final["model"]
     contract_staged, _contract_final = staged_and_final["feature_contract"]
@@ -1108,12 +1326,82 @@ def _publish_training_artifacts(
         raise WorkerProtocolError("Training model filename does not match the requested name")
     if contract_staged.name != model_contract_filename(model_staged.stem):
         raise WorkerProtocolError("Training model and feature contract filenames do not match")
+    evaluation_names = evaluation_artifact_filenames(expected_model_name)
+    expected_evaluation_names = {
+        "evaluation_plan": evaluation_names["plan"],
+        "evaluation_results": evaluation_names["results"],
+        "evaluation_report": evaluation_names["report"],
+    }
+    for kind, expected_name in expected_evaluation_names.items():
+        staged, _final = staged_and_final[kind]
+        if staged.name != expected_name:
+            raise WorkerProtocolError(
+                f"Training {kind} filename does not match the requested model name"
+            )
+    expected_evaluation_response = expected_evaluation.model_dump(
+        mode="json",
+        exclude_none=True,
+    )
+    for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
+        if expected_evaluation_response.pop(response_field) != by_kind[kind].relative_path:
+            raise WorkerProtocolError(
+                f"Training evaluation response path does not match the staged {kind} manifest"
+            )
+    artifact_evaluation_response = _validate_evaluation_artifact_contents(
+        staged_and_final,
+        response_fit_count=expected_evaluation_response["fit_count"],
+    )
+    if expected_evaluation_response != artifact_evaluation_response:
+        raise WorkerProtocolError(
+            "Training evaluation response does not match the staged artifact contents"
+        )
+
+    tuning_names = tuning_artifact_filenames(expected_model_name)
+    if has_tuning_artifacts:
+        tuning_response = cast(TuningReportPayload, expected_tuning)
+        expected_tuning_names = {
+            "tuning_plan": tuning_names["plan"],
+            "tuning_trials": tuning_names["trials"],
+            "tuning_report": tuning_names["report"],
+        }
+        for kind, expected_name in expected_tuning_names.items():
+            staged, _final = staged_and_final[kind]
+            if staged.name != expected_name:
+                raise WorkerProtocolError(
+                    f"Training {kind} filename does not match the requested model name"
+                )
+        expected_tuning_response = tuning_response.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+        for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
+            if expected_tuning_response.pop(response_field) != by_kind[kind].relative_path:
+                raise WorkerProtocolError(
+                    f"Training tuning response path does not match the staged {kind} manifest"
+                )
+        artifact_tuning_response = _validate_tuning_artifact_contents(
+            staged_and_final,
+            evaluation_plan_sha256=artifact_evaluation_response["plan_sha256"],
+        )
+        if expected_tuning_response != artifact_tuning_response:
+            raise WorkerProtocolError(
+                "Training tuning response does not match the staged artifact contents"
+            )
+
+    obsolete_names: list[str] = []
+    if not has_tuning_artifacts:
+        obsolete_names.extend(tuning_names.values())
+    obsolete_finals = tuple((destination_root / filename).resolve() for filename in obsolete_names)
     destination_root.mkdir(parents=True, exist_ok=True)
 
     backups: dict[Path, Path] = {}
     published: list[Path] = []
     try:
-        for _staged, final in staged_and_final.values():
+        managed_finals = [
+            *(final for _staged, final in staged_and_final.values()),
+            *obsolete_finals,
+        ]
+        for final in managed_finals:
             if final.exists() or final.is_symlink():
                 backup = final.with_name(f".{final.name}.{job_id}.haute-backup")
                 if backup.exists() or backup.is_symlink():
@@ -1199,6 +1487,59 @@ def _check_gpu_vram(
         available_mb=available_mb,
         warning=warning,
     )
+
+
+def _evaluation_preview_payload(
+    plan: EvaluationPlan,
+    *,
+    date_values: list[str] | None = None,
+) -> dict[str, Any]:
+    """Project an exact plan into the bounded public preflight summary."""
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "strategy": plan.config.strategy,
+        "validation_method": plan.config.validation["method"],
+        "development_rows": len(plan.development_positions),
+        "final_test_rows": len(plan.test_positions),
+        "validation_fit_count": len(plan.validation_fits),
+    }
+    if plan.validation_fits:
+        train_rows = [fit.train_rows for fit in plan.validation_fits]
+        validation_rows = [fit.validation_rows for fit in plan.validation_fits]
+        payload.update(
+            {
+                "min_selection_train_rows": min(train_rows),
+                "max_selection_train_rows": max(train_rows),
+                "min_selection_validation_rows": min(validation_rows),
+                "max_selection_validation_rows": max(validation_rows),
+            }
+        )
+    if plan.config.strategy == "group":
+        payload.update(
+            {
+                "development_group_count": plan.summary["development_group_count"],
+                "final_test_group_count": plan.summary["test_group_count"],
+            }
+        )
+    if plan.config.strategy == "temporal":
+        if date_values is None or len(date_values) != plan.row_count:
+            raise ValueError("temporal evaluation preview requires exact date values")
+
+        def date_range(positions: tuple[int, ...]) -> dict[str, str] | None:
+            if not positions:
+                return None
+            values = [date_values[position] for position in positions]
+            ordered = sorted(
+                values,
+                key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")),
+            )
+            return {"start": ordered[0], "end": ordered[-1]}
+
+        payload["development_date_range"] = date_range(plan.development_positions)
+        final_test_range = date_range(plan.test_positions)
+        if final_test_range is not None:
+            payload["final_test_date_range"] = final_test_range
+    return payload
 
 
 class TrainService:
@@ -1317,6 +1658,165 @@ class TrainService:
                 detail="Training preparation failed to start. Check the server logs for details.",
             ) from exc
         return TrainResponse(status="started", job_id=job_id)
+
+    def evaluation_preview(
+        self,
+        body: TrainEstimateRequest,
+        *,
+        row_limit: int | None,
+    ) -> dict[str, Any] | None:
+        """Materialise only evaluation keys and return the exact bounded plan summary.
+
+        An incomplete setup deliberately has no preview. Once target, objective,
+        and canonical evaluation fields are complete, data-dependent failures
+        (class counts, empty group/date partitions, invalid temporal values)
+        fail preflight explicitly instead of inventing an approximate summary.
+        """
+        node = _find_modelling_node(body.graph, body.node_id)
+        config = node.data.config
+        target = config.get("target")
+        task = config.get("task", "regression")
+        raw_evaluation = config.get("evaluation")
+        if (
+            not isinstance(target, str)
+            or not target
+            or task not in {"regression", "classification"}
+            or not isinstance(raw_evaluation, dict)
+            or training_objective_issue(config) is not None
+        ):
+            return None
+        try:
+            evaluation = EvaluationConfig.from_plain_data(raw_evaluation)
+        except (TypeError, ValueError):
+            return None
+
+        key_column = (
+            evaluation.group_column
+            if evaluation.strategy == "group"
+            else (evaluation.date_column if evaluation.strategy == "temporal" else None)
+        )
+        selected_columns = list(
+            dict.fromkeys(
+                [
+                    target,
+                    *([key_column] if key_column is not None else []),
+                ]
+            )
+        )
+        execution_context: ExecutionContext | None = None
+        try:
+            execution_context = create_admitted_execution_context(
+                operation="training_evaluation_preview",
+                profile=ExecutionProfile.TRAINING_PREP,
+            )
+            preamble_ns = self._compile_preamble(body.graph)
+            required_columns_by_node = _training_required_columns_by_node(
+                body.node_id,
+                config,
+            )
+            from haute._polars_utils import (
+                DEFAULT_STREAMING_CHUNK_SIZE,
+                streaming_collect,
+            )
+            from haute.executor import _build_node_fn
+
+            cache_request = build_dataframe_execution_cache_request(
+                body.graph,
+                node_ids=[body.node_id],
+                namespace="training_evaluation_preview",
+                source=body.source,
+                profile=execution_context.profile,
+                input_fingerprint=dataframe_graph_input_fingerprint(
+                    body.graph,
+                    target_node_id=body.node_id,
+                    source=body.source,
+                ),
+                target_node_id=body.node_id,
+                required_columns_by_node=required_columns_by_node,
+                enforce_contracts=True,
+                preamble_ns_supplied=preamble_ns is not None,
+                streaming_chunk_size=DEFAULT_STREAMING_CHUNK_SIZE,
+            )
+            lazy_outputs, *_ = execute_lazy_graph(
+                body.graph,
+                _build_node_fn,
+                target_node_id=body.node_id,
+                preamble_ns=preamble_ns,
+                source=body.source,
+                enforce_contracts=True,
+                required_columns_by_node=required_columns_by_node,
+                execution_context=execution_context,
+                dataframe_cache_request=cache_request,
+            )
+            evaluation_lf = lazy_outputs.get(body.node_id)
+            if evaluation_lf is None:
+                raise ValueError("No training data arrived at the modelling node.")
+            if row_limit is not None:
+                evaluation_lf = _seeded_training_sample(
+                    evaluation_lf,
+                    row_limit,
+                )
+            available_columns = set(evaluation_lf.collect_schema().names())
+            missing_columns = sorted(set(selected_columns) - available_columns)
+            if missing_columns:
+                raise ValueError(
+                    f"evaluation preview is missing required column(s): {missing_columns}"
+                )
+            projection = [
+                (
+                    pl.col(column).cast(pl.String).alias(column)
+                    if column == evaluation.date_column
+                    else pl.col(column)
+                )
+                for column in selected_columns
+            ]
+            frame = streaming_collect(
+                evaluation_lf.filter(pl.col(target).is_not_null()).select(projection),
+                execution_context=execution_context,
+            )
+            if frame.height < 1:
+                raise ValueError(f"Target column {target!r} contains only null values")
+            target_values = frame[target].to_list() if task == "classification" else None
+            group_values = (
+                frame[evaluation.group_column].to_list()
+                if evaluation.group_column is not None
+                else None
+            )
+            date_values = (
+                frame[evaluation.date_column].to_list()
+                if evaluation.date_column is not None
+                else None
+            )
+            plan = generate_evaluation_plan(
+                evaluation,
+                source_sha256="0" * 64,
+                row_count=frame.height,
+                task=str(task),
+                target_values=target_values,
+                group_values=group_values,
+                date_values=date_values,
+            )
+            return _evaluation_preview_payload(
+                plan,
+                date_values=date_values,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Evaluation preview failed: {exc}",
+            ) from exc
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            raise _memory_limit_http_exception(exc) from None
+        except PUBLIC_CONTRACT_ERROR_TYPES as exc:
+            raise contract_error_http_exception(exc) from None
+        except BoundedMemoryUnsupportedError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Evaluation preview cannot run in bounded mode: {exc}",
+            ) from exc
+        finally:
+            if execution_context is not None:
+                execution_context.release_admission(preserve_primary_error=True)
 
     def _join_preparation(self, job_id: str, *, timeout: float = 10.0) -> None:
         """Wait for an in-flight preparation owner (used by shutdown/tests)."""
@@ -1959,6 +2459,29 @@ class TrainService:
         objective_issue = training_objective_issue(config)
         if objective_issue is not None:
             raise HTTPException(status_code=400, detail=objective_issue)
+        try:
+            legacy_fields = [key for key in ("split", "cross_validation") if key in config]
+            if legacy_fields:
+                raise TrainingConfigError(
+                    "Invalid legacy modelling config: public split/cross_validation "
+                    "fields were replaced by the canonical versioned evaluation object."
+                )
+            evaluation = parse_evaluation_config(config.get("evaluation"))
+            metrics = config.get("metrics") or []
+            if not metrics:
+                # The builder derives objective-aware defaults. Reuse it rather
+                # than creating a second default-metric contract in the route.
+                build_training_job_kwargs(config, data="__config_validation__")
+            else:
+                parse_tuning_config(
+                    config.get("tuning"),
+                    algorithm=str(algorithm),
+                    base_params=build_train_params(config),
+                    evaluation=evaluation,
+                    configured_metrics=list(metrics),
+                )
+        except TrainingConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     def _check_no_concurrent_jobs(self) -> None:
         """Reject if a training job is already running."""
@@ -2231,7 +2754,7 @@ class TrainService:
 
             # Project down to only the columns needed for training.
             # This reduces peak memory during sink and all subsequent
-            # phases (split, pool construction, diagnostics).
+            # phases (evaluation partitions, pool construction, diagnostics).
             if exclude and keep_columns:
                 all_cols = schema_cols
                 drop_cols = [c for c in all_cols if c in exclude and c not in keep_columns]
@@ -2444,6 +2967,63 @@ class TrainService:
                     expected_status="running",
                 )
                 return
+            if event.kind == "tuning":
+                if not isinstance(event.fields, dict) or set(event.fields) != {
+                    "phase",
+                    "trial_index",
+                    "trial_count",
+                    "fold_index",
+                    "fold_count",
+                    "completed_fits",
+                    "total_fits",
+                    "best_objective",
+                }:
+                    raise WorkerProtocolError("Training tuning progress event fields are malformed")
+                try:
+                    validated_status = TrainStatusResponse.model_validate(
+                        {"status": "running", **event.fields}
+                    )
+                except ValueError as exc:
+                    raise WorkerProtocolError(
+                        f"Training tuning progress event fields are malformed: {exc}"
+                    ) from exc
+                current_job = self._store.get_job(job_id)
+                if current_job is None:
+                    raise KeyError(f"Training job {job_id!r} disappeared during tuning progress")
+                previous_completed = current_job.get("completed_fits")
+                previous_total = current_job.get("total_fits")
+                if (
+                    previous_completed is not None
+                    and validated_status.completed_fits is not None
+                    and validated_status.completed_fits < previous_completed
+                ):
+                    raise WorkerProtocolError("Training tuning progress completed_fits regressed")
+                if previous_total is not None and validated_status.total_fits != previous_total:
+                    raise WorkerProtocolError("Training tuning progress total_fits changed")
+                tuning_fields = {
+                    key: getattr(validated_status, key)
+                    for key in (
+                        "phase",
+                        "trial_index",
+                        "trial_count",
+                        "fold_index",
+                        "fold_count",
+                        "completed_fits",
+                        "total_fits",
+                        "best_objective",
+                    )
+                }
+                self._store.atomic_update(
+                    job_id,
+                    {
+                        **tuning_fields,
+                        "progress": event.progress,
+                        "message": event.message,
+                        "elapsed_seconds": time.monotonic() - start_time,
+                    },
+                    expected_status="running",
+                )
+                return
             if event.kind != "iteration" or not isinstance(event.fields, dict):
                 raise WorkerProtocolError(f"Unknown training progress event kind {event.kind!r}")
             iteration = event.fields.get("iteration")
@@ -2495,6 +3075,26 @@ class TrainService:
             raw_response = result.metadata.get("response")
             if not isinstance(raw_response, dict):
                 raise WorkerProtocolError("Training result response must be an object")
+            # Cheap identity and manifest-shape guards run on the raw payload
+            # first so a cross-job or artifact-less response is diagnosed as
+            # such rather than as a schema failure.
+            if raw_response.get("status") != "completed" or raw_response.get("job_id") != job_id:
+                raise WorkerProtocolError(
+                    "Training response status or job identifier does not match request"
+                )
+            model_artifacts = [
+                artifact for artifact in result.artifacts if artifact.kind == "model"
+            ]
+            if (
+                len(model_artifacts) != 1
+                or raw_response.get("model_path") != model_artifacts[0].relative_path
+            ):
+                raise WorkerProtocolError(
+                    "Training response model path does not match the staged model manifest"
+                )
+            execution_metrics = result.metadata.get("execution_metrics")
+            if not isinstance(execution_metrics, dict):
+                raise WorkerProtocolError("Training execution metrics must be an object")
             response_fields = dict(raw_response)
             response_fields.update(
                 {
@@ -2507,25 +3107,38 @@ class TrainService:
                     ),
                 }
             )
-            staged_response = TrainResponse.model_validate(response_fields)
+            try:
+                staged_response = TrainResponse.model_validate(response_fields)
+            except ValidationError as exc:
+                raise WorkerProtocolError(f"Training response is malformed: {exc}") from exc
             _assert_json_finite(staged_response)
-            if staged_response.status != "completed" or staged_response.job_id != job_id:
-                raise WorkerProtocolError(
-                    "Training response status or job identifier does not match request"
-                )
-            model_artifacts = [
-                artifact for artifact in result.artifacts if artifact.kind == "model"
-            ]
-            if (
-                len(model_artifacts) != 1
-                or staged_response.model_path != model_artifacts[0].relative_path
-            ):
-                raise WorkerProtocolError(
-                    "Training response model path does not match the staged model manifest"
-                )
-            execution_metrics = result.metadata.get("execution_metrics")
-            if not isinstance(execution_metrics, dict):
-                raise WorkerProtocolError("Training execution metrics must be an object")
+            artifacts_by_kind = {artifact.kind: artifact for artifact in result.artifacts}
+            for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
+                artifact = artifacts_by_kind.get(kind)
+                if (
+                    staged_response.evaluation is None
+                    or artifact is None
+                    or getattr(staged_response.evaluation, response_field) != artifact.relative_path
+                ):
+                    raise WorkerProtocolError(
+                        "Training evaluation response path does not match "
+                        f"the staged {kind} manifest"
+                    )
+            if staged_response.tuning is None:
+                if any(kind in artifacts_by_kind for kind in _TUNING_ARTIFACT_PATHS):
+                    raise WorkerProtocolError("Training response omits declared tuning artifacts")
+            else:
+                for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
+                    artifact = artifacts_by_kind.get(kind)
+                    if (
+                        artifact is None
+                        or getattr(staged_response.tuning, response_field) != artifact.relative_path
+                    ):
+                        raise WorkerProtocolError(
+                            "Training tuning response path does not match "
+                            f"the staged {kind} manifest"
+                        )
+            staged_evaluation = cast(EvaluationReportPayload, staged_response.evaluation)
             # Publication and the running->completed transition must be one
             # critical section.  A cancellation that wins first leaves the
             # staged artifacts untouched; one that arrives afterwards sees a
@@ -2540,11 +3153,42 @@ class TrainService:
                     output_root=output_root,
                     job_id=job_id,
                     expected_model_name=str(job_kwargs["name"]),
+                    expected_evaluation=staged_evaluation,
+                    expected_tuning=staged_response.tuning,
                 )
                 artifact_publication_committed.set()
                 response_fields["model_path"] = str(published["model"])
+                evaluation_fields = staged_evaluation.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                )
+                for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
+                    evaluation_fields[response_field] = str(published[kind])
+                response_fields["evaluation"] = evaluation_fields
+                if staged_response.tuning is not None:
+                    tuning_fields = staged_response.tuning.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    )
+                    for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
+                        tuning_fields[response_field] = str(published[kind])
+                    response_fields["tuning"] = tuning_fields
                 response = TrainResponse.model_validate(response_fields)
                 _assert_json_finite(response)
+                completed_progress_fields: dict[str, Any] = {}
+                if response.tuning is not None:
+                    completed_progress_fields = {
+                        "phase": "completed",
+                        "trial_index": None,
+                        "trial_count": response.tuning.trial_count,
+                        "fold_index": None,
+                        "fold_count": (
+                            response.tuning.trial_fit_count // response.tuning.trial_count
+                        ),
+                        "completed_fits": response.tuning.total_fit_count,
+                        "total_fits": response.tuning.total_fit_count,
+                        "best_objective": response.tuning.winner_objective,
+                    }
                 committed = self._lifecycle.transition(
                     job_id,
                     to="completed",
@@ -2553,6 +3197,7 @@ class TrainService:
                         "result": response,
                         "execution_metrics": execution_metrics,
                         "progress": 1.0,
+                        **completed_progress_fields,
                     },
                     elapsed_seconds=time.monotonic() - start_time,
                 )
@@ -2575,7 +3220,7 @@ class TrainService:
                 _run_training_process_job,
                 request,
                 artifact_root=artifact_root,
-                artifact_kinds=frozenset({"model", "feature_contract"}),
+                artifact_kinds=_TRAINING_ARTIFACT_KINDS,
                 max_artifact_size_bytes=_max_training_artifact_bytes(),
                 config=worker_config,
                 on_progress=on_progress,

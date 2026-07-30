@@ -115,7 +115,7 @@ describe("TargetAndTaskConfig", () => {
 
   it("gates Tweedie variance power until it is set explicitly", () => {
     // Unset: no silent 1.5 slider — a prompt to set it (the gate).
-    render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie" } })} />)
+    render(<TargetAndTaskConfig {...makeProps({ config: { loss_function: "Tweedie", variance_power: null } })} />)
     expect(screen.getByText(/Variance power/)).toBeInTheDocument()
     expect(screen.getByRole("button", { name: /Set variance power/ })).toBeInTheDocument()
     expect(screen.queryByRole("slider")).toBeNull()

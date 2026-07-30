@@ -63,7 +63,13 @@ def test_catboost_explicit_feature_columns_yield_exact_training_projection_seed(
             "exclude": ["policy_id", "debug_payload"],
             "weight": "exposure",
             "offset": "log_exposure",
-            "split": {"strategy": "group", "group_column": "household_id"},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "group",
+                "group_column": "household_id",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
             "id_columns": ["quote_id"],
         },
     )
@@ -93,7 +99,16 @@ def test_catboost_without_feature_columns_yields_all_except_training_demand() ->
             "exclude": ["policy_id", "debug_payload"],
             "weight": "exposure",
             "offset": "log_exposure",
-            "split": {"strategy": "temporal", "date_column": "quote_date"},
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "date_column": "quote_date",
+                "validation": {
+                    "method": "cross_validation",
+                    "fold_count": 3,
+                    "window": "expanding",
+                },
+            },
             "fold_column": "fold_id",
             "id_columns": ["quote_id", "customer_id"],
         },
@@ -154,7 +169,13 @@ def test_catboost_schema_derived_features_exclude_metadata_and_keep_categorical_
         weight="exposure",
         offset="log_exposure",
         exclude=["debug_payload", "fold_id", "quote_id"],
-        split={"strategy": "group", "group_column": "household_id"},
+        evaluation={
+            "schema_version": 1,
+            "strategy": "group",
+            "group_column": "household_id",
+            "seed": 42,
+            "validation": {"method": "single", "size": 0.2},
+        },
         algorithm="catboost",
     )._prepare_data(lambda _msg, _frac: None)
 

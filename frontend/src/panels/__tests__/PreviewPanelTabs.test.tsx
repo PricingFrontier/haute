@@ -84,4 +84,41 @@ describe("PreviewPanelTabs", () => {
     expect(third).toHaveFocus()
     expect(third).toHaveAttribute("aria-selected", "true")
   })
+
+  it("renders visible and assistive indicator semantics without changing the tab name", () => {
+    render(
+      <PreviewPanelTabs
+        tabs={[
+          {
+            key: "first",
+            label: "First",
+            indicator: {
+              kind: "warning",
+              label: "Choose a training loss",
+            },
+          },
+          {
+            key: "second",
+            label: "Second",
+            indicator: {
+              kind: "active",
+              label: "Training is running",
+            },
+          },
+        ]}
+        activeTab="first"
+        ariaLabel="Indicator tabs"
+        onChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("tab", { name: "First" })).toHaveAccessibleDescription(
+      "Choose a training loss",
+    )
+    expect(screen.getByRole("tab", { name: "Second" })).toHaveAccessibleDescription(
+      "Training is running",
+    )
+    expect(screen.getByText("Needs attention")).toBeVisible()
+    expect(screen.getByText("Running")).toBeVisible()
+  })
 })

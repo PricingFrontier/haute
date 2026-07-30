@@ -59,6 +59,70 @@ describe("TrainingProgress", () => {
     expect(container.textContent).toContain("0.1235")
   })
 
+  it("renders the authoritative bounded loss-history snapshot and truncation label", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({
+          train_loss_history: [
+            { iteration: 40, train_rmse: 0.8, eval_rmse: 0.9 },
+            { iteration: 50, train_rmse: 0.7, eval_rmse: 0.85 },
+          ],
+          train_loss_history_truncated: true,
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Loss Curve")).toBeInTheDocument()
+    expect(
+      screen.getByText("Showing latest retained loss-history window."),
+    ).toBeInTheDocument()
+  })
+
+  it("does not synthesize a chart from the latest loss poll", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({ train_loss: { train_rmse: 0.7 } })}
+      />,
+    )
+
+    expect(screen.queryByText("Loss Curve")).toBeNull()
+  })
+
+  it("shows an estimate only when the store supplies one", () => {
+    const rendered = render(
+      <TrainingProgress
+        trainProgress={makeProgress()}
+        estimatedRemainingSeconds={45}
+      />,
+    )
+    expect(screen.getByText("Estimated remaining: 45s")).toBeInTheDocument()
+
+    rendered.rerender(<TrainingProgress trainProgress={makeProgress()} />)
+    expect(screen.queryByText(/Estimated remaining/)).toBeNull()
+  })
+
+  it("renders tuning trial, fold, fit count, and best objective", () => {
+    render(
+      <TrainingProgress
+        trainProgress={makeProgress({
+          phase: "trial_fit",
+          trial_index: 7,
+          trial_count: 20,
+          fold_index: 2,
+          fold_count: 5,
+          completed_fits: 31,
+          total_fits: 101,
+          best_objective: 0.4172,
+          total_iterations: 0,
+        })}
+      />,
+    )
+
+    expect(screen.getByText(
+      "Trial 7 of 20 · Fold 2 of 5 · 31 of 101 fits · Best objective 0.4172",
+    )).toBeInTheDocument()
+  })
+
   it("renders memory-pressure diagnostics from structured progress metrics", () => {
     render(
       <TrainingProgress

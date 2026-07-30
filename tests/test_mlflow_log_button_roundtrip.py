@@ -152,14 +152,38 @@ def _train_glm(model_dir: Path) -> tuple[Path, Any, Any]:
 
 
 def _completed_result(model_path: str, **overrides: Any) -> TrainResponse:
+    artifact_path = str(Path(__file__).resolve())
     base: dict[str, Any] = {
         "status": "completed",
-        "metrics": {"rmse": 0.1, "gini": 0.5},
+        "diagnostic_metrics": {"rmse": 0.1, "gini": 0.5},
+        "final_test_metrics": {},
         "model_path": model_path,
-        "train_rows": 60,
-        "validation_rows": 20,
+        "development_rows": 80,
+        "final_test_rows": 0,
+        "diagnostics_set": "development",
         "features": FEATURES,
         "cat_features": CAT_FEATURES,
+        "evaluation": {
+            "schema_version": 1,
+            "strategy": "random",
+            "validation_method": "none",
+            "validation_fit_count": 0,
+            "fit_count": 1,
+            "development_rows": 80,
+            "final_test_rows": 0,
+            "selection_fits": [],
+            "selection_metrics": {},
+            "plan_sha256": "a" * 64,
+            "results_sha256": "b" * 64,
+            "plan_path": artifact_path,
+            "results_path": artifact_path,
+            "report_path": artifact_path,
+            "summary": {
+                "development_rows": 80,
+                "test_rows": 0,
+                "validation_fit_count": 0,
+            },
+        },
     }
     base.update(overrides)
     return TrainResponse(**base)
@@ -416,7 +440,7 @@ class TestButtonLogConstruction:
     def test_metrics_only_job_logs_without_contract(self, client, local_mlflow: Path) -> None:
         """No model artifact → no signature needed → the contract is not
         required and metrics still reach MLflow."""
-        result = _completed_result("", metrics={"rmse": 0.25})
+        result = _completed_result("", diagnostic_metrics={"rmse": 0.25})
         config = {"algorithm": "catboost", "task": "regression", "target": TARGET}
 
         with _seeded_job("btn_nomodel", result, config):

@@ -1,6 +1,6 @@
 {
   "status": "completed",
-  "progress": 1.0,
+  "progress": 1,
   "message": "done",
   "iteration": 10,
   "total_iterations": 10,
@@ -9,27 +9,26 @@
   },
   "train_loss_history": [],
   "train_loss_history_truncated": false,
-  "elapsed_seconds": 4.0,
+  "elapsed_seconds": 4,
   "result": {
     "status": "completed",
     "job_id": "job-1",
-    "metrics": {
+    "diagnostic_metrics": {
+      "rmse": 0.1
+    },
+    "final_test_metrics": {
       "rmse": 0.1
     },
     "feature_importance": [
       {
         "feature": "x",
-        "importance": 1.0
+        "importance": 1
       }
     ],
     "model_path": "outputs/model.cbm",
-    "train_rows": 100,
-    "validation_rows": 25,
-    "holdout_rows": 10,
-    "holdout_metrics": {
-      "rmse": 0.2
-    },
-    "diagnostics_set": "validation",
+    "development_rows": 100,
+    "final_test_rows": 10,
+    "diagnostics_set": "final_test",
     "features": [
       "x"
     ],
@@ -70,8 +69,8 @@
         "bins": [
           {
             "label": "all",
-            "exposure": 1.0,
-            "avg_actual": 2.0,
+            "exposure": 1,
+            "avg_actual": 2,
             "avg_predicted": 2.1
           }
         ]
@@ -79,20 +78,20 @@
     ],
     "residuals_histogram": [
       {
-        "bin_center": 0.0,
+        "bin_center": 0,
         "count": 2,
-        "weighted_count": 2.0
+        "weighted_count": 2
       }
     ],
     "residuals_stats": {
-      "mean": 0.0,
-      "std": 1.0
+      "mean": 0,
+      "std": 1
     },
     "actual_vs_predicted": [
       {
-        "actual": 1.0,
+        "actual": 1,
         "predicted": 1.1,
-        "weight": 1.0
+        "weight": 1
       }
     ],
     "lorenz_curve": [
@@ -120,13 +119,13 @@
       }
     ],
     "warning": null,
-    "total_source_rows": 135,
+    "total_source_rows": 110,
     "glm_coefficients": [
       {
         "feature": "x",
         "coefficient": 0.1,
         "std_error": 0.01,
-        "z_value": 10.0,
+        "z_value": 10,
         "p_value": 0.001,
         "significance": "***"
       }
@@ -135,7 +134,7 @@
       {
         "feature": "x",
         "relativity": 1.1,
-        "ci_lower": 1.0,
+        "ci_lower": 1,
         "ci_upper": 1.2
       }
     ],
@@ -153,7 +152,32 @@
         "error_type": "ValueError"
       }
     ],
-    "feature_selection": null
+    "feature_selection": null,
+    "evaluation": {
+      "schema_version": 1,
+      "strategy": "random",
+      "validation_method": "none",
+      "validation_fit_count": 0,
+      "fit_count": 1,
+      "development_rows": 100,
+      "final_test_rows": 10,
+      "selection_fits": [],
+      "selection_metrics": {},
+      "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "results_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "plan_path": "outputs/plan.json",
+      "results_path": "outputs/results.json",
+      "report_path": "outputs/report.json",
+      "summary": {
+        "development_rows": 100,
+        "test_rows": 10,
+        "validation_fit_count": 0,
+        "development_group_count": null,
+        "test_group_count": null,
+        "development_date_count": null,
+        "test_date_count": null
+      }
+    }
   },
   "warning": null,
   "terminal_reason": null,
@@ -161,5 +185,13 @@
   "http_status_code": null,
   "error_detail": null,
   "execution_metrics": null,
-  "feature_selection": null
+  "feature_selection": null,
+  "phase": null,
+  "trial_index": null,
+  "trial_count": null,
+  "fold_index": null,
+  "fold_count": null,
+  "completed_fits": null,
+  "total_fits": null,
+  "best_objective": null
 }

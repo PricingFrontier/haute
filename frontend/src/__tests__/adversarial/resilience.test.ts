@@ -31,7 +31,7 @@ import useSettingsStore from "../../stores/useSettingsStore.ts"
 // ── Utility imports ──────────────────────────────────────────────
 import { computeNextNodeId, normalizeEdges } from "../../utils/graphHelpers.ts"
 import { buildGraph } from "../../utils/buildGraph.ts"
-import { makeNode, makeEdge, makeSimpleNode, makeSimpleEdge } from "../../test-utils/factories.ts"
+import { makeNode, makeEdge, makeSimpleNode, makeSimpleEdge, makeTrainResult } from "../../test-utils/factories.ts"
 import { makePreviewData } from "../../utils/makePreviewData.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -148,14 +148,14 @@ describe("1. API returns unexpected shapes", () => {
     it("completeTrainJob with minimal result shape does not crash", () => {
       const store = useNodeResultsStore.getState()
       store.startTrainJob("t1", "tj1", "Train", "h", "live", 0)
-      const minimalResult = {
-        status: "completed",
-        metrics: {},
+      const minimalResult = makeTrainResult({
+        diagnostic_metrics: {},
+        final_test_metrics: {},
         feature_importance: [],
         model_path: "",
-        train_rows: 0,
-        validation_rows: 0,
-      }
+        development_rows: 0,
+        final_test_rows: 0,
+      })
       expect(() => store.completeTrainJob("t1", minimalResult)).not.toThrow()
       expect(useNodeResultsStore.getState().trainResults["t1"]).toBeDefined()
     })

@@ -5,7 +5,14 @@ from __future__ import annotations
 import pytest
 
 from haute.modelling._export import generate_training_script
-from haute.modelling._split import DEFAULT_SPLIT_DICT
+from haute.modelling._train_config import TrainingConfigError
+
+STRICT_RANDOM_EVALUATION = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {"method": "single", "size": 0.2},
+}
 
 MINIMAL_CONFIG = {
     "name": "freq",
@@ -13,6 +20,7 @@ MINIMAL_CONFIG = {
     "algorithm": "catboost",
     "task": "regression",
     "loss_function": "Poisson",
+    "evaluation": STRICT_RANDOM_EVALUATION,
 }
 
 
@@ -80,7 +88,10 @@ class TestParameterRepr:
         # Use offset (a simple string config) as the integer-adjacent
         # smoke-test for repr formatting — ``cv_folds`` was removed in
         # Phase 2 Package 2C-5.
-        config = {**MINIMAL_CONFIG, "split": {"strategy": "random", "seed": 12345}}
+        config = {
+            **MINIMAL_CONFIG,
+            "evaluation": {**STRICT_RANDOM_EVALUATION, "seed": 12345},
+        }
         script = generate_training_script(config, "d.parquet")
         assert "'seed': 12345" in script
 
@@ -206,51 +217,63 @@ class TestMetricsList:
         assert "metrics=['gini', 'rmse']" in script
 
 
-class TestSplitConfiguration:
-    def test_random_split(self):
+class TestEvaluationConfiguration:
+    def test_random_evaluation(self):
         config = {
             **MINIMAL_CONFIG,
-            "split": {"strategy": "random", "validation_size": 0.3, "seed": 99},
+            "evaluation": STRICT_RANDOM_EVALUATION,
         }
         script = generate_training_script(config, "d.parquet")
+        assert "evaluation=" in script
         assert "'strategy': 'random'" in script
-        assert "'validation_size': 0.3" in script
-        assert "'seed': 99" in script
+        assert "'validation'" in script
+        assert "split=" not in script
+        assert "cross_validation=" not in script
         compile(script, "<test>", "exec")
 
-    def test_temporal_split(self):
+    def test_temporal_evaluation(self):
         config = {
             **MINIMAL_CONFIG,
-            "split": {
+            "evaluation": {
+                "schema_version": 1,
                 "strategy": "temporal",
+                "validation": {"method": "single", "start": "2023-01-01"},
                 "date_column": "event_date",
-                "cutoff_date": "2023-01-01",
             },
         }
         script = generate_training_script(config, "d.parquet")
+        assert "evaluation=" in script
         assert "'strategy': 'temporal'" in script
         assert "'date_column': 'event_date'" in script
-        assert "'cutoff_date': '2023-01-01'" in script
         compile(script, "<test>", "exec")
 
-    def test_group_split(self):
+    def test_group_evaluation(self):
         config = {
             **MINIMAL_CONFIG,
-            "split": {
+            "evaluation": {
+                "schema_version": 1,
                 "strategy": "group",
                 "group_column": "policy_id",
-                "validation_size": 0.2,
                 "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
             },
         }
         script = generate_training_script(config, "d.parquet")
+        assert "evaluation=" in script
         assert "'strategy': 'group'" in script
         assert "'group_column': 'policy_id'" in script
         compile(script, "<test>", "exec")
 
-    def test_default_split_dict_used_when_not_provided(self):
-        script = generate_training_script(MINIMAL_CONFIG, "d.parquet")
-        assert repr(DEFAULT_SPLIT_DICT) in script
+    def test_legacy_split_and_cross_validation_rejected(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+        }
+        with pytest.raises(TrainingConfigError):
+            generate_training_script(config, "d.parquet")
+        config = {**MINIMAL_CONFIG, "cross_validation": {"strategy": "random", "fold_count": 3}}
+        with pytest.raises(TrainingConfigError):
+            generate_training_script(config, "d.parquet")
 
 
 class TestMLflow:
@@ -400,6 +423,7 @@ class TestGLMExportParity:
         "l1_ratio": 0.1,
         "intercept": True,
         "interactions": [],
+        "evaluation": STRICT_RANDOM_EVALUATION,
     }
 
     def _script_job(self, script: str):
@@ -503,12 +527,16 @@ class TestByteStableExportForExistingConfigs:
             "algorithm": "catboost",
             "task": "regression",
             "params": {"iterations": 100, "depth": 4},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": STRICT_RANDOM_EVALUATION,
             "metrics": ["gini", "rmse"],
             "loss_function": "Poisson",
             "offset": "log_exposure",
             "output_dir": "outputs",
         }
+        evaluation_line = (
+            "evaluation={'schema_version': 1, 'strategy': 'random', 'seed': 42, "
+            "'validation': {'method': 'single', 'size': 0.2}},"
+        )
         expected = '''"""Training script generated by Haute."""
 
 from haute.modelling import TrainingJob
@@ -523,7 +551,7 @@ job = TrainingJob(
     algorithm='catboost',
     task='regression',
     params={'iterations': 100, 'depth': 4},
-    split={'strategy': 'random', 'validation_size': 0.2, 'seed': 42},
+    {evaluation_line}
     metrics=['gini', 'rmse'],
     loss_function='Poisson',
     offset='log_exposure',
@@ -534,10 +562,38 @@ job = TrainingJob(
 if __name__ == "__main__":
     result = job.run()
     print(f"Model saved to: {result.model_path}")
-    for name, value in result.metrics.items():
+    reported_metrics = result.final_test_metrics or result.metrics
+    for name, value in reported_metrics.items():
         print(f"  {name}: {value:.4f}")
-'''
+'''.replace("{evaluation_line}", evaluation_line)
         assert generate_training_script(config, "output/freq.parquet") == expected
+
+
+class TestTuningExportParity:
+    def test_tuning_and_evaluation_are_exported_without_legacy_fields(self):
+        config = {
+            **MINIMAL_CONFIG,
+            "metrics": ["gini"],
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "cross_validation", "fold_count": 2},
+            },
+            "tuning": {
+                "schema_version": 1,
+                "trial_count": 5,
+                "seed": 42,
+                "metric": "gini",
+                "search_space": {"depth": [4, 5, 6]},
+            },
+        }
+        script = generate_training_script(config, "d.parquet")
+        assert "evaluation=" in script
+        assert "tuning=" in script
+        assert "split=" not in script
+        assert "cross_validation=" not in script
+        compile(script, "<test>", "exec")
 
 
 class TestFullConfig:
@@ -550,7 +606,7 @@ class TestFullConfig:
             "algorithm": "lightgbm",
             "task": "regression",
             "params": {"num_leaves": 31, "learning_rate": 0.05},
-            "split": {"strategy": "random", "validation_size": 0.25, "seed": 123},
+            "evaluation": STRICT_RANDOM_EVALUATION,
             "metrics": ["gini", "rmse", "mae"],
             "loss_function": "Tweedie",
             "variance_power": 1.5,

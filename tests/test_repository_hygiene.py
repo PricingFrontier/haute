@@ -326,6 +326,9 @@ _BACKEND_MINT_ALLOWLIST = {
     # before checking credential substrings. It neither mints nor persists a
     # filesystem or identifier name.
     "src/haute/_source_cache.py",
+    # Local replace-to-underscore canonicalizes bounded metric display spellings
+    # only; it does not mint or persist filesystem or identifier names.
+    "src/haute/modelling/_tuning.py",
 }
 _FRONTEND_MINT_ALLOWLIST = {
     # Deliberate third sanitizer with distinct semantics (run-collapse

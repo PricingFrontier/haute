@@ -3,12 +3,16 @@ import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react"
 import type { OnUpdateConfig } from "../editors"
 import { configField, safeParseFloat } from "../../utils/configField"
 import { FailoverHelp } from "./FailoverHelp"
+import { cleanupFeatureDependencies, roleColumns } from "./featureSelection"
 
 const ALL_FACTORS_HELP =
   "With no factors configured, the GLM would silently auto-build one term per " +
   "column (linear for numeric, categorical for strings) — an all-features " +
   "model you never chose. Tick 'All features' to opt into that explicitly, or " +
   "add factors below. Your individual factor setup is kept either way."
+
+const FACTOR_REMOVAL_CONFIRMATION =
+  "Removing selected features also removes their monotonic constraints and dependent interactions. Continue?"
 
 type Column = { name: string; dtype: string }
 
@@ -81,13 +85,10 @@ export function GLMFactorConfig({
   config,
   onUpdate,
   columns,
-  target,
-  weight,
   exclude,
 }: GLMFactorConfigProps) {
   const terms = configField<Record<string, TermSpec>>(config, "terms", {})
   const interactions = configField<InteractionSpec[]>(config, "interactions", [])
-  const offset = configField(config, "offset", "")
   // "All features" is an explicit opt-in to auto-terms (one linear/categorical
   // term per column). It gates the otherwise-silent empty-terms failover: with
   // it off and no terms, the model would auto-build over every column with no
@@ -98,10 +99,15 @@ export function GLMFactorConfig({
   const [factorsOpen, setFactorsOpen] = useState(true)
   const [mode, setMode] = useState<FactorMode>("builder")
 
-  // All eligible columns (not target/weight/offset/exclude)
+  // All eligible columns (not modelling-role columns or explicit exclusions).
   const eligibleColumns = useMemo(
-    () => columns.filter(c => c.name !== target && c.name !== weight && c.name !== offset && !exclude.includes(c.name)),
-    [columns, target, weight, offset, exclude],
+    () => {
+      const roles = roleColumns(config)
+      return columns.filter(
+        (column) => !roles.has(column.name) && !exclude.includes(column.name),
+      )
+    },
+    [columns, config, exclude],
   )
 
   // Columns already added as factors
@@ -145,9 +151,13 @@ export function GLMFactorConfig({
   }, [terms, eligibleColumns, onUpdate])
 
   const removeFactor = useCallback((name: string) => {
+    if (!allFactors && !confirm(FACTOR_REMOVAL_CONFIRMATION)) return
     const { [name]: _removed, ...rest } = terms; void _removed
-    onUpdate("terms", rest)
-  }, [terms, onUpdate])
+    onUpdate({
+      terms: rest,
+      ...cleanupFeatureDependencies({ ...config, terms: rest }, [name]),
+    })
+  }, [allFactors, config, terms, onUpdate])
 
   // ── Update term spec ──
 
@@ -173,12 +183,30 @@ export function GLMFactorConfig({
         setJsonError("Must be a JSON object")
         return
       }
+      const nextTerms = parsed as Record<string, TermSpec>
+      const removed = allFactors
+        ? []
+        : Object.keys(terms).filter((name) => !Object.hasOwn(nextTerms, name))
+      if (removed.length > 0 && !confirm(FACTOR_REMOVAL_CONFIRMATION)) {
+        setJsonDraft(termsJson)
+        return
+      }
       setJsonError(null)
-      onUpdate("terms", parsed)
+      if (removed.length === 0) {
+        onUpdate("terms", nextTerms)
+      } else {
+        onUpdate({
+          terms: nextTerms,
+          ...cleanupFeatureDependencies(
+            { ...config, terms: nextTerms },
+            removed,
+          ),
+        })
+      }
     } catch (e) {
       setJsonError((e as Error).message)
     }
-  }, [onUpdate])
+  }, [allFactors, config, onUpdate, terms, termsJson])
 
   // ── Interactions ──
 
@@ -255,7 +283,21 @@ export function GLMFactorConfig({
             <input
               type="checkbox"
               checked={allFactors}
-              onChange={(e) => onUpdate("all_factors", e.target.checked || null)}
+              onChange={(e) => {
+                if (!e.target.checked) {
+                  const removed = eligibleColumns
+                    .filter((column) => !Object.hasOwn(terms, column.name))
+                    .map((column) => column.name)
+                  if (
+                    removed.length > 0
+                    && !confirm(FACTOR_REMOVAL_CONFIRMATION)
+                  ) return
+                  onUpdate({
+                    all_factors: null,
+                    ...cleanupFeatureDependencies(config, removed),
+                  })
+                } else onUpdate("all_factors", true)
+              }}
               className="accent-purple-500"
             />
             <span className="text-[11px]" style={{ color: "var(--text-primary)" }}>

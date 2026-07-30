@@ -118,6 +118,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
 
   return (
     <div>
+      <p className="text-[10px] mb-1" aria-label="Selected algorithm">Algorithm: <strong>GLM</strong></p>
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>
         Target & Weight
       </label>
@@ -235,7 +236,7 @@ export function GLMTargetConfig({ config, onUpdate, columns, onEstimateDispersio
               Variance power (1.0=Poisson, 2.0=Gamma)
               <FailoverHelp label={TWEEDIE_HELP} />
             </label>
-            {config.var_power === undefined ? (
+            {config.var_power === undefined || config.var_power === null ? (
               <div className="mt-1 flex gap-1.5">
                 <button
                   onClick={() => onUpdate("var_power", 1.5)}

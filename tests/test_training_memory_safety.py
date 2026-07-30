@@ -241,7 +241,9 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
         def __init__(self, *args, **kwargs):
             pass
 
-        def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
+        def run(
+            self, progress, on_iteration, check_cancelled=None, execution_context=None, **_kwargs
+        ):
             assert execution_context is not None
             raise ExecutionMemoryLimitExceededError(
                 "training_job",
@@ -260,6 +262,12 @@ def test_training_background_memory_limit_sets_typed_terminal_status(
                 "target": "target",
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 42,
+                    "validation": {"method": "none"},
+                },
             },
             {},
             str(tmp_parquet),
@@ -292,13 +300,16 @@ def test_launch_background_reconstructs_child_context_from_admitted_budget(
     captured: dict[str, Any] = {}
 
     class _TrainingJob(_SuccessfulTrainingJob):
-        def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
+        def run(
+            self, progress, on_iteration, check_cancelled=None, execution_context=None, **_kwargs
+        ):
             captured["execution_context"] = execution_context
             return super().run(
                 progress,
                 on_iteration,
                 check_cancelled=check_cancelled,
                 execution_context=execution_context,
+                **_kwargs,
             )
 
     admitted, _ = _admitted_training_context(job_id)
@@ -311,6 +322,12 @@ def test_launch_background_reconstructs_child_context_from_admitted_budget(
                 "target": "target",
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 42,
+                    "validation": {"method": "none"},
+                },
             },
             {},
             str(tmp_parquet),
@@ -359,6 +376,12 @@ def test_launch_background_releases_admission_after_thread_completes(
                 "target": "target",
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 42,
+                    "validation": {"method": "none"},
+                },
             },
             {},
             str(tmp_parquet),
@@ -408,6 +431,12 @@ def test_launch_background_releases_admission_on_thread_start_failure(
                 "target": "target",
                 "loss_function": "RMSE",
                 "output_dir": str(tmp_path / "outputs"),
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "random",
+                    "seed": 42,
+                    "validation": {"method": "none"},
+                },
             },
             {},
             str(tmp_parquet),

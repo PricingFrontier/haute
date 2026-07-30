@@ -28,6 +28,38 @@ from tests.optimiser_fixtures import run_frontier_and_wait
 _SAFE_DETAIL = "Operation failed. Check the server logs for details."
 
 
+def _completed_modelling_result() -> object:
+    from haute.schemas import TrainResponse
+
+    artifact_path = str(Path(__file__).resolve())
+    return TrainResponse(
+        status="completed",
+        diagnostic_metrics={"rmse": 0.1},
+        development_rows=1,
+        evaluation={
+            "schema_version": 1,
+            "strategy": "random",
+            "validation_method": "none",
+            "validation_fit_count": 0,
+            "fit_count": 1,
+            "development_rows": 1,
+            "final_test_rows": 0,
+            "selection_fits": [],
+            "selection_metrics": {},
+            "plan_sha256": "a" * 64,
+            "results_sha256": "b" * 64,
+            "plan_path": artifact_path,
+            "results_path": artifact_path,
+            "report_path": artifact_path,
+            "summary": {
+                "development_rows": 1,
+                "test_rows": 0,
+                "validation_fit_count": 0,
+            },
+        },
+    )
+
+
 def _file_input_config(path: str) -> dict:
     format_name, mode = {
         ".csv": ("csv", "scan"),
@@ -604,12 +636,7 @@ class TestModellingRoutesSafeDetail:
 
         _store.jobs["test_err"] = {
             "status": "completed",
-            "result": SimpleNamespace(
-                metrics={},
-                model_path=None,
-                diagnostics={},
-                metadata={},
-            ),
+            "result": _completed_modelling_result(),
             "config": {},
             "node_label": "model",
             "created_at": time.time(),
@@ -1254,31 +1281,7 @@ class TestSensitiveInfoLeakage:
 
         _store.jobs["test_pg_leak"] = {
             "status": "completed",
-            "result": SimpleNamespace(
-                metrics={},
-                model_path=None,
-                diagnostics={},
-                metadata={},
-                feature_importance=None,
-                shap_summary=None,
-                feature_importance_loss=None,
-                double_lift=None,
-                loss_history=None,
-                ave_per_feature=None,
-                residuals_histogram=None,
-                residuals_stats=None,
-                actual_vs_predicted=None,
-                lorenz_curve=None,
-                lorenz_curve_perfect=None,
-                pdp_data=None,
-                holdout_metrics=None,
-                diagnostics_set=None,
-                train_rows=100,
-                validation_rows=20,
-                holdout_rows=10,
-                features=["x"],
-                best_iteration=50,
-            ),
+            "result": _completed_modelling_result(),
             "config": {},
             "node_label": "model",
             "created_at": time.time(),
