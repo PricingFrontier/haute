@@ -108,6 +108,9 @@ never surfaced" invariant without pinning API shape:
 
 ## Interactions
 
+- [specs/hosted-project-storage](../hosted-project-storage/high-level.md) —
+  answers this spec's ephemeral-storage constraint: durable saves via a
+  bound git remote (DRAFT).
 - specs/databricks-io — gains the SP-OAuth credential path.
 - specs/deploy — already owns the `databricks` scaffold target the seeded
   project uses.
