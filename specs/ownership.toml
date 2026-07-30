@@ -20,8 +20,8 @@ reason = "The application shell hosts the canvas and wires in the assistant pane
 [[shared_file]]
 path = "frontend/src/api/types.ts"
 primary = "frontend-shared"
-consumers = ["optimiser"]
-reason = "Shared UI owns the canonical API contracts extended by optimiser responses."
+consumers = ["frontend-modelling-optimiser-ui", "optimiser"]
+reason = "Shared UI owns the canonical API contracts extended by modelling and optimiser responses."
 
 [[shared_file]]
 path = "frontend/src/components/ExecutionDiagnosticsSummary.tsx"
@@ -60,16 +60,40 @@ consumers = ["frontend-node-editors"]
 reason = "Shared UI owns the public form-primitive barrel used by node editors."
 
 [[shared_file]]
+path = "frontend/src/panels/NodePanel.tsx"
+primary = "frontend-node-editors"
+consumers = ["frontend-modelling-optimiser-ui"]
+reason = "Node editors own routing and chrome; modelling consumes its five-pane strip and objective/job indicators."
+
+[[shared_file]]
+path = "frontend/src/panels/PreviewPanelTabs.tsx"
+primary = "frontend-preview-explore"
+consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
+reason = "Preview/Explore owns the generic ARIA tab strip consumed by modelling result and node-panel panes."
+
+[[shared_file]]
+path = "frontend/src/stores/useNodeResultsStore.ts"
+primary = "frontend-shared"
+consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
+reason = "Shared UI owns result/job state; modelling consumes training history/ETA and node chrome consumes active-job state."
+
+[[shared_file]]
 path = "frontend/src/stores/useUIStore.ts"
 primary = "frontend-shared"
-consumers = ["frontend-assistant-ui"]
-reason = "Global UI state is shared infrastructure consumed by the assistant panel."
+consumers = ["frontend-assistant-ui", "frontend-modelling-optimiser-ui", "frontend-node-editors"]
+reason = "Global UI state is consumed by the assistant and by modelling pane selection hosted in node-editor chrome."
 
 [[shared_file]]
 path = "frontend/src/types/node.ts"
 primary = "frontend-shared"
 consumers = ["frontend-graph-canvas"]
 reason = "Shared UI owns canonical node-data types consumed at the canvas boundary."
+
+[[shared_file]]
+path = "frontend/src/types/trainGuards.ts"
+primary = "frontend-shared"
+consumers = ["frontend-modelling-optimiser-ui"]
+reason = "Shared UI owns the lazy training JSON trust boundary; modelling consumes strict live-history and evaluation/tuning result parsing."
 
 [[shared_file]]
 path = "frontend/src/utils/banding.ts"
@@ -88,6 +112,12 @@ path = "frontend/src/utils/configField.ts"
 primary = "frontend-modelling-optimiser-ui"
 consumers = ["frontend-node-editors"]
 reason = "Modelling owns typed config reads; node editors consume the shared helpers."
+
+[[shared_file]]
+path = "frontend/src/utils/trainingObjective.ts"
+primary = "frontend-modelling-optimiser-ui"
+consumers = ["frontend-node-editors"]
+reason = "Modelling owns objective issue codes and pane routing; NodePanel consumes them for accessible tab indicators."
 
 [[shared_file]]
 path = "pyproject.toml"

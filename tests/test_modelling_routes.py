@@ -57,6 +57,15 @@ def _fast_training_params(**overrides: object) -> dict[str, object]:
     return params
 
 
+def _random_evaluation_config() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "strategy": "random",
+        "seed": 42,
+        "validation": {"method": "single", "size": 0.2},
+    }
+
+
 def _completed_train_result() -> object:
     """Small successful TrainResult for endpoint tests that do not care about fit quality."""
     from haute.modelling._training_job import TrainResult
@@ -70,6 +79,133 @@ def _completed_train_result() -> object:
         features=["x1", "x2"],
         cat_features=[],
     )
+
+
+def _evaluation_response_payload() -> dict[str, object]:
+    selection_fits = [
+        {
+            "schema_version": 1,
+            "fit_index": 0,
+            "train_rows": 8,
+            "validation_rows": 2,
+            "metrics": {"rmse": 1.0},
+        },
+        {
+            "schema_version": 1,
+            "fit_index": 1,
+            "train_rows": 8,
+            "validation_rows": 2,
+            "metrics": {"rmse": 3.0},
+        },
+    ]
+    return {
+        "schema_version": 1,
+        "strategy": "random",
+        "validation_method": "cross_validation",
+        "validation_fit_count": 2,
+        "fit_count": 3,
+        "development_rows": 10,
+        "final_test_rows": 2,
+        "selection_fits": selection_fits,
+        "selection_metrics": {
+            "rmse": {
+                "mean": 2.0,
+                "stddev": 1.0,
+                "min": 1.0,
+                "max": 3.0,
+                "fit_count": 2,
+                "validation_rows": 4,
+            }
+        },
+        "plan_sha256": "a" * 64,
+        "results_sha256": "b" * 64,
+        "plan_path": "outputs/model.evaluation-plan.json",
+        "results_path": "outputs/model.evaluation-results.json",
+        "report_path": "outputs/model.evaluation-report.json",
+        "summary": {
+            "development_rows": 10,
+            "test_rows": 2,
+            "validation_fit_count": 2,
+        },
+    }
+
+
+def _completed_train_response(**overrides: object):
+    from haute.schemas import TrainResponse
+
+    values: dict[str, object] = {
+        "status": "completed",
+        "job_id": "test",
+        "diagnostic_metrics": {"rmse": 0.12},
+        "final_test_metrics": {"rmse": 0.12},
+        "development_rows": 10,
+        "final_test_rows": 2,
+        "diagnostics_set": "final_test",
+        "evaluation": _evaluation_response_payload(),
+    }
+    values.update(overrides)
+    return TrainResponse(**values)
+
+
+class TestEvaluationResponseContract:
+    def test_completed_response_accepts_bounded_report(self) -> None:
+        from haute.schemas import TrainResponse
+
+        response = TrainResponse(
+            status="completed",
+            diagnostic_metrics={"rmse": 0.12},
+            final_test_metrics={"rmse": 0.12},
+            development_rows=10,
+            final_test_rows=2,
+            diagnostics_set="final_test",
+            evaluation=_evaluation_response_payload(),
+        )
+
+        assert response.evaluation is not None
+        assert response.evaluation.fit_count == 3
+        assert [fit.fit_index for fit in response.evaluation.selection_fits] == [0, 1]
+
+    @pytest.mark.parametrize(
+        ("mutate", "message"),
+        [
+            (
+                lambda payload: payload.update(validation_fit_count=11),
+                "less than or equal to 10",
+            ),
+            (
+                lambda payload: payload["selection_fits"].reverse(),
+                "ascending",
+            ),
+            (
+                lambda payload: payload["selection_metrics"]["rmse"].update(validation_rows=5),
+                "validation_rows",
+            ),
+            (
+                lambda payload: payload["selection_fits"][0]["metrics"].update(mae=1.0),
+                "metric names",
+            ),
+            (
+                lambda payload: payload.update(plan_sha256="not-a-digest"),
+                "plan_sha256",
+            ),
+        ],
+    )
+    def test_completed_response_rejects_malformed_report(self, mutate, message: str) -> None:
+        from haute.schemas import TrainResponse
+
+        payload = _evaluation_response_payload()
+        mutate(payload)
+
+        with pytest.raises(ValueError, match=message):
+            TrainResponse(
+                status="completed",
+                diagnostic_metrics={"rmse": 0.12},
+                final_test_metrics={"rmse": 0.12},
+                development_rows=10,
+                final_test_rows=2,
+                diagnostics_set="final_test",
+                evaluation=payload,
+            )
 
 
 def _inline_route_service(monkeypatch: pytest.MonkeyPatch):
@@ -147,6 +283,7 @@ def _make_modelling_graph(
     algorithm: str = "catboost",
     task: str = "regression",
     params: dict | None = None,
+    evaluation: dict | None = None,
 ) -> dict:
     """Build a simple 2-node graph: dataInput → modelling."""
     config: dict = {
@@ -154,7 +291,13 @@ def _make_modelling_graph(
         "algorithm": algorithm,
         "task": task,
         "params": params or _fast_training_params(),
-        "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+        "evaluation": evaluation
+        or {
+            "schema_version": 1,
+            "strategy": "random",
+            "seed": 42,
+            "validation": {"method": "single", "size": 0.2},
+        },
         "metrics": ["gini", "rmse"] if task == "regression" else ["auc", "logloss"],
     }
     if algorithm == "catboost":
@@ -311,9 +454,11 @@ class TestTrainEndpoint:
         assert data["job_id"]
         status = _poll_until_done(client, data["job_id"])
         result = status["result"]
-        assert result["metrics"]
-        assert result["train_rows"] > 0
-        assert result["validation_rows"] > 0
+        assert result["diagnostic_metrics"]
+        assert result["final_test_metrics"] == {}
+        assert result["development_rows"] > 0
+        assert result["final_test_rows"] == 0
+        assert result["evaluation"]["validation_fit_count"] == 1
         # Should have ave_per_feature for the 2 features (x1, x2)
         assert "ave_per_feature" in result
         assert isinstance(result["ave_per_feature"], list)
@@ -425,7 +570,13 @@ class TestTrainBackgroundLaunchFailures:
             service._launch_background(
                 job_id,
                 "train",
-                {"target": "y", "loss_function": "RMSE"},
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "loss_function": "RMSE",
+                    "evaluation": _random_evaluation_config(),
+                },
                 {},
                 str(tmp_parquet),
                 None,
@@ -470,28 +621,55 @@ class TestTrainBackgroundLaunchFailures:
                 self.name = str(kwargs.get("name", "model"))
                 self.model_contract_filename = model_contract_filename
 
-            def run(self, progress, on_iteration, check_cancelled=None, execution_context=None):
+            def run(
+                self,
+                progress,
+                on_iteration,
+                check_cancelled=None,
+                execution_context=None,
+                on_tuning_progress=None,
+            ):
                 self.output_dir.mkdir(parents=True, exist_ok=True)
                 model_path = self.output_dir / f"{self.name}.cbm"
                 model_path.write_bytes(b"model")
                 (self.output_dir / self.model_contract_filename(self.name)).write_text(
                     '{"schema_version": 1}', encoding="utf-8"
                 )
+                evaluation = _evaluation_response_payload()
+                for field, filename in {
+                    "plan_path": f"{self.name}.evaluation-plan.json",
+                    "results_path": f"{self.name}.evaluation-results.json",
+                    "report_path": f"{self.name}.evaluation-report.json",
+                }.items():
+                    artifact_path = self.output_dir / filename
+                    artifact_path.write_text("{}", encoding="utf-8")
+                    evaluation[field] = str(artifact_path)
                 return TrainResult(
-                    metrics={"auc": float("nan")},
+                    metrics={"rmse": 0.1},
                     feature_importance=[],
                     model_path=str(model_path),
-                    train_rows=10,
-                    validation_rows=0,
+                    train_rows=8,
+                    validation_rows=2,
                     features=["x"],
                     cat_features=[],
+                    diagnostics_set="final_test",
+                    development_rows=10,
+                    final_test_rows=2,
+                    final_test_metrics={"auc": float("nan")},
+                    evaluation=evaluation,
                 )
 
         with patch("haute.modelling.TrainingJob", FakeTrainingJob):
             thread = service._launch_background(
                 job_id,
                 "train",
-                {"target": "y", "loss_function": "RMSE"},
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "loss_function": "RMSE",
+                    "evaluation": _random_evaluation_config(),
+                },
                 {},
                 str(tmp_parquet),
                 None,
@@ -504,8 +682,8 @@ class TestTrainBackgroundLaunchFailures:
         job = store.require_job(job_id)
         assert job["status"] == "contract_error"
         assert job["terminal_reason"] == "contract_error"
-        assert "non-finite numeric value" in job["message"]
-        assert "metrics.auc" in job["message"]
+        assert "must be a finite number" in job["message"]
+        assert "final_test_metrics.auc" in job["message"]
         assert job.get("result") is None
         assert not tmp_parquet.exists()
 
@@ -652,7 +830,7 @@ class TestTrainStatusEndpoint:
         bad_result = TrainResponse.model_construct(
             status="completed",
             job_id="bad_result",
-            metrics={"auc": float("nan")},
+            diagnostic_metrics={"auc": float("nan")},
         )
         job_id = store.create_job(
             {
@@ -668,7 +846,7 @@ class TestTrainStatusEndpoint:
             data = resp.json()
             assert data["status"] == "error"
             assert "non-finite numeric value" in data["message"]
-            assert "metrics.auc" in data["message"]
+            assert "diagnostic_metrics.auc" in data["message"]
             assert data["result"] is None
         finally:
             store.jobs.pop(job_id, None)
@@ -683,13 +861,12 @@ class TestTrainStatusEndpoint:
         """
         from haute.routes import modelling as modelling_routes
         from haute.routes.modelling import _store
-        from haute.schemas import TrainResponse
 
         store = _store
-        good_result = TrainResponse.model_construct(
-            status="completed",
+        good_result = _completed_train_response(
             job_id="good_result",
-            metrics={"auc": 0.87},
+            diagnostic_metrics={"auc": 0.87},
+            final_test_metrics={"auc": 0.87},
         )
         job_id = store.create_job(
             {
@@ -955,6 +1132,131 @@ class TestEstimateEndpoint:
         assert "estimated_mb" in data
         assert "training_mb" in data
 
+    def test_estimate_includes_exact_bounded_evaluation_preview(
+        self,
+        client,
+        training_data,
+    ):
+        graph = _make_modelling_graph(
+            training_data,
+            evaluation={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "test": {"size": 0.2},
+                "validation": {"method": "single", "size": 0.2},
+            },
+        )
+
+        resp = client.post(
+            "/api/modelling/estimate",
+            json={"graph": graph, "node_id": "train"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["evaluation_preview"] == {
+            "schema_version": 1,
+            "strategy": "random",
+            "validation_method": "single",
+            "development_rows": 48,
+            "final_test_rows": 12,
+            "validation_fit_count": 1,
+            "min_selection_train_rows": 36,
+            "max_selection_train_rows": 36,
+            "min_selection_validation_rows": 12,
+            "max_selection_validation_rows": 12,
+        }
+
+    def test_estimate_preview_includes_group_counts(
+        self,
+        client,
+        tmp_path,
+    ):
+        path = tmp_path / "group-preview.parquet"
+        pl.DataFrame(
+            {
+                "entity": ["a", "a", "b", "b", "c", "c", "d", "d"],
+                "x": list(range(8)),
+                "y": [float(value) for value in range(8)],
+            }
+        ).write_parquet(path)
+        graph = _make_modelling_graph(
+            str(path),
+            evaluation={
+                "schema_version": 1,
+                "strategy": "group",
+                "group_column": "entity",
+                "seed": 42,
+                "test": {"size": 0.25},
+                "validation": {
+                    "method": "cross_validation",
+                    "fold_count": 2,
+                },
+            },
+        )
+
+        resp = client.post(
+            "/api/modelling/estimate",
+            json={"graph": graph, "node_id": "train"},
+        )
+
+        assert resp.status_code == 200
+        preview = resp.json()["evaluation_preview"]
+        assert preview["development_rows"] == 6
+        assert preview["final_test_rows"] == 2
+        assert preview["development_group_count"] == 3
+        assert preview["final_test_group_count"] == 1
+        assert preview["min_selection_validation_rows"] == 2
+        assert preview["max_selection_validation_rows"] == 4
+
+    def test_estimate_preview_includes_temporal_date_ranges(
+        self,
+        client,
+        tmp_path,
+    ):
+        path = tmp_path / "temporal-preview.parquet"
+        pl.DataFrame(
+            {
+                "month": pl.date_range(
+                    pl.date(2024, 1, 1),
+                    pl.date(2024, 6, 1),
+                    interval="1mo",
+                    eager=True,
+                ),
+                "x": list(range(6)),
+                "y": [float(value) for value in range(6)],
+            }
+        ).write_parquet(path)
+        graph = _make_modelling_graph(
+            str(path),
+            evaluation={
+                "schema_version": 1,
+                "strategy": "temporal",
+                "date_column": "month",
+                "test": {"start": "2024-05-01"},
+                "validation": {
+                    "method": "single",
+                    "start": "2024-03-01",
+                },
+            },
+        )
+
+        resp = client.post(
+            "/api/modelling/estimate",
+            json={"graph": graph, "node_id": "train"},
+        )
+
+        assert resp.status_code == 200
+        preview = resp.json()["evaluation_preview"]
+        assert preview["development_date_range"] == {
+            "start": "2024-01-01",
+            "end": "2024-04-01",
+        }
+        assert preview["final_test_date_range"] == {
+            "start": "2024-05-01",
+            "end": "2024-06-01",
+        }
+
     def test_estimate_gpu_vram_path(self, client, training_data):
         graph = _make_modelling_graph(
             training_data,
@@ -1050,15 +1352,12 @@ class TestMlflowLogSuccess:
     def test_mlflow_log_success(self, client):
         """Inject a completed job and mock log_experiment to test success path."""
         from haute.routes.modelling import _store
-        from haute.schemas import TrainResponse
 
-        fake_result = TrainResponse(
-            status="completed",
+        fake_result = _completed_train_response(
             job_id="test_log",
-            metrics={"gini": 0.85, "rmse": 0.12},
+            diagnostic_metrics={"gini": 0.85, "rmse": 0.12},
+            final_test_metrics={"gini": 0.85, "rmse": 0.12},
             model_path="/tmp/model.cbm",
-            train_rows=80,
-            validation_rows=20,
         )
         _store.jobs["test_log"] = {
             "status": "completed",
@@ -1091,9 +1390,12 @@ class TestMlflowLogSuccess:
     def test_mlflow_log_exception_returns_500(self, client):
         """If log_experiment raises, should return 500."""
         from haute.routes.modelling import _store
-        from haute.schemas import TrainResponse
 
-        fake_result = TrainResponse(status="completed", job_id="test_err", metrics={"gini": 0.5})
+        fake_result = _completed_train_response(
+            job_id="test_err",
+            diagnostic_metrics={"gini": 0.5},
+            final_test_metrics={"gini": 0.5},
+        )
         _store.jobs["test_err"] = {
             "status": "completed",
             "result": fake_result,
@@ -1306,7 +1608,13 @@ class TestTrainingProjection:
                     "driver_age": {"type": "linear"},
                     "territory": {"type": "categorical"},
                 },
-                "split": {"strategy": "group", "group_column": "policy_id"},
+                "evaluation": {
+                    "schema_version": 1,
+                    "strategy": "group",
+                    "group_column": "policy_id",
+                    "seed": 42,
+                    "validation": {"method": "single", "size": 0.2},
+                },
             },
         )
 
@@ -1568,8 +1876,39 @@ class TestValidateConfig:
                 "algorithm": "catboost",
                 "loss_function": "RMSE",
                 "params": {"iterations": 10},
+                "evaluation": _random_evaluation_config(),
             }
         )
+
+    @pytest.mark.parametrize(
+        "cross_validation",
+        [
+            {"schema_version": 2, "strategy": "random", "fold_count": 3, "seed": 7},
+            {"schema_version": 1, "strategy": "random", "fold_count": True, "seed": 7},
+            {
+                "schema_version": 1,
+                "strategy": "group",
+                "fold_count": 3,
+                "seed": 7,
+            },
+        ],
+    )
+    def test_invalid_cross_validation_fails_before_job_creation(
+        self, cross_validation: dict[str, object]
+    ) -> None:
+        with pytest.raises(HTTPException) as raised:
+            TrainService._validate_config(
+                {
+                    "target": "y",
+                    "algorithm": "catboost",
+                    "task": "regression",
+                    "loss_function": "RMSE",
+                    "cross_validation": cross_validation,
+                }
+            )
+
+        assert raised.value.status_code == 400
+        assert "cross_validation" in str(raised.value.detail)
 
     def test_valid_glm_config_passes(self):
         TrainService._validate_config(
@@ -1579,6 +1918,7 @@ class TestValidateConfig:
                 "family": "poisson",
                 "link": "log",
                 "all_factors": True,
+                "evaluation": _random_evaluation_config(),
             }
         )
 
@@ -1592,6 +1932,7 @@ class TestValidateConfig:
                 "link": "log",
                 "all_factors": True,
                 "params": {"family": "binomial", "link": "identity"},
+                "evaluation": _random_evaluation_config(),
             }
         )
 
@@ -1694,6 +2035,7 @@ class TestValidateConfig:
                 "family": "gaussian",
                 "link": "",
                 "all_factors": True,
+                "evaluation": _random_evaluation_config(),
             }
         )
 
@@ -1788,7 +2130,7 @@ def _make_negbinomial_graph(data_path: str, **config_overrides: object) -> dict:
         "family": "negbinomial",
         "terms": {"x1": {"type": "linear"}, "x2": {"type": "linear"}},
         "params": {},
-        "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+        "evaluation": _random_evaluation_config(),
         **config_overrides,
     }
     graph = make_graph(
@@ -1923,6 +2265,7 @@ _NB_ESTIMATION_CONFIG: dict = {
     "family": "negbinomial",
     "terms": {"x1": {"type": "linear"}},
     "params": {},
+    "evaluation": _random_evaluation_config(),
 }
 
 
@@ -2408,12 +2751,11 @@ class TestTrainStatusDirect:
     @pytest.mark.asyncio
     async def test_completed_job_includes_result(self):
         from haute.routes.modelling import _store, train_status
-        from haute.schemas import TrainResponse
 
-        fake_result = TrainResponse(
-            status="completed",
+        fake_result = _completed_train_response(
             job_id="test",
-            metrics={"gini": 0.85},
+            diagnostic_metrics={"gini": 0.85},
+            final_test_metrics={"gini": 0.85},
         )
         job_id = _store.create_job(
             {
@@ -2471,6 +2813,7 @@ class TestExportScriptDirect:
                                 "task": "regression",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 100},
+                                "evaluation": _random_evaluation_config(),
                             },
                         },
                     },
@@ -2502,6 +2845,7 @@ class TestExportScriptDirect:
                                 "algorithm": "catboost",
                                 "loss_function": "RMSE",
                                 "params": {"iterations": 10},
+                                "evaluation": _random_evaluation_config(),
                             },
                         },
                     },

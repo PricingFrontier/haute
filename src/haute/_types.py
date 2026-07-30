@@ -384,7 +384,8 @@ class ModellingConfig(TypedDict, total=False):
     algorithm: str  # "catboost" | "glm"
     task: str  # "regression" | "classification"
     params: dict[str, Any]
-    split: dict[str, Any]
+    evaluation: dict[str, Any]
+    tuning: dict[str, Any]
     metrics: list[str]
     mlflow_experiment: str
     model_name: str
@@ -592,7 +593,8 @@ MODELLING_CONFIG_KEYS: tuple[str, ...] = (
     "algorithm",
     "task",
     "params",
-    "split",
+    "evaluation",
+    "tuning",
     "metrics",
     "mlflow_experiment",
     "model_name",

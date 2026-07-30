@@ -6,17 +6,21 @@
 | --- | --- |
 | `frontend/src/panels/ModellingConfig.tsx` | Modelling form orchestration, early training-job registration/cancellation, RAM estimate and GLM estimate wiring. |
 | `frontend/src/panels/ModellingPreview.tsx` | Result-backed modelling tab selection and tab reset. |
+| `frontend/src/panels/NodePanel.tsx`, `frontend/src/panels/PreviewPanelTabs.tsx` | Five-pane hosting owned by [frontend-node-editors](../frontend-node-editors/low-level.md) and the accessible tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md), both consumed by modelling. |
 | `frontend/src/panels/OptimiserConfig.tsx` | Optimiser form, solve submission, source/constraint configuration and auto-range lifecycle. |
 | `frontend/src/panels/OptimiserPreview.tsx` | Solve-result tab orchestration, point selection, exports and ratebook detail materialisation. |
 | `frontend/src/panels/OptimiserDataPreview.tsx` | Bounded pre-solve scenario table, quote navigation, multi-series chart and statistics. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-memory and rejected-strategy banner shared with modelling progress, optimiser actions, and Explore. |
 | `frontend/src/panels/optimiserScenarioStats.ts` | Strict finite-number parsing and per-scenario statistical aggregation used by the optimiser data preview. |
 | `frontend/src/hooks/useConstraintHandlers.ts`, `frontend/src/hooks/useDataInputColumns.ts` | Constraint mutation handlers and stale-aware data-input column fetching. |
-| `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-objective gate and structured execution-error/metric display helpers. |
-| `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/FeatureAndAlgorithmConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | Target/task/loss/metric, feature/algorithm/hyperparameter and split configuration. |
+| `frontend/src/api/types.ts`, `frontend/src/types/trainGuards.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned API types and dynamically loaded strict JSON response parsing consumed by modelling progress/results. |
+| `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned result/job state and per-node modelling-pane memory consumed by the modelling workflow. |
+| `frontend/src/utils/configField.ts`, `frontend/src/utils/trainingObjective.ts`, `frontend/src/utils/executionDiagnostics.ts` | Typed config reads/parsing, training-configuration issue derivation with click-time presentation, and structured execution-error/metric display helpers. |
+| `frontend/src/panels/modelling/TargetAndTaskConfig.tsx`, `frontend/src/panels/modelling/CommonFeatureConfig.tsx`, `frontend/src/panels/modelling/SplitAndMetricsConfig.tsx` | CatBoost target/task/loss/metric controls, the common feature/monotonicity browser, and the canonical evaluation editor with exact-plan preview. |
+| `frontend/src/panels/modelling/HyperparametersConfig.tsx`, `frontend/src/panels/modelling/hyperparameters.ts`, `frontend/src/panels/modelling/featureSelection.ts` | Algorithm-neutral fixed-parameter JSON editing, optional bounded CatBoost tuning/search-space editing, and pure parameter/feature transitions. |
 | `frontend/src/panels/modelling/GLMTargetConfig.tsx`, `frontend/src/panels/modelling/GLMFactorConfig.tsx`, `frontend/src/panels/modelling/GLMRegularizationConfig.tsx` | GLM family/dispersion, terms/factors and regularisation controls. |
 | `frontend/src/panels/modelling/TrainingActionsAndResults.tsx`, `frontend/src/panels/modelling/TrainingProgress.tsx`, `frontend/src/panels/modelling/MlflowExportSection.tsx` | Train action/result summary, progress and MLflow export. |
-| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, metrics/CV, warnings and MLflow export result summary. |
+| `frontend/src/panels/modelling/SummaryTab.tsx` | Model info, diagnostics/errors, development/selection/final-test metrics, tuning baseline/winner evidence, warnings and MLflow export summary. |
 | `frontend/src/panels/modelling/GLMCoefficientsTab.tsx`, `frontend/src/panels/modelling/GLMRelativitiesTab.tsx` | GLM-specific coefficient and relativity result tables. |
 | `frontend/src/panels/modelling/FeatureImportance.tsx`, `frontend/src/panels/modelling/FeaturesTab.tsx`, `frontend/src/panels/modelling/FeatureBrowser.tsx` | Feature-importance display, tab and feature browser. |
 | `frontend/src/panels/modelling/ChartScaffold.tsx`, `frontend/src/panels/modelling/LossChart.tsx`, `frontend/src/panels/modelling/LossTab.tsx` | Shared chart primitives and loss visualisation. |
@@ -34,8 +38,12 @@
 - `TrainResult`/`TrainProgress` and optimiser result/job records are consumed from
   `frontend/src/stores/useNodeResultsStore.ts`; the panels key them by `config._nodeId` and source/
   structural/config hash state supplied to the shared estimate/job layers.
-- Modelling configuration is a `Record<string, unknown>` split into target, feature, algorithm,
-  parameter and split contracts. `trainingObjectiveIssue` gates an incomplete backend objective.
+- Modelling configuration is a `Record<string, unknown>` split into target, feature,
+  algorithm, fixed-parameter, required version-1 `evaluation`, and optional version-1
+  `tuning` contracts. `trainingConfigurationIssues` derives incomplete target,
+  objective, evaluation and tuning requirements for the Train guard; `ModellingConfig`
+  adds any invalid JSON draft for the selected CatBoost parameter strategy. Public
+  `split`/`cross_validation` fields have no editor or runtime result path.
 - Optimiser uses input node/banding-node descriptions, `FrontierRangeConfig`, constraints and
   ratebook `FactorTables`. `frontend/src/utils/banding.ts` returns ordered factor levels, including
   a banding default only for the ordering APIs that request it. Per-constraint
@@ -45,17 +53,25 @@
 
 ### Modelling
 
-1. `frontend/src/panels/ModellingConfig.tsx` reads graph/source/job state, passes its sections the
-   shared `onUpdate` contract, and gates training with `trainingObjectiveIssue`. CatBoost
-   hyperparameters use `config.params` and `config.variance_power`; GLM controls write their
-   algorithm fields directly on `config`, including `config.var_power`.
-   `SplitAndMetricsConfig` uses the shared Polars numeric-dtype classifier for
-   monotonicity rows, so only numeric selected features can write
-   `monotone_constraints[name] = -1|1`; choosing zero removes the key.
+1. `frontend/src/panels/ModellingConfig.tsx` reads graph/source/job state, routes the active
+   Target/Features/Params/Split/Train pane, and passes the shared `onUpdate` contract. It
+   continuously derives every applicable configuration issue, including the selected CatBoost
+   strategy's JSON-draft issue, and passes the current messages to the Train pane. An idle
+   Train/Re-train press with a non-empty list suppresses the request and reveals those messages
+   only in the banner beneath the main Train button. CatBoost hyperparameters use `config.params`
+   and `config.variance_power`; GLM controls write their algorithm fields directly on `config`,
+   including `config.var_power`. `CommonFeatureConfig` uses the shared Polars numeric-dtype
+   classifier and final algorithm selection, so only selected numeric features can write
+   `monotone_constraints[name] = -1|1`; choosing zero removes the key. New algorithms receive a
+   canonical random/single-validation evaluation. Later strategy changes replace incompatible
+   keys atomically instead of retaining stale group/date/fraction fields.
 2. `useStaleConfigEstimate` receives the RAM request endpoint with graph/source/structural version;
    it owns abort/loading/error and associates an estimate with the current config. Every cached
    solve/train result carries the complete canonical identity
-   `{ configHash, source, structuralVersion }`; the hook has no partial-result shape.
+   `{ configHash, source, structuralVersion }`; the hook has no partial-result shape. Its guarded
+   optional `evaluation_preview` is shown only when the backend can build the exact plan and
+   includes development/final-test rows, validation-fit bounds and strategy-specific group/date
+   summaries.
 3. Training records the `POST /api/modelling/train` job handle as soon as it is returned, after
    which background polling owns preparation/fit progress. `TrainingActionsAndResults` keeps a
    distinct Cancel control visible while that job is active; `ModellingConfig` posts its job ID to
@@ -67,8 +83,10 @@
    and writes a successful theta/variance-power estimate through the ordinary editable update
    callback.
 4. `frontend/src/panels/ModellingPreview.tsx` computes which tabs have result data, renders only
-   those, and resets the active tab when a new result arrives. `SummaryTab` exposes diagnostics
-   rather than suppressing a partially successful training result.
+   those, and resets the active tab when a new result arrives. `SummaryTab` separates selection
+   estimates from final-test metrics, renders ordered validation fits and tuning
+   baseline/winner/improvement evidence, and exposes diagnostics rather than suppressing a
+   partially successful training result.
 
 ### Optimiser
 
@@ -161,3 +179,108 @@ fields, selects and applies the backend `point_index`, and intercepts the
 MLflow API to assert request/result identity without contacting a live service.
 Hook/component tests also inspect atomic constraint-range rename/removal and
 prove no global frontier bounds are read or written.
+
+## Modelling config panes
+
+The behavioural contract is defined in
+[the high-level specification](high-level.md#modelling-config-panes).
+
+- `frontend/src/panels/ModellingConfig.tsx` is the pane router. It retains job submission,
+  cancellation, RAM-estimate and dispersion wiring, receives the active pane from `NodePanel`,
+  and renders one pane at a time. CatBoost JSON drafts live above the pane branch, keyed by node,
+  so invalid or incomplete text survives Params unmount without crossing node identity.
+  The gateway handles only an unset algorithm; unsupported values render an explicit diagnostic,
+  and supported nodes expose no algorithm mutation action.
+- `frontend/src/panels/modelling/featureSelection.ts` owns role exclusion, final algorithm
+  selection and atomic dependency cleanup. The configured target, weight, offset, fold,
+  identifiers, and active evaluation group/date key are never offered as features. Cleanup returns
+  only affected `terms`, `interactions`, and `monotone_constraints` fields for the caller's one
+  config update.
+- `TargetAndTaskConfig.tsx` and `GLMTargetConfig.tsx` show read-only algorithm context. The common
+  `CommonFeatureConfig.tsx` browser supplies case-insensitive filtering, dtype labels, stale
+  exclusion repair, include/exclude actions, and final-selection-aware monotonicity. GLM composes
+  `GLMFactorConfig.tsx` beneath it; exclusion, explicit-term removal, and `all_factors` narrowing
+  use the same confirmed dependency transition. `GLMRegularizationConfig.tsx` is the GLM Params
+  body.
+- `HyperparametersConfig.tsx` owns the algorithm-neutral JSON-object editor, while
+  `hyperparameters.ts` owns its formatting, object parsing, and reserved-key merge transitions.
+  The editor receives display defaults and reserved keys from its caller, accepts arbitrary
+  non-reserved object contents without duplicating algorithm-specific validation, and renders no
+  dedicated parameter fields. For CatBoost, a Target-style **Fixed parameters** /
+  **Tune parameters** radio group is the first control below the heading. Fixed mode renders only
+  Parameters JSON; Tune mode renders only trial count, seed, configured selection metric and
+  Search space JSON.
+  Each JSON draft autosaves when its frontend parser accepts the top-level object, without
+  Apply/Revert controls; invalid syntax, a non-object top level, or a reserved fixed key stays in
+  the corresponding per-node draft and contributes a click-time issue to the Train banner only
+  while that strategy is selected.
+  The Train-pane GPU toggle merges only the latest stored `task_type`. The search-space formatter
+  keeps scalar candidate arrays on one line and recursively indents nested conditional objects;
+  the pane renders neither a derived fit-count sentence nor search-space explanatory copy.
+  Selecting Tune parameters seeds fresh editable candidate lists for `depth`, `learning_rate`,
+  and `l2_leaf_reg`. In the same atomic update, it adds `evaluation.test={size: 0.2}` for a
+  random/group evaluation or `evaluation.test={start: ""}` for a temporal evaluation only when
+  the key is absent and validation is enabled; it never overwrites an existing evaluation choice.
+  Selecting Fixed parameters writes `tuning=null`. The frontend Train guard checks that the search
+  space is an object with 1–32 entries; per-entry choice and conditional semantics remain owned by
+  the shared backend contract.
+- `SplitAndMetricsConfig.tsx` edits the single version-1 `evaluation` object. Strategy changes
+  canonicalise random/group/temporal keys; validation changes canonicalise none/single/CV shapes;
+  final-test controls use source-relative fractions for random/group and explicit starts for
+  temporal. The neutral exact-plan card renders guarded backend counts/ranges only when present.
+  The Train pane owns GPU, row limit, MLflow fields,
+  actions, progress and results. Those editable controls retain the standard modelling input
+  background, border, text, spacing and monospace-value treatment instead of relying on unstyled
+  browser defaults. `TrainingProgress.tsx` renders authoritative planning/trial/fold/final-fit/
+  publication phases, bounded fit counts and best objective, plus the final model's bounded
+  `train_loss_history`; it labels a truncated retained window and shows browser-derived ETA only
+  for a valid advancing sample pair.
+- `trainingObjective.ts` exposes a stable issue-code union and derives the currently applicable
+  frontend target, objective, evaluation and bounded-tuning Train-guard issues. `ModellingConfig`
+  continuously appends at most the selected CatBoost strategy's current draft issue
+  (`catboost-params` for fixed parameters or `tuning-config` for the tuning search space) and
+  passes the complete current list to `TrainPane`. `TrainPane` withholds the list from
+  `TrainingActionsAndResults` until an
+  invalid Train/Re-train press sets its local reveal latch and suppresses the request. Once
+  revealed, the banner reflects the current non-empty list. The parent keys `TrainPane` by node
+  and complete/incomplete state, so resolving the final issue resets the latch and later
+  invalidity is hidden until another press; leaving and returning to the pane also remounts it.
+  `TrainingActionsAndResults` renders the single alert directly beneath the main Train button.
+  `NodePanel.tsx` derives no configuration warning descriptors; it supplies only the
+  active-job indicator
+  ([frontend-node-editors](../frontend-node-editors/low-level.md#modelling-config-panes)).
+  `PreviewPanelTabs.tsx` owns that visible and assistive indicator semantics without changing
+  roving focus or layout
+  ([frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes)).
+- `api/types.ts`, `types/trainGuards.ts`, and the train-progress store type share the backend status
+  contract. `parseTrainStatusResponse` strictly retains present history/truncation and leaves
+  absent history absent. `parseTrainResponse` rejects retired result fields and strictly
+  recomputes evaluation/tuning counts, weighted aggregates, digest links, winner and improvement
+  invariants. `useUIStore.ts` remembers the pane per node.
+  `useNodeResultsStore.ts` retains the latest authoritative history snapshot and only the last two
+  valid increasing iteration/elapsed samples; it never reconstructs loss history. A new or
+  terminal job resets the ETA state
+  ([frontend-shared](../frontend-shared/low-level.md#modelling-config-panes)).
+
+Verification is deliberately assigned to the owning seams:
+
+- `frontend/src/panels/__tests__/ModellingConfig.test.tsx` and suites under
+  `frontend/src/panels/modelling/__tests__/` cover pane content, both algorithms' common feature
+  browser, role/final-selection filtering, unset-only immutable algorithm selection, confirmed
+  dependent cleanup, arbitrary params JSON draft/object validation, click-time aggregate
+  training-validation presentation, canonical evaluation transitions/preview, tuning
+  enablement/search-space drafts, evaluation/result/progress fit counts, result labels, and live
+  progress presentation.
+- `frontend/src/panels/__tests__/NodePanel.test.tsx`,
+  `frontend/src/stores/__tests__/useUIStore.test.ts`, and
+  `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx` cover strip gating, per-node memory,
+  plain setup-tab labels, active-job indicator semantics and roving keyboard behaviour.
+- `frontend/src/types/__tests__/guards.contract.test.ts`,
+  `frontend/src/api/__tests__/client.contract.test.ts`, and
+  `frontend/src/__tests__/stores/useNodeResultsStore.test.ts` cover strict status-history parsing,
+  canonical evaluation/tuning response and preview validation, weighted-evidence tampering,
+  truncation retention, latest-snapshot semantics, valid/invalid estimate samples, and new-job
+  reset.
+
+Shared `NodePanel`, tab-control, API/parser, and store interactions are recorded in
+[ownership.toml](../ownership.toml).

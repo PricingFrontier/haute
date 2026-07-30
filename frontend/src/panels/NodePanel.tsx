@@ -30,7 +30,8 @@ import {
 } from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
 import { effectiveNodeType, type HauteNodeData } from "../types/node"
-import useUIStore, { type ExplorePane } from "../stores/useUIStore"
+import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
+import useNodeResultsStore from "../stores/useNodeResultsStore"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
@@ -99,6 +100,14 @@ const EXPLORE_PANES = [
   { key: "charts", label: "Charts" },
   { key: "export", label: "Export" },
 ] as const satisfies readonly { key: ExplorePane; label: string }[]
+
+const MODELLING_PANES = [
+  { key: "target", label: "Target" },
+  { key: "features", label: "Features" },
+  { key: "params", label: "Params" },
+  { key: "split", label: "Split" },
+  { key: "train", label: "Train" },
+] as const satisfies readonly { key: ModellingPane; label: string }[]
 
 // ─── Instance sub-panel (kept inline — it references multiple node-level concerns) ──
 
@@ -689,6 +698,9 @@ export default function NodePanel({
   const [labelUpdateError, setLabelUpdateError] = useState<string | null>(null)
   const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
   const setExplorePane = useUIStore((s) => s.setExplorePane)
+  const rememberedModellingPane = useUIStore((s) => node?.id ? s.modellingPanes[node.id] : undefined)
+  const setModellingPane = useUIStore((s) => s.setModellingPane)
+  const hasActiveTrainJob = useNodeResultsStore((s) => node?.id ? Boolean(s.trainJobs[node.id]) : false)
 
   // Keep config and node in refs so handleConfigUpdate never captures stale values
   const configRef = useRef(config)
@@ -785,6 +797,15 @@ export default function NodePanel({
   const refreshTitle = showExplorePanes ? "Refresh Explore outputs" : "Refresh preview"
   const activeExplorePane = showExplorePanes ? rememberedExplorePane ?? "code" : "code"
   const activeExplorePaneMeta = EXPLORE_PANES.find((pane) => pane.key === activeExplorePane) ?? EXPLORE_PANES[0]
+  const algorithm = typeof config.algorithm === "string" ? config.algorithm.toLowerCase() : ""
+  const showModellingPanes = isKnownNodeType && !isInstance && nodeType === NODE_TYPES.MODELLING && (algorithm === "catboost" || algorithm === "glm")
+  const activeModellingPane = showModellingPanes ? rememberedModellingPane ?? "target" : "target"
+  const modellingTabs = MODELLING_PANES.map((pane) => ({
+    ...pane,
+    indicator: pane.key === "train" && hasActiveTrainJob
+      ? { kind: "active" as const, label: "Training is running" }
+      : undefined,
+  }))
 
   // ── Render the right editor based on nodeType ──
 
@@ -925,6 +946,7 @@ export default function NodePanel({
             config={configWithNodeId}
             onUpdate={handleConfigUpdate}
             upstreamColumns={effectiveCols}
+            activePane={activeModellingPane}
           />
         )
       }
@@ -1088,6 +1110,17 @@ export default function NodePanel({
           accentColor={accentColor}
           equalWidth
           idPrefix="explore"
+        />
+      )}
+      {showModellingPanes && (
+        <PreviewPanelTabs
+          tabs={modellingTabs}
+          activeTab={activeModellingPane}
+          onChange={(pane) => setModellingPane(node.id, pane)}
+          ariaLabel="Modelling panes"
+          accentColor={accentColor}
+          equalWidth
+          idPrefix="modelling"
         />
       )}
 

@@ -435,6 +435,7 @@ import type { PreviewData } from "../../panels/DataPreview"
 import type { OptimiserPreviewData } from "../../panels/OptimiserPreview"
 import type { OptimiserSolveResult } from "../../api/types"
 import type { ModellingPreviewData } from "../../panels/ModellingPreview"
+import { makeTrainResult } from "../../test-utils/factories"
 
 function makePreviewData(): PreviewData {
   return {
@@ -482,14 +483,13 @@ function makeOptimiserPreviewData(): OptimiserPreviewData {
 
 function makeModellingPreviewData(): ModellingPreviewData {
   return {
-    result: {
-      status: "ok",
-      metrics: { rmse: 0.12 },
+    result: makeTrainResult({
+      final_test_metrics: { rmse: 0.12 },
       feature_importance: [{ feature: "x", importance: 1.0 }],
       model_path: "/tmp/model",
-      train_rows: 100,
-      validation_rows: 20,
-    },
+      development_rows: 100,
+      final_test_rows: 20,
+    }),
     jobId: "job-m1",
     nodeLabel: "Model Node",
     configHash: "abc",

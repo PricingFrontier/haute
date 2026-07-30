@@ -18,7 +18,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from haute.modelling._split import DEFAULT_SPLIT_DICT
+from haute.modelling._evaluation import EvaluationConfig
+from haute.modelling._tuning import TuningConfig
 
 # GLM config keys live at the top level of the modelling-node config (not
 # inside ``config["params"]``) and are consumed by ``GLMAlgorithm.fit`` via
@@ -42,6 +43,44 @@ GLM_CONFIG_KEYS: tuple[str, ...] = (
 
 class TrainingConfigError(ValueError):
     """Raised when a modelling node config cannot produce a training job."""
+
+
+def parse_evaluation_config(raw: Any) -> dict[str, Any]:
+    """Validate and canonicalise the required public evaluation object."""
+    if raw is None:
+        raise TrainingConfigError(
+            "Modelling config has no evaluation object. Open the Split pane and "
+            "choose how the data is structured, how candidates are validated, "
+            "and whether a final test is reserved."
+        )
+    try:
+        return EvaluationConfig.from_plain_data(raw).to_plain_data()
+    except (TypeError, ValueError) as exc:
+        raise TrainingConfigError(f"Invalid evaluation config: {exc}") from exc
+
+
+def parse_tuning_config(
+    raw: Any,
+    *,
+    algorithm: str,
+    base_params: Mapping[str, Any],
+    evaluation: Mapping[str, Any],
+    configured_metrics: list[str],
+) -> dict[str, Any] | None:
+    """Validate and canonicalise the optional public tuning object."""
+    if raw is None:
+        return None
+    try:
+        evaluation_config = EvaluationConfig.from_plain_data(evaluation)
+        return TuningConfig.from_plain_data(
+            raw,
+            algorithm=algorithm,
+            base_params=base_params,
+            evaluation=evaluation_config,
+            configured_metrics=configured_metrics,
+        ).to_plain_data()
+    except (TypeError, ValueError) as exc:
+        raise TrainingConfigError(f"Invalid tuning config: {exc}") from exc
 
 
 def default_metrics(
@@ -197,6 +236,29 @@ def build_training_job_kwargs(
     family = params.get("family") if algorithm == "glm" else None
     loss_function = None if algorithm == "glm" else config.get("loss_function")
     variance_power = config.get("var_power") if algorithm == "glm" else config.get("variance_power")
+    legacy_fields = [key for key in ("split", "cross_validation") if key in config]
+    if legacy_fields:
+        raise TrainingConfigError(
+            "Invalid legacy modelling config: public split/cross_validation fields "
+            "were replaced by the canonical versioned evaluation object."
+        )
+    evaluation = parse_evaluation_config(config.get("evaluation"))
+    metrics = config.get("metrics") or default_metrics(
+        task,
+        loss_function=loss_function,
+        family=family,
+    )
+    if not isinstance(metrics, list) or not all(
+        isinstance(metric, str) and metric for metric in metrics
+    ):
+        raise TrainingConfigError("Configured metrics must be a non-empty string list.")
+    tuning = parse_tuning_config(
+        config.get("tuning"),
+        algorithm=algorithm,
+        base_params=params,
+        evaluation=evaluation,
+        configured_metrics=metrics,
+    )
 
     return {
         "name": config.get("name", default_name),
@@ -210,9 +272,9 @@ def build_training_job_kwargs(
         "algorithm": config.get("algorithm", "catboost"),
         "task": task,
         "params": params,
-        "split": config.get("split", DEFAULT_SPLIT_DICT),
-        "metrics": config.get("metrics")
-        or default_metrics(task, loss_function=loss_function, family=family),
+        "evaluation": evaluation,
+        "tuning": tuning,
+        "metrics": metrics,
         "mlflow_experiment": config.get("mlflow_experiment") or None,
         "model_name": config.get("model_name") or None,
         "output_dir": config.get("output_dir", "outputs"),

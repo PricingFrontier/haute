@@ -15,14 +15,93 @@ import { create } from "zustand"
 import useGraphStore from "./useGraphStore"
 import type { PreviewData } from "../panels/DataPreview"
 import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
-import type { FrontierSelectResponse, FrontierData, JobStatus, ExecutionMetrics, ExploreCacheReport, ExploreStatusResponse, OptimiserSolveResult } from "../api/types"
+import type {
+  ExecutionMetrics,
+  ExploreCacheReport,
+  ExploreStatusResponse,
+  FrontierData,
+  FrontierSelectResponse,
+  JobStatus,
+  OptimiserSolveResult,
+  TrainResponse,
+} from "../api/types"
 import type { ColumnInfo } from "../types/node"
+import { TERMINAL_JOB_STATUSES } from "../api/types"
 
 export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
 export const MAX_CACHED_TRAIN_RESULTS = 8
 export const MAX_CACHED_EXPLORE_RESULTS = 8
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
+
+type TrainEstimateSample = {
+  iteration: number
+  elapsedSeconds: number
+  totalIterations: number
+  mode?: "fits"
+}
+
+export function nextTrainEstimate(
+  previous: TrainEstimateSample[],
+  progress: TrainProgress,
+): {
+  samples: TrainEstimateSample[]
+  estimatedRemainingSeconds: number | null
+} {
+  if (TERMINAL_JOB_STATUSES.has(progress.status)) {
+    return { samples: [], estimatedRemainingSeconds: null }
+  }
+
+  const tuningSample = (
+    progress.phase != null
+    && progress.completed_fits != null
+    && progress.total_fits != null
+  )
+  const sample: TrainEstimateSample = {
+    iteration: tuningSample ? progress.completed_fits! : progress.iteration,
+    elapsedSeconds: progress.elapsed_seconds,
+    totalIterations: tuningSample ? progress.total_fits! : progress.total_iterations,
+    ...(tuningSample ? { mode: "fits" as const } : {}),
+  }
+  const validSample =
+    Number.isFinite(sample.iteration)
+    && Number.isFinite(sample.elapsedSeconds)
+    && Number.isFinite(sample.totalIterations)
+    && sample.iteration > 0
+    && sample.elapsedSeconds > 0
+    && sample.totalIterations > sample.iteration
+  if (!validSample) {
+    return { samples: previous, estimatedRemainingSeconds: null }
+  }
+
+  const prior = previous.at(-1)
+  if (!prior) return { samples: [sample], estimatedRemainingSeconds: null }
+  if (
+    prior.mode !== sample.mode
+    ||
+    sample.iteration <= prior.iteration
+    || sample.elapsedSeconds <= prior.elapsedSeconds
+  ) {
+    return { samples: previous, estimatedRemainingSeconds: null }
+  }
+
+  const rate =
+    (sample.iteration - prior.iteration)
+    / (sample.elapsedSeconds - prior.elapsedSeconds)
+  const remaining = (sample.totalIterations - sample.iteration) / rate
+  const estimatedRemainingSeconds =
+    Number.isFinite(rate)
+    && rate > 0
+    && Number.isFinite(remaining)
+    && remaining > 0
+      ? remaining
+      : null
+
+  return {
+    samples: [prior, sample],
+    estimatedRemainingSeconds,
+  }
+}
 
 // Result caches use entry-count LRU deliberately: preview payloads are already
 // bounded by backend row/column limits, and byte-accurate browser-side accounting
@@ -40,41 +119,7 @@ export type SolveProgress = {
   execution_metrics?: ExecutionMetrics | null
 }
 
-export type TrainResult = {
-  status: string
-  metrics: Record<string, number>
-  feature_importance: { feature: string; importance: number }[]
-  model_path: string
-  train_rows: number
-  validation_rows: number  // validation rows
-  holdout_rows?: number
-  holdout_metrics?: Record<string, number>
-  diagnostics_set?: string  // "train" | "validation" | "holdout"
-  features?: string[]
-  cat_features?: string[]
-  error?: string
-  best_iteration?: number | null
-  loss_history?: { iteration: number; [key: string]: number }[]
-  loss_history_truncated?: boolean
-  double_lift?: { decile: number; actual: number; predicted: number; count: number }[]
-  shap_summary?: { feature: string; mean_abs_shap: number }[]
-  feature_importance_loss?: { feature: string; importance: number }[]
-  ave_per_feature?: { feature: string; type: string; bins: { label: string; exposure: number; avg_actual: number; avg_predicted: number }[] }[]
-  residuals_histogram?: { bin_center: number; count: number; weighted_count: number }[]
-  residuals_stats?: { mean: number; std: number; skew: number; min: number; max: number }
-  actual_vs_predicted?: { actual: number; predicted: number; weight: number }[]
-  lorenz_curve?: { cum_weight_frac: number; cum_actual_frac: number }[]
-  lorenz_curve_perfect?: { cum_weight_frac: number; cum_actual_frac: number }[]
-  pdp_data?: { feature: string; type: string; grid: { value: number | string; avg_prediction: number }[]; error?: string; error_type?: string }[]
-  warning?: string | null
-  total_source_rows?: number | null
-  // GLM-specific
-  glm_coefficients?: { feature: string; coefficient: number; std_error: number; z_value: number; p_value: number; significance: string }[]
-  glm_relativities?: { feature: string; relativity: number; ci_lower?: number; ci_upper?: number }[]
-  glm_fit_statistics?: Record<string, number>
-  glm_regularization_path?: { selected_alpha?: number; n_nonzero?: number }
-  diagnostics_errors?: { diagnostic: string; error: string; error_type: string }[]
-}
+export type TrainResult = TrainResponse
 
 export type TrainProgress = {
   status: JobStatus
@@ -83,6 +128,8 @@ export type TrainProgress = {
   iteration: number
   total_iterations: number
   train_loss: Record<string, number>
+  train_loss_history?: Array<{ iteration: number; [key: string]: number }>
+  train_loss_history_truncated?: boolean
   elapsed_seconds: number
   result?: TrainResult
   warning?: string | null
@@ -91,6 +138,14 @@ export type TrainProgress = {
   http_status_code?: number | null
   error_detail?: unknown
   execution_metrics?: ExecutionMetrics | null
+  phase?: "planning" | "trial_fit" | "trial_complete" | "final_fit" | "publication" | "completed" | null
+  trial_index?: number | null
+  trial_count?: number | null
+  fold_index?: number | null
+  fold_count?: number | null
+  completed_fits?: number | null
+  total_fits?: number | null
+  best_objective?: number | null
 }
 
 export type ExploreProgress = ExploreStatusResponse
@@ -151,6 +206,9 @@ interface ActiveTrainJob {
   configHash: string
   source: string
   structuralVersion: number
+  /** The only two samples retained for the browser-derived ETA. */
+  estimateSamples?: TrainEstimateSample[]
+  estimatedRemainingSeconds?: number | null
 }
 
 interface CachedExploreResult {
@@ -938,7 +996,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   startTrainJob: (nodeId, jobId, nodeLabel, configHash, source, structuralVersion) =>
     set((s) => {
-      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash, source, structuralVersion }
+      const nextJob = { jobId, nodeId, nodeLabel, progress: null, error: null, configHash, source, structuralVersion, estimateSamples: [], estimatedRemainingSeconds: null }
       const cached = s.trainResults[nodeId]
       if (cached && cached.result.status !== "error") {
         cacheModellingPreview(nodeId, cached, nextJob)
@@ -955,8 +1013,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => {
       const job = s.trainJobs[nodeId]
       if (!job) return s
+      const estimate = nextTrainEstimate(job.estimateSamples ?? [], progress)
       return {
-        trainJobs: { ...s.trainJobs, [nodeId]: { ...job, progress } },
+        trainJobs: { ...s.trainJobs, [nodeId]: { ...job, progress, estimateSamples: estimate.samples, estimatedRemainingSeconds: estimate.estimatedRemainingSeconds } },
       }
     }),
 
@@ -1007,7 +1066,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.trainJobs; void _removedJob
       touchCachedResult(trainResultRecency, nodeId)
       const nextCached: CachedTrainResult = {
-        result: { status: "error", error, metrics: {}, feature_importance: [], model_path: "", train_rows: 0, validation_rows: 0 } as TrainResult,
+        result: { status: "error", job_id: null, diagnostic_metrics: {}, final_test_metrics: {}, feature_importance: [], model_path: "", development_rows: 0, final_test_rows: 0, diagnostics_set: "development", features: [], cat_features: [], error, best_iteration: null, loss_history: [], loss_history_truncated: false, double_lift: [], shap_summary: [], feature_importance_loss: [], ave_per_feature: [], residuals_histogram: [], residuals_stats: {}, actual_vs_predicted: [], lorenz_curve: [], lorenz_curve_perfect: [], pdp_data: [], warning: null, total_source_rows: null, glm_coefficients: [], glm_relativities: [], glm_fit_statistics: {}, glm_regularization_path: null, diagnostics_errors: [], feature_selection: null },
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
         configHash: job.configHash,

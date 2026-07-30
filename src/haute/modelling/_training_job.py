@@ -2,26 +2,44 @@
 
 from __future__ import annotations
 
+import copy
 import gc
+import hashlib
 import os
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import polars as pl
 
-from haute._execution_context import ExecutionContext
+from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
 from haute._polars_utils import streaming_collect
+from haute.errors import HauteError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
     IterationCallback,
     _malloc_trim,
     resolve_loss_function,
 )
+from haute.modelling._evaluation import (
+    EvaluationConfig,
+    EvaluationFitResult,
+    EvaluationPlan,
+    EvaluationResultsArtifact,
+    aggregate_evaluation_results,
+    generate_evaluation_plan,
+    load_evaluation_plan,
+    load_evaluation_report,
+    load_evaluation_results,
+    save_evaluation_plan,
+    save_evaluation_report,
+    save_evaluation_results,
+)
+from haute.modelling._evaluation import file_sha256 as evaluation_file_sha256
 from haute.modelling._metrics import compute_metrics
 from haute.modelling._split import (
     PARTITION_HOLDOUT,
@@ -31,6 +49,22 @@ from haute.modelling._split import (
     split_mask,
 )
 from haute.modelling._train_config import default_metrics
+from haute.modelling._tuning import (
+    TUNING_SCHEMA_VERSION,
+    TuningConfig,
+    TuningPlanArtifact,
+    TuningTrialResult,
+    TuningTrialsArtifact,
+    build_tuning_report,
+    canonical_json_bytes,
+    choose_winner,
+    resolve_trial_parameters,
+    save_tuning_plan,
+    save_tuning_report,
+    save_tuning_trials,
+    suggest_parameters,
+    validation_weighted_tree_count,
+)
 
 logger = get_logger(component="training_job")
 
@@ -52,6 +86,24 @@ def model_contract_filename(model_name: str) -> str:
     from haute.modelling._feature_contract import CONTRACT_FILENAME
 
     return f"{model_name}.{CONTRACT_FILENAME}"
+
+
+def evaluation_artifact_filenames(model_name: str) -> dict[str, str]:
+    """Return the canonical names of the evaluation publication artifacts."""
+    return {
+        "plan": f"{model_name}.evaluation-plan.json",
+        "results": f"{model_name}.evaluation-results.json",
+        "report": f"{model_name}.evaluation-report.json",
+    }
+
+
+def tuning_artifact_filenames(model_name: str) -> dict[str, str]:
+    """Return the canonical names of the tuning publication artifacts."""
+    return {
+        "plan": f"{model_name}.tuning-plan.json",
+        "trials": f"{model_name}.tuning-trials.json",
+        "report": f"{model_name}.tuning-report.json",
+    }
 
 
 def _remove_temp_parquet(path: str | None, *, context: str) -> bool:
@@ -77,6 +129,25 @@ def _remove_temp_parquet(path: str | None, *, context: str) -> bool:
             exc_info=True,
         )
         return False
+
+
+def _remove_training_artifact(path: Path) -> None:
+    """Unlink a run-owned evaluation JSON artifact; loud on failure, silent if absent.
+
+    Removal failures are logged instead of raising so cleanup running inside
+    exception handling can never mask the in-flight error.
+    """
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as cleanup_exc:
+        logger.warning(
+            "training_artifact_cleanup_failed",
+            path=str(path),
+            error=str(cleanup_exc),
+            exc_info=True,
+        )
 
 
 # Mapping used by the feature-contract artifact and the MLflow signature.
@@ -207,6 +278,11 @@ class TrainResult:
     # run (SHAP/PDP/GLM diagnostics missing) is visible in the UI and
     # in test suites, instead of being silently swallowed.
     diagnostics_errors: list[dict[str, str]] = field(default_factory=list)
+    development_rows: int = 0
+    final_test_rows: int = 0
+    final_test_metrics: dict[str, float] = field(default_factory=dict)
+    evaluation: dict[str, Any] | None = None
+    tuning: dict[str, Any] | None = None
 
 
 @dataclass
@@ -277,7 +353,12 @@ class _MetricsResult:
 
 
 class TrainingJob:
-    """Orchestrates model training: split, fit, evaluate, optionally log to MLflow.
+    """Orchestrate evaluation, optional tuning, final fitting, and MLflow logging.
+
+    Canonical modelling-node jobs use one versioned ``evaluation`` contract
+    and may add a bounded ``tuning`` contract. ``split`` is a constructor-only
+    internal seam for direct test callers exercising the shared partition and
+    fit machinery; node config parsing rejects it.
 
     Parameters
     ----------
@@ -299,11 +380,15 @@ class TrainingJob:
     params : dict | None
         Algorithm-specific hyperparameters.
     split : dict | SplitConfig | None
-        Split configuration (strategy, validation_size, seed, etc.).
+        Internal test-seam partition configuration for direct callers.
     metrics : list[str] | None
         Metrics to compute. When omitted, the default list is derived from
         the training objective (loss function / GLM family) so a Poisson or
         Tweedie model is not silently reported with squared-error metrics.
+    evaluation : dict | EvaluationConfig | None
+        Canonical development/validation/final-test plan configuration.
+    tuning : dict | TuningConfig | None
+        Optional bounded, seeded search on the evaluation validation fits.
     mlflow_experiment : str | None
         MLflow experiment path. If set and mlflow is importable, logs the run.
     model_name : str | None
@@ -337,6 +422,11 @@ class TrainingJob:
         monotone_constraints: dict[str, int] | None = None,
         feature_weights: dict[str, float] | None = None,
         categorical_levels: Mapping[str, Iterable[str | None]] | None = None,
+        evaluation: Mapping[str, Any] | EvaluationConfig | None = None,
+        tuning: Mapping[str, Any] | TuningConfig | None = None,
+        evaluation_plan: EvaluationPlan | None = None,
+        fit_index: int | None = None,
+        plan_source_sha256: str | None = None,
     ) -> None:
         self.name = name
         self._data: str | pl.DataFrame | pl.LazyFrame | None = data
@@ -362,6 +452,60 @@ class TrainingJob:
         self.offset = offset
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
+        if split is not None and evaluation is not None:
+            raise ValueError("split and evaluation are competing contracts")
+        self.evaluation: EvaluationConfig | None
+        if evaluation is None:
+            self.evaluation = None
+        elif isinstance(evaluation, EvaluationConfig):
+            self.evaluation = evaluation
+        else:
+            self.evaluation = EvaluationConfig.from_plain_data(evaluation)
+        if tuning is None:
+            self.tuning = None
+        elif self.evaluation is None:
+            raise ValueError("tuning requires an explicit evaluation contract")
+        elif isinstance(tuning, TuningConfig):
+            self.tuning = tuning
+        else:
+            self.tuning = TuningConfig.from_plain_data(
+                tuning,
+                algorithm=self.algorithm,
+                base_params=self.params,
+                evaluation=self.evaluation,
+                configured_metrics=self.metrics,
+            )
+        if evaluation_plan is not None and self.evaluation is None:
+            raise ValueError("evaluation_plan requires an explicit evaluation contract")
+        if evaluation_plan is None and fit_index is not None:
+            raise ValueError("fit_index requires an evaluation_plan")
+        if (
+            evaluation_plan is not None
+            and fit_index is not None
+            and not (0 <= fit_index < len(evaluation_plan.validation_fits))
+        ):
+            raise ValueError("fit_index is outside evaluation plan")
+        self.evaluation_plan = evaluation_plan
+        self.evaluation_fit_index = fit_index
+        if plan_source_sha256 is not None and evaluation_plan is None:
+            raise ValueError("plan_source_sha256 requires an evaluation_plan")
+        self._plan_source_sha256 = plan_source_sha256
+        evaluation_key = None
+        if self.evaluation is not None:
+            evaluation_key = (
+                self.evaluation.group_column
+                if self.evaluation.strategy == "group"
+                else (
+                    self.evaluation.date_column if self.evaluation.strategy == "temporal" else None
+                )
+            )
+        if evaluation_key:
+            if evaluation_key in self.feature_columns:
+                raise ValueError("evaluation key cannot be an explicit feature column")
+            if self.algorithm == "glm" and evaluation_key in (self.params.get("terms") or {}):
+                raise ValueError("evaluation key cannot be a GLM term")
+            if evaluation_key not in self.id_columns:
+                self.id_columns.append(evaluation_key)
         from haute.modelling._feature_contract import normalise_categorical_levels
 
         self._declared_categorical_levels = normalise_categorical_levels(
@@ -390,6 +534,7 @@ class TrainingJob:
         on_iteration: IterationCallback | None = None,
         check_cancelled: Callable[[], None] | None = None,
         execution_context: ExecutionContext | None = None,
+        on_tuning_progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> TrainResult:
         """Execute the full training pipeline.
 
@@ -406,6 +551,15 @@ class TrainingJob:
         TrainResult
             Metrics, feature importances, model path, and split sizes.
         """
+
+        if self.evaluation_plan is None and self.evaluation is not None:
+            return self._run_evaluation(
+                progress=progress,
+                on_iteration=on_iteration,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+                on_tuning_progress=on_tuning_progress,
+            )
 
         def _report(msg: str, frac: float) -> None:
             if check_cancelled is not None:
@@ -442,52 +596,7 @@ class TrainingJob:
             self._contract_target_dtype = prepared.target_dtype
             self._contract_offset_dtype = prepared.offset_dtype
 
-            # GLM: narrow features to only the terms the user selected.
-            # CatBoost uses all features; GLM should only carry the columns
-            # referenced by its terms dict so we don't build a massive
-            # design matrix or load unnecessary columns from parquet.
-            if self.algorithm == "glm":
-                glm_terms = self.params.get("terms", {})
-                if glm_terms:
-                    term_names = set(glm_terms.keys())
-                    missing = term_names - set(prepared.features)
-                    if missing:
-                        raise ValueError(
-                            f"GLM terms reference columns not found in training data: "
-                            f"{sorted(missing)}. Available columns: {prepared.features[:20]}"
-                            + ("..." if len(prepared.features) > 20 else "")
-                        )
-                    prepared = _PreparedData(
-                        data_path=prepared.data_path,
-                        owns_tmp=prepared.owns_tmp,
-                        features=[f for f in prepared.features if f in term_names],
-                        cat_features=[f for f in prepared.cat_features if f in term_names],
-                        total_rows=prepared.total_rows,
-                        feature_dtypes={
-                            f: dt for f, dt in prepared.feature_dtypes.items() if f in term_names
-                        },
-                        categorical_levels={
-                            f: levels
-                            for f, levels in prepared.categorical_levels.items()
-                            if f in term_names
-                        },
-                        target_dtype=prepared.target_dtype,
-                        target_null_count=prepared.target_null_count,
-                        offset_dtype=prepared.offset_dtype,
-                    )
-                    _report(
-                        f"GLM: using {len(prepared.features)} term features "
-                        f"({len(prepared.cat_features)} categorical)",
-                        0.12,
-                    )
-                    if not prepared.features:
-                        raise ValueError(
-                            "GLM: no valid features remaining after matching terms to data "
-                            "columns. Check that your factor names match column names in the "
-                            "training data."
-                        )
-
-            self._validate_monotone_constraints(prepared)
+            prepared = self._prepare_fit_features(prepared, _report)
 
             _report("Splitting data", 0.15)
             split_result = self._split_data(
@@ -558,7 +667,9 @@ class TrainingJob:
                 diagnostics_errors=metrics_result.diagnostics_errors,
             )
 
-            if self.mlflow_experiment:
+            # An internal final evaluation fit must attach the persisted
+            # evaluation/tuning report before the one MLflow handoff.
+            if self.mlflow_experiment and self.evaluation_plan is None:
                 _checkpoint()
                 with _training_stage(execution_context, "training_mlflow_log"):
                     self._log_to_mlflow(result, check_cancelled=_checkpoint)
@@ -596,6 +707,704 @@ class TrainingJob:
         for path in candidates:
             if _remove_temp_parquet(path, context="training_run_abort"):
                 logger.warning("training_temp_parquet_removed_after_abort", path=path)
+
+    def _build_evaluation_plan(
+        self,
+        prepared: _PreparedData,
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> EvaluationPlan:
+        """Build the canonical plan for the already-clean eligible source."""
+        assert self.evaluation is not None
+        values: dict[str, list[object]] = {}
+        columns: list[str] = []
+        if self.evaluation.strategy == "random" and self.task == "classification":
+            columns.append(self.target)
+        elif self.evaluation.strategy == "group":
+            assert self.evaluation.group_column is not None
+            columns.append(self.evaluation.group_column)
+        elif self.evaluation.strategy == "temporal":
+            assert self.evaluation.date_column is not None
+            columns.append(self.evaluation.date_column)
+        if columns:
+            frame = _training_streaming_collect(
+                pl.scan_parquet(prepared.data_path).select(columns),
+                stage_name="evaluation_plan_key_collect",
+                execution_context=execution_context,
+            )
+            values = {column: frame[column].to_list() for column in columns}
+        return generate_evaluation_plan(
+            self.evaluation,
+            source_sha256=evaluation_file_sha256(prepared.data_path),
+            row_count=prepared.total_rows,
+            task=self.task,
+            target_values=values.get(self.target),
+            group_values=values.get(self.evaluation.group_column or ""),
+            date_values=values.get(self.evaluation.date_column or ""),
+        )
+
+    def _new_evaluation_job(
+        self,
+        *,
+        name: str,
+        data: str,
+        output_dir: str,
+        plan: EvaluationPlan,
+        fit_index: int | None,
+        mlflow_experiment: str | None,
+        params: Mapping[str, Any] | None = None,
+        source_sha256: str | None = None,
+    ) -> TrainingJob:
+        """Clone this job for one evaluation selection or deployable final fit."""
+        return TrainingJob(
+            name=name,
+            data=data,
+            target=self.target,
+            weight=self.weight,
+            exclude=list(self.exclude),
+            feature_columns=list(self.feature_columns),
+            fold_column=self.fold_column,
+            id_columns=list(self.id_columns),
+            algorithm=self.algorithm,
+            task=self.task,
+            params=copy.deepcopy(dict(self.params if params is None else params)),
+            metrics=list(self.metrics),
+            mlflow_experiment=mlflow_experiment,
+            model_name=self.model_name,
+            output_dir=output_dir,
+            loss_function=self.loss_function,
+            variance_power=self.variance_power,
+            offset=self.offset,
+            monotone_constraints=self.monotone_constraints,
+            feature_weights=self.feature_weights,
+            categorical_levels=self._declared_categorical_levels,
+            evaluation=self.evaluation,
+            tuning=self.tuning,
+            evaluation_plan=plan,
+            fit_index=fit_index,
+            plan_source_sha256=source_sha256,
+        )
+
+    def _prepare_fit_features(
+        self,
+        prepared: _PreparedData,
+        report: Callable[[str, float], None],
+    ) -> _PreparedData:
+        """Apply the same final feature contract to selection and final fits."""
+        if self.algorithm == "glm":
+            glm_terms = self.params.get("terms", {})
+            if glm_terms:
+                term_names = set(glm_terms)
+                missing = term_names - set(prepared.features)
+                if missing:
+                    raise ValueError(
+                        "GLM terms reference columns not found in training data: "
+                        f"{sorted(missing)}. Available columns: "
+                        f"{prepared.features[:20]}" + ("..." if len(prepared.features) > 20 else "")
+                    )
+                prepared = _PreparedData(
+                    data_path=prepared.data_path,
+                    owns_tmp=prepared.owns_tmp,
+                    features=[feature for feature in prepared.features if feature in term_names],
+                    cat_features=[
+                        feature for feature in prepared.cat_features if feature in term_names
+                    ],
+                    total_rows=prepared.total_rows,
+                    feature_dtypes={
+                        feature: dtype
+                        for feature, dtype in prepared.feature_dtypes.items()
+                        if feature in term_names
+                    },
+                    categorical_levels={
+                        feature: levels
+                        for feature, levels in prepared.categorical_levels.items()
+                        if feature in term_names
+                    },
+                    target_dtype=prepared.target_dtype,
+                    target_null_count=prepared.target_null_count,
+                    offset_dtype=prepared.offset_dtype,
+                )
+                report(
+                    f"GLM: using {len(prepared.features)} term features "
+                    f"({len(prepared.cat_features)} categorical)",
+                    0.12,
+                )
+                if not prepared.features:
+                    raise ValueError(
+                        "GLM: no valid features remaining after matching terms to "
+                        "data columns. Check that factor names match the training "
+                        "data."
+                    )
+        self._validate_monotone_constraints(prepared)
+        return prepared
+
+    def run_evaluation_fit(
+        self,
+        progress: Callable[[str, float], None] | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+        execution_context: ExecutionContext | None = None,
+    ) -> EvaluationFitResult:
+        """Fit one selection partition without publishing model or diagnostics."""
+        if self.evaluation_plan is None or self.evaluation_fit_index is None:
+            raise ValueError("run_evaluation_fit requires an internal evaluation selection job")
+        prepared: _PreparedData | None = None
+        split_result: _SplitResult | None = None
+
+        def report(message: str, fraction: float) -> None:
+            if check_cancelled is not None:
+                check_cancelled()
+            if progress is not None:
+                progress(message, fraction)
+
+        try:
+            prepared = self._prepare_data(report, execution_context=execution_context)
+            prepared = self._prepare_fit_features(prepared, report)
+            split_result = self._split_data(prepared, report, execution_context=execution_context)
+
+            def selection_iteration(
+                _iteration: int,
+                _total: int,
+                _metrics: dict[str, float],
+            ) -> None:
+                if check_cancelled is not None:
+                    check_cancelled()
+                _training_checkpoint(
+                    execution_context,
+                    label="evaluation_selection_iteration",
+                )
+
+            trained = self._train_model(
+                split_result,
+                prepared.features,
+                prepared.cat_features,
+                (
+                    selection_iteration
+                    if check_cancelled is not None or execution_context is not None
+                    else None
+                ),
+                report,
+                execution_context=execution_context,
+            )
+            validation = self._read_partition(
+                split_result.split_path,
+                PARTITION_VALIDATION,
+                columns=self._glm_select_columns(prepared.features),
+                execution_context=execution_context,
+                stage_name="evaluation_selection_metrics_materialise",
+            )
+            predictions = trained.algo.predict(
+                trained.model,
+                validation,
+                prepared.features,
+                offset=self.offset,
+            )
+            metrics = compute_metrics(
+                validation[self.target].to_numpy(),
+                predictions,
+                validation[self.weight].to_numpy() if self.weight else None,
+                self.metrics,
+                variance_power=self.variance_power,
+            )
+            return EvaluationFitResult(
+                1,
+                self.evaluation_fit_index,
+                split_result.n_train,
+                split_result.n_validation,
+                metrics,
+                trained.fit_result.best_iteration,
+            )
+        finally:
+            self._cleanup_owned_temp_parquets(prepared, split_result)
+
+    def _run_tuning_trials(
+        self,
+        *,
+        plan: EvaluationPlan,
+        plan_digest: str,
+        source_sha256: str,
+        prepared: _PreparedData,
+        output: Path,
+        fit_output_dir: str,
+        created: list[Path],
+        report: Callable[[str, float], None],
+        checkpoint: Callable[[str], None],
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+        on_tuning_progress: Callable[[dict[str, Any]], None] | None,
+    ) -> tuple[
+        tuple[EvaluationFitResult, ...],
+        dict[str, Any],
+        dict[str, Any],
+    ]:
+        """Run seeded sequential ask/tell trials on the persisted plan."""
+        assert self.tuning is not None
+        import optuna
+
+        config = self.tuning
+        names = tuning_artifact_filenames(self.name)
+        plan_path = output / names["plan"]
+        trials_path = output / names["trials"]
+        tuning_report_path = output / names["report"]
+        if any(path.exists() for path in (plan_path, trials_path, tuning_report_path)):
+            raise ValueError("tuning artifact paths already exist")
+
+        tuning_plan = TuningPlanArtifact.create(
+            config=config,
+            base_params=self.params,
+            evaluation_plan_sha256=plan_digest,
+            sampler="TPESampler",
+            sampler_version=optuna.__version__,
+        )
+        save_tuning_plan(tuning_plan, plan_path)
+        created.append(plan_path)
+        tuning_plan_digest = evaluation_file_sha256(plan_path)
+
+        sampler = optuna.samplers.TPESampler(seed=config.seed)
+        study = optuna.create_study(direction=config.direction, sampler=sampler)
+        trials: list[TuningTrialResult] = []
+        completed_fits = 0
+
+        def emit_progress(
+            *,
+            phase: str,
+            trial_index: int | None,
+            fold_index: int | None,
+            best_objective: float | None,
+        ) -> None:
+            if on_tuning_progress is None:
+                return
+            payload: dict[str, Any] = {
+                "phase": phase,
+                "trial_index": (None if trial_index is None else trial_index + 1),
+                "trial_count": config.trial_count,
+                "fold_index": None if fold_index is None else fold_index + 1,
+                "fold_count": config.validation_fit_count,
+                "completed_fits": completed_fits,
+                "total_fits": config.total_fit_count,
+                "best_objective": best_objective,
+            }
+            on_tuning_progress(payload)
+
+        emit_progress(
+            phase="planning",
+            trial_index=None,
+            fold_index=None,
+            best_objective=None,
+        )
+        for trial_index in range(config.trial_count):
+            checkpoint(f"before_tuning_trial_{trial_index}")
+            optuna_trial = None
+            label: Literal["baseline", "sampled"]
+            if trial_index == 0:
+                sampled_params: dict[str, Any] = {}
+                label = "baseline"
+            else:
+                optuna_trial = study.ask()
+                sampled_params = suggest_parameters(
+                    optuna_trial,
+                    config,
+                    self.params,
+                )
+                label = "sampled"
+            resolved_params = resolve_trial_parameters(
+                self.params,
+                sampled_params,
+            )
+            fit_results: list[EvaluationFitResult] = []
+            try:
+                for fit_index in range(config.validation_fit_count):
+                    report(
+                        (
+                            f"Tuning: trial {trial_index + 1}/"
+                            f"{config.trial_count}, fold {fit_index + 1}/"
+                            f"{config.validation_fit_count}"
+                        ),
+                        completed_fits / config.total_fit_count,
+                    )
+                    best_so_far = (
+                        None
+                        if not trials
+                        else choose_winner(
+                            trials,
+                            direction=config.direction,
+                        ).objective
+                    )
+                    emit_progress(
+                        phase="trial_fit",
+                        trial_index=trial_index,
+                        fold_index=fit_index,
+                        best_objective=best_so_far,
+                    )
+                    child = self._new_evaluation_job(
+                        name=(f"{self.name}.tuning-{trial_index}-evaluation-{fit_index}"),
+                        data=prepared.data_path,
+                        output_dir=fit_output_dir,
+                        plan=plan,
+                        fit_index=fit_index,
+                        mlflow_experiment=None,
+                        params=resolved_params,
+                        source_sha256=source_sha256,
+                    )
+                    fit_results.append(
+                        child.run_evaluation_fit(
+                            check_cancelled=check_cancelled,
+                            execution_context=execution_context,
+                        )
+                    )
+                    completed_fits += 1
+                    checkpoint(f"after_tuning_trial_{trial_index}_fit_{fit_index}")
+            except (ExecutionCancelledError, MemoryError, HauteError):
+                raise
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Tuning trial {trial_index} failed for sampled parameters "
+                    f"{sampled_params!r}: {exc}"
+                ) from exc
+
+            transient_results = EvaluationResultsArtifact(
+                TUNING_SCHEMA_VERSION,
+                plan_digest,
+                tuple(fit_results),
+            )
+            transient_digest = hashlib.sha256(
+                canonical_json_bytes(transient_results.to_plain_data())
+            ).hexdigest()
+            aggregate = aggregate_evaluation_results(
+                plan,
+                transient_results,
+                self.metrics,
+                results_sha256=transient_digest,
+            )
+            aggregate_metrics = {
+                metric: float(summary["mean"]) for metric, summary in aggregate.metrics.items()
+            }
+            objective = aggregate_metrics[config.metric]
+            completed_trial = TuningTrialResult(
+                schema_version=TUNING_SCHEMA_VERSION,
+                trial_index=trial_index,
+                label=label,
+                sampled_params=sampled_params,
+                resolved_params=resolved_params,
+                fits=tuple(fit_results),
+                aggregate_metrics=aggregate_metrics,
+                objective=objective,
+                # Runtime duration is deliberately not part of canonical
+                # reproducibility. Live status owns elapsed time.
+                elapsed_seconds=0.0,
+            )
+            trials.append(completed_trial)
+            if optuna_trial is not None:
+                study.tell(optuna_trial, objective)
+            emit_progress(
+                phase="trial_complete",
+                trial_index=trial_index,
+                fold_index=None,
+                best_objective=choose_winner(
+                    trials,
+                    direction=config.direction,
+                ).objective,
+            )
+
+        trials_artifact = TuningTrialsArtifact(
+            schema_version=TUNING_SCHEMA_VERSION,
+            plan_sha256=tuning_plan_digest,
+            evaluation_plan_sha256=plan_digest,
+            trials=tuple(trials),
+        )
+        save_tuning_trials(trials_artifact, trials_path)
+        created.append(trials_path)
+        trials_digest = evaluation_file_sha256(trials_path)
+        winner = choose_winner(trials, direction=config.direction)
+        iteration_ceiling = self.params.get("iterations", 1000)
+        if (
+            isinstance(iteration_ceiling, bool)
+            or not isinstance(iteration_ceiling, int)
+            or iteration_ceiling <= 0
+        ):
+            raise ValueError(
+                "Fixed CatBoost iterations must be a positive exact integer when tuning is enabled"
+            )
+        if any(fit.best_iteration is None for fit in winner.fits):
+            raise ValueError("Winning tuning validation fits did not report best_iteration")
+        final_tree_count = validation_weighted_tree_count(
+            best_iterations=[
+                fit.best_iteration for fit in winner.fits if fit.best_iteration is not None
+            ],
+            validation_rows=[fit.validation_rows for fit in winner.fits],
+            iteration_ceiling=iteration_ceiling,
+        )
+        final_params = copy.deepcopy(dict(winner.resolved_params))
+        for key in (
+            "early_stopping_rounds",
+            "od_pval",
+            "od_type",
+            "od_wait",
+            "use_best_model",
+        ):
+            final_params.pop(key, None)
+        final_params["iterations"] = final_tree_count
+        tuning_report = build_tuning_report(
+            tuning_plan,
+            trials_artifact,
+            trials_sha256=trials_digest,
+            final_params=final_params,
+            final_tree_count=final_tree_count,
+        )
+        save_tuning_report(tuning_report, tuning_report_path)
+        created.append(tuning_report_path)
+        response = {
+            **tuning_report.to_plain_data(),
+            "trials": [trial.to_plain_data() for trial in trials_artifact.trials],
+            "plan_path": str(plan_path),
+            "trials_path": str(trials_path),
+            "report_path": str(tuning_report_path),
+        }
+        return winner.fits, final_params, response
+
+    def _run_evaluation(
+        self,
+        *,
+        progress: Callable[[str, float], None] | None,
+        on_iteration: IterationCallback | None,
+        check_cancelled: Callable[[], None] | None,
+        execution_context: ExecutionContext | None,
+        on_tuning_progress: Callable[[dict[str, Any]], None] | None,
+    ) -> TrainResult:
+        """Orchestrate persisted selection evaluation followed by one final fit."""
+        assert self.evaluation is not None
+        prepared: _PreparedData | None = None
+        created: list[Path] = []
+        floor = 0.0
+
+        def checkpoint(label: str) -> None:
+            if check_cancelled is not None:
+                check_cancelled()
+            _training_checkpoint(execution_context, label=label)
+
+        def report(message: str, fraction: float) -> None:
+            nonlocal floor
+            checkpoint("before_evaluation_progress")
+            floor = max(floor, fraction)
+            if progress is not None:
+                progress(message, floor)
+            checkpoint("after_evaluation_progress")
+
+        try:
+            report("Evaluation: preparing source", 0.0)
+            prepared = self._prepare_data(report, execution_context=execution_context)
+            # Caller-owned parquets retain the fused null-target filter until
+            # planning needs stable eligible positions. Run-owned prepared
+            # parquets are already physically filtered and must not be copied
+            # again (or orphaned when ``prepared`` is replaced).
+            if prepared.target_null_count and not prepared.owns_tmp:
+                clean = tempfile.NamedTemporaryFile(
+                    suffix=".parquet", prefix="haute_evaluation_clean_", delete=False
+                )
+                clean.close()
+                try:
+                    from haute._polars_utils import bounded_sink
+
+                    bounded_sink(
+                        pl.scan_parquet(prepared.data_path).filter(
+                            pl.col(self.target).is_not_null()
+                        ),
+                        clean.name,
+                        fast_checkpoint=True,
+                    )
+                except BaseException:
+                    _remove_temp_parquet(clean.name, context="evaluation_clean_source")
+                    raise
+                prepared = _PreparedData(
+                    clean.name,
+                    True,
+                    prepared.features,
+                    prepared.cat_features,
+                    prepared.total_rows,
+                    prepared.feature_dtypes,
+                    prepared.categorical_levels,
+                    prepared.target_dtype,
+                    0,
+                    prepared.offset_dtype,
+                )
+            generated_plan = self._build_evaluation_plan(
+                prepared,
+                execution_context=execution_context,
+            )
+            output = Path(self.output_dir).resolve()
+            output.mkdir(parents=True, exist_ok=True)
+            names = evaluation_artifact_filenames(self.name)
+            plan_path, results_path, report_path = (
+                output / names[key] for key in ("plan", "results", "report")
+            )
+            if any(path.exists() for path in (plan_path, results_path, report_path)):
+                raise ValueError("evaluation artifact paths already exist")
+            save_evaluation_plan(generated_plan, plan_path)
+            created.append(plan_path)
+            source_digest = evaluation_file_sha256(prepared.data_path)
+            plan = load_evaluation_plan(plan_path, source_sha256=source_digest)
+            if plan.to_plain_data() != generated_plan.to_plain_data():
+                raise ValueError("reloaded evaluation plan differs from generated plan")
+            plan_digest = evaluation_file_sha256(plan_path)
+            selection_fit_count = len(plan.validation_fits)
+            tuning_response: dict[str, Any] | None = None
+            if self.tuning is not None:
+                with tempfile.TemporaryDirectory(prefix="haute_tuning_fits_") as tuning_fit_root:
+                    fits, final_params, tuning_response = self._run_tuning_trials(
+                        plan=plan,
+                        plan_digest=plan_digest,
+                        source_sha256=source_digest,
+                        prepared=prepared,
+                        output=output,
+                        fit_output_dir=tuning_fit_root,
+                        created=created,
+                        report=report,
+                        checkpoint=checkpoint,
+                        check_cancelled=check_cancelled,
+                        execution_context=execution_context,
+                        on_tuning_progress=on_tuning_progress,
+                    )
+                total = self.tuning.total_fit_count
+                completed_before_final = self.tuning.trial_fit_count
+            else:
+                ordinary_fits: list[EvaluationFitResult] = []
+                total = selection_fit_count + 1
+                completed_before_final = selection_fit_count
+                with tempfile.TemporaryDirectory(prefix="haute_evaluation_fits_") as root:
+                    for fit_index in range(selection_fit_count):
+                        report(
+                            f"Evaluation: fit {fit_index + 1}/{total}",
+                            fit_index / total,
+                        )
+                        child = self._new_evaluation_job(
+                            name=f"{self.name}.evaluation-{fit_index}",
+                            data=prepared.data_path,
+                            output_dir=root,
+                            plan=plan,
+                            fit_index=fit_index,
+                            mlflow_experiment=None,
+                            params=self.params,
+                            source_sha256=source_digest,
+                        )
+                        ordinary_fits.append(
+                            child.run_evaluation_fit(
+                                check_cancelled=check_cancelled,
+                                execution_context=execution_context,
+                            )
+                        )
+                fits = tuple(ordinary_fits)
+                final_params = copy.deepcopy(self.params)
+            artifact = EvaluationResultsArtifact(1, plan_digest, tuple(fits))
+            save_evaluation_results(artifact, results_path)
+            created.append(results_path)
+            results = load_evaluation_results(results_path, plan_sha256=plan_digest)
+            results_digest = evaluation_file_sha256(results_path)
+            aggregate = aggregate_evaluation_results(
+                plan, results, self.metrics, results_sha256=results_digest
+            )
+            save_evaluation_report(aggregate, report_path)
+            created.append(report_path)
+            aggregate = load_evaluation_report(report_path)
+            final_source_digest = evaluation_file_sha256(prepared.data_path)
+            if final_source_digest != plan.source_sha256:
+                raise ValueError("evaluation source changed before final fit")
+            report("Evaluation: final fit", completed_before_final / total)
+            if self.tuning is not None and on_tuning_progress is not None:
+                on_tuning_progress(
+                    {
+                        "phase": "final_fit",
+                        "trial_index": None,
+                        "trial_count": self.tuning.trial_count,
+                        "fold_index": None,
+                        "fold_count": self.tuning.validation_fit_count,
+                        "completed_fits": completed_before_final,
+                        "total_fits": total,
+                        "best_objective": (
+                            tuning_response["winner_objective"]
+                            if tuning_response is not None
+                            else None
+                        ),
+                    }
+                )
+            final = self._new_evaluation_job(
+                name=self.name,
+                data=prepared.data_path,
+                output_dir=self.output_dir,
+                plan=plan,
+                fit_index=None,
+                # The outer orchestration logs exactly once after attaching
+                # evaluation/tuning reports and canonical final-test labels.
+                mlflow_experiment=None,
+                params=final_params,
+                source_sha256=final_source_digest,
+            )
+            result = final.run(
+                progress=lambda message, fraction: report(
+                    f"Evaluation: final fit: {message}",
+                    (completed_before_final + fraction) / total,
+                ),
+                on_iteration=on_iteration,
+                check_cancelled=check_cancelled,
+                execution_context=execution_context,
+            )
+            result.development_rows = len(plan.development_positions)
+            result.final_test_rows = len(plan.test_positions)
+            result.final_test_metrics = dict(result.holdout_metrics) if plan.test_positions else {}
+            result.diagnostics_set = "final_test" if plan.test_positions else "development"
+            result.evaluation = {
+                "schema_version": 1,
+                "strategy": self.evaluation.strategy,
+                "validation_method": self.evaluation.validation["method"],
+                "validation_fit_count": selection_fit_count,
+                "fit_count": total,
+                "development_rows": len(plan.development_positions),
+                "final_test_rows": len(plan.test_positions),
+                "selection_fits": [fit.to_plain_data() for fit in results.fits],
+                "selection_metrics": {
+                    metric: dict(values) for metric, values in aggregate.metrics.items()
+                },
+                "plan_sha256": plan_digest,
+                "results_sha256": results_digest,
+                "plan_path": str(plan_path),
+                "results_path": str(results_path),
+                "report_path": str(report_path),
+                "summary": dict(plan.summary),
+            }
+            result.tuning = tuning_response
+            if self.tuning is not None and on_tuning_progress is not None:
+                on_tuning_progress(
+                    {
+                        "phase": "publication",
+                        "trial_index": None,
+                        "trial_count": self.tuning.trial_count,
+                        "fold_index": None,
+                        "fold_count": self.tuning.validation_fit_count,
+                        "completed_fits": total,
+                        "total_fits": total,
+                        "best_objective": (
+                            tuning_response["winner_objective"]
+                            if tuning_response is not None
+                            else None
+                        ),
+                    }
+                )
+            if self.mlflow_experiment:
+                checkpoint("before_evaluation_mlflow_log")
+                with _training_stage(
+                    execution_context,
+                    "training_mlflow_log",
+                ):
+                    self._log_to_mlflow(
+                        result,
+                        check_cancelled=lambda: checkpoint("evaluation_mlflow_checkpoint"),
+                    )
+            report("Done", 1.0)
+            return result
+        except BaseException:
+            for path in created:
+                _remove_training_artifact(path)
+            raise
+        finally:
+            self._cleanup_owned_temp_parquets(prepared, None)
 
     # ------------------------------------------------------------------
     # Pipeline sub-methods
@@ -809,17 +1618,33 @@ class TrainingJob:
         if target_null_count > 0:
             split_lf = split_lf.filter(pl.col(self.target).is_not_null())
 
-        # Compute mask -- for temporal/group we need a small scan
-        mask_df = None
-        if self.split_config.strategy in ("temporal", "group"):
-            col = self.split_config.date_column or self.split_config.group_column
-            mask_df = _training_streaming_collect(
-                split_lf.select(col),
-                stage_name="training_split_key_collect",
-                execution_context=execution_context,
-            )
-        mask = split_mask(total_rows, self.split_config, df=mask_df)
-        del mask_df
+        if self.evaluation_plan is not None:
+            # The orchestrator hashes the prepared source once per run (and
+            # freshly again before the deployable final fit); children reuse
+            # that digest instead of re-hashing a multi-GB parquet per fit.
+            source_digest = self._plan_source_sha256 or evaluation_file_sha256(data_path)
+            if self.evaluation_plan.source_sha256 != source_digest:
+                raise ValueError("evaluation plan source digest does not match prepared source")
+            if total_rows != self.evaluation_plan.row_count:
+                raise ValueError("evaluation plan row count does not match prepared source")
+            if self.evaluation_fit_index is None:
+                mask = pl.Series("_partition", self.evaluation_plan.final_mask())
+            else:
+                mask = pl.Series(
+                    "_partition", self.evaluation_plan.selection_mask(self.evaluation_fit_index)
+                )
+        else:
+            # Compute mask -- for temporal/group we need a small scan
+            mask_df = None
+            if self.split_config.strategy in ("temporal", "group"):
+                col = self.split_config.date_column or self.split_config.group_column
+                mask_df = _training_streaming_collect(
+                    split_lf.select(col),
+                    stage_name="training_split_key_collect",
+                    execution_context=execution_context,
+                )
+            mask = split_mask(total_rows, self.split_config, df=mask_df)
+            del mask_df
         n_train = int((mask == PARTITION_TRAIN).sum())
         n_validation = int((mask == PARTITION_VALIDATION).sum())
         n_holdout = int((mask == PARTITION_HOLDOUT).sum())
@@ -1646,7 +2471,14 @@ class TrainingJob:
             glm_regularization_path=result.glm_regularization_path,
             lorenz_curve_perfect=result.lorenz_curve_perfect,
             pdp_data=result.pdp_data,
-            holdout_metrics=result.holdout_metrics,
+            final_test_metrics=result.final_test_metrics,
+            selection_metrics=(
+                dict(result.evaluation.get("selection_metrics", {}))
+                if result.evaluation is not None
+                else {}
+            ),
+            evaluation=result.evaluation,
+            tuning=result.tuning,
             diagnostics_set=result.diagnostics_set,
         )
         # Populate the feature-contract metadata so ``log_experiment``
@@ -1655,11 +2487,12 @@ class TrainingJob:
         metadata = ModelCardMetadata(
             algorithm=self.algorithm,
             task=self.task,
-            train_rows=result.train_rows,
-            validation_rows=result.validation_rows,
-            holdout_rows=result.holdout_rows,
+            development_rows=result.development_rows,
+            final_test_rows=result.final_test_rows,
             features=result.features,
-            split_config=asdict(self.split_config) if self.split_config else {},
+            evaluation_config=(
+                self.evaluation.to_plain_data() if self.evaluation is not None else {}
+            ),
             best_iteration=result.best_iteration,
             feature_types=feature_types,
             categorical_features=list(result.cat_features),
@@ -1669,23 +2502,47 @@ class TrainingJob:
             offset_type=(self._contract_offset_dtype or "Float64") if self.offset else "",
         )
 
+        final_params = (
+            dict(result.tuning["final_params"]) if result.tuning is not None else self.params
+        )
+        artifact_paths: dict[str, str] = {}
+        if result.evaluation is not None:
+            artifact_paths.update(
+                {
+                    "evaluation_plan": result.evaluation["plan_path"],
+                    "evaluation_results": result.evaluation["results_path"],
+                    "evaluation_report": result.evaluation["report_path"],
+                }
+            )
+        if result.tuning is not None:
+            artifact_paths.update(
+                {
+                    "tuning_plan": result.tuning["plan_path"],
+                    "tuning_trials": result.tuning["trials_path"],
+                    "tuning_report": result.tuning["report_path"],
+                }
+            )
         log_experiment(
             experiment_name=self.mlflow_experiment,
             run_name=self.name,
-            metrics=result.metrics,
+            metrics=result.final_test_metrics or result.metrics,
             params={
                 "algorithm": self.algorithm,
                 "task": self.task,
                 "target": self.target,
                 "weight": self.weight or "",
-                "split_strategy": self.split_config.strategy,
-                "validation_size": self.split_config.validation_size,
-                "holdout_size": self.split_config.holdout_size,
-                **{f"param_{k}": v for k, v in self.params.items()},
+                "evaluation_strategy": (
+                    self.evaluation.strategy if self.evaluation is not None else ""
+                ),
+                "validation_method": (
+                    self.evaluation.validation["method"] if self.evaluation is not None else ""
+                ),
+                **{f"param_{k}": v for k, v in final_params.items()},
             },
             diagnostics=diagnostics,
             metadata=metadata,
             model_path=result.model_path or None,
             model_name=self.model_name,
+            artifact_paths=artifact_paths,
             check_cancelled=check_cancelled,
         )

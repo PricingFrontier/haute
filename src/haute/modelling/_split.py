@@ -79,6 +79,10 @@ def split_data(
 PARTITION_TRAIN = 0
 PARTITION_VALIDATION = 1
 PARTITION_HOLDOUT = 2
+# Cross-validation temporal plans leave future rows outside the current
+# expanding-window fold.  They must not be labelled as holdout: diagnostics
+# deliberately prefer holdout and would then inspect the future.
+PARTITION_UNUSED = 3
 
 
 def split_mask(

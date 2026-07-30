@@ -126,7 +126,6 @@ _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
     "assistant",
     "background-jobs-api",
     "explore-eda",
-    "modelling",
     "optimiser",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(

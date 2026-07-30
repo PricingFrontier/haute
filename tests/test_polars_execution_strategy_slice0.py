@@ -111,6 +111,12 @@ def _make_avg_top_5_competitor_join_graph(
                             "target": "target",
                             "exclude": ["quote_id", "policy_id"],
                             "params": {"iterations": 1, "depth": 1},
+                            "evaluation": {
+                                "schema_version": 1,
+                                "strategy": "random",
+                                "seed": 42,
+                                "validation": {"method": "single", "size": 0.2},
+                            },
                         },
                     },
                 },

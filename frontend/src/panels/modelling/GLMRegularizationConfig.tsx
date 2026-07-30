@@ -29,7 +29,7 @@ export function GLMRegularizationConfig({ config, onUpdate }: GLMRegularizationC
   const [open, setOpen] = useState(false)
   const regularization = configField(config, "regularization", "")
   const alpha = configField(config, "alpha", 0)
-  const l1RatioSet = config.l1_ratio !== undefined
+  const l1RatioSet = config.l1_ratio !== undefined && config.l1_ratio !== null
   const l1Ratio = configField(config, "l1_ratio", 0.5)
   const isActive = !!regularization
 

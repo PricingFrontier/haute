@@ -54,6 +54,7 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
   const availableMetrics = task === "classification" ? CLASSIFICATION_METRICS : REGRESSION_METRICS
   return (
     <div>
+      <p className="text-[10px] mb-1" aria-label="Selected algorithm">Algorithm: <strong>CatBoost</strong></p>
       <label className="text-[11px] font-bold uppercase tracking-[0.08em]" style={{ color: "var(--text-muted)" }}>Target & Weight</label>
       <div className="mt-1.5 space-y-2">
         <div>
@@ -151,7 +152,7 @@ export function TargetAndTaskConfig({ config, onUpdate, columns, target, weight,
                 Variance power (1.0=Poisson, 2.0=Gamma)
                 <FailoverHelp label={TWEEDIE_HELP} />
               </label>
-              {config.variance_power === undefined ? (
+              {config.variance_power === undefined || config.variance_power === null ? (
                 <button
                   onClick={() => onUpdate("variance_power", 1.5)}
                   className="w-full mt-1 px-2.5 py-1.5 rounded-lg text-xs font-medium"

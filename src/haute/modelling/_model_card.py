@@ -8,6 +8,7 @@ open the file in a browser and decide whether a model goes live.
 from __future__ import annotations
 
 import html
+import json
 import math
 from datetime import UTC, datetime
 from typing import Any
@@ -83,17 +84,21 @@ def generate_model_card(
     )
 
     # --- Training summary ---
-    split_desc = meta.split_config.get("strategy", "random") if meta.split_config else "random"
+    development_rows = meta.development_rows or meta.train_rows + meta.validation_rows
+    final_test_rows = meta.final_test_rows or meta.holdout_rows
+    evaluation_config = meta.evaluation_config or meta.split_config
+    evaluation_strategy = (
+        evaluation_config.get("strategy", "random") if evaluation_config else "random"
+    )
     summary_rows = [
-        ["Train rows", f"{meta.train_rows:,}"],
-        ["Validation rows", f"{meta.validation_rows:,}"],
+        ["Development rows", f"{development_rows:,}"],
     ]
-    if meta.holdout_rows:
-        summary_rows.append(["Holdout rows", f"{meta.holdout_rows:,}"])
+    if final_test_rows:
+        summary_rows.append(["Final test rows", f"{final_test_rows:,}"])
     summary_rows += [
         ["Features", f"{len(meta.features):,}" if meta.features else "—"],
-        ["Split strategy", split_desc],
-        ["Diagnostics computed on", diag.diagnostics_set.title()],
+        ["Evaluation strategy", evaluation_strategy],
+        ["Diagnostics computed on", diag.diagnostics_set.replace("_", " ").title()],
     ]
     if meta.best_iteration is not None:
         summary_rows.append(["Best iteration", str(meta.best_iteration)])
@@ -103,17 +108,76 @@ def generate_model_card(
     # --- Primary metrics (from diagnostics set) ---
     if metrics:
         metric_rows = [[k, f"{v:.4f}" if math.isfinite(v) else "N/A"] for k, v in metrics.items()]
-        header = f"Metrics ({diag.diagnostics_set.title()} set)"
+        header = f"Metrics ({diag.diagnostics_set.replace('_', ' ').title()} set)"
         sections.append(f"<h2>{html.escape(header)}</h2>")
         sections.append(_html_table(["Metric", "Value"], metric_rows, ["left", "right"]))
 
-    # --- Holdout metrics (when holdout exists but isn't the diagnostics set) ---
-    if diag.holdout_metrics and diag.diagnostics_set != "holdout":
+    # --- Final-test metrics (when present but diagnostics came from development) ---
+    final_test_metrics = diag.final_test_metrics or diag.holdout_metrics
+    if final_test_metrics and diag.diagnostics_set != "final_test":
         ho_rows = [
-            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"] for k, v in diag.holdout_metrics.items()
+            [k, f"{v:.4f}" if math.isfinite(v) else "N/A"] for k, v in final_test_metrics.items()
         ]
-        sections.append("<h2>Holdout Metrics</h2>")
+        sections.append("<h2>Final Test Metrics</h2>")
         sections.append(_html_table(["Metric", "Value"], ho_rows, ["left", "right"]))
+
+    if diag.selection_metrics:
+        selection_rows = []
+        for name, raw_summary in diag.selection_metrics.items():
+            if not isinstance(raw_summary, dict):
+                continue
+            mean = raw_summary.get("mean")
+            stddev = raw_summary.get("stddev")
+            if isinstance(mean, int | float) and isinstance(stddev, int | float):
+                selection_rows.append([name, f"{float(mean):.4f}", f"{float(stddev):.4f}"])
+        if selection_rows:
+            sections.append("<h2>Validation Selection Metrics</h2>")
+            sections.append(
+                _html_table(
+                    ["Metric", "Weighted Mean", "Std. Dev."],
+                    selection_rows,
+                    ["left", "right", "right"],
+                )
+            )
+
+    if diag.tuning:
+        tuning = diag.tuning
+        metric = str(tuning["metric"])
+
+        def tuning_number(field: str) -> str:
+            value = tuning[field]
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError(f"tuning {field} must be numeric")
+            return f"{float(value):.4f}" if math.isfinite(float(value)) else "N/A"
+
+        tuning_rows = [
+            ["Selection metric", metric],
+            ["Direction", str(tuning["direction"])],
+            [f"Baseline {metric}", tuning_number("baseline_objective")],
+            [f"Winning {metric}", tuning_number("winner_objective")],
+            ["Improvement", tuning_number("improvement")],
+            ["Winning trial index", str(tuning["winner_trial_index"])],
+            ["Trials", str(tuning["trial_count"])],
+            ["Total fits", str(tuning["total_fit_count"])],
+            ["Final tree count", str(tuning["final_tree_count"])],
+            [
+                "Best sampled parameters",
+                json.dumps(
+                    tuning.get("best_sampled_params", {}),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ],
+        ]
+        sections.append("<h2>Hyperparameter Tuning</h2>")
+        sections.append(
+            _html_table(
+                ["Property", "Value"],
+                tuning_rows,
+                ["left", "left"],
+            )
+        )
 
     # --- Loss curve ---
     if diag.loss_history:

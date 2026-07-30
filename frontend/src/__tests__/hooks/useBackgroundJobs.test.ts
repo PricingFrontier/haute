@@ -28,6 +28,7 @@ import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
 import type { ExploreProgress, SolveProgress, TrainProgress } from "../../stores/useNodeResultsStore.ts"
 import type { ExploreCacheReport } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
+import { makeTrainResult } from "../../test-utils/factories.ts"
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -294,14 +295,13 @@ describe("useBackgroundJobs", () => {
     it("polls and completes a train job when API returns completed status", async () => {
       const mockGetStatus = vi.mocked(getTrainStatus)
 
-      const trainResult = {
-        status: "completed",
-        metrics: { rmse: 0.05 },
+      const trainResult = makeTrainResult({
+        final_test_metrics: { rmse: 0.05 },
         feature_importance: [],
         model_path: "/m.pkl",
-        train_rows: 100,
-        validation_rows: 20,
-      }
+        development_rows: 100,
+        final_test_rows: 20,
+      })
       mockGetStatus.mockResolvedValueOnce(
         makeTrainProgress({ status: "completed", progress: 1.0, result: trainResult }),
       )
@@ -316,7 +316,7 @@ describe("useBackgroundJobs", () => {
 
       const state = useNodeResultsStore.getState()
       expect(state.trainResults["t1"]).toBeDefined()
-      expect(state.trainResults["t1"].result.metrics.rmse).toBe(0.05)
+      expect(state.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.05)
       expect(state.trainJobs["t1"]).toBeUndefined()
     })
 

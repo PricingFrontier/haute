@@ -4,13 +4,15 @@
 
 | File | Responsibility |
 |---|---|
-| `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `SplitConfig`, `generate_training_script`, `log_experiment`. |
+| `src/haute/modelling/__init__.py` | Public API surface: `FitResult`, `MLflowLogResult`, `TrainingJob`, `TrainResult`, `generate_training_script`, `log_experiment`. |
 | `src/haute/modelling/_algorithms.py` | `BaseAlgorithm` ABC, `CatBoostAlgorithm`, `ALGORITHM_REGISTRY`, memory-checkpoint helpers, CatBoost `Pool` construction, GPU fit-thread lifecycle. |
 | `src/haute/modelling/_rustystats.py` | `GLMAlgorithm` implementing `BaseAlgorithm` via RustyStats; GLM-only diagnostics (`coefficients_table`, `relativities`, `fit_statistics`, `glm_diagnostics`); `estimate_glm_dispersion()` profile-likelihood estimation; `_resolve_glm_terms()` term resolution. |
-| `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare data, split, train, compute metrics, save artifacts, and optionally log to MLflow; also defines `TrainResult` and the intermediate stage types. |
-| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `training_objective_issue`, `default_metrics`). |
+| `src/haute/modelling/_training_job.py` | `TrainingJob` orchestrator — prepare one eligible source, persist/reload its evaluation plan, run selection or tuning fits, perform one deployable final fit, compute diagnostics, stage artifacts, and optionally log once to MLflow; also defines `TrainResult` and intermediate stage types. |
+| `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
+| `src/haute/modelling/_tuning.py` | Strict bounded CatBoost tuning config/search-space validation, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
+| `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`). |
 | `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task gate returning an actionable message (or nothing when the pairing is valid), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
-| `src/haute/modelling/_split.py` | `SplitConfig`, `split_data`/`split_mask` for random/temporal/group strategies, and partition constants. |
+| `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
 | `src/haute/modelling/_signature.py` | `build_signature()` — MLflow `ModelSignature` construction with loud dtype/metadata validation, structural Date/parameterised-Datetime mapping, and the explicit no-lossy-Decimal policy. |
@@ -40,10 +42,20 @@
   `{"catboost": CatBoostAlgorithm}` unconditionally; `"glm": GLMAlgorithm` is added only
   if `import rustystats` succeeds (lazy `try/except ImportError` at module import time),
   so RustyStats stays an optional dependency.
-- **`SplitConfig`** (`_split.py`, dataclass) — `strategy: "random"|"temporal"|"group"`,
-  `validation_size`, `holdout_size`, `seed`, `date_column`/`cutoff_date` (temporal),
-  `group_column` (group). `__post_init__` validates `0 <= size < 1`,
-  `validation_size + holdout_size < 1`, and that strategy-specific fields are present.
+- **`EvaluationConfig` / `EvaluationValidationFit` / `EvaluationPlan` /
+  `EvaluationFitResult` / `EvaluationResultsArtifact` /
+  `EvaluationAggregateReport`** (`_evaluation.py`, frozen dataclasses) — the required
+  version-1 evaluation contract and its persisted evidence. Parsing rejects unknown
+  keys and inexact or non-finite values. Planning assigns final-test positions first,
+  derives every validation fit only from development positions, and records exact
+  source positions plus bounded random/group/temporal summaries. Artifact readers
+  validate membership, ordering, counts and SHA-256 links before aggregation.
+- **`TuningConfig` / `TuningTrialResult` / `TuningPlanArtifact` /
+  `TuningTrialsArtifact` / `TuningReportArtifact`** (`_tuning.py`, frozen dataclasses)
+  — the optional version-1 CatBoost tuning contract. It owns the 5–50 trial,
+  at-most-200 trial-fit limits, seeded conditional explicit-choice search-space
+  semantics, deterministic baseline/winner selection, validation-row-weighted final
+  tree count, and strict digest-linked artifacts.
 - **`FeatureContract`** (`_feature_contract.py`, frozen dataclass) — `features`,
   `feature_types`, `categorical_features`, `categorical_levels`, `target_name`,
   `target_type`, `task`, `contract_hash` (sha256 of canonical compact JSON over every
@@ -57,13 +69,22 @@
   maps both temporal families to MLflow `DataType.datetime`; it recognises
   `Decimal(...)` separately and raises the actionable unsupported-type error
   rather than falling through to an unknown type or `double`.
-- **`TrainingJob`** (`_training_job.py`) — the orchestrator. Constructor stores
+- **`TrainingJob`** (`_training_job.py`) — the orchestrator. Public-node construction
+  stores
   `name`, `data` (path/DataFrame/LazyFrame), `target`, `weight`, `exclude`,
   `feature_columns`, `fold_column`, `id_columns`, `algorithm`, `task`, `params`,
-  `split_config` (parsed from dict/`SplitConfig`/default), `metrics` (defaulted via
-  `default_metrics()` when omitted), `mlflow_experiment`, `model_name`, `output_dir`,
-  `loss_function`, `variance_power`, `offset`, `monotone_constraints`,
-  `feature_weights`, and a normalised `_declared_categorical_levels`. A contract-dtype
+  required canonical `evaluation`, optional canonical `tuning`, `metrics` (defaulted
+  via `default_metrics()` when omitted), `mlflow_experiment`, `model_name`,
+  `output_dir`, `loss_function`, `variance_power`, `offset`,
+  `monotone_constraints`, `feature_weights`, and a normalised
+  `_declared_categorical_levels`. Internal clones additionally receive an
+  `evaluation_plan`, optional validation `fit_index`, and the orchestrator's
+  precomputed `plan_source_sha256`; those arguments are never accepted from node
+  JSON. The `split` argument is a private test seam rejected by the public config
+  builder; a direct caller that omits `evaluation` stays on that internal path, and
+  supplying `evaluation` together with `split` fails instead of silently
+  ignoring either contract. Canonical `tuning` and internal `evaluation_plan` inputs
+  require an explicit canonical `evaluation`. A contract-dtype
   snapshot (`_contract_feature_dtypes`, `_contract_categorical_levels`,
   `_contract_target_dtype`, `_contract_offset_dtype`) is populated inside `_prepare_data`
   and consumed by `_save_artifacts` and `_log_to_mlflow`.
@@ -91,15 +112,13 @@
   at `rtol=atol=1e-12` with matching dtype. A C-layout conversion may enter
   production only when it is at least 20% faster and does not introduce a
   full-matrix peak allocation.
-- **`TrainResult`** (`_training_job.py`, dataclass) — the full public result: `metrics`,
-  `feature_importance`, `model_path`, `train_rows`, `validation_rows`, `features`,
-  `cat_features`, `holdout_rows`, `holdout_metrics`, `diagnostics_set`
-  (`"train"|"validation"|"holdout"`), `best_iteration`, `loss_history`, every chart's
-  underlying data (`double_lift`, `shap_summary`, `feature_importance_loss`,
-  `ave_per_feature`, `residuals_histogram`/`residuals_stats`, `actual_vs_predicted`,
-  `lorenz_curve`/`lorenz_curve_perfect`, `pdp_data`), GLM-only fields
-  (`glm_coefficients`, `glm_relativities`, `glm_fit_statistics`,
-  `glm_regularization_path`), and `diagnostics_errors: list[dict[str, str]]`.
+- **`TrainResult`** (`_training_job.py`, dataclass) — the child-internal result bundle.
+  It carries model/feature/diagnostic data plus canonical `development_rows`,
+  `final_test_rows`, `final_test_metrics`, `evaluation`, and optional `tuning`.
+  Primitive `train_rows`/`validation_rows`/`holdout_*` fields remain internal
+  final-fit plumbing. `_run_training_process_job` projects the bundle into the strict
+  public `TrainResponse`, whose result terminology is exclusively development,
+  validation/selection, and final test.
 - **Intermediate stage types** (`_training_job.py`, all dataclasses): `_PreparedData`
   (data path, feature/categorical schema snapshot), `_SplitResult` (split parquet path,
   per-partition row counts), `_TrainModelResult` (fitted model, algo instance,
@@ -151,8 +170,10 @@
 2. `TrainService.start`: locate the modelling node in the graph; merge declared
    `categorical_levels` from the node and its upstream ancestors
    (`_declared_categorical_levels_for_training`); `_validate_config` (target set,
-   algorithm registered, GLM family/link validity or CatBoost loss validity via
-   `resolve_loss_function`, then `training_objective_issue` for completeness); under
+   algorithm registered, canonical `evaluation` and optional `tuning` parsed,
+   legacy `split`/`cross_validation` rejected, GLM family/link validity or CatBoost
+   loss validity via `resolve_loss_function`, then `training_objective_issue` for
+   completeness); under
    `_start_lock`, reject if another job is already `"running"`
    (`_check_no_concurrent_jobs`), create the job record, and register its cancellation
    token; start the owned preparation thread and return `TrainResponse(status="started",
@@ -187,18 +208,20 @@
    it. Every preparation exception is consumed by the thread and persisted as a typed
    terminal job rather than escaping as an unobserved thread failure.
 4. In the child, `_run_training_process_job` reconstructs `TrainingJob` and a fresh
-   bounded `ExecutionContext`, then runs fit/evaluation/diagnostics and stages the model
-   plus per-model feature contract. It returns progress events and a validated result
-   manifest containing a bounded `TrainResponse` payload. In the parent, the supervisor
-   validates the staged pair, publishes it with rollback, rewrites `model_path` to the
-   durable destination, and transitions the job to `"completed"` with final
+   bounded `ExecutionContext`, then runs planning, selection/tuning, final fit and
+   diagnostics. It stages the model, per-model feature contract, three evaluation
+   artifacts, and—when enabled—three tuning artifacts. It returns progress events and
+   a validated result manifest containing a bounded `TrainResponse` payload. In the
+   parent, the supervisor strictly reloads and cross-checks the complete staged set,
+   publishes it with rollback, rewrites all artifact paths to durable destinations,
+   and transitions the job to `"completed"` with final
    `elapsed_seconds`. Publication and the transition share the job-store critical
    section: cancellation that wins first prevents publication, while publication
    that wins first prevents a late cancellation from relabelling the durable model.
    On Windows only, access-denied/sharing-violation failures from `os.replace`
    receive a short bounded retry. Exhaustion raises
    `TrainingArtifactPublicationError` with the source, destination, and attempt
-   count; rollback restores the previous durable pair before that typed failure
+   count; rollback restores the previous durable generation before that typed failure
    escapes. Non-contention filesystem errors are never retried or reclassified.
    Typed child,
    protocol, crash, cancellation, timeout, cleanup, and unexpected supervisor failures
@@ -215,54 +238,60 @@
    structured `error_detail` for terminal preparation failures, including the actionable
    GPU-VRAM 507 payload.
 
-### `TrainingJob.run()` pipeline (used by live training and direct/test callers)
+### Canonical `TrainingJob.run()` pipeline
 
-1. **`_prepare_data`** — reuse an already-sunk parquet path directly, or collect a
-   supplied DataFrame/LazyFrame and write it to a temp parquet; validate required
-   columns and the target/task pairing (`training_target_task_issue` — a continuous or
-   non-classifiable target under `task="classification"` raises the same actionable
-   `ValueError` the route gate uses, covering the CLI and exported-script paths);
-   count and, when the run owns the input, filter out null-target rows into a
-   second "clean" temp parquet; `_derive_features` (explicit `feature_columns`, or all
-   columns minus target/weight/offset/fold/id/split-key columns/exclude, with
-   categorical features detected from Polars dtype); snapshot feature dtypes,
-   categorical levels, target dtype, and offset dtype for the contract.
-2. **GLM term narrowing** (`TrainingJob.run`, algorithm == `"glm"` only) — if `terms`
-   were configured, narrow `features`/`cat_features` to just the term columns (raising
-   if a term names a column absent from the data, or if narrowing leaves zero
-   features).
-3. **`_split_data`** — compute an `Int8` partition mask via `split_mask` for the
-   configured strategy; sink the original data plus a `_partition` column to a new
-   split parquet via `bounded_sink`; frees the prepared-data temp file once consumed.
-4. **`_train_model`** — resolve the algorithm class from `ALGORITHM_REGISTRY`; resolve
-   CatBoost's `loss_function` (GLM's equivalent config already lives in `params`); read
-   the train (and validation, if present) partitions with an algorithm-appropriate
-   column projection (`_glm_select_columns` / `_catboost_select_columns` via
-   `_scan_with_columns`); GLM calls `algo.fit(train_df, ...)` on DataFrames directly;
-   CatBoost extracts label/weight/offset arrays, builds `Pool`s via `_build_pool`
-   (float32 downcast, categorical-index mapping, explicit feature-name pinning so a
-   reloaded `.cbm` scores by name, not position), then fits.
-5. **`_compute_metrics`** — mandatory `algo.feature_importance(model)`; select the
-   diagnostics partition by precedence holdout > validation > train; read it once;
-   compute primary metrics with offset-inclusive predictions (a `ValueError` from
-   mandatory metric computation is re-raised with the evaluation set, target column,
-   task, and requested metric names wrapped around the library error, so a bare
-   sklearn message never crosses the worker boundary); if the diagnostics set is
-   holdout, separately re-read validation to report both sets' metrics; then double
-   lift, AvE-per-feature, optional SHAP / `LossFunctionChange` importance (each
-   individually try/excepted into `diagnostics_errors`), residuals
-   histogram/scatter/Lorenz curve, optional PDP (raises only if *every* feature's PDP
-   fails), optional GLM-specific diagnostics probed via `hasattr`; frees the
-   diagnostics DataFrame and unlinks the split parquet.
-6. **`_save_artifacts`** — write the native model file
-   (`.cbm`/`.rsglm`/`.model` from `_MODEL_EXT_MAP`); when features are supplied, build
-   and save the per-model `FeatureContract`.
-7. Assemble `TrainResult`; if `mlflow_experiment` is set, `_log_to_mlflow` delegates to
-   `_mlflow_log.log_experiment`, reusing the same contract-dtype snapshot for the
-   `ModelSignature`.
-8. `finally` — `_cleanup_owned_temp_parquets` removes any run-owned temp file not
-   already consumed by the normal flow, so an abort or cancellation anywhere in the
-   pipeline cannot leak multi-GB files into the OS temp directory.
+This pipeline is selected by the explicit canonical `evaluation` supplied by every
+live modelling-node and exported-script call. Direct/test callers that deliberately
+omit it retain the constructor-only legacy split/CV pipeline described above.
+
+1. **Prepare one eligible source** — `_prepare_data` reuses an already-sunk parquet or
+   materialises a supplied frame, validates required columns and the target/task
+   pairing (`training_target_task_issue` — a continuous or non-classifiable target
+   under `task="classification"` raises the same actionable `ValueError` the route
+   gate uses, covering the CLI and exported-script paths), removes null-target rows,
+   derives the final feature set and schema snapshot, and applies GLM term narrowing
+   and monotonicity validation once before planning.
+2. **Plan once** — `_build_evaluation_plan` reads only the target or strategy key
+   columns needed for planning, computes the prepared-source digest, and calls
+   `generate_evaluation_plan`. `_run_evaluation` saves then strictly reloads
+   `{model}.evaluation-plan.json` against that digest before any fit begins.
+   Internal clones reuse that once-computed digest instead of re-hashing the
+   source for every selection or trial fit; the orchestrator re-hashes the
+   prepared source one more time immediately before the deployable final fit.
+3. **Run selection evidence** — without tuning, each validation fit is an internal
+   clone carrying the same plan and `fit_index`. `run_evaluation_fit` uses
+   `EvaluationPlan.selection_mask`, trains only that partition, computes configured
+   metrics, and returns `EvaluationFitResult`; it never saves a deployable model,
+   feature contract, MLflow run, SHAP/PDP, or full diagnostics. No-validation performs
+   zero selection fits.
+4. **Run bounded tuning when configured** — `_run_tuning_trials` writes/reloads the
+   tuning plan, uses one seeded Optuna `TPESampler` through sequential ask/tell, runs
+   every baseline/sampled candidate on the exact same validation fits, persists every
+   trial, selects the deterministic winner, derives its validation-row-weighted tree
+   count, and produces final parameters with validation-only early-stop controls
+   removed.
+5. **Persist selection results** — `_run_evaluation` writes and strictly reloads
+   `{model}.evaluation-results.json`, aggregates only from that reloaded evidence, and
+   writes/reloads `{model}.evaluation-report.json`. Every summary metric is weighted by
+   validation rows and linked to the exact plan/results digests.
+6. **Perform one final fit** — an internal clone uses
+   `EvaluationPlan.final_mask`: every development row is training data and final-test
+   rows, if any, occupy the internal holdout partition. `_train_model` resolves the
+   algorithm and projections; `_compute_metrics` reads the chosen diagnostics
+   partition once and computes primary metrics plus optional diagnostics (a
+   `ValueError` from mandatory metric computation is re-raised with the evaluation
+   set, target column, task, and requested metric names wrapped around the library
+   error, so a bare sklearn message never crosses the worker boundary). The outer
+   orchestrator maps internal partition names to public `development`/`final_test`
+   labels, attaches the evaluation/tuning reports, and saves the native model plus
+   feature contract.
+7. **Log once, after evidence is attached** — when an MLflow experiment is configured,
+   the outer orchestration calls `_log_to_mlflow` once with selected final parameters,
+   canonical result labels, evaluation/tuning summaries and artifact paths, reusing the
+   same feature-contract dtype snapshot for the `ModelSignature`.
+8. **Clean up on every path** — cancellation checkpoints surround planning, each fit,
+   persistence, final fit and publication progress. `finally` removes all run-owned
+   parquets and any staged evaluation/tuning artifacts from a failed child run.
 
 ### Script export
 
@@ -427,15 +456,27 @@ input preparation.
 
 ## Edge cases and invariants
 
-- Splitting an empty DataFrame raises `ValueError` (`split_data`/`split_mask`).
-- A temporal split with any null dates in the date column raises `ValueError` naming
-  the null count (`_require_no_null_dates`) — the previous behaviour silently routed
-  null-date rows into validation (mask path) or dropped them (split path), both biased
-  because nulls cluster; the current policy requires the caller to filter/impute first.
-- A group split forces at least one group into validation/test when the hash
-  assignment happened to place zero groups there and more than one group exists.
-- `SplitConfig.__post_init__` rejects `validation_size + holdout_size >= 1` at
-  construction time, before any data is touched.
+- Planning an empty eligible source, or any requested empty development,
+  validation, final-test, group, class or temporal partition, raises before fitting.
+- Temporal evaluation rejects null/unparseable dates with the invalid-row count,
+  keeps equal dates together, requires a single-validation boundary before the
+  final-test boundary, and gives every expanding-window fit strictly earlier training
+  dates than validation dates.
+- Random classification planning is target-stratified. It reports class counts and
+  the minimum required rows when a requested partition/fold cannot contain every
+  class; random regression remains seeded but unstratified.
+- Group planning canonicalises keys, never divides a group between memberships, and
+  greedily balances seeded groups toward requested row counts. Too few groups for the
+  requested test/validation structure fails instead of leaking or creating an empty
+  fit.
+- `EvaluationConfig.from_plain_data` rejects unknown versions/fields, Boolean numeric
+  values, non-finite/out-of-range fractions, invalid strategy-specific keys, temporal
+  relative fractions, and cross-validation counts outside 2–10 before data is touched.
+- Tuning is CatBoost-only, requires validation, includes its baseline in 5–50 trials,
+  and must satisfy `trial_count * validation_fit_count <= 200`. Invalid search shapes,
+  empty/duplicate/oversized or non-finite candidate lists, reserved orchestration keys,
+  impossible/cyclic conditions, or a selection metric outside the configured metrics
+  fail before Optuna is created.
 - GLM `terms` naming a column absent from the training data raise before fitting,
   listing the missing names and a truncated sample of what is available.
 - `_build_interactions` (`_rustystats.py`) filters unset factor slots (`""`) out of an
@@ -514,10 +555,10 @@ rows/features) and retry.
   caught by `TrainingJob._compute_metrics`'s `hasattr(algo, "coefficients_table")`
   block via `_record_diag_error`; recorded in `diagnostics_errors`, never propagates to
   fail the whole run.
-- **`ValueError`** — the dominant validation error across the package: bad split
-  config, missing required columns, a target/task mismatch
+- **`ValueError`** — the dominant validation error across the package: invalid
+  evaluation/tuning evidence, missing required columns, a target/task mismatch
   (`training_target_task_issue`), an empty training DataFrame, all-non-finite metric
-  inputs, a missing offset column at predict time, GLM terms referencing absent
+  inputs, a missing offset column at predict time, or GLM terms referencing absent
   columns. A `ValueError` from mandatory metric computation in
   `TrainingJob._compute_metrics` is re-raised as a `ValueError` naming the evaluation
   set, target column, task, and requested metrics, chaining the original.
@@ -589,14 +630,26 @@ rows/features) and retry.
 
 Tests live in the flat `tests/` directory rather than mirroring the package layout:
 
-- `test_modelling.py` — the broad unit-test base for `TrainingJob`,
-  algorithms, metrics, and splits.
+- `test_modelling.py` — the broad unit-test base for `TrainingJob`, algorithms,
+  metrics, and internal partition execution.
 - `test_modelling_routes.py` — HTTP-level integration tests for every route
   in `routes/modelling.py`, including `TestDispersionEstimateEndpoint` (happy path,
   status polling, completion payload) and `TestDispersionErrorPaths` (every 400
   validation branch, worker-side failure mapping, cancellation).
 - `test_modelling_export.py` — exhaustive coverage of
   `generate_training_script` and its kwarg-rendering rules.
+- `tests/test_evaluation.py` and `tests/test_train_evaluation_config.py` — strict
+  canonical config parsing, deterministic random/group/temporal plans,
+  stratification and failure counts, membership/order invariants, digest-linked
+  artifact round trips, and validation-row-weighted aggregation.
+- `tests/test_training_evaluation.py` and
+  `tests/test_training_response_evaluation.py` — selection-only execution, one final
+  deployable fit, final-test exclusion/evaluation, public response invariants,
+  cancellation checkpoints and cleanup.
+- `tests/test_tuning.py` and `tests/test_training_tuning.py` — static search-space
+  validation, seeded conditional sampling, deterministic baseline/winner/tree-count
+  selection, fit bounds, exact plan reuse, progress, artifact trust, and candidate
+  failure visibility.
 - `test_train_config_builder.py` — unit tests for the config→kwargs builder,
   including regression coverage for the GLM-vs-CatBoost key-routing bugs it was written
   to prevent, and the Negative Binomial `theta` gate (unset fails loud, top-level
@@ -654,11 +707,9 @@ with a small number of golden-snapshot tests pinning route response shapes. GLM 
 skip cleanly when RustyStats is not installed, matching the production lazy-registration
 behaviour in `ALGORITHM_REGISTRY`.
 
-Known coverage gap: there is no single dedicated test file for `_split.py` in
-isolation — split logic (random/temporal/group strategies and mask functions) is
-exercised indirectly through `test_modelling.py`,
-`test_training_null_target_fused_split.py`, and
-`test_training_split_streaming.py` rather than one focused suite.
+The internal `_split.py` primitives remain covered through direct training tests, while
+the public evaluation contract has dedicated plan/config/orchestration suites above.
+No public node-config test treats `SplitConfig` as an accepted alternative.
 
 ## Approved change contract — canonical-only modelling artifacts
 
@@ -666,3 +717,59 @@ Under the [prerelease canonical-only format contract](../README.md#approved-chan
 training reads and writes only the current run-scoped feature contract and artifact layout. It
 does not probe for, warn about, or interpret a historical shared contract path. Result and CLI
 field names describe their current meaning rather than retaining an obsolete name.
+
+## Unified evaluation and bounded tuning
+
+The product contract and limits are defined in
+[the high-level specification](high-level.md#unified-evaluation-and-bounded-tuning).
+The implementation seams are:
+
+- `_train_config.py` is the only public node-config parser used by live training and
+  script export. It requires `evaluation`, canonicalises optional `tuning`, and rejects
+  the retired top-level `split` and `cross_validation` keys before job construction.
+- `_evaluation.py` owns exact version-1 strategy/config parsing and immutable plan,
+  results and report evidence. Writers use canonical finite JSON and atomic
+  same-directory replacement. Planning enforces group/date semantics; readers reject
+  unknown keys/versions and validate canonical source membership, ordinary-CV
+  partitioning, temporal expanding membership, counts, digests and aggregate values.
+- `_tuning.py` owns exact explicit-choice search-space validation, metric direction,
+  conditional categorical sampling, fixed/sample merge, deterministic winner/tree-count
+  rules, fit limits and the tuning plan/trials/report evidence. Trial artifacts revalidate fit metric names
+  and validation-row-weighted aggregates rather than trusting submitted summaries.
+  Their `elapsed_seconds` field is the canonical zero marker; wall-clock elapsed is
+  job metadata so repeated evidence remains byte-identical.
+- `_training_job.py` prepares one source, persists/reloads one evaluation plan, and
+  drives all selection/trial fits through `run_evaluation_fit`. The final fit alone
+  writes the model/contract, emits model loss history, and computes expensive
+  diagnostics. Tuning uses pinned Optuna 4.x with one seeded sequential TPE sampler;
+  no candidate is skipped after a fit failure.
+- `routes/_train_service.py` sends one versioned request to one supervised child for
+  the complete run. Progress carries planning, trial-fit, trial-complete, final-fit,
+  publication and completed phases with bounded one-based trial/fold indices and exact
+  fit counts. The parent remains authoritative for cancellation, timeout, admission,
+  terminal state and publication.
+- The training manifest always contains the model, feature contract and three
+  evaluation companions; tuned runs add three tuning companions. Publication verifies
+  canonical names, path containment, declared size/digest, strict artifact reloads,
+  digest links and response/artifact agreement before atomically replacing the whole
+  generation. A non-tuned replacement retires stale tuning companions in that same
+  rollback-capable transaction.
+- `schemas.py` and `frontend/src/types/trainGuards.ts` independently enforce the strict
+  terminal response: completed runs require evaluation, row/fit counts and artifact
+  digests must agree, selection/trial aggregates must recompute from persisted fits,
+  and the deterministic tuning winner/improvement must be correct. The frontend store
+  retains the canonical objects, while `SummaryTab` labels selection estimates,
+  final-test metrics, baseline/winner comparison, exact fit counts and the completed
+  job's total elapsed time separately.
+- `POST /api/modelling/estimate` calls the same planner over the same eligible rows and
+  returns only bounded counts/ranges. The editor shows this neutral exact preview once
+  enough fields are valid; malformed or incomplete configuration remains a click-time
+  validation issue rather than an estimate-warning state.
+
+Focused evidence lives in `tests/test_evaluation.py`,
+`tests/test_train_evaluation_config.py`, `tests/test_training_evaluation.py`,
+`tests/test_training_response_evaluation.py`, `tests/test_tuning.py`, and
+`tests/test_training_tuning.py`, with worker/route/export/publication integration in
+`tests/test_training_worker_protocol.py`, `tests/test_modelling_routes.py`, and
+`tests/test_modelling_export.py`. Frontend guard, config, preview, summary and progress
+suites prove the same canonical vocabulary and bounded lifecycle end to end.

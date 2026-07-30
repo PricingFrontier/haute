@@ -17,6 +17,7 @@ import { getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
+import { makeTrainResult } from "../../test-utils/factories.ts"
 
 function resetStores() {
   useNodeResultsStore.setState({
@@ -68,14 +69,13 @@ describe("useBackgroundJobs — gap tests", () => {
         lambdas: {},
         converged: true,
       }
-      const trainResult = {
-        status: "completed",
-        metrics: { rmse: 0.01 },
+      const trainResult = makeTrainResult({
+        final_test_metrics: { rmse: 0.01 },
         feature_importance: [],
         model_path: "/m.pkl",
-        train_rows: 100,
-        validation_rows: 20,
-      }
+        development_rows: 100,
+        final_test_rows: 20,
+      })
 
       // Solve: running → completed
       mockSolve.mockResolvedValueOnce({
@@ -137,7 +137,7 @@ describe("useBackgroundJobs — gap tests", () => {
       expect(state.solveResults["s1"]).toBeDefined()
       expect(state.solveResults["s1"].result.converged).toBe(true)
       expect(state.trainResults["t1"]).toBeDefined()
-      expect(state.trainResults["t1"].result.metrics.rmse).toBe(0.01)
+      expect(state.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.01)
       expect(state.solveJobs["s1"]).toBeUndefined()
       expect(state.trainJobs["t1"]).toBeUndefined()
     })

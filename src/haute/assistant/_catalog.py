@@ -114,7 +114,7 @@ _USAGE_NOTES: dict[NodeType, str] = {
     ),
     NodeType.MODELLING: (
         "Train a model from the connected frame; configure target, algorithm, "
-        "task, features, and split settings, and keep training outside the live quote path."
+        "task, features, and evaluation settings, and keep training outside the live quote path."
     ),
     NodeType.OPTIMISER: (
         "Search for better factor or quote values under an objective and "

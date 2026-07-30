@@ -12,6 +12,7 @@ import { create } from "zustand"
 export type RatingStepEditorSection = "tables" | "combined"
 export type ExplorePane = "code" | "overview" | "relationships" | "charts" | "export"
 export type ExplorePreviewPane = "preview" | "overview" | "relationships" | "charts"
+export type ModellingPane = "target" | "features" | "params" | "split" | "train"
 
 function setNodeIdEntry<T>(map: Record<string, T>, nodeId: string, value: T): Record<string, T> {
   return { ...map, [nodeId]: value }
@@ -51,6 +52,8 @@ interface UIState {
   setExplorePane: (nodeId: string, pane: ExplorePane) => void
   explorePreviewPanes: Record<string, ExplorePreviewPane>
   setExplorePreviewPane: (nodeId: string, pane: ExplorePreviewPane) => void
+  modellingPanes: Record<string, ModellingPane>
+  setModellingPane: (nodeId: string, pane: ModellingPane) => void
 
   // Hover highlight — when set, connected edges glow and unconnected nodes/edges dim
   hoveredNodeId: string | null
@@ -106,6 +109,10 @@ const useUIStore = create<UIState>()((set) => ({
   explorePreviewPanes: {},
   setExplorePreviewPane: (nodeId, pane) => set((state) => ({
     explorePreviewPanes: setNodeIdEntry(state.explorePreviewPanes, nodeId, pane),
+  })),
+  modellingPanes: {},
+  setModellingPane: (nodeId, pane) => set((state) => ({
+    modellingPanes: setNodeIdEntry(state.modellingPanes, nodeId, pane),
   })),
 
   // Hover highlight
