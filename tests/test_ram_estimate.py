@@ -2027,6 +2027,7 @@ class _FakeLibSystem:
         self._page_size = page_size
         self._page_size_kern = page_size_kern
         self._statistics_kern = statistics_kern
+        self.host_statistics64_calls = 0
         self.mach_host_self = MagicMock(return_value=99)
         self.mach_task_self = MagicMock(return_value=1)
         self.mach_port_deallocate = MagicMock(return_value=0)
@@ -2042,6 +2043,11 @@ class _FakeLibSystem:
         stats_ref: object,
         count_ref: object,
     ) -> int:
+        self.host_statistics64_calls += 1
+        # Independently pin the real mach ABI so a drifted flavor or count
+        # (which the kernel would reject or misinterpret) fails loudly here.
+        assert flavor == 4  # HOST_VM_INFO64
+        assert count_ref._obj.value == 38  # type: ignore[attr-defined]  # HOST_VM_INFO64_REV1_COUNT
         stats = stats_ref._obj  # type: ignore[attr-defined]
         stats.free_count = self._free_pages
         stats.inactive_count = self._inactive_pages
@@ -2094,9 +2100,14 @@ class TestAvailableRamDarwinPath:
             patch("builtins.open", side_effect=OSError),
             patch("os.sysconf", side_effect=ValueError, create=True),
             patch("ctypes.CDLL", return_value=fake),
+            capture_logs() as logs,
         ):
             assert available_ram_bytes() is None
         fake.mach_port_deallocate.assert_called_once()
+        unavailable_log = next(
+            event for event in logs if event.get("event") == "available_ram_unavailable"
+        )
+        assert "host_page_size" in unavailable_log["darwin_error"]
 
     def test_darwin_non_positive_mach_values_are_unavailable(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2110,6 +2121,7 @@ class TestAvailableRamDarwinPath:
             patch("ctypes.CDLL", return_value=fake),
         ):
             assert available_ram_bytes() is None
+        assert fake.host_statistics64_calls == 1
 
     def test_non_darwin_platform_does_not_probe_mach(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("sys.platform", "freebsd13")
@@ -2128,11 +2140,18 @@ class TestAvailableRamDarwinPath:
         assert unavailable_log["darwin_error"] is None
 
     @pytest.mark.skipif(sys.platform != "darwin", reason="real mach probe needs macOS")
-    def test_darwin_real_probe_returns_positive_int(self) -> None:
-        """The unmocked mach probe observes genuine availability on macOS."""
+    def test_darwin_real_probe_is_available_not_total(self) -> None:
+        """The unmocked mach probe observes availability, bounded by physical RAM."""
+        import os
+
         ram = available_ram_bytes()
         assert isinstance(ram, int)
         assert ram > 100 * 1024 * 1024
+        # Available must sit strictly below total physical memory; this is the
+        # assertion that catches a mis-read struct, wrong flavor, or a slide
+        # back to a total-capacity figure.
+        total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        assert ram < total
 
 
 # ---------------------------------------------------------------------------

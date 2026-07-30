@@ -114,13 +114,17 @@
 - **macOS available RAM** — darwin exposes neither `/proc/meminfo` nor
   `sysconf(SC_AVPHYS_PAGES)`, so `available_ram_bytes()` queries mach
   `host_statistics64` through ctypes on `libSystem`:
-  `(free_count + inactive_count) × host_page_size` — the reclaimable set
-  `vm_stat` reports, an *available* (not total) figure. The page size comes
-  from mach `host_page_size` (not `sysconf`) so page units stay consistent on
-  Apple Silicon, and the `mach_host_self` port right is deallocated after use.
-  A failed or non-positive mach probe is recorded in the
-  `available_ram_unavailable` structured log (`darwin_attempted`,
-  `darwin_error`) and yields `None` — no capacity is fabricated.
+  `(free_count + inactive_count) × host_page_size` — the free and inactive
+  page counts `vm_stat` reports, an *available* (not total) figure.
+  Compressor-held memory is not subtracted, so the value is an optimistic
+  bound; the admission OS reserve and safety factor absorb that. The page
+  size comes from mach `host_page_size` (not `sysconf`) so page units match
+  the statistics even where `sysconf` disagrees (a Rosetta-translated x86_64
+  interpreter reports 4 KiB pages while mach counts 16 KiB host pages), and
+  the `mach_host_self` port right is deallocated after use. A failed or
+  non-positive mach probe is recorded in the `available_ram_unavailable`
+  structured log (`darwin_attempted`, `darwin_error`) and yields `None` — no
+  capacity is fabricated.
 - **`ExecutionFaultPoint` / `ExecutionTelemetryEvent`** (`_execution_context.py`) —
   immutable sequenced request-local fault boundaries and schema-versioned,
   identifier-free terminal telemetry with a bounded scalar attribute allow-list.

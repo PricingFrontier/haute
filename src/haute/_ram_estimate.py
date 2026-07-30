@@ -204,21 +204,31 @@ def _clamp_available_ram_to_cgroup(host_available: int | None) -> int | None:
 
 # <mach/host_info.h> flavor selecting struct vm_statistics64.
 _DARWIN_HOST_VM_INFO64 = 4
+# Buffer size in integer_t (4-byte) words for the rev1 struct prefix below.
+# Must stay on a legal revision boundary: the kernel clamps the returned
+# count to a boundary at or below the request, so an off-boundary count
+# silently zero-fills trailing fields instead of failing.
+_DARWIN_HOST_VM_INFO64_REV1_COUNT = 38
 
 
 def _darwin_available_ram_bytes() -> int:
     """Return macOS available RAM via mach ``host_statistics64``.
 
-    Availability is ``(free_count + inactive_count) × page size`` — the
-    reclaimable set ``vm_stat`` reports, not total capacity.  The page size
-    comes from mach ``host_page_size`` so page units match the statistics on
-    Apple Silicon.  Raises on any mach failure so the caller records the error
-    instead of fabricating capacity.
+    Availability is ``(free_count + inactive_count) × page size`` — the free
+    and inactive page counts ``vm_stat`` reports, not total capacity.
+    Inactive includes dirty pages reclaimable only via compression or swap,
+    so this is an optimistic available bound; admission's OS reserve and
+    safety factor absorb that.  The page size comes from mach
+    ``host_page_size`` so page units match the statistics even where
+    ``sysconf`` disagrees (a Rosetta-translated x86_64 interpreter reports
+    4 KiB pages while mach counts 16 KiB host pages).  Raises on any mach
+    failure so the caller records the error instead of fabricating capacity.
     """
     import ctypes
 
     class VMStatistics64(ctypes.Structure):
-        # struct vm_statistics64 from <mach/vm_statistics.h>; counts are pages.
+        # rev1 prefix of struct vm_statistics64 from <mach/vm_statistics.h>
+        # (later revisions append more fields); counts are pages.
         _fields_ = [
             ("free_count", ctypes.c_uint),
             ("active_count", ctypes.c_uint),
@@ -255,8 +265,9 @@ def _darwin_available_ram_bytes() -> int:
         if kern != 0:
             raise OSError(f"host_page_size returned kern_return {kern}")
         stats = VMStatistics64()
-        # mach sizes host_info buffers in integer_t (4-byte) words.
-        count = ctypes.c_uint(ctypes.sizeof(stats) // 4)
+        if ctypes.sizeof(stats) != _DARWIN_HOST_VM_INFO64_REV1_COUNT * 4:
+            raise ValueError("vm_statistics64 prefix no longer matches the rev1 count")
+        count = ctypes.c_uint(_DARWIN_HOST_VM_INFO64_REV1_COUNT)
         kern = libsystem.host_statistics64(
             host,
             _DARWIN_HOST_VM_INFO64,
@@ -266,7 +277,12 @@ def _darwin_available_ram_bytes() -> int:
         if kern != 0:
             raise OSError(f"host_statistics64 returned kern_return {kern}")
     finally:
-        libsystem.mach_port_deallocate(libsystem.mach_task_self(), host)
+        try:
+            libsystem.mach_port_deallocate(libsystem.mach_task_self(), host)
+        except (AttributeError, OSError):
+            # A leaked host port right is preferable to discarding a good
+            # reading or masking the body's real error.
+            pass
 
     available_pages = int(stats.free_count) + int(stats.inactive_count)
     if available_pages <= 0 or page_size.value <= 0:
@@ -318,7 +334,7 @@ def available_ram_bytes() -> int | None:
         darwin_attempted = True
         try:
             return _clamp_available_ram_to_cgroup(_darwin_available_ram_bytes())
-        except (OSError, AttributeError, ValueError) as exc:
+        except (OSError, AttributeError, ValueError, ImportError) as exc:
             darwin_error = str(exc)
 
     if sys.platform == "win32":
