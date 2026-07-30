@@ -264,6 +264,12 @@ class TestPreDispatchServiceGate:
                             "algorithm": "catboost",
                             "loss_function": "Logloss",
                             "params": {"iterations": 2},
+                            "evaluation": {
+                                "schema_version": 1,
+                                "strategy": "random",
+                                "seed": 42,
+                                "validation": {"method": "single", "size": 0.2},
+                            },
                         },
                     },
                 },
