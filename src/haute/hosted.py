@@ -140,7 +140,9 @@ def create_app() -> ASGIApp:
         )
     os.environ[DISABLE_AUTH_ENV] = "1"
     # Imported here so the trust decision above is already recorded when
-    # the server module (and its middleware stack) initialises.
+    # the server module (and its middleware stack) initialises — and, in
+    # deployments that restore a bound project, after the working
+    # directory is already the restored clone.
     from haute.server import app as server_app
 
     logger.info(
