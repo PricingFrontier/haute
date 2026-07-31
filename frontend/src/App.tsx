@@ -82,6 +82,7 @@ const DivergenceModal = lazy(() => import("./components/DivergenceModal"))
 const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModal"))
 const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
 const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
+const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
@@ -1278,6 +1279,12 @@ function FlowEditor() {
       {gitModal === "milestone" && (
         <Suspense fallback={null}>
           <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {gitModal === "storage" && (
+        <Suspense fallback={null}>
+          <StorageBindModal onClose={closeGitModal} />
         </Suspense>
       )}
 

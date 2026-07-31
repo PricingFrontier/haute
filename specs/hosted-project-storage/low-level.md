@@ -2,147 +2,58 @@
 
 ## Module map
 
-The component is **not yet implemented**. Current shipped behaviour, for
-orientation:
-
-| Path | Responsibility today |
-| --- | --- |
-| `databricks_app/bootstrap.py` | Seeds a volatile `haute init` project + git repo into the container cwd on first boot; state dies with the container. |
-| `src/haute/hosted.py` | Environment-contract detection and the platform-proxy boundary; no storage awareness. |
-| `src/haute/_git.py` | Save/milestone commit machinery, `git_binary_available()`, push/fetch primitives used by existing flows. |
-
-Everything below is the approved-change design, not current behaviour.
-
-## Approved change contract
-
-**Current limitation.** A hosted session's project directory — including
-its git history — is destroyed on every redeploy, restart, or app stop.
-Saves and milestone commits are therefore not durable; there is no
-development cycle on the hosted platform.
-
-**Approved target behaviour.** The lifecycle in
-[high-level.md](high-level.md) §Behaviour: bind → restore → async
-push-on-save → nothing-on-close, gated on the hosted environment
-contract, with the invariants and failure model stated there.
-
-**Non-goals.** Multi-writer coordination or merge handling beyond loud
-non-fast-forward stop; volume (`uc::`) transport — designed below,
-explicitly deferred; MLflow persistence; any local-mode change; secret
-*creation* UX (operator attaches the secret resource out of band).
-
-### Planned module map
-
 | Path | Responsibility |
 | --- | --- |
-| `src/haute/_project_storage.py` | Binding record model + Files-API read/write; restore-at-boot (clone, branch adoption); the serialised async push queue with sync-state; askpass credential helper materialisation. |
-| `src/haute/hosted.py` | Gains `restore_project()` called from the entry point before serving; exposes storage state to the server. |
-| `src/haute/routes/git.py` (or new `routes/storage.py`) | Bind endpoint (validate remote, clone-or-init, record binding); sync-state in the working-branch readiness response; manual retry endpoint. |
-| `src/haute/_git.py` | Post-commit hook point: save + milestone commit call sites enqueue a push (no behavioural change when no binding exists). |
-| `frontend` (guards, BranchIndicator, startup modal, App gates) | New readiness field: `storage: bound / volatile / restoring`; sync chip (synced / pending *n* / failed) beside the branch indicator; bind dialog in the startup flow. |
-| `databricks_app/bootstrap.py` | Becomes: binding recorded → restore; else seed volatile (current behaviour) and mark volatile. |
-
-### Key decisions (fixed by this contract)
-
-- **Binding record**: JSON at
-  `/Volumes/<catalog>/<schema>/<state volume>/haute-apps/<app-name>/binding.json`
-  via the Files API (SDK, SP auth): `{"remote_url", "branch", "bound_by",
-  "bound_at"}`. No credential material in the record. The state volume
-  is configured via one env var (`HAUTE_STATE_VOLUME`, e.g.
-  `workspace.default.haute_data`); SP needs `READ VOLUME` +
-  `WRITE VOLUME` on it.
-- **Credential**: HTTPS remotes only. Token supplied as env
-  `HAUTE_GIT_TOKEN` from an app **secret resource**; injected into git
-  exclusively via a generated `GIT_ASKPASS` helper (0700, in the
-  container tmp dir) — never in the URL, never in `.git/config`, never
-  logged. `HAUTE_GIT_TOKEN` joins the secret-surface AST allowlist with
-  a justification, and a contract test asserts no config/log leakage.
-- **Push queue**: single background worker, FIFO, coalescing (a push
-  synchronises all local refs that matter: working branch + ledger
-  refs — reuse the ref enumeration the existing fetch/push machinery
-  uses). States: `synced`, `pending(n)`, `failed(reason class)`.
-  Enqueue on save-commit and milestone-commit; retry on next enqueue or
-  manual trigger. Failure classes: unreachable / auth / non-fast-forward
-  (terminal until user action).
-- **Boot order** (bundle entry point): refresh wheel → probe → read
-  binding → if bound: clone + adopt branch (failure ⇒ gate per failure
-  model, do NOT seed over it) → else seed volatile → serve.
-- **Environment gating**: every new surface no-ops (and hides in the UI)
-  when `databricks_app_environment()` is `None`. Local mode byte-identical.
-- **`uc::` transport (deferred design sketch)**: a git remote helper
-  shuttling `git bundle` files over the Files API to a volume path,
-  registered as transport #2 behind the same binding record
-  (`remote_url: "uc://catalog.schema.volume/path"`). Not built in v1;
-  the binding validator rejects the scheme with "not yet supported".
-
-### Failure and compatibility semantics
-
-As high-level.md §Failure model, plus: a binding written by a NEWER
-haute (unknown fields) is tolerated (ignore unknown keys); an unreadable
-or malformed binding record gates exactly like an unreachable remote
-(never silently volatile). Message shapes follow the MAGINOT
-low-context-error class and are pinned by tests.
-
-### Acceptance evidence (executable)
-
-- Unit/contract (`tests/test_project_storage.py`): binding record
-  round-trip with a stubbed Files API; clone-or-init against a local
-  **`file://` bare repo** standing in as the remote (full lifecycle:
-  bind → commit → push → simulate container death by re-restoring into a
-  fresh tmp dir → history intact); push-queue coalescing, retry, and
-  non-fast-forward terminality; askpass helper leaves no token in
-  `.git/config`, process env of child git carries no token in argv.
-- Secret backstops extended: `HAUTE_GIT_TOKEN` reviewed; response-model
-  walk stays clean (sync state exposes counts and classes, never
-  reasons' raw stderr).
-- Hosted-sim (`tests/test_hosted.py` pattern): boot with binding +
-  unreachable remote gates with the specified message; volatile session
-  requires the explicit flag.
-- Real-deploy smoke (manual, scripted steps in `databricks_app/LEARNINGS.md`):
-  bind the live app to a scratch private repo, save, `apps stop`/`start`
-  (the cheapest container death), confirm the project and history
-  restore; confirm the pending-counter path by revoking the token
-  mid-session.
-
-### Open decisions (Nick, before or during implementation)
-
-1. State volume: reuse `workspace.default.haute_data` or a dedicated
-   `haute_state` volume (cleaner grants: data volume stays read-only for
-   the SP).
-2. Are volatile sessions permitted outside testing, or does production
-   posture require a binding to serve at all?
-3. Commit identity: keep the seeded app identity, or stamp
-   `X-Forwarded-Email` (already captured in the request scope) as
-   author on save commits — natural rider on this work.
-4. Push cadence: every save (contract above) vs milestone-only with a
-   periodic background sync — contract assumes every save; flag if the
-   save frequency makes remote churn a concern.
-
-**Implementation plan**: single branch off
-`claude/haute-databricks-app-deployment-b99fca` (or main after it
-lands); order: `_project_storage.py` + tests → git hook points →
-routes/readiness → frontend → bundle boot order → real-deploy smoke.
-Verification ladder: unit → contract → hosted-sim → live smoke, gates
-green (`scripts/preflight.sh`), Codex (or fallback cross-model) review
-before PR.
+| `src/haute/_project_storage.py` | The component. Binding record (Files API), remote-URL validation, the `GIT_ASKPASS` credential helper, restore-at-boot, bind, and the background `PushQueue`. Orchestrates git but never shells out itself. |
+| `src/haute/_git.py` | Git chokepoint. Supplies `ensure_remote`, `clone_project`, `remote_has_content`, and the pre-existing `push_working_pair` that publishes the working/ledger pair atomically. |
+| `src/haute/routes/git.py` | HTTP surface: `_with_storage_state` decorates readiness, `POST /api/git/storage/bind`, `POST /api/git/storage/retry`; the milestone route enqueues a push after a successful commit. |
+| `src/haute/routes/_save_pipeline.py` | Enqueues a push after a save commit produces a SHA. |
+| `src/haute/schemas.py` | `GitStorageSync` plus the `storage` / `storage_remote` / `sync` fields on `GitWorkingBranchResponse`. |
+| `databricks_app/bootstrap.py` | Boot path: configure credentials → restore-if-bound → else seed volatile → `chdir` into the project directory before the server is imported. |
+| `frontend/src/components/BranchIndicator.tsx` | The storage/sync chip beside the branch indicator. |
+| `frontend/src/components/StorageBindModal.tsx` | The bind dialog, including the distinct restart-required state. |
+| `frontend/src/types/guards.ts`, `frontend/src/api/{types,client}.ts`, `frontend/src/stores/useGitStore.ts` | Parsing, API calls, and store actions for the above. |
+| `tests/test_project_storage.py` | Module tests, including the container-death survival scenario against a `file://` bare repo. |
+| `tests/test_storage_routes.py` | HTTP-surface tests, including the no-raw-stderr regression. |
 
 ## Key types and data structures
 
-Not yet implemented — see §Approved change contract.
+- `StorageBinding` — frozen dataclass `{remote_url, branch, bound_by, bound_at}`, serialised as JSON. `from_payload` ignores unknown keys (a record written by a newer haute must not brick an older container) and raises `StorageUnavailableError` on a malformed or remote-URL-less record.
+- `SyncStatus` — `{state: synced|pending|failed, pending: int, failure: transport|rejected|config|None, message: str|None}`. Counts and a failure CLASS plus hand-authored prose; never raw git stderr.
+- `PushQueue` — one worker thread per process, guarded by a `threading.Condition`. State: `_pending` (unpublished commits), `_blocked` (do not attempt), `_terminal` (only a manual retry clears), `_failure`/`_message`.
+- Module singletons `_queue` and `_active_binding`: one hosted container serves one project, and caching the binding keeps the frequently-polled readiness endpoint off the Files API.
+- Errors: `StorageConfigError` (actionable misconfiguration → HTTP 400) and `StorageUnavailableError` (binding store unreadable → HTTP 503), both under `StorageError(HauteError)`.
 
 ## Control flow
 
-Not yet implemented — see §Approved change contract (boot order, push
-queue).
+**Boot** (`databricks_app/app.py` → `bootstrap.ensure_project`): refresh the vendored wheel → probe → `configure_git_credentials(~/.haute-runtime)` → `restore_if_bound(project_dir)`. `restored` clones the remote and rewrites `.haute/state.json` from the binding's branch; `present` reuses an existing clone; `unbound` seeds the standard scaffold plus a local repo. The process then `chdir`s into the project directory — before `haute.server` is imported, so pipeline discovery and the file watcher see the project, not the app bundle.
+
+**Bind** (`POST /api/git/storage/bind`): validate the URL → `ensure_remote("origin", url)` → `remote_has_content`. Empty remote: `push_working_pair` first, then write the binding (a binding pointing at a remote we could not write to would promise durability the next boot cannot deliver), then activate the queue → `adopted`. Populated remote: write the binding and return `restart-required` WITHOUT activating the queue — the on-disk project is not that remote's project, so publishing from this process would push the wrong history.
+
+**Save/commit → publish**: `commit_save` (via `_save_pipeline`) and `commit_milestone` (via the route) call `enqueue_push()` after success. That bumps a counter and returns; the worker publishes the current ref state, so N queued commits collapse into one `push_working_pair`.
+
+**Failure gating**: a transport failure sets `_blocked` (cleared by the next save or a manual retry); a rejection or `GitDomainError` also sets `_terminal` (only a manual retry clears it), so a diverged remote is not hammered by every subsequent save.
 
 ## Edge cases and invariants
 
-Not yet implemented — see §Approved change contract (failure and
-compatibility semantics).
+- An unreadable, corrupt, or non-object binding record raises rather than reading as "unbound" — the invariant that stops a fresh project being seeded over durable work.
+- `remote_has_content` propagates errors: an unreachable remote must never read as "empty" and trigger an adopt that publishes over someone else's project.
+- Remote URLs are restricted to `https://` and `file://`; embedded credentials are refused (they would land in `.git/config` and every remote-tracking log line). Plain `http://` and `ssh://` are rejected.
+- The askpass helper contains no secret: it reads `HAUTE_GIT_TOKEN` from the environment at call time, is written `0700`, and answers the username prompt separately from the password prompt.
+- `enqueue` on a queue that was never started (every local session) is inert, so the save path is unchanged off the hosted platform.
+- `storage_state()` returns `unsupported` without `HAUTE_STATE_VOLUME`, which hides the whole surface in the UI rather than offering an action that cannot work.
+- The worker never holds the queue lock across a push, so it cannot deadlock against the repository mutation lock `push_working_pair` acquires.
 
 ## Error handling
 
-Not yet implemented — see high-level.md §Failure model.
+`StorageConfigError` → 400 with the setting named; `StorageUnavailableError` → 503; `GitPushRejectedError` → 409 with the structured rejection; other `GitError` → the existing `_handle_git_error` sanitiser. `_with_storage_state` never raises: storage is additive to git readiness, and a storage fault must not blank the branch indicator — it surfaces through the sync state instead. Clone and push failures log stderr server-side and return hand-authored prose, per the MAGINOT low-context-error class.
 
 ## Testing
 
-Not yet implemented — see §Acceptance evidence.
+`tests/test_project_storage.py` covers URL validation, binding-record semantics (round-trip, unknown-field tolerance, malformed and unreadable records), credential handling (token absent from the helper file, `0700`, correct answers to both git prompts), the push-queue state machine (coalescing, transport retry-on-next-save, terminal rejection, message sanitisation), and `TestContainerDeathSurvival` — bind → save → publish → restore into a fresh directory against a real `file://` bare repository, asserting the save's SHA and the resumed working branch. `tests/test_storage_routes.py` covers the HTTP surface and pins that no absolute path or raw stderr reaches the response body. Frontend behaviour is covered in `BranchIndicator.test.tsx` and `guards.contract.test.ts`.
+
+Known gaps: no test exercises a real HTTPS remote (the live smoke in `databricks_app/LEARNINGS.md` covers that path manually), and the `uc::` volume transport is unimplemented.
+
+## Approved change contract
+
+Delivered. The current limitation, target behaviour, and non-goals recorded here during design are now described in the present-tense sections above. Two items from the design remain deliberately out of scope: the `uc::` bundle transport (the binding validator rejects the scheme), and per-commit authorship from the forwarded user identity — `bound_by` records who bound the project, and request logs carry the per-request user, but commits are authored by the app identity. Both are follow-ups, not regressions.

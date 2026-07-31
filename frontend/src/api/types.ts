@@ -1197,6 +1197,20 @@ export interface UtilityDeleteResponse {
 
 export type WorkingBranchState = "git-unavailable" | "no-repository" | "unset" | "detached" | "invalid" | "divergent" | "ready"
 
+/** Whether this deployment can durably remember a bound remote at all (§ hosted storage). */
+export type StorageState = "unsupported" | "unbound" | "bound"
+
+export type SyncState = "synced" | "pending" | "failed"
+
+export type SyncFailure = "transport" | "rejected" | "config"
+
+export interface GitStorageSync {
+  state: SyncState
+  pending: number
+  failure: SyncFailure | null
+  message: string | null
+}
+
 export interface GitWorkingBranchResponse {
   working_branch: string | null
   state: WorkingBranchState
@@ -1208,6 +1222,18 @@ export interface GitWorkingBranchResponse {
   user_name: string | null
   user_email: string | null
   head_sha?: string | null
+  /** Whether this deployment can durably remember a bound remote. Optional so
+   *  older backends (and existing fixtures) that omit it still type-check; the
+   *  parser defaults it to "unsupported" (hide the storage surface). */
+  storage?: StorageState
+  storage_remote?: string | null
+  sync?: GitStorageSync | null
+}
+
+export interface GitBindStorageResponse {
+  outcome: "adopted" | "restart-required"
+  remote_url: string
+  message: string
 }
 
 export interface GitSetWorkingBranchResponse {

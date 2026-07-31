@@ -69,6 +69,19 @@ reverse proxy that adds `X-Forwarded-*` headers and a
   (PAT) only — hosted data access needs an SP-OAuth path (small,
   spec-first change; sql-connector 4.x supports credentials providers).
 
+## Third staleness layer: `databricks sync` honours .gitignore
+
+Gitignoring the vendored wheel (right for git — a 2 MB build artifact) makes
+it INVISIBLE to `databricks sync`. Source files then update on every deploy
+while the installed package silently freezes at whatever wheel the workspace
+last received — the failure looks like an `ImportError` for a module that is
+demonstrably present in the local wheel. Diagnose by comparing sizes:
+`databricks workspace list <dir>` vs the local file.
+
+Fix: `scripts/deploy.sh` imports the wheel explicitly
+(`databricks workspace import --format RAW --overwrite`) after the sync.
+Always deploy through that script while the wheel stays gitignored.
+
 ## The vendored-wheel staleness trap (hit on the graduation redeploy)
 
 Two independent layers silently keep an OLD haute running after a deploy

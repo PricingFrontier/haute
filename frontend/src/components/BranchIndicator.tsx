@@ -3,6 +3,83 @@ import { GitBranch } from "lucide-react"
 import useGitStore from "../stores/useGitStore"
 import useUIStore from "../stores/useUIStore"
 
+/** The sync/storage chip shown beside the branch indicator once a working
+ *  branch is ready (S28 durable-storage surface). Hidden entirely when this
+ *  deployment cannot remember a binding ("unsupported", e.g. every local
+ *  session) — the whole storage concept doesn't apply there. */
+function StorageChip() {
+  const status = useGitStore((s) => s.status)
+  const openModal = useGitStore((s) => s.openModal)
+  const retrySync = useGitStore((s) => s.retrySync)
+
+  if (!status || !status.storage || status.storage === "unsupported") return null
+
+  if (status.storage === "unbound") {
+    return (
+      <button
+        type="button"
+        data-testid="storage-indicator"
+        data-storage-state="unbound"
+        onClick={() => openModal("storage")}
+        className="flex items-center text-[11px] font-medium px-1.5 py-0.5 rounded-md hover-chrome"
+        style={{ color: "var(--danger)" }}
+        title="Work is lost if this app restarts — click to save it to a repository."
+      >
+        Not stored
+      </button>
+    )
+  }
+
+  const sync = status.sync
+  if (!sync || sync.state === "synced") {
+    return (
+      <span
+        data-testid="storage-indicator"
+        data-sync-state="synced"
+        className="text-[11px] font-medium px-1.5 py-0.5"
+        style={{ color: "var(--text-muted)" }}
+        title="Saves are stored durably in the bound repository."
+      >
+        Synced
+      </span>
+    )
+  }
+
+  if (sync.state === "pending") {
+    return (
+      <span
+        data-testid="storage-indicator"
+        data-sync-state="pending"
+        className="text-[11px] font-medium px-1.5 py-0.5"
+        style={{ color: "var(--text-muted)" }}
+        title="Saves not yet published to the bound repository."
+      >
+        {sync.pending} unpublished
+      </span>
+    )
+  }
+
+  return (
+    <span
+      data-testid="storage-indicator"
+      data-sync-state="failed"
+      className="flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5"
+      style={{ color: "var(--danger)" }}
+      title={sync.message ?? "Sync to the bound repository failed."}
+    >
+      {sync.message ?? "Sync failed"}
+      <button
+        type="button"
+        data-testid="storage-retry"
+        onClick={() => void retrySync()}
+        className="underline"
+      >
+        Retry
+      </button>
+    </span>
+  )
+}
+
 /**
  * Persistent toolbar indicator (S28): the working branch + the current save
  * SHA. Both the name and the SHA open the Git sidebar panel, which hosts the
@@ -162,6 +239,7 @@ export default function BranchIndicator() {
           {shortSha}
         </button>
       )}
+      <StorageChip />
     </div>
   )
 }

@@ -17,6 +17,9 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
     identity_set: true,
     user_name: "U",
     user_email: "u@x.y",
+    storage: "unsupported",
+    storage_remote: null,
+    sync: null,
     ...overrides,
   }
 }
@@ -142,5 +145,66 @@ describe("BranchIndicator", () => {
     render(<BranchIndicator />)
     fireEvent.click(screen.getByTestId("toolbar-branch-indicator"))
     expect(useGitStore.getState().modal).toBe("divergence")
+  })
+
+  describe("durable storage surface", () => {
+    it("renders nothing extra when storage is unsupported (every local session)", () => {
+      useGitStore.setState({ status: status({ storage: "unsupported" }) })
+      render(<BranchIndicator />)
+      expect(screen.queryByTestId("storage-indicator")).toBeNull()
+    })
+
+    it("shows a clickable 'Not stored' affordance when unbound", () => {
+      useGitStore.setState({ status: status({ storage: "unbound" }) })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("Not stored")
+      expect(chip).toHaveAttribute("data-storage-state", "unbound")
+      fireEvent.click(chip)
+      expect(useGitStore.getState().modal).toBe("storage")
+    })
+
+    it("shows a quiet Synced chip when bound and synced", () => {
+      useGitStore.setState({
+        status: status({
+          storage: "bound",
+          sync: { state: "synced", pending: 0, failure: null, message: null },
+        }),
+      })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("Synced")
+      expect(chip).toHaveAttribute("data-sync-state", "synced")
+    })
+
+    it("shows the unpublished count while pending", () => {
+      useGitStore.setState({
+        status: status({
+          storage: "bound",
+          sync: { state: "pending", pending: 3, failure: null, message: null },
+        }),
+      })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("3 unpublished")
+      expect(chip).toHaveAttribute("data-sync-state", "pending")
+    })
+
+    it("shows the failure message and a working retry action when failed", () => {
+      const retrySync = vi.fn()
+      useGitStore.setState({
+        status: status({
+          storage: "bound",
+          sync: { state: "failed", pending: 1, failure: "transport", message: "Could not reach the remote" },
+        }),
+        retrySync,
+      })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("Could not reach the remote")
+      expect(chip).toHaveAttribute("data-sync-state", "failed")
+      fireEvent.click(screen.getByTestId("storage-retry"))
+      expect(retrySync).toHaveBeenCalledOnce()
+    })
   })
 })

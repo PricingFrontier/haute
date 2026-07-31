@@ -69,7 +69,9 @@ import type {
   GitPushRejection,
   GitPushResponse,
   GitSetIdentityResponse,
+  GitBindStorageResponse,
   GitSetWorkingBranchResponse,
+  GitStorageSync,
   GitWorkingBranchResponse,
   IoCapabilitiesResponse,
   IoCapabilityGroup,
@@ -2458,6 +2460,35 @@ export function parseUtilityDeleteResponse(value: unknown): UtilityDeleteRespons
 
 const WORKING_BRANCH_STATES = ["git-unavailable", "no-repository", "unset", "detached", "invalid", "divergent", "ready"] as const
 
+const STORAGE_STATES = ["unsupported", "unbound", "bound"] as const
+
+const SYNC_STATES = ["synced", "pending", "failed"] as const
+
+const SYNC_FAILURES = ["transport", "rejected", "config"] as const
+
+/** Older backends omit the storage surface entirely — default to "unsupported"
+ *  (hide the surface) rather than throw, and treat `sync` as absent (null). */
+function parseGitStorageSync(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+): GitStorageSync | null {
+  const value = obj[key]
+  if (value === undefined || value === null) return null
+  const syncObj = expectPlainObject(parser, value, `field \`${key}\``)
+  return {
+    state: expectStringLiteral(parser, syncObj.state, `field \`${key}.state\``, SYNC_STATES),
+    pending: optionalNumber(parser, syncObj, "pending"),
+    failure: expectNullableStringLiteral(
+      parser,
+      syncObj.failure === undefined ? null : syncObj.failure,
+      `field \`${key}.failure\``,
+      SYNC_FAILURES,
+    ),
+    message: optionalNullableString(parser, syncObj, "message"),
+  }
+}
+
 export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchResponse {
   const obj = expectPlainObject("parseGitWorkingBranchResponse", value)
   return {
@@ -2484,6 +2515,24 @@ export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchR
     user_name: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_name"),
     user_email: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_email"),
     head_sha: optionalNullableString("parseGitWorkingBranchResponse", obj, "head_sha"),
+    storage:
+      obj.storage === undefined
+        ? "unsupported"
+        : expectStringLiteral("parseGitWorkingBranchResponse", obj.storage, "field `storage`", STORAGE_STATES),
+    storage_remote: optionalNullableString("parseGitWorkingBranchResponse", obj, "storage_remote"),
+    sync: parseGitStorageSync("parseGitWorkingBranchResponse", obj, "sync"),
+  }
+}
+
+export function parseGitBindStorageResponse(value: unknown): GitBindStorageResponse {
+  const obj = expectPlainObject("parseGitBindStorageResponse", value)
+  return {
+    outcome: expectStringLiteral("parseGitBindStorageResponse", obj.outcome, "field `outcome`", [
+      "adopted",
+      "restart-required",
+    ] as const),
+    remote_url: expectString("parseGitBindStorageResponse", obj.remote_url, "field `remote_url`"),
+    message: expectString("parseGitBindStorageResponse", obj.message, "field `message`"),
   }
 }
 

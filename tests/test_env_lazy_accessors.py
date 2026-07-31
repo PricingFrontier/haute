@@ -510,6 +510,50 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "DATABRICKS_CLIENT_SECRET",
         "os.getenv",
     ),
+    # Hosted durable storage: deployment identity and credential locations,
+    # each read per call so a container can be reconfigured without a rebuild.
+    (
+        "src/haute/_project_storage.py",
+        "<module>.state_volume_configured",
+        "HAUTE_STATE_VOLUME",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>._state_volume_root",
+        "HAUTE_STATE_VOLUME",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>._scope_name",
+        "DATABRICKS_APP_NAME",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>.resolve_project_dir",
+        "HAUTE_PROJECT_DIR",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>.configure_git_credentials",
+        "HAUTE_GIT_TOKEN",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>._assert_credential_may_reach",
+        "HAUTE_GIT_TOKEN",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>._allowed_hosts",
+        "HAUTE_GIT_ALLOWED_HOSTS",
+        "os.environ.get",
+    ),
     ("src/haute/routes/modelling.py", "<module>.mlflow_check", "DATABRICKS_HOST", "os.getenv"),
     # String, boolean, mapping, or custom validation semantics.
     (

@@ -37,6 +37,7 @@ import type {
   GitPushResponse,
   GitFastForwardResponse,
   GitBranchAwayResponse,
+  GitBindStorageResponse,
   GitCommitContext,
   GitGraphResponse,
   GitMoveResponse,
@@ -107,6 +108,7 @@ import {
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
   parseGitRemotesResponse,
+  parseGitBindStorageResponse,
   parseGitPushResponse,
   parseGitFastForwardResponse,
   parseGitGraphResponse,
@@ -1331,6 +1333,23 @@ export function setWorkingBranch(
   return post<unknown>("/api/git/working-branch", { branch, create }, options).then(
     parseGitSetWorkingBranchResponse,
   )
+}
+
+/** Bind this clone's state volume to a remote for durable storage (hosted mode only). */
+export function bindGitStorage(
+  remoteUrl: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitBindStorageResponse> {
+  return post<unknown>("/api/git/storage/bind", { remote_url: remoteUrl }, options).then(
+    parseGitBindStorageResponse,
+  )
+}
+
+/** Retry a failed sync to the bound remote and return refreshed readiness. */
+export function retryGitStorageSync(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/storage/retry", {}, options).then(parseGitWorkingBranchResponse)
 }
 
 export function setGitIdentity(

@@ -11,6 +11,7 @@ import {
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
+  parseGitBindStorageResponse,
   parseGitDeleteBranchResponse,
   parseGitMoveResponse,
   parseGitPushResponse,
@@ -1488,6 +1489,76 @@ describe("API response guards", () => {
         current_branch: "",
       }),
     ).toThrow(/expected field `state` to be one of/i)
+  })
+
+  it("defaults storage to unsupported and sync to null when an older backend omits them", () => {
+    const parsed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+    })
+    expect(parsed.storage).toBe("unsupported")
+    expect(parsed.storage_remote).toBeNull()
+    expect(parsed.sync).toBeNull()
+  })
+
+  it("parses a bound, synced storage surface", () => {
+    const parsed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage: "bound",
+      storage_remote: "https://github.com/org/repo.git",
+      sync: { state: "synced", pending: 0, failure: null, message: null },
+    })
+    expect(parsed.storage).toBe("bound")
+    expect(parsed.storage_remote).toBe("https://github.com/org/repo.git")
+    expect(parsed.sync).toEqual({ state: "synced", pending: 0, failure: null, message: null })
+  })
+
+  it("parses a failed sync with its failure kind and message", () => {
+    const parsed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage: "bound",
+      sync: { state: "failed", pending: 2, failure: "rejected", message: "Push was rejected" },
+    })
+    expect(parsed.sync).toEqual({
+      state: "failed",
+      pending: 2,
+      failure: "rejected",
+      message: "Push was rejected",
+    })
+  })
+
+  it("rejects an unknown storage state", () => {
+    expect(() =>
+      parseGitWorkingBranchResponse({
+        state: "ready",
+        current_branch: "dev",
+        storage: "bogus",
+      }),
+    ).toThrow(/expected field `storage` to be one of/i)
+  })
+
+  it("parses an adopted bind-storage response", () => {
+    const parsed = parseGitBindStorageResponse({
+      outcome: "adopted",
+      remote_url: "https://github.com/org/repo.git",
+      message: "Bound to https://github.com/org/repo.git",
+    })
+    expect(parsed).toEqual({
+      outcome: "adopted",
+      remote_url: "https://github.com/org/repo.git",
+      message: "Bound to https://github.com/org/repo.git",
+    })
+  })
+
+  it("parses a restart-required bind-storage response", () => {
+    const parsed = parseGitBindStorageResponse({
+      outcome: "restart-required",
+      remote_url: "https://github.com/org/repo.git",
+      message: "Saved. Restart the app to load this project.",
+    })
+    expect(parsed.outcome).toBe("restart-required")
   })
 
   // --- P7 remote catch-up surface: per-leg divergence, fast-forward, branch-away,

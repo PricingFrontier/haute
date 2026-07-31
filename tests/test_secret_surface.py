@@ -124,6 +124,11 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     ("deploy/_mlflow.py", "DATABRICKS_RATING_TOKEN"),
     ("assistant/_config.py", "ANTHROPIC_API_KEY"),
     ("assistant/_config.py", "OPENAI_API_KEY"),
+    # Hosted durable storage: the value reaches git ONLY through a generated
+    # GIT_ASKPASS helper that reads it from the environment at call time — it is
+    # never written into the helper file, a git config, a URL, or a log line
+    # (pinned by tests/test_project_storage.py::TestCredentialHandling).
+    ("_project_storage.py", "HAUTE_GIT_TOKEN"),
     # Local session-token machinery (owns the token by design).
     ("_local_security.py", "HAUTE_LOCAL_SESSION_TOKEN"),
     ("cli/_serve.py", "VITE_HAUTE_SESSION_TOKEN"),

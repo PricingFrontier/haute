@@ -69,9 +69,23 @@ Invariants:
   stops loudly with the divergence explained. Single-writer is the v1
   assumption, as it is for a local checkout.
 - Credentials never appear in URLs, git config, the repository, logs, or
-  API responses (extends the secret-surface backstops).
+  API responses (extends the secret-surface backstops), and never travel
+  to a host the deployment has not approved: `GIT_ASKPASS` is
+  process-wide and git offers the credential to whatever host a URL
+  names, so a token without `HAUTE_GIT_ALLOWED_HOSTS` refuses every bind
+  rather than letting a caller choose the recipient.
+- A restored session is USABLE, not merely present: the working branch
+  and its ledger exist as local refs and the session can publish again
+  without the user re-adopting a branch.
 - Local mode is untouched: every behaviour above is gated on the hosted
   environment contract.
+
+Known limitation (measured, not designed around): saves do not wait on
+the *network*, but git serialises operations per repository, so a save
+issued while a publish is in flight waits for that publish — bounded by
+the push timeout. Removing this would mean relaxing the repository
+mutation lock for the publish path, which is a change to the git
+engine's serialisation policy and deserves its own review.
 
 ## Design rationale
 

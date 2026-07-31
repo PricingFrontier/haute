@@ -10,13 +10,13 @@
  */
 import { create } from "zustand"
 
-import { getWorkingBranch } from "../api/client"
-import type { GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
+import { bindGitStorage, getWorkingBranch, retryGitStorageSync } from "../api/client"
+import type { GitBindStorageResponse, GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
 
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
 /** Which modal is open. */
-export type GitModalMode = "select" | "divergence" | "milestone"
+export type GitModalMode = "select" | "divergence" | "milestone" | "storage"
 
 /** A version being inspected read-only in the side-by-side comparison view (S11).
  *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
@@ -109,6 +109,10 @@ interface GitState {
   closeMove: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
+  /** Bind the state volume to a remote for durable storage, then refresh readiness. */
+  bindStorage: (remoteUrl: string) => Promise<GitBindStorageResponse>
+  /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
+  retrySync: () => Promise<GitWorkingBranchResponse | null>
 }
 
 const useGitStore = create<GitState>()((set, get) => ({
@@ -184,6 +188,17 @@ const useGitStore = create<GitState>()((set, get) => ({
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),
+
+  bindStorage: async (remoteUrl) => {
+    const result = await bindGitStorage(remoteUrl)
+    await get().loadStatus()
+    return result
+  },
+  retrySync: async () => {
+    const status = await retryGitStorageSync()
+    set({ status })
+    return status
+  },
 }))
 
 export default useGitStore

@@ -3,3 +3,17 @@ command: ["python", "app.py"]
 env:
   - name: HAUTE_DISABLE_LOCAL_SESSION_AUTH
     value: "1"
+  # Unity Catalog volume (catalog.schema.volume) holding this app's storage
+  # binding record. Without it the session runs volatile: work is lost when
+  # the container is replaced.
+  - name: HAUTE_STATE_VOLUME
+    value: "workspace.default.haute_state"
+  # Git credential for the bound remote. Attach as a secret resource named
+  # "git-token"; omit for public or file:// remotes.
+  # - name: HAUTE_GIT_TOKEN
+  #   valueFrom: "git-token"
+  # REQUIRED whenever HAUTE_GIT_TOKEN is set: git offers the credential to
+  # whatever host a URL names, and any app user can call the bind endpoint,
+  # so the hosts it may reach must be stated explicitly.
+  # - name: HAUTE_GIT_ALLOWED_HOSTS
+  #   value: "github.com"
