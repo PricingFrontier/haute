@@ -18,8 +18,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NoReturn
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from haute import _project_storage
 from haute._git import (
     GitDomainError,
     GitError,
@@ -51,10 +52,13 @@ from haute._git import (
 )
 from haute._logging import get_logger
 from haute.graph_utils import PipelineGraph
+from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
+    GitBindStorageRequest,
+    GitBindStorageResponse,
     GitBranchAwayRequest,
     GitBranchAwayResponse,
     GitCommitContext,
@@ -83,6 +87,7 @@ from haute.schemas import (
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
+    GitStorageSync,
     GitUndeleteRequest,
     GitUndeleteResponse,
     GitWorkingBranchesResponse,
@@ -121,6 +126,29 @@ def _handle_git_error(e: GitError) -> NoReturn:
     raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL)
 
 
+def _with_storage_state(status: GitWorkingBranchResponse) -> GitWorkingBranchResponse:
+    """Attach durable-storage state to a readiness response.
+
+    Never raises: storage is additive to git readiness, and a storage
+    fault must not blank the branch indicator. The failure surfaces
+    through the sync state instead.
+    """
+    binding = _project_storage.active_binding()
+    sync = _project_storage.push_queue().status()
+    return status.model_copy(
+        update={
+            "storage": _project_storage.storage_state(),
+            "storage_remote": binding.remote_url if binding is not None else None,
+            "sync": GitStorageSync(
+                state=sync.state,
+                pending=sync.pending,
+                failure=sync.failure,
+                message=sync.message,
+            ),
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/git/working-branch — readiness signal for the startup flow
 # ---------------------------------------------------------------------------
@@ -128,11 +156,12 @@ def _handle_git_error(e: GitError) -> NoReturn:
 
 @router.get("/working-branch", response_model=GitWorkingBranchResponse)
 def git_get_working_branch() -> GitWorkingBranchResponse:
-    """Six-state repository readiness, identity, and the
+    """Repository readiness, identity, durable-storage state, and the
     branches choosable as a working branch — everything the startup modal and
     toolbar indicator need in one call."""
     try:
-        return working_branch_status(Path.cwd())
+        status = working_branch_status(Path.cwd())
+        return _with_storage_state(status)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
@@ -216,12 +245,16 @@ def git_commit(body: GitCommitRequest) -> GitCommitResponse:
     route returns **409** with a structured :class:`GitMilestoneFork` body so the
     UI can warn (U4/D4). ``allow_fork`` is the user's "commit anyway" override."""
     try:
-        return commit_milestone(
+        response = commit_milestone(
             body.message,
             Path.cwd(),
             version_label=body.version_label,
             allow_fork=body.allow_fork,
         )
+        # Publish the milestone (and any ledger saves it folded in) when the
+        # project is bound to durable storage. A no-op for local sessions.
+        _project_storage.enqueue_push()
+        return response
     except GitMilestoneForkError as e:
         logger.info("git_commit_would_fork", remote=e.fork.remote)
         raise HTTPException(status_code=409, detail=e.fork.model_dump())
@@ -523,6 +556,72 @@ def git_push(body: GitPushRequest) -> GitPushResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_push_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/bind — bind this project to durable storage
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/bind", response_model=GitBindStorageResponse)
+def git_bind_storage(body: GitBindStorageRequest, request: Request) -> GitBindStorageResponse:
+    """Make this hosted project's history durable by binding it to a remote.
+
+    An empty remote adopts the project immediately and publishing goes
+    live. A populated remote records the binding and asks for a restart,
+    which lifts that project cleanly at boot rather than swapping the
+    running server's working directory underneath it."""
+    try:
+        outcome = _project_storage.bind_remote(
+            body.remote_url,
+            Path.cwd(),
+            # Platform-authenticated visitor, when hosted behind an SSO proxy.
+            bound_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
+        )
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except GitPushRejectedError as e:
+        logger.warning("storage_bind_rejected", message=e.rejection.message)
+        raise HTTPException(status_code=409, detail=e.rejection.model_dump())
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_bind_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    message = (
+        "This project is now stored on the remote — saves publish automatically."
+        if outcome == "adopted"
+        else (
+            "Binding saved. That repository already holds a project, so restart "
+            "the app to load it — this session's project is not published."
+        )
+    )
+    return GitBindStorageResponse(
+        outcome=outcome,
+        remote_url=_project_storage.validate_remote_url(body.remote_url),
+        message=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/retry — retry a failed publication now
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/retry", response_model=GitWorkingBranchResponse)
+def git_retry_storage_sync() -> GitWorkingBranchResponse:
+    """Retry publishing after a failure, returning the refreshed readiness."""
+    _project_storage.push_queue().retry_now()
+    try:
+        return _with_storage_state(working_branch_status(Path.cwd()))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_retry_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 

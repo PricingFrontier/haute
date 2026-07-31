@@ -225,7 +225,13 @@ class SavePipelineService:
         from haute import _git
 
         try:
-            return _git.commit_save(rel_paths, working, cwd=self._root)
+            sha = _git.commit_save(rel_paths, working, cwd=self._root)
+            if sha is not None:
+                # Publish to durable storage when bound; no-op otherwise.
+                from haute import _project_storage
+
+                _project_storage.enqueue_push()
+            return sha
         except _git.GitDomainError as exc:
             # Hand-authored messages (incl. guardrails) are safe verbatim.
             warnings.append(f"Changes saved; version capture failed: {exc}")

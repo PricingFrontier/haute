@@ -1907,9 +1907,35 @@ GitWorkingBranchState = Literal[
 ]
 
 
+GitStorageState = Literal["unsupported", "unbound", "bound"]
+GitSyncState = Literal["synced", "pending", "failed"]
+GitSyncFailure = Literal["transport", "rejected", "config"]
+
+
+class GitStorageSync(BaseModel):
+    """Publication state of a hosted project's durable storage.
+
+    Carries counts and a failure CLASS plus a hand-authored message — never
+    raw git stderr, which embeds remote URLs and credential material.
+    """
+
+    state: GitSyncState = "synced"
+    # Commits made locally but not yet published.
+    pending: int = 0
+    failure: GitSyncFailure | None = None
+    message: str | None = None
+
+
 class GitWorkingBranchResponse(BaseModel):
     # The branch recorded against this clone in .haute/state.json, or None.
     working_branch: str | None = None
+    # Durable-storage binding for hosted sessions; "unsupported" everywhere a
+    # binding cannot be remembered (every local session), which hides the
+    # storage surface rather than offering an action that cannot work.
+    storage: GitStorageState = "unsupported"
+    # The bound remote's URL, for display beside the sync state.
+    storage_remote: str | None = None
+    sync: GitStorageSync | None = None
     # Drives whether the startup modal fires (S27) and which variant (S14).
     state: GitWorkingBranchState = "unset"
     # Human-readable reasons when state is "invalid" (check_invariants output
@@ -1929,6 +1955,21 @@ class GitWorkingBranchResponse(BaseModel):
     identity_set: bool = True
     user_name: str | None = None
     user_email: str | None = None
+
+
+class GitBindStorageRequest(BaseModel):
+    # HTTPS repository URL; credentials come from the app's secret, never here.
+    remote_url: str
+
+
+class GitBindStorageResponse(BaseModel):
+    # "adopted": the empty remote now holds this project and publishing is
+    # live. "restart-required": the remote already holds a project, so the
+    # binding is recorded and the next boot lifts it (swapping a running
+    # server's project directory underneath it is not safe to do live).
+    outcome: Literal["adopted", "restart-required"]
+    remote_url: str
+    message: str
 
 
 class GitSetWorkingBranchRequest(BaseModel):

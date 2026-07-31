@@ -86,6 +86,11 @@ _FETCH_TIMEOUT_SECONDS: float = 10.0
 # Publication can legitimately take longer than a ref advertisement/fetch, but
 # it must still release the repository mutation lock on a wedged transport.
 _PUSH_TIMEOUT_SECONDS: float = 60.0
+# A hosted restore clones a whole project before the server accepts traffic, so
+# it is allowed materially longer than a push — but still bounded, because an
+# unreachable remote must surface as a gate, never as a container that never
+# finishes booting.
+_CLONE_TIMEOUT_SECONDS: float = 300.0
 # Per-(cwd, remote, kind) last-fetch timestamps. Keyed — not one global float —
 # so concurrent worktrees served by a single process don't share one cooldown
 # window, where one clone's fetch would starve another's (F7). ``kind`` keeps
@@ -2692,6 +2697,122 @@ def _remote_names(cwd: Path | None = None) -> list[str]:
     """Names of the configured remotes (empty when fully offline)."""
     ok, out = _run_git_ok("remote", cwd=cwd)
     return out.splitlines() if ok and out.strip() else []
+
+
+def ensure_remote(name: str, url: str, cwd: Path | None = None) -> None:
+    """Point remote *name* at *url*, adding it when absent (idempotent).
+
+    Used by hosted project storage to bind a clone to its durable remote.
+    The URL is never written into a log line: it can carry a host, a path,
+    and — for a malformed user entry — credential material.
+    """
+    _validate_ref_name(name)
+    if not url or url.strip() != url or any(char.isspace() for char in url):
+        raise GitDomainError("A remote URL must be a single non-empty token without whitespace.")
+    if name in _remote_names(cwd):
+        _run_git("remote", "set-url", name, url, cwd=cwd)
+    else:
+        _run_git("remote", "add", name, url, cwd=cwd)
+    logger.info("git_remote_bound", remote=name)
+
+
+def remote_url(name: str, cwd: Path | None = None) -> str | None:
+    """Return the configured URL for remote *name*, or ``None`` when absent."""
+    _validate_ref_name(name)
+    ok, url = _run_git_ok("remote", "get-url", name, cwd=cwd)
+    return url.strip() if ok and url.strip() else None
+
+
+def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None = None) -> None:
+    """Materialise a cloned project's managed lineage as local branches.
+
+    ``git clone`` checks out only the remote's default branch, so a restored
+    hosted project would hold the working branch and its ledger solely as
+    remote-tracking refs — which ``_rev_parse`` does not resolve. The session
+    would then report an invalid repository, show the default branch's file
+    contents rather than the user's latest saves, and fail every publish with
+    "working branch does not exist".
+
+    Creates local ``working`` and (when the remote has one) its ledger, then
+    checks out the ledger — the same shape :func:`set_working_branch` leaves
+    behind, so a restored session is indistinguishable from an adopted one.
+    """
+    _validate_ref_name(working)
+    _validate_ref_name(remote)
+    tracking = f"refs/remotes/{remote}/{working}"
+    if _rev_parse(tracking, cwd=cwd) is None:
+        raise GitDomainError(
+            f"The stored project does not contain branch '{working}'. "
+            "Its storage binding names a branch the remote no longer has."
+        )
+    _run_git("branch", "--force", working, tracking, cwd=cwd)
+
+    ledger = ledger_name(working)
+    ledger_tracking = f"refs/remotes/{remote}/{ledger}"
+    if _rev_parse(ledger_tracking, cwd=cwd) is not None:
+        # Check out the ledger: saves commit there, and a ledger re-spawned
+        # from the working tip would diverge from the published one.
+        _run_git("checkout", "-B", ledger, ledger_tracking, cwd=cwd)
+    else:
+        _run_git("checkout", working, cwd=cwd)
+    logger.info("cloned_lineage_adopted", working=working)
+
+
+def remote_has_content(remote: str, cwd: Path | None = None) -> bool:
+    """Whether *remote* advertises any object refs (i.e. is not an empty repo).
+
+    Hosted binding uses this to choose between adopting the local project
+    onto a fresh remote and lifting an existing project from a populated
+    one. Propagates :class:`GitError` when the remote cannot be inspected
+    at all — an unreachable remote must never read as "empty" and trigger
+    an adopt that would publish over someone's project.
+    """
+    _validate_ref_name(remote)
+    _, _, has_object_refs = _inspect_remote(remote, cwd=cwd)
+    return has_object_refs
+
+
+def clone_project(url: str, destination: Path, branch: str | None = None) -> None:
+    """Clone *url* into *destination*, which must not already exist.
+
+    The prompt-proof remote environment applies (``GIT_TERMINAL_PROMPT=0``
+    plus SSH ``BatchMode``) and the transport is time-bounded, so an
+    unreachable or credential-walled remote fails within
+    ``_CLONE_TIMEOUT_SECONDS`` instead of wedging a hosted boot. Raw
+    stderr is logged, never returned: clone stderr routinely embeds the
+    remote URL and any credential the caller supplied inside it.
+    """
+    if destination.exists():
+        raise GitDomainError(f"Clone destination already exists: {destination.name}")
+    if not url or any(char.isspace() for char in url):
+        raise GitDomainError("A remote URL must be a single non-empty token without whitespace.")
+    if branch is not None:
+        _validate_ref_name(branch)
+
+    cmd = ["git", "clone"]
+    if branch is not None:
+        cmd.extend(["--branch", branch])
+    cmd.extend([url, str(destination)])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_remote_env(),
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning("git_clone_timeout", seconds=_CLONE_TIMEOUT_SECONDS)
+        raise GitError(
+            f"The remote did not respond within {int(_CLONE_TIMEOUT_SECONDS)} seconds."
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        logger.warning("git_clone_failed", error=str(exc))
+        raise GitError("The clone could not be started.") from exc
+    if result.returncode != 0:
+        logger.warning("git_clone_failed", stderr=result.stderr.strip())
+        raise GitError("The remote could not be cloned.")
 
 
 def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLeg:
