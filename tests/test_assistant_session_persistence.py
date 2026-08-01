@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 import structlog.testing
 
 from haute.assistant._session import MAX_PERSISTED_SESSIONS, SessionStore
@@ -40,11 +41,66 @@ class TestWriteThrough:
         )
         assert data["id"] == session.id
         assert data["source_file"] == "rating/main.py"
-        assert data["history"] == []
+
+    def test_persisted_tool_payload_is_redacted_but_attribution_survives(self, tmp_path: Path):
+        store = _store(tmp_path)
+        session = store.create("main.py")
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "inspect"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "t1",
+                                "name": "get_node_config",
+                                "arguments": {"node": "rating"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "t1",
+                        "name": "get_node_config",
+                        "content": {
+                            "config": {"customer_name": "Ada", "api_token": "secret-value"},
+                            "base_revision": "a" * 64,
+                        },
+                        "is_error": False,
+                    },
+                ]
+            },
+        )
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "Ada" not in raw
+        assert "secret-value" not in raw
+        assert "payload_sha256" not in raw
+        data = json.loads(raw)
+        assistant = next(
+            message
+            for turn in data["history"]
+            for message in turn["messages"]
+            if message["role"] == "assistant"
+        )
+        tool = next(
+            message
+            for turn in data["history"]
+            for message in turn["messages"]
+            if message["role"] == "tool"
+        )
+        assert assistant["tool_calls"][0]["arguments"] == {"redacted": True}
+        assert tool["content"] == {
+            "redacted": True,
+            "base_revision": "a" * 64,
+        }
 
     def test_append_persists_committed_turns(self, tmp_path: Path):
         store = _store(tmp_path)
         session = store.create("rating/main.py")
+
         store.append(session, _turn("question", "answer"))
         data = json.loads(
             (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
@@ -52,6 +108,77 @@ class TestWriteThrough:
         assert len(data["history"]) == 1
         contents = [m["content"] for m in data["history"][0]["messages"]]
         assert contents == ["question", "answer"]
+
+    def test_persisted_tool_error_retains_only_approved_diagnostic_evidence(self, tmp_path: Path):
+        store = _store(tmp_path)
+        session = store.create("main.py")
+        store.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "edit"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "t1",
+                                "name": "dry_run_graph_edits",
+                                "arguments": {"ops": [{"op": "secret-op"}]},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "t1",
+                        "name": "dry_run_graph_edits",
+                        "content": {
+                            "error": {
+                                "code": "invalid_request",
+                                "message": "secret-value",
+                                "validation_path": "dry_run_graph_edits.ops[0].op",
+                                "validation_reason": "unsupported_discriminator",
+                                "value": "secret-op",
+                            }
+                        },
+                        "is_error": True,
+                    },
+                ]
+            },
+        )
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "secret-value" not in raw
+        assert "secret-op" not in raw
+        assert "payload_sha256" not in raw
+        data = json.loads(raw)
+        tool = data["history"][0]["messages"][2]
+        assert tool["content"] == {
+            "redacted": True,
+            "error": {
+                "code": "invalid_request",
+                "validation_path": "dry_run_graph_edits.ops[0].op",
+                "validation_reason": "unsupported_discriminator",
+            },
+        }
+
+    def test_credential_assignments_and_provider_keys_are_redacted_from_text(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "provider-secret-canary")
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(
+            session,
+            _turn(
+                "api_token=inline-secret",
+                "The observed key was provider-secret-canary.",
+            ),
+        )
+
+        raw = (tmp_path / "sessions" / f"{session.id}.json").read_text(encoding="utf-8")
+        assert "inline-secret" not in raw
+        assert "provider-secret-canary" not in raw
+        assert "<redacted>" in raw
 
     def test_no_storage_dir_means_no_files(self, tmp_path: Path):
         store = SessionStore()
@@ -73,6 +200,33 @@ class TestRevival:
         assert revived.source_file == "rating/main.py"
         assert [m.content for m in revived.history[0].messages] == ["hi", "hello"]
         assert not revived.lock.locked()
+
+    def test_controller_continuation_survives_restart(self, tmp_path: Path):
+        first = _store(tmp_path)
+        session = first.create("main.py")
+        first.append(
+            session,
+            {
+                "messages": [
+                    {"role": "user", "content": "add a pipeline"},
+                    {"role": "assistant", "content": "Let me inspect the example."},
+                    {
+                        "role": "controller",
+                        "content": "Continue the mutation workflow.",
+                    },
+                    {"role": "assistant", "content": "BLOCKED: invalid request."},
+                ]
+            },
+        )
+
+        revived = _store(tmp_path).lookup(session.id)
+        assert revived is not None
+        assert [message.role for message in revived.history[0].messages] == [
+            "user",
+            "assistant",
+            "controller",
+            "assistant",
+        ]
 
     def test_lru_eviction_is_invisible_with_persistence(self, tmp_path: Path):
         store = _store(tmp_path, max_live_sessions=1)
@@ -127,6 +281,34 @@ class TestCorruption:
         self._plant(tmp_path, session_id, "{not json")
         with structlog.testing.capture_logs() as logs:
             assert store.lookup(session_id) is None
+        assert any(e["event"] == "assistant_session_unreadable" for e in logs)
+
+    def test_symlinked_session_file_is_a_logged_miss(self, tmp_path: Path):
+        store = _store(tmp_path)
+        session_id = "e" * 32
+        outside = tmp_path / "outside.json"
+        outside.write_text(
+            json.dumps(
+                {
+                    "id": session_id,
+                    "source_file": "main.py",
+                    "history": [],
+                    "created_at": 1.0,
+                    "last_used": 1.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        try:
+            os.symlink(outside, sessions / f"{session_id}.json")
+        except OSError:
+            pytest.skip("file symlinks are unavailable on this platform")
+
+        with structlog.testing.capture_logs() as logs:
+            assert store.lookup(session_id) is None
+
         assert any(e["event"] == "assistant_session_unreadable" for e in logs)
 
     def test_invalid_history_shape_is_a_logged_miss(self, tmp_path: Path):

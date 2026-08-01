@@ -1798,6 +1798,34 @@ class TestExtractSourceUserCode:
         )
         assert _extract_source_user_code(body) == ""
 
+    def test_canonical_direct_return_loader_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute.graph_utils import resolve_data_input_from_config\n"
+            "    return resolve_data_input_from_config(\n"
+            '        "config/data_input/input.json",\n'
+            "        base_dir=Path(__file__).parent,\n"
+            "    )"
+        )
+
+        assert _extract_source_user_code(body) == ""
+
+    def test_project_root_generated_loader_is_not_user_code(self):
+        body = (
+            "    from pathlib import Path\n"
+            "    from haute._project import get_project_root\n"
+            "    from haute.graph_utils import resolve_data_input_from_config\n"
+            "    base = Path(__file__).resolve().parent\n"
+            "    project_root = get_project_root(base)\n"
+            "    df = resolve_data_input_from_config(\n"
+            '        "config/data_input/input.json",\n'
+            "        base_dir=base, project_root=project_root,\n"
+            "    )\n"
+            "    return df"
+        )
+
+        assert _extract_source_user_code(body) == ""
+
 
 # ===========================================================================
 # _extract_scenario_expander_user_code

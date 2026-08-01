@@ -510,6 +510,9 @@ def _materialise_pipeline(tmp_path: Path, graph: PipelineGraph, input_df: pl.Dat
     from haute._config_io import collect_node_configs
     from haute.codegen import graph_to_code
 
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    (tmp_path / "haute.toml").write_text('[project]\nname = "banding-test"\n', encoding="utf-8")
+
     code = graph_to_code(graph, pipeline_name="banding_standalone")
     for rel_path, content in collect_node_configs(graph).items():
         cfg_file = tmp_path / rel_path
@@ -1243,3 +1246,27 @@ class TestStripInternalKeys:
         config = {"factors": [{"column": "x", "rules": []}]}
         result = _strip_internal_keys(config)
         assert result == config
+
+
+@pytest.mark.parametrize(
+    "factor",
+    [
+        {
+            "banding": "age",
+            "column": "proposer_age",
+            "outputColumn": "age_band",
+            "rules": [{"key": "18-25", "value": 25}],
+        },
+        {
+            "banding": "continuous",
+            "column": "proposer_age",
+            "outputColumn": "age_band",
+            "rules": [{"key": "18-25", "value": 25}],
+        },
+    ],
+)
+def test_validate_banding_config_rejects_unusable_authored_factor(factor) -> None:
+    from haute._rating import validate_banding_config
+
+    with pytest.raises(ValueError):
+        validate_banding_config({"factors": [factor]})

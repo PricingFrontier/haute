@@ -5,21 +5,30 @@
 | File | Responsibility |
 |---|---|
 | `src/haute/assistant/__init__.py` | Public package seam; re-exports only `assistant_readiness`. The FastAPI router remains in the routes package and is not re-exported here. |
-| `src/haute/assistant/_config.py` | Resolves assistant configuration: the closed `[assistant]` table from `haute.toml` (tomllib, same parsing discipline as `routes/_helpers.pipeline_dir()` — malformed TOML or unknown keys raise `ConfigError`, an absent table is a legitimate not-configured state), validates OpenAI `base_url` as a credential-free absolute HTTP(S) URL, reads API keys from `os.getenv` after server lifespan startup has loaded the project `.env` without overriding inherited variables, and probes the SDK only after config validation. Produces `AssistantConfig` (ready) or `AssistantReadiness` with a reason (not ready). It follows the same fail-loud credential posture as Databricks I/O. |
-| `src/haute/assistant/_catalog.py` | The node-type catalog the model reads: mechanical facts derived from `haute._types` (`NodeType`, `NODE_TYPE_TO_DECORATOR`), `haute._config_validation` (`VALID_KEYS`, config TypedDict shapes), `haute._config_io` (sidecar folders), and the save service (singleton policy), plus hand-authored per-type usage notes. `validate_catalog_complete()` runs at import time and raises if any canonical fact or node entry drifts; `render_catalog()` is the sole static prompt renderer. |
-| `src/haute/assistant/_assets.py` | Loader for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` materialises the complete example tree (source plus parser-relative sidecars), then reparses and renders the exemplar on demand through `routes/_helpers.parse_pipeline_to_graph` and the same formatter used by the get-pipeline tool. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured tool error listing the valid names. |
-| `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance injected into every system prompt. |
+| `src/haute/assistant/_config.py` | Resolves assistant configuration: the outer `[assistant]` table is closed to provider/model/base URL/egress and the required nested `[assistant.egress]` table is closed to trust, maximum sensitivity, and the three `allow_*` booleans. It validates endpoint/trust combinations and credential-free OpenAI URLs before SDK/key probing. The first-class Databricks mode rejects `base_url`, reads DATABRICKS_HOST / DATABRICKS_TOKEN, validates a credential-free HTTPS workspace-root host, and derives `<host>/serving-endpoints`. Other credentials come from their named environment variables. It produces `AssistantConfig`/`AssistantReadiness` including safe endpoint host, trust, and sensitivity status. |
+| `src/haute/assistant/_catalog.py` | The versioned capability registry and compatibility catalogue view. It derives mechanical node facts and resolved JSON Schemas from Haute's canonical types, config validation, config I/O, node registry, Polars I/O registry, and save validation; owns completeness-checked semantic metadata; declares the closed operation descriptors consumed by the tool layer; computes canonical manifest identity; and caches immutable manifests by installed version plus capability hash. |
+| `src/haute/assistant/_assets.py` | Loader and verifier for the assistant's packaged knowledge assets (read via `importlib.resources`): resource enumeration, `authoring_guide()`, and `example_index()` are cached; `load_example(name)` materialises the complete example tree for validation, then returns only a self-contained model-facing attribution/narrative/rendered-graph view with no inaccessible resource inventory. `validate_example_bundles()` checks closed manifests, content digests, evidence-resource roles, graph/schema assertions, positional golden output, and the declared installed-package fast checks; `materialize_example_bundle()` copies one already-validated project into an empty destination for specialist ordinary/negative checks. The guide fails loudly if missing/empty, index summaries come from the first module-docstring line, and an unknown name is a structured error listing valid names. |
+| `src/haute/assistant/_recipes.py` | Versioned immutable recipe registry and deterministic `plan_recipe` dispatcher. Each descriptor has a closed argument schema, unresolved decisions, preconditions, allowed primitive operation kinds, postconditions, linked example bundles, and stable failures. Explanation-only requests do not route to mutations, while a later explicit sequenced authoring clause retains mutation intent. Planner output is round-tripped through `_wire_ops.parse_ops`; unknown recipes and invalid arguments fail by stable code. |
+| `src/haute/assistant/_project_knowledge.py` | Source-linked project-knowledge extraction, bounded query selection, and disposable content-addressed index. Derives a saved-graph fact, a value-free `haute.toml` digest fact, and allowlisted UTF-8 documentation evidence; labels unmarked document sensitivity as restricted; records source digest/extraction version/evidence class; filters by `EgressPolicy`; and atomically refreshes metadata-only cache state under `.haute/assistant/knowledge/`. An allowlisted document that is not valid UTF-8 fails the read with a typed, project-relative error instead of silently disappearing. Dataset schemas remain a separate schema-only tool result. |
+| `src/haute/assistant/_evaluation.py` | Closed evaluation scenario/support-matrix loaders, semantic/safety scorer, repeated-trial attribution, percentile aggregation, and release-gate evaluator. The runner is injected so deterministic tests use fakes and the live-provider lane uses real provider adapters in isolated projects. It never imports or exposes held-out fixtures through production tools. |
+| `src/haute/assistant/_self_test.py` | Developer-facing live self-test harness for the configured provider. It loads a closed prompt-case format, copies each project fixture into a disposable directory, initializes the real Git mutation gate, runs the provider-neutral loop with the real tool executor, and evaluates semantic, completion, connectivity, join-port, failed-attempt, duplicate-read, and canary-leakage expectations. Reports may retain ordered tool names plus value-free status/error code/validation path/validation reason diagnostics so failed model strategies are actionable. They otherwise record only redacted identities, outcomes, reasons, graph structure, and aggregate metrics; prompts, model prose, tool arguments/results, credentials, dataset values, canary values, and content digests are not written to reports. |
+| `scripts/run_assistant_self_test.py` | Explicit credentialed CLI for listing/selecting self-test cases, loading the project's configured provider, running isolated synthetic cases, printing the redacted summary, optionally writing the redacted report, and exiting non-zero when any case fails. |
+| `src/haute/assistant/assets/examples/<id>/manifest.json` | Closed executable-bundle manifest (`schema_version=1`, stable id/version, summary, source, `fast`/`ordinary`/`negative` assertion tier, required `engineering`/`pricing` review class, and a closed-role resource inventory). Review class records the required discipline rather than asserting approval; model-validation and optimisation fixtures use `pricing`, while purely mechanical fixtures use `engineering`. Every bundle includes its project configuration, source, synthetic input, graph/schema expectations, golden request/output, boundary cases, paired prompts, and semantic assertions. Assertion files have only `target`, non-empty `required_columns`, optional `row_count`, and a non-empty closed `checks` list. Golden arrays retain production row order, so order-unstable operators are followed by an explicit stable pipeline sort rather than normalized by the verifier. Every declared resource resolves inside its bundle, exists, and matches its recorded SHA-256 digest. |
+| `src/haute/assistant/assets/authoring_guide.md` | Packaged, hand-authored Haute idiom: canonical pipeline shapes, naming and stage-chaining conventions, and do/don't guidance returned with source/version/digest/evidence attribution by the authoring-guide tool; it is not embedded in every system prompt. |
 | `src/haute/assistant/assets/examples/branched_features.py` | Packaged exemplar with parallel feature branches joined before the output stage; its module docstring supplies narrative notes and the index summary. |
 | `src/haute/assistant/assets/examples/joined_reference.py` | Packaged exemplar showing a reference-data join; parsed as data by `_assets.py`, never imported as a module. |
 | `src/haute/assistant/assets/examples/linear_pricing.py` | Packaged minimal linear-pricing exemplar; parsed through the real pipeline parser and rendered in the same compact graph shape as the get-pipeline tool. |
 | `src/haute/assistant/assets/examples/config/data_input/quotes.json`, `src/haute/assistant/assets/examples/config/data_input/regions.json` | Packaged parser-relative file-input sidecars used by the linear and joined exemplars; source decorators load them through the same generated-code helper as user pipelines. |
 | `src/haute/assistant/assets/examples/config/quote_input/quote.json` | Packaged API-input schema for the branched exemplar, including its emitted `quote` port. |
 | `src/haute/assistant/assets/examples/config/quote_response/joined_priced.json`, `src/haute/assistant/assets/examples/config/quote_response/linear_priced.json`, `src/haute/assistant/assets/examples/config/quote_response/response.json` | Packaged response-output sidecars; each carries a concrete non-empty `outputMapping`. |
-| `src/haute/assistant/_ops.py` | The graph-edit operation model and its pure application engine: add-node, update-node, rename-node, delete-node, add-edge, delete-edge, and update-preamble operations; validation (unknown targets, unknown config keys, submodel-internal targets, ambiguous edge matches); ordered application over a `PipelineGraph` copy; and deterministic position assignment for new nodes. No I/O — unit-testable graph→graph functions. |
-| `src/haute/assistant/_tools.py` | The tool registry: JSON-schema definitions and dispatch for every read and mutation tool. Dataset listing and schema preview share the files route's installed-input-extension registry and reject hidden components plus denylisted state/credential names before any directory enumeration or read. Other read tools wrap saved-graph parsing, `_assets.load_example`, and production lazy execution for `get_node_schema`. `apply_graph_edits` itself owns mutation readiness, parse → ordered ops → transactional save under `save_lock` → re-parse → `graph.update` publish. Every tool returns a structured result-or-error payload instead of raising into the loop. |
-| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral message history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, the provider-request history window, and the bounded-retention rules — an LRU cap on live sessions and a per-session stored-history cap (constants below). `resume(id, source_file)` validates the binding before touching/promoting the record. Memory is the runtime authority; when a `storage_dir` factory is supplied (the route wires `.haute/assistant/sessions/` under the project cwd), sessions write through to one JSON file per session (atomic tmp+`os.replace`) on create and on every committed turn, and `lookup` revives an unknown id from its file (fresh lock; history revalidated through the same JSON-boundary validators). Unreadable/corrupt/invalid files emit the assistant-session-unreadable warning and are treated as absent, mirroring the Git-state posture for `.haute/` files. Persist failures emit the assistant-session-persist-failed warning without failing the committed turn — the in-memory session stays intact and the reply was already delivered. Creation prunes abandoned UUID-shaped `.json.tmp` artifacts before applying the persisted-session cap. |
-| `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its two adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API) and `OpenAIProvider` (`openai` SDK, Chat Completions streaming — the OpenAI-compatible protocol Databricks serving endpoints implement — honouring the configured base URL). SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
-| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields an in-flight tool from cancellation, enforces tool/time limits, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
+| `src/haute/assistant/_wire_ops.py` | Closed provider-wire graph-edit models plus graph-independent `parse_ops` validation. It imports no assistant modules, so recipes, the capability catalogue, and the graph domain layer share one operation vocabulary without lazy imports or dependency cycles. |
+| `src/haute/assistant/_ops.py` | Pure graph-edit domain layer, re-exporting the wire vocabulary for its existing public seam: ordered graph application, assistant-authoring validation (including connected new nodes and retained Polars results), canonical snapshot/revision and semantic-diff functions, typed plan models, deterministic verification policy, postcondition evaluation, and the bounded single-use `PlanStore`. It performs no writes. |
+| `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries, edges and handles, preamble presence/digest, and singleton presence without executable source or row values. |
+| `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and graph-update publisher; transport and model tools are adapters only. |
+| `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. A routed Parquet showcase binds an omitted listing root to the safe folder explicitly named by the user and enables recursion. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn. The only provider-visible mutation tools are `dry_run_graph_edits` and `apply_graph_plan`: the model must pass the exact returned plan hash and cannot resend operations at apply time. Tool code does not own revision, save, or verification policy. |
+| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
+| `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
+| `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe route, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates after the second failed dry-run, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies graph-update fingerprint/wire-path helpers used by mutation publishing. |
@@ -46,20 +55,49 @@ orphaned halves).
 
 ## Key types and data structures
 
-- **`AssistantConfig`** (frozen dataclass, `src/haute/assistant/_config.py`): `provider: Literal["anthropic", "openai"]`,
-  `model: str`, `base_url: str | None` (OpenAI adapter only; rejected for
-  anthropic; when present it is an absolute `http|https` URL with a hostname,
+- **`CapabilityManifest`** (`_catalog.py`): immutable manifest identity plus
+  tuples of `NodeCapabilityDescriptor`, `OperationCapabilityDescriptor`, and
+  recipe descriptors.
+  `as_dict()` is the sole JSON representation and always emits
+  `schema_version`, `haute_version`, `capability_hash`,
+  `installed_capabilities`, `feature_flags`, `nodes`, `operations`, and
+  `recipes`.
+- **`NodeCapabilityDescriptor`**: a closed description of one `NodeType`.
+  `config_schema` is derived from the canonical `TypedDict` annotations
+  (including `Required`, `Literal`, unions, lists, mappings and discriminated
+  Data Input/Output branches) and has `additionalProperties: false`.
+  `required_fields`, `optional_fields`, defaults and enum values are derived
+  from that resolved schema rather than maintained separately.
+- **`OperationCapabilityDescriptor`**: a closed, versioned operation
+  declaration. `_tools.TOOL_DEFINITIONS` is projected from these descriptors,
+  so a provider-visible tool cannot exist without risk, egress, retry,
+  concurrency, timeout, payload, context-budget, stable-error and recovery
+  metadata. Its output schema requires attribution plus exactly one non-empty
+  success or error result variant; an empty object is never a valid declared
+  operation result.
+- **Manifest identity/cache**: `get_capability_manifest()` refreshes installed
+  format/engine facts, canonicalises all immutable material as UTF-8 JSON with
+  sorted object keys and compact separators, hashes it with SHA-256, and looks
+  up the frozen result by `(haute_version, capability_hash)`. Cache inspection
+  and clearing are private test seams only.
+
+- **`AssistantConfig`** (frozen dataclass, `src/haute/assistant/_config.py`): `provider: Literal["anthropic", "openai", "databricks"]`,
+  `model: str`, `base_url: str | None` (authored only for OpenAI; rejected for
+  Anthropic and Databricks; Databricks receives the derived
+  `<DATABRICKS_HOST>/serving-endpoints` value; an authored OpenAI value is an
+  absolute `http|https` URL with a hostname,
   valid port, no whitespace/control characters, and no user information),
   `api_key: str`, `max_output_tokens: int` (from `HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS`,
   default 8192 when unset; a set-but-malformed or non-positive value fails readiness with a
-  named reason rather than silently substituting the default). Only ever constructed fully
-  valid.
+  named reason rather than silently substituting the default),
+  `egress: EgressPolicy`, and safe `endpoint_host: str`. Only ever constructed fully valid.
 - **`AssistantReadiness`** (`src/haute/assistant/_config.py` → `AssistantStatusResponse`): `configured: bool`,
   `reason: str | None` (exactly one of: no `[assistant]` table, unknown provider, missing
-  model, missing API key env var — named — the provider SDK missing from the installation
+  model, missing provider credential/host env var — named — the provider SDK missing from the installation
   (a broken install: the SDKs are core dependencies), or an invalid
   `HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS` value — malformed or non-positive, named),
-  `provider`/`model` echoes, plus
+  `provider`/`model` echoes, safe `endpoint_host`, `trust`, and
+  `max_sensitivity`, plus
   `mutations_enabled: bool` / `mutations_reason: str | None` — driven by
   `haute._git.working_branch_status(...)`, the same readiness the GUI's Save gate requires.
   The state→reason mapping is owned in `src/haute/assistant/_config.py` because not every non-ready state
@@ -91,15 +129,57 @@ orphaned halves).
     `ref` (optional) names the batch-local handle later ops may use wherever a node id is
     accepted; positions are assigned by the deterministic rule below *after* the whole batch
     has applied, so parent-based placement sees the batch's final wiring.
+    The persisted id and label are both the canonical sanitised function name,
+    because source reparse cannot preserve a separate unsanitised label.
+    Adding or renaming to a sanitised id already owned by a different node is
+    rejected before the working copy can contain duplicate identities.
   - `update_node {node, config}` — shallow key merge into the existing config; an explicit
     JSON `null` value removes that key. Unknown keys for the node's type are rejected using
     the same `TypedDict`-derived allowlist machinery the sidecar writer uses (see Edge
     cases for why this is deliberately stricter than save's warn-and-drop).
-  - `rename_node {node, new_name}` · `delete_node {node}` (drops every touching edge,
+  - `rename_node {node, new_name}` (sets both id and persisted label to the
+    canonical sanitised function name) · `delete_node {node}` (drops every touching edge,
     mirroring the GUI's atomic delete) · `add_edge {source, target, source_handle?,
     target_handle?}` · `delete_edge {source, target, source_handle?, target_handle?}`
     (matched on endpoints + handles; an ambiguous match is an error, never a guess) ·
     `update_preamble {preamble}` (full replacement).
+    Every edge into an `edgeJoin` is stricter than the generic operation shape:
+    `target_handle` is mandatory, exactly one incoming edge must use `"base"` and exactly
+    one must use `"join"`, and those sources must equal the node's `baseInput` and
+    `joinInput` respectively. Handle-less joins are invalid; there is no edge-order
+    inference or compatibility path.
+- **`ProjectSnapshot` / `ProjectRevision`** (`_ops.py`): immutable saved graph
+  plus a canonical manifest of source/config/knowledge/artifact/capability
+  digests. The revision is the SHA-256 of canonical JSON for that manifest.
+- **`GraphEditPlan`**: base revision, normalized primitive operations,
+  semantic diff, affected capabilities, postconditions, egress, verification
+  tier, schema evidence, and plan hash.
+  Affected capabilities are derived from the complete change set rather than
+  the bounded presentation lists. The hash excludes timestamps and includes
+  every authority-relevant field.
+  A schema-tier plan carries a bounded, deterministic record for each verified
+  terminal (`node`, output/port shape, column count, schema SHA-256); that
+  evidence is part of the hash rather than an informational afterthought.
+- **`SemanticDiff`**: closed added/removed/renamed/updated node records,
+  added/removed edges, configuration changes, preamble change and sidecar
+  change identities. Provider-visible identity lists are capped at 50 entries
+  per category and carry closed complete-category counts, an explicit
+  `truncated` flag, and a SHA-256 over the complete untruncated semantic diff.
+  The digest covers every change identity, full edge port identity, and the
+  exact preamble digest. Post-save exactness compares that complete digest as
+  well as the visible values, so presentation bounds can never mask an
+  additional or missing structural change. Configuration changes identify
+  their node and key; the stored normalized
+  operation remains the authority for its requested value.
+- **`PlanStore`**: process-local, size- and TTL-bounded records keyed by plan
+  hash. It owns validated/applying/applied/aborted state transitions under a
+  lock. An applied record cannot return to validated. A failed pre-commit
+  application becomes aborted and cannot be applied directly again; an
+  identical fresh dry-run may replace that aborted record and reissue the same
+  deterministic hash after complete revalidation.
+- **`PipelineApplicationService`**: the only stateful assistant mutation
+  service. `inspect`, `dry_run`, `apply`, and `verify` return closed
+  Pydantic models or stable `AssistantOperationError` codes.
 - **`AssistantSession`** (`_session.py`): `id` (uuid4 hex), `source_file`, `history` — a list
   of **turn records**, each grouping one user message with every assistant message, tool
   call, and tool result it produced (the atomic unit all pruning operates on) — one
@@ -110,10 +190,144 @@ orphaned halves).
 
 ## Control flow
 
+**Capability query**: the prompt obtains
+`get_capability_manifest(compact=True)`, which returns identity, dynamic
+installed capabilities, and stable indexes. `get_capability_descriptors(kind,
+ids)` accepts only the closed kinds `node`, `operation`, and `recipe` plus
+one to twelve unique ids. It validates the complete batch before returning descriptors
+in request order, so an unknown or duplicate id is one stable
+`unsupported_capability` or `invalid_capability_query` result rather than a partial
+response. Every descriptor is materialised into ordinary JSON containers.
+`list_node_types` maps the manifest's node descriptors into its legacy response shape
+and cannot drift independently.
+
+**Recipe planning**: `plan_recipe` has a canonical flat discriminated union derived from the
+closed recipe argument schemas. For a uniquely routed current request, the provider-facing
+tool definition contains only the exact matching union branch. Unrouted provider catalogs
+omit `plan_recipe` and `dry_run_recipe_plan`; the canonical internal registry retains the
+complete union. Argument descriptions distinguish a requested graph-node name from its
+output-column name. Transform, join, and rating recipes also accept optional non-empty
+`output_name` and `output_columns` fields, which must be present together. The latter is a
+non-empty unique array of simple JSON-field column names. When present, the deterministic
+planner adds one response `output` node, a canonical JSON `outputMapping` for exactly those
+columns, and an edge from the recipe node in the same canonical batch. The standalone
+`response_output` recipe requires `source`, `output_name`, and `output_columns` and
+creates the same canonical mapping directly after the saved source. A bare output name or
+column list is a material ambiguity and fails recipe planning. A continuous-banding rule is
+a closed object requiring `op1` from `<`, `<=`, `>`, `>=`, `=`, or `==`; finite
+numeric `val1`; and a non-empty string `assignment`. The optional second bound is valid
+only when `op2` and finite numeric `val2` are both present. A categorical-banding rule
+contains exactly a non-null finite JSON scalar `value` and non-empty `assignment`. The
+rating-step recipe's provider-facing table contract is closed and positional: each
+table requires one to three unique ordered `factors`, an `output_column`, a finite numeric
+`default_value`, and non-empty entries. Every entry has exactly `factor_values` and a
+finite numeric `value`; the factor-values length must equal the table's factor count and
+each factor value must be a non-null finite JSON scalar. Optional `combined_outputs` entries
+have exactly `output_column`, `operation` from `multiply`, `add`, `min`, or `max`,
+and finite numeric `base_value`. Planning converts these snake-case positional arguments
+to canonical dynamic-key rating tables and camel-case combined outputs, runs the canonical
+rating validators, then includes the result in the `recipe_plan_hash` over recipe id,
+version, canonical operations, and postconditions.
+
+The `parquet_showcase` branch requires closed `base` and `reference` objects containing
+exactly a safe relative Parquet `path` and graph `name`, plus `join_name`, `join_key`,
+`transform_name`, and `output_name`. It accepts neither provider-authored transform code nor
+output columns. Planning emits two scanned file `dataInput` nodes, a left `edgeJoin` with
+exact base/join handles, a connected Polars node whose fixed code casts `join_key` to the
+derived `<join_key>_text` column and adds literal `showcase_stage`, and a connected canonical
+JSON response output mapping exactly `join_key`, `<join_key>_text`, and `showcase_stage`.
+Paths, names, generated code retention, mappings, primitive operations, and postconditions all
+pass their ordinary validators; planning and self-test never execute the graph or output.
+The source-bound executor retains that material by hash and replaces the previous pending
+handle for the same recipe on correction. Its provider result is the closed opaque receipt
+`recipe_id`, `version`, and `recipe_plan_hash`; canonical operations and postconditions stay
+server-side. `dry_run_recipe_plan(recipe_plan_hash)` resolves only that executor's live
+handle and invokes the ordinary graph dry-run with exactly the stored canonical recipe
+material. It rejects every additional property. A pending recipe makes primitive
+`dry_run_graph_edits` return `recipe_plan_requires_handle`; an unknown or replaced handle returns
+`recipe_plan_not_found`. The live handle clears only after a successful dedicated
+dry-run. Neither tool writes. A conservative current-request router returns a recipe id only
+when exactly one explicit domain pattern matches: a band/banding term with a continuous,
+range, breakpoint, bucket, or comparison-operator cue maps to `continuous_banding`;
+categorical/discrete banding maps to `categorical_banding`; join maps to `reference_join`;
+and the phrase rating step maps to `rating_step`. An explicit request to build, create,
+author, or make a Parquet pipeline as a showcase of multiple node types maps to
+`parquet_showcase`; its showcase cue is `showcase`, `node types`, or the closed pair
+`many`/`types` even when the intervening noun is misspelled. Its current-turn
+contract requires dataset listing and every schema when two to eight Parquet datasets are
+discovered. It forms candidate pairs with shared `quote_id`, otherwise pairs with exactly one
+shared column; ranks candidates by `quote_id` first, descending combined distinct column count
+second, and the ordered project-relative path pair last; then chooses the wider member as base
+with stable path order breaking equal widths. It supplies only the selected source/key/node-name
+arguments while the recipe owns its schema-safe transform and mapped output, and calls the recipe
+rather than asking about reversible demonstration aesthetics. It asks only when the dataset count
+is outside two to eight or no candidate pair remains. If the assistant returns
+`NEEDS_INPUT:`, route resolution scans backward only across consecutive turns whose final
+assistant text also begins `NEEDS_INPUT:` and reuses the first directly routed user request.
+Any other final response ends continuation, so an unrelated bare path cannot revive stale
+mutation authority. A standalone
+response-output request maps to `response_output`; a specialist recipe that also requests
+a response output keeps its specialist route and owns that downstream output. The loop
+appends that route id to the current turn's system contract and
+the source-bound executor independently enforces it. Primitive dry-run before that recipe
+returns `recipe_route_required`; a `plan_recipe` call for another id returns
+`recipe_route_mismatch`. Zero or multiple matches do not force a route; the provider-visible
+catalog then omits both `plan_recipe` and `dry_run_recipe_plan`, while the canonical internal
+registry retains the complete discriminated union. The router never populates recipe arguments. A closed primary-name recognizer accepts
+recipe-specific `named NAME` forms plus `add NAME:` and compares the explicit name to
+`name` (or `output_name` for standalone response output) before planning. A mismatch
+returns `recipe_name_mismatch` with the expected name and never stores a recipe plan.
+A closed material-input recognizer identifies rating-factor
+requests which explicitly say factor values or missing-factor policy are not supplied. Such a
+turn appends a mandatory `NEEDS_INPUT:` contract, omits `plan_recipe`,
+`dry_run_recipe_plan`, `dry_run_graph_edits`, and `apply_graph_plan` from provider tools,
+and makes the independent source-bound executor return `material_input_required` for any
+of those calls. Provider-side narrowing changes only the advertised input
+branch; the source-bound executor still validates the canonical schema and route.
+
+**Project-knowledge query**: `get_project_knowledge(query, limit)` builds the
+current policy-filtered view, scores only eligible items against normalized
+query terms, and returns at most ten items under a fixed aggregate character
+budget. Returned items retain source/digest/version/sensitivity/evidence
+attribution. Restricted or otherwise excluded material contributes only to an
+excluded count; its path and content never cross the tool boundary.
+
+**Plan/apply/verify**:
+
+1. `dry_run` resolves and parses the saved source, builds the snapshot and
+   revision, parses and normalizes primitive ops, applies them to a deep graph
+   copy, invokes the save service's public no-write validation (including
+   canonical Edge Join role, handle, topology, and key-form validation),
+   derives the complete changed-node set, and resolves the schema of every
+   reachable executable terminal through `flatten_graph` +
+   `execute_lazy_graph(..., enforce_contracts=True)` + `collect_schema()`.
+   No frame is collected and no sink is invoked. It then derives the semantic
+   diff/postconditions/tier, binds the closed schema evidence into the plan
+   hash, and records the immutable validated plan. A schema failure aborts the
+   dry-run and stores no plan.
+2. `apply` acquires `save_lock`, reloads the snapshot, compares its revision,
+   replays and revalidates the stored normalized operations, recomputes the
+   candidate schema evidence and plan hash, checks the plan-store state, and invokes
+   `SavePipelineService.save_graph_transactionally` exactly once.
+3. Still under the lock, it reparses, derives the actual diff/revision,
+   verifies the visible diff plus complete semantic-diff digest, postconditions,
+   and schema evidence at the declared tier, marks the plan applied, and publishes
+   one graph update. Errors before the save leave no files changed; post-save
+   verification errors report the committed state and ledger evidence without
+   retrying the mutation.
+
+`PlanStore` is bounded for plans awaiting use, but an `applying` record is a
+non-evictable lease until `complete_apply` or `abort_apply` records its
+terminal result. TTL expiry and capacity pressure may remove only
+non-applying records. If every slot is leased, a new distinct dry-run fails
+with `plan_store_busy` rather than losing authority evidence for a save that
+may already be committing.
+
 **Status** (`GET /api/assistant/status`): `_config.assistant_readiness()` — read `haute.toml`
 (malformed or unknown `[assistant]` key → `ConfigError` → 400), check
-provider/model fields, validate an OpenAI `base_url`, then probe the SDK import
-for the configured provider and check the key env var. Pure inspection, no
+provider/model fields, validate an OpenAI `base_url` or derive and validate the
+Databricks serving endpoint from `DATABRICKS_HOST`, then probe the SDK import
+for the configured provider and check its credential env var. Pure inspection, no
 provider network call. Config errors name `[assistant].<field>` but never echo
 the field value.
 
@@ -143,18 +357,56 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    pre-stream failure releases it immediately, while a started turn releases it from the
    loop/response lifecycle and appends the turn to history.
 3. Resolve the provider configuration, construct the adapter, parse the session's saved
-   pipeline, and build the provider request: system prompt (static role instructions + the `_catalog`
-   rendering + the `_assets` authoring guide + the exemplar index (name and one-line
-   summary per packaged exemplar) + project facts: pipeline name, source file,
+   pipeline, and build the provider request: system prompt (static role and
+   authority/evidence instructions + compact capability identity, an installed-I/O
+   availability summary, and node/operation/recipe ids with their canonical summaries
+   + an example-ID-only index + project facts: pipeline name, source file,
    node-count/type summary) + windowed history + the new user message + `_tools` JSON
    schemas. Fresh graph detail is deliberately *not* embedded in the system prompt — the
-   model fetches it via tools, so it is never stale mid-turn. Full exemplar bodies are
-   likewise prompt-excluded: the model pulls them through `get_example` only when relevant.
+   model fetches it via tools, so it is never stale mid-turn. The authoring
+   guide and full exemplar bodies are likewise prompt-excluded: the model pulls
+   them through `get_authoring_guide` and `get_example` only when relevant. The
+   permanent installed-I/O summary includes only group identity, input/output
+   availability, cache modes, and format names; field schemas stay out of the prompt
+   and remain available through capability tools. This keeps the routing facts useful
+   without paying for a redundant descriptor copy or burying the mutation protocol.
+   The prompt treats explicit authoring verbs such as build, add, change, update,
+   connect, remove, delete, and make as mutation intent rather than an invitation to
+   inspect and stop. When an installed deterministic recipe matches the requested
+   operation, the model must call `plan_recipe`, then pass its `recipe_plan_hash` to
+   `dry_run_recipe_plan`; it never copies the returned operations. A unique explicit
+   current-request recipe route is repeated in the per-turn system contract and enforced
+   independently by the tool executor. A failed dry run
+   permits at most one materially corrected retry. The loop counts failed calls to either
+   dry-run tool; after the second failure it appends a deterministic assistant `BLOCKED:`
+   message containing only the latest stable error code and the fact that no graph changes
+   were applied, emits `completed`, and performs no third dry-run or provider round.
 4. Stream provider events. `TextDelta` → emit `text_delta`. `ToolCallRequest` → emit
    `tool_started`; execute; append the result to the pending provider messages before
    emitting `tool_finished` (+`graph_updated` for successful mutations); on `TurnStop("tool_use")`
-   re-invoke the provider with the accumulated results; on `TurnStop("end")` emit
-   `completed` with usage and finish. If the response closes while suspended at
+   re-invoke the provider with the accumulated results. Before streaming, a closed lexical
+   classifier marks completion as required for explicit build/add/change/update/connect/
+   remove/delete/create/rename/configure/edit/author requests unless they clearly ask only
+   for explanation, and for explicit pipeline run/execute/materialise or external-write
+   requests. Classification never authorises a new action; it only prevents false completion.
+   An action word which the user explicitly identifies as untrusted reported content does not
+   create completion authority when the request starts as read-only inspection and asks only for
+   an explanation; an actual inspect-then-mutate request remains completion-required.
+   The loop also marks completion required after a graph dry-run and tracks whether
+   `apply_graph_plan` has succeeded. A successful apply is terminal after the current stream
+   reaches its stop event: any later tool-call events in that same provider round are ignored,
+   the loop records the successful apply and its result, emits the deterministic assistant
+   text `Graph changes applied successfully.`, emits `completed` with usage, and does not
+   invoke the provider again. Otherwise, when completion is required, `TurnStop("end")` is
+   accepted only when the stripped assistant text begins `NEEDS_INPUT:` or `BLOCKED:` and
+   contains non-whitespace detail after the marker. The first unqualified end appends a
+   transcript-hidden `controller` message instructing the model to continue; when dry-run
+   succeeded, it explicitly requires an immediate `apply_graph_plan` tool call with the
+   exact returned hash rather than prose. The loop re-invokes the provider, and adapters
+   encode that internal role as a user instruction. A second unqualified end emits `failed`
+   with the incomplete-mutation reason. An accepted `TurnStop("end")` emits `completed` with
+   usage and finishes.
+   If the response closes while suspended at
    `tool_started`, the round commit filters the unmatched call; closing at either later
    event retains the already-recorded result. Thus every persisted call id has exactly one
    matching result id on every generator-close boundary.
@@ -190,29 +442,40 @@ returns a fresh session with empty `history`; resume is an offer, never an error
       schema caches apply). Any engine raise — unfetched Databricks cache
       (`CacheNotFoundError`, whose message already tells the analyst to fetch), a missing
       trained artifact, invalid node code — becomes a structured tool error, sanitized
-      like every other tool failure. `apply_graph_edits` first checks
-   the mutation precondition — `working_branch_status(...)` reports `state == "ready"` (the
-   same readiness the GUI's Save gate requires), else a structured tool error carrying the
-   mapped per-state reason (the `src/haute/assistant/_config.py` table) and nothing is read or written — then
-   runs the **entire** mutation flow while holding the shared
-   `save_lock`, so no GUI save or submodel operation can interleave between its read and its
-   write: `parse_pipeline_to_graph` (thread) → `_ops.apply(graph, ops)` (pure; `$ref`s
-   resolve as their `add_node` applies; positions assigned after the full batch; any
-   validation failure returns a structured tool error before anything touches disk) → build
-   the save request **from the parsed graph** so every untargeted field (`sources`,
-   `active_source`, `preserved_blocks` — explicitly forwarded per the `_save_pipeline.py`
-   row above — name, description, and the preamble unless an op replaced it) round-trips →
-   `SavePipelineService.save_graph_transactionally` (thread) → re-parse →
-   `default_bus.publish("graph.update", GraphUpdatePayload(graph, graph_fingerprint,
-   source_file))` — the exact payload the file watcher publishes, so `/ws/sync` clients
-   receive an ordinary `graph_update` frame. The lock spans parse→apply→save→re-parse→
-   publish. The save's own writes are self-write-marked by the `Writer` callback (existing
-   service behaviour), which is precisely why the explicit publish exists: the watcher will
-   deliberately suppress the filesystem echo.
+      like every other tool failure.
+
+   Mutation dispatch is an adapter over `PipelineApplicationService`.
+   `dry_run_graph_edits` performs parse, exact evidence/revision capture, pure
+   operation replay, no-write save validation, schema-only lazy-plan validation, postcondition evaluation, semantic
+   diff construction, and immutable plan storage while holding the shared
+   save lock against concurrent GUI saves. `apply_graph_plan` then checks branch
+   readiness and, under the same lock, reloads and compares all revision sources,
+   replays the stored normalized operations, recomputes the plan hash, checks
+   one-use authority, invokes
+   `SavePipelineService.save_graph_transactionally` once, reparses, verifies the
+   actual diff, schema evidence, and postconditions, and publishes the standard graph update.
+   The provider receives no operation that combines dry-run and apply.
+
+   Before any dispatcher indexes an argument, the executor validates the
+   complete JSON value against the operation descriptor's closed input schema,
+   including required/unknown fields, discriminated operation variants,
+   bounds, enums, hash patterns, JSON-serialisability, and finite numbers.
+   For a closed object union whose branches expose a common `const`/`enum`
+   discriminator such as `op` or `kind`, validation first selects that branch.
+   A selected-branch failure therefore retains its exact safe schema path and stable
+   value-free reason instead of becoming a generic union mismatch. These two fields are
+   included in the structured error and durable redacted result, while the rejected value
+   and free-form message are not persisted. Malformed capability-descriptor queries
+   return `invalid_capability_query`; other malformed known-tool calls return
+   `invalid_request`. Neither path raises a `KeyError`, echoes the rejected
+   value, or invokes the operation.
 6. Limits: a wall-clock deadline (`HAUTE_ASSISTANT_TURN_TIMEOUT`) checked around provider
    streaming and before each tool dispatch, and a per-turn tool-call cap
    (`HAUTE_ASSISTANT_MAX_TOOL_CALLS`). Hitting either aborts the provider stream and emits
-   `failed` naming the limit.
+   `failed` naming the limit. A non-mutating tool still running at the deadline is cancelled
+   rather than drained; the interrupted call receives a matched, value-free
+   `tool_interrupted` error in durable history so the timeout remains a real response bound
+   without creating an orphaned provider call/result pair.
 7. Cancellation: the client dropping the SSE connection cancels the generator. The provider
    stream is closed immediately; no further tool is dispatched; a save/publish already in
    flight is wrapped in `asyncio.shield` so the transactional write and its broadcast always
@@ -232,14 +495,44 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   `input_json_delta` fragments accumulate per block and emit one `ToolCallRequest` at the
   block's stop; the message stop reason (`end_turn` vs `tool_use`) → `TurnStop`; usage
   from the message-level usage events.
-- **OpenAI** — `client.chat.completions.create(model=…, messages=…, tools=…, stream=True,
+- **OpenAI and Databricks** — `client.chat.completions.create(model=…, messages=…, tools=…, stream=True,
   stream_options={"include_usage": True})` plus the output budget, whose parameter name is
   target-mapped: `max_completion_tokens` against api.openai.com (required by current OpenAI
   models), but `max_tokens` whenever `base_url` is set — the parameter Databricks' Chat
   Completions contract documents. Chat Completions, not the Responses API, deliberately: it
-  is the OpenAI-compatible protocol Databricks model-serving endpoints implement, so the
-  future third backend reuses this adapter via configuration, with the parameter mapping
-  asserted in adapter tests on the emitted request for both shapes. `delta.content` →
+  is the OpenAI-compatible protocol Databricks model-serving endpoints implement.
+  `DatabricksProvider` uses the URL derived by `_config`, attributes errors as
+  `databricks`, and otherwise reuses this exact stream path; adapter tests assert the
+  emitted request for both shapes. Databricks client construction disables the OpenAI
+  SDK's internal retries. `DatabricksProvider` retries only a pre-stream SDK rate-limit
+  exception, at most twice, after one and three seconds, against the identical
+  model/endpoint request. Each retry is logged by provider identity and ordinal without
+  the raw response. A failure after a stream object exists is never retried; exhausted
+  rate limits retain the sanitized `databricks`/`rate_limit` failure.
+  Before either provider request, every canonical tool
+  input schema is projected to a portable wire schema with a sixteen-property budget per
+  tool. It retains object/array shape, property names, descriptions, common required fields,
+  single scalar types, enums, and closed-object declarations; nullable scalar unions project
+  to their non-null generation type. For a composition of closed object branches that fits
+  the remaining budget, the projection unions branch properties, combines discriminator
+  constants into one enum, recursively projects a property present in one branch or
+  identically declared across branches within the remaining budget, reduces conflicting
+  property schemas to a common portable type, intersects required fields, and remains closed. A
+  composition that does not fit remains a generic typed container. Patterns, ranges, and
+  other unsupported validation vocabulary are omitted. `_tools` independently validates
+  the decoded call against the unchanged canonical operation schema, so the projection is a
+  generation contract rather than an authorization or validation fallback. After the outer
+  function-arguments object is parsed,
+  Databricks alone performs one schema-directed compatibility pass over its top-level
+  fields: when the advertised input schema declares a field as `array` or `object` but
+  the provider returned a string, valid finite JSON with the declared container type is
+  decoded and then proceeds through the unchanged closed tool validator. Invalid JSON or a
+  decoded scalar/wrong container remains the original string; the canonical validator
+  returns `invalid_request`, nothing executes, and the model can retry in the same turn.
+  Declared string fields, nested values already carried inside a decoded container, unknown
+  tools, OpenAI, and Anthropic are never coerced. This deliberately avoids blanket recursive
+  JSON coercion or speculative repair while handling the live
+  Databricks/Qwen function-calling dialect captured on 2026-07-30. `delta.content` →
   `TextDelta`, accepting both the api.openai.com dialect (a plain string) and the
   OpenAI-compatible-gateway dialect for Anthropic models (a list of typed content parts,
   as Databricks Foundation Model APIs stream for Claude): `text` parts yield `TextDelta`s,
@@ -268,25 +561,53 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 
 - **Ops apply in order against the evolving graph** — `add_node` followed by `add_edge`
   addressing the new node via `$ref` within one batch is valid and covered by tests.
-- **The mutation is one critical section.** Parse→apply→save→re-parse→publish happens under
-  the process-wide `save_lock`; a GUI save or submodel operation serialises entirely before
-  or entirely after, never between the assistant's read and write. A GUI save landing *after*
-  an assistant save supersedes it — the same last-write-wins the product has for external
-  edits, mitigated by the frontend's clean-canvas gate and the sync banner. Base-revision
-  conflict detection on ordinary saves is deliberately out of this feature's scope (noted
-  as a candidate follow-up hardening).
+- **Revision checks and the write are one critical section.** Dry-run is serialized
+  with saves while it captures the exact saved sources. Apply reloads and verifies
+  those sources, replays the exact plan, saves, reparses, verifies, and publishes
+  under the process-wide `save_lock`. A GUI save before apply therefore produces
+  `stale_revision`; a GUI save after apply is a distinct later save.
 - **A batch is all-or-nothing**: op validation failures abort before the save; a mid-save
   failure rolls back every staged file (the save service's existing `_TouchedFile`
   snapshot/rollback); in both cases the pipeline on disk is exactly what it was.
+- **Aborted plans require fresh validation**: a pre-commit exception moves the
+  acquired plan from `applying` to `aborted`; applying that hash again returns
+  `plan_aborted`. Repeating the identical dry-run replaces the aborted record
+  after full validation, allowing a deliberate retry without minting a
+  different hash or weakening the one-use rule for applied plans.
+- **New assistant-authored nodes are connected**: after the complete ordered
+  batch is replayed, every surviving node created by an `add_node` operation,
+  tracked through later batch-local renames and deletes, must be incident to at
+  least one final edge. The check does not reject unrelated edits merely
+  because an already-saved node is disconnected.
+- **Polars results must be retained**: non-empty explicit code on a `polars`
+  node must parse as Python and contain a non-trivial assignment to `df` or an
+  explicit non-trivial return. Bare immutable expressions and `df = df` are
+  rejected because generated node code would otherwise discard their result.
+  Empty code remains the canonical pass-through.
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
   allowlist source, different strictness, both deliberate.
-- **The `[assistant]` table is closed.** Its accepted key set is exactly
-  `provider`, `model`, and `base_url`; unknown keys raise `ConfigError` naming
-  the full TOML path. A non-string `base_url` raises `ConfigError`, any
-  `base_url` on Anthropic is a not-ready reason, and OpenAI accepts only an
+- **The assistant configuration is closed.** The outer accepted key set is
+  exactly `provider`, `model`, `base_url`, and `egress`; the nested table has
+  exactly the five required ASSIST-A07 fields. Unknown or missing fields fail
+  with their full TOML path. A non-string `base_url` raises `ConfigError`, any
+  `base_url` on Anthropic or Databricks is a not-ready reason, and OpenAI accepts only an
   absolute credential-free HTTP(S) URL with a hostname and valid port.
+  Databricks requires `DATABRICKS_HOST` to be an absolute credential-free
+  HTTPS workspace-root URL with no query, fragment, or non-root path, strips
+  only a trailing slash, derives `/serving-endpoints`, and reads only
+  `DATABRICKS_TOKEN` for authentication.
+- **Provider compatibility is schema-directed and fail-closed.** Every provider receives
+  the same portable wire-schema projection while the ordinary tool validator retains the
+  complete canonical schema. Only the Databricks adapter may decode a stringified top-level
+  tool argument, only when that field's advertised schema exclusively declares one or more
+  compatible JSON types from `object`, `array`, `boolean`, `integer`, and `number`, and only
+  when the decoded finite JSON has a declared type. Python booleans do not satisfy integer
+  or number declarations. String and null declarations, undeclared types, ambiguous schemas,
+  non-finite numbers, and nested string values are not decoded. A value that cannot be
+  decoded safely is preserved solely so canonical validation can reject it as a recoverable
+  tool result; it is never passed to an operation.
 - **Submodel boundaries**: ops may only target top-level nodes; `add_node` of
   `submodel`/`submodelPort` types and any op addressing a node inside a submodel graph
   return named tool errors (v1 limitation, stated in the error text).
@@ -297,7 +618,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   right of its rightmost parent (fallback: right of the graph's rightmost node; empty graph:
   origin), vertically staggered by sibling index. Nothing else moves; analysts rearrange
   freely afterwards.
-- **Mutation precondition**: `apply_graph_edits` requires `working_branch_status(...)` to
+- **Mutation precondition**: `apply_graph_plan` requires `working_branch_status(...)` to
   report `"ready"` — the state in which the save service ledger-captures — so every assistant
   edit is *expected* to be captured. If capture still fails after a successful save (the
   service's documented degrade-to-warning path), the warning propagates into the tool
@@ -316,12 +637,20 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   conversation). Live sessions are LRU-capped at 32 with least-recently-used *idle*
   eviction — a session holding a running turn is never evicted, and eviction drops only
   the in-memory record: the persisted file revives the id transparently on next lookup.
-- **Dataset discovery and preview share one safety contract**: installed readable path
+- **Dataset discovery and schema inspection share one safety contract**: installed readable path
   extensions come from `routes.files._installed_input_extensions()` and are matched by
   case-folded filename suffix (including compound extensions). The resolved project-relative
   path must contain no hidden component; exact state/credential names in the assistant
   denylist are rejected before listing or reading. Direct calls cannot bypass the filter
-  that navigation applies.
+  that navigation applies. `list_datasets(project_root, recursive)` defaults to a one-level
+  listing; recursive mode walks only non-symlink descendants, returns deterministic
+  project-relative POSIX paths, caps datasets and directories independently, and sets
+  `truncated=true` when either cap or the traversal bound is reached. For a routed
+  `parquet_showcase`, a safe folder explicitly named in the effective authoring request is
+  advertised as the provider schema's constant `project_root`; before canonical validation,
+  the source-bound executor replaces any model-supplied listing root and recursion value with
+  those routed constants. The assistant schema helper is separate from the UI
+  schema/preview reader and never invokes the preview collector.
 - **`get_node_schema` collects nothing** — the invariant is testable: the tool's plan
   construction plus `collect_schema()` must never invoke `LazyFrame.collect` (asserted by
   poisoning `collect` in tests). The two honest cost exceptions are inherited, not assistant
@@ -338,11 +667,16 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   never auto-created; one turn per session via the per-session lock; committed turns
   persist to `.haute/assistant/sessions/` and survive restarts, while a truly lost id
   (pruned, corrupt file, cleaned `.haute/`) still 404s and the frontend renders that
-  explicitly by starting a fresh session. Current tool-role records require an
+  explicitly by starting a fresh session. A `controller` role is internal provider history:
+  adapters encode it as a user instruction, it does not count as the turn's single real user
+  message, and transcript projection never exposes it. Current tool-role records require an
   explicit boolean `is_error`; missing values are invalid session data rather
   than inferred from an obsolete content shape. Tool-role messages retain `is_error` through
   validation, JSON persistence, revival, history-window rendering, and both provider
-  adapters. Turn and response cleanup release their idempotent reservation in nested
+  adapters. Persisted tool arguments/results carry no deterministic digest. Tool errors may
+  retain only `code`, `validation_path`, and `validation_reason`; paths/reasons are
+  produced by trusted schemas and never contain submitted values. Turn and response cleanup
+  release their idempotent reservation in nested
   `finally` blocks even if history append or iterator close raises.
 - **No `print`, structlog only** — the assistant package and router are swept by the existing
   decoupling and routes-hygiene contract tests.
@@ -351,7 +685,7 @@ returns a fresh session with empty `history`; resume is an offer, never an error
 
 | Failure | Where raised | Surfaced as |
 |---|---|---|
-| Malformed `haute.toml`, unknown `[assistant]` key, or invalid OpenAI `base_url` | `_config`, before SDK probing/client construction | `ConfigError` naming the field (never its value) → 400 |
+| Malformed `haute.toml`, unknown assistant/egress key, missing or invalid egress policy, invalid OpenAI `base_url`, invalid/missing `DATABRICKS_HOST`, or conflicting Databricks `base_url` | `_config`, before SDK probing/client construction | `ConfigError` or not-ready reason naming the field/environment variable (never its value) → 400 |
 | Not configured / provider SDK missing | `_config` via route pre-check | 400 with the readiness reason verbatim |
 | Unknown session | route | 404 |
 | Turn already running on session | route (lock try-acquire) | 409 |
@@ -386,28 +720,75 @@ fixture for route tests). The implemented coverage is:
   shallow-merge/null-removes semantics; unknown-config-key rejection; submodel-target and
   submodel-type rejection; ambiguous edge match; deterministic positions evaluated
   post-batch (property: same batch, same graph → same positions).
+  ASSIST-A05 adds canonical revision/plan hashing, semantic diff boundaries,
+  closed postconditions, single-use plan transitions,
+  stale/altered-plan rejection before save,
+  unrelated-diff detection, and truthful verification evidence.
 - **`tests/test_assistant_catalog.py`** — completeness against `NodeType` (mirror of the
   registry-completeness test); folder/decorator facts agree with `_types`/`_config_io`.
+  ASSIST-A04 additionally pins resolved schema agreement, closed operation
+  metadata, deterministic canonical hashing, cache reuse/invalidation,
+  manifest compatibility identity, and the compact/full projection boundary.
 - **`tests/test_assistant_tools.py`** — real tmp-project coverage for source/downstream
   schemas, preamble-dependent transforms, and the collect-poisoning invariant
   (`LazyFrame.collect` must not run). Contract tests assert that the saved `active_source`
   is passed to the engine; crafted/mocked execution results cover submodel-boundary
   rejection, multi-frame per-port shaping, unknown-node errors, and propagation of an
-  unfetched-Databricks `CacheNotFoundError` message as a structured tool error. Dataset
+  unfetched-Databricks `CacheNotFoundError` message as a structured tool error. Capability
+  tests pin ordered one-to-twelve descriptor batches, duplicate/unknown rejection, and JSON
+  materialisation. Discriminated-union failures pin precise validation paths and stable
+  value-free reasons without invoking an operation. Dataset
   coverage pins installed-registry extension parity and rejects direct hidden,
-  state-directory, and credential-file listing/preview.
+  state-directory, and credential-file listing/schema inspection; preview
+  collection is poisoned to enforce the no-row boundary.
 - **`tests/test_assistant_assets.py`** — the authoring guide loads non-empty via
-  `importlib.resources` (missing/empty asset raises loudly); every packaged exemplar parses
-  cleanly through `parse_pipeline_to_graph` (the drift guard — a stale exemplar fails CI);
-  every exemplar has a module docstring and `example_index()` summaries derive from its
-  first line; `load_example` renders the same shape `get_pipeline` renders; unknown example
-  name → structured error listing valid names.
+  `importlib.resources`; every legacy exemplar and content-addressed bundle
+  parses through `parse_pipeline_to_graph`; bundle manifests are closed,
+  inventories reject unknown roles, missing/digest-mismatched/undeclared
+  files, expected-schema/assertion drift, and missing required artifact
+  classes; the declared fast subset executes against synthetic data.
+  `load_example` returns bounded attribution, narrative, and the same graph shape as live
+  inspection; resource inventory names and paths are absent from the model-facing result.
+- **`tests/test_assistant_recipes.py`** — closed descriptor completeness,
+  deterministic planning, unresolved-decision handling, primitive-operation
+  validation, linked examples, preconditions, and stable recipe failures.
+- **`tests/test_assistant_application.py`** — saved-state inspection, exact
+  no-write planning, single-use authority, stale-state rejection,
+  transactional apply, semantic-diff verification, postconditions, and
+  committed verification-failure reporting.
+- **`tests/test_assistant_project_knowledge.py`** — source attribution,
+  sensitivity filtering, cache invalidation/rebuild, bounded queries, tool
+  policy, symlink containment, and metadata-only durable cache state.
+- **`tests/test_assistant_evaluation.py`** — held-out/teaching separation,
+  closed support matrices, semantic and zero-tolerance safety scoring,
+  repeated-trial attribution, aggregation, redacted reports, and fail-closed
+  qualification decisions.
+- **`tests/test_assistant_self_test.py`** — closed prompt-case loading and
+  selection plus a synthetic portfolio covering continuous and categorical banding,
+  exact join roles, positional rating steps, Polars transforms, explicit mapped response
+  outputs, file input/output graph authoring without sink execution, broad parquet showcase
+  construction, material clarification for joins/rating/output mappings, prompt injection,
+  and blocked pipeline execution/external writes. Loop-quality scoring requires a successful
+  terminal outcome with bounded failed tool attempts and duplicate static reads, graph
+  connectivity, and exact edge-join base/join port assertions. A null expected target handle
+  matches an edge by source/target endpoints for ordinary single-input nodes; non-null handles
+  remain exact port assertions. For multi-round text, scoring uses the last explicit
+  `NEEDS_INPUT:` or `BLOCKED:` marker, so earlier preparatory prose cannot hide the final
+  qualified outcome. Coverage also pins the redacted report shape and a
+  scripted-provider integration through the real loop, tools, dry-run, apply, parser, and
+  disposable Git mutation gate.
+- **`tests/test_assistant_example_portfolio.py`** — live/batch parity, trace
+  and structural dry-run, real model training/scoring, real online/ratebook
+  optimisation, saved versioned apply, deployment preflight plus unsafe
+  configuration rejection, and adversarial content/operation handling.
 - **`tests/test_assistant_config.py`** — readiness matrix (absent table, unknown provider,
   missing model, missing key, missing SDK, fully configured); malformed TOML raises;
   unknown keys name their TOML path; OpenAI `base_url` accepts absolute
   credential-free HTTP(S) URLs and rejects malformed/relative/unsupported-
   scheme/userinfo/invalid-port values without exposing them; `base_url` is
-  rejected for anthropic; `max_output_tokens` unset-defaults-to-8192 and
+  rejected for anthropic and Databricks; Databricks derives its serving URL
+  from a validated `DATABRICKS_HOST`, reads `DATABRICKS_TOKEN`, and fails
+  loudly/redacted for missing or malformed values; `max_output_tokens` unset-defaults-to-8192 and
   malformed/non-positive-fails-readiness behaviour (named reason, no silent default);
   `mutations_enabled`/`mutations_reason` across all six `working_branch_status` states
   (ready, no-repository, unset, detached, divergent, invalid — asserting each state's
@@ -417,14 +798,24 @@ fixture for route tests). The implemented coverage is:
   import failure produces the readiness reason, not an ImportError at server start; the
   OpenAI content-delta dialects (plain string, and gateway content-part lists where `text`
   parts stream, `reasoning` parts stay unsurfaced, and unknown part types or non-text
-  shapes raise `malformed_stream`).
+  shapes raise `malformed_stream`); the Databricks adapter reuses the
+  OpenAI-compatible request while preserving `databricks` failure attribution; all three
+  adapters advertise the same budgeted portable wire schemas, including merged
+  discriminated graph-operation fields and discriminator enums; the Databricks adapter decodes valid
+  schema-declared top-level array, object, boolean, integer, and finite-number strings from
+  the live dialect, leaves declared strings, nulls, nested values, and the other adapters
+  untouched, and carries invalid/wrong-type encodings to the canonical validator for a
+  recoverable `invalid_request` result.
 - **`tests/test_assistant_loop.py`** — against a scripted fake provider: text-only turn;
   tool round-trip; tool error fed back; cap and timeout terminal events; completed/failed
   exactly-one-terminal checks; cancellation drains an in-flight tool, closes the provider
   stream, and releases the session lock; closing at each tool lifecycle yield never
   persists an unmatched call; a raising history append still releases the lock;
-  turn-atomic history windowing, including a
-  tool-heavy turn crossing both caps without splitting a call/result group.
+  turn-atomic history windowing, including a tool-heavy turn crossing both caps without
+  splitting a call/result group; an end after unsuccessful mutation receives one internal
+  controller continuation, successful apply terminates with deterministic text and no later
+  provider/tool round, explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally, and a
+  second unqualified end fails rather than completes.
 - **`tests/test_assistant_routes.py`** — status/session/message endpoints: SSE framing,
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
   transcript rehydration, adapter construction, atomic concurrent-send reservation, and
@@ -432,7 +823,9 @@ fixture for route tests). The implemented coverage is:
 - **`tests/test_assistant_session_persistence.py`** — atomic write-through persistence,
   restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
   path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,
-  tool-error round-trip, and non-fatal persist failures.
+  tool-error round-trip, internal-controller revival/transcript hiding, absence of
+  deterministic payload digests, safe validation path/reason retention, and non-fatal
+  persist failures.
 - **`tests/test_assistant_integration.py`** — fake-provider end-to-end on a tmp project:
   instruction → ops → real transactional save (files on disk assert codegen/sidecars) →
   `graph.update` published with the post-save fingerprint (asserted via a test subscriber)
@@ -447,7 +840,18 @@ fixture for route tests). The implemented coverage is:
   preserve-marker round-trip through
   `save_graph_transactionally` (parse a marker-bearing pipeline → transactional save →
   markers and content survive on disk), independent of which layer supplies the blocks.
-No test calls a live Anthropic, OpenAI, or Databricks-compatible endpoint; provider wire
-behaviour is exercised with scripted SDK streams. The package is covered by the repository's
-global branch gate, while exemplar `.py` assets are omitted from coverage because they are
-parsed package data rather than importable modules (they remain parser- and lint-checked).
+No automated test calls a live Anthropic, OpenAI, or Databricks-compatible endpoint; provider
+wire behaviour is exercised with scripted SDK streams. `scripts/run_assistant_self_test.py`
+is the explicit credentialed developer lane: it loads the same project `.env` and
+`[assistant]` configuration as the app, accepts repeated `--case` selection (plus `--list`),
+runs each selected prompt once in an isolated fixture. Entering and leaving a fixture clears
+the process-cached active pipeline directory so one project or the invoking repository cannot
+escape into another fixture's application service. The lane exits non-zero on any failed case and
+optionally writes the redacted report described above. Cases may expose only synthetic schemas,
+the synthetic request, and ordinary assistant tool context to the configured endpoint. The lane
+never executes the authored pipeline or materialises a configured output sink. It is a fast
+diagnostic and regression loop, not release qualification; repeated support-matrix trials remain
+the authority for model qualification. The package is covered by the repository's global branch
+gate, while exemplar
+`.py` assets are omitted from coverage because they are parsed package data rather than
+importable modules (they remain parser- and lint-checked).

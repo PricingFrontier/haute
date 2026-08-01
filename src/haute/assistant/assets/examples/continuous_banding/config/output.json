@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"banded","source_column":"driver_age_band","output_path":"$[:].driver_age_band","enabled":true}],"outputFormat":"json"}

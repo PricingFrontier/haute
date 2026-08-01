@@ -239,9 +239,13 @@ function rejectTurn(set: SetAssistantState, error: unknown): void {
   }
 
   if (error instanceof ApiError && error.status === 409) {
+    let notice = error.detail ?? "The assistant request conflicted with current server state."
+    if (error.detail === "An assistant turn is already running") {
+      notice = "The assistant is still finishing its last edit; try again in a moment."
+    }
     set((state) => ({
       entries: appendMarker(removeStreamingAssistant(state.entries), "failed", error.detail),
-      notice: "The assistant is still finishing its last edit; try again in a moment.",
+      notice,
     }))
     return
   }
@@ -395,7 +399,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       if (terminalEvent === null) {
         set((state) => ({ entries: appendMarker(state.entries, "interrupted") }))
       } else if (terminalEvent.type === "completed") {
-        set((state) => ({ entries: appendMarker(state.entries, "completed") }))
+        set((state) => ({
+          entries: appendMarker(state.entries, "completed"),
+        }))
       } else if (terminalEvent.type === "failed") {
         set((state) => ({ entries: appendMarker(state.entries, "failed", terminalEvent.message) }))
         useToastStore.getState().addToast("error", terminalEvent.message)

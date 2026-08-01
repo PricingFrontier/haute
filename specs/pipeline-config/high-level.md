@@ -191,6 +191,18 @@ executor. Editing a valid sidecar therefore changes the next parse and
 standalone execution without regenerating Python; a missing, malformed, or
 shape-incomplete sidecar fails before the data/object file is read.
 
+For tabular Data Input values specifically, a relative `path` is interpreted
+from the Haute project root by both canvas execution and generated standalone
+functions. The generated helper receives the project root discovered from the
+pipeline file and uses the same canonical runtime resolver as the executor;
+the sidecar's own `config/data_input/...json` location remains pipeline-relative.
+When parsing a handwritten Data Input function, the canonical direct-return
+wrapper `return resolve_data_input_from_config(...)` is loading scaffold, not
+post-load transform code. It round-trips as an empty executable `code` field
+instead of being re-executed as a bare `return` statement.
+There is no generated-code-only rebasing of `data/foo.parquet` beneath the
+pipeline module directory.
+
 ## Design rationale
 
 The component leans hard on failing loudly rather than guessing: duplicate node names,

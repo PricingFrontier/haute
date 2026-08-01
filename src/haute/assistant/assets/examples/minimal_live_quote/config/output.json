@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"quote","source_column":"fixture_value","output_path":"$[:].fixture_value","enabled":true}],"outputFormat":"json"}

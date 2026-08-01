@@ -1,0 +1,1 @@
+[{"case":"missing_submodel_file","expectation":"the parser fails loudly instead of silently flattening or skipping the boundary"}]

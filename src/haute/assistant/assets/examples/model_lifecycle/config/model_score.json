@@ -1,0 +1,7 @@
+{
+  "sourceType": "run",
+  "run_id": "replace-with-training-run-id",
+  "artifact_path": "model",
+  "task": "regression",
+  "output_column": "prediction"
+}

@@ -1,0 +1,8 @@
+[project]
+name = "assistant-deployment-safety"
+pipeline = "pipeline.py"
+
+[deploy]
+target = "databricks"
+model_name = "assistant-deployment-safety"
+output_fields = ["fixture_value"]

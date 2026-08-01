@@ -1,0 +1,8 @@
+{
+  "sourceType": "file",
+  "artifact_path": "data/ratebook_v1.json",
+  "version_column": "ratebook_version",
+  "optimised_value_column": "selected_factor",
+  "optimiser_mode": "ratebook",
+  "ratebook_input": "factors"
+}

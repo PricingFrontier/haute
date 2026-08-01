@@ -259,6 +259,38 @@ become diagnostic-unavailable rather than a fabricated success.
   come from a different trust boundary (generated strings, not direct user path input) and
   need a narrower allowlist than general file browsing.
 
+## Approved change contract — assistant plan authority
+
+The server exposes the assistant application service inside the running
+process; it adds no headless or serverless mutation API. GUI saves and
+assistant applies share the same process-wide save lock, transactional
+`SavePipelineService`, self-write marking, graph-update broadcast and Git
+ledger capture.
+
+`SavePipelineService.validate_graph(...)` is the public, no-write validation
+entry point used by both `save(...)` and assistant dry-run. It performs the
+same singleton, data-I/O, Edge Join role/key/topology, sanitized-name,
+load-error, API-input and path validation that can be decided without staging
+files. Edge Join validation uses the canonical backend join validators, not a
+save- or assistant-specific approximation. Save invokes it before any write,
+so the validation paths cannot drift.
+
+Assistant message requests carry only the session id and user message. Graph
+authoring has no browser confirmation object or plan-ready stream event:
+application does not execute the graph or materialise a configured output.
+The provider invokes a server-owned exact plan hash after dry-run. Plan records
+are bounded process state; restart invalidates them safely and the assistant
+must dry-run again.
+
+The bounded semantic diff carries complete category counts, an explicit
+truncation flag, and a complete semantic-diff digest. Exact post-save
+verification compares that digest, so the wire-size bound cannot hide an
+unrelated committed change.
+
+Every assistant saved-state response identifies the project revision it
+describes. Stale, changed or already-applied plans fail before
+`SavePipelineService.save_graph_transactionally(...)` is invoked.
+
 ## Interactions
 
 - **[execution-engine](../execution-engine/high-level.md)** — `routes/pipeline.py` and

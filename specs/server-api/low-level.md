@@ -26,6 +26,21 @@
 
 ## Key types and data structures
 
+ASSIST-A05 adds the following contracts:
+
+- `SavePipelineService.validate_graph(graph, source_file)` is public and
+  side-effect free. It validates Edge Join connected roles, target handles,
+  and mutually exclusive/required key forms through the canonical
+  `_edge_join.py` validators as well as the other save invariants. `save()`
+  calls it before staging, and dry-run calls the same method.
+- `AssistantMessageRequest` is a strict request containing only `session_id`
+  and `message`; graph-authoring confirmation payloads are rejected as unknown
+  fields.
+- assistant plan/application responses carry `base_revision`,
+  `result_revision`, `capability_hash`, `plan_hash`, semantic diff,
+  verification tier/evidence, warnings and ledger reference as applicable.
+  Unknown fields remain rejected at typed HTTP boundaries.
+
 **Exception hierarchy** (`errors.py`, abridged to route-relevant branches) — every subclass
 roots at `HauteError`, which renders
 `**context` kwargs into `str(err)` (`"message (k=v, k2=v2)"`) so structured fields reach log
@@ -153,6 +168,22 @@ no frame. The frame builder rejects an event payload that already contains reser
 `type`.
 
 ## Control flow
+
+For an assistant apply, the route/service sequence is: reserve the session;
+run the provider loop; acquire `save_lock` only when `apply_graph_plan`
+executes; recompute revision/plan/authority under the lock; call the
+transactional save once; reparse/verify; publish once; release in `finally`. A
+failed precondition never enters the save service, and a completed save is
+never automatically replayed after transport failure.
+
+`POST /api/assistant/message` accepts exactly `session_id` and `message`; the
+request is closed to unknown fields. There is no graph-plan confirmation
+request and no `plan_ready` SSE event. A graph edit only authors project
+source/config and does not run the pipeline or materialise outputs, so the
+model may apply any valid stored plan directly. Missing, expired, stale or
+used plans fail at the tool boundary before save. Runtime execution and
+external writes remain separate user-initiated operations; v1 exposes no
+assistant execution tool.
 
 **Startup.** `_lifespan()`: `_clear_bytecache()` (rmtree every `__pycache__` under
 `src/haute/`) → `configure_logging()` → `_load_env(Path.cwd())` → validate and cache

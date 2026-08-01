@@ -98,8 +98,27 @@ class AssistantStatusResponse(BaseModel):
     reason: str | None
     provider: str | None
     model: str | None
+    endpoint_host: str | None
+    trust: Literal["local", "organization", "external"] | None
+    max_sensitivity: Literal["public", "internal", "restricted"] | None
     mutations_enabled: bool
     mutations_reason: str | None
+
+    @model_validator(mode="after")
+    def _configured_status_has_egress_identity(self) -> AssistantStatusResponse:
+        if self.configured and (
+            self.reason is not None
+            or self.provider is None
+            or self.model is None
+            or self.endpoint_host is None
+            or self.trust is None
+            or self.max_sensitivity is None
+        ):
+            raise ValueError(
+                "configured assistant status requires provider, model, endpoint host, "
+                "trust, maximum sensitivity, and no readiness reason"
+            )
+        return self
 
 
 class AssistantSessionRequest(BaseModel):
@@ -127,6 +146,8 @@ class AssistantSessionResponse(BaseModel):
 
 
 class AssistantMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_id: str
     message: str
 

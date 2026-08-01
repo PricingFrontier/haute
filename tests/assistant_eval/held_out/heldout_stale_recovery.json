@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "heldout_stale_recovery",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "stale_recovery",
+  "request": "Recover safely when the saved graph changes after dry-run.",
+  "required_node_types": [],
+  "required_node_configs": {},
+  "required_edges": [],
+  "max_unrelated_changes": 0,
+  "require_clarification": false,
+  "require_recovery": true
+}

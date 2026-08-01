@@ -48,6 +48,7 @@ SUPPORTED_BANDING_OPERATORS = MappingProxyType(
         "==": operator.eq,
     }
 )
+SUPPORTED_BANDING_TYPES = frozenset({"continuous", "categorical", "breakpoints"})
 
 
 def _banding_rule_comparators(rule: dict[str, Any]) -> list[tuple[str, float]]:
@@ -272,6 +273,62 @@ def _breakpoints_to_rules(
 def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the ``factors`` list from banding config."""
     return normalise_banding_factors(config)
+
+
+def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate and return canonical banding factors.
+
+    A factor without a column, output column, or rules remains a supported
+    draft no-op. Once all three are configured, the discriminant and rule
+    shape must be executable rather than being silently skipped at runtime.
+    """
+
+    factors = normalise_banding_factors(config)
+    for index, factor in enumerate(factors):
+        configured_type = str(factor.get("banding", "") or "").strip()
+        column = str(factor.get("column", "") or "").strip()
+        output_column = str(factor.get("outputColumn", "") or "").strip()
+        configured_rules = factor.get("rules", []) or []
+
+        if not column or not output_column or not configured_rules:
+            continue
+        banding_type = configured_type or "continuous"
+        if banding_type not in SUPPORTED_BANDING_TYPES:
+            allowed = ", ".join(sorted(SUPPORTED_BANDING_TYPES))
+            raise ValueError(
+                f"Banding factor {index} has unsupported banding type "
+                f"{banding_type!r}; expected one of: {allowed}"
+            )
+        rules = normalise_banding_rules(banding_type, configured_rules)
+        if not rules:
+            continue
+
+        if banding_type == "categorical":
+            usable = any(
+                rule.get("value") not in (None, "") and rule.get("assignment") not in (None, "")
+                for rule in rules
+            )
+            if not usable:
+                raise ValueError(f"Banding output {output_column!r} has no usable categorical rule")
+            continue
+
+        continuous_rules = (
+            _breakpoints_to_rules(
+                rules,
+                right_closed=bool(factor.get("rightClosed", True)),
+            )
+            if banding_type == "breakpoints"
+            else rules
+        )
+        usable = False
+        for rule in continuous_rules:
+            comparators = _banding_rule_comparators(rule)
+            assignment = rule.get("assignment")
+            if comparators and assignment not in (None, ""):
+                usable = True
+        if not usable:
+            raise ValueError(f"Banding output {output_column!r} has no usable continuous rule")
+    return factors
 
 
 def _apply_banding_factors(lf: _Frame, factors: Iterable[dict[str, Any]]) -> _Frame:

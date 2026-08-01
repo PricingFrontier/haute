@@ -17,7 +17,9 @@
 
 - **`AssistantStatus`** (`api/assistant.ts`, mirrored from `schemas.py`):
   `{ configured: boolean; reason: string | null; provider: string | null; model: string |
-  null; mutations_enabled: boolean; mutations_reason: string | null }`.
+  null; endpoint_host: string | null; trust: "local" | "organization" | "external" | null;
+  max_sensitivity: "public" | "internal" | "restricted" | null;
+  mutations_enabled: boolean; mutations_reason: string | null }`.
   `reason` (unconfigured) and `mutations_reason` (working branch not ready — the backend's
   per-state message for no-repository/unset/detached/divergent/invalid) are the backend's human-readable
   explanations; the composer renders whichever applies verbatim.
@@ -81,7 +83,8 @@ rendered as the loading state; never polled).
    is applied to the store: `text_delta` appends to the open assistant entry;
    `tool_started`/`tool_finished` append/settle an activity row; `graph_updated` appends an
    activity row noting the canvas was updated (the canvas itself refreshes via `/ws/sync`,
-   not here). A terminal event is retained locally and committed as the single marker only
+   not here). A terminal event is retained locally and
+   committed as the single marker only
    after the response ends; any later event throws instead. The owning action alone clears
    its controller and returns `turnStatus` to idle in `finally`.
 6. The loop runs in the store action, not a component effect — closing the panel (or another
@@ -122,6 +125,9 @@ settled transcript row.
 - **Event after a terminal event throws** from the store callback, cancels the reader, and
   replaces the provisional terminal outcome with one `interrupted` marker plus an error
   toast. It is never discarded.
+- **Plan authority is server-only**: the browser never sends operations,
+  revisions, plan hashes, or consent metadata. Staleness, expiry and prior use
+  are enforced when the model invokes the exact stored plan.
 - **Canvas dirtied mid-turn** (the analyst edits while the agent works): the send-time gate
   can't prevent it. Incoming `graph.update` frames then hit the canvas's existing
   dirty-guard banner (reload/discard) rather than applying — the transcript still records
@@ -151,7 +157,8 @@ settled transcript row.
 | Session-create `ApiError` 400 (unconfigured) | No transcript entries have been appended yet, so the transcript stays unchanged; inline notice with the backend detail; `refreshStatus()` re-run so the composer gate shows the current reason. |
 | Message-send `ApiError` 400 (unconfigured) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline notice with the backend detail; `refreshStatus()` re-run so the composer gate shows the current reason. |
 | Send-time `ApiError` 404 (stale session) | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; inline "session expired (server restarted)" notice offering New chat; no silent re-create. |
-| Send-time `ApiError` 409 | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; the still-finishing inline notice; composer stays enabled; no auto-retry. The client does not distinguish a post-stop 409 from another 409. |
+| Send-time concurrent-turn `ApiError` 409 | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; the still-finishing inline notice; composer stays enabled; no auto-retry. |
+| Other send-time `ApiError` 409 | Empty speculative assistant bubble removed; user entry followed by one `failed` marker; the backend detail (or a generic conflict notice); composer stays enabled; no auto-retry. |
 | Terminal `failed` event | Marker `failed` with the backend-provided message inline + error toast (`useToastStore`). |
 | Status/session parser throw | Descriptive ordinary `Error`; no typed value or partial history is returned, and the existing status/session failure path handles it. |
 | SSE parser throw / callback throw / transport drop mid-stream | Response reader cancelled, marker `interrupted` + error toast; composer re-enabled. Contract failures are ordinary `Error` values, not `ApiError`. |
@@ -160,7 +167,11 @@ settled transcript row.
 
 ## Testing
 
-Implemented Vitest coverage is split between `frontend/src/stores/__tests__/useAssistantStore.test.ts`, `frontend/src/api/__tests__/assistant.test.ts`, and `frontend/src/__tests__/App.assistantLazy.test.ts`. Component-level transcript/composer DOM interactions are not currently covered directly.
+Implemented Vitest coverage is split between
+`frontend/src/stores/__tests__/useAssistantStore.test.ts`,
+`frontend/src/api/__tests__/assistant.test.ts`,
+and `frontend/src/__tests__/App.assistantLazy.test.ts`. Transcript/composer DOM
+interactions are covered through the store/API boundaries.
 
 - **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; source-change reset versus same-source session reuse; session persistence/hydration; 400/404/409 notices; abort-stop; and idle-only New chat.
 - **Assistant API boundary** (`frontend/src/api/__tests__/assistant.test.ts`):
@@ -169,7 +180,8 @@ Implemented Vitest coverage is split between `frontend/src/stores/__tests__/useA
   wrong fields for every known SSE variant; unknown-discriminator failure;
   callback-not-invoked proof for rejected frames; non-OK `ApiError` mapping;
   reader cancellation after parser/callback failure; and a stream ending without
-  a terminal event for the store to classify.
+  a terminal event for the store to classify. The suite also covers the closed
+  message request and every remaining SSE variant.
 - **Bundle boundary** (`frontend/src/__tests__/App.assistantLazy.test.ts`): `App.tsx` uses only `React.lazy(import())` for the panel and neither it nor non-assistant production modules import the markdown renderer.
 
 The following matrix records the full regression contract; where the scenario is already unit-covered above, it remains a useful component/integration target:

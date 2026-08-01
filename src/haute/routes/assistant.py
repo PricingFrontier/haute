@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from haute._logging import get_logger
 from haute.assistant import _loop, assistant_readiness
 from haute.assistant._config import AssistantConfig, resolve_assistant_config
-from haute.assistant._providers import AnthropicProvider, AssistantProvider, OpenAIProvider
+from haute.assistant._providers import AssistantProvider, create_provider
 from haute.assistant._session import AssistantSession, SessionStore
 from haute.assistant._tools import TOOL_DEFINITIONS, build_tool_executor
 from haute.errors import ConfigError, HauteError
@@ -45,7 +45,11 @@ def _sessions_storage_dir() -> Path:
     directory is the project root.
     """
 
-    return Path.cwd() / ".haute" / "assistant" / "sessions"
+    project_root = Path.cwd().resolve()
+    storage = project_root / ".haute" / "assistant" / "sessions"
+    if not storage.resolve().is_relative_to(project_root):
+        raise ConfigError("Assistant session storage must resolve inside the project root")
+    return storage
 
 
 session_store = SessionStore(storage_dir=_sessions_storage_dir)
@@ -54,11 +58,7 @@ session_store = SessionStore(storage_dir=_sessions_storage_dir)
 def _provider_factory(config: AssistantConfig) -> AssistantProvider:
     """Construct the configured adapter without importing optional SDKs here."""
 
-    if config.provider == "anthropic":
-        return AnthropicProvider(config)
-    if config.provider == "openai":
-        return OpenAIProvider(config)
-    raise ConfigError(f"Unknown assistant provider: {config.provider!r}.")
+    return create_provider(config)
 
 
 def _relative_source_file(path: Path) -> str:
@@ -139,6 +139,9 @@ def _readiness() -> AssistantStatusResponse:
         reason=status.reason,
         provider=status.provider,
         model=status.model,
+        endpoint_host=status.endpoint_host,
+        trust=status.trust,
+        max_sensitivity=status.max_sensitivity,
         mutations_enabled=status.mutations_enabled,
         mutations_reason=status.mutations_reason,
     )
@@ -234,6 +237,7 @@ async def _event_stream(
     execute_tool: _loop.ToolExecutor,
     system_prompt: str,
     reservation: _loop.TurnReservation,
+    authoring_request: str,
 ) -> AsyncIterator[str]:
     """Frame loop events as server-sent events."""
 
@@ -248,6 +252,7 @@ async def _event_stream(
         turn_timeout=None,
         max_tool_calls=None,
         reservation=reservation,
+        authoring_request=authoring_request,
     )
     try:
         async for event in turn:
@@ -345,13 +350,19 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         except Exception as exc:
             detail = _http_error_detail(exc, "system_prompt")
             raise HTTPException(status_code=500, detail=detail) from None
+        authoring_request = _loop.effective_authoring_request(session, body.message)
+        execute_tool = build_tool_executor(
+            session.source_file,
+            session_id=session.id,
+            prior_messages=session_store.history_window(session),
+            authoring_request=authoring_request,
+        )
     except BaseException:
         # Pre-stream failure after the reservation: the turn will never run,
         # so the lock must be released here or the session deadlocks.
         reservation.release()
         raise
 
-    execute_tool = build_tool_executor(session.source_file)
     return _ReservedStreamingResponse(
         _event_stream(
             request=body,
@@ -359,6 +370,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
             execute_tool=execute_tool,
             system_prompt=system_prompt,
             reservation=reservation,
+            authoring_request=authoring_request,
         ),
         media_type="text/event-stream",
         reservation=reservation,

@@ -1,0 +1,11 @@
+[project]
+name = "assistant-deployment-unsafe"
+pipeline = "pipeline.py"
+
+[deploy]
+target = "container"
+model_name = "assistant-deployment-unsafe"
+output_fields = ["fixture_value"]
+
+[deploy.container]
+base_image = "python:latest"

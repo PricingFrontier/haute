@@ -119,6 +119,15 @@ Out of scope:
   visible owner, execution order, dependency boundary, and retirement decision
   without depending on a second review or remediation Markdown tree.
 
+## Assistant provider qualification
+
+Supported assistant provider/model configurations are gated by a separate
+credentialed evaluation lane. Version-controlled held-out semantic and
+adversarial scenarios run repeatedly in isolated temporary projects and are
+scored against a closed support matrix. Deterministic CI validates the harness,
+fixture separation, aggregation, attribution, and zero-tolerance safety rules;
+it does not substitute a scripted provider result for live qualification.
+
 ## Interactions
 
 - Every product component supplies source and tests to this component's gates;

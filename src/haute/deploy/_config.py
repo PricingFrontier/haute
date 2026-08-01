@@ -12,6 +12,7 @@ from typing import Any
 
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute.assistant._config import ASSISTANT_EGRESS_TOML_KEYS, ASSISTANT_TOML_KEYS
 from haute.deploy._pruner import (
     find_deploy_input_nodes,
     find_output_node,
@@ -180,6 +181,10 @@ _VALID_TOML_SCHEMA: dict[str, set[str] | dict[str, set[str]]] = {
         "production": {"endpoint_url"},
     },
     "server": {"host"},
+    "assistant": {
+        "_self": set(ASSISTANT_TOML_KEYS - {"egress"}),
+        "egress": set(ASSISTANT_EGRESS_TOML_KEYS),
+    },
 }
 
 

@@ -68,10 +68,12 @@ assistant reads your graph, checks the real columns in your data, and makes the 
 through the same validated save path the visual editor uses. Every change lands in your
 Python file, on your git working branch, exactly as if you had made it by hand.
 
-Bring your own model: Anthropic or OpenAI API keys, or any OpenAI-compatible serving
-endpoint (including Databricks model serving) via a single `base_url` setting in
-`haute.toml`. Credentials stay in your `.env`; conversations persist per project in the
-untracked `.haute/` directory, so they survive server restarts and never enter git.
+Bring your own model through an explicit Anthropic, OpenAI, or Databricks provider.
+Databricks model serving reuses the project's standard `DATABRICKS_HOST` and
+`DATABRICKS_TOKEN` values from `.env`; its serving URL is derived automatically, so
+workspace identity is not duplicated in `haute.toml`. Credentials stay in `.env`;
+conversations persist per project in the untracked `.haute/` directory, so they survive
+server restarts and never enter git.
 
 This is an early preview — the core authoring loop is solid and fully tested, but expect
 rough edges while the experience gets tuned.

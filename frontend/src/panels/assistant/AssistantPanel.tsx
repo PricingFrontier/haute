@@ -78,6 +78,15 @@ export default function AssistantPanel({ isInsideSubmodel, currentSourceFile }: 
           </button>
         </div>
       )}
+      {status !== "unknown" && status !== "error" && status.configured && (
+        <div
+          data-testid="assistant-egress-status"
+          className="shrink-0 px-3 py-1.5 text-[10px]"
+          style={{ color: "var(--text-muted)", borderBottom: "1px solid var(--border)" }}
+        >
+          Provider: {status.endpoint_host} · {status.trust} · up to {status.max_sensitivity}
+        </div>
+      )}
 
       <div
         ref={transcriptRef}

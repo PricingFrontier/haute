@@ -1134,6 +1134,8 @@ class TestCodegenExecValidation:
         import polars as pl
 
         monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         pl.DataFrame({"policy_id": [1, 2]}).write_parquet(data_dir / "policies.parquet")
@@ -1165,6 +1167,8 @@ class TestCodegenExecValidation:
     ) -> None:
         """Generated dataInput code should honour shared source schema config."""
         monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "haute.toml").write_text('[project]\nname = "test"\n', encoding="utf-8")
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         csv_path = data_dir / "quotes.csv"
