@@ -272,16 +272,15 @@ def _breakpoints_to_rules(
 
 def _normalise_banding_factors(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the ``factors`` list from banding config."""
-    return validate_banding_config(config)
+    return normalise_banding_factors(config)
 
 
 def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
     """Validate and return canonical banding factors.
 
-    A draft factor with only the editor's default continuous discriminant
-    remains a supported no-op. Once a column, output, or rule is configured,
-    however, the discriminant and rule shape must be executable rather than
-    being silently skipped at runtime.
+    A factor without a column, output column, or rules remains a supported
+    draft no-op. Once all three are configured, the discriminant and rule
+    shape must be executable rather than being silently skipped at runtime.
     """
 
     factors = normalise_banding_factors(config)
@@ -291,12 +290,7 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
         output_column = str(factor.get("outputColumn", "") or "").strip()
         configured_rules = factor.get("rules", []) or []
 
-        if (
-            configured_type in {"", "continuous"}
-            and not column
-            and not output_column
-            and not configured_rules
-        ):
+        if not column or not output_column or not configured_rules:
             continue
         banding_type = configured_type or "continuous"
         if banding_type not in SUPPORTED_BANDING_TYPES:
@@ -312,7 +306,7 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
 
         rules = normalise_banding_rules(banding_type, configured_rules)
         if not rules:
-            raise ValueError(f"Banding factor {index} requires at least one rule")
+            continue
 
         if banding_type == "categorical":
             usable = any(

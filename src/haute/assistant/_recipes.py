@@ -12,6 +12,8 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Any, cast
 
+from haute._cache import canonical_json
+
 
 class RecipeError(Exception):
     """A stable recipe failure suitable for returning to an assistant client."""
@@ -1167,15 +1169,7 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
             ],
         ],
     }
-    result["recipe_plan_hash"] = hashlib.sha256(
-        json.dumps(
-            result,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
+    result["recipe_plan_hash"] = hashlib.sha256(canonical_json(result).encode("utf-8")).hexdigest()
     return result
 
 

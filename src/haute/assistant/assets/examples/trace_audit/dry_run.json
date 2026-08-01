@@ -1,1 +1,15 @@
-{"operations":[{"op":"rename_node","node":"derived","new_name":"audited_derived"}],"expected_nodes_removed":["derived"],"expected_nodes_added":["audited_derived"]}
+{
+  "operations": [
+    {
+      "op": "rename_node",
+      "node": "derived",
+      "new_name": "audited_derived"
+    }
+  ],
+  "expected_nodes_removed": [
+    "derived"
+  ],
+  "expected_nodes_added": [
+    "audited_derived"
+  ]
+}

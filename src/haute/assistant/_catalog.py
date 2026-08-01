@@ -10,13 +10,13 @@ decorators, sidecar folders, or singleton rules.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from types import MappingProxyType, UnionType
 from typing import Literal, Required, Union, cast, get_args, get_origin, get_type_hints
 
+from haute._cache import canonical_json
 from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, VALID_KEYS
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
@@ -1363,9 +1363,7 @@ def capability_manifest() -> CapabilityManifest:
         "operations": [operation.as_dict() for operation in operations],
         "recipes": [_thaw(recipe) for recipe in recipes],
     }
-    digest = hashlib.sha256(
-        json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    ).hexdigest()
+    digest = hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
     key = (haute_version, digest)
     if key not in _MANIFEST_CACHE:
         _MANIFEST_CACHE[key] = CapabilityManifest(

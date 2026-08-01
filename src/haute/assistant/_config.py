@@ -40,8 +40,8 @@ _PROVIDER_KEYS: dict[AssistantProvider, str] = {
     "openai": "OPENAI_API_KEY",
     "databricks": "DATABRICKS_TOKEN",
 }
-_ASSISTANT_TABLE_KEYS = frozenset({"provider", "model", "base_url", "egress"})
-_EGRESS_TABLE_KEYS = frozenset(
+ASSISTANT_TOML_KEYS = frozenset({"provider", "model", "base_url", "egress"})
+ASSISTANT_EGRESS_TOML_KEYS = frozenset(
     {
         "trust",
         "max_sensitivity",
@@ -50,6 +50,8 @@ _EGRESS_TABLE_KEYS = frozenset(
         "allow_row_samples",
     }
 )
+_ASSISTANT_TABLE_KEYS = ASSISTANT_TOML_KEYS
+_EGRESS_TABLE_KEYS = ASSISTANT_EGRESS_TOML_KEYS
 _TRUST_VALUES = frozenset({"local", "organization", "external"})
 _SENSITIVITY_VALUES = frozenset({"public", "internal", "restricted"})
 

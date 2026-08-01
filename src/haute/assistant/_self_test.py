@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 import tomllib
@@ -16,6 +15,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
+from haute import _git
 from haute._git_state import write_working_branch
 from haute.assistant._config import AssistantConfig
 from haute.assistant._loop import build_system_prompt, run_turn, summarise_graph_nodes
@@ -547,14 +547,10 @@ def _append_assistant_config(project_root: Path, config: AssistantConfig) -> Non
 
 
 def _run_git(project_root: Path, *arguments: str) -> None:
-    process = subprocess.run(
-        ["git", "-C", str(project_root), *arguments],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if process.returncode != 0:
-        raise RuntimeError(f"self-test Git setup failed during {arguments[0]}")
+    try:
+        _git._run_git(*arguments, cwd=project_root)
+    except _git.GitError as exc:
+        raise RuntimeError(f"self-test Git setup failed during {arguments[0]}") from exc
 
 
 def _initialize_mutation_gate(project_root: Path) -> None:
