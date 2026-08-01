@@ -55,11 +55,11 @@ _STATIC_READ_TOOLS = frozenset(
     {
         "get_authoring_guide",
         "get_capability_descriptors",
+        "get_capability_manifest",
         "get_dataset_schema",
+        "get_example",
         "list_datasets",
-        "list_example_pipelines",
         "list_node_types",
-        "read_example_pipeline",
     }
 )
 

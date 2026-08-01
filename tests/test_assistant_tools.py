@@ -1067,6 +1067,28 @@ class TestToolExecutorDispatch:
         assert result["error"]["validation_path"] == path
         assert result["error"]["validation_reason"] == reason
 
+    async def test_recipe_arguments_reject_duplicate_unique_items(self, project_root: Path):
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "plan_recipe",
+            {
+                "recipe_id": "continuous_banding",
+                "source": "quotes",
+                "name": "year_band",
+                "column": "vehicle_year",
+                "output_column": "vehicle_year_band",
+                "rules": [{"op1": "<=", "val1": 2020, "assignment": "older"}],
+                "output_name": "year_response",
+                "output_columns": ["vehicle_year_band", "vehicle_year_band"],
+                "default": "unknown",
+            },
+        )
+
+        assert result["error"]["code"] == "invalid_request"
+        assert result["error"]["validation_path"] == "plan_recipe.output_columns"
+        assert result["error"]["validation_reason"] == "duplicate_items"
+
     @pytest.mark.parametrize(
         ("name", "arguments"),
         [
@@ -1282,3 +1304,54 @@ class TestExecutorArms:
         )
 
         assert "schema:data/quotes.parquet" in plan["revision_sources"]
+
+
+class TestClosedSchemaKeywords:
+    def test_max_length_rejects_long_strings(self):
+        from haute.assistant._tools import _ToolArgumentValidationError, _validate_tool_value
+
+        schema = {"type": "string", "maxLength": 3}
+        _validate_tool_value("abc", schema, path="tool.field")
+
+        with pytest.raises(_ToolArgumentValidationError) as excinfo:
+            _validate_tool_value("abcd", schema, path="tool.field")
+
+        assert excinfo.value.path == "tool.field"
+        assert excinfo.value.reason == "too_long"
+        assert str(excinfo.value) == "tool.field is too long"
+
+    def test_unique_items_rejects_repeated_members(self):
+        from haute.assistant._tools import _ToolArgumentValidationError, _validate_tool_value
+
+        schema = {"type": "array", "uniqueItems": True, "items": {"type": "string"}}
+        _validate_tool_value(["a", "b"], schema, path="tool.items")
+
+        with pytest.raises(_ToolArgumentValidationError) as excinfo:
+            _validate_tool_value(["a", "a"], schema, path="tool.items")
+
+        assert excinfo.value.path == "tool.items"
+        assert excinfo.value.reason == "duplicate_items"
+        assert str(excinfo.value) == "tool.items contains duplicate items"
+
+    def test_unique_items_compares_unhashable_members_canonically(self):
+        from haute.assistant._tools import _ToolArgumentValidationError, _validate_tool_value
+
+        schema = {"type": "array", "uniqueItems": True}
+        _validate_tool_value([{"a": 1}, {"a": 2}], schema, path="tool.items")
+
+        with pytest.raises(_ToolArgumentValidationError):
+            _validate_tool_value([{"a": 1, "b": 2}, {"b": 2, "a": 1}], schema, path="tool.items")
+
+    def test_unique_items_ignores_unencodable_members(self):
+        from haute.assistant._tools import _validate_tool_value
+
+        _validate_tool_value(
+            [float("nan"), float("nan")],
+            {"type": "array", "uniqueItems": True},
+            path="tool.items",
+        )
+
+    def test_unique_items_is_inactive_unless_declared(self):
+        from haute.assistant._tools import _validate_tool_value
+
+        _validate_tool_value(["a", "a"], {"type": "array"}, path="tool.items")

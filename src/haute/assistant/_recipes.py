@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from haute._cache import canonical_json
+from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
 class RecipeError(Exception):
@@ -354,11 +355,23 @@ _EXPLICITLY_WITHHELD_RATING_MATERIAL = re.compile(
     r"|\bwithout\b.{0,120}\b(?:factor\s+values?|missing[- ]factor\s+policy|default)\b)",
     re.IGNORECASE,
 )
+_EXPLANATION_ONLY_REQUEST = re.compile(
+    r"^\s*(?:please\s+)?(?:explain\b|describe\b|show\s+me\s+how\b|how\b|what\b)",
+    re.IGNORECASE,
+)
+
+
+def is_explanation_only_request(request: str) -> bool:
+    """Return whether the request opens as an explanation, not an instruction."""
+
+    return _EXPLANATION_ONLY_REQUEST.match(request) is not None
 
 
 def request_requires_material_clarification(request: str) -> bool:
     """Identify an explicit refusal to supply required rating decisions."""
 
+    if is_explanation_only_request(request):
+        return False
     return bool(
         _MATERIAL_RATING_INTENT.search(request)
         and _EXPLICITLY_WITHHELD_RATING_MATERIAL.search(request)
@@ -412,6 +425,8 @@ def explicit_primary_recipe_name(request: str, recipe_id: str) -> str | None:
 def route_recipe_request(request: str) -> str | None:
     """Return one conservative explicit recipe route, never a guessed tie."""
 
+    if is_explanation_only_request(request):
+        return None
     tokens = [token.casefold() for token in re.findall("[A-Za-z]+", request)]
     token_set = set(tokens)
     matches: list[str] = []
@@ -1136,8 +1151,6 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
             )
         )
     try:
-        from haute.assistant._ops import OpValidationError, parse_ops
-
         parse_ops(operations)
     except OpValidationError as exc:
         raise RecipeError(
@@ -1177,6 +1190,7 @@ __all__ = [
     "RecipeError",
     "explicit_dataset_directory",
     "explicit_primary_recipe_name",
+    "is_explanation_only_request",
     "plan_recipe",
     "recipe_descriptor",
     "recipe_manifest",

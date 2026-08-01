@@ -299,11 +299,6 @@ def validate_banding_config(config: dict[str, Any]) -> list[dict[str, Any]]:
                 f"Banding factor {index} has unsupported banding type "
                 f"{banding_type!r}; expected one of: {allowed}"
             )
-        if not column:
-            raise ValueError(f"Banding factor {index} requires a non-empty column")
-        if not output_column:
-            raise ValueError(f"Banding factor {index} requires a non-empty outputColumn")
-
         rules = normalise_banding_rules(banding_type, configured_rules)
         if not rules:
             continue

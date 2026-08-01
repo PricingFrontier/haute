@@ -385,53 +385,81 @@ def _validate_egress(
     )
 
 
-def _resolve_config(
-    table: dict[str, object],
-) -> AssistantConfig | tuple[str, str | None, str | None]:
-    """Resolve provider settings, returning one readiness reason on failure."""
+class _UnresolvedConfigError(Exception):
+    """One provider or endpoint failure, carrying the reason its caller renders.
 
+    ``_resolve_config`` reports user-recoverable states as readiness reasons
+    while ``resolve_egress_policy`` raises them; ``fatal`` marks the states both
+    callers must raise.
+    """
+
+    def __init__(self, reason: str, *, fatal: bool = False) -> None:
+        self.reason = reason
+        self.fatal = fatal
+        super().__init__(reason)
+
+
+def _validate_table_keys(table: dict[str, object]) -> None:
     unknown_keys = sorted(set(table).difference(_ASSISTANT_TABLE_KEYS))
     if unknown_keys:
         paths = ", ".join(f"[assistant].{key}" for key in unknown_keys)
         raise ConfigError(f"Unknown [assistant] configuration key(s): {paths}.")
 
+
+def _resolve_provider(raw_provider: object) -> AssistantProvider:
+    if not isinstance(raw_provider, str) or raw_provider not in _PROVIDER_SDKS:
+        raise _UnresolvedConfigError(f"Unknown assistant provider: {raw_provider!r}.")
+    return cast(AssistantProvider, raw_provider)
+
+
+def _resolve_base_url(table: dict[str, object], provider: AssistantProvider) -> str | None:
+    raw_base_url = table.get("base_url")
+    if provider in {"anthropic", "databricks"} and raw_base_url is not None:
+        if provider == "databricks":
+            raise _UnresolvedConfigError(
+                "base_url is derived from DATABRICKS_HOST for the databricks assistant provider."
+            )
+        raise _UnresolvedConfigError(
+            "base_url is only supported for the openai assistant provider."
+        )
+    if raw_base_url is not None and not isinstance(raw_base_url, str):
+        raise _UnresolvedConfigError("[assistant].base_url must be a string", fatal=True)
+    if provider == "databricks":
+        raw_host = _databricks_host_from_environment()
+        if not raw_host:
+            raise _UnresolvedConfigError(
+                "Missing Databricks host environment variable: DATABRICKS_HOST."
+            )
+        return _databricks_base_url(raw_host)
+    return _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
+
+
+def _resolve_config(
+    table: dict[str, object],
+) -> AssistantConfig | tuple[str, str | None, str | None]:
+    """Resolve provider settings, returning one readiness reason on failure."""
+
+    _validate_table_keys(table)
+
     raw_provider = table.get("provider")
     provider_echo = raw_provider if isinstance(raw_provider, str) else None
     raw_model = table.get("model")
     model_echo = raw_model if isinstance(raw_model, str) else None
-    if not isinstance(raw_provider, str) or raw_provider not in _PROVIDER_SDKS:
-        return f"Unknown assistant provider: {raw_provider!r}.", provider_echo, model_echo
-    provider = cast(AssistantProvider, raw_provider)
+    try:
+        provider = _resolve_provider(raw_provider)
+    except _UnresolvedConfigError as failure:
+        return failure.reason, provider_echo, model_echo
 
     if not isinstance(raw_model, str) or not raw_model.strip():
         return "Missing assistant model.", provider, None
     model = raw_model
 
-    raw_base_url = table.get("base_url")
-    if provider in {"anthropic", "databricks"} and raw_base_url is not None:
-        if provider == "databricks":
-            reason = (
-                "base_url is derived from DATABRICKS_HOST for the databricks assistant provider."
-            )
-        else:
-            reason = "base_url is only supported for the openai assistant provider."
-        return reason, provider, model
-    if raw_base_url is not None and not isinstance(raw_base_url, str):
-        raise ConfigError("[assistant].base_url must be a string", provider=provider)
-    base_url: str | None
-    if provider == "databricks":
-        raw_host = _databricks_host_from_environment()
-        if not raw_host:
-            return (
-                "Missing Databricks host environment variable: DATABRICKS_HOST.",
-                provider,
-                model,
-            )
-        base_url = _databricks_base_url(raw_host)
-    else:
-        base_url = (
-            _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
-        )
+    try:
+        base_url = _resolve_base_url(table, provider)
+    except _UnresolvedConfigError as failure:
+        if failure.fatal:
+            raise ConfigError(failure.reason, provider=provider) from None
+        return failure.reason, provider, model
     endpoint = _endpoint(provider, base_url)
     raw_egress = table.get("egress")
     if raw_egress is None:
@@ -558,33 +586,12 @@ def resolve_egress_policy(project_root: Path | None = None) -> EgressPolicy:
     table = _read_assistant_table(root)
     if table is None:
         raise ConfigError("No [assistant] table is configured in haute.toml.")
-    unknown = sorted(set(table).difference(_ASSISTANT_TABLE_KEYS))
-    if unknown:
-        paths = ", ".join(f"[assistant].{key}" for key in unknown)
-        raise ConfigError(f"Unknown [assistant] configuration key(s): {paths}.")
-    raw_provider = table.get("provider")
-    if not isinstance(raw_provider, str) or raw_provider not in _PROVIDER_SDKS:
-        raise ConfigError(f"Unknown assistant provider: {raw_provider!r}.")
-    provider = cast(AssistantProvider, raw_provider)
-    raw_base_url = table.get("base_url")
-    if provider in {"anthropic", "databricks"} and raw_base_url is not None:
-        if provider == "databricks":
-            raise ConfigError(
-                "base_url is derived from DATABRICKS_HOST for the databricks assistant provider."
-            )
-        raise ConfigError("base_url is only supported for the openai assistant provider.")
-    if raw_base_url is not None and not isinstance(raw_base_url, str):
-        raise ConfigError("[assistant].base_url must be a string")
-    base_url: str | None
-    if provider == "databricks":
-        raw_host = _databricks_host_from_environment()
-        if not raw_host:
-            raise ConfigError("Missing Databricks host environment variable: DATABRICKS_HOST.")
-        base_url = _databricks_base_url(raw_host)
-    else:
-        base_url = (
-            _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
-        )
+    _validate_table_keys(table)
+    try:
+        provider = _resolve_provider(table.get("provider"))
+        base_url = _resolve_base_url(table, provider)
+    except _UnresolvedConfigError as failure:
+        raise ConfigError(failure.reason) from None
     raw_egress = table.get("egress")
     if raw_egress is None:
         raise ConfigError("Missing required [assistant].egress table.")

@@ -367,9 +367,16 @@ def _portable_allowed_values(schema: Mapping[str, object]) -> tuple[object, ...]
     return None
 
 
+@dataclass
+class _SchemaBudget:
+    """Bounded property count projected onto a provider wire schema."""
+
+    remaining: int = 16
+
+
 def _portable_property_schema(
     schemas: Sequence[Mapping[str, object]],
-    budget: list[int],
+    budget: _SchemaBudget,
 ) -> dict[str, object]:
     if schemas and all(schema == schemas[0] for schema in schemas[1:]):
         return _portable_tool_schema(schemas[0], budget)
@@ -399,7 +406,7 @@ def _portable_required_names(schema: Mapping[str, object]) -> tuple[str, ...]:
 
 def _portable_composed_object(
     schema: Mapping[str, object],
-    budget: list[int],
+    budget: _SchemaBudget,
 ) -> dict[str, object] | None:
     """Merge one closed object union when it fits the remaining property budget."""
 
@@ -436,9 +443,9 @@ def _portable_composed_object(
         for name in properties:
             if isinstance(name, str) and name not in names:
                 names.append(name)
-    if len(names) > budget[0]:
+    if len(names) > budget.remaining:
         return {"type": "object"}
-    budget[0] -= len(names)
+    budget.remaining -= len(names)
 
     projected_properties: dict[str, object] = {}
     for name in names:
@@ -468,12 +475,12 @@ def _portable_composed_object(
 
 def _portable_tool_schema(
     schema: Mapping[str, object],
-    budget: list[int] | None = None,
+    budget: _SchemaBudget | None = None,
 ) -> dict[str, object]:
     """Project canonical validation schema onto one bounded provider wire subset."""
 
     if budget is None:
-        budget = [16]
+        budget = _SchemaBudget()
     composed = _portable_composed_object(schema, budget)
     if composed is not None:
         return composed
@@ -495,9 +502,9 @@ def _portable_tool_schema(
     properties = schema.get("properties")
     if isinstance(properties, Mapping):
         property_names = [name for name in properties if isinstance(name, str)]
-        if len(property_names) > budget[0]:
+        if len(property_names) > budget.remaining:
             return {"type": projected_type or "object"}
-        budget[0] -= len(property_names)
+        budget.remaining -= len(property_names)
         projected_properties = {
             str(name): _portable_tool_schema(value, budget)
             for name, value in properties.items()

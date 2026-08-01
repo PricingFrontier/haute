@@ -167,7 +167,10 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
         data = path.read_bytes()
         if len(data) > _MAX_DOCUMENT_BYTES:
             continue
-        text = data.decode("utf-8")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
         items.append(
             _source_item(
                 source=path.relative_to(project_root).as_posix(),

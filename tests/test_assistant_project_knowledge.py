@@ -59,6 +59,26 @@ def test_items_are_source_linked_label_unknown_restricted_and_filter_by_policy(t
     assert view.excluded_by_policy == ("docs/unknown.md",)
 
 
+def test_undecodable_document_is_skipped_without_failing_the_build(tmp_path: Path):
+    from haute.assistant._config import EgressPolicy
+    from haute.assistant._project_knowledge import build_project_knowledge
+
+    _project(tmp_path)
+    (tmp_path / "docs" / "broken.md").write_bytes(b"\xff\xfe\x00broken")
+    policy = EgressPolicy(
+        trust="organization",
+        max_sensitivity="internal",
+        allow_project_knowledge=True,
+        allow_executable_source=False,
+        allow_row_samples=False,
+    )
+    view = build_project_knowledge(tmp_path, "main.py", policy=policy)
+
+    assert any(item.source == "docs/terms.md" for item in view.items)
+    assert all(item.source != "docs/broken.md" for item in view.items)
+    assert "docs/broken.md" not in view.excluded_by_policy
+
+
 def test_changed_and_removed_sources_invalidate_metadata_cache(tmp_path: Path):
     from haute.assistant._config import EgressPolicy
     from haute.assistant._project_knowledge import build_project_knowledge

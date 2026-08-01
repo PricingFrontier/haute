@@ -9,6 +9,7 @@ decorators, sidecar folders, or singleton rules.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from haute._cache import canonical_json
 from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import _TYPED_DICT_BY_NODE_TYPE, VALID_KEYS
 from haute._types import NODE_TYPE_TO_DECORATOR, NodeType
+from haute.assistant._recipes import recipe_manifest
 from haute.routes._save_pipeline import _SINGLETON_NODE_TYPES
 
 
@@ -265,7 +267,6 @@ validate_catalog_complete()
 # This intentionally lives beside the legacy catalogue: it is the authoritative
 # descriptor and the latter remains a small compatibility projection.
 MANIFEST_SCHEMA_VERSION = "1.0"
-_MANIFEST_CACHE: dict[tuple[str, str], CapabilityManifest] = {}
 
 
 def _json_value_schema() -> dict[str, object]:
@@ -1016,8 +1017,6 @@ def _operation_output_schema(name: str) -> dict[str, object]:
 def _recipe_invocation_schema() -> dict[str, object]:
     """Expose recipe arguments as a provider-friendly discriminated union."""
 
-    from haute.assistant._recipes import recipe_manifest
-
     variants: list[dict[str, object]] = []
     for descriptor in recipe_manifest():
         recipe_id = descriptor.get("id")
@@ -1319,9 +1318,8 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
     )
 
 
-def capability_manifest() -> CapabilityManifest:
-    from haute.assistant._recipes import recipe_manifest
-
+@functools.cache
+def _build_manifest() -> CapabilityManifest:
     installed = _installed_capabilities()
     nodes = tuple(_node_descriptor(node_type) for node_type in NodeType)
     recipes = recipe_manifest()
@@ -1364,23 +1362,24 @@ def capability_manifest() -> CapabilityManifest:
         "recipes": [_thaw(recipe) for recipe in recipes],
     }
     digest = hashlib.sha256(canonical_json(material).encode("utf-8")).hexdigest()
-    key = (haute_version, digest)
-    if key not in _MANIFEST_CACHE:
-        _MANIFEST_CACHE[key] = CapabilityManifest(
-            schema_version=MANIFEST_SCHEMA_VERSION,
-            haute_version=haute_version,
-            capability_hash=digest,
-            installed_capabilities=cast(Mapping[str, object], _freeze(installed)),
-            feature_flags=MappingProxyType(feature_flags),
-            nodes=nodes,
-            operations=operations,
-            recipes=recipes,
-        )
-    return _MANIFEST_CACHE[key]
+    return CapabilityManifest(
+        schema_version=MANIFEST_SCHEMA_VERSION,
+        haute_version=haute_version,
+        capability_hash=digest,
+        installed_capabilities=cast(Mapping[str, object], _freeze(installed)),
+        feature_flags=MappingProxyType(feature_flags),
+        nodes=nodes,
+        operations=operations,
+        recipes=recipes,
+    )
+
+
+def capability_manifest() -> CapabilityManifest:
+    return _build_manifest()
 
 
 def _clear_manifest_cache() -> None:
-    _MANIFEST_CACHE.clear()
+    _build_manifest.cache_clear()
 
 
 def validate_manifest_complete() -> None:

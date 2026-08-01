@@ -69,6 +69,43 @@ def test_explicit_request_recipe_routing_is_conservative(prompt: str, expected: 
 
 
 @pytest.mark.parametrize(
+    "prompt",
+    [
+        "Explain how joins work in this pipeline",
+        "What does joining two tables do?",
+        "How is banding of continuous ranges handled?",
+        "Describe the rating step for this pipeline",
+    ],
+)
+def test_explanation_only_requests_never_route_to_a_recipe(prompt: str) -> None:
+    from haute.assistant._recipes import route_recipe_request
+
+    assert route_recipe_request(prompt) is None
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        ("Add continuous banding for driver_age.", "continuous_banding"),
+        ("Add a LEFT JOIN to the lookup.", "reference_join"),
+        ("Build a rating-step node.", "rating_step"),
+        ("Add categorical banding for region.", "categorical_banding"),
+        ("Add a response output for quote_id.", "response_output"),
+        (
+            "Build a pipeline with the parquets and use many node types.",
+            "parquet_showcase",
+        ),
+    ],
+)
+def test_imperative_requests_still_route_past_the_explanation_guard(
+    prompt: str, expected: str
+) -> None:
+    from haute.assistant._recipes import route_recipe_request
+
+    assert route_recipe_request(prompt) == expected
+
+
+@pytest.mark.parametrize(
     ("recipe_id", "user_text", "expected"),
     [
         ("continuous_banding", "After quotes, add age_band: band driver_age.", "age_band"),
@@ -101,6 +138,18 @@ def test_explicitly_withheld_rating_material_requires_clarification() -> None:
     assert not request_requires_material_clarification(
         "Add a rating step with region north = 1.1 and default 1.0."
     )
+
+
+def test_explanation_phrased_material_question_is_not_forced_to_clarify() -> None:
+    from haute.assistant._recipes import request_requires_material_clarification
+
+    assert not request_requires_material_clarification(
+        "Explain what happens to rating factors when I do not supply factor values"
+    )
+    assert request_requires_material_clarification(
+        "Add rating factors, but do not supply missing-factor policy or factor values."
+    )
+    assert request_requires_material_clarification("Add rating factors without factor values.")
 
 
 def _arguments(recipe_id: str) -> dict[str, object]:

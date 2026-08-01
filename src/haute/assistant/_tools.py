@@ -50,6 +50,7 @@ from haute.assistant._recipes import (
     route_recipe_request,
 )
 from haute.assistant._recipes import plan_recipe as _plan_recipe
+from haute.assistant._render import render_pipeline_graph
 from haute.errors import HauteError
 from haute.execution import execute_lazy_graph
 from haute.executor import (
@@ -220,15 +221,6 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
         )
 
 
-def _node_type(node: GraphNode) -> str:
-    value = node.data.nodeType
-    return value.value if isinstance(value, NodeType) else str(value)
-
-
-def _render_config_summary(config: Mapping[str, Any]) -> dict[str, object]:
-    return {"keys": sorted(config), "count": len(config)}
-
-
 _EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script"})
 _ROW_VALUE_CONFIG_KEYS = frozenset({"records"})
 
@@ -249,50 +241,6 @@ def _redact_config_value(value: object, *, key: str | None = None) -> object:
     if isinstance(value, list | tuple):
         return [_redact_config_value(child) for child in value]
     return value
-
-
-def render_pipeline_graph(graph: PipelineGraph) -> dict[str, object]:
-    """Render the compact graph shape shared by live pipelines and examples."""
-
-    nodes = [
-        {
-            "id": node.id,
-            "type": _node_type(node),
-            "label": node.data.label,
-            "config": _render_config_summary(node.data.config),
-        }
-        for node in graph.nodes
-    ]
-    edges = [
-        {
-            "id": edge.id,
-            "source": edge.source,
-            "target": edge.target,
-            "sourceHandle": edge.sourceHandle,
-            "targetHandle": edge.targetHandle,
-        }
-        for edge in graph.edges
-    ]
-    singletons = {
-        entry.node_type.value: any(
-            _node_type(node) == entry.node_type.value for node in graph.nodes
-        )
-        for entry in NODE_CATALOG.values()
-        if entry.singleton
-    }
-    return {
-        "name": graph.pipeline_name,
-        "description": graph.pipeline_description,
-        "nodes": nodes,
-        "edges": edges,
-        "preamble": {
-            "present": bool(graph.preamble),
-            "sha256": (
-                sha256(graph.preamble.encode("utf-8")).hexdigest() if graph.preamble else None
-            ),
-        },
-        "singletons": singletons,
-    }
 
 
 def _parse_graph(source_file: str) -> PipelineGraph:
@@ -686,97 +634,6 @@ def get_project_knowledge(
         )
 
 
-def _graph_edit_schema() -> dict[str, object]:
-    """Return the provider-facing schema for the ordered graph-edit batch."""
-
-    ref = {
-        "type": "string",
-        "description": "Node id, or a batch-local $ref declared by an earlier add_node.",
-    }
-    return {
-        "type": "array",
-        "description": (
-            "Ordered graph edits. An add_node may declare ref; later node and edge fields "
-            "may use $ref to address that node."
-        ),
-        "items": {
-            "oneOf": [
-                {
-                    "type": "object",
-                    "properties": {
-                        "op": {"const": "add_node"},
-                        "node_type": {"type": "string"},
-                        "name": {"type": "string"},
-                        "config": {"type": "object"},
-                        "ref": {"type": "string"},
-                    },
-                    "required": ["op", "node_type", "name"],
-                    "additionalProperties": False,
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "op": {"const": "update_node"},
-                        "node": ref,
-                        "config": {"type": "object"},
-                    },
-                    "required": ["op", "node", "config"],
-                    "additionalProperties": False,
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "op": {"const": "rename_node"},
-                        "node": ref,
-                        "new_name": {"type": "string"},
-                    },
-                    "required": ["op", "node", "new_name"],
-                    "additionalProperties": False,
-                },
-                {
-                    "type": "object",
-                    "properties": {"op": {"const": "delete_node"}, "node": ref},
-                    "required": ["op", "node"],
-                    "additionalProperties": False,
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "op": {"const": "add_edge"},
-                        "source": ref,
-                        "target": ref,
-                        "source_handle": {"type": ["string", "null"]},
-                        "target_handle": {"type": ["string", "null"]},
-                    },
-                    "required": ["op", "source", "target"],
-                    "additionalProperties": False,
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "op": {"const": "delete_edge"},
-                        "source": ref,
-                        "target": ref,
-                        "source_handle": {"type": ["string", "null"]},
-                        "target_handle": {"type": ["string", "null"]},
-                    },
-                    "required": ["op", "source", "target"],
-                    "additionalProperties": False,
-                },
-                {
-                    "type": "object",
-                    "properties": {
-                        "op": {"const": "update_preamble"},
-                        "preamble": {"type": ["string", "null"]},
-                    },
-                    "required": ["op", "preamble"],
-                    "additionalProperties": False,
-                },
-            ]
-        },
-    }
-
-
 def _publish_graph_update(source_file: str, graph: PipelineGraph) -> str:
     """Publish the exact graph-update payload used by the file watcher."""
 
@@ -894,6 +751,27 @@ def _json_size(value: object) -> int:
             allow_nan=False,
         ).encode("utf-8")
     )
+
+
+def _has_duplicate_items(value: list[object]) -> bool:
+    """Report repeats by canonical encoding, because members may be unhashable."""
+
+    seen: set[str] = set()
+    for item in value:
+        try:
+            encoded = json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            continue
+        if encoded in seen:
+            return True
+        seen.add(encoded)
+    return False
 
 
 class _ToolArgumentValidationError(ValueError):
@@ -1064,6 +942,12 @@ def _validate_tool_value(
                 "too_many_items",
                 f"{path} has too many items",
             )
+        if schema.get("uniqueItems") is True and _has_duplicate_items(value):
+            raise _ToolArgumentValidationError(
+                path,
+                "duplicate_items",
+                f"{path} contains duplicate items",
+            )
         item_schema = schema.get("items")
         if isinstance(item_schema, Mapping):
             for index, item in enumerate(value):
@@ -1071,11 +955,18 @@ def _validate_tool_value(
 
     if isinstance(value, str) and "string" in expected_types:
         minimum_length = schema.get("minLength")
+        maximum_length = schema.get("maxLength")
         if isinstance(minimum_length, int) and len(value) < minimum_length:
             raise _ToolArgumentValidationError(
                 path,
                 "too_short",
                 f"{path} is too short",
+            )
+        if isinstance(maximum_length, int) and len(value) > maximum_length:
+            raise _ToolArgumentValidationError(
+                path,
+                "too_long",
+                f"{path} is too long",
             )
         pattern = schema.get("pattern")
         if isinstance(pattern, str) and re.search(pattern, value) is None:
@@ -1468,14 +1359,11 @@ def build_tool_executor(
                     arguments["ids"],
                 )
             elif name == "list_datasets":
-                requested_root = arguments.get("project_root")
-                recursive = arguments.get("recursive", False)
-                if showcase_dataset_root is not None:
-                    if requested_root is None:
-                        requested_root = showcase_dataset_root
-                    if requested_root == showcase_dataset_root:
-                        recursive = True
-                operation = partial(list_datasets, requested_root, recursive=recursive)
+                operation = partial(
+                    list_datasets,
+                    arguments.get("project_root"),
+                    recursive=arguments.get("recursive", False),
+                )
             elif name == "get_dataset_schema":
                 operation = partial(
                     get_dataset_schema,

@@ -350,7 +350,7 @@ async def post_assistant_message(body: AssistantMessageRequest) -> StreamingResp
         except Exception as exc:
             detail = _http_error_detail(exc, "system_prompt")
             raise HTTPException(status_code=500, detail=detail) from None
-        authoring_request = _loop._effective_authoring_request(session, body.message)
+        authoring_request = _loop.effective_authoring_request(session, body.message)
         execute_tool = build_tool_executor(
             session.source_file,
             session_id=session.id,

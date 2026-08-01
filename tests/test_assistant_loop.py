@@ -286,6 +286,33 @@ class TestMutationCompletionController:
 
         assert _request_requires_completion(user_text) is expected
 
+    async def test_explanation_request_completes_without_a_controller_continuation(
+        self, store, session_id
+    ):
+        provider = ScriptedProvider(
+            [
+                [
+                    TextDelta("Joins combine a base flow with a reference source."),
+                    TurnStop("end", _usage()),
+                ]
+            ]
+        )
+
+        events = await _run(
+            store,
+            session_id,
+            "Explain how joins work in this pipeline",
+            provider=provider,
+        )
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert len(provider.calls) == 1
+        assert all(
+            message["role"] != "controller"
+            for call in provider.calls
+            for message in call["messages"]
+        )
+
     async def test_explicit_authoring_end_before_dry_run_gets_one_controller_continuation(
         self, store, session_id
     ):
@@ -1201,7 +1228,7 @@ class TestSystemPrompt:
     def test_needs_input_chain_retains_recipe_route_but_normal_completion_does_not(
         self, store, session_id
     ):
-        from haute.assistant._loop import _effective_authoring_request
+        from haute.assistant._loop import effective_authoring_request
         from haute.assistant._recipes import route_recipe_request
 
         session = store.lookup(session_id)
@@ -1225,7 +1252,7 @@ class TestSystemPrompt:
             ],
         )
 
-        continued = _effective_authoring_request(session, "data/quotes.parquet")
+        continued = effective_authoring_request(session, "data/quotes.parquet")
         assert route_recipe_request(continued) == "parquet_showcase"
         assert original in continued
         assert "data/quotes.parquet" in continued
@@ -1236,7 +1263,7 @@ class TestSystemPrompt:
                 {"role": "assistant", "content": "No changes were made."},
             ]
         )
-        assert _effective_authoring_request(session, "data/quotes.parquet") == (
+        assert effective_authoring_request(session, "data/quotes.parquet") == (
             "data/quotes.parquet"
         )
 

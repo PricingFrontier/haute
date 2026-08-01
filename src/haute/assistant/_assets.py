@@ -21,6 +21,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from haute.assistant._render import render_pipeline_graph
+
 if TYPE_CHECKING:
     from haute._types import PipelineGraph
 
@@ -798,7 +800,6 @@ def _load_bundle(bundle: Traversable, manifest: dict[str, object]) -> dict[str, 
         destination = Path(temp_dir) / bundle.name
         _materialize_resource_tree(bundle, destination)
         graph = parse_pipeline_to_graph(destination / source_path)
-    from haute.assistant._tools import render_pipeline_graph
 
     return {
         "name": manifest["id"],
@@ -884,10 +885,6 @@ def load_example(name: str) -> dict[str, object]:
         examples_path = Path(temp_dir) / _EXAMPLES_DIR
         _materialize_resource_tree(_examples_root(), examples_path)
         graph = parse_pipeline_to_graph(examples_path / resource.name)
-
-    # Import lazily because _tools owns the shared graph rendering function
-    # and imports this module for the example dispatcher.
-    from haute.assistant._tools import render_pipeline_graph
 
     return {
         "name": name,
