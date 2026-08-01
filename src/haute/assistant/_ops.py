@@ -20,7 +20,7 @@ from pathlib import Path
 from threading import RLock
 from time import monotonic
 from types import MappingProxyType
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, NoReturn, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -39,8 +39,6 @@ from haute.assistant._wire_ops import (
     RenameNodeOp,
     UpdateNodeOp,
     UpdatePreambleOp,
-    _invalid,
-    _OpModel,
     parse_ops,
 )
 from haute.errors import HauteError
@@ -49,6 +47,19 @@ _SUBMODEL_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 _X_STEP = 280.0
 _Y_STEP = 120.0
 _ANY_HANDLE = object()
+_GRAPH_EDIT_OP_MODELS = (
+    AddNodeOp,
+    UpdateNodeOp,
+    RenameNodeOp,
+    DeleteNodeOp,
+    AddEdgeOp,
+    DeleteEdgeOp,
+    UpdatePreambleOp,
+)
+
+
+def _invalid(message: str) -> NoReturn:
+    raise OpValidationError(message)
 
 
 def _mapping(value: object) -> Mapping[str, Any] | None:
@@ -816,7 +827,7 @@ def semantic_diff(
     """Return the bounded canonical semantic diff for an exact operation batch."""
 
     typed_operations = [
-        operation if isinstance(operation, _OpModel) else parse_ops([operation])[0]
+        operation if isinstance(operation, _GRAPH_EDIT_OP_MODELS) else parse_ops([operation])[0]
         for operation in operations
     ]
     _expected, refs, _new_node_ids = _apply_ops_with_refs(before, typed_operations)

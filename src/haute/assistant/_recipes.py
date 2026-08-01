@@ -359,12 +359,21 @@ _EXPLANATION_ONLY_REQUEST = re.compile(
     r"^\s*(?:please\s+)?(?:explain\b|describe\b|show\s+me\s+how\b|how\b|what\b)",
     re.IGNORECASE,
 )
+_SEQUENCED_AUTHORING_REQUEST = re.compile(
+    r"(?:[,;]\s*(?:and\s+)?(?:then\s+)?|\b(?:and\s+then|then|also|afterwards)\s+)"
+    r"(?:please\s+)?"
+    r"(?:build|add|change|update|connect|remove|delete|create|rename|configure|edit|author|make)\b",
+    re.IGNORECASE,
+)
 
 
 def is_explanation_only_request(request: str) -> bool:
     """Return whether the request opens as an explanation, not an instruction."""
 
-    return _EXPLANATION_ONLY_REQUEST.match(request) is not None
+    return bool(
+        _EXPLANATION_ONLY_REQUEST.match(request)
+        and _SEQUENCED_AUTHORING_REQUEST.search(request) is None
+    )
 
 
 def request_requires_material_clarification(request: str) -> bool:

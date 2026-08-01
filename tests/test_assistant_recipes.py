@@ -83,6 +83,15 @@ def test_explanation_only_requests_never_route_to_a_recipe(prompt: str) -> None:
     assert route_recipe_request(prompt) is None
 
 
+def test_explanation_followed_by_explicit_authoring_still_routes_to_a_recipe() -> None:
+    from haute.assistant._recipes import route_recipe_request
+
+    assert (
+        route_recipe_request("Explain how joins work, then add a left join to the lookup.")
+        == "reference_join"
+    )
+
+
 @pytest.mark.parametrize(
     ("prompt", "expected"),
     [

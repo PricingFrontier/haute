@@ -268,6 +268,7 @@ class TestMutationCompletionController:
             ("Can you build a pipeline from these files?", True),
             ("Add and connect an output node.", True),
             ("Explain how to build a pipeline.", False),
+            ("Explain how joins work, then add a left join to the lookup.", True),
             ("What can you build with Haute?", False),
             ("Run the saved pipeline now.", True),
             ("Read the saved graph.", False),

@@ -160,39 +160,24 @@ class TestCapabilityManifest:
 
         assert hashlib.sha256(canonical).hexdigest() == reported
 
-    def test_manifest_cache_reuses_identity_and_rebuilds_after_clear(
+    def test_manifest_cache_reuses_identity_and_invalidates_on_installed_capabilities(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         _catalog._clear_manifest_cache()
-        try:
-            first = capability_manifest()
-            second = capability_manifest()
-            assert first is second
+        first = capability_manifest()
+        second = capability_manifest()
+        assert first is second
 
-            original = _catalog._installed_capabilities
+        original = _catalog._installed_capabilities
 
-            def changed_capabilities():
-                changed = original()
-                return {**changed, "test_engine": {"available": True}}
+        def changed_capabilities():
+            changed = original()
+            return {**changed, "test_engine": {"available": True}}
 
-            monkeypatch.setattr(_catalog, "_installed_capabilities", changed_capabilities)
-            _catalog._clear_manifest_cache()
-            changed = capability_manifest()
-            assert changed is not first
-            assert changed.capability_hash != first.capability_hash
-        finally:
-            _catalog._clear_manifest_cache()
-
-    def test_manifest_is_built_once_per_process(self):
-        assert capability_manifest() is capability_manifest()
-
-        cached = capability_manifest()
-        _catalog._clear_manifest_cache()
-        rebuilt = capability_manifest()
-
-        assert rebuilt is not cached
-        assert rebuilt.capability_hash == cached.capability_hash
-        assert rebuilt.as_dict() == cached.as_dict()
+        monkeypatch.setattr(_catalog, "_installed_capabilities", changed_capabilities)
+        changed = capability_manifest()
+        assert changed is not first
+        assert changed.capability_hash != first.capability_hash
 
     def test_cached_manifest_material_is_immutable(self):
         manifest = capability_manifest()

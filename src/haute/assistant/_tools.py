@@ -758,16 +758,13 @@ def _has_duplicate_items(value: list[object]) -> bool:
 
     seen: set[str] = set()
     for item in value:
-        try:
-            encoded = json.dumps(
-                item,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=False,
-                allow_nan=False,
-            )
-        except (TypeError, ValueError):
-            continue
+        encoded = json.dumps(
+            item,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
         if encoded in seen:
             return True
         seen.add(encoded)

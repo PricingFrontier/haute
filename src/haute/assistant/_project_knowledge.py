@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from haute.assistant._config import EgressPolicy, Sensitivity
+from haute.errors import HauteError
 from haute.routes._helpers import parse_pipeline_to_graph
 
 EvidenceClass = Literal["project_fact", "untrusted_document"]
@@ -32,6 +33,10 @@ _SENSITIVITY_LINE = re.compile(
     r"^\s*sensitivity\s*:\s*(public|internal|restricted)\s*$",
     re.IGNORECASE,
 )
+
+
+class ProjectKnowledgeError(HauteError):
+    """Project knowledge could not be extracted without losing source evidence."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,8 +174,11 @@ def _document_items(project_root: Path) -> list[KnowledgeItem]:
             continue
         try:
             text = data.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
+        except UnicodeDecodeError as exc:
+            source = path.relative_to(project_root).as_posix()
+            raise ProjectKnowledgeError(
+                f"Project documentation must be valid UTF-8: {source}."
+            ) from exc
         items.append(
             _source_item(
                 source=path.relative_to(project_root).as_posix(),
@@ -299,6 +307,7 @@ def query_project_knowledge(
 __all__ = [
     "EXTRACTION_VERSION",
     "KnowledgeItem",
+    "ProjectKnowledgeError",
     "ProjectKnowledgeView",
     "build_project_knowledge",
     "query_project_knowledge",

@@ -1342,14 +1342,15 @@ class TestClosedSchemaKeywords:
         with pytest.raises(_ToolArgumentValidationError):
             _validate_tool_value([{"a": 1, "b": 2}, {"b": 2, "a": 1}], schema, path="tool.items")
 
-    def test_unique_items_ignores_unencodable_members(self):
+    def test_unique_items_rejects_non_finite_json_members(self):
         from haute.assistant._tools import _validate_tool_value
 
-        _validate_tool_value(
-            [float("nan"), float("nan")],
-            {"type": "array", "uniqueItems": True},
-            path="tool.items",
-        )
+        with pytest.raises(ValueError, match="Out of range float values"):
+            _validate_tool_value(
+                [float("nan"), float("nan")],
+                {"type": "array", "uniqueItems": True},
+                path="tool.items",
+            )
 
     def test_unique_items_is_inactive_unless_declared(self):
         from haute.assistant._tools import _validate_tool_value
