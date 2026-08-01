@@ -13,6 +13,9 @@ make these pass.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from haute._graph_utils import _sanitize_func_name
@@ -82,6 +85,10 @@ class TestParseOps:
         )
         assert len(ops) == 2
 
+    def test_operation_count_is_bounded(self):
+        with pytest.raises(OpValidationError, match="at most 100"):
+            parse_ops([{"op": "update_preamble", "preamble": None} for _ in range(101)])
+
 
 # ---------------------------------------------------------------------------
 # add_node
@@ -103,7 +110,7 @@ class TestAddNode:
         )
         expected_id = _sanitize_func_name("My Step")
         node = _get(out, expected_id)
-        assert node.data.label == "My Step"
+        assert node.data.label == "My_Step"
         assert node.data.nodeType == "polars"
         assert node.data.config == {"code": "df"}
 
@@ -115,6 +122,14 @@ class TestAddNode:
     def test_unknown_node_type_rejected(self):
         with pytest.raises(OpValidationError):
             _apply(_graph([]), [{"op": "add_node", "node_type": "notAType", "name": "x"}])
+
+    def test_sanitized_id_collision_is_rejected_without_changing_input(self):
+        graph = _graph([_node("My_Step")])
+
+        with pytest.raises(OpValidationError, match="already exists"):
+            _apply(graph, [{"op": "add_node", "node_type": "polars", "name": "My Step"}])
+
+        assert _ids(graph) == {"My_Step"}
 
 
 # ---------------------------------------------------------------------------
@@ -238,12 +253,23 @@ class TestRenameNode:
         out = _apply(base, [{"op": "rename_node", "node": "a", "new_name": "first step"}])
         new_id = _sanitize_func_name("first step")
         assert new_id in _ids(out) and "a" not in _ids(out)
-        assert _get(out, new_id).data.label == "first step"
+        assert _get(out, new_id).data.label == "first_step"
         assert any(e.source == new_id and e.target == "b" for e in out.edges)
 
     def test_rename_unknown_node_rejected(self):
         with pytest.raises(OpValidationError):
             _apply(_graph([]), [{"op": "rename_node", "node": "ghost", "new_name": "x"}])
+
+    def test_rename_cannot_overwrite_an_existing_sanitized_id(self):
+        graph = _graph([_node("first"), _node("Existing_Name")])
+
+        with pytest.raises(OpValidationError, match="already exists"):
+            _apply(
+                graph,
+                [{"op": "rename_node", "node": "first", "new_name": "Existing Name"}],
+            )
+
+        assert _ids(graph) == {"first", "Existing_Name"}
 
 
 # ---------------------------------------------------------------------------
@@ -518,3 +544,558 @@ class TestDuplicateEdges:
             ],
         )
         assert len(out.edges) == 1
+
+
+class TestProjectRevision:
+    def test_revision_is_deterministic_and_covers_source_config_graph_and_capabilities(
+        self, tmp_path: Path
+    ):
+        from haute.assistant._ops import build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("first", encoding="utf-8")
+        (tmp_path / "haute.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+        graph = _graph([_node("source", "dataInput", path="quotes.parquet")])
+
+        first = build_project_snapshot(tmp_path, source, graph)
+        assert first == build_project_snapshot(tmp_path, source, graph)
+        assert len(first.revision) == 64
+        assert first.capability_hash
+
+        source.write_text("second", encoding="utf-8")
+        assert build_project_snapshot(tmp_path, source, graph).revision != first.revision
+        source.write_text("first", encoding="utf-8")
+
+        (tmp_path / "haute.toml").write_text("[project]\nname='y'\n", encoding="utf-8")
+        assert build_project_snapshot(tmp_path, source, graph).revision != first.revision
+
+        changed_graph = _graph([_node("source", "dataInput", path="other.parquet")])
+        assert build_project_snapshot(tmp_path, source, changed_graph).revision != first.revision
+
+    def test_project_sources_are_path_safe_and_content_addressed(self, tmp_path: Path):
+        from haute.assistant._ops import AssistantOperationError, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        knowledge = tmp_path / "docs" / "terms.md"
+        knowledge.parent.mkdir()
+        knowledge.write_text("one", encoding="utf-8")
+
+        first = build_project_snapshot(tmp_path, source, _graph([]), project_sources=[knowledge])
+        knowledge.write_text("two", encoding="utf-8")
+        second = build_project_snapshot(tmp_path, source, _graph([]), project_sources=[knowledge])
+        assert first.revision != second.revision
+
+        outside = tmp_path.parent / "outside.md"
+        outside.write_text("outside", encoding="utf-8")
+        with pytest.raises(AssistantOperationError) as exc:
+            build_project_snapshot(tmp_path, source, _graph([]), project_sources=[outside])
+        assert exc.value.code == "project_source_forbidden"
+
+
+class TestSemanticPlans:
+    def test_plan_is_canonical_and_reports_bounded_semantic_diff(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph([_node("source", "dataInput")])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        raw_ops = [
+            {"op": "add_node", "node_type": "banding", "name": "Age band", "ref": "band"},
+            {"op": "add_edge", "source": "source", "target": "$band"},
+        ]
+
+        first = build_graph_edit_plan(snapshot, raw_ops)
+        second = build_graph_edit_plan(snapshot, json.loads(json.dumps(raw_ops)))
+
+        assert first == second
+        assert len(first.plan_hash) == 64
+        assert first.base_revision == snapshot.revision
+        assert first.verification_tier == "structural"
+        assert first.diff.nodes_added == ("Age_band",)
+        assert first.diff.nodes_removed == ()
+        assert len(first.diff.edges_added) == 1
+        assert first.diff.sidecar_changes
+        assert first.affected_capabilities == ("banding", "dataInput")
+        assert first.postconditions
+        assert first.normalized_operations[0]["op"] == "add_node"
+
+    def test_semantic_diff_resolves_batch_refs_to_final_node_identity(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("source")]))
+
+        plan = build_graph_edit_plan(
+            snapshot,
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "Fresh Node",
+                    "ref": "fresh",
+                },
+                {
+                    "op": "update_node",
+                    "node": "$fresh",
+                    "config": {"code": "return frame"},
+                },
+                {"op": "add_edge", "source": "source", "target": "$fresh"},
+            ],
+        )
+
+        assert plan.diff.nodes_updated == ("Fresh_Node",)
+        assert plan.diff.config_changes == ("Fresh_Node:code",)
+        assert "$fresh" not in json.dumps(plan.diff.as_dict())
+
+    def test_plan_rejects_a_new_disconnected_node(self, tmp_path: Path):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(
+            tmp_path,
+            source,
+            _graph([_node("source", "dataInput")]),
+        )
+
+        with pytest.raises(AssistantOperationError) as exc:
+            build_graph_edit_plan(
+                snapshot,
+                [{"op": "add_node", "node_type": "polars", "name": "orphan"}],
+            )
+
+        assert exc.value.code == "invalid_plan"
+        assert "disconnected" in str(exc.value).lower()
+
+    def test_renaming_a_new_node_cannot_bypass_connectivity_validation(self, tmp_path: Path):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(
+            tmp_path,
+            source,
+            _graph([_node("source", "dataInput")]),
+        )
+
+        with pytest.raises(AssistantOperationError) as exc:
+            build_graph_edit_plan(
+                snapshot,
+                [
+                    {"op": "add_node", "node_type": "polars", "name": "fresh", "ref": "fresh"},
+                    {"op": "rename_node", "node": "$fresh", "new_name": "renamed"},
+                ],
+            )
+
+        assert exc.value.code == "invalid_plan"
+        assert "renamed" in str(exc.value)
+
+    def test_existing_disconnected_node_does_not_block_an_unrelated_plan(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(
+            tmp_path,
+            source,
+            _graph([_node("source", "dataInput"), _node("existing_orphan")]),
+        )
+
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+
+        assert plan.diff.nodes_renamed == (("source", "renamed"),)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "df.filter(pl.col('age') > 18)",
+            "df.with_columns(pl.lit(1).alias('one'))",
+            "df = df",
+            "return df",
+            "return None",
+            "def inner():\n    return df.filter(pl.col('age') > 18)",
+            "df.filter(",
+        ],
+    )
+    def test_plan_rejects_polars_code_whose_result_is_discarded(
+        self,
+        tmp_path: Path,
+        code: str,
+    ):
+        from haute.assistant._ops import (
+            OpValidationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(
+            tmp_path,
+            source,
+            _graph([_node("source", "dataInput")]),
+        )
+
+        with pytest.raises(OpValidationError):
+            build_graph_edit_plan(
+                snapshot,
+                [
+                    {
+                        "op": "add_node",
+                        "node_type": "polars",
+                        "name": "transform",
+                        "config": {"code": code},
+                        "ref": "transform",
+                    },
+                    {"op": "add_edge", "source": "source", "target": "$transform"},
+                ],
+            )
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "df = df.filter(pl.col('age') > 18)",
+            "return df.with_columns(pl.lit(1).alias('one'))",
+            "df = prepared_frame",
+        ],
+    )
+    def test_plan_accepts_polars_code_that_retains_its_result(self, tmp_path: Path, code: str):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("transform")]))
+
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "update_node", "node": "transform", "config": {"code": code}}],
+        )
+
+        assert plan.diff.config_changes == ("transform:code",)
+
+    def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
+        from haute.assistant._ops import semantic_diff
+
+        targets = [_node(f"target_{index:02d}") for index in range(61)]
+        before = _graph(
+            [_node("hub"), *targets],
+            [_edge("hub", target.id) for target in targets],
+        )
+        expected_after = _apply(before, [{"op": "delete_node", "node": "hub"}])
+        incomplete_after = expected_after.model_copy(deep=True)
+        incomplete_after.edges.append(_edge("hub", "target_60"))
+
+        expected = semantic_diff(
+            before,
+            expected_after,
+            [{"op": "delete_node", "node": "hub"}],
+        )
+        incomplete = semantic_diff(
+            before,
+            incomplete_after,
+            [{"op": "delete_node", "node": "hub"}],
+        )
+
+        assert len(expected.edges_removed) == 50
+        assert expected.edges_removed == incomplete.edges_removed
+        assert expected.truncated is True
+        assert expected.complete_counts["edges_removed"] == 61
+        assert incomplete.complete_counts["edges_removed"] == 60
+        assert expected.complete_hash != incomplete.complete_hash
+        assert expected != incomplete
+
+    def test_affected_capabilities_cover_changes_beyond_visible_diff_limit(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        nodes = [_node(f"node_{index:02d}") for index in range(50)]
+        nodes.append(_node("zz_rating", "ratingStep"))
+        snapshot = build_project_snapshot(tmp_path, source, _graph(nodes))
+        operations = [{"op": "update_node", "node": node.id, "config": {}} for node in nodes]
+
+        plan = build_graph_edit_plan(snapshot, operations)
+
+        assert plan.diff.truncated is True
+        assert plan.diff.complete_counts["nodes_updated"] == 51
+        assert plan.affected_capabilities == ("polars", "ratingStep")
+
+    @pytest.mark.parametrize(
+        "ops",
+        [
+            [{"op": "delete_node", "node": "transform"}],
+            [{"op": "update_preamble", "preamble": "import os"}],
+            [{"op": "update_node", "node": "transform", "config": {"code": "return frame"}}],
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "modelScore",
+                    "name": "score",
+                    "config": {"version": "2"},
+                },
+                {"op": "add_edge", "source": "transform", "target": "score"},
+            ],
+        ],
+    )
+    def test_graph_authoring_plan_has_no_runtime_consent_classification(
+        self, tmp_path: Path, ops: list[dict]
+    ):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph([_node("transform", "polars", code="return frame")])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+
+        plan = build_graph_edit_plan(snapshot, ops)
+        assert "risk" not in plan.as_dict()
+        assert "confirmation_required" not in plan.as_dict()
+
+    def test_deleting_an_edge_has_exact_plan_authority_only(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph([_node("source"), _node("target")], [_edge("source", "target")])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "delete_edge", "source": "source", "target": "target"}],
+        )
+
+        assert "risk" not in plan.as_dict()
+        assert "confirmation_required" not in plan.as_dict()
+
+    @pytest.mark.parametrize(
+        "ops",
+        [
+            [{"op": "update_node", "node": "sink", "config": {"mode": "write"}}],
+            [{"op": "rename_node", "node": "sink", "new_name": "renamed_sink"}],
+            [{"op": "add_edge", "source": "source", "target": "sink"}],
+        ],
+    )
+    def test_authoring_an_external_output_does_not_authorize_execution(
+        self,
+        tmp_path: Path,
+        ops: list[dict],
+    ):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph([_node("source"), _node("sink", "dataOutput")])
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+
+        plan = build_graph_edit_plan(snapshot, ops)
+
+        assert "risk" not in plan.as_dict()
+        assert "confirmation_required" not in plan.as_dict()
+
+    def test_plan_hash_binds_postconditions_and_base_revision(self, tmp_path: Path):
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("one", encoding="utf-8")
+        graph = _graph([_node("source")])
+        first_snapshot = build_project_snapshot(tmp_path, source, graph)
+        ops = [{"op": "rename_node", "node": "source", "new_name": "renamed"}]
+        first = build_graph_edit_plan(first_snapshot, ops)
+
+        source.write_text("two", encoding="utf-8")
+        second_snapshot = build_project_snapshot(tmp_path, source, graph)
+        second = build_graph_edit_plan(second_snapshot, ops)
+        assert first.plan_hash != second.plan_hash
+
+        altered = build_graph_edit_plan(
+            first_snapshot,
+            ops,
+            postconditions=[{"kind": "node_exists", "node": "renamed"}],
+        )
+        assert altered.plan_hash != first.plan_hash
+
+    @pytest.mark.parametrize(
+        "postconditions",
+        [
+            [{"kind": "unsupported"}],
+            [{"kind": "node_exists", "node": "source", "extra": True}],
+            [{"kind": "node_exists", "node": "missing"}],
+            [{"kind": "graph_shape", "nodes": -1, "edges": 0}],
+        ],
+    )
+    def test_invalid_or_unsatisfied_postconditions_fail_during_planning(
+        self,
+        tmp_path: Path,
+        postconditions: list[dict],
+    ):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(
+            tmp_path,
+            source,
+            _graph([_node("source")]),
+        )
+
+        with pytest.raises(AssistantOperationError):
+            build_graph_edit_plan(
+                snapshot,
+                [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+                postconditions=postconditions,
+            )
+
+
+class TestPlanStore:
+    def test_applying_plan_survives_ttl_until_terminal_result(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from haute.assistant import _ops
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        now = 0.0
+        monkeypatch.setattr(_ops, "monotonic", lambda: now)
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        plan = build_graph_edit_plan(
+            build_project_snapshot(tmp_path, source, _graph([_node("source")])),
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+        store = PlanStore(ttl_seconds=1)
+        store.put(plan)
+        store.begin_apply(plan.plan_hash)
+
+        now = 2.0
+        store.complete_apply(plan.plan_hash, {"result_revision": "a" * 64})
+
+        with pytest.raises(AssistantOperationError) as exc:
+            store.get(plan.plan_hash)
+        assert exc.value.code == "plan_expired"
+
+    def test_capacity_never_evicts_an_applying_plan(self, tmp_path: Path):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("source")]))
+        first = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "first"}],
+        )
+        second = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "second"}],
+        )
+        store = PlanStore(max_size=1)
+        store.put(first)
+        store.begin_apply(first.plan_hash)
+
+        with pytest.raises(AssistantOperationError) as exc:
+            store.put(second)
+        assert exc.value.code == "plan_store_busy"
+
+        store.complete_apply(first.plan_hash, {"result_revision": "a" * 64})
+        with pytest.raises(AssistantOperationError) as exc:
+            store.begin_apply(first.plan_hash)
+        assert exc.value.code == "plan_already_applied"
+
+    def test_plan_is_single_use(self, tmp_path: Path):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("source")]))
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+        store = PlanStore()
+        store.put(plan)
+        assert store.begin_apply(plan.plan_hash) == plan
+        store.complete_apply(plan.plan_hash, {"result_revision": "a" * 64})
+        store.put(plan)
+
+        with pytest.raises(AssistantOperationError) as exc:
+            store.begin_apply(plan.plan_hash)
+        assert exc.value.code == "plan_already_applied"
+
+    def test_aborted_plan_requires_a_fresh_identical_put_before_retry(self, tmp_path: Path):
+        from haute.assistant._ops import (
+            AssistantOperationError,
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        plan = build_graph_edit_plan(
+            build_project_snapshot(tmp_path, source, _graph([_node("source")])),
+            [{"op": "rename_node", "node": "source", "new_name": "renamed"}],
+        )
+        store = PlanStore()
+        store.put(plan)
+        store.begin_apply(plan.plan_hash)
+        store.abort_apply(plan.plan_hash)
+
+        with pytest.raises(AssistantOperationError) as exc:
+            store.begin_apply(plan.plan_hash)
+        assert exc.value.code == "plan_aborted"
+        assert "dry-run" in str(exc.value)
+
+        store.put(plan)
+        assert store.begin_apply(plan.plan_hash) == plan
+
+    def test_destructive_plan_enters_applying_without_session_consent(self, tmp_path: Path):
+        from haute.assistant._ops import (
+            PlanStore,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        snapshot = build_project_snapshot(tmp_path, source, _graph([_node("source")]))
+        plan = build_graph_edit_plan(
+            snapshot,
+            [{"op": "delete_node", "node": "source"}],
+        )
+        store = PlanStore()
+        store.put(plan)
+
+        assert store.begin_apply(plan.plan_hash) == plan

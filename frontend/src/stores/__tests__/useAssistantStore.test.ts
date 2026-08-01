@@ -40,6 +40,9 @@ const READY_STATUS = {
   reason: null,
   provider: "anthropic",
   model: "m",
+  endpoint_host: "api.anthropic.com",
+  trust: "external" as const,
+  max_sensitivity: "public" as const,
   mutations_enabled: true,
   mutations_reason: null,
 }
@@ -131,8 +134,8 @@ describe("sendMessage transcript flow", () => {
 
   it("marks failed tool activity as error state", async () => {
     scriptStream([
-      { type: "tool_started", id: "t1", name: "apply_graph_edits", summary: "{}" },
-      { type: "tool_finished", id: "t1", name: "apply_graph_edits", is_error: true, summary: "no" },
+      { type: "tool_started", id: "t1", name: "apply_graph_plan", summary: "{}" },
+      { type: "tool_finished", id: "t1", name: "apply_graph_plan", is_error: true, summary: "no" },
       completed(),
     ])
     await useAssistantStore.getState().sendMessage("edit", SEND_OPTS)
@@ -291,7 +294,7 @@ describe("session persistence across reloads and restarts", () => {
         {
           kind: "tool",
           text: "",
-          name: "apply_graph_edits",
+          name: "apply_graph_plan",
           summary: '{"applied": 1}',
           is_error: false,
         },
@@ -322,7 +325,7 @@ describe("session persistence across reloads and restarts", () => {
     expect(entries[1]).toEqual({ kind: "assistant", text: "Adding it now.", streaming: false })
     expect(entries[2]).toMatchObject({
       kind: "activity",
-      name: "apply_graph_edits",
+      name: "apply_graph_plan",
       state: "ok",
       summary: '{"applied": 1}',
     })

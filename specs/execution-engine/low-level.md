@@ -634,3 +634,20 @@ Under the [prerelease canonical-only format contract](../README.md#approved-chan
 maintained execution call sites use the current typed planner, admission, runtime-input, and
 diagnostic result objects directly. Private compatibility wrappers, tuple projections, and
 test-only call shapes are removed together with their wrapper-specific tests.
+
+## Assistant interaction
+
+`src/haute/assistant/_tools.py::get_node_schema` is a cross-component caller of
+the public lazy-execution facade. It validates the target against the original
+hierarchical graph, flattens submodels for execution, compiles the saved
+preamble with the pipeline directory, selects the graph's saved active source,
+and calls `execute_lazy_graph` with `target_node_id`, `preserve_node_ids`, and
+contract enforcement. It reads only lazy schemas; a dict-shaped multi-frame
+result is rendered per port and no frame is collected.
+
+The assistant application service's v1 post-save verification tier is
+`structural`: it reparses and validates the saved graph and evaluates closed
+structural postconditions. Execution-plan verification is an explicitly
+stronger future tier. This component does not own assistant project revisions,
+plan hashes or save authority, and no assistant tool may present a structural
+result as execution evidence.

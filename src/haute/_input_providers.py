@@ -292,12 +292,33 @@ def resolve_data_input_from_config(
     *,
     base_dir: str | Path | None = None,
     profile: ExecutionProfile | str | None = None,
+    project_root: str | Path | None = None,
 ) -> pl.LazyFrame:
-    """Load a generated sidecar and resolve its direct or snapshot-backed input."""
+    """Load a sidecar and resolve its input with project-relative data paths.
+
+    Generated pipelines can live below the Haute project root while Data Input
+    paths are selected relative to that root. Resolve a configured path once
+    before handing it to the direct/snapshot provider so standalone generated
+    code uses the same anchor as canvas execution.
+    """
     from haute._config_io import load_node_config
 
     base = _base_path(base_dir)
     config = load_node_config(config_path, base_dir=base)
+    configured_path = config.get("path")
+    if project_root is not None and isinstance(configured_path, (str, Path)) and configured_path:
+        from haute._path_resolution import resolve_runtime_file_path
+
+        config = dict(config)
+        config["path"] = str(
+            resolve_runtime_file_path(
+                configured_path,
+                pipeline_dir=base,
+                project_root=project_root,
+                prefer="project",
+                enforce_project_root=True,
+            )
+        )
     return resolve_data_input(config, base_dir=base, profile=profile)
 
 

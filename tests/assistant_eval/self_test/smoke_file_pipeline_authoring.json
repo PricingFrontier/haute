@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "smoke_file_pipeline_authoring",
+  "fixture_version": "1",
+  "project_fixture": "showcase_parquets",
+  "category": "semantic",
+  "request": "Author and save this graph only; do not run it or perform the write. Add a file data input named nb_batch that scans data/nb_batch.parquet as Parquet. Add a Polars node named valid_quotes after it with code `df = df.filter(pl.col(\"exposure\") > 0)`. Add a file data output named curated_quotes after valid_quotes, configured to write Parquet to data/curated_quotes.parquet.",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": [
+      "dataInput",
+      "polars",
+      "dataOutput"
+    ],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [
+      {
+        "source": "nb_batch",
+        "target": "valid_quotes",
+        "target_handle": null
+      },
+      {
+        "source": "valid_quotes",
+        "target": "curated_quotes",
+        "target_handle": null
+      }
+    ],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 8,
+    "max_tool_calls": 16,
+    "max_failed_tool_calls": 1,
+    "max_duplicate_static_reads": 1
+  }
+}

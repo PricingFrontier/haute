@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"derived","source_column":"derived_value","output_path":"$[:].derived_value","enabled":true}],"outputFormat":"json"}

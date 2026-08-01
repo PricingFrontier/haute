@@ -1,0 +1,1 @@
+{"target":"response","required_columns":["quote_id","scenario_index","scenario_value","expected_income","volume"],"checks":["parse","optimisation"]}

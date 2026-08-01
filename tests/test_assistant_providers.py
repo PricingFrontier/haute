@@ -28,15 +28,17 @@ Authored test-first per CLAUDE.md TDD.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from haute.assistant._config import AssistantConfig
+from haute.assistant._config import AssistantConfig, EgressPolicy
 from haute.assistant._providers import (
     AnthropicProvider,
     AssistantProviderError,
+    DatabricksProvider,
     OpenAIProvider,
     TextDelta,
     ToolCallRequest,
@@ -55,6 +57,14 @@ def _config(provider: str, base_url: str | None = None) -> AssistantConfig:
         base_url=base_url,
         api_key="sk-test-secret",
         max_output_tokens=1234,
+        egress=EgressPolicy(
+            trust="organization",
+            max_sensitivity="internal",
+            allow_project_knowledge=False,
+            allow_executable_source=False,
+            allow_row_samples=False,
+        ),
+        endpoint_host="api.example.test",
     )
 
 
@@ -69,10 +79,30 @@ _TOOLS = [
 ]
 
 
-async def _collect(provider) -> list:
+async def _collect(provider, *, tools=_TOOLS) -> list:
     return [
         event
-        async for event in provider.stream_turn(system=_SYSTEM, messages=_MESSAGES, tools=_TOOLS)
+        async for event in provider.stream_turn(system=_SYSTEM, messages=_MESSAGES, tools=tools)
+    ]
+
+
+def test_controller_messages_are_provider_visible_as_user_messages():
+    from haute.assistant._providers import (
+        _anthropic_messages,
+        _openai_messages,
+    )
+
+    controller = {
+        "role": "controller",
+        "content": "Continue the mutation workflow.",
+    }
+
+    assert _anthropic_messages([controller]) == [
+        {"role": "user", "content": "Continue the mutation workflow."}
+    ]
+    assert _openai_messages(_SYSTEM, [controller]) == [
+        {"role": "system", "content": _SYSTEM},
+        {"role": "user", "content": "Continue the mutation workflow."},
     ]
 
 
@@ -279,6 +309,24 @@ class _FakeOpenAIClient:
         self.chat = SimpleNamespace(completions=_Completions())
 
 
+class _SequencedOpenAIClient:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+        outer = self
+
+        class _Completions:
+            async def create(self, **kwargs):
+                del kwargs
+                outer.calls += 1
+                outcome = outer.outcomes.pop(0)
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return _FakeOpenAIStream(outcome)
+
+        self.chat = SimpleNamespace(completions=_Completions())
+
+
 def _openai_text_tool_chunks():
     ns = SimpleNamespace
     return [
@@ -322,6 +370,61 @@ def _openai_text_tool_chunks():
         ),
         ns(choices=[], usage=ns(prompt_tokens=7, completion_tokens=3)),
     ]
+
+
+def _openai_tool_chunks(name: str, arguments: dict[str, object]):
+    ns = SimpleNamespace
+    return [
+        ns(
+            choices=[
+                ns(
+                    delta=ns(
+                        content=None,
+                        tool_calls=[
+                            ns(
+                                index=0,
+                                id="call_nested",
+                                function=ns(
+                                    name=name,
+                                    arguments=json.dumps(arguments, separators=(",", ":")),
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        ns(
+            choices=[ns(delta=ns(content=None, tool_calls=None), finish_reason="tool_calls")],
+            usage=None,
+        ),
+        ns(choices=[], usage=ns(prompt_tokens=7, completion_tokens=3)),
+    ]
+
+
+_NESTED_TOOLS = [
+    {
+        "name": "probe_nested",
+        "description": "Exercise nested function arguments.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ops": {"type": "array", "items": {"type": "object"}},
+                "metadata": {"type": "object"},
+                "note": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "limit": {"type": "integer"},
+                "ratio": {"type": "number"},
+                "nullable_limit": {"type": ["integer", "null"]},
+                "untyped": {},
+            },
+            "required": ["ops", "metadata", "note"],
+            "additionalProperties": False,
+        },
+    }
+]
 
 
 class TestOpenAIProvider:
@@ -757,6 +860,351 @@ class TestOpenAIProvider:
 # ---------------------------------------------------------------------------
 
 
+class TestDatabricksProvider:
+    async def test_reuses_openai_compatible_request_contract(self):
+        client = _FakeOpenAIClient(_openai_text_tool_chunks())
+        events = await _collect(
+            DatabricksProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=client,
+            )
+        )
+
+        assert events[0] == TextDelta(text="Hi")
+        assert isinstance(events[-1], TurnStop)
+        assert client.captured_kwargs is not None
+        assert client.captured_kwargs["model"] == "test-model"
+        assert client.captured_kwargs["max_tokens"] == 1234
+
+    async def test_retries_pre_stream_rate_limit_with_a_fixed_bound(self):
+        rate_limit_error = type("RateLimitError", (Exception,), {})
+
+        class ImmediateRetryProvider(DatabricksProvider):
+            rate_limit_retry_delays = (0.0, 0.0)
+
+        client = _SequencedOpenAIClient(
+            [
+                rate_limit_error("first"),
+                rate_limit_error("second"),
+                _openai_text_tool_chunks(),
+            ]
+        )
+        events = await _collect(
+            ImmediateRetryProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=client,
+            )
+        )
+
+        assert events[0] == TextDelta(text="Hi")
+        assert client.calls == 3
+
+    async def test_exhausted_pre_stream_rate_limit_stays_sanitized(self):
+        rate_limit_error = type("RateLimitError", (Exception,), {})
+
+        class ImmediateRetryProvider(DatabricksProvider):
+            rate_limit_retry_delays = (0.0,)
+
+        client = _SequencedOpenAIClient(
+            [rate_limit_error("secret-one"), rate_limit_error("secret-two")]
+        )
+        with pytest.raises(AssistantProviderError) as exc_info:
+            await _collect(
+                ImmediateRetryProvider(
+                    _config("databricks", base_url="https://workspace.example/serving"),
+                    client=client,
+                )
+            )
+        assert exc_info.value.failure_class == "rate_limit"
+        assert "secret" not in str(exc_info.value)
+        assert client.calls == 2
+
+    async def test_decodes_only_schema_declared_top_level_compatible_types(self):
+        arguments = {
+            "ops": '[{"op":"add_node","name":"demo"}]',
+            "metadata": '{"enabled":true,"count":2}',
+            "note": '{"must":"remain text"}',
+            "enabled": "true",
+            "limit": "5",
+            "ratio": "0.25",
+        }
+        client = _FakeOpenAIClient(_openai_tool_chunks("probe_nested", arguments))
+
+        events = await _collect(
+            DatabricksProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=client,
+            ),
+            tools=_NESTED_TOOLS,
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments == {
+            "ops": [{"op": "add_node", "name": "demo"}],
+            "metadata": {"enabled": True, "count": 2},
+            "note": '{"must":"remain text"}',
+            "enabled": True,
+            "limit": 5,
+            "ratio": 0.25,
+        }
+
+    async def test_decodes_production_graph_edit_ops_without_losing_nested_config(self):
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        definition = next(
+            tool for tool in TOOL_DEFINITIONS if tool["name"] == "dry_run_graph_edits"
+        )
+        operation = {
+            "op": "add_node",
+            "node_type": "dataInput",
+            "name": "demo",
+            "config": {
+                "inputType": "file",
+                "format": "parquet",
+                "path": "data/demo.parquet",
+                "mode": "scan",
+            },
+        }
+        client = _FakeOpenAIClient(
+            _openai_tool_chunks(
+                "dry_run_graph_edits",
+                {"ops": json.dumps([operation], separators=(",", ":"))},
+            )
+        )
+
+        events = await _collect(
+            DatabricksProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=client,
+            ),
+            tools=[definition],
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments == {"ops": [operation]}
+
+    async def test_all_providers_advertise_the_same_portable_production_schema(self):
+        from haute.assistant._loop import _request_routed_tools
+        from haute.assistant._tools import TOOL_DEFINITIONS
+
+        routed_tools = _request_routed_tools(
+            TOOL_DEFINITIONS,
+            "Continuously band driver_age into driver_age_band.",
+        )
+
+        canonical_definition = next(
+            tool for tool in routed_tools if tool["name"] == "dry_run_graph_edits"
+        )
+        canonical = canonical_definition["input_schema"]
+
+        anthropic_client = _FakeAnthropicClient(_anthropic_text_tool_events())
+        openai_client = _FakeOpenAIClient(_openai_text_tool_chunks())
+        databricks_client = _FakeOpenAIClient(_openai_text_tool_chunks())
+
+        await _collect(
+            AnthropicProvider(_config("anthropic"), client=anthropic_client),
+            tools=routed_tools,
+        )
+        await _collect(
+            OpenAIProvider(_config("openai"), client=openai_client),
+            tools=routed_tools,
+        )
+        await _collect(
+            DatabricksProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=databricks_client,
+            ),
+            tools=routed_tools,
+        )
+
+        assert anthropic_client.captured_kwargs is not None
+        assert openai_client.captured_kwargs is not None
+        assert databricks_client.captured_kwargs is not None
+        anthropic_schemas = {
+            tool["name"]: tool["input_schema"] for tool in anthropic_client.captured_kwargs["tools"]
+        }
+        openai_schemas = {
+            tool["function"]["name"]: tool["function"]["parameters"]
+            for tool in openai_client.captured_kwargs["tools"]
+        }
+        databricks_schemas = {
+            tool["function"]["name"]: tool["function"]["parameters"]
+            for tool in databricks_client.captured_kwargs["tools"]
+        }
+
+        assert anthropic_schemas == openai_schemas == databricks_schemas
+        assert set(anthropic_schemas) == {tool["name"] for tool in routed_tools}
+        anthropic_wire = anthropic_schemas["dry_run_graph_edits"]
+        assert anthropic_wire != canonical
+        assert canonical["properties"]["ops"]["items"].get("oneOf")
+        operation_item = anthropic_wire["properties"]["ops"]["items"]
+        assert operation_item["type"] == "object"
+        assert operation_item["required"] == ["op"]
+        assert operation_item["additionalProperties"] is False
+        assert set(operation_item["properties"]) == {
+            "op",
+            "node_type",
+            "name",
+            "config",
+            "ref",
+            "node",
+            "new_name",
+            "source",
+            "target",
+            "source_handle",
+            "target_handle",
+            "preamble",
+        }
+        assert operation_item["properties"]["op"] == {
+            "enum": [
+                "add_node",
+                "update_node",
+                "rename_node",
+                "delete_node",
+                "add_edge",
+                "delete_edge",
+                "update_preamble",
+            ]
+        }
+        assert anthropic_wire["properties"]["postconditions"]["items"] == {"type": "object"}
+
+        recipe_wire = anthropic_schemas["plan_recipe"]
+        assert "graph node name" in recipe_wire["properties"]["name"]["description"]
+        rules_wire = recipe_wire["properties"]["rules"]
+        assert rules_wire["type"] == "array"
+        assert "op1" in rules_wire["description"]
+        assert "assignment" in rules_wire["description"]
+        assert rules_wire["items"]["additionalProperties"] is False
+        assert set(rules_wire["items"]["properties"]) == {
+            "op1",
+            "val1",
+            "op2",
+            "val2",
+            "assignment",
+        }
+
+        def objects(value):
+            if isinstance(value, dict):
+                yield value
+                for child in value.values():
+                    yield from objects(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from objects(child)
+
+        unsupported = {"oneOf", "anyOf", "allOf", "$ref", "pattern", "prefixItems"}
+        for wire_schema in anthropic_schemas.values():
+            wire_objects = list(objects(wire_schema))
+            assert all(unsupported.isdisjoint(value) for value in wire_objects)
+            assert all(not isinstance(value.get("type"), list) for value in wire_objects)
+            assert sum(len(value.get("properties", {})) for value in wire_objects) <= 16
+
+    async def test_openai_provider_does_not_apply_databricks_compatibility(self):
+        arguments = {
+            "ops": '[{"op":"add_node","name":"demo"}]',
+            "metadata": '{"enabled":true}',
+            "note": "plain",
+            "enabled": "true",
+            "limit": "5",
+            "ratio": "0.25",
+        }
+        client = _FakeOpenAIClient(_openai_tool_chunks("probe_nested", arguments))
+
+        events = await _collect(
+            OpenAIProvider(_config("openai"), client=client),
+            tools=_NESTED_TOOLS,
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments == arguments
+
+    @pytest.mark.parametrize(
+        ("field", "encoded"),
+        [
+            ("ops", "not-json"),
+            ("ops", '{"wrong":"container"}'),
+            ("metadata", "NaN"),
+            ("metadata", "[]"),
+            ("note", "true"),
+            ("enabled", "1"),
+            ("limit", "1.5"),
+            ("ratio", "true"),
+            ("ratio", "1e309"),
+            ("nullable_limit", "5"),
+            ("untyped", "true"),
+        ],
+    )
+    async def test_preserves_unsafe_or_wrong_type_encodings_for_tool_validation(
+        self, field: str, encoded: str
+    ):
+        arguments = {
+            "ops": "[]",
+            "metadata": "{}",
+            "note": "plain",
+            field: encoded,
+        }
+        client = _FakeOpenAIClient(_openai_tool_chunks("probe_nested", arguments))
+
+        events = await _collect(
+            DatabricksProvider(
+                _config(
+                    "databricks",
+                    base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                ),
+                client=client,
+            ),
+            tools=_NESTED_TOOLS,
+        )
+
+        (tool,) = [event for event in events if isinstance(event, ToolCallRequest)]
+        assert tool.arguments[field] == encoded
+        assert isinstance(events[-1], TurnStop)
+        assert events[-1].reason == "tool_use"
+
+    async def test_malformed_stream_retains_databricks_error_identity(self):
+        ns = SimpleNamespace
+        client = _FakeOpenAIClient(
+            [
+                ns(
+                    choices=[
+                        ns(
+                            delta=ns(content=42, tool_calls=None),
+                            finish_reason=None,
+                        )
+                    ],
+                    usage=None,
+                )
+            ]
+        )
+
+        with pytest.raises(AssistantProviderError) as exc_info:
+            await _collect(
+                DatabricksProvider(
+                    _config(
+                        "databricks",
+                        base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                    ),
+                    client=client,
+                )
+            )
+        assert exc_info.value.provider == "databricks"
+
+
 class TestErrorClassification:
     @pytest.mark.parametrize(
         ("class_name", "category"),
@@ -818,6 +1266,36 @@ class TestLazyClientLoaders:
         with pytest.raises(AssistantProviderError) as excinfo:
             OpenAIProvider(_config("openai"))
         assert excinfo.value.failure_class == "dependency"
+
+    def test_databricks_client_uses_its_resolved_url_and_token(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        import sys
+
+        captured: dict[str, object] = {}
+        client = object()
+
+        def fake_client(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        monkeypatch.setitem(
+            sys.modules,
+            "openai",
+            SimpleNamespace(AsyncOpenAI=fake_client),
+        )
+        config = _config(
+            "databricks",
+            base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+        )
+
+        provider = DatabricksProvider(config)
+        assert provider.client is client
+        assert captured == {
+            "api_key": "sk-test-secret",
+            "base_url": "https://workspace.cloud.databricks.com/serving-endpoints",
+            "max_retries": 0,
+        }
 
     def test_installed_sdks_construct_real_clients(self):
         anthropic_provider = AnthropicProvider(_config("anthropic"))

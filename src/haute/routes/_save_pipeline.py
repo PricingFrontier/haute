@@ -31,7 +31,7 @@ from haute._api_input_schema import is_json_api_input_path
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
 from haute._submodel_paths import resolve_submodel_reference
-from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
+from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import (
     invalidate_pipeline_index,
     mark_self_write,
@@ -115,12 +115,8 @@ class SavePipelineService:
         """
         graph = body.graph
 
-        self._validate_singletons(graph)
-        self._validate_data_io_configs(graph)
-        self._validate_unique_sanitized_names(graph)
-        self._validate_no_load_errors(graph)
+        warnings = self.validate_graph(graph, source_file=body.source_file)
         py_path = self._resolve_source_file(body.source_file)
-        self._validate_source_file_matches_pipeline_root(py_path)
         delete_targets = [
             self._resolve_existing_module_delete_file(rel_path)
             for rel_path in delete_module_files
@@ -138,10 +134,8 @@ class SavePipelineService:
         self._prev_config_files = self._compute_disk_prev_config_files(py_path)
 
         touched: list[_TouchedFile] = []
-        warnings: list[str] = []
         try:
             self._write_code(body, graph, py_path, touched)
-            self._validate_api_inputs_have_schemas(graph, warnings)
             self._write_config_files(graph, touched)
             self._mirror_api_input_caches(graph)
             warnings.extend(
@@ -272,6 +266,56 @@ class SavePipelineService:
     # Validation
     # ------------------------------------------------------------------
 
+    def validate_graph(self, graph: PipelineGraph, *, source_file: str) -> list[str]:
+        """Run the canonical graph/save validation without writing.
+
+        This is the shared dry-run seam. ``save`` calls it before staging any
+        file, so application-service planning and the eventual commit cannot
+        drift onto separate structural validators.
+        """
+
+        self._validate_singletons(graph)
+        self._validate_edge_join_configs(graph)
+        self._validate_strict_node_configs(graph)
+        self._validate_unique_sanitized_names(graph)
+        self._validate_no_load_errors(graph)
+        py_path = self._resolve_source_file(source_file)
+        self._validate_source_file_matches_pipeline_root(py_path)
+        warnings: list[str] = []
+        self._validate_api_inputs_have_schemas(graph, warnings)
+        return warnings
+
+    @staticmethod
+    def _validate_edge_join_configs(graph: PipelineGraph) -> None:
+        """Reject graph-aware Edge Join config before codegen or writes.
+
+        The canonical join validators need both the node config and its
+        connected sources/role handles. Flattening supplies that same view for
+        root and submodel joins, including cross-boundary inputs.
+        """
+
+        from haute._edge_join import (
+            build_edge_join_kwargs,
+            resolve_edge_join_role_indices,
+        )
+        from haute.graph_utils import flatten_graph
+
+        flattened = flatten_graph(graph)
+        incoming_by_target: dict[str, list[GraphEdge]] = defaultdict(list)
+        for edge in flattened.edges:
+            incoming_by_target[edge.target].append(edge)
+
+        for node in flattened.nodes:
+            if node.data.nodeType != NodeType.EDGE_JOIN:
+                continue
+            incoming = incoming_by_target[node.id]
+            resolve_edge_join_role_indices(
+                node.data.config,
+                [edge.source for edge in incoming],
+                [edge.targetHandle for edge in incoming],
+            )
+            build_edge_join_kwargs(node.data.config)
+
     @staticmethod
     def _validate_singletons(graph: PipelineGraph) -> None:
         """Ensure singleton node types appear at most once."""
@@ -284,14 +328,19 @@ class SavePipelineService:
                 )
 
     @staticmethod
-    def _validate_data_io_configs(graph: PipelineGraph) -> None:
-        """Reject invalid provider branches before generating or writing files."""
+    def _validate_strict_node_configs(graph: PipelineGraph) -> None:
+        """Reject invalid discriminated configs before generating or writing."""
         from haute._config_validation import validate_node_config
 
         graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
+        strict_types = {
+            NodeType.DATA_INPUT,
+            NodeType.DATA_OUTPUT,
+            NodeType.BANDING,
+        }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
-                if node.data.nodeType not in {NodeType.DATA_INPUT, NodeType.DATA_OUTPUT}:
+                if node.data.nodeType not in strict_types:
                     continue
                 try:
                     validate_node_config(node.data.nodeType, node.data.config)

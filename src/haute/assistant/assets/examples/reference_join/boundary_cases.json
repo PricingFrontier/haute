@@ -1,0 +1,1 @@
+[{"case":"matching_region","expectation":"synthetic label is attached"},{"case":"duplicate_reference_key","expectation":"the declared many-to-one cardinality fails rather than multiplying quote rows"}]

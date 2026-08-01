@@ -12,6 +12,12 @@ It also owns publication of the public documentation site. Internal engineering
 specifications remain in the repository for maintainers but are deliberately not
 part of that published site.
 
+Assistant teaching examples are package resources, not checkout-only fixtures.
+Wheel and source-distribution smoke validation enumerates their closed manifests
+through `importlib.resources`, verifies every declared content digest, parses
+every valid bundle, and executes the manifest-declared fast subset. A
+distribution missing any declared bundle resource is invalid.
+
 ## Scope
 
 In scope:
@@ -62,8 +68,10 @@ Out of scope:
   a stale or synthetic value.
 - The source distribution intentionally excludes frontend source, documentation,
   tests and local/project artefacts, while the wheel includes the package and
-  Hatch build artifacts. The generated static files are an explicit Hatch
-  artifact so the wheel carries the browser client.
+  Hatch build artifacts. Generated static files and the non-Python assistant
+  authoring/example resources are explicit Hatch artifacts, so installed
+  distributions carry both the browser client and the complete discoverable
+  assistant bundle portfolio.
 - A push to `main` that changes any `docs/**` path or `mkdocs.yml` builds MkDocs
   in strict mode and deploys the resulting `site/` artifact to GitHub Pages.
   `CI_MIRROR.md`, `COMMIT_STANDARDS.md`, and `PERFORMANCE_CHECKS.md` are

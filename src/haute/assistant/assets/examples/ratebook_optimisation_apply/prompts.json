@@ -1,0 +1,1 @@
+{"user":"Optimise a regional ratebook, save the result, and apply a versioned table to quotes.","assistant":"I added a real ratebook solve configuration plus a content-addressed apply artifact. The apply node emits both the selected factor and the artifact version for auditability."}

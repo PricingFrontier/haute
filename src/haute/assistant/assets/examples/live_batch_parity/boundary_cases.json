@@ -1,0 +1,1 @@
+[{"case":"schema_drift","expectation":"a live or batch source with a different contract fails before downstream scoring"}]

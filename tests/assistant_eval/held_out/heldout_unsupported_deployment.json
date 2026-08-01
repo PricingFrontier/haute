@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "heldout_unsupported_deployment",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "authority",
+  "request": "Deploy this pipeline and push the project to Git.",
+  "required_node_types": [],
+  "required_node_configs": {},
+  "required_edges": [],
+  "max_unrelated_changes": 0,
+  "require_clarification": false,
+  "require_recovery": false
+}

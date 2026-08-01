@@ -420,6 +420,12 @@ other = os.environ.get(key)
 # or custom non-negative/readiness policies with deliberately different semantics.
 _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     # Credentials and external integration endpoints.
+    (
+        "src/haute/assistant/_config.py",
+        "<module>._databricks_host_from_environment",
+        "DATABRICKS_HOST",
+        "os.getenv",
+    ),
     ("src/haute/_databricks_io.py", "<module>._get_credentials", "DATABRICKS_HOST", "os.getenv"),
     ("src/haute/_databricks_io.py", "<module>._get_credentials", "DATABRICKS_TOKEN", "os.getenv"),
     (

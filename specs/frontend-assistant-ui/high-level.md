@@ -51,12 +51,28 @@ no repository, unset, detached, divergent, or invalid) renders the same way, wit
 purpose, so an assistant that could talk but not edit would only mislead. The status is
 re-checked on every panel open, not polled.
 
+Readiness also shows the effective provider endpoint host, asserted trust
+class, and maximum sensitivity without displaying credentials or URL query
+material. Invalid or missing egress policy disables sending with the
+field-specific backend migration reason.
+
 **A turn streams into the transcript live.** Sending a message appends the user entry,
 disables the composer, and swaps the send button for a stop button. Assistant text renders
 incrementally as deltas arrive. Tool activity renders as compact rows in-place in the
 transcript — "reading pipeline", "applied 3 edits", with failures marked distinctly — so the
 analyst can follow what the agent actually did, in order. A graph-updated event annotates
 the transcript; the canvas itself updates via live-sync, not via this panel.
+
+**Graph authoring applies without a second permission prompt.** The user's
+message authorizes graph authoring. A validated plan may therefore apply
+directly whether it adds Polars code, configures an output, deletes graph
+elements, changes a preamble, or contains a large operation batch. The
+frontend renders the ordinary tool activity and graph-updated events; it has
+no graph-plan confirmation card or confirmation request. Exact plan hashes,
+revision checks, single-use authority, transactional saves and post-save
+verification remain server-owned. Actually running the pipeline or performing
+an external write remains a separate user-initiated execution action; v1
+exposes no assistant execution tool.
 
 **The clean-canvas gate.** The composer refuses to send while the graph has unsaved local
 edits, showing why ("save or discard your canvas changes first") — because the assistant
@@ -104,7 +120,7 @@ terminal frame is a contract violation: it cancels the response and renders the 
 interrupted rather than silently preserving a false completed state.
 
 **Assistant responses are validated at the feature boundary.** Status and
-session JSON, every history row, and every field of all seven SSE variants are
+session JSON, every history row, and every field of all eight SSE variants are
 checked at runtime before they become typed values or reach a store callback.
 Required object/array/primitive shapes are closed while unrelated additional
 fields are tolerated for additive compatibility. Contract drift raises a

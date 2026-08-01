@@ -10,9 +10,12 @@ does not acquire an optional dependency or trigger provider-side behaviour.
 from __future__ import annotations
 
 import importlib.util
+import ipaddress
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal, cast
 from urllib.parse import SplitResult, urlsplit
@@ -21,19 +24,58 @@ from haute import _git
 from haute.errors import ConfigError, HauteError
 from haute.schemas import GitWorkingBranchResponse
 
-AssistantProvider = Literal["anthropic", "openai"]
+AssistantProvider = Literal["anthropic", "openai", "databricks"]
+ProviderTrust = Literal["local", "organization", "external"]
+Sensitivity = Literal["public", "internal", "restricted"]
 
 _DEFAULT_MAX_OUTPUT_TOKENS = 8192
 _MAX_OUTPUT_TOKENS_ENV = "HAUTE_ASSISTANT_MAX_OUTPUT_TOKENS"
 _PROVIDER_SDKS: dict[AssistantProvider, str] = {
     "anthropic": "anthropic",
     "openai": "openai",
+    "databricks": "openai",
 }
 _PROVIDER_KEYS: dict[AssistantProvider, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "databricks": "DATABRICKS_TOKEN",
 }
-_ASSISTANT_TABLE_KEYS = frozenset({"provider", "model", "base_url"})
+_ASSISTANT_TABLE_KEYS = frozenset({"provider", "model", "base_url", "egress"})
+_EGRESS_TABLE_KEYS = frozenset(
+    {
+        "trust",
+        "max_sensitivity",
+        "allow_project_knowledge",
+        "allow_executable_source",
+        "allow_row_samples",
+    }
+)
+_TRUST_VALUES = frozenset({"local", "organization", "external"})
+_SENSITIVITY_VALUES = frozenset({"public", "internal", "restricted"})
+
+
+@dataclass(frozen=True, slots=True)
+class EgressPolicy:
+    """Closed project policy governing provider-visible project material."""
+
+    trust: ProviderTrust
+    max_sensitivity: Sensitivity
+    allow_project_knowledge: bool
+    allow_executable_source: bool
+    allow_row_samples: bool
+
+    @property
+    def policy_hash(self) -> str:
+        payload = {
+            "allow_executable_source": self.allow_executable_source,
+            "allow_project_knowledge": self.allow_project_knowledge,
+            "allow_row_samples": self.allow_row_samples,
+            "max_sensitivity": self.max_sensitivity,
+            "trust": self.trust,
+        }
+        return sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +87,8 @@ class AssistantConfig:
     base_url: str | None
     api_key: str = field(repr=False)
     max_output_tokens: int
+    egress: EgressPolicy
+    endpoint_host: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +99,9 @@ class AssistantReadiness:
     reason: str | None
     provider: str | None
     model: str | None
+    endpoint_host: str | None
+    trust: ProviderTrust | None
+    max_sensitivity: Sensitivity | None
     mutations_enabled: bool
     mutations_reason: str | None
 
@@ -215,6 +262,127 @@ def _validate_openai_base_url(raw_base_url: str) -> str:
     return raw_base_url
 
 
+def _invalid_databricks_host() -> ConfigError:
+    """Build the deliberately value-free Databricks host validation error."""
+
+    return ConfigError(
+        "DATABRICKS_HOST must be an absolute HTTPS workspace-root URL with a hostname "
+        "and no user information, query, fragment, or non-root path"
+    )
+
+
+def _databricks_host_from_environment() -> str | None:
+    """Read the shared Databricks workspace host at configuration-resolution time."""
+
+    return os.getenv("DATABRICKS_HOST")
+
+
+def _databricks_base_url(raw_host: str) -> str:
+    """Validate a workspace host and derive its OpenAI-compatible API root."""
+
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in raw_host
+    ):
+        raise _invalid_databricks_host()
+
+    try:
+        parsed = urlsplit(raw_host)
+        port = parsed.port
+    except ValueError as exc:
+        raise _invalid_databricks_host() from exc
+
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or "@" in parsed.netloc
+        or "\\" in parsed.netloc
+        or parsed.netloc.endswith(":")
+        or (port is not None and not 0 <= port <= 65535)
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise _invalid_databricks_host()
+
+    workspace_root = raw_host[:-1] if parsed.path == "/" else raw_host
+    return f"{workspace_root}/serving-endpoints"
+
+
+def _endpoint(provider: AssistantProvider, base_url: str | None) -> SplitResult:
+    url = (
+        "https://api.anthropic.com"
+        if provider == "anthropic"
+        else base_url or "https://api.openai.com/v1"
+    )
+    return urlsplit(url)
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_egress(
+    raw: object,
+    *,
+    endpoint: SplitResult,
+) -> EgressPolicy:
+    if not isinstance(raw, dict):
+        raise ConfigError("[assistant].egress must be a TOML table")
+    unknown = sorted(set(raw).difference(_EGRESS_TABLE_KEYS))
+    if unknown:
+        paths = ", ".join(f"[assistant].egress.{key}" for key in unknown)
+        raise ConfigError(f"Unknown [assistant].egress configuration key(s): {paths}.")
+    missing = sorted(_EGRESS_TABLE_KEYS.difference(raw))
+    if missing:
+        paths = ", ".join(f"[assistant].egress.{key}" for key in missing)
+        raise ConfigError(f"Missing required assistant egress key(s): {paths}.")
+
+    trust = raw["trust"]
+    sensitivity = raw["max_sensitivity"]
+    if not isinstance(trust, str) or trust not in _TRUST_VALUES:
+        raise ConfigError("[assistant].egress.trust must be local, organization, or external")
+    if not isinstance(sensitivity, str) or sensitivity not in _SENSITIVITY_VALUES:
+        raise ConfigError(
+            "[assistant].egress.max_sensitivity must be public, internal, or restricted"
+        )
+    for key in (
+        "allow_project_knowledge",
+        "allow_executable_source",
+        "allow_row_samples",
+    ):
+        if not isinstance(raw[key], bool):
+            raise ConfigError(f"[assistant].egress.{key} must be a boolean")
+
+    host = endpoint.hostname
+    assert host is not None
+    if trust == "local" and not _is_loopback_host(host):
+        raise ConfigError(
+            "[assistant].egress.trust local requires a localhost or loopback endpoint"
+        )
+    if trust in {"organization", "external"} and endpoint.scheme != "https":
+        raise ConfigError(f"[assistant].egress.trust {trust} requires an HTTPS endpoint")
+    if trust == "external" and (
+        sensitivity != "public" or raw["allow_executable_source"] or raw["allow_row_samples"]
+    ):
+        raise ConfigError(
+            "[assistant].egress external is public-only and forbids executable source "
+            "and row samples"
+        )
+    return EgressPolicy(
+        trust=cast(ProviderTrust, trust),
+        max_sensitivity=cast(Sensitivity, sensitivity),
+        allow_project_knowledge=raw["allow_project_knowledge"],
+        allow_executable_source=raw["allow_executable_source"],
+        allow_row_samples=raw["allow_row_samples"],
+    )
+
+
 def _resolve_config(
     table: dict[str, object],
 ) -> AssistantConfig | tuple[str, str | None, str | None]:
@@ -238,16 +406,51 @@ def _resolve_config(
     model = raw_model
 
     raw_base_url = table.get("base_url")
-    if provider == "anthropic" and raw_base_url is not None:
-        return "base_url is only supported for the openai assistant provider.", provider, model
+    if provider in {"anthropic", "databricks"} and raw_base_url is not None:
+        if provider == "databricks":
+            reason = (
+                "base_url is derived from DATABRICKS_HOST for the databricks assistant provider."
+            )
+        else:
+            reason = "base_url is only supported for the openai assistant provider."
+        return reason, provider, model
     if raw_base_url is not None and not isinstance(raw_base_url, str):
         raise ConfigError("[assistant].base_url must be a string", provider=provider)
-    base_url = _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
+    base_url: str | None
+    if provider == "databricks":
+        raw_host = _databricks_host_from_environment()
+        if not raw_host:
+            return (
+                "Missing Databricks host environment variable: DATABRICKS_HOST.",
+                provider,
+                model,
+            )
+        base_url = _databricks_base_url(raw_host)
+    else:
+        base_url = (
+            _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
+        )
+    endpoint = _endpoint(provider, base_url)
+    raw_egress = table.get("egress")
+    if raw_egress is None:
+        return (
+            "Missing required [assistant].egress table; add the explicit provider trust "
+            "and sensitivity policy.",
+            provider,
+            model,
+        )
+    egress = _validate_egress(raw_egress, endpoint=endpoint)
 
     if not _sdk_importable(provider):
+        if provider == "databricks":
+            sdk_reason = (
+                "The openai SDK required by the databricks provider is missing from "
+                "this installation"
+            )
+        else:
+            sdk_reason = f"The {provider} SDK is missing from this installation"
         return (
-            f"The {provider} SDK is missing from this installation; it ships with haute, "
-            "so reinstall haute to repair the environment.",
+            f"{sdk_reason}; it ships with haute, so reinstall haute to repair the environment.",
             provider,
             model,
         )
@@ -268,6 +471,8 @@ def _resolve_config(
         base_url=base_url,
         api_key=api_key,
         max_output_tokens=max_output_tokens,
+        egress=egress,
+        endpoint_host=endpoint.hostname or "",
     )
 
 
@@ -286,6 +491,9 @@ def assistant_readiness(
     table = _read_assistant_table(root)
     provider: str | None
     model: str | None
+    endpoint_host: str | None = None
+    trust: ProviderTrust | None = None
+    max_sensitivity: Sensitivity | None = None
 
     # Read and validate TOML before asking Git for its status.  A malformed
     # project configuration must consistently surface as ConfigError, even if
@@ -300,6 +508,9 @@ def assistant_readiness(
             reason = None
             provider = resolved.provider
             model = resolved.model
+            endpoint_host = resolved.endpoint_host
+            trust = resolved.egress.trust
+            max_sensitivity = resolved.egress.max_sensitivity
             configured = True
         else:
             reason, provider, model = resolved
@@ -311,6 +522,9 @@ def assistant_readiness(
         reason=reason,
         provider=provider,
         model=model,
+        endpoint_host=endpoint_host,
+        trust=trust,
+        max_sensitivity=max_sensitivity,
         mutations_enabled=mutations_enabled,
         mutations_reason=mutations_reason,
     )
@@ -335,11 +549,55 @@ def resolve_assistant_config(project_root: Path | None = None) -> AssistantConfi
     raise ConfigError(reason, provider=provider, model=model)
 
 
+def resolve_egress_policy(project_root: Path | None = None) -> EgressPolicy:
+    """Resolve only the closed egress policy, without probing SDKs or credentials."""
+
+    root = _normalise_project_root(project_root)
+    table = _read_assistant_table(root)
+    if table is None:
+        raise ConfigError("No [assistant] table is configured in haute.toml.")
+    unknown = sorted(set(table).difference(_ASSISTANT_TABLE_KEYS))
+    if unknown:
+        paths = ", ".join(f"[assistant].{key}" for key in unknown)
+        raise ConfigError(f"Unknown [assistant] configuration key(s): {paths}.")
+    raw_provider = table.get("provider")
+    if not isinstance(raw_provider, str) or raw_provider not in _PROVIDER_SDKS:
+        raise ConfigError(f"Unknown assistant provider: {raw_provider!r}.")
+    provider = cast(AssistantProvider, raw_provider)
+    raw_base_url = table.get("base_url")
+    if provider in {"anthropic", "databricks"} and raw_base_url is not None:
+        if provider == "databricks":
+            raise ConfigError(
+                "base_url is derived from DATABRICKS_HOST for the databricks assistant provider."
+            )
+        raise ConfigError("base_url is only supported for the openai assistant provider.")
+    if raw_base_url is not None and not isinstance(raw_base_url, str):
+        raise ConfigError("[assistant].base_url must be a string")
+    base_url: str | None
+    if provider == "databricks":
+        raw_host = _databricks_host_from_environment()
+        if not raw_host:
+            raise ConfigError("Missing Databricks host environment variable: DATABRICKS_HOST.")
+        base_url = _databricks_base_url(raw_host)
+    else:
+        base_url = (
+            _validate_openai_base_url(raw_base_url) if isinstance(raw_base_url, str) else None
+        )
+    raw_egress = table.get("egress")
+    if raw_egress is None:
+        raise ConfigError("Missing required [assistant].egress table.")
+    return _validate_egress(raw_egress, endpoint=_endpoint(provider, base_url))
+
+
 __all__ = [
     "AssistantConfig",
+    "EgressPolicy",
     "AssistantProvider",
     "AssistantReadiness",
+    "ProviderTrust",
+    "Sensitivity",
     "assistant_readiness",
     "mutations_readiness",
     "resolve_assistant_config",
+    "resolve_egress_policy",
 ]

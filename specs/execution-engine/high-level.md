@@ -80,6 +80,11 @@ running heavy work in a child process the parent can kill on timeout or memory l
   `_execute_eager_core`/`ExecutionContext` primitives this component exposes.
 - HTTP request/response shapes and route wiring for preview/run/sink/train endpoints —
   [server-api](../server-api/high-level.md).
+- Assistant revision, risk, consent, mutation, and verification policy is owned by
+  [assistant](../assistant/high-level.md). The assistant may ask this component to
+  build a target-node lazy plan and read its schema, but v1 exposes no assistant
+  preview, training, optimisation, deployment, external-write, or Git execution
+  operation.
 - Reading/writing the underlying file formats (parquet, CSV, Databricks tables) —
   [io-layer](../io-layer/high-level.md) and [databricks-io](../databricks-io/high-level.md).
 
@@ -177,6 +182,24 @@ running heavy work in a child process the parent can kill on timeout or memory l
   failures into a diagnosed opaque contract. Every non-preview profile, and an
   unprofiled low-level eager or lazy call, raises `ContractResolutionError` before
   node work. This policy is independent of projection/materialisation strictness.
+- **Assistant schema inspection is plan-only.** `get_node_schema` performs the
+  same flattening, preamble compilation, active-source selection, node building,
+  and contract enforcement as production lazy execution up to the requested
+  top-level node, then calls `collect_schema()` on the preserved lazy result.
+  It never collects rows. Multi-frame results report one schema per output port.
+  This is execution-plan evidence, not proof of row values or commercial
+  correctness. The current assistant mutation service declares structural
+  verification after save; it does not claim that this schema read ran for every
+  mutation.
+- **Assistant schema inspection is plan-only.** `get_node_schema` performs the
+  same flattening, preamble compilation, active-source selection, node building,
+  and contract enforcement as production lazy execution up to the requested
+  top-level node, then calls `collect_schema()` on the preserved lazy result.
+  It never collects rows. Multi-frame results report one schema per output port.
+  This is execution-plan evidence, not proof of row values or commercial
+  correctness. The current assistant mutation service declares structural
+  verification after save; it does not claim that this schema read ran for every
+  mutation.
 - **Partitioned Parquet remains lazy and projected.** Directory-backed inputs retain
   Hive-partition predicates and required columns in the optimized scan, pruning
   irrelevant files/columns before checkpointing, caching, or response materialisation.

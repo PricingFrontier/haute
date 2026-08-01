@@ -1,0 +1,3 @@
+[project]
+name = "assistant-ratebook-optimisation-apply"
+pipeline = "pipeline.py"

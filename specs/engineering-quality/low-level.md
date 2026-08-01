@@ -48,10 +48,12 @@
 | `scripts/init_smoke.py` | Builds/installs or consumes a wheel in a fresh environment, initialises a project, serves it headlessly, exercises an authenticated endpoint, and shuts it down. |
 | `scripts/memory_smoke.py` | Runs the maintained memory-safety smoke path. |
 | `scripts/package_smoke_check.py` | Validates an installed distribution's package/runtime expectations. |
+| `scripts/update_assistant_example_manifests.py` | Checks or explicitly refreshes closed content-addressed assistant example inventories; unsafe, duplicate, missing, and undeclared paths fail in both modes. |
 | `scripts/preflight.ps1` | Windows preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/preflight.sh` | POSIX preflight entry point for selected backend/frontend/init-smoke checks. |
 | `scripts/regen_sanitize_parity_fixture.py` | Regenerates the committed sanitisation-parity fixture when deliberately requested. |
 | `scripts/run_frontend_e2e_server.py` | Generates the isolated browser fixture, then starts and readiness-signals its dedicated-port backend and Vite proxy for Playwright. |
+| `scripts/run_assistant_evaluation.py` | Fail-closed credentialed assistant qualification command: loads a closed candidate/matrix/scenario set, invokes an explicit live runner repeatedly, writes a redacted atomic report, and succeeds only for an already-qualified configuration that still meets every threshold. |
 | `scripts/run_mutation_suite.py` | Implements mutation target selection, work planning, shard execution, merge, and survival-threshold reporting. |
 | `scripts/run_perf_suite.py` | Runs bounded Python performance tests and writes schema-3 workload, environment, resource, wall-time, and per-test evidence artifacts. |
 | `scripts/spec_corpus_inventory.py` | Builds the exact working-tree specification inventory and content fingerprint, validates complete per-file review coverage, and derives component/governance/roadmap line and coverage totals for reproducible semantic-review claims. |
@@ -67,6 +69,7 @@
 | `mutation/cosmic-ray.path-resolution.toml` | Cosmic Ray configuration for path-resolution mutation coverage. |
 | `mutation/cosmic-ray.registry.toml` | Cosmic Ray configuration for registry mutation coverage. |
 | `tests/` | Active Python unit, integration, property, regression, contract, E2E-support, and repository-hygiene test corpus. |
+| `tests/test_assistant_example_portfolio.py` | Ordinary specialist evidence for the packaged assistant portfolio: source parity, trace/dry-run, real training/scoring and optimisation/apply, deployment preflight, and adversarial rejection. |
 | `tests/fixtures/` | Checked-in input, golden, expected-contract, UI-contract, and data fixtures consumed by active tests. |
 | `tests/performance/` | `perf`-marked benchmark-style tests excluded from ordinary pytest and run by the performance harness, including the rating miss-guard evidence matrix (`test_rating_miss_guard_perf.py`). |
 | `tests/test-health-summary.md` | Deterministic generated inventory of backend/frontend skip/xfail/flaky debt, browser retry budget, and mutation-survivor thresholds. Ordinary tests reject drift from the live scanners. |
@@ -270,6 +273,26 @@
   policy/scanner/report failures. An acceptance is not a wildcard: an expired,
   duplicate, wrong-package, or no-longer-observed entry makes the policy fail
   so the registry cannot accumulate silent debt.
+
+## Assistant evaluation lane
+
+`tests/assistant_eval/support_matrix.json` is the closed, versioned threshold
+contract. Held-out fixtures under `tests/assistant_eval/held_out/` are excluded
+from package resources and checked against teaching-example IDs. The
+task IDs in every matrix entry must exactly cover the scenarios supplied to
+the runner: a missing threshold or an unexpected trial is a qualification
+failure, so adding a scenario cannot silently leave it outside the release
+gate. The
+credentialed lane writes one JSON trial record per run plus an aggregate report
+containing cold/warm p50 and p95 latency, tool/token/cost bounds, semantic task
+rates, and safety counts. Missing trials, attribution drift, unauthorized
+mutation, or leakage leaves a configuration unqualified.
+`scripts/run_assistant_evaluation.py` is the fail-closed command boundary: it
+loads one matrix configuration, held-out scenarios, and an explicit
+`module:attribute` async live runner; executes the configured repetitions;
+writes one atomic content-redacted v1 report; and exits non-zero unless every
+live threshold passes. Canary values are counted for zero-tolerance scoring but
+are never retained in the report artifact.
 
 ## Testing
 

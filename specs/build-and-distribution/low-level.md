@@ -52,7 +52,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
   `frontend/public/`; and production files below `frontend/src/`. Test files,
   test-only directories, test support, and `setupTests.ts` are excluded.
 - **Static output graph** is the Vite output rooted at
-  `src/haute/static/`: regular `index.html`, non-empty `manifest.json` with at
+  `src/haute/static/`: regular `index.html`, non-empty
+  `src/haute/static/manifest.json` with at
   least one entry, every declared file/CSS/asset and import/dynamic-import key,
   and every local script `src` or link `href` parsed from the entry document.
   All resolved paths must remain inside the static root and exist as regular files;
@@ -92,13 +93,16 @@ package input validated by `hatch_build.py`, not hand-edited source.
 4. `frontend/package.json` runs `tsc -b` before Vite. `frontend/vite.config.ts`
    reads the package version, supplies React/Tailwind and development proxies,
    clears `src/haute/static/`, then emits the HTML/public assets,
-   JavaScript/CSS chunks, and `manifest.json` there. The hook captures the input
+   JavaScript/CSS chunks, and `src/haute/static/manifest.json` there. The hook captures the input
    manifest immediately before Vite and requires the same bytes afterwards, so
    a concurrent source edit invalidates rather than blessing the generated
    output. It then atomically writes `haute-build-inputs.json` and revalidates
    both proofs before allowing packaging to continue.
-5. Hatch packages `src/haute` into the wheel and includes static artifacts;
-   the sdist exclusions in `pyproject.toml` remove source-only trees. The
+5. Hatch packages `src/haute` into the wheel and explicitly includes both
+   generated static artifacts and `src/haute/assistant/assets/**`; the latter
+   declaration is required because the teaching bundles and authoring guide
+   are non-Python package resources. The sdist exclusions in `pyproject.toml`
+   remove source-only trees. The
    command entry point resolves `haute.cli:cli` after installation.
 6. Separately, `.github/workflows/docs.yml` runs `uv sync --group dev --locked`
    and `uv run mkdocs build --strict`, uploads `site/`, then lets the dependent
@@ -179,3 +183,12 @@ package input validated by `hatch_build.py`, not hand-edited source.
   `scripts/package_smoke_check.py`, `scripts/init_smoke.py`, and CI's
   package/init-smoke jobs. The frontend's build/typecheck commands are likewise
   quality gates, not independent package-format tests.
+- `scripts/package_smoke_check.py` also calls the installed
+  `haute.assistant._assets.validate_example_bundles(execute_fast=True)` entry
+  point. It uses only installed resources, validates closed manifests and
+  content hashes, parses every valid bundle, and executes the `fast` tier's
+  production graph, trace, and no-write dry-run checks when declared.
+- `scripts/update_assistant_example_manifests.py` is the source-authoring
+  boundary for bundle inventories. Its default check mode fails on stale
+  digests or inventory drift; `--write` is the only supported digest refresh
+  and still rejects unsafe, duplicate, missing, or undeclared resources.
