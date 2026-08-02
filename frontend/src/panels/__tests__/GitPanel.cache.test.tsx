@@ -131,7 +131,7 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     // single-flight starves loadStatus() in every test shuffled after them.
     resetGitStatusRequestForTests()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    useGitStore.setState({ status: null, loading: false, statusError: null, branches: [], branchesLoaded: false, branchesLoading: false, branchesError: null, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockSetWorkingBranch.mockResolvedValue({})
     // Fresh, deep-equal object per call: proves the short-circuit works on

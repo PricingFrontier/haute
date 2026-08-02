@@ -458,7 +458,6 @@ describe("useEdgeHandlers", () => {
   })
 
   it("onConnectEnd honours React Flow rejection after reverse-direction validation passes", () => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     const params = makeParams()
     params.validateConnection = vi.fn(() => ({ ok: true as const }))
     const { result } = renderHook(() => useEdgeHandlers(params))
