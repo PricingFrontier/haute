@@ -237,3 +237,26 @@ def test_post_commit_parse_failure_restores_deleted_source_and_sidecar(tmp_path:
     assert parent.read_bytes() == parent_original
     assert child.read_bytes() == child_original
     assert child_sidecar.read_bytes() == sidecar_original
+
+
+def test_unmatched_managed_claim_fails_400_before_writes(tmp_path: Path) -> None:
+    parent = tmp_path / "main.py"
+    parent_original = b"# original parent\n"
+    parent.write_bytes(parent_original)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _service(tmp_path).save_graph_transactionally(
+            graph=_flat_graph(),
+            name="main",
+            description="",
+            preamble="",
+            source_file="main.py",
+            require_absent_module_files=["modules/orphan.py"],
+            claim_managed_module_files=["modules/orphan.py"],
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "claim" in str(exc_info.value.detail).lower()
+    assert parent.read_bytes() == parent_original
+    assert not (tmp_path / "modules" / "orphan.py").exists()
+    assert not (tmp_path / "main.haute.json").exists()

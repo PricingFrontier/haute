@@ -460,9 +460,32 @@
     `setNodesAndEdgesAndSubmodels` call and updates `parentGraphRef`.
     Synthetic edge/row backing metadata lets the same
     pure reconciliation run after undo or redo so the ref cannot drift from the
-    restored snapshot. The projection records represented external ids for
+    restored snapshot. `reconcileSubmodelBoundaryState` is confirmation-based
+    over the visible drilled edges and walks the persisted parent edges in
+    order, so retained edges keep their original list positions: a mapped
+    inbound backing edge with no surviving view mapping converts to the
+    null-handle draft, or is dropped when its `(source, sourceHandle)` frame
+    already has another surviving edge — the same per-frame rule
+    `removeSubmodelBoundaryEdges` applies across one batch, evaluated against
+    the running edge list so removing every mapping of a frame in one gesture
+    still ends in a draft. Consumers of an export with no surviving
+    declaration edge are dropped; wrong-prefixed handles pass through
+    untouched. This keeps direct-setter deletions (keyboard
+    Delete/Backspace, node-panel delete) consistent: a mapping cannot be
+    silently resurrected from stale card metadata, and a deleted child leaves
+    an available draft rather than a stale `in__<child>` edge that codegen
+    would reject. `reconcileSubmodelBoundaryState` returns `null` when the
+    view lacks the Input or Output card, and the hook's state derivation
+    requires both cards, so a history restore that replaces the drilled view
+    with a non-drilled snapshot leaves `parentGraphRef`/`submodelsRef` at
+    their last synchronized values instead of reconciling the parent canvas
+    as if it were the child graph. The projection records represented external ids for
     trace collapsing, uses `submodel_file`, lays out with ELK, and re-fits.
-21. **Submodel create/dissolve.** Both requests send
+21. **Submodel create/dissolve.** Both handlers refuse to run while a drilled
+    view is active (`parentGraphRef.current` set), toasting an instruction to
+    return to the main pipeline — the same client-side gate as save — so the
+    backend revision precondition is never triggered by a mis-scoped request.
+    Both requests send
     `base_revision=sourceRevisionRef.current` and
     `preserved_blocks=preservedBlocksRef.current`. Create changes no local
     state until the response succeeds. Dissolve installs the returned graph's

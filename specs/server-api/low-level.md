@@ -253,8 +253,12 @@ concurrent plain saves, but does not coordinate another worker process):
    transaction-local `claim_managed_module_files` through the same allowlist;
    each claim must name one of those no-clobber targets. Resolve every child
    metadata path and prove ownership from its existing sidecar or one of those
-   claims; request-only `managed=true` fails `409`. These preflights run before
-   all writes.
+   claims; request-only `managed=true` fails `409`, and a claim that matches
+   no resolved child metadata path (for example a parent pipeline nested
+   below the pipeline root, whose recorded `modules/` path resolves to a
+   different directory than the allowlist target) fails `400` before writes.
+   All three checks compare fully resolved, casefolded paths. These
+   preflights run before all writes.
 4. Snapshot the *on-disk* graph's config-file set (`_compute_disk_prev_config_files`) — the
    diff baseline for stale-file cleanup, computed **before** any write in this call.
 5. Generate code (`graph_to_code` or, if submodels are present, `graph_to_code_multi`),

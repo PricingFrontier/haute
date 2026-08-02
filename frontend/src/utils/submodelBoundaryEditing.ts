@@ -104,7 +104,10 @@ export function removeSubmodelBoundaryEdges(state: SubmodelBoundaryEditState, ed
     const info = (edge.data as SubmodelBoundaryEdgeData).submodelBoundary
     if (info.direction === "input") {
       const backing = info.parentEdge
-      const logical = state.parentEdges.filter(candidate => candidate.target === placeholderId(state.submodelName) && candidate.source === backing.source && (candidate.sourceHandle ?? null) === (backing.sourceHandle ?? null))
+      // Evaluate survivors against the running list, not the entry snapshot:
+      // removing every mapping of one frame in a single batch must still end
+      // with the last removal converting its backing edge to a draft.
+      const logical = parentEdges.filter(candidate => candidate.target === placeholderId(state.submodelName) && candidate.source === backing.source && (candidate.sourceHandle ?? null) === (backing.sourceHandle ?? null))
       const otherMappings = logical.filter(candidate => candidate.id !== backing.id && candidate.targetHandle !== null && candidate.targetHandle !== undefined)
       if (otherMappings.length === 0) parentEdges = parentEdges.map(candidate => candidate.id === backing.id ? { ...candidate, targetHandle: null, targetPort: null } : candidate)
       else parentEdges = parentEdges.filter(candidate => candidate.id !== backing.id)
@@ -124,28 +127,85 @@ export function removeSubmodelBoundaryEdges(state: SubmodelBoundaryEditState, ed
 
 
 
-/** Rebuild persisted submodel state from a visible drilled-in snapshot. */
-export function reconcileSubmodelBoundaryState(state: SubmodelBoundaryEditState): SubmodelBoundaryEditResult {
+/**
+ * Rebuild persisted submodel state from a visible drilled-in snapshot.
+ *
+ * Confirmation-based: a persisted mapped inbound edge survives only while a
+ * drilled mapping edge still represents it, so deletions that bypass the
+ * boundary gesture handlers (keyboard Delete, node-panel delete) cannot
+ * resurrect a mapping from stale card metadata. An unrepresented mapping —
+ * including one that was already stale when the view opened — returns to the
+ * available null-handle draft, or is dropped when its logical frame keeps
+ * another surviving edge, mirroring `removeSubmodelBoundaryEdges`. Retained
+ * parent edges keep their original list positions. Returns `null` when the
+ * view lacks either composite card: that graph is not a drilled projection
+ * (e.g. history restored a pre-drill snapshot) and must not be reconciled as
+ * if the parent canvas were the child graph.
+ */
+export function reconcileSubmodelBoundaryState(state: SubmodelBoundaryEditState): SubmodelBoundaryEditResult | null {
   const inputNode = state.viewNodes.find(node => boundary(node, "input"))
   const outputNode = state.viewNodes.find(node => boundary(node, "output"))
-  const inputData = inputNode ? inputNode.data as unknown as SubmodelPortData : undefined
+  if (!inputNode || !outputNode) return null
   const placeholder = placeholderId(state.submodelName)
-  const currentBoundary = new Map<string, PipelineEdge>()
-  for (const port of inputData?.ports ?? []) for (const edge of port.parentEdges ?? []) currentBoundary.set(edge.id, edge)
-  const inputEdges = state.viewEdges.filter(edge => edge.source === inputNode?.id && isBoundaryEdge(edge))
-  const outputEdges = state.viewEdges.filter(edge => edge.target === outputNode?.id && isBoundaryEdge(edge))
+  const childIds = new Set(state.viewNodes.filter(node => node.type !== "submodelPort").map(node => node.id))
+
+  const inputEdges = state.viewEdges.filter(edge => edge.source === inputNode.id && isBoundaryEdge(edge) && childIds.has(edge.target))
+  const outputEdges = state.viewEdges.filter(edge => edge.target === outputNode.id && isBoundaryEdge(edge) && childIds.has(edge.source))
+  const confirmedInput = new Map<string, PipelineEdge>()
   for (const edge of inputEdges) {
     const info = (edge.data as SubmodelBoundaryEdgeData).submodelBoundary
-    if (info.direction === "input") currentBoundary.set(info.parentEdge.id, info.parentEdge)
+    if (info.direction === "input") confirmedInput.set(info.parentEdge.id, info.parentEdge)
   }
+  const confirmedConsumers = new Map<string, PipelineEdge>()
   for (const edge of outputEdges) {
     const info = (edge.data as SubmodelBoundaryEdgeData).submodelBoundary
-    if (info.direction === "output") for (const consumer of info.parentConsumerEdges) currentBoundary.set(consumer.id, consumer)
+    if (info.direction === "output") for (const consumer of info.parentConsumerEdges) confirmedConsumers.set(consumer.id, consumer)
   }
-  const isPersistedBoundary = (edge: PipelineEdge) =>
-    (edge.target === placeholder && (edge.targetHandle === null || edge.targetHandle === undefined || edge.targetHandle.startsWith("in__"))) ||
-    (edge.source === placeholder && typeof edge.sourceHandle === "string" && edge.sourceHandle.startsWith("out__"))
-  const parentEdges = [...state.parentEdges.filter(edge => !isPersistedBoundary(edge)), ...currentBoundary.values()]
+
+  const isInbound = (edge: PipelineEdge) => edge.target === placeholder && (edge.targetHandle === null || edge.targetHandle === undefined || edge.targetHandle.startsWith("in__"))
+  const isOutbound = (edge: PipelineEdge) => edge.source === placeholder && typeof edge.sourceHandle === "string" && edge.sourceHandle.startsWith("out__")
+  const frameKey = (edge: PipelineEdge) => JSON.stringify([edge.source, edge.sourceHandle ?? null])
+
+  // A logical frame stays represented by a confirmed mapping or a draft; only
+  // then may an unrepresented mapping be dropped instead of draft-converted.
+  const framesWithSurvivor = new Set<string>()
+  for (const edge of state.parentEdges) {
+    if (!isInbound(edge)) continue
+    if (confirmedInput.has(edge.id) || edge.targetHandle === null || edge.targetHandle === undefined) framesWithSurvivor.add(frameKey(edge))
+  }
+
+  const parentEdges: PipelineEdge[] = []
+  for (const edge of state.parentEdges) {
+    if (isInbound(edge)) {
+      const confirmed = confirmedInput.get(edge.id)
+      if (confirmed) {
+        parentEdges.push(confirmed)
+        confirmedInput.delete(edge.id)
+        continue
+      }
+      if (edge.targetHandle === null || edge.targetHandle === undefined) {
+        parentEdges.push(edge)
+        continue
+      }
+      if (framesWithSurvivor.has(frameKey(edge))) continue
+      framesWithSurvivor.add(frameKey(edge))
+      parentEdges.push({ ...edge, targetHandle: null, targetPort: null })
+      continue
+    }
+    if (isOutbound(edge)) {
+      const confirmed = confirmedConsumers.get(edge.id)
+      if (confirmed) {
+        parentEdges.push(confirmed)
+        confirmedConsumers.delete(edge.id)
+      }
+      continue
+    }
+    parentEdges.push(edge)
+  }
+  // Backing edges the view still represents but the persisted list lost are
+  // re-appended so undo/redo of a drilled edit cannot drop a live mapping.
+  parentEdges.push(...confirmedInput.values(), ...confirmedConsumers.values())
+
   const inputPorts = [...new Set(inputEdges.map(edge => edge.target))]
   const outputPorts = [...new Set(outputEdges.map(edge => edge.source))]
   const labels = Object.fromEntries(outputPorts.map(id => {

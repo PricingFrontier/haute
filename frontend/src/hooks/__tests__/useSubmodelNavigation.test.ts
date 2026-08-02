@@ -63,6 +63,56 @@ describe("useSubmodelNavigation", () => {
     expect(result.current.viewStack[0]).toMatchObject({ type: "pipeline", name: "main" })
   })
 
+  it("handleCreateSubmodel refuses while a drilled view is active", async () => {
+    const params = makeParams({
+      parentGraphRef: {
+        current: {
+          nodes: [] as Node[],
+          edges: [] as Edge[],
+          submodels: {} as Record<string, unknown>,
+        },
+      },
+    })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
+    })
+
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: expect.stringContaining("main pipeline"),
+      }),
+    ])
+  })
+
+  it("handleDissolveSubmodel refuses while a drilled view is active", async () => {
+    const params = makeParams({
+      parentGraphRef: {
+        current: {
+          nodes: [] as Node[],
+          edges: [] as Edge[],
+          submodels: {} as Record<string, unknown>,
+        },
+      },
+    })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDissolveSubmodel("pricing")
+    })
+
+    expect(mockDissolve).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: expect.stringContaining("main pipeline"),
+      }),
+    ])
+  })
+
   it("handleCreateSubmodel calls API and updates nodes", async () => {
     vi.useFakeTimers()
     mockCreate.mockResolvedValue({

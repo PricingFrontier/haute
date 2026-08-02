@@ -367,6 +367,7 @@ Acquires `save_lock`, runs the body in a threadpool:
 | Unknown selected id, existing canonical submodel, or stale `base_revision` | `SubmodelValidationError`/revision mismatch → `HTTPException(409, <safe detail>)` | Before transform/save. |
 | Existing case-insensitive target module or sibling sidecar | `HTTPException(409, <safe detail>)` | `SavePipelineService` no-clobber preflight, before writes. |
 | Request asserts managed ownership without a matching sidecar or create claim | `HTTPException(409, <reload/safety detail>)` | `SavePipelineService` ownership preflight, before writes. |
+| Create claim matches no resolved child metadata path (e.g. parent pipeline nested below the pipeline root) | `HTTPException(400, <specific message>)` | `SavePipelineService` ownership preflight, before writes. |
 | Submitted dissolve metadata for the selected submodel is not an object | `HTTPException(400, <specific message>)` | Before authoritative child metadata is merged or any write runs. |
 | Submodel name collides with a Windows reserved device filename | `HTTPException(400, <specific message>)` | `create_submodel`, before `create_submodel_graph` runs. |
 | Missing/blank `base_revision` on create/dissolve | FastAPI request validation → `422` | Before the route runs. |

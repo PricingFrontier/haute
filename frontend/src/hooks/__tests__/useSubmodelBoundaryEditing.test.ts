@@ -207,6 +207,33 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(metadata.outputPorts).toEqual([])
   })
 
+  it("leaves parent refs untouched when history restores a non-drilled snapshot", () => {
+    const fixture = makeFixture({ outputPorts: ["child_a"] })
+    const { rerender } = renderHook(
+      (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
+      { initialProps: hookParams(fixture) },
+    )
+
+    // Undo past the drill-in boundary: the visible graph becomes the parent
+    // canvas again while the drilled view is still active.
+    rerender({
+      ...hookParams(fixture),
+      nodes: fixture.parentNodes,
+      edges: fixture.parentEdges as PipelineEdge[],
+    })
+
+    const metadata = fixture.submodelsRef.current[SUBMODEL_NAME] as {
+      childNodeIds: string[]
+      outputPorts: string[]
+    }
+    expect(metadata.childNodeIds).toEqual(["child_a", "child_b"])
+    expect(metadata.outputPorts).toEqual(["child_a"])
+    expect((fixture.parentGraphRef.current?.edges ?? []).map((edge) => edge.id)).toEqual([
+      "consumer-a-child_a",
+      "consumer-b-child_a",
+    ])
+  })
+
   it("does not own ordinary edges or any gesture outside a drilled submodel", () => {
     const fixture = makeFixture()
     const { result } = renderHook(() => useSubmodelBoundaryEditing({

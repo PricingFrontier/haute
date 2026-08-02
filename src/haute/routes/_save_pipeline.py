@@ -705,7 +705,9 @@ class SavePipelineService:
         targets = [self._resolve_module_delete_file(rel_path) for rel_path in rel_paths]
         seen: set[str] = set()
         for target in targets:
-            folded_target = str(target).casefold()
+            # Fully resolved, casefolded keys — the same normalisation
+            # `_prepare_managed_child_sidecars` applies to metadata paths.
+            folded_target = str(target.resolve()).casefold()
             if folded_target in seen:
                 raise HTTPException(
                     status_code=409,
@@ -749,7 +751,7 @@ class SavePipelineService:
         claimed: set[str] = set()
         for rel_path in rel_paths:
             target = self._resolve_module_delete_file(rel_path)
-            key = str(target).casefold()
+            key = str(target.resolve()).casefold()
             if key in claimed:
                 raise ValueError("A managed submodel module claim was duplicated.")
             if key not in absent_module_paths:
@@ -822,7 +824,18 @@ class SavePipelineService:
             )
 
         if remaining_claims:
-            raise ValueError("A managed submodel claim has no matching graph metadata.")
+            # Client-reachable: a parent pipeline nested below the pipeline
+            # root records "modules/<name>.py" relative to its own directory,
+            # which never matches the allowlist target under the root's
+            # modules/ directory. Fail cleanly before any write.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Submodel module claim does not match the pipeline's recorded "
+                    "module path. The parent pipeline must live directly in the "
+                    "active pipeline directory."
+                ),
+            )
         return prepared
 
     # ------------------------------------------------------------------

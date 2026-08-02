@@ -49,6 +49,10 @@ export default function useSubmodelNavigation({
   useEffect(() => { viewStackRef.current = viewStack }, [viewStack])
 
   const handleCreateSubmodel = useCallback(async (name: string, nodeIds: string[]) => {
+    if (parentGraphRef.current) {
+      addToast("error", "Return to the main pipeline before creating a submodel.")
+      return
+    }
     try {
       const graph = { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current }
       const data = await createSubmodel({
@@ -78,7 +82,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     const smName = nodeId.replace("submodel__", "")
@@ -154,6 +158,10 @@ export default function useSubmodelNavigation({
   }, [parentGraphRef, submodelsRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, fitView])
 
   const handleDissolveSubmodel = useCallback(async (smName: string) => {
+    if (parentGraphRef.current) {
+      addToast("error", "Return to the main pipeline before dissolving a submodel.")
+      return
+    }
     try {
       const graph = { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current }
       const data = await dissolveSubmodel({
@@ -188,7 +196,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, sourceRevisionRef, preservedBlocksRef, setPreamble, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, sourceRevisionRef, preservedBlocksRef, setPreamble, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   return {
     viewStack,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from "react"
 import { applyEdgeChanges, type Connection, type Edge, type EdgeChange, type Node } from "@xyflow/react"
-import type { PipelineEdge, SubmodelBoundaryEdgeData } from "../types/node"
+import type { PipelineEdge, SubmodelBoundaryEdgeData, SubmodelPortData } from "../types/node"
 import {
   applySubmodelBoundaryConnection,
   reconcileSubmodelBoundaryState,
@@ -25,6 +25,8 @@ export interface UseSubmodelBoundaryEditingParams {
 }
 
 const isBoundaryNode = (node: Node | undefined) => node?.type === "submodelPort"
+const hasBoundaryCard = (nodes: Node[], direction: "input" | "output") =>
+  nodes.some(node => node.type === "submodelPort" && (node.data as Partial<SubmodelPortData>).portDirection === direction)
 const isBoundaryEdge = (edge: Edge) => {
   const data = edge.data as SubmodelBoundaryEdgeData | undefined
   return data?.submodelBoundary?.direction === "input" || data?.submodelBoundary?.direction === "output"
@@ -35,6 +37,10 @@ export default function useSubmodelBoundaryEditing({
 }: UseSubmodelBoundaryEditingParams) {
   const state = useCallback((): SubmodelBoundaryEditState | null => {
     if (!activeSubmodelName || !parentGraphRef.current) return null
+    // Without both composite cards the visible graph is not a drilled
+    // projection (e.g. history restored a pre-drill snapshot); reconciling it
+    // would rewrite the submodel metadata from the parent canvas.
+    if (!hasBoundaryCard(nodes, "input") || !hasBoundaryCard(nodes, "output")) return null
     return { submodelName: activeSubmodelName, viewNodes: nodes, viewEdges: edges, parentNodes: parentGraphRef.current.nodes, parentEdges: parentGraphRef.current.edges, submodels }
   }, [activeSubmodelName, nodes, edges, submodels, parentGraphRef])
   const commit = useCallback((result: SubmodelBoundaryEditResult) => {
@@ -85,7 +91,8 @@ export default function useSubmodelBoundaryEditing({
     if (!removed) return true
     const remaining = changes.filter(change => !(change.type === "remove" && removedBoundaryIds.includes(change.id)))
     const viewEdges = applyEdgeChanges(remaining, removed.viewEdges)
-    commit(reconcileSubmodelBoundaryState({ ...removed, viewEdges: viewEdges as PipelineEdge[] }))
+    const reconciled = reconcileSubmodelBoundaryState({ ...removed, viewEdges: viewEdges as PipelineEdge[] })
+    if (reconciled) commit(reconciled)
     return true
   }, [state, edges, commit])
 

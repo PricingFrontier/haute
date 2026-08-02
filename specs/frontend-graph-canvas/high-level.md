@@ -130,9 +130,10 @@ Out of scope (owned by neighbouring components, linked where they exist):
   frame in parent-edge order and gives every row its own source handle. A new
   parent-to-submodel connection creates an available row only: it does not
   choose or connect an internal child. The user may explicitly connect that
-  row to one or more children; removing the last such mapping returns the row
-  to its available, unassigned state until the parent connection itself is
-  deleted on the main canvas. This null-handle draft is non-executable and is
+  row to one or more children; removing the last such mapping — whether alone
+  or as part of one batch gesture that removes several mappings of the same
+  frame — returns the row to its available, unassigned state until the parent
+  connection itself is deleted on the main canvas. This null-handle draft is non-executable and is
   omitted from runtime flattening, so automatic previews of the remaining
   graph continue while the user finishes the mapping. An incoming API-input
   edge is labelled by its
@@ -147,7 +148,20 @@ Out of scope (owned by neighbouring components, linked where they exist):
   endpoint. Both composite nodes remain visible when empty. Each composite
   keeps its current canvas position when an Input mapping or Output export is
   added or removed; boundary reconciliation updates topology and metadata but
-  never relays out or resets an existing card. Each composite records the
+  never relays out or resets an existing card. Reconciliation is
+  confirmation-based against the drilled view: a persisted mapped inbound
+  edge that no longer has a surviving drilled mapping — because the mapping
+  or its child was deleted through any editor path, or because the mapping
+  was already stale when the view opened — returns to the available
+  null-handle draft, or is dropped when its logical frame still has another
+  surviving edge, so the parent connection itself is never silently severed.
+  Consumers of an export that is no longer represented are removed with it,
+  wrong-prefixed handles pass through untouched for the backend to reject,
+  and retained parent edges keep their relative order. When the visible
+  graph does not contain both boundary cards — for example after history
+  restores a non-drilled snapshot while a drilled view is active —
+  reconciliation is a no-op and the parent refs keep their last
+  synchronized state. Each composite records the
   external parent node ids it represents, so flat-graph trace
   steps still highlight the corresponding Input or Output card after the
   per-parent markers are collapsed. Input-to-child and child-to-Output edges
@@ -295,7 +309,11 @@ Out of scope (owned by neighbouring components, linked where they exist):
   reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
   non-previewable node type — rather than the output-port summary table that
-  was once proposed and never built. Create and dissolve send the retained
+  was once proposed and never built. Create and dissolve are main-canvas
+  operations: while a drilled submodel view is active both handlers refuse to
+  run and toast an instruction to return to the main pipeline — the same
+  client-side gate as save — instead of sending a mis-scoped request that the
+  backend would reject with a misleading revision `409`. Create and dissolve send the retained
   parent `source_revision` as `base_revision` and include the untouched
   preserved blocks. Successful responses replace that revision. A `409`
   leaves the local graph unchanged and tells the user to reload. Dissolve

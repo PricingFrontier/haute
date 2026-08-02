@@ -5,6 +5,7 @@ import { makeNode } from "../../test-utils/factories"
 import { buildSubmodelViewGraph } from "../submodelViewGraph"
 import {
   applySubmodelBoundaryConnection,
+  reconcileSubmodelBoundaryState,
   removeSubmodelBoundaryEdges,
   type SubmodelBoundaryEditState,
 } from "../submodelBoundaryEditing"
@@ -323,5 +324,222 @@ describe("submodelBoundaryEditing", () => {
       edges: Edge[]
     }
     expect(graph.edges).toEqual([internal])
+  })
+
+  it("removing every mapping of one frame in a single batch returns the frame to available", () => {
+    const state = editState({
+      inputPorts: ["child_a", "child_b"],
+      parentEdges: [
+        {
+          id: "map-a",
+          source: "quote_input",
+          sourceHandle: "quote",
+          target: "submodel__pricing",
+          targetHandle: "in__child_a",
+        },
+        {
+          id: "map-b",
+          source: "quote_input",
+          sourceHandle: "quote",
+          target: "submodel__pricing",
+          targetHandle: "in__child_b",
+        },
+      ],
+    })
+    const input = boundary(state.viewNodes, "input")
+    const mappings = state.viewEdges.filter((edge) => edge.source === input.id)
+    expect(mappings).toHaveLength(2)
+
+    const result = removeSubmodelBoundaryEdges(state, mappings.map((edge) => edge.id))
+
+    expect(result).not.toBeNull()
+    expect(result!.parentEdges).toEqual([
+      expect.objectContaining({
+        source: "quote_input",
+        sourceHandle: "quote",
+        targetHandle: null,
+        targetPort: null,
+      }),
+    ])
+    expect(configOf(result!.parentNodes).inputPorts).toEqual([])
+    const inputAfter = boundary(result!.viewNodes, "input")
+    expect((inputAfter.data as unknown as SubmodelPortData).ports).toHaveLength(1)
+  })
+
+  it("reconcile returns a directly-deleted mapping's backing edge to available", () => {
+    const state = editState({
+      inputPorts: ["child_a"],
+      parentEdges: [{
+        id: "input-frame",
+        source: "quote_input",
+        sourceHandle: "quote",
+        target: "submodel__pricing",
+        targetHandle: "in__child_a",
+        targetPort: "join",
+      }],
+    })
+    const input = boundary(state.viewNodes, "input")
+    state.viewEdges = state.viewEdges.filter((edge) => edge.source !== input.id)
+
+    const result = reconcileSubmodelBoundaryState(state)
+
+    expect(result).not.toBeNull()
+    expect(result!.parentEdges).toEqual([
+      expect.objectContaining({
+        id: "input-frame",
+        targetHandle: null,
+        targetPort: null,
+      }),
+    ])
+    expect(configOf(result!.parentNodes).inputPorts).toEqual([])
+    const inputAfter = boundary(result!.viewNodes, "input")
+    expect((inputAfter.data as unknown as SubmodelPortData).ports).toHaveLength(1)
+  })
+
+  it("reconcile leaves an available draft when a mapped child is deleted directly", () => {
+    const state = editState({
+      inputPorts: ["child_a"],
+      parentEdges: [{
+        id: "input-frame",
+        source: "quote_input",
+        sourceHandle: "quote",
+        target: "submodel__pricing",
+        targetHandle: "in__child_a",
+      }],
+    })
+    state.viewNodes = state.viewNodes.filter((node) => node.id !== "child_a")
+    state.viewEdges = state.viewEdges.filter(
+      (edge) => edge.source !== "child_a" && edge.target !== "child_a",
+    )
+
+    const result = reconcileSubmodelBoundaryState(state)
+
+    expect(result).not.toBeNull()
+    expect(result!.parentEdges).toEqual([
+      expect.objectContaining({
+        id: "input-frame",
+        targetHandle: null,
+        targetPort: null,
+      }),
+    ])
+    expect(metadataOf(result!.submodels).childNodeIds).toEqual(["child_b"])
+    expect(configOf(result!.parentNodes).inputPorts).toEqual([])
+  })
+
+  it("reconcile drops a directly-deleted mapping when its frame still has another mapping", () => {
+    const state = editState({
+      inputPorts: ["child_a", "child_b"],
+      parentEdges: [
+        {
+          id: "map-a",
+          source: "quote_input",
+          sourceHandle: "quote",
+          target: "submodel__pricing",
+          targetHandle: "in__child_a",
+        },
+        {
+          id: "map-b",
+          source: "quote_input",
+          sourceHandle: "quote",
+          target: "submodel__pricing",
+          targetHandle: "in__child_b",
+        },
+      ],
+    })
+    const input = boundary(state.viewNodes, "input")
+    state.viewEdges = state.viewEdges.filter(
+      (edge) => !(edge.source === input.id && edge.target === "child_b"),
+    )
+
+    const result = reconcileSubmodelBoundaryState(state)
+
+    expect(result).not.toBeNull()
+    expect(result!.parentEdges).toEqual([
+      expect.objectContaining({ id: "map-a", targetHandle: "in__child_a" }),
+    ])
+    expect(configOf(result!.parentNodes).inputPorts).toEqual(["child_a"])
+  })
+
+  it("reconcile converts a stale mapped inbound edge into an available draft", () => {
+    const state = editState({
+      parentEdges: [{
+        id: "stale",
+        source: "quote_input",
+        sourceHandle: "quote",
+        target: "submodel__pricing",
+        targetHandle: "in__ghost",
+        targetPort: "join",
+      }],
+    })
+
+    const result = reconcileSubmodelBoundaryState(state)
+
+    expect(result).not.toBeNull()
+    expect(result!.parentEdges).toEqual([
+      expect.objectContaining({
+        id: "stale",
+        targetHandle: null,
+        targetPort: null,
+      }),
+    ])
+    const inputAfter = boundary(result!.viewNodes, "input")
+    expect((inputAfter.data as unknown as SubmodelPortData).ports).toHaveLength(1)
+  })
+
+  it("reconcile passes wrong-prefixed boundary handles through untouched", () => {
+    const malformed: PipelineEdge = {
+      id: "bad",
+      source: "quote_input",
+      target: "submodel__pricing",
+      targetHandle: "into__child_a",
+    }
+    const state = editState({ parentEdges: [malformed] })
+
+    const result = reconcileSubmodelBoundaryState(state)
+
+    expect(result).not.toBeNull()
+    expect(result!.parentEdges).toEqual([malformed])
+  })
+
+  it("reconcile preserves the relative order of retained parent edges", () => {
+    const mapped: PipelineEdge = {
+      id: "map-a",
+      source: "quote_input",
+      sourceHandle: "quote",
+      target: "submodel__pricing",
+      targetHandle: "in__child_a",
+    }
+    const external: PipelineEdge = {
+      id: "external",
+      source: "quote_input",
+      target: "consumer_a",
+    }
+    const consumer: PipelineEdge = {
+      id: "consume-b",
+      source: "submodel__pricing",
+      sourceHandle: "out__child_b",
+      target: "consumer_b",
+    }
+    const state = editState({
+      inputPorts: ["child_a"],
+      outputPorts: ["child_b"],
+      parentEdges: [mapped, external, consumer],
+    })
+
+    const result = reconcileSubmodelBoundaryState(state)
+
+    expect(result).not.toBeNull()
+    expect(result!.parentEdges.map((edge) => edge.id)).toEqual([
+      "map-a",
+      "external",
+      "consume-b",
+    ])
+  })
+
+  it("reconcile refuses a view that lacks the composite boundary cards", () => {
+    const state = editState()
+    state.viewNodes = state.viewNodes.filter((node) => node.type !== "submodelPort")
+
+    expect(reconcileSubmodelBoundaryState(state)).toBeNull()
   })
 })
