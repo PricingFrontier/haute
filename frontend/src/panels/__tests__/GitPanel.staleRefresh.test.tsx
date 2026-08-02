@@ -3,6 +3,7 @@ import { render, screen, cleanup, waitFor, act } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import { clearGitPanelCaches, readBranchHistory } from "../gitPanelCache"
 import useGitStore, { resetGitStatusRequestForTests } from "../../stores/useGitStore"
+import { resetGitBranchLoaderForTests } from "../../stores/gitBranchLoader"
 
 // Regression pin for the refresh() generation guard: a refresh captured for
 // the PREVIOUS branch (its fetches still in flight when a peek retargets the
@@ -81,6 +82,7 @@ describe("GitPanel stale refresh (generation guard)", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     clearGitPanelCaches()
+    resetGitBranchLoaderForTests()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     resetGitStatusRequestForTests()
     useGitStore.setState({ status: null, loading: false, statusError: null, branches: [], branchesLoaded: false, branchesLoading: false, branchesError: null, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })

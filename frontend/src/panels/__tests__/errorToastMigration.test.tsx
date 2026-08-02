@@ -44,6 +44,7 @@ import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import useToastStore from "../../stores/useToastStore"
+import { resetGitBranchLoaderForTests } from "../../stores/gitBranchLoader"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Source walker (shared by all structural tests)
@@ -374,11 +375,6 @@ vi.mock("../editors/CodeEditor", () => ({
   ),
 }))
 
-// Reset helper used by every behavioral test.
-function resetToasts() {
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  Behavioral tests
 // ═══════════════════════════════════════════════════════════════════
@@ -401,7 +397,6 @@ import OptimiserPreview, { type OptimiserPreviewData } from "../OptimiserPreview
 describe("OptimiserPreview frontier-point switching stays local", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    resetToasts()
   })
   afterEach(cleanup)
 
@@ -461,7 +456,7 @@ import GitPanel from "../GitPanel"
 describe("#83 behavioral: GitPanel history load failure surfaces a toast", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    resetToasts()
+    resetGitBranchLoaderForTests()
     // The v1 GitPanel loads its history (+ branch manager + status) on mount.
     H.getWorkingBranch.mockResolvedValue({
       working_branch: "demo",
@@ -506,7 +501,6 @@ import UtilityPanel from "../UtilityPanel"
 describe("#83 behavioral: UtilityPanel file load failure surfaces a toast", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    resetToasts()
   })
   afterEach(cleanup)
 

@@ -23,7 +23,6 @@ import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import type { MutableRefObject } from "react"
 import usePipelineAPI from "../usePipelineAPI"
-import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
@@ -120,7 +119,6 @@ async function advanceTimers(ms: number) {
 describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)", () => {
   beforeEach(() => {
     vi.useRealTimers()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })
     useGraphStore.setState({
       nodes: [],

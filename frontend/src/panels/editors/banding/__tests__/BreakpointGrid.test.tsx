@@ -17,7 +17,6 @@ function restoreClipboard(): void {
 describe("BreakpointGrid", () => {
   afterEach(() => {
     cleanup()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     restoreClipboard()
   })
 

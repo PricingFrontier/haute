@@ -16,7 +16,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useNodeHandlers from "../useNodeHandlers"
-import useToastStore from "../../stores/useToastStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useUIStore from "../../stores/useUIStore"
 import { makeNode } from "../../test-utils/factories"
@@ -41,7 +40,6 @@ function makeParams() {
 describe("useNodeHandlers — cache cleanup deferred on delete (#32)", () => {
   beforeEach(() => {
     vi.useRealTimers()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useNodeResultsStore.setState({
       previews: {},
       columnCache: {},

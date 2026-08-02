@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, waitFor, cleanup } from "@testing-library/react"
 import { useStaleConfigEstimate } from "../useStaleConfigEstimate"
-import useToastStore from "../../stores/useToastStore"
 import useNodeResultsStore, { hashConfig } from "../../stores/useNodeResultsStore"
 
 // Key-contract pin (Maginot: fingerprint / cache-key completeness).
@@ -16,10 +15,6 @@ interface FakeEstimate {
 
 const config = { algorithm: "catboost", gpu: false }
 const sampleEstimate: FakeEstimate = { estimated_mb: 1024 }
-
-beforeEach(() => {
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
-})
 
 afterEach(() => {
   cleanup()

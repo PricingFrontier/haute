@@ -25,7 +25,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
-import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
@@ -103,7 +102,6 @@ function makeStashedNode(id: string, source?: string): Node {
 describe("column-stash source identity (cache-key completeness)", () => {
   beforeEach(() => {
     vi.useFakeTimers()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })
     useGraphStore.setState({
       nodes: [],

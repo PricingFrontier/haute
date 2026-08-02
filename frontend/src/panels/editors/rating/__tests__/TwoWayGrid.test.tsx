@@ -28,7 +28,6 @@ describe("TwoWayGrid", () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
   })
 
   it("renders row and column factor headers", () => {

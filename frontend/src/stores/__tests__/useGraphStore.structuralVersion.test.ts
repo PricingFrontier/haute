@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest"
 import { act } from "@testing-library/react"
-import useGraphStore, { computeStructuralFingerprint } from "../useGraphStore"
+import useGraphStore, { computeStructuralFingerprint, computePanelContextFingerprint } from "../useGraphStore"
+import { serializeSnapshot } from "../../utils/graphSnapshot"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import type { Node } from "@xyflow/react"
 
@@ -9,14 +10,15 @@ function resetStore() {
     nodes: [],
     edges: [],
     preamble: "",
+    submodels: {},
     lastSavedSnapshot: null,
     undoStack: [],
     redoStack: [],
     structuralVersion: 0,
-    structuralFingerprint: "nodes:||edges:||preamble:\"\"",
+    structuralFingerprint: computeStructuralFingerprint([], [], ""),
     panelContextVersion: 0,
-    panelContextFingerprint: "nodes:||edges:",
-    persistedFingerprint: "nodes:[]|edges:[]|preamble:\"\"",
+    panelContextFingerprint: computePanelContextFingerprint([], []),
+    persistedFingerprint: serializeSnapshot({ nodes: [], edges: [], preamble: "", submodels: {} }),
     savedPersistedFingerprint: null,
     dirty: false,
   })

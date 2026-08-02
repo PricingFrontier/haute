@@ -72,7 +72,6 @@ function resetStores() {
     redoStack: [],
     structuralVersion: 0,
   })
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
 
 function generateLargeGraph(nodeCount: number, edgeCount: number) {

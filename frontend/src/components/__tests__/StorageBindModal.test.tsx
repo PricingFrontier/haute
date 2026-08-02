@@ -67,7 +67,6 @@ describe("StorageBindModal — asynchronous binding", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ status: status({}), modal: "storage" })
-    useToastStore.setState({ toasts: [] })
   })
   afterEach(cleanup)
 

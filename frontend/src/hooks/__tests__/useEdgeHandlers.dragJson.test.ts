@@ -11,7 +11,7 @@
  * matches the project-wide "fail loudly, no unnecessary fallbacks"
  * principle in CLAUDE.md.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
@@ -66,9 +66,6 @@ function makeDragEvent(type: string, rawConfig: string | undefined) {
 }
 
 describe("useEdgeHandlers.onDrop — malformed drag JSON fails loudly (#35)", () => {
-  beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  })
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()

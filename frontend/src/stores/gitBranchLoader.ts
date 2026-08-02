@@ -14,6 +14,13 @@ type SetGitBranchState = (state: Partial<GitBranchState>) => void
 let inFlight: Promise<GitManagedBranch[]> | null = null
 let queuedRefresh: Promise<GitManagedBranch[]> | null = null
 
+/** Tests that hold a mocked getWorkingBranches open forever leave the
+ *  single-flight stuck, starving every later loadBranches() in the same file. */
+export function resetGitBranchLoaderForTests(): void {
+  inFlight = null
+  queuedRefresh = null
+}
+
 /**
  * Fetch and publish the shared branch listing.
  *

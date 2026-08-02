@@ -1,4 +1,18 @@
 import "@testing-library/jest-dom/vitest"
+import { beforeEach } from "vitest"
+
+import useToastStore from "./stores/useToastStore"
+
+// The toast store is a module-level singleton read by nearly every hook and
+// component test. Reset it globally so a file that forgets its own copy can't
+// leak toasts into whichever tests the nightly shuffle runs after it. Files
+// that mock the store module are unaffected — setup-file imports resolve
+// before a test file's hoisted vi.mock() factories run, so this import is
+// always the real store. File-level beforeEach hooks run after this one, so
+// deliberate seeding wins.
+beforeEach(() => {
+  useToastStore.setState({ toasts: [], _toastCounter: 0 })
+})
 
 Object.defineProperty(globalThis, "__APP_VERSION__", {
   configurable: true,

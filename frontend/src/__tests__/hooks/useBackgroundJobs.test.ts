@@ -43,10 +43,6 @@ function resetStores() {
     exploreResults: {},
     exploreJobs: {},
   })
-  useToastStore.setState({
-    toasts: [],
-    _toastCounter: 0,
-  })
 }
 
 function makeSolveProgress(overrides: Partial<SolveProgress> = {}): SolveProgress {

@@ -100,7 +100,6 @@ function makeCreateResponse(
 
 describe("useSubmodelNavigation", () => {
   beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useGraphStore.getState().loadGraphSnapshot({
       nodes: [],
       edges: [],

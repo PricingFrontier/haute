@@ -14,7 +14,8 @@
  * list-screen state view/sessions/sessionsStatus.
  *
  * The api module is mocked (the SSE parser has its own suite); graph and
- * toast stores are the real ones, reset per test for shuffle safety.
+ * toast stores are the real ones (the toast store is reset per test by the
+ * global setupTests hook).
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -66,7 +67,6 @@ function resetStores() {
     sessionsStatus: "unknown",
   })
   useGraphStore.setState({ dirty: false })
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
   vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", history: [] })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
   // Every completed turn refreshes the list; without a default the shared

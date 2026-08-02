@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge, Connection } from "@xyflow/react"
 import useEdgeHandlers from "../useEdgeHandlers"
@@ -1485,10 +1485,6 @@ describe("useEdgeHandlers", () => {
 })
 
 describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
-  beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  })
-
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
@@ -1981,10 +1977,6 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
 })
 
 describe("useEdgeHandlers edge-join insertion candidates", () => {
-  beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  })
-
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()

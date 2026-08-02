@@ -174,7 +174,6 @@ function columnsByNodeFromGraph(graph: unknown) {
 describe("usePipelineAPI — downstream propagation (Phase 2D-5)", () => {
   beforeEach(() => {
     vi.useRealTimers()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live", "staging"] })
     useGraphStore.setState({
       nodes: [],

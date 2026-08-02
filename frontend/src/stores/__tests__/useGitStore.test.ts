@@ -12,6 +12,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 import useGitStore, { resetGitStatusRequestForTests } from "../useGitStore"
+import { resetGitBranchLoaderForTests } from "../gitBranchLoader"
 import {
   acknowledgeGitBind,
   bindGitStorage,
@@ -38,6 +39,7 @@ const READY: GitWorkingBranchResponse = {
 
 describe("useGitStore", () => {
   beforeEach(() => {
+    resetGitBranchLoaderForTests()
     useGitStore.setState({
       status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
       branchesLoading: false, branchesError: null, modal: null, pendingAction: null,

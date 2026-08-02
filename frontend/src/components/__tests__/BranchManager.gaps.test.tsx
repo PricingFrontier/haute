@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import BranchManager from "../BranchManager"
 import useGitStore from "../../stores/useGitStore"
+import { resetGitBranchLoaderForTests } from "../../stores/gitBranchLoader"
 import useGraphStore from "../../stores/useGraphStore"
 
 const mockGetWorkingBranches = vi.fn()
@@ -40,6 +41,7 @@ describe("BranchManager reload-on-state-change navigation", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    resetGitBranchLoaderForTests()
     useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null })
     useGraphStore.setState({ dirty: false })
     mockGetWorkingBranches.mockResolvedValue({

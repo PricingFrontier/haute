@@ -42,7 +42,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import useTracing from "../useTracing"
-import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 
@@ -84,7 +83,6 @@ function makeParams(overrides: Partial<TracingParams> = {}): TracingParams {
 
 describe("nodesWithStatus memoization (#96)", () => {
   beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live" })
   })
 

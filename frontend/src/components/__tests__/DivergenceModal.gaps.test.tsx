@@ -52,7 +52,6 @@ describe("DivergenceModal (gaps)", () => {
       loading: false,
     })
     useUIStore.setState({ gitOpen: false })
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
   })
   afterEach(cleanup)
 

@@ -94,7 +94,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 describe("usePipelineAPI — gap tests", () => {
   beforeEach(() => {
     vi.useRealTimers()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
     useGraphStore.setState({
       nodes: [],

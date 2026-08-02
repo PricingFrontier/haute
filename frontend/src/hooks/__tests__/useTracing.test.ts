@@ -6,7 +6,6 @@ import useTracing, {
   TRACE_PROGRESS_DELAY_MS,
   buildEdgeAdjacency,
 } from "../useTracing"
-import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
@@ -131,7 +130,6 @@ function makeTrace(nodeIds: string[]): TraceResult {
 
 describe("useTracing", () => {
   beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live" })
     mockTraceCell.mockReset()
     mockReducedMotion(false)

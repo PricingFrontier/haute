@@ -3,8 +3,8 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import type { SubmodelDefinition } from "../../types/node"
 import useSubmodelNavigation from "../useSubmodelNavigation"
-import useToastStore from "../../stores/useToastStore"
 import useGraphStore from "../../stores/useGraphStore"
+import useToastStore from "../../stores/useToastStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 
 vi.mock("../../api/client", () => ({
@@ -76,7 +76,6 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
 
 describe("useSubmodelNavigation — canonical port building & branch gaps", () => {
   beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useGraphStore.setState({ lastSavedSnapshot: null })
     mockLoad.mockReset()
   })
