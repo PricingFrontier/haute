@@ -904,9 +904,13 @@ class TestGetSchema:
 @pytest.fixture()
 def three_node_graph(pipeline_dir: Path) -> dict:
     """Parse the test pipeline and return its graph as a dict payload."""
+    from haute._pipeline_revision import pipeline_document_revision
     from haute.parser import parse_pipeline_file
 
-    graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+    parent = pipeline_dir / "test_pipeline.py"
+    graph = parse_pipeline_file(parent)
+    revision = pipeline_document_revision(graph, pipeline_path=parent, project_root=pipeline_dir)
+    graph = graph.model_copy(update={"source_revision": revision})
     return graph.model_dump()
 
 
@@ -918,6 +922,7 @@ class TestCreateSubmodel:
             "graph": graph_dict,
             "source_file": "test_pipeline.py",
             "pipeline_name": "test_pipeline",
+            "base_revision": graph_dict["source_revision"],
         }
 
     def test_create_submodel_success(
@@ -956,20 +961,14 @@ class TestCreateSubmodel:
         client: TestClient,
         three_node_graph: dict,
     ):
-        """Phase 1C #11: the handler now returns a sanitized 400 detail
-        so raw ValueError text from ``create_submodel_graph`` (which
-        may embed graph walk internals) never reaches the client.  The
-        full "at least 2 nodes" message is recorded in the
-        ``submodel_create_invalid`` structured log with ``exc_info=True``.
-        """
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+        """A structurally invalid selection returns an actionable safe detail."""
 
         # Only 1 node -- must be at least 2
         node_ids = [three_node_graph["nodes"][0]["id"]]
         payload = self._create_payload(three_node_graph, node_ids)
         resp = client.post("/api/submodel/create", json=payload)
         assert resp.status_code == 400
-        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert resp.json()["detail"] == "A submodel must contain at least 2 nodes."
 
     def test_create_submodel_missing_source_file_returns_400(
         self,
@@ -983,6 +982,7 @@ class TestCreateSubmodel:
             "graph": three_node_graph,
             "source_file": "",
             "pipeline_name": "test_pipeline",
+            "base_revision": three_node_graph["source_revision"],
         }
         resp = client.post("/api/submodel/create", json=payload)
         assert resp.status_code == 400
@@ -1006,12 +1006,13 @@ class TestGetSubmodel:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
 
         # Now fetch it
-        resp = client.get("/api/submodel/lookup")
+        resp = client.get("/api/submodel/lookup", params={"source_file": "test_pipeline.py"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -1023,7 +1024,7 @@ class TestGetSubmodel:
             assert nid in internal_ids
 
     def test_get_submodel_not_found_returns_404(self, client: TestClient):
-        resp = client.get("/api/submodel/nonexistent")
+        resp = client.get("/api/submodel/nonexistent", params={"source_file": "test_pipeline.py"})
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
@@ -1045,6 +1046,7 @@ class TestDissolveSubmodel:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
@@ -1058,6 +1060,7 @@ class TestDissolveSubmodel:
                 "graph": updated_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": create_resp.json()["source_revision"],
             },
         )
         assert resp.status_code == 200
@@ -1085,6 +1088,7 @@ class TestDissolveSubmodel:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert resp.status_code == 404

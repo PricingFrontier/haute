@@ -427,6 +427,33 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     )
   })
 
+  it("rejects graph_update frames that omit preserved blocks", async () => {
+    const params = makeHookParams()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            submodels: {},
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [],
+            source_revision: "revision-new",
+          },
+        }),
+      }))
+    })
+
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
+    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("preserved_blocks"),
+    )
+  })
+
   it("subsequent graph_update after a failed one is handled cleanly", async () => {
     // Catches: a failed message should not poison the handler for
     // future messages.  The next valid message must process as usual.

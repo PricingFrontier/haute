@@ -85,19 +85,19 @@ def test_revision_is_deterministic_and_excludes_itself(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "file_key",
-    ["parent_source", "parent_sidecar", "child_source", "child_sidecar"],
+    "relative_path",
+    ["main.py", "main.haute.json", "modules/child.py", "modules/child.haute.json"],
 )
 def test_revision_changes_with_every_owned_document_file(
-    tmp_path: Path,
-    file_key: str,
+    haute_scratch: Path,
+    relative_path: str,
 ) -> None:
-    graph, parent, files = _document(tmp_path)
-    before = _revision(graph, parent, tmp_path)
-    target = files[file_key]
-    target.write_bytes(target.read_bytes() + b"# changed\n")
+    graph, parent, _files = _document(haute_scratch)
+    before = _revision(graph, parent, haute_scratch)
+    target = haute_scratch / relative_path
+    (haute_scratch / relative_path).write_bytes(target.read_bytes() + b"# changed\n")
 
-    assert _revision(graph, parent, tmp_path) != before
+    assert _revision(graph, parent, haute_scratch) != before
 
 
 def test_revision_changes_with_canonical_graph_config(tmp_path: Path) -> None:

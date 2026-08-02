@@ -115,11 +115,13 @@ def _dissolve_body(graph, *, source_file: str = "main.py") -> dict[str, object]:
 
 def test_create_rejects_stale_revision_before_transform_or_save(
     client: TestClient,
-    tmp_path: Path,
+    haute_scratch: Path,
 ) -> None:
-    parent = _write_flat_parent(tmp_path)
-    graph = _current_graph(parent, tmp_path)
-    parent.write_text(parent.read_text(encoding="utf-8") + "\n# external edit\n", encoding="utf-8")
+    parent = _write_flat_parent(haute_scratch)
+    graph = _current_graph(parent, haute_scratch)
+    (haute_scratch / "main.py").write_text(
+        parent.read_text(encoding="utf-8") + "\n# external edit\n", encoding="utf-8"
+    )
     body = {
         "name": "pricing",
         "node_ids": ["first", "second"],

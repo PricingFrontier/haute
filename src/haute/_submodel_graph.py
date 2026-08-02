@@ -69,9 +69,7 @@ def build_submodel_placeholder(
                 "childNodeIds": list(child_node_ids),
                 "inputPorts": list(input_ports),
                 "outputPorts": list(output_ports),
-                "outputPortLabels": {
-                    port: labels[port] for port in output_ports if port in labels
-                },
+                "outputPortLabels": {port: labels[port] for port in output_ports if port in labels},
             },
         ),
     )
