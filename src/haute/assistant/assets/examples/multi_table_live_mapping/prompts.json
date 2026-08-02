@@ -1,0 +1,1 @@
+{"user":"Accept quote and driver tables in one request and return the driver age with each quote.","assistant":"Declare two named API-input ports, preserve their handles, validate join cardinality, and map the combined output explicitly."}

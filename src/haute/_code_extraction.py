@@ -426,7 +426,21 @@ def _match_polars(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherRe
     return MatcherResult(start_idx=0, return_vars=("df",))
 
 
-_SOURCE_LOAD_PREFIXES: tuple[str, ...] = ("df=resolve_data_input_from_config(",)
+_SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
+    "df=resolve_data_input_from_config(",
+    "returnresolve_data_input_from_config(",
+)
+
+_SOURCE_SETUP_STATEMENTS = frozenset(
+    {
+        "base=Path(__file__).resolve().parent",
+        "project_root=get_project_root(base)",
+    }
+)
+
+
+def _is_source_setup_statement(line: str) -> bool:
+    return line.strip().replace(" ", "") in _SOURCE_SETUP_STATEMENTS
 
 
 def _is_source_load_statement_start(line: str) -> bool:
@@ -455,6 +469,9 @@ def _source_load_boilerplate_end_index(cleaned: list[str]) -> int:
             idx += 1
             continue
         if stripped.startswith(("from ", "import ")):
+            idx += 1
+            continue
+        if _is_source_setup_statement(stripped):
             idx += 1
             continue
         if _is_source_load_statement_start(stripped):
@@ -921,6 +938,9 @@ def _extract_source_user_code(body_source: str) -> str:
     The generated boilerplate assigns
     ``resolve_data_input_from_config(...)`` to ``df``. Everything after that
     assignment — minus the trailing ``return df`` — is user code.
+
+    A canonical handwritten function that directly returns the same resolver
+    call is entirely loading scaffold and has no extracted user code.
 
     User code follows the generated boilerplate directly.
     """

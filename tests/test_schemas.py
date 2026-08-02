@@ -216,3 +216,46 @@ class TestStreamingChunkSizeField:
     def test_rejects_bool(self, schema_cls, bool_value):
         with pytest.raises(ValidationError):
             schema_cls(**_kwargs_for(schema_cls), streaming_chunk_size=bool_value)
+
+
+class TestAssistantMessageRequest:
+    def test_accepts_session_and_message_only(self):
+        from haute.schemas import AssistantMessageRequest
+
+        request = AssistantMessageRequest(
+            session_id="session-1",
+            message="Author this pipeline",
+        )
+        assert request.session_id == "session-1"
+        assert request.message == "Author this pipeline"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"session_id": "s", "message": "m", "unknown": True},
+            {"session_id": "s", "message": "m", "confirmation": {"plan_hash": "a" * 64}},
+        ],
+    )
+    def test_request_is_closed(self, payload):
+        from haute.schemas import AssistantMessageRequest
+
+        with pytest.raises(ValidationError):
+            AssistantMessageRequest.model_validate(payload)
+
+
+class TestAssistantStatus:
+    def test_configured_status_requires_complete_egress_identity(self):
+        from haute.schemas import AssistantStatusResponse
+
+        with pytest.raises(ValidationError):
+            AssistantStatusResponse(
+                configured=True,
+                reason=None,
+                provider="openai",
+                model="m",
+                endpoint_host=None,
+                trust=None,
+                max_sensitivity=None,
+                mutations_enabled=True,
+                mutations_reason=None,
+            )

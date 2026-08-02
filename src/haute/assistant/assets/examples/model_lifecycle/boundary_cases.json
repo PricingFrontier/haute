@@ -1,0 +1,1 @@
+[{"case":"The scoring sidecar names a placeholder run ID.","expectation":"Parsing remains offline; execution must replace it only with an explicitly selected training run."},{"case":"Training data has fewer than the configured row limit.","expectation":"Every synthetic row is eligible and the train/status result reports a completed fit."}]

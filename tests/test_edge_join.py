@@ -617,6 +617,20 @@ def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
     assert "modules/inputs.py" in files
 
 
+def test_save_validation_accepts_cross_boundary_submodel_edge_join(tmp_path: Path) -> None:
+    from haute.routes._save_pipeline import SavePipelineService
+
+    service = SavePipelineService(tmp_path, tmp_path)
+
+    assert (
+        service.validate_graph(
+            _submodel_edge_join_graph(),
+            source_file="main.py",
+        )
+        == []
+    )
+
+
 def test_flattening_submodel_restores_external_edge_join_target_role() -> None:
     graph = PipelineGraph(
         nodes=[
@@ -1472,3 +1486,17 @@ def test_edge_join_runtime_numeric_key_widths_upcast_to_supertype() -> None:
     result = _run_edge_join({"how": "inner", "on": ["k"]}, _HOW_BASE, i32_join)
     _assert_edge_join_output(result, ["k", "bv", "jv"], [(2, "b2", "a"), (3, "b3", "b")])
     assert result.schema["k"] == pl.Int64
+
+
+def test_edge_join_rejects_handleless_incoming_edges() -> None:
+    with pytest.raises(ConfigError, match="targetHandle.*required"):
+        _build_edge_join(
+            {
+                "baseInput": "quotes",
+                "joinInput": "lookup",
+                "how": "left",
+                "on": ["region"],
+            },
+            source_ids=["quotes", "lookup"],
+            target_handles=[None, None],
+        )

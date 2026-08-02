@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"train","source_column":"target","output_path":"$[:].target","enabled":true}],"outputFormat":"json"}

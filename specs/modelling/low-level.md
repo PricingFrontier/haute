@@ -43,7 +43,7 @@
   so RustyStats stays an optional dependency.
 - **`EvaluationConfig` / `EvaluationValidationFit` / `EvaluationPlan` /
   `EvaluationFitResult` / `EvaluationResultsArtifact` /
-  `EvaluationAggregateReport`** (`_evaluation.py`, frozen dataclasses) — the required
+  `EvaluationAggregateReport`** (`src/haute/modelling/_evaluation.py`, frozen dataclasses) — the required
   version-1 evaluation contract and its persisted evidence. Parsing rejects unknown
   keys and inexact or non-finite values. Planning assigns final-test positions first,
   derives every validation fit only from development positions, and records exact
@@ -698,7 +698,7 @@ The implementation seams are:
 - `_train_config.py` is the only public node-config parser used by live training and
   script export. It requires `evaluation`, canonicalises optional `tuning`, and rejects
   the retired top-level `split` and `cross_validation` keys before job construction.
-- `_evaluation.py` owns exact version-1 strategy/config parsing and immutable plan,
+- `src/haute/modelling/_evaluation.py` owns exact version-1 strategy/config parsing and immutable plan,
   results and report evidence. Writers use canonical finite JSON and atomic
   same-directory replacement. Planning enforces group/date semantics; readers reject
   unknown keys/versions and validate canonical source membership, ordinary-CV

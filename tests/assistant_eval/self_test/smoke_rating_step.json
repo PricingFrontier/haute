@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "smoke_rating_step",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "semantic",
+  "request": "After quotes, add a rating step named age_rating. Use one table with factor driver_age, output age_factor, rows 20 -> 1.3 and 40 -> 1.0, and default 1.0. Add combined output technical_premium using multiply with base value 100. Then add a response output named age_price_response containing quote_id, age_factor, and technical_premium.",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": [
+      "ratingStep",
+      "output"
+    ],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [
+      {
+        "source": "quotes",
+        "target": "age_rating",
+        "target_handle": null
+      },
+      {
+        "source": "age_rating",
+        "target": "age_price_response",
+        "target_handle": null
+      }
+    ],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 7,
+    "max_tool_calls": 14,
+    "max_failed_tool_calls": 1,
+    "max_duplicate_static_reads": 1
+  }
+}

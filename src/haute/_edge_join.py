@@ -112,12 +112,10 @@ def validate_edge_join_target_handles(
         )
 
     present_handles = [handle for handle in target_handles if handle is not None]
-    if not present_handles:
-        return
     if len(present_handles) != len(target_handles):
         raise ConfigError(
-            "edgeJoin targetHandle roles must be set on every incoming edge "
-            "when any role handle is set.",
+            "edgeJoin targetHandle roles are required on every incoming edge; "
+            "use exactly one 'base' and one 'join' handle.",
             connected_input_node_ids=list(source_ids),
             targetHandles=list(target_handles),
         )

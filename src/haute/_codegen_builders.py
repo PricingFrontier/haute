@@ -825,9 +825,13 @@ def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
         f"def {func_name}() -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    from pathlib import Path\n"
+        f"    from haute._project import get_project_root\n"
         f"    from haute.graph_utils import resolve_data_input_from_config\n"
+        f"    base = Path(__file__).resolve().parent\n"
+        f"    project_root = get_project_root(base)\n"
         f"    df = resolve_data_input_from_config(\n"
-        f"        {_safe_path(cfg_path)}, base_dir=Path(__file__).parent\n"
+        f"        {_safe_path(cfg_path)}, base_dir=base, "
+        f"project_root=project_root\n"
         f"    )\n"
         f"{body}\n"
     )

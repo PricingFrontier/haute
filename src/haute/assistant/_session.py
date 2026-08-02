@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 from uuid import uuid4
 
+from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
 
 logger = get_logger(component="assistant.session")
@@ -64,7 +65,7 @@ _SESSION_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 
-_MESSAGE_ROLES = frozenset({"user", "assistant", "tool"})
+_MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "controller"})
 _MISSING = object()
 
 
@@ -321,6 +322,74 @@ class AssistantMessage:
         return result
 
 
+_PERSISTED_TOOL_EVIDENCE_KEYS = frozenset(
+    {
+        "applied_operations",
+        "base_revision",
+        "capability_hash",
+        "git_sha",
+        "graph_fingerprint",
+        "operation_version",
+        "plan_hash",
+        "policy_hash",
+        "project_revision",
+        "result_revision",
+        "source_digest",
+        "verification_error_code",
+        "verification_status",
+        "verification_tier",
+    }
+)
+
+
+def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
+    """Redact provider-working tool payloads for durable restart history."""
+
+    wire: dict[str, JSONValue] = message.as_dict()
+    if isinstance(message.content, str):
+        wire["content"] = redact_sensitive_text(
+            message.content,
+            known_secrets=(
+                env_secret
+                for name in (
+                    "ANTHROPIC_API_KEY",
+                    "OPENAI_API_KEY",
+                    "DATABRICKS_TOKEN",
+                )
+                if (env_secret := os.environ.get(name))
+            ),
+        )
+    if message.tool_calls:
+        wire["tool_calls"] = [
+            {
+                "id": call.id,
+                "name": call.name,
+                "arguments": {"redacted": True},
+            }
+            for call in message.tool_calls
+        ]
+    if message.role == "tool":
+        content = message.content
+        redacted: dict[str, JSONValue] = {"redacted": True}
+        if isinstance(content, dict):
+            for key in sorted(_PERSISTED_TOOL_EVIDENCE_KEYS):
+                evidence_value = content.get(key)
+                if key in content and (
+                    isinstance(evidence_value, (str, int, float, bool)) or evidence_value is None
+                ):
+                    redacted[key] = _copy_json_value(evidence_value)
+            error = content.get("error")
+            if isinstance(error, dict) and isinstance(error.get("code"), str):
+                safe_error: dict[str, JSONValue] = {"code": error["code"]}
+                for key in ("validation_path", "validation_reason"):
+                    value = error.get(key)
+                    if isinstance(value, str):
+                        safe_error[key] = value
+                redacted["error"] = safe_error
+        wire["content"] = redacted
+    return wire
+
+
 @dataclass(frozen=True, slots=True)
 class AssistantTurn:
     """One complete user turn and all messages produced for it."""
@@ -412,6 +481,20 @@ class AssistantSession:
             "id": self.id,
             "source_file": self.source_file,
             "history": [turn.as_dict() for turn in self.history],
+            "created_at": self.created_at,
+            "last_used": self.last_used,
+        }
+
+    def as_persisted_dict(self) -> dict[str, JSONValue]:
+        """Return restartable history with provider-working payloads redacted."""
+
+        return {
+            "id": self.id,
+            "source_file": self.source_file,
+            "history": [
+                {"messages": [_persisted_message(message) for message in turn.messages]}
+                for turn in self.history
+            ],
             "created_at": self.created_at,
             "last_used": self.last_used,
         }
@@ -520,7 +603,7 @@ class SessionStore:
             path = self._storage_dir() / f"{session.id}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(session.as_dict()), encoding="utf-8")
+            tmp.write_text(json.dumps(session.as_persisted_dict()), encoding="utf-8")
             os.replace(tmp, path)
         except OSError:
             logger.warning("assistant_session_persist_failed", session_id=session.id, exc_info=True)
@@ -537,7 +620,7 @@ class SessionStore:
                 if _SESSION_ID_PATTERN.fullmatch(session_id) is not None:
                     path.unlink(missing_ok=True)
             others = sorted(
-                (p for p in base.glob("*.json") if p.stem != keep_id),
+                (p for p in base.glob("*.json") if p.stem != keep_id and not p.is_symlink()),
                 key=lambda p: p.stat().st_mtime,
             )
             excess = len(others) + 1 - self.max_persisted_sessions
@@ -564,6 +647,13 @@ class SessionStore:
         if self._storage_dir is None or _SESSION_ID_PATTERN.fullmatch(session_id) is None:
             return None
         path = self._storage_dir() / f"{session_id}.json"
+        if path.is_symlink():
+            logger.warning(
+                "assistant_session_unreadable",
+                session_id=session_id,
+                detail="session file must not be a symbolic link",
+            )
+            return None
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:

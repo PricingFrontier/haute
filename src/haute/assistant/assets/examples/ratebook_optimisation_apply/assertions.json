@@ -1,0 +1,1 @@
+{"target":"response","row_count":6,"required_columns":["quote_id","region","selected_factor","ratebook_version"],"checks":["parse","optimisation","optimiser_apply"]}

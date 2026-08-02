@@ -1,6 +1,6 @@
 """Pure graph-edit operations used by the assistant mutation tool.
 
-The wire models in this module deliberately know nothing about files or the
+The wire models re-exported here deliberately know nothing about files or the
 save service.  ``parse_ops`` validates the provider-shaped payload and
 ``apply_ops`` evaluates a parsed batch against a deep copy of a
 ``PipelineGraph``.  This keeps a failed batch from ever changing the graph
@@ -9,169 +9,57 @@ that the caller owns.
 
 from __future__ import annotations
 
+import ast
+import json
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from typing import Annotated, Any, Literal, NoReturn, TypeAlias
+from dataclasses import dataclass, field
+from hashlib import sha256
+from pathlib import Path
+from threading import RLock
+from time import monotonic
+from types import MappingProxyType
+from typing import Any, Literal, NoReturn, TypeVar, cast
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    TypeAdapter,
-    ValidationError,
-    field_validator,
-)
+from pydantic import BaseModel, ValidationError
 
+from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import VALID_KEYS
 from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute.assistant._catalog import capability_manifest
+from haute.assistant._wire_ops import (
+    AddEdgeOp,
+    AddNodeOp,
+    DeleteEdgeOp,
+    DeleteNodeOp,
+    GraphEditOp,
+    OpValidationError,
+    RenameNodeOp,
+    UpdateNodeOp,
+    UpdatePreambleOp,
+    parse_ops,
+)
 from haute.errors import HauteError
 
-
-class OpValidationError(HauteError):
-    """Raised when an operation cannot be parsed or applied to a graph."""
-
-
-class _OpModel(BaseModel):
-    """Shared wire-model policy for graph operations."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
-def _reject_blank(value: str) -> str:
-    if not value.strip():
-        raise ValueError("must not be blank")
-    return value
-
-
-class AddNodeOp(_OpModel):
-    op: Literal["add_node"] = "add_node"
-    node_type: NodeType
-    name: str
-    config: dict[str, Any] = Field(default_factory=dict)
-    ref: str | None = None
-
-    _name_not_blank = field_validator("name")(_reject_blank)
-
-    @field_validator("ref")
-    @classmethod
-    def _ref_not_blank(cls, value: str | None) -> str | None:
-        if value is not None:
-            _reject_blank(value)
-            if value.startswith("$"):
-                raise ValueError("must not start with '$'")
-        return value
-
-
-class UpdateNodeOp(_OpModel):
-    op: Literal["update_node"] = "update_node"
-    node: str
-    config: dict[str, Any]
-
-    _node_not_blank = field_validator("node")(_reject_blank)
-
-
-class RenameNodeOp(_OpModel):
-    op: Literal["rename_node"] = "rename_node"
-    node: str
-    new_name: str
-
-    _node_not_blank = field_validator("node")(_reject_blank)
-    _new_name_not_blank = field_validator("new_name")(_reject_blank)
-
-
-class DeleteNodeOp(_OpModel):
-    op: Literal["delete_node"] = "delete_node"
-    node: str
-
-    _node_not_blank = field_validator("node")(_reject_blank)
-
-
-class AddEdgeOp(_OpModel):
-    op: Literal["add_edge"] = "add_edge"
-    source: str
-    target: str
-    source_handle: str | None = None
-    target_handle: str | None = None
-
-    _source_not_blank = field_validator("source")(_reject_blank)
-    _target_not_blank = field_validator("target")(_reject_blank)
-
-    @field_validator("source_handle", "target_handle")
-    @classmethod
-    def _handles_not_blank(cls, value: str | None) -> str | None:
-        if value is not None:
-            _reject_blank(value)
-        return value
-
-
-class DeleteEdgeOp(_OpModel):
-    op: Literal["delete_edge"] = "delete_edge"
-    source: str
-    target: str
-    source_handle: str | None = None
-    target_handle: str | None = None
-
-    _source_not_blank = field_validator("source")(_reject_blank)
-    _target_not_blank = field_validator("target")(_reject_blank)
-
-    @field_validator("source_handle", "target_handle")
-    @classmethod
-    def _handles_not_blank(cls, value: str | None) -> str | None:
-        if value is not None:
-            _reject_blank(value)
-        return value
-
-
-class UpdatePreambleOp(_OpModel):
-    op: Literal["update_preamble"] = "update_preamble"
-    preamble: str | None
-
-
-GraphEditOp: TypeAlias = Annotated[
-    AddNodeOp
-    | UpdateNodeOp
-    | RenameNodeOp
-    | DeleteNodeOp
-    | AddEdgeOp
-    | DeleteEdgeOp
-    | UpdatePreambleOp,
-    Field(discriminator="op"),
-]
-
-_OP_ADAPTER: TypeAdapter[GraphEditOp] = TypeAdapter(GraphEditOp)
 _SUBMODEL_TYPES = frozenset({NodeType.SUBMODEL, NodeType.SUBMODEL_PORT})
 _X_STEP = 280.0
 _Y_STEP = 120.0
 _ANY_HANDLE = object()
+_GRAPH_EDIT_OP_MODELS = (
+    AddNodeOp,
+    UpdateNodeOp,
+    RenameNodeOp,
+    DeleteNodeOp,
+    AddEdgeOp,
+    DeleteEdgeOp,
+    UpdatePreambleOp,
+)
 
 
 def _invalid(message: str) -> NoReturn:
     raise OpValidationError(message)
-
-
-def parse_ops(raw_ops: Sequence[Mapping[str, Any]]) -> list[GraphEditOp]:
-    """Validate wire-shaped operation dictionaries.
-
-    Parsing is intentionally separate from graph-dependent validation.  For
-    example, whether a node id exists can only be checked while applying the
-    ordered batch to its evolving graph.
-    """
-
-    if isinstance(raw_ops, (str, bytes)) or not isinstance(raw_ops, Sequence):
-        _invalid("Graph edit operations must be a list of operation objects")
-
-    parsed: list[GraphEditOp] = []
-    for index, raw_op in enumerate(raw_ops):
-        if not isinstance(raw_op, Mapping):
-            _invalid(f"Operation {index} must be an object")
-        try:
-            parsed.append(_OP_ADAPTER.validate_python(raw_op))
-        except ValidationError as exc:
-            raise OpValidationError(
-                f"Invalid graph edit operation at index {index}: {exc}"
-            ) from exc
-    return parsed
 
 
 def _mapping(value: object) -> Mapping[str, Any] | None:
@@ -307,11 +195,13 @@ def _apply_add_node(
     _validate_config(op.node_type, op.config, operation="add_node")
 
     node_id = _sanitize_func_name(op.name)
+    if _node_index(graph, node_id) is not None:
+        _invalid(f"Cannot add node {op.name!r}: sanitized id {node_id!r} already exists")
     node = GraphNode(
         id=node_id,
         type=op.node_type.value,
         data=NodeData(
-            label=op.name,
+            label=node_id,
             nodeType=op.node_type,
             config=deepcopy(op.config),
         ),
@@ -364,9 +254,11 @@ def _apply_rename_node(
     index = _node_index(graph, old_id)
     assert index is not None
     new_id = _sanitize_func_name(op.new_name)
+    if new_id != old_id and _node_index(graph, new_id) is not None:
+        _invalid(f"Cannot rename node: sanitized id {new_id!r} already exists")
 
     node = graph.nodes[index]
-    data = node.data.model_copy(update={"label": op.new_name})
+    data = node.data.model_copy(update={"label": new_id})
     _replace_node(graph, index, node.model_copy(update={"id": new_id, "data": data}))
     graph.edges = [
         edge.model_copy(
@@ -556,8 +448,10 @@ def _assign_new_positions(graph: PipelineGraph, new_node_ids: Sequence[str]) -> 
     ]
 
 
-def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph:
-    """Apply a batch to a deep copy of *graph* and return the resulting graph.
+def _apply_ops_with_refs(
+    graph: PipelineGraph, ops: Sequence[GraphEditOp]
+) -> tuple[PipelineGraph, dict[str, str], tuple[str, ...]]:
+    """Apply a batch and return its graph, resolved refs, and final new-node ids.
 
     Operations are evaluated in order.  A validation error can therefore
     refer to an earlier add, rename, or delete, while the caller's original
@@ -601,19 +495,926 @@ def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph
             ) from exc
 
     _assign_new_positions(working, new_node_ids)
-    return working
+    return working, refs, tuple(new_node_ids)
+
+
+def apply_ops(graph: PipelineGraph, ops: Sequence[GraphEditOp]) -> PipelineGraph:
+    """Apply a batch to a deep copy of *graph* and return the resulting graph."""
+
+    return _apply_ops_with_refs(graph, ops)[0]
+
+
+# The plan domain below is deliberately file-service agnostic.  It records the
+# facts which an application service must later re-check under its save lock;
+# it does not itself write a source file or a sidecar.
+_DIFF_LIMIT = 50
+
+
+class AssistantOperationError(HauteError):
+    """A stable, machine-readable failure from the assistant plan domain."""
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        self.code = code
+        super().__init__(message or code)
+
+
+def _canonical_json(value: object) -> str:
+    """Render JSON with the one representation used for revisions and plans."""
+
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _digest(value: object) -> str:
+    return sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _frozen_json(value: object) -> object:
+    """Make a JSON-shaped value recursively immutable and equality-friendly."""
+
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _frozen_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen_json(item) for item in value)
+    return value
+
+
+def _wire_json(value: object) -> object:
+    """Turn the immutable representation back into ordinary JSON values."""
+
+    if isinstance(value, Mapping):
+        return {key: _wire_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_wire_json(item) for item in value]
+    return value
+
+
+def _project_relative_path(project_root: Path, path: Path) -> tuple[Path, str]:
+    root = project_root.resolve()
+    resolved = path.resolve()
+    try:
+        return resolved, resolved.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise AssistantOperationError(
+            "project_source_forbidden", "Project source is outside the project root"
+        ) from exc
+
+
+def _source_manifest_entry(project_root: Path, path: Path) -> tuple[str, str]:
+    resolved, relative = _project_relative_path(project_root, path)
+    if not resolved.is_file():
+        raise AssistantOperationError(
+            "project_source_missing", f"Project source is missing: {relative}"
+        )
+    return f"content:{relative}", sha256(resolved.read_bytes()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSourceEvidence:
+    """One exact project fact previously returned to the assistant."""
+
+    path: Path
+    digest: str
+    kind: Literal["content", "schema"] = "content"
+
+    def __post_init__(self) -> None:
+        if len(self.digest) != 64 or any(
+            character not in "0123456789abcdef" for character in self.digest
+        ):
+            raise ValueError("project evidence digest must be lowercase SHA-256 hex")
+
+
+def dataset_schema_digest(schema: Mapping[str, object]) -> str:
+    """Hash exactly the schema-only payload exposed to the model."""
+
+    return _digest(schema)
+
+
+def _evidence_manifest_entry(
+    project_root: Path,
+    evidence: ProjectSourceEvidence,
+) -> tuple[str, str]:
+    resolved, relative = _project_relative_path(project_root, evidence.path)
+    if not resolved.is_file():
+        raise AssistantOperationError(
+            "project_source_missing", f"Project source is missing: {relative}"
+        )
+    if evidence.kind == "content":
+        actual = sha256(resolved.read_bytes()).hexdigest()
+    else:
+        from haute.routes.files import _read_schema_only_blocking
+
+        actual = dataset_schema_digest(_read_schema_only_blocking(relative, resolved))
+    if actual != evidence.digest:
+        raise AssistantOperationError(
+            "stale_project_evidence",
+            "A retrieved project source changed; inspect it again before planning.",
+        )
+    return f"{evidence.kind}:{relative}", actual
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectSnapshot:
+    """An immutable description of the saved state a plan is authorized against."""
+
+    revision: str
+    capability_hash: str
+    graph: PipelineGraph
+    source_manifest: tuple[tuple[str, str], ...]
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "revision": self.revision,
+            "capability_hash": self.capability_hash,
+            "graph": self.graph.model_dump(mode="json"),
+            "source_manifest": dict(self.source_manifest),
+        }
+
+
+def build_project_snapshot(
+    project_root: Path,
+    source_file: Path,
+    graph: PipelineGraph,
+    project_sources: Sequence[Path | ProjectSourceEvidence] = (),
+) -> ProjectSnapshot:
+    """Build a content-addressed snapshot without reading anything outside *root*."""
+
+    root = project_root.resolve()
+    source_entries = [_source_manifest_entry(root, source_file)]
+    config_path = root / "haute.toml"
+    if config_path.exists():
+        source_entries.append(_source_manifest_entry(root, config_path))
+    for source in project_sources:
+        source_entries.append(
+            _evidence_manifest_entry(root, source)
+            if isinstance(source, ProjectSourceEvidence)
+            else _source_manifest_entry(root, source)
+        )
+    # Duplicate references are one source identity, not an accidental revision change.
+    manifest = tuple(sorted(dict(source_entries).items()))
+    capability_hash = capability_manifest().capability_hash
+    canonical_graph = graph.model_dump(mode="json")
+    revision = _digest(
+        {
+            "capability_hash": capability_hash,
+            "graph": canonical_graph,
+            "sources": dict(manifest),
+        }
+    )
+    return ProjectSnapshot(
+        revision=revision,
+        capability_hash=capability_hash,
+        graph=graph.model_copy(deep=True),
+        source_manifest=manifest,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticDiff:
+    nodes_added: tuple[str, ...] = ()
+    nodes_removed: tuple[str, ...] = ()
+    nodes_renamed: tuple[tuple[str, str], ...] = ()
+    nodes_updated: tuple[str, ...] = ()
+    edges_added: tuple[tuple[str, str, str | None, str | None], ...] = ()
+    edges_removed: tuple[tuple[str, str, str | None, str | None], ...] = ()
+    config_changes: tuple[str, ...] = ()
+    preamble_changed: bool = False
+    sidecar_changes: tuple[str, ...] = ()
+    complete_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    complete_hash: str = ""
+    truncated: bool = False
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "nodes_added": self.nodes_added,
+            "nodes_removed": self.nodes_removed,
+            "nodes_renamed": self.nodes_renamed,
+            "nodes_updated": self.nodes_updated,
+            "edges_added": self.edges_added,
+            "edges_removed": self.edges_removed,
+            "config_changes": self.config_changes,
+            "preamble_changed": self.preamble_changed,
+            "sidecar_changes": self.sidecar_changes,
+            "complete_counts": dict(self.complete_counts),
+            "complete_hash": self.complete_hash,
+            "truncated": self.truncated,
+        }
+
+
+def _edge_identity(edge: GraphEdge) -> tuple[str, str, str | None, str | None]:
+    return (edge.source, edge.target, edge.sourceHandle, edge.targetHandle)
+
+
+def _complete_edge_identity(
+    edge: GraphEdge,
+) -> tuple[str, str, str | None, str | None, str | None, str | None]:
+    return (
+        edge.source,
+        edge.target,
+        edge.sourceHandle,
+        edge.targetHandle,
+        edge.sourcePort,
+        edge.targetPort,
+    )
+
+
+_Identity = TypeVar("_Identity", bound=tuple[Any, ...])
+
+
+def _sorted_identities(values: set[_Identity]) -> tuple[_Identity, ...]:
+    """Sort nullable tuple identities without comparing ``None`` to strings."""
+
+    return tuple(sorted(values, key=_canonical_json))
+
+
+def _semantic_node_id(raw_id: str, refs: Mapping[str, str]) -> str:
+    if raw_id.startswith("$"):
+        return refs.get(raw_id[1:], raw_id)
+    return raw_id
+
+
+def _semantic_diff(
+    before: PipelineGraph,
+    after: PipelineGraph,
+    ops: Sequence[GraphEditOp],
+    refs: Mapping[str, str],
+) -> SemanticDiff:
+    old_nodes = {node.id: node for node in before.nodes}
+    new_nodes = {node.id: node for node in after.nodes}
+    renamed = tuple(
+        (_semantic_node_id(op.node, refs), _sanitize_func_name(op.new_name))
+        for op in ops
+        if isinstance(op, RenameNodeOp) and not op.node.startswith("$")
+    )
+    # Save/codegen/parser may canonicalise untouched source bodies and
+    # inferred contracts. The semantic mutation diff is therefore grounded
+    # in the explicit operation vocabulary, while added/removed nodes and
+    # edges are still derived from the actual before/after graphs.
+    updates = tuple(
+        sorted({_semantic_node_id(op.node, refs) for op in ops if isinstance(op, UpdateNodeOp)})
+    )
+    config_changes = tuple(
+        sorted(
+            f"{_semantic_node_id(op.node, refs)}:{key}"
+            for op in ops
+            if isinstance(op, UpdateNodeOp)
+            for key in op.config
+        )
+    )
+    old_edges = {_edge_identity(edge) for edge in before.edges}
+    new_edges = {_edge_identity(edge) for edge in after.edges}
+    added_ids = new_nodes.keys() - old_nodes.keys()
+    removed_ids = old_nodes.keys() - new_nodes.keys()
+    sidecar_ids = added_ids | removed_ids | set(updates)
+    sidecar_changes = tuple(
+        sorted(
+            f"config/{folder}/{node_id}"
+            for node_id in sidecar_ids
+            if (node := new_nodes.get(node_id) or old_nodes.get(node_id)) is not None
+            if (folder := NODE_TYPE_TO_FOLDER.get(node.data.nodeType)) is not None
+        )
+    )
+    nodes_added = tuple(sorted(added_ids))
+    nodes_removed = tuple(sorted(removed_ids))
+    edges_added = _sorted_identities(new_edges - old_edges)
+    edges_removed = _sorted_identities(old_edges - new_edges)
+    complete_values: dict[str, tuple[object, ...]] = {
+        "nodes_added": nodes_added,
+        "nodes_removed": nodes_removed,
+        "nodes_renamed": renamed,
+        "nodes_updated": updates,
+        "edges_added": edges_added,
+        "edges_removed": edges_removed,
+        "config_changes": config_changes,
+        "sidecar_changes": sidecar_changes,
+    }
+    complete_counts = {category: len(values) for category, values in complete_values.items()}
+    old_complete_edges = {_complete_edge_identity(edge) for edge in before.edges}
+    new_complete_edges = {_complete_edge_identity(edge) for edge in after.edges}
+    complete_payload = {
+        **complete_values,
+        "complete_edges_added": _sorted_identities(new_complete_edges - old_complete_edges),
+        "complete_edges_removed": _sorted_identities(old_complete_edges - new_complete_edges),
+        "preamble_digests": (
+            sha256((before.preamble or "").encode("utf-8")).hexdigest(),
+            sha256((after.preamble or "").encode("utf-8")).hexdigest(),
+        ),
+    }
+    return SemanticDiff(
+        nodes_added=nodes_added[:_DIFF_LIMIT],
+        nodes_removed=nodes_removed[:_DIFF_LIMIT],
+        nodes_renamed=renamed[:_DIFF_LIMIT],
+        nodes_updated=updates[:_DIFF_LIMIT],
+        edges_added=edges_added[:_DIFF_LIMIT],
+        edges_removed=edges_removed[:_DIFF_LIMIT],
+        config_changes=config_changes[:_DIFF_LIMIT],
+        preamble_changed=before.preamble != after.preamble,
+        sidecar_changes=sidecar_changes[:_DIFF_LIMIT],
+        complete_counts=MappingProxyType(complete_counts),
+        complete_hash=_digest(complete_payload),
+        truncated=any(count > _DIFF_LIMIT for count in complete_counts.values()),
+    )
+
+
+def semantic_diff(
+    before: PipelineGraph,
+    after: PipelineGraph,
+    operations: Sequence[GraphEditOp] | Sequence[Mapping[str, Any]],
+) -> SemanticDiff:
+    """Return the bounded canonical semantic diff for an exact operation batch."""
+
+    typed_operations = [
+        operation if isinstance(operation, _GRAPH_EDIT_OP_MODELS) else parse_ops([operation])[0]
+        for operation in operations
+    ]
+    _expected, refs, _new_node_ids = _apply_ops_with_refs(before, typed_operations)
+    return _semantic_diff(before, after, typed_operations, refs)
+
+
+def _automatic_postconditions(graph: PipelineGraph, diff: SemanticDiff) -> tuple[object, ...]:
+    conditions: list[object] = [
+        _frozen_json({"kind": "node_exists", "node": node_id}) for node_id in diff.nodes_added
+    ]
+    conditions.extend(
+        _frozen_json(
+            {
+                "kind": "edge_exists",
+                "source": source,
+                "target": target,
+                "source_handle": source_handle,
+                "target_handle": target_handle,
+            }
+        )
+        for source, target, source_handle, target_handle in diff.edges_added
+    )
+    conditions.extend(
+        _frozen_json({"kind": "node_absent", "node": node_id}) for node_id in diff.nodes_removed
+    )
+    conditions.extend(
+        _frozen_json(
+            {
+                "kind": "edge_absent",
+                "source": source,
+                "target": target,
+                "source_handle": source_handle,
+                "target_handle": target_handle,
+            }
+        )
+        for source, target, source_handle, target_handle in diff.edges_removed
+    )
+    if diff.preamble_changed:
+        conditions.append(
+            _frozen_json(
+                {
+                    "kind": "preamble_digest",
+                    "sha256": sha256((graph.preamble or "").encode("utf-8")).hexdigest(),
+                }
+            )
+        )
+    conditions.append(
+        _frozen_json({"kind": "graph_shape", "nodes": len(graph.nodes), "edges": len(graph.edges)})
+    )
+    return tuple(conditions[:_DIFF_LIMIT])
+
+
+def verify_postconditions(
+    graph: PipelineGraph,
+    postconditions: Sequence[object],
+) -> tuple[Mapping[str, object], ...]:
+    """Evaluate closed structural postconditions and return bounded evidence."""
+
+    nodes = {node.id: node for node in graph.nodes}
+    edges = {_edge_identity(edge) for edge in graph.edges}
+    evidence: list[Mapping[str, object]] = []
+    for raw in postconditions:
+        if not isinstance(raw, Mapping):
+            raise AssistantOperationError("invalid_plan", "Postcondition must be an object")
+        condition = _wire_json(raw)
+        assert isinstance(condition, dict)
+        kind = condition.get("kind")
+        passed = False
+        if kind == "node_exists":
+            passed = condition.get("node") in nodes
+        elif kind == "node_absent":
+            passed = condition.get("node") not in nodes
+        elif kind in {"edge_exists", "edge_absent"}:
+            source = condition.get("source")
+            target = condition.get("target")
+            source_handle = condition.get("source_handle", _ANY_HANDLE)
+            target_handle = condition.get("target_handle", _ANY_HANDLE)
+            matched = any(
+                edge[0] == source
+                and edge[1] == target
+                and (source_handle is _ANY_HANDLE or edge[2] == source_handle)
+                and (target_handle is _ANY_HANDLE or edge[3] == target_handle)
+                for edge in edges
+            )
+            passed = matched if kind == "edge_exists" else not matched
+        elif kind == "graph_shape":
+            passed = condition.get("nodes") == len(graph.nodes) and condition.get("edges") == len(
+                graph.edges
+            )
+        elif kind == "preamble_digest":
+            passed = (
+                condition.get("sha256")
+                == sha256((graph.preamble or "").encode("utf-8")).hexdigest()
+            )
+        else:
+            raise AssistantOperationError(
+                "invalid_plan",
+                f"Unsupported postcondition kind: {kind!r}",
+            )
+        item = MappingProxyType({"kind": str(kind), "passed": passed})
+        evidence.append(item)
+        if not passed:
+            raise AssistantOperationError(
+                "postcondition_failed",
+                f"Postcondition {kind!r} was not satisfied",
+            )
+    return tuple(evidence)
+
+
+def _affected_capabilities(
+    before: PipelineGraph,
+    after: PipelineGraph,
+    diff: SemanticDiff,
+    ops: Sequence[GraphEditOp],
+    refs: Mapping[str, str],
+) -> tuple[str, ...]:
+    old_nodes = {node.id: node for node in before.nodes}
+    new_nodes = {node.id: node for node in after.nodes}
+    ids = set(old_nodes).symmetric_difference(new_nodes)
+    old_edges = {_edge_identity(edge) for edge in before.edges}
+    new_edges = {_edge_identity(edge) for edge in after.edges}
+    for source, target, _source_handle, _target_handle in old_edges.symmetric_difference(new_edges):
+        ids.update((source, target))
+    ids.update(
+        _semantic_node_id(op.node, refs)
+        for op in ops
+        if isinstance(op, (UpdateNodeOp, RenameNodeOp))
+    )
+    capabilities = {
+        node.data.nodeType.value
+        for node_id in ids
+        if (node := new_nodes.get(node_id) or old_nodes.get(node_id)) is not None
+    }
+    if diff.preamble_changed:
+        capabilities.add("pipeline_preamble")
+    return tuple(sorted(capabilities))
+
+
+@dataclass(frozen=True, slots=True)
+class GraphEditPlan:
+    base_revision: str
+    capability_hash: str
+    source_manifest: tuple[tuple[str, str], ...]
+    normalized_operations: tuple[object, ...]
+    diff: SemanticDiff
+    affected_capabilities: tuple[str, ...]
+    postconditions: tuple[object, ...]
+    validation_warnings: tuple[str, ...]
+    resulting_graph_shape: Mapping[str, int]
+    egress: Literal["none"]
+    verification_tier: Literal["structural", "schema"]
+    verification_evidence: tuple[Mapping[str, object], ...]
+    plan_hash: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "base_revision": self.base_revision,
+            "capability_hash": self.capability_hash,
+            "revision_sources": dict(self.source_manifest),
+            "normalized_operations": _wire_json(self.normalized_operations),
+            "diff": self.diff.as_dict(),
+            "affected_capabilities": self.affected_capabilities,
+            "postconditions": _wire_json(self.postconditions),
+            "validation_warnings": self.validation_warnings,
+            "resulting_graph_shape": dict(self.resulting_graph_shape),
+            "egress": self.egress,
+            "verification_tier": self.verification_tier,
+            "verification_evidence": _wire_json(self.verification_evidence),
+            "plan_hash": self.plan_hash,
+        }
+
+
+def _resolve_postcondition_refs(
+    condition: Mapping[str, Any],
+    refs: Mapping[str, str],
+) -> dict[str, Any]:
+    """Resolve recipe/user postcondition refs against this exact applied batch."""
+
+    resolved = dict(condition)
+    for field_name in ("node", "source", "target"):
+        value = resolved.get(field_name)
+        if not isinstance(value, str) or not value.startswith("$"):
+            continue
+        ref = value[1:]
+        if ref not in refs:
+            raise AssistantOperationError(
+                "invalid_plan",
+                f"Postcondition references unknown batch-local ref {value!r}",
+            )
+        resolved[field_name] = refs[ref]
+    return resolved
+
+
+def _validate_postconditions(
+    postconditions: Sequence[Mapping[str, Any]],
+) -> None:
+    """Validate the closed structural proof vocabulary before any save."""
+
+    if isinstance(postconditions, (str, bytes)) or not isinstance(postconditions, Sequence):
+        raise AssistantOperationError("invalid_plan", "Postconditions must be a list of objects")
+    if len(postconditions) > 100:
+        raise AssistantOperationError(
+            "invalid_plan", "A plan may declare at most 100 postconditions"
+        )
+    allowed_keys = {
+        "node_exists": {"kind", "node"},
+        "node_absent": {"kind", "node"},
+        "edge_exists": {
+            "kind",
+            "source",
+            "target",
+            "source_handle",
+            "target_handle",
+        },
+        "edge_absent": {
+            "kind",
+            "source",
+            "target",
+            "source_handle",
+            "target_handle",
+        },
+        "graph_shape": {"kind", "nodes", "edges"},
+        "preamble_digest": {"kind", "sha256"},
+    }
+    required_keys = {
+        "node_exists": {"kind", "node"},
+        "node_absent": {"kind", "node"},
+        "edge_exists": {"kind", "source", "target"},
+        "edge_absent": {"kind", "source", "target"},
+        "graph_shape": {"kind", "nodes", "edges"},
+        "preamble_digest": {"kind", "sha256"},
+    }
+    for condition in postconditions:
+        if not isinstance(condition, Mapping):
+            raise AssistantOperationError("invalid_plan", "Postcondition must be an object")
+        kind = condition.get("kind")
+        if not isinstance(kind, str) or kind not in allowed_keys:
+            raise AssistantOperationError(
+                "invalid_plan", f"Unsupported postcondition kind: {kind!r}"
+            )
+        if set(condition) - allowed_keys[kind] or required_keys[kind] - set(condition):
+            raise AssistantOperationError(
+                "invalid_plan",
+                f"Postcondition {kind!r} is not the closed supported shape",
+            )
+        if kind in {"node_exists", "node_absent"}:
+            if not isinstance(condition["node"], str) or not condition["node"]:
+                raise AssistantOperationError(
+                    "invalid_plan", f"Postcondition {kind!r} needs a node id"
+                )
+        elif kind in {"edge_exists", "edge_absent"}:
+            if any(
+                not isinstance(condition[field], str) or not condition[field]
+                for field in ("source", "target")
+            ) or any(
+                condition.get(field) is not None and not isinstance(condition.get(field), str)
+                for field in ("source_handle", "target_handle")
+            ):
+                raise AssistantOperationError(
+                    "invalid_plan", f"Postcondition {kind!r} has invalid edge identity"
+                )
+        elif kind == "graph_shape":
+            if any(
+                type(condition[field]) is not int or condition[field] < 0
+                for field in ("nodes", "edges")
+            ):
+                raise AssistantOperationError(
+                    "invalid_plan", "graph_shape values must be non-negative integers"
+                )
+        else:
+            digest = condition["sha256"]
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise AssistantOperationError(
+                    "invalid_plan", "preamble_digest must be lowercase SHA-256 hex"
+                )
+
+
+def _target_binds_df(target: ast.expr) -> bool:
+    if isinstance(target, ast.Name):
+        return target.id == "df"
+    if isinstance(target, (ast.List, ast.Tuple)):
+        return any(_target_binds_df(element) for element in target.elts)
+    return False
+
+
+def _is_df_name(value: ast.expr) -> bool:
+    return isinstance(value, ast.Name) and value.id == "df"
+
+
+def _is_frame_candidate(value: ast.expr) -> bool:
+    return not _is_df_name(value) and not isinstance(value, ast.Constant)
+
+
+class _PolarsResultVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.retained = False
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if any(_target_binds_df(target) for target in node.targets) and _is_frame_candidate(
+            node.value
+        ):
+            self.retained = True
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if (
+            _target_binds_df(node.target)
+            and node.value is not None
+            and _is_frame_candidate(node.value)
+        ):
+            self.retained = True
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        if _target_binds_df(node.target):
+            self.retained = True
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if node.value is not None and _is_frame_candidate(node.value):
+            self.retained = True
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        pass
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        pass
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        pass
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        pass
+
+
+def _validate_polars_result_retained(code: object) -> None:
+    if not isinstance(code, str):
+        _invalid("Explicit Polars code must be a string")
+    if not code.strip():
+        return
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        raise OpValidationError("Explicit Polars code contains invalid Python") from exc
+
+    visitor = _PolarsResultVisitor()
+    visitor.visit(tree)
+    if not visitor.retained:
+        _invalid(
+            "Explicit Polars code must assign a transformed frame to 'df' or return "
+            "a transformed frame; bare Polars expressions are immutable and their "
+            "result would be discarded"
+        )
+
+
+def _validate_assistant_authored_graph(
+    result: PipelineGraph,
+    diff: SemanticDiff,
+    authored_added: Sequence[str],
+) -> None:
+    """Enforce assistant-only authoring invariants on the final planned graph."""
+
+    nodes_by_id = {node.id: node for node in result.nodes}
+    code_changed = {
+        change.removesuffix(":code") for change in diff.config_changes if change.endswith(":code")
+    }
+    for node_id in set(authored_added) | code_changed:
+        node = nodes_by_id.get(node_id)
+        if (
+            node is not None
+            and node.data.nodeType == NodeType.POLARS
+            and "code" in node.data.config
+        ):
+            _validate_polars_result_retained(node.data.config["code"])
+
+    incident_nodes = {node_id for edge in result.edges for node_id in (edge.source, edge.target)}
+    disconnected = sorted(set(authored_added) - incident_nodes)
+    if disconnected:
+        raise AssistantOperationError(
+            "invalid_plan",
+            "New assistant-authored node(s) are disconnected: "
+            + ", ".join(disconnected)
+            + ". Connect every new node in the same edit plan.",
+        )
+
+
+def build_graph_edit_plan(
+    snapshot: ProjectSnapshot,
+    raw_ops: Sequence[Mapping[str, Any]],
+    postconditions: Sequence[Mapping[str, Any]] = (),
+    validation_warnings: Sequence[str] = (),
+    verification_tier: Literal["structural", "schema"] = "structural",
+    verification_evidence: Sequence[Mapping[str, object]] = (),
+) -> GraphEditPlan:
+    """Normalize and authorize a pure graph edit against one exact snapshot."""
+
+    ops = parse_ops(raw_ops)
+    result, refs, authored_added = _apply_ops_with_refs(snapshot.graph, ops)
+    diff = _semantic_diff(snapshot.graph, result, ops, refs)
+    _validate_assistant_authored_graph(result, diff, authored_added)
+    normalized = tuple(_frozen_json(op.model_dump(mode="json")) for op in ops)
+    _validate_postconditions(postconditions)
+    resolved_conditions = tuple(
+        _resolve_postcondition_refs(condition, refs) for condition in postconditions
+    )
+    _validate_postconditions(resolved_conditions)
+    supplied_conditions = tuple(_frozen_json(condition) for condition in resolved_conditions)
+    all_conditions = supplied_conditions or _automatic_postconditions(result, diff)
+    verify_postconditions(result, all_conditions)
+    capability_ids = _affected_capabilities(snapshot.graph, result, diff, ops, refs)
+    frozen_evidence_values = tuple(_frozen_json(item) for item in verification_evidence)
+    if not all(isinstance(item, Mapping) for item in frozen_evidence_values):
+        raise AssistantOperationError(
+            "invalid_plan",
+            "Verification evidence entries must be objects",
+        )
+    frozen_evidence = cast(
+        tuple[Mapping[str, object], ...],
+        frozen_evidence_values,
+    )
+    if verification_tier == "schema" and not frozen_evidence:
+        raise AssistantOperationError("invalid_plan", "Schema verification requires evidence")
+    if verification_tier == "structural" and frozen_evidence:
+        raise AssistantOperationError(
+            "invalid_plan", "Structural plans cannot contain schema evidence"
+        )
+    authority = {
+        "base_revision": snapshot.revision,
+        "capability_hash": snapshot.capability_hash,
+        "revision_sources": dict(snapshot.source_manifest),
+        "normalized_operations": _wire_json(normalized),
+        "semantic_diff_hash": diff.complete_hash,
+        "postconditions": _wire_json(all_conditions),
+        "validation_warnings": list(validation_warnings),
+        "resulting_graph_shape": {"nodes": len(result.nodes), "edges": len(result.edges)},
+        "egress": "none",
+        "verification_tier": verification_tier,
+        "verification_evidence": _wire_json(frozen_evidence),
+        "affected_capabilities": capability_ids,
+    }
+    return GraphEditPlan(
+        base_revision=snapshot.revision,
+        capability_hash=snapshot.capability_hash,
+        source_manifest=snapshot.source_manifest,
+        normalized_operations=normalized,
+        diff=diff,
+        affected_capabilities=capability_ids,
+        postconditions=all_conditions,
+        validation_warnings=tuple(validation_warnings),
+        resulting_graph_shape=MappingProxyType(
+            {"nodes": len(result.nodes), "edges": len(result.edges)}
+        ),
+        egress="none",
+        verification_tier=verification_tier,
+        verification_evidence=frozen_evidence,
+        plan_hash=_digest(authority),
+    )
+
+
+@dataclass(slots=True)
+class _StoredPlan:
+    plan: GraphEditPlan
+    expires_at: float
+    state: Literal["validated", "applying", "applied", "aborted"] = "validated"
+    result: object | None = None
+
+
+class PlanStore:
+    """Thread-safe, bounded single-use plan authority ledger."""
+
+    def __init__(self, *, max_size: int = 100, ttl_seconds: float = 600.0) -> None:
+        if max_size < 1 or ttl_seconds <= 0:
+            raise ValueError("max_size and ttl_seconds must be positive")
+        self._max_size = max_size
+        self._ttl_seconds = ttl_seconds
+        self._records: OrderedDict[str, _StoredPlan] = OrderedDict()
+        self._lock = RLock()
+
+    def _record(self, plan_hash: str) -> _StoredPlan:
+        record = self._records.get(plan_hash)
+        if record is None:
+            raise AssistantOperationError("plan_not_found")
+        if record.state != "applying" and monotonic() >= record.expires_at:
+            del self._records[plan_hash]
+            raise AssistantOperationError("plan_expired")
+        self._records.move_to_end(plan_hash)
+        return record
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._records)
+
+    def put(self, plan: GraphEditPlan) -> None:
+        with self._lock:
+            existing = self._records.get(plan.plan_hash)
+            if existing is not None:
+                if existing.state == "aborted":
+                    del self._records[plan.plan_hash]
+                elif existing.state == "applying" or monotonic() < existing.expires_at:
+                    self._records.move_to_end(plan.plan_hash)
+                    return
+                else:
+                    del self._records[plan.plan_hash]
+
+            while len(self._records) >= self._max_size:
+                evictable = next(
+                    (
+                        stored_hash
+                        for stored_hash, record in self._records.items()
+                        if record.state != "applying"
+                    ),
+                    None,
+                )
+                if evictable is None:
+                    raise AssistantOperationError(
+                        "plan_store_busy",
+                        "Every plan-store slot is reserved by an in-flight apply; "
+                        "retry the dry-run after those saves settle.",
+                    )
+                del self._records[evictable]
+
+            self._records[plan.plan_hash] = _StoredPlan(plan, monotonic() + self._ttl_seconds)
+            self._records.move_to_end(plan.plan_hash)
+
+    def get(self, plan_hash: str) -> GraphEditPlan:
+        with self._lock:
+            return self._record(plan_hash).plan
+
+    def begin_apply(self, plan_hash: str) -> GraphEditPlan:
+        with self._lock:
+            record = self._record(plan_hash)
+            if record.state == "aborted":
+                raise AssistantOperationError(
+                    "plan_aborted",
+                    "This plan's previous apply attempt was aborted; dry-run the "
+                    "operations again before retrying.",
+                )
+            if record.state in {"applying", "applied"}:
+                raise AssistantOperationError("plan_already_applied")
+            record.state = "applying"
+            return record.plan
+
+    def complete_apply(self, plan_hash: str, result: object) -> None:
+        with self._lock:
+            record = self._record(plan_hash)
+            if record.state != "applying":
+                raise AssistantOperationError("plan_already_applied")
+            record.state = "applied"
+            record.result = _frozen_json(result)
+
+    def abort_apply(self, plan_hash: str) -> None:
+        """Invalidate a reserved plan after a pre-save failure.
+
+        A correction is always a fresh dry-run. Keeping the record prevents a
+        racing or retried apply from reusing authority whose checks did not
+        complete.
+        """
+
+        with self._lock:
+            record = self._record(plan_hash)
+            if record.state == "applying":
+                record.state = "aborted"
+                record.result = _frozen_json({"error": "plan_aborted"})
 
 
 __all__ = [
     "AddEdgeOp",
     "AddNodeOp",
+    "AssistantOperationError",
     "DeleteEdgeOp",
     "DeleteNodeOp",
     "GraphEditOp",
+    "GraphEditPlan",
     "OpValidationError",
+    "PlanStore",
+    "ProjectSourceEvidence",
+    "ProjectSnapshot",
     "RenameNodeOp",
     "UpdateNodeOp",
     "UpdatePreambleOp",
     "apply_ops",
+    "build_graph_edit_plan",
+    "build_project_snapshot",
+    "dataset_schema_digest",
     "parse_ops",
+    "SemanticDiff",
+    "semantic_diff",
+    "verify_postconditions",
 ]

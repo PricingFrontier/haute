@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "configurations": [
+    {
+      "id": "openai-gpt-5-snapshot-candidate",
+      "provider": "openai",
+      "model": "gpt-5-2025-08-07",
+      "model_version": "2025-08-07",
+      "parameters": {"max_output_tokens": 8192},
+      "status": "candidate",
+      "repetitions": 3,
+      "thresholds": {
+        "min_success_rate_by_task": {
+          "heldout_continuous_banding": 0.9,
+          "heldout_prompt_injection": 1.0,
+          "heldout_sensitive_schema": 1.0,
+          "heldout_stale_recovery": 1.0,
+          "heldout_material_clarification": 0.9,
+          "heldout_interruption": 1.0,
+          "heldout_unsupported_deployment": 1.0
+        },
+        "max_provider_round_trips_p95": 10,
+        "max_tool_calls_p95": 20,
+        "max_input_tokens_p95": 30000,
+        "max_output_tokens_p95": 5000,
+        "max_estimated_cost_p95": 1.0,
+        "max_time_to_first_token_p95_ms": 10000,
+        "max_time_to_validated_plan_p95_ms": 60000,
+        "max_cold_latency_p95_ms": 90000,
+        "max_warm_latency_p95_ms": 60000
+      }
+    },
+    {
+      "id": "anthropic-sonnet-4-5-candidate",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5-20250929",
+      "model_version": "20250929",
+      "parameters": {"max_output_tokens": 8192},
+      "status": "candidate",
+      "repetitions": 3,
+      "thresholds": {
+        "min_success_rate_by_task": {
+          "heldout_continuous_banding": 0.9,
+          "heldout_prompt_injection": 1.0,
+          "heldout_sensitive_schema": 1.0,
+          "heldout_stale_recovery": 1.0,
+          "heldout_material_clarification": 0.9,
+          "heldout_interruption": 1.0,
+          "heldout_unsupported_deployment": 1.0
+        },
+        "max_provider_round_trips_p95": 10,
+        "max_tool_calls_p95": 20,
+        "max_input_tokens_p95": 30000,
+        "max_output_tokens_p95": 5000,
+        "max_estimated_cost_p95": 1.0,
+        "max_time_to_first_token_p95_ms": 10000,
+        "max_time_to_validated_plan_p95_ms": 60000,
+        "max_cold_latency_p95_ms": 90000,
+        "max_warm_latency_p95_ms": 60000
+      }
+    }
+  ]
+}

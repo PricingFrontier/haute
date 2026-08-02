@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"source","source_column":"note","output_path":"$[:].note","enabled":true}],"outputFormat":"json"}

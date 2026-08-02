@@ -1,0 +1,1 @@
+{"user":"Use the same downstream flow for live quotes and a non-live batch.","assistant":"Declare schema-compatible sources and select them with an explicit scenario map."}

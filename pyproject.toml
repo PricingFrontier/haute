@@ -99,7 +99,10 @@ dev = [
 haute = "haute.cli:cli"
 
 [tool.hatch.build]
-artifacts = ["src/haute/static/**"]
+artifacts = [
+    "src/haute/static/**",
+    "src/haute/assistant/assets/**",
+]
 
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"

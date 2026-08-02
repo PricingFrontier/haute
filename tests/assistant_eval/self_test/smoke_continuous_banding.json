@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "smoke_continuous_banding",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "semantic",
+  "request": "After quotes, add age_band: band driver_age into driver_age_band as young when <= 25 and experienced when > 25, with unknown as the default.",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": ["banding"],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [
+      {"source": "quotes", "target": "age_band", "target_handle": null}
+    ],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 6,
+    "max_tool_calls": 12,
+    "max_failed_tool_calls": 1,
+    "max_duplicate_static_reads": 1
+  }
+}

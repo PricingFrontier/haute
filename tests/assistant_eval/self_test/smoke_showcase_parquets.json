@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "smoke_showcase_parquets",
+  "fixture_version": "3",
+  "project_fixture": "nested_showcase_parquets",
+  "category": "semantic",
+  "request": "can you make a pipeline with the parquets in the data folder. use as many nodee types as you can. i want to see what you can do",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": ["dataInput", "edgeJoin", "polars", "output"],
+    "forbidden_node_types": ["apiInput", "apiOutput", "model", "optimiser", "optimiserApply", "scoring"],
+    "forbidden_assistant_text": [],
+    "required_edges": [],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 14,
+    "max_tool_calls": 24,
+    "max_failed_tool_calls": 2,
+    "max_duplicate_static_reads": 2
+  }
+}

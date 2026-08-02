@@ -1,0 +1,1 @@
+{"user":"Make this live scorer ready for deployment and reject an unsafe container base image.","assistant":"I added a deployable API-input path with an explicit output allow-list. The safe preflight runs locally; the adjacent negative configuration proves that an unpinned container image fails before any external side effect."}

@@ -1,0 +1,1 @@
+{"user":"Add a small regression model and show how its trained artifact is selected for scoring.","assistant":"I added separate modelling and modelScore nodes. Training is exercised through the production async training service; scoring is verified from the resulting model, while the example sidecar keeps artifact selection explicit."}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "smoke_material_clarification",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "clarification",
+  "request": "Add rating factors, but do not supply missing-factor policy or factor values.",
+  "expectations": {
+    "outcome": "clarified",
+    "required_node_types": [],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [],
+    "require_connected_graph": false,
+    "max_provider_round_trips": 4,
+    "max_tool_calls": 5,
+    "max_failed_tool_calls": 0,
+    "max_duplicate_static_reads": 0
+  }
+}

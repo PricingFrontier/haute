@@ -1,0 +1,1 @@
+[{"case":"known_band","expectation":"mechanical table lookup produces a fixture factor"},{"case":"missing_band","expectation":"the explicit default value is used rather than an implicit null or dropped row"}]

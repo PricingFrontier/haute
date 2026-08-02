@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "id": "smoke_join_clarification",
+  "fixture_version": "1",
+  "project_fixture": "join_parquets",
+  "category": "clarification",
+  "request": "Join nb_batch as the main/base input with competitor_insight as the joining/reference input, but I have not decided the join type or key columns. Do not choose them for me; ask one focused question.",
+  "expectations": {
+    "outcome": "clarified",
+    "required_node_types": [],
+    "forbidden_node_types": [
+      "edgeJoin"
+    ],
+    "forbidden_assistant_text": [],
+    "required_edges": [],
+    "require_connected_graph": false,
+    "max_provider_round_trips": 3,
+    "max_tool_calls": 6,
+    "max_failed_tool_calls": 0,
+    "max_duplicate_static_reads": 0
+  }
+}

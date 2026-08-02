@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"rated","source_column":"fixture_result","output_path":"$[:].fixture_result","enabled":true}],"outputFormat":"json"}

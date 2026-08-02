@@ -678,7 +678,7 @@ class TestDissolveSubmodel:
             )
         assert response.status_code == 200
         parse_disk.assert_called_once()
-        flattened_graph = flatten.call_args.args[0]
+        flattened_graph = flatten.call_args_list[0].args[0]
         disk_meta = flattened_graph.submodels["pricing"]["graph"]
         assert {node["id"] for node in disk_meta["nodes"]} == {"disk_child", "disk_internal"}
         assert [

@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"banded","source_column":"property_group","output_path":"$[:].property_group","enabled":true}],"outputFormat":"json"}

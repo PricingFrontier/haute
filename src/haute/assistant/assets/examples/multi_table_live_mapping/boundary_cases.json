@@ -1,0 +1,1 @@
+[{"case":"duplicate_driver_key","expectation":"the declared one-to-one join cardinality fails rather than multiplying quote rows"}]
