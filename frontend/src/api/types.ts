@@ -17,6 +17,8 @@ export interface PipelineGraph {
   warning?: string | null
   sources?: string[]
   active_source?: string
+  preserved_blocks?: string[]
+  source_revision?: string | null
 }
 export interface SchemaWarning {
   column: string
@@ -252,6 +254,7 @@ export interface SavePipelineResponse {
   /** SHA of the ledger commit this save produced, or null when no working
    *  branch is configured. Feeds the toolbar branch/SHA indicator. */
   git_sha?: string | null
+  source_revision: string
 }
 
 export interface PreviewNodeResponse extends NodeResult {
@@ -267,17 +270,22 @@ export interface SubmodelCreateResponse {
   submodel_file: string
   parent_file: string
   graph: PipelineGraph
+  source_revision: string
 }
 
 export interface SubmodelGraphResponse {
   status: string
   submodel_name: string
   graph: PipelineGraph
+  submodel_file: string
 }
 
 export interface DissolveSubmodelResponse {
   status: string
   graph: PipelineGraph
+  source_revision: string
+  submodel_file_deleted: boolean
+  retained_submodel_file: string | null
 }
 
 /** HTTP response envelope for /api/pipeline/trace (wraps TraceResult).

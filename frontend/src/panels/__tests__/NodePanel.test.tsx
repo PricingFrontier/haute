@@ -892,6 +892,66 @@ describe("NodePanel", () => {
       expect(sources[2].frameUnresolved).not.toBe(true)
     })
 
+    it("renders drilled submodel Input frame names instead of the composite label", () => {
+      const target = makeNode({
+        id: "quote",
+        data: { label: "quote", description: "", nodeType: "polars", config: {} },
+      })
+      const boundaryInput = makeNode({
+        id: "submodel-input",
+        type: "submodelPort",
+        data: {
+          label: "INPUT",
+          description: "",
+          nodeType: "submodelPort",
+          config: {},
+          portDirection: "input",
+          ports: [
+            { id: "row-quote", label: "quote_info" },
+            { id: "row-batch", label: "nb_batch2" },
+          ],
+          externalNodeIds: ["quote_api", "nb_batch"],
+        },
+      })
+      const edges: SimpleEdge[] = [
+        {
+          id: "edge_quote",
+          source: boundaryInput.id,
+          sourceHandle: "row-quote",
+          target: target.id,
+          targetHandle: null,
+        },
+        {
+          id: "edge_batch",
+          source: boundaryInput.id,
+          sourceHandle: "row-batch",
+          target: target.id,
+          targetHandle: null,
+        },
+      ]
+
+      renderPanel({
+        node: target,
+        allNodes: [boundaryInput, target],
+        edges,
+      })
+
+      expect(latestTransformInputSources()).toEqual([
+        expect.objectContaining({
+          edgeId: "edge_quote",
+          name: "quote_info",
+          sourceLabel: "INPUT",
+        }),
+        expect.objectContaining({
+          edgeId: "edge_batch",
+          name: "nb_batch2",
+          sourceLabel: "INPUT",
+        }),
+      ])
+      expect(screen.getByTestId("input-source-edge_quote")).toHaveTextContent("quote_info")
+      expect(screen.getByTestId("input-source-edge_batch")).toHaveTextContent("nb_batch2")
+    })
+
     it("keeps a dangling apiInput handle verbatim and marks it unresolved", () => {
       const target = makeNode({
         id: "target",

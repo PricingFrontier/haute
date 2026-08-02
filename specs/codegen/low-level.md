@@ -49,17 +49,26 @@
    `GraphNode`/`GraphEdge` list (submodels may be stored as dicts or already-
    validated models — `GraphNode.model_validate` is applied conditionally),
    order edge-join edges, topo-sort, resolve cross-boundary `in__<child_id>`
-   edges targeting the submodel placeholder into that child's sources
-   (raising `ParseError` on a malformed or unknown handle), validate
-   `out__<child_id>` edges leaving the placeholder the same way, build that
-   submodel's `connect_pairs`, and emit its file via
-   `_generate_pipeline_lines(kind="submodel", obj_name="submodel", ...)`,
-   passing the child graph's description, preamble, and preserved blocks.
+   edges targeting the submodel placeholder into that child's sources, and
+   reject the runtime-only null-handle inbound draft because it cannot be
+   represented in generated Python (raising `ParseError` on that draft or any
+   malformed/unknown mapped handle). Validate `out__<child_id>` edges leaving
+   the placeholder the same way, build that
+   submodel's `connect_pairs`, validate the ordered metadata `outputPorts`
+   against the embedded child ids, map each id to its emitted function name,
+   and emit its file via `_generate_pipeline_lines(kind="submodel",
+   obj_name="submodel", outputs=..., ...)`, passing the child graph's
+   description, preamble, and preserved blocks. Empty and unused declared
+   exports are emitted; duplicates or unknown child ids raise `ParseError`.
    Then assemble the main file: root nodes are those not inside any
    submodel's `childNodeIds` and not a `submodel__<name>` placeholder;
    `_resolve_submodel_endpoint` maps a placeholder-boundary edge to the
-   actual child node id on either side; `root_connect_pairs` forwards
-   ordinary `sourceHandle`/`targetHandle` values on non-boundary edges and
+   actual child node id on either side. Root edge-join ordering uses that
+   resolved source id rather than the raw placeholder id, so an external join
+   can consume one or two distinct child outputs from the same submodel while
+   continuing to validate its configured roles strictly.
+   `root_connect_pairs` forwards ordinary `sourceHandle`/`targetHandle` values
+   on non-boundary edges and
    restores the authored `sourcePort`/`targetPort` values hidden behind a
    submodel boundary. Synthetic `out__<id>` / `in__<id>` handles are never
    emitted as user-facing ports. Boundary detection gates on the endpoint
@@ -269,7 +278,7 @@ text between the parens is non-whitespace).
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
-| Submodel cross-boundary edge with missing/malformed `in__`/`out__` handle, or referencing an unknown child id | `ParseError` | `codegen.graph_to_code_multi`, `codegen._resolve_submodel_endpoint` |
+| Submodel cross-boundary edge with a null inbound draft, missing/malformed `in__`/`out__` mapped handle, or unknown child id | `ParseError` | `codegen.graph_to_code_multi`, `codegen._resolve_submodel_endpoint`; save requires every available row to be explicitly mapped. |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
 | `polars` transform has no code and no/multiple sources | `ConfigError` | `_codegen_builders._gen_transform` |

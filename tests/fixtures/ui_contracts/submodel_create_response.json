@@ -2,6 +2,7 @@
   "status": "ok",
   "submodel_file": "pricing.py",
   "parent_file": "main.py",
+  "source_revision": "revision-create-1",
   "graph": {
     "nodes": [
       {
@@ -43,6 +44,8 @@
       "pricing": {
         "path": "pricing.py"
       }
-    }
+    },
+    "preserved_blocks": [],
+    "source_revision": "revision-create-1"
   }
 }

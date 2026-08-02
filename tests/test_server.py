@@ -276,6 +276,97 @@ class TestPreviewNode:
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
 
+    def test_preview_ignores_unassigned_submodel_input_draft(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ) -> None:
+        from unittest.mock import patch
+
+        from haute.schemas import NodeResult
+
+        graph = {
+            "nodes": [
+                {
+                    "id": "nb_batch",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "nb_batch2",
+                        "nodeType": "dataInput",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "submodel__sm",
+                    "type": "submodel",
+                    "position": {"x": 300, "y": 0},
+                    "data": {
+                        "label": "sm",
+                        "nodeType": "submodel",
+                        "config": {
+                            "childNodeIds": ["child_a", "child_b"],
+                            "inputPorts": [],
+                            "outputPorts": [],
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "unassigned",
+                    "source": "nb_batch",
+                    "target": "submodel__sm",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                }
+            ],
+            "pipeline_name": "draft_preview",
+            "source_file": str(pipeline_dir / "test_pipeline.py"),
+            "submodels": {
+                "sm": {
+                    "file": "modules/sm.py",
+                    "childNodeIds": ["child_a", "child_b"],
+                    "inputPorts": [],
+                    "outputPorts": [],
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": child_id,
+                                "type": "pipelineNode",
+                                "position": {"x": 0, "y": 0},
+                                "data": {
+                                    "label": child_id,
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            }
+                            for child_id in ("child_a", "child_b")
+                        ],
+                        "edges": [],
+                    },
+                }
+            },
+        }
+
+        with patch(
+            "haute.routes.pipeline.execute_graph",
+            return_value={"nb_batch": NodeResult(status="ok")},
+        ) as execute_graph:
+            response = client.post(
+                "/api/pipeline/preview",
+                json={"graph": graph, "node_id": "nb_batch"},
+            )
+
+        assert response.status_code == 200
+        execution_graph = execute_graph.call_args.args[0]
+        assert {node.id for node in execution_graph.nodes} == {
+            "nb_batch",
+            "child_a",
+            "child_b",
+        }
+        assert execution_graph.edges == []
+
     def test_preview_returns_relevant_ancestor_node_schema_maps(
         self,
         client: TestClient,
@@ -813,9 +904,13 @@ class TestGetSchema:
 @pytest.fixture()
 def three_node_graph(pipeline_dir: Path) -> dict:
     """Parse the test pipeline and return its graph as a dict payload."""
+    from haute._pipeline_revision import pipeline_document_revision
     from haute.parser import parse_pipeline_file
 
-    graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
+    parent = pipeline_dir / "test_pipeline.py"
+    graph = parse_pipeline_file(parent)
+    revision = pipeline_document_revision(graph, pipeline_path=parent, project_root=pipeline_dir)
+    graph = graph.model_copy(update={"source_revision": revision})
     return graph.model_dump()
 
 
@@ -827,6 +922,7 @@ class TestCreateSubmodel:
             "graph": graph_dict,
             "source_file": "test_pipeline.py",
             "pipeline_name": "test_pipeline",
+            "base_revision": graph_dict["source_revision"],
         }
 
     def test_create_submodel_success(
@@ -865,20 +961,14 @@ class TestCreateSubmodel:
         client: TestClient,
         three_node_graph: dict,
     ):
-        """Phase 1C #11: the handler now returns a sanitized 400 detail
-        so raw ValueError text from ``create_submodel_graph`` (which
-        may embed graph walk internals) never reaches the client.  The
-        full "at least 2 nodes" message is recorded in the
-        ``submodel_create_invalid`` structured log with ``exc_info=True``.
-        """
-        from haute.routes._helpers import _INTERNAL_ERROR_DETAIL
+        """A structurally invalid selection returns an actionable safe detail."""
 
         # Only 1 node -- must be at least 2
         node_ids = [three_node_graph["nodes"][0]["id"]]
         payload = self._create_payload(three_node_graph, node_ids)
         resp = client.post("/api/submodel/create", json=payload)
         assert resp.status_code == 400
-        assert resp.json()["detail"] == _INTERNAL_ERROR_DETAIL
+        assert resp.json()["detail"] == "A submodel must contain at least 2 nodes."
 
     def test_create_submodel_missing_source_file_returns_400(
         self,
@@ -892,6 +982,7 @@ class TestCreateSubmodel:
             "graph": three_node_graph,
             "source_file": "",
             "pipeline_name": "test_pipeline",
+            "base_revision": three_node_graph["source_revision"],
         }
         resp = client.post("/api/submodel/create", json=payload)
         assert resp.status_code == 400
@@ -915,12 +1006,13 @@ class TestGetSubmodel:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
 
         # Now fetch it
-        resp = client.get("/api/submodel/lookup")
+        resp = client.get("/api/submodel/lookup", params={"source_file": "test_pipeline.py"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
@@ -932,7 +1024,7 @@ class TestGetSubmodel:
             assert nid in internal_ids
 
     def test_get_submodel_not_found_returns_404(self, client: TestClient):
-        resp = client.get("/api/submodel/nonexistent")
+        resp = client.get("/api/submodel/nonexistent", params={"source_file": "test_pipeline.py"})
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
@@ -954,6 +1046,7 @@ class TestDissolveSubmodel:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
@@ -967,6 +1060,7 @@ class TestDissolveSubmodel:
                 "graph": updated_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": create_resp.json()["source_revision"],
             },
         )
         assert resp.status_code == 200
@@ -994,6 +1088,7 @@ class TestDissolveSubmodel:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert resp.status_code == 404
@@ -3829,10 +3924,15 @@ class TestSubmodelOutputPorts:
     ):
         """When a selected node has edges going OUT to unselected nodes,
         those should become output ports on the submodel."""
+        from haute._pipeline_revision import pipeline_document_revision
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
-        graph_dict = graph.model_dump()
+        parent = pipeline_dir / "test_pipeline.py"
+        graph = parse_pipeline_file(parent)
+        revision = pipeline_document_revision(
+            graph, pipeline_path=parent, project_root=pipeline_dir
+        )
+        graph_dict = graph.model_copy(update={"source_revision": revision}).model_dump()
 
         # Select only "source" -- it has an edge to "transform" which is outside
         # Need at least 2 nodes for submodel creation
@@ -3850,6 +3950,7 @@ class TestSubmodelOutputPorts:
                 "graph": graph_dict,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": revision,
             },
         )
         assert resp.status_code == 200
@@ -3896,10 +3997,15 @@ pipeline.connect("source", "middle")
 pipeline.connect("middle", "final")
 """
         (pipeline_dir / "rewire_test.py").write_text(code)
+        from haute._pipeline_revision import pipeline_document_revision
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "rewire_test.py")
-        graph_dict = graph.model_dump()
+        parent = pipeline_dir / "rewire_test.py"
+        graph = parse_pipeline_file(parent)
+        revision = pipeline_document_revision(
+            graph, pipeline_path=parent, project_root=pipeline_dir
+        )
+        graph_dict = graph.model_copy(update={"source_revision": revision}).model_dump()
 
         # Select only "middle" and "source" (2 nodes) -- "final" stays outside
         selected = ["source", "middle"]
@@ -3912,6 +4018,7 @@ pipeline.connect("middle", "final")
                 "graph": graph_dict,
                 "source_file": "rewire_test.py",
                 "pipeline_name": "rewire_test",
+                "base_revision": revision,
             },
         )
         assert resp.status_code == 200
@@ -4216,6 +4323,7 @@ class TestGetSubmodelSidecarPositions:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
@@ -4235,7 +4343,7 @@ class TestGetSubmodelSidecarPositions:
         )
 
         # Fetch the submodel
-        resp = client.get("/api/submodel/positioned")
+        resp = client.get("/api/submodel/positioned", params={"source_file": "test_pipeline.py"})
         assert resp.status_code == 200
         data = resp.json()
 
@@ -4268,6 +4376,7 @@ class TestDissolveEdgeCases:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
@@ -4280,6 +4389,7 @@ class TestDissolveEdgeCases:
                 "graph": updated_graph,
                 "source_file": "",
                 "pipeline_name": "test_pipeline",
+                "base_revision": create_resp.json()["source_revision"],
             },
         )
         assert resp.status_code == 400

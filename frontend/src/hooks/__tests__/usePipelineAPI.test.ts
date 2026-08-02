@@ -106,6 +106,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
+    sourceRevisionRef: { current: "revision-old" },
+    preservedBlocksRef: { current: [] as string[] },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -289,6 +291,8 @@ describe("usePipelineAPI", () => {
       edges: [],
       preamble: "import polars as pl",
       pipeline_name: "pricing",
+      source_revision: "revision-load",
+      preserved_blocks: ["KEEP = 1"],
       submodels: {
         pricing: { graph: { nodes: [makeNode("child")], edges: [] } },
       },
@@ -297,6 +301,8 @@ describe("usePipelineAPI", () => {
     const params = makeParams({
       preambleRef: { current: "import stale" },
       submodelsRef: { current: staleSubmodels },
+      sourceRevisionRef: { current: "revision-stale" },
+      preservedBlocksRef: { current: ["STALE = 1"] },
     })
     const { result } = renderHook(() => usePipelineAPI(params))
     expect(result.current.loading).toBe(true)
@@ -321,12 +327,19 @@ describe("usePipelineAPI", () => {
     expect(state.dirty).toBe(false)
     expect(params.preambleRef.current).toBe("import polars as pl")
     expect(params.submodelsRef.current).toEqual(state.submodels)
+    expect(params.sourceRevisionRef.current).toBe("revision-load")
+    expect(params.preservedBlocksRef.current).toEqual(["KEEP = 1"])
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setPreamble).not.toHaveBeenCalled()
   })
 
   it("uses the cold-start retry policy for the initial pipeline load", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({
+      nodes: [],
+      edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
+    })
 
     const params = makeParams()
     renderHook(() => usePipelineAPI(params))
@@ -373,6 +386,8 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue({
       nodes: [],
       edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
       pipeline_name: null,
       pipeline_description: null,
       preamble: null,
@@ -420,10 +435,41 @@ describe("usePipelineAPI", () => {
     })
   })
 
-  it("handleSave calls savePipeline and shows success toast", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+  it("rejects a live pipeline load without a committed revision", async () => {
+    mockLoad.mockResolvedValue({
+      nodes: [],
+      edges: [],
+      source_file: "main.py",
+      preserved_blocks: [],
+      source_revision: null,
+    })
     const params = makeParams()
+    renderHook(() => usePipelineAPI(params))
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((toast) =>
+        toast.type === "error" && toast.text.includes("source_revision")
+      )).toBe(true)
+    })
+    expect(params.sourceRevisionRef.current).toBe("revision-old")
+  })
+
+  it("handleSave calls savePipeline and shows success toast", async () => {
+    mockLoad.mockResolvedValue({
+      nodes: [],
+      edges: [],
+      preserved_blocks: ["KEEP = 1"],
+      source_revision: "revision-load",
+    })
+    mockSave.mockResolvedValue({
+      file: "pricing.py",
+      pipeline_name: "pricing",
+      source_revision: "revision-save",
+    })
+    const params = makeParams({
+      preservedBlocksRef: { current: ["KEEP = 1"] },
+    })
     params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     // handleSave reads graphRef for the save payload and marks that
     // submitted snapshot as saved after the backend accepts it. Keep
@@ -440,11 +486,15 @@ describe("usePipelineAPI", () => {
     })
     // After save, the submitted graph snapshot is the saved baseline.
     expect(useGraphStore.getState().isDirty()).toBe(false)
+    expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({
+      preserved_blocks: ["KEEP = 1"],
+    }))
+    expect(params.sourceRevisionRef.current).toBe("revision-save")
   })
 
   it("handleSave includes the current submodel mirror in the payload", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
     const params = makeParams()
     const submodels = {
       pricing: {
@@ -467,8 +517,8 @@ describe("usePipelineAPI", () => {
   })
 
   it("preserves authored submodel boundary ports in the save payload", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
     const boundaryEdge: PipelineEdge = {
       id: "e_boundary",
       source: "submodel__pricing",
@@ -501,9 +551,9 @@ describe("usePipelineAPI", () => {
   })
 
   it("keeps later edits dirty when they happen while a save is in flight", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    let resolveSave!: (value: { file: string; pipeline_name: string }) => void
-    const savePromise = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
+    let resolveSave!: (value: { file: string; pipeline_name: string; source_revision: string }) => void
+    const savePromise = new Promise<{ file: string; pipeline_name: string; source_revision: string }>((resolve) => {
       resolveSave = resolve
     })
     mockSave.mockReturnValue(savePromise)
@@ -532,7 +582,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
     await act(async () => {
-      resolveSave({ file: "pricing.py", pipeline_name: "pricing" })
+      resolveSave({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
       await savePromise
     })
 
@@ -544,9 +594,9 @@ describe("usePipelineAPI", () => {
   })
 
   it("keeps in-place graph mutations dirty when they happen while a save is in flight", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    let resolveSave!: (value: { file: string; pipeline_name: string }) => void
-    const savePromise = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
+    let resolveSave!: (value: { file: string; pipeline_name: string; source_revision: string }) => void
+    const savePromise = new Promise<{ file: string; pipeline_name: string; source_revision: string }>((resolve) => {
       resolveSave = resolve
     })
     mockSave.mockReturnValue(savePromise)
@@ -574,7 +624,7 @@ describe("usePipelineAPI", () => {
     expect(useGraphStore.getState().isDirty()).toBe(true)
 
     await act(async () => {
-      resolveSave({ file: "pricing.py", pipeline_name: "pricing" })
+      resolveSave({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
       await savePromise
     })
 
@@ -590,13 +640,13 @@ describe("usePipelineAPI", () => {
   })
 
   it("does not let an older save response replace a newer saved baseline", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    let resolveFirst!: (value: { file: string; pipeline_name: string }) => void
-    let resolveSecond!: (value: { file: string; pipeline_name: string }) => void
-    const firstSave = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
+    let resolveFirst!: (value: { file: string; pipeline_name: string; source_revision: string }) => void
+    let resolveSecond!: (value: { file: string; pipeline_name: string; source_revision: string }) => void
+    const firstSave = new Promise<{ file: string; pipeline_name: string; source_revision: string }>((resolve) => {
       resolveFirst = resolve
     })
-    const secondSave = new Promise<{ file: string; pipeline_name: string }>((resolve) => {
+    const secondSave = new Promise<{ file: string; pipeline_name: string; source_revision: string }>((resolve) => {
       resolveSecond = resolve
     })
     mockSave
@@ -626,16 +676,18 @@ describe("usePipelineAPI", () => {
     })
 
     await act(async () => {
-      resolveSecond({ file: "pricing.py", pipeline_name: "pricing" })
+      resolveSecond({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-newer" })
       await secondSave
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
+    expect(params.sourceRevisionRef.current).toBe("revision-newer")
 
     await act(async () => {
-      resolveFirst({ file: "pricing.py", pipeline_name: "pricing" })
+      resolveFirst({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-older" })
       await firstSave
     })
     expect(useGraphStore.getState().isDirty()).toBe(false)
+    expect(params.sourceRevisionRef.current).toBe("revision-newer")
 
     act(() => {
       useGraphStore.getState().setNodes(firstNodes)
@@ -644,8 +696,8 @@ describe("usePipelineAPI", () => {
   })
 
   it("handleSave is blocked while drilled into a submodel", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing" })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
+    mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
     const params = makeParams({
       parentGraphRef: {
         current: {
@@ -672,7 +724,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("handleSave shows error toast on failure", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockSave.mockRejectedValue(new Error("disk full"))
     const params = makeParams()
     params.graphRef.current = { nodes: [], edges: [] }
@@ -688,7 +740,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("handleSave shows ApiError detail for backend validation failures", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockSave.mockRejectedValue(
       new ApiError(
         "HTTP 400",
@@ -727,8 +779,14 @@ describe("usePipelineAPI", () => {
       "Cross joins must not configure join keys.",
     ],
   ])("handleSave blocks invalid edgeJoin config before posting for %s", async (_caseName, config, message) => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
-    mockSave.mockResolvedValue({ status: "saved", file: "test.py", pipeline_name: "test", warnings: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
+    mockSave.mockResolvedValue({
+      status: "saved",
+      file: "test.py",
+      pipeline_name: "test",
+      source_revision: "revision-save",
+      warnings: [],
+    })
     const graph = edgeJoinSaveGraph(config)
     const params = makeParams()
     params.graphRef.current = graph
@@ -754,6 +812,8 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue({
       nodes: [],
       edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
       sources: ["live", "test_scenario"],
       active_source: "test_scenario",
     })
@@ -766,7 +826,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("setPreviewData can be set externally", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -777,7 +837,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("initial nodeStatuses is empty", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -785,7 +845,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("fetchPreview sets loading preview then calls API", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -806,7 +866,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("builds a missing input snapshot before sending the preview", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
     mockBuildInputCache.mockResolvedValue({
       schema_version: 1,
@@ -858,7 +918,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("blocks preview and surfaces an input snapshot build failure", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockGetInputCacheStatus.mockResolvedValue(inputCacheSnapshot("missing"))
     mockBuildInputCache.mockResolvedValue({
       schema_version: 1,
@@ -897,7 +957,7 @@ describe("usePipelineAPI", () => {
   it.each(["fresh", "stale"] as const)(
     "uses a ready %s input snapshot without rebuilding",
     async (freshness) => {
-      mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+      mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
       mockGetInputCacheStatus.mockResolvedValue(
         inputCacheSnapshot("ready", freshness),
       )
@@ -933,7 +993,7 @@ describe("usePipelineAPI", () => {
     NODE_TYPES.SUBMODEL,
     NODE_TYPES.SUBMODEL_PORT,
   ])("fetchPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "should-not-run",
       status: "ok",
@@ -956,7 +1016,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("fetchPreview skips backend preview for submodel port nodes typed by React Flow", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "should-not-run",
       status: "ok",
@@ -982,7 +1042,7 @@ describe("usePipelineAPI", () => {
     NODE_TYPES.SUBMODEL,
     NODE_TYPES.SUBMODEL_PORT,
   ])("refreshPreview skips backend preview for non-executable placeholder node type %s", async (nodeType) => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -997,7 +1057,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview skips backend preview for submodel port nodes typed by React Flow", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     const params = makeParams()
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -1012,7 +1072,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("fetchPreview propagation skips downstream submodel placeholders", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "upstream",
       status: "ok",
@@ -1043,7 +1103,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("fetchPreview propagation skips downstream submodel ports typed by React Flow", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "upstream",
       status: "ok",
@@ -1074,7 +1134,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview skips stale upstream submodel placeholders", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "target",
       status: "ok",
@@ -1104,7 +1164,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview skips stale upstream submodel ports typed by React Flow", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "target",
       status: "ok",
@@ -1134,7 +1194,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("fetchPreview requests known preview columns for nodes with cached schema", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -1170,7 +1230,7 @@ describe("usePipelineAPI", () => {
       name: `col_${i}`,
       dtype: "i64",
     }))
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "wide",
       status: "ok",
@@ -1201,7 +1261,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("fetchPreview preserves full preview fetch when schema is not known yet", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -1221,7 +1281,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("fetchPreview populates nodeStatuses from response", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -1246,7 +1306,7 @@ describe("usePipelineAPI", () => {
     const node = makeNode("n1", "polars", {
       data: { label: "Node n1", nodeType: "polars", config: {} },
     })
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -1282,7 +1342,7 @@ describe("usePipelineAPI", () => {
     const child = makeNode("child", "polars", {
       data: { label: "Child", nodeType: "polars", config: {} },
     })
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
 
     let childSignal: AbortSignal | undefined
     mockPreview.mockImplementation(({ nodeId, signal }) => {
@@ -1328,7 +1388,7 @@ describe("usePipelineAPI", () => {
 
   it("fetchPreview carries execution metrics into visible preview data and cache", async () => {
     const executionMetrics = makeExecutionMetricsFixture()
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -1353,7 +1413,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("shows client-side preview timeouts in the panel and toast", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockRejectedValue(new ApiTimeoutError("/api/pipeline/preview", 120_000))
     const params = makeParams()
     const node = makeNode("n1", "polars", {
@@ -1380,7 +1440,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("applies preview schema through the raw node setter without history or dirty churn", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -1443,7 +1503,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("keeps nodeStatuses when selectedNode is recreated with the same id", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "n1",
       status: "ok",
@@ -1474,7 +1534,7 @@ describe("usePipelineAPI", () => {
   // ── B10: nodeIdCounter from max ID suffix, not nodes.length ──────
 
   it("refreshPreview ignores in-flight upstream results after graph structure changes", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
 
     const upstream = makeNode("upstream")
     const target = makeNode("target")
@@ -1535,7 +1595,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview applies upstream schema through the raw node setter", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     const upstream = makeNode("upstream")
     const target = makeNode("target")
     const edge = makeEdge("upstream", "target")
@@ -1593,7 +1653,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview suppresses stale upstream warnings after graph structure changes", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
 
     const upstream = makeNode("upstream", "polars", {
       data: { label: "Upstream", nodeType: "polars", config: {} },
@@ -1649,7 +1709,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview aborts stale upstream preview requests when superseded", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
 
     const upstream = makeNode("upstream")
     const target = makeNode("target")
@@ -1691,7 +1751,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview does not start the target preview after unmount aborts stale upstream work", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
 
     const upstream = makeNode("upstream")
     const target = makeNode("target")
@@ -1741,7 +1801,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview caps concurrent stale upstream previews", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     const callOrder: string[] = []
     const activeUpstream = new Set<string>()
     const deferreds = new Map<string, { resolve: (value: unknown) => void }>()
@@ -1819,7 +1879,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("refreshPreview clears an older debounced preview before starting target preview", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
       node_id: "target",
       status: "ok",
@@ -1882,6 +1942,8 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue({
       nodes: [makeNode("transform_0"), makeNode("transform_5")],
       edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
     })
     const params = makeParams()
     renderHook(() => usePipelineAPI(params))
@@ -1895,6 +1957,8 @@ describe("usePipelineAPI", () => {
     mockLoad.mockResolvedValue({
       nodes: [makeNode("plain_node")],
       edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
     })
     const params = makeParams()
     renderHook(() => usePipelineAPI(params))
@@ -1905,7 +1969,7 @@ describe("usePipelineAPI", () => {
   })
 
   it("sets nodeIdCounter to 0 when pipeline has no nodes", async () => {
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     const params = makeParams()
     renderHook(() => usePipelineAPI(params))
     await waitFor(() => {

@@ -58,7 +58,7 @@ vi.mock("../api/client", async () => {
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
-    loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
+    loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),
     traceCell: vi.fn(() => Promise.resolve({ status: "ok" })),
@@ -410,8 +410,8 @@ beforeEach(() => {
   MockWebSocket.instances = []
 
   // Reset all api mocks to their default resolution (empty graph, success).
-  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "" })
-  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main" })
+  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })
+  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
   vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
@@ -446,7 +446,13 @@ afterEach(() => {
 
 describe("App integration — mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
-    let resolveLoad!: (value: { nodes: []; edges: []; preamble: string }) => void
+    let resolveLoad!: (value: {
+      nodes: []
+      edges: []
+      preamble: string
+      preserved_blocks: string[]
+      source_revision: string
+    }) => void
     vi.mocked(api.loadPipeline).mockImplementationOnce(
       () => new Promise((resolve) => {
         resolveLoad = resolve
@@ -458,7 +464,7 @@ describe("App integration — mounts and renders main chrome", () => {
     expect(screen.getByText("Loading pipeline...")).toBeInTheDocument()
     expect(MockWebSocket.instances).toHaveLength(0)
 
-    resolveLoad({ nodes: [], edges: [], preamble: "" })
+    resolveLoad({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })
     await waitForAppReady()
 
     expect(MockWebSocket.instances).toHaveLength(1)
@@ -582,6 +588,8 @@ describe("App integration — load a pipeline with nodes", () => {
         { id: "e2", source: "polars_1", target: "output_2" },
       ],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     })
     render(<App />)
     await waitForAppReady()
@@ -605,6 +613,8 @@ describe("App integration — load a pipeline with nodes", () => {
       nodes: [makeNode("polars_0", "Node A")],
       edges: [],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     })
     render(<App />)
     await waitForAppReady()
@@ -637,6 +647,8 @@ describe("App integration — load a pipeline with nodes", () => {
       ],
       edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     })
     useSettingsStore.setState({ rowLimit: 2 })
     vi.mocked(api.previewNode).mockResolvedValueOnce({
@@ -764,6 +776,8 @@ describe("App integration — save pipeline", () => {
       nodes: [makeNode("polars_0", "Transform A")],
       edges: [],
       preamble: "import polars as pl",
+      preserved_blocks: [],
+      source_revision: "revision-test",
       pipeline_name: "pricing",
       source_file: "pricing.py",
     })
@@ -791,7 +805,7 @@ describe("App integration — save pipeline", () => {
   })
 
   it("shows a success toast when savePipeline resolves", async () => {
-    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo" })
+    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test" })
     render(<App />)
     await waitForAppReady()
 
@@ -1018,6 +1032,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         },
       ],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     }
   }
 
@@ -1110,6 +1126,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         },
       ],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     }
   }
 
@@ -1200,6 +1218,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         },
       },
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     }
   }
 

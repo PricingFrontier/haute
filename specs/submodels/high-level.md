@@ -51,8 +51,9 @@ Out of scope (owned elsewhere, linked where relevant):
 
 ## Behaviour
 
-- **Creation** (`POST /api/submodel/create`): given a set of `node_ids`, a
-  name, and the current graph, the selected nodes are removed from the parent
+- **Creation** (`POST /api/submodel/create`): given an ordered list of unique,
+  existing `node_ids`, a non-blank name, the current graph, and the document
+  revision on which that graph is based, the selected nodes are removed from the parent
   graph and replaced with one `SUBMODEL`-typed placeholder node
   (id `submodel__<sanitized-name>`). Edges that crossed the selection
   boundary are rewired to the placeholder using synthetic handles —
@@ -60,15 +61,22 @@ Out of scope (owned elsewhere, linked where relevant):
   `out__<child_id>` for edges now leaving it — and the parent graph gains a
   `submodels["<name>"]` metadata entry holding the file path, the child node
   ids, the inferred ports, and the submodel's own internal graph (nodes +
-  internal edges only). A new `modules/<name>.py` file is written and the
+  internal edges only). Child ids retain parent graph order and the placeholder
+  is placed at the centre of the selected nodes' bounding box. The parent
+  preamble and preserved blocks are copied into the new child graph as a
+  conservative support-code snapshot while remaining available to ungrouped
+  parent nodes. A new, Haute-managed `modules/<name>.py` file and child position
+  sidecar are written and the
   parent file is rewritten to reference it, through the same save transaction
-  as a manual pipeline save.
-- **Drill-down** (`GET /api/submodel/{name}`): returns the named submodel's
-  internal graph, parsed fresh from the path recorded by the active pipeline,
-  with any sidecar node positions applied. The `modules/<name>.py` convention
-  is used only when no parseable discovered pipeline records the requested
-  submodel. A broken sibling pipeline is logged and skipped rather than
-  preventing an unrelated healthy submodel from opening.
+  as a manual pipeline save. Creation refuses to overwrite any existing
+  case-insensitive target path, regardless of whether another pipeline
+  currently references it.
+- **Drill-down** (`GET /api/submodel/{name}?source_file=<parent>`): returns the
+  named submodel's internal graph, parsed fresh from the path recorded by that
+  exact parent pipeline, with any sidecar node positions applied. The parent
+  source identity is mandatory: lookup never scans unrelated pipelines or
+  guesses `modules/<name>.py`, so two pipelines may safely use the same
+  submodel name for different files.
   This is how the GUI renders the inside of a placeholder when the user opens
   it, including hand-authored references such as `lib/pricing.py`.
 - **Dissolution** (`POST /api/submodel/dissolve`): the inverse of creation —
@@ -76,11 +84,17 @@ Out of scope (owned elsewhere, linked where relevant):
   authoritative graph is merged with its sidecar node positions and replaces
   the client's possibly stale metadata, and only then is the placeholder
   replaced by child nodes/internal edges via targeted `flatten_graph`. The
-  parent file is rewritten and the recorded child file is deleted through one
-  save transaction.
-- **Minimum size.** A submodel must contain at least 2 nodes after any
-  nonexistent or duplicate ids in the request are resolved against the actual
-  graph; fewer is rejected.
+  parent file is rewritten through one save transaction. The recorded child
+  source and sidecar are deleted only when the child carries a matching Haute
+  ownership marker and no other parseable pipeline references the same resolved
+  file. Hand-authored, shared, ambiguously owned, or potentially referenced
+  files are retained and that outcome is returned to the GUI.
+- **Selection validity.** A submodel must contain at least 2 unique node ids,
+  every requested id must exist in the submitted graph, and duplicates are an
+  invalid client request rather than an instruction to coalesce entries. A
+  stale id rejects the entire operation; creation never silently groups a
+  subset of the user's selection. Selections may be disconnected and may have
+  no cross-boundary edges.
 - **No nesting.** A node that is itself a `SUBMODEL` placeholder cannot be
   selected as part of a new group — grouping is capped at one level. A hand-authored submodel
   file that contains `pipeline.submodel(...)` is rejected by the parser with every nested path
@@ -95,10 +109,15 @@ Out of scope (owned elsewhere, linked where relevant):
   `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, any casing, any extension) is rejected
   before any graph transformation runs, on every platform — so a pipeline
   authored on Linux/macOS stays loadable on a Windows checkout.
+- **Names are validated at the API boundary.** Whitespace-only names are
+  rejected rather than silently becoming `unnamed_node`; the trimmed name is
+  the input to sanitisation. A canonical name or placeholder identity already
+  present in the parent under any casing is a conflict, matching the
+  case-insensitive module no-clobber rule.
 - **Boundary handles are the single source of truth for "which side of the
   boundary this edge attaches to."** `in__<child>` / `out__<child>` is the
   spelling produced when a submodel is created (or reconstructed by the parser) and validated by
-  both codegen and flattening. Flattening requires the correct prefix and a
+  both codegen and flattening. For mapped boundaries, flattening requires the correct prefix and a
   child id present in the authoritative child graph; malformed boundaries
   raise `ParseError` before any edge or file is removed. On valid graphs it
   strips the prefix, restores the child endpoint and any authored port,
@@ -108,15 +127,42 @@ Out of scope (owned elsewhere, linked where relevant):
   `out__<something>` is never treated as a boundary handle by the consuming
   side — only an edge whose source or target actually is a submodel
   placeholder node is.
+- **Boundary identity and presentation are separate.** Placeholder output
+  handles remain `out__<child-id>` so flattening and codegen have a stable
+  identity. The placeholder also carries an `outputPortLabels` map derived
+  from the authoritative child nodes so the GUI can show frame names without
+  substituting those mutable labels into edge identity. Older payloads may
+  omit the map; their child ids remain valid display fallbacks. Drill-down
+  projects the boundary as one composite Input and one composite Output. The
+  Input owns one row per external logical frame; a parent edge with no
+  `in__<child>` handle is a deliberate editor draft and must be explicitly
+  mapped before save. Runtime flattening omits that exact null-handle inbound
+  draft because it has no executable child endpoint, so preview and trace of
+  the remaining graph, including an automatic preview after an upstream
+  rename, continue normally. Wrong-prefixed or stale mapped handles remain
+  errors, and code generation continues to reject the unpersistable draft
+  until it has an explicit mapping. The Output owns one shared target handle;
+  child-to-Output connections are explicit export declarations, not
+  downstream-consumer edges. Declared exports remain visible and round-trip
+  even with no consumer. Removing a declaration also removes every parent
+  edge using its `out__<child-id>` handle. None of these presentation rules
+  changes the stable `in__`/`out__` endpoint contract used by flattened
+  edges.
 - **Per-file module code survives both representations.** Parsed submodel
   descriptions, preambles, and column-zero preserved blocks stay in the
   child metadata and are re-emitted in that child file. When a submodel is
   flattened for execution or dissolve, its preamble and preserved blocks are
   merged into the parent graph so the inlined nodes retain their support code.
-- **Writes are serialised.** Both create and dissolve acquire the same shared
+  Exact support-code snapshots already present in the parent are not appended
+  a second time, so create then dissolve reaches a stable representation.
+- **Writes are serialised and freshness-checked.** Both create and dissolve acquire the same shared
   write lock used by the manual pipeline save endpoint, so a submodel
   operation can never interleave with a concurrent save or with another
-  submodel operation.
+  submodel operation inside one server process. Before transforming anything,
+  each route compares `base_revision` with a deterministic revision of the
+  current parent document and its referenced child state. A mismatch returns
+  `409` instead of overwriting a newer on-disk graph. The lock is process-local
+  and is not a multi-worker filesystem lock.
 
 ## Design rationale
 
@@ -140,12 +186,20 @@ Out of scope (owned elsewhere, linked where relevant):
   sidecar staging, and stale-config cleanup that a manual save gets — a
   bespoke writer for submodel operations would be a second place those
   invariants could drift out of sync.
+- **File ownership is explicit and conservative.** A GUI-created child gets a
+  `managed_parent` marker in its `.haute.json` sidecar. Merely parsing or saving
+  a hand-authored reference—or submitting `managed=true`—never manufactures
+  ownership. The create route alone supplies a transaction-local claim, and
+  only after both the new source and its sidecar pass no-clobber. Dissolve checks that
+  marker and project-wide resolved references before scheduling deletion; if
+  ownership or reference discovery is uncertain, retaining the file is the
+  safe, visible result. Creation's no-clobber check is independent of ownership
+  and runs before any write for both the child source and sibling sidecar.
 - **Submodel path resolution deliberately mirrors the parser's own module
   lookup**, rather than inventing a second convention: drill-down parses the
-  active pipeline and resolves the exact project-relative path stored in its
-  submodel metadata. `modules/<name>.py` remains a compatibility fallback
-  only when no discovered pipeline records the name. The GUI and the
-  actually executed pipeline therefore open the same file.
+  parent named by `source_file` and resolves the exact project-relative path
+  stored in its submodel metadata. There is no global name-only fallback. The
+  GUI and the actually executed pipeline therefore open the same file.
 - **Nesting is disallowed by construction, not by convention.** Rejecting any
   selection that includes a submodel placeholder keeps the placeholder model,
   the `in__`/`out__` handle scheme, and the flatten pass single-level;
@@ -183,20 +237,31 @@ Out of scope (owned elsewhere, linked where relevant):
   submodel navigation UI itself — the `useSubmodelNavigation` hook (drill-in/out, create,
   dissolve) and the `SubmodelDialog` create/rename component — lives in the
   [frontend-graph-canvas](../frontend-graph-canvas/high-level.md) component, not here.
+- Depends on server-api's document revision and sidecar ownership fields. The
+  frontend retains the latest `source_revision` from load, save, WebSocket
+  refresh, create, or dissolve and supplies it as `base_revision` on the next
+  mutating submodel request.
 - A downstream node fed across a submodel boundary lists that input by the referenced
   child node's sanitised label — the name the flattened code actually binds as the
   argument (see [frontend-node-editors](../frontend-node-editors/high-level.md) for the
   chip derivation and [codegen](../codegen/high-level.md)/`edge_input_name` for the
   backend rule) — never by the submodel placeholder's own label, which names the
   container, not the frame delivered.
+- The same logical-child identity governs a downstream `edgeJoin`'s
+  `baseInput`/`joinInput` roles. An `out__<child_id>` boundary handle must be
+  resolved before role validation or ordering; two different child outputs of
+  one submodel are therefore two distinct join inputs even though their stored
+  parent edges share the same placeholder `source`.
 
 ## Failure model
 
-- Selecting fewer than 2 nodes, or any node that is itself a submodel
-  placeholder, raises `ValueError` inside the pure graph transform. The route
-  logs the full detail server-side (it may embed graph-walk internals) and
-  returns a generic sanitised `400` — the client never sees the specific
-  validation message, only that the request was rejected.
+- A blank name, fewer than 2 unique ids, duplicate ids, or selecting a node
+  that is itself a submodel placeholder returns `400` with a stable, safe,
+  actionable explanation. An id absent from the submitted graph, an existing
+  canonical submodel name, or a changed `base_revision` returns `409`; no graph
+  transform or write runs.
+- If the new module path already exists under any casing, creation returns
+  `409` before any file is touched.
 - A submodel name that would collide with a Windows reserved device name
   returns a `400` with a specific, user-facing explanation (unlike the
   generic case above, this message is safe to show as-is since it only names
@@ -208,16 +273,18 @@ Out of scope (owned elsewhere, linked where relevant):
   metadata returns `404`.
 - Drilling into a submodel whose `.py` file does not exist on disk returns
   `404`.
-- A discovered sibling pipeline that cannot be parsed is logged and skipped
-  during drill-down lookup. Other discovered pipelines and the conventional
-  module fallback remain eligible.
+- A missing or invalid drill-down `source_file`, a parent that does not record
+  the requested name, or a missing recorded child returns `400`/`404` as
+  appropriate. Unrelated pipelines cannot influence drill-down lookup.
 - A malformed route name or recorded reference (empty, NUL-containing, or a
   `{name}` containing `/` or `\`) returns `400`; a reference resolving
   outside the project returns `403`. These typed path failures are mapped
   before filesystem access rather than escaping as an uncaught `ValueError`.
-- A missing, wrong-prefixed, or stale-child boundary handle raises
-  `ParseError` from `flatten_graph`. Dissolve stops before persisting the
-  parent or deleting the authoritative child file.
+- A null target handle on an inbound submodel edge is an unassigned editor
+  draft and is omitted by `flatten_graph`. A missing outbound handle, a
+  wrong-prefixed mapped handle, or a stale child reference raises `ParseError`.
+  Dissolve stops before persisting the parent or deleting the authoritative
+  child file for those malformed mapped boundaries.
 - Any failure partway through the underlying save transaction (config write,
   sidecar write, or the submodel file's own deletion on dissolve) triggers a
   best-effort rollback of every touched file and surfaces the original
@@ -225,3 +292,9 @@ Out of scope (owned elsewhere, linked where relevant):
   rollback failure is logged and may leave partial state. See
   [server-api](../server-api/high-level.md) for the transaction's full
   contract.
+- A child without a matching ownership marker, a child referenced by another
+  healthy pipeline, or any unparseable sibling that makes a complete reference
+  audit impossible is dissolved without deleting its source or sidecar. The
+  response names the retained file so the GUI can explain the outcome.
+- Sanitised node-name collisions discovered by `SavePipelineService` return a
+  specific `400` before writes begin.

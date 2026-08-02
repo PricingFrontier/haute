@@ -36,6 +36,7 @@
  *     site. `applyApiInputConfigChange` composes the two.
  */
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
+import type { SubmodelPortData } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
 import { sanitizeName } from "./sanitizeName"
 
@@ -217,6 +218,23 @@ export function edgeInputName(
       return UNRESOLVED_INPUT_NAME
     }
     return edge.sourceHandle
+  }
+  if (sourceNode.data.nodeType === NODE_TYPES.SUBMODEL_PORT) {
+    const boundary = sourceNode.data as Partial<SubmodelPortData>
+    if (boundary.portDirection !== "input" || !Array.isArray(boundary.ports)) {
+      throw new Error(
+        `Cannot derive input name for edge ${edge.id}: source ${sourceNode.id} is not a valid submodel Input`,
+      )
+    }
+    const port = boundary.ports.find(
+      (candidate) => candidate.id === edge.sourceHandle,
+    )
+    if (!port || typeof port.label !== "string") {
+      throw new Error(
+        `Cannot derive input name for edge ${edge.id}: submodel Input row ${String(edge.sourceHandle)} is missing`,
+      )
+    }
+    return sanitizeName(port.label)
   }
   const resolvedChild = submodelChildNode(edge, sourceNode, submodels)
   return sanitizeName(resolvedChild?.data.label ?? sourceNode.data.label)

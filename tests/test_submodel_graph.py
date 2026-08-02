@@ -35,6 +35,27 @@ class TestBuildSubmodelPlaceholder:
         assert node.data.config["childNodeIds"] == ["a", "b"]
         assert node.data.config["inputPorts"] == ["a"]
         assert node.data.config["outputPorts"] == ["b"]
+        assert node.data.config["outputPortLabels"] == {}
+
+    def test_output_port_labels_follow_port_order_and_exclude_non_outputs(self):
+        node = build_submodel_placeholder(
+            "scoring",
+            "modules/scoring.py",
+            ["a", "b", "c"],
+            [],
+            ["b", "a"],
+            output_port_labels={
+                "a": "Quote frame",
+                "b": "Claims frame",
+                "c": "Internal only",
+            },
+        )
+
+        assert list(node.data.config["outputPortLabels"]) == ["b", "a"]
+        assert node.data.config["outputPortLabels"] == {
+            "b": "Claims frame",
+            "a": "Quote frame",
+        }
 
     def test_with_description(self):
         """Description is passed through."""

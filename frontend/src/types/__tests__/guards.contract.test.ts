@@ -374,6 +374,28 @@ describe("API response guards", () => {
 
     expect(parsed.warnings).toEqual(["renamed duplicate node"])
     expect(parsed.status).toBe("saved")
+    expect(parsed.source_revision).toBe("revision-save-1")
+  })
+
+  it("rejects savePipeline responses without a committed revision", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("save_pipeline")
+    expect(() => parseSavePipelineResponse({
+      ...fixture,
+      source_revision: undefined,
+    })).toThrow(/source_revision/i)
+  })
+
+  it("rejects blank committed revisions and submodel paths", () => {
+    const save = loadUiContractFixture<Record<string, unknown>>("save_pipeline")
+    const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
+    const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseSavePipelineResponse({ ...save, source_revision: "   " })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: "" })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, parent_file: " " })).toThrow(/parent_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: "" })).toThrow(/submodel_file/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: "\t" })).toThrow(/source_revision/i)
   })
 
   it("fills preview defaults for sparse error payloads", () => {
@@ -1457,10 +1479,28 @@ describe("API response guards", () => {
     const dissolved = parseDissolveSubmodelResponse(loadUiContractFixture("dissolve_submodel_response"))
 
     expect(created.submodel_file).toBe("pricing.py")
+    expect(created.source_revision).toBe("revision-create-1")
     expect(created.graph.edges[0].targetPort).toBe("base")
     expect(created.graph.edges[1].sourcePort).toBe("quotes")
     expect(loaded.submodel_name).toBe("pricing")
+    expect(loaded.submodel_file).toBe("modules/pricing.py")
+    expect(dissolved.source_revision).toBe("revision-dissolve-1")
+    expect(dissolved.retained_submodel_file).toBeNull()
+    expect(dissolved.submodel_file_deleted).toBe(true)
     expect(dissolved.graph.nodes).toHaveLength(2)
+  })
+
+  it("rejects missing mandatory submodel revision and retention metadata", () => {
+    const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
+    const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: undefined })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, parent_file: undefined })).toThrow(/parent_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: undefined })).toThrow(/submodel_file/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: undefined })).toThrow(/source_revision/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, submodel_file_deleted: undefined })).toThrow(/submodel_file_deleted/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, retained_submodel_file: undefined })).toThrow(/retained_submodel_file/i)
   })
 
   it("parses modelling preflight payloads", () => {

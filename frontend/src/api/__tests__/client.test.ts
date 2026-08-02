@@ -23,6 +23,8 @@ import {
   solveOptimiser,
   listFiles,
   createSubmodel,
+  dissolveSubmodel,
+  loadSubmodel,
   checkMlflow,
   getTrainStatus,
   cancelTrain,
@@ -96,6 +98,8 @@ const dummyGraph = {
     data: { nodeType: "polars" },
   }],
   edges: [],
+  preserved_blocks: [],
+  source_revision: "revision-graph",
 }
 
 function makePreviewResponse() {
@@ -123,6 +127,7 @@ function makeSavePipelineResponse() {
     status: "saved",
     file: "pipe.py",
     pipeline_name: "test",
+    source_revision: "revision-save",
     warnings: [],
   }
 }
@@ -221,10 +226,13 @@ function makeSubmodelCreateResponse(overrides: Record<string, unknown> = {}) {
     status: "ok",
     submodel_file: "pricing.py",
     parent_file: "main.py",
+    source_revision: "revision-create",
     graph: {
       nodes: [dummyGraph.nodes[0]],
       edges: [],
       submodels: { pricing: { path: "pricing.py" } },
+      preserved_blocks: [],
+      source_revision: "revision-create",
     },
     ...overrides,
   }
@@ -234,9 +242,12 @@ function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
   return {
     status: "ok",
     submodel_name: "pricing",
+    submodel_file: "modules/pricing.py",
     graph: {
       nodes: [dummyGraph.nodes[0]],
       edges: [],
+      preserved_blocks: [],
+      source_revision: null,
     },
     ...overrides,
   }
@@ -245,9 +256,14 @@ function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
 function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
   return {
     status: "ok",
+    source_revision: "revision-dissolve",
+    submodel_file_deleted: true,
+    retained_submodel_file: null,
     graph: {
       nodes: dummyGraph.nodes,
       edges: dummyGraph.edges,
+      preserved_blocks: [],
+      source_revision: "revision-dissolve",
     },
     ...overrides,
   }
@@ -337,7 +353,9 @@ afterEach(() => {
 
 describe("request() core via loadPipeline", () => {
   it("makes a GET request to the correct URL", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+    mockFetch.mockReturnValue(jsonResponse({
+      nodes: [], edges: [], preserved_blocks: [], source_revision: null,
+    }))
     await loadPipeline()
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [url] = mockFetch.mock.calls[0]
@@ -345,7 +363,9 @@ describe("request() core via loadPipeline", () => {
   })
 
   it("uses browser-managed same-origin credentials", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+    mockFetch.mockReturnValue(jsonResponse({
+      nodes: [], edges: [], preserved_blocks: [], source_revision: null,
+    }))
 
     await loadPipeline()
 
@@ -411,7 +431,12 @@ describe("request() core via loadPipeline", () => {
   })
 
   it("returns parsed JSON on success", async () => {
-    const data = { nodes: [{ id: "1" }], edges: [] }
+    const data = {
+      nodes: [{ id: "1" }],
+      edges: [],
+      preserved_blocks: [],
+      source_revision: null,
+    }
     mockFetch.mockReturnValue(jsonResponse(data))
     const result = await loadPipeline()
     expect(result).toEqual(data)
@@ -514,7 +539,9 @@ describe("request() core via loadPipeline", () => {
   })
 
   it("passes AbortController signal to fetch", async () => {
-    mockFetch.mockReturnValue(jsonResponse({ nodes: [], edges: [] }))
+    mockFetch.mockReturnValue(jsonResponse({
+      nodes: [], edges: [], preserved_blocks: [], source_revision: null,
+    }))
     await loadPipeline()
     const [, options] = mockFetch.mock.calls[0]
     expect(options.signal).toBeInstanceOf(AbortSignal)
@@ -552,7 +579,7 @@ describe("endpoint contracts", () => {
       if (url === "/api/optimiser/solve") return jsonResponse(makeSolveOptimiserResponse())
       if (url === "/api/submodel/create") return jsonResponse(makeSubmodelCreateResponse())
       if (url === "/api/submodel/dissolve") return jsonResponse(makeDissolveSubmodelResponse())
-      if (url === "/api/submodel/pricing") return jsonResponse(makeSubmodelGraphResponse())
+      if (url.startsWith("/api/submodel/pricing?")) return jsonResponse(makeSubmodelGraphResponse())
       if (url === "/api/databricks/warehouses") return jsonResponse({ warehouses: [] })
       if (url === "/api/databricks/catalogs") return jsonResponse({ catalogs: [] })
       return jsonResponse({})
@@ -578,6 +605,7 @@ describe("endpoint contracts", () => {
       graph: dummyGraph,
       preamble: "",
       source_file: "pipe.py",
+      preserved_blocks: [],
     }
     await savePipeline(payload)
     const [url, opts] = mockFetch.mock.calls[0]
@@ -586,6 +614,38 @@ describe("endpoint contracts", () => {
     const body = JSON.parse(opts.body)
     expect(body.name).toBe("test")
     expect(body.source_file).toBe("pipe.py")
+  })
+
+  it("sends source-preservation concurrency metadata for pipeline and submodel writes", async () => {
+    await savePipeline({
+      name: "test", description: "desc", graph: dummyGraph, preamble: "",
+      source_file: "pipe.py", preserved_blocks: ["import polars as pl"],
+    })
+    await createSubmodel({
+      name: "pricing", node_ids: ["n1"], graph: dummyGraph, preamble: "",
+      source_file: "pipe.py", pipeline_name: "test", base_revision: "rev-1",
+      preserved_blocks: ["import polars as pl"],
+    })
+    await dissolveSubmodel({
+      submodel_name: "pricing", graph: dummyGraph, preamble: "", source_file: "pipe.py",
+      pipeline_name: "test", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
+    })
+
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toMatchObject({
+      preserved_blocks: ["import polars as pl"],
+    })
+    expect(JSON.parse(String(mockFetch.mock.calls[1][1]?.body))).toMatchObject({
+      base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
+    })
+    expect(JSON.parse(String(mockFetch.mock.calls[2][1]?.body))).toMatchObject({
+      base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
+    })
+  })
+
+  it("encodes the parent source file when loading a submodel", async () => {
+    await loadSubmodel("pricing", "pipelines/main.py")
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/submodel/pricing?source_file=pipelines%2Fmain.py")
   })
 
   it("traceCell posts to /api/pipeline/trace with correct body", async () => {
@@ -665,6 +725,8 @@ describe("endpoint contracts", () => {
       preamble: "",
       source_file: "pipe.py",
       pipeline_name: "main",
+      base_revision: "revision-parent",
+      preserved_blocks: [],
     }
     await createSubmodel(payload)
     const [url, opts] = mockFetch.mock.calls[0]

@@ -20,6 +20,7 @@ from haute.errors import ConfigError
 from haute.executor import _build_node_fn, execute_graph
 from haute.parser import parse_pipeline_file
 from haute.pipeline import Pipeline
+from haute.routes._submodel_ops import create_submodel_graph
 
 
 def _edge_join_node(config: dict) -> GraphNode:
@@ -529,6 +530,91 @@ def test_submodel_edge_join_decorator_kwargs_use_emitted_function_names() -> Non
 
     assert 'base_input="Src"' in files["modules/rating.py"]
     assert 'join_input="Lookup"' in files["modules/rating.py"]
+
+
+def _external_edge_join_with_groupable_inputs() -> PipelineGraph:
+    return PipelineGraph(
+        nodes=[
+            GraphNode(
+                id="base",
+                data=NodeData(
+                    label="Base",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": [{"name": "id", "value": "1"}]},
+                ),
+            ),
+            GraphNode(
+                id="lookup",
+                data=NodeData(
+                    label="Lookup",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": [{"name": "id", "value": "1"}]},
+                ),
+            ),
+            GraphNode(
+                id="helper",
+                data=NodeData(
+                    label="Helper",
+                    nodeType=NodeType.CONSTANT,
+                    config={"values": [{"name": "unused", "value": "1"}]},
+                ),
+            ),
+            GraphNode(
+                id="join",
+                data=NodeData(
+                    label="Join",
+                    nodeType=NodeType.EDGE_JOIN,
+                    config={
+                        "baseInput": "base",
+                        "joinInput": "lookup",
+                        "how": "left",
+                        "on": ["id"],
+                    },
+                ),
+            ),
+        ],
+        # Deliberately store join before base: codegen must restore role order
+        # after resolving any submodel boundary source handles.
+        edges=[
+            GraphEdge(
+                id="e-lookup-join",
+                source="lookup",
+                target="join",
+                targetHandle="join",
+            ),
+            GraphEdge(
+                id="e-base-join",
+                source="base",
+                target="join",
+                targetHandle="base",
+            ),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "selected_ids",
+    [
+        pytest.param(["base", "helper"], id="one-boundary-role"),
+        pytest.param(["base", "lookup"], id="both-boundary-roles"),
+    ],
+)
+def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
+    selected_ids: list[str],
+) -> None:
+    result = create_submodel_graph(
+        _external_edge_join_with_groupable_inputs(),
+        selected_ids,
+        "inputs",
+    )
+
+    files = graph_to_code_multi(result.graph, pipeline_name="main")
+
+    main = files["main.py"]
+    assert '@pipeline.edge_join(base_input="Base", join_input="Lookup"' in main
+    assert 'pipeline.connect("Base", "Join", target_port="base")' in main
+    assert 'pipeline.connect("Lookup", "Join", target_port="join")' in main
+    assert "modules/inputs.py" in files
 
 
 def test_save_validation_accepts_cross_boundary_submodel_edge_join(tmp_path: Path) -> None:

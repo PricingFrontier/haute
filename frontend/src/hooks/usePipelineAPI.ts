@@ -37,6 +37,8 @@ interface PipelineAPIParams {
   pipelineNameRef: React.MutableRefObject<string>
   descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
+  sourceRevisionRef: React.MutableRefObject<string>
+  preservedBlocksRef: React.MutableRefObject<string[]>
   nodeIdCounter: React.MutableRefObject<number>
 }
 
@@ -245,7 +247,7 @@ export default function usePipelineAPI({
   selectedNode,
   graphRef, parentGraphRef, submodelsRef,
   setNodesRaw, setCurrentSourceFile,
-  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
+  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
@@ -304,6 +306,9 @@ export default function usePipelineAPI({
         // `.catch` handler below — rather than surfacing downstream as a
         // cryptic "undefined is not iterable" three callbacks deep.
         const data = parsePipelineResponse(raw)
+        if (data.source_file && data.source_revision === null) {
+          throw new Error("parsePipelineResponse: live document has no source_revision")
+        }
         const pipelineNodes = data.nodes
         const pipelineEdges = data.edges
         const loadedPreamble = data.preamble ?? ""
@@ -313,6 +318,8 @@ export default function usePipelineAPI({
         // can never observe the new document with stale mirrors.
         preambleRef.current = loadedPreamble
         submodelsRef.current = loadedSubmodels
+        sourceRevisionRef.current = data.source_revision ?? ""
+        preservedBlocksRef.current = data.preserved_blocks
         useGraphStore.getState().loadGraphSnapshot({
           nodes: pipelineNodes,
           edges: normalizeEdges(pipelineEdges),
@@ -346,7 +353,7 @@ export default function usePipelineAPI({
       disposed = true
       controller.abort()
     }
-  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
+  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean; snapshotsEnsured?: boolean }) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
@@ -957,12 +964,14 @@ export default function usePipelineAPI({
         source_file: sourceFileRef.current,
         sources: sc,
         active_source: as_,
+        preserved_blocks: preservedBlocksRef.current,
       })
       // Mark the exact graph snapshot that reached the backend, unless a
       // newer save has already been applied.
       if (saveRequestId > appliedSaveSeq.current) {
         useGraphStore.getState().markSaved(savedSnapshot)
         appliedSaveSeq.current = saveRequestId
+        sourceRevisionRef.current = data.source_revision
       }
       // Reflect the new ledger commit in the toolbar indicator (P2). null
       // when no working branch is configured — the indicator stays as-is.
@@ -982,7 +991,7 @@ export default function usePipelineAPI({
       addToast("error", `Failed to save pipeline: ${detail}`)
       return false
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   const selectedNodeId = selectedNode?.id ?? null
 

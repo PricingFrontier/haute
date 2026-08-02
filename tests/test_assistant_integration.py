@@ -92,6 +92,10 @@ def _usage() -> ProviderUsage:
 
 @pytest.fixture()
 def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from haute.assistant import _tools
+    from haute.assistant._ops import PlanStore
+
+    monkeypatch.setattr(_tools, "_PLAN_STORE", PlanStore())
     monkeypatch.chdir(tmp_path)
     (tmp_path / "main.py").write_text(PIPELINE_SOURCE, encoding="utf-8")
     (tmp_path / "haute.toml").write_text(
@@ -271,7 +275,13 @@ class TestMutationEndToEnd:
         session_id = store.create("main.py").id
         events = await _run_turn(provider, store, session_id)
 
-        assert events[-1].type == "completed"
+        applied = next(
+            event
+            for event in events
+            if event.type == "tool_finished" and event.name == "apply_graph_plan"
+        )
+        assert applied.is_error is False, applied.summary
+        assert events[-1].type == "completed", [repr(event) for event in events]
         finished = next(event for event in events if event.type == "tool_finished")
         assert finished.is_error is False
         assert len(provider.calls) == 2

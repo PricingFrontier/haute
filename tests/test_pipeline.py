@@ -1051,6 +1051,22 @@ class TestSubmodel:
         assert s.nodes == []
         assert s.edges == []
 
+    def test_declared_outputs_are_ordered_and_copy_on_read(self):
+        s = Submodel("scoring", outputs=["score", "audit"])
+
+        assert s.outputs == ["score", "audit"]
+        returned = s.outputs
+        returned.append("mutated")
+        assert s.outputs == ["score", "audit"]
+
+    @pytest.mark.parametrize(
+        "outputs",
+        [["score", "score"], [""], ["score", 1], "score"],
+    )
+    def test_invalid_declared_outputs_fail_loudly(self, outputs):
+        with pytest.raises((TypeError, ValueError), match="output"):
+            Submodel("scoring", outputs=outputs)
+
     def test_submodel_chaining(self):
         p = Pipeline("main")
         result = p.submodel("a.py").submodel("b.py")

@@ -638,6 +638,7 @@ export function savePipeline(
     source_file: string
     sources?: string[]
     active_source?: string
+    preserved_blocks: string[]
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
@@ -784,6 +785,8 @@ export function createSubmodel(
     source_file: string
     pipeline_name: string
     pipeline_description?: string
+    base_revision: string
+    preserved_blocks: string[]
   },
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelCreateResponse> {
@@ -792,10 +795,11 @@ export function createSubmodel(
 
 export function loadSubmodel(
   name: string,
+  parentSourceFile: string,
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelGraphResponse> {
   return request<unknown>(
-    `/api/submodel/${encodeURIComponent(name)}`,
+    `/api/submodel/${encodeURIComponent(name)}?source_file=${encodeURIComponent(parentSourceFile)}`,
     options,
   ).then(parseSubmodelGraphResponse)
 }
@@ -808,6 +812,8 @@ export function dissolveSubmodel(
     source_file: string
     pipeline_name: string
     pipeline_description?: string
+    base_revision: string
+    preserved_blocks: string[]
   },
   options?: { signal?: AbortSignal },
 ): Promise<DissolveSubmodelResponse> {

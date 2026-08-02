@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
-import { NODE_TYPES } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import { normalizeEdges } from "../utils/graphHelpers"
-import { nodeData } from "../types/node"
-import { validateReactFlowNode } from "../types/guards"
+import { buildSubmodelViewGraph } from "../utils/submodelViewGraph"
 import { createSubmodel, loadSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
 
@@ -21,6 +19,9 @@ interface SubmodelNavParams {
   setCurrentSourceFile?: (sourceFile: string | null) => void
   setPreviewData: (data: null) => void
   preambleRef: React.MutableRefObject<string>
+  sourceRevisionRef: React.MutableRefObject<string>
+  preservedBlocksRef: React.MutableRefObject<string[]>
+  setPreamble: (preamble: string) => void
   descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
   pipelineNameRef: React.MutableRefObject<string>
@@ -39,7 +40,7 @@ export default function useSubmodelNavigation({
   graphRef, parentGraphRef, submodelsRef,
   setNodesRaw, setEdgesRaw, setSubmodelsRaw,
   setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData,
-  preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
+  preambleRef, sourceRevisionRef, preservedBlocksRef, setPreamble, descriptionRef, sourceFileRef, pipelineNameRef,
   fitView,
 }: SubmodelNavParams): SubmodelNavReturn {
   const addToast = useToastStore((s) => s.addToast)
@@ -48,6 +49,10 @@ export default function useSubmodelNavigation({
   useEffect(() => { viewStackRef.current = viewStack }, [viewStack])
 
   const handleCreateSubmodel = useCallback(async (name: string, nodeIds: string[]) => {
+    if (parentGraphRef.current) {
+      addToast("error", "Return to the main pipeline before creating a submodel.")
+      return
+    }
     try {
       const graph = { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current }
       const data = await createSubmodel({
@@ -58,12 +63,15 @@ export default function useSubmodelNavigation({
         source_file: sourceFileRef.current,
         pipeline_name: pipelineNameRef.current,
         pipeline_description: descriptionRef.current,
+        base_revision: sourceRevisionRef.current,
+        preserved_blocks: preservedBlocksRef.current,
       })
       const newGraph = data.graph
       if (newGraph) {
         setNodesRaw(newGraph.nodes ?? [])
         setEdgesRaw(normalizeEdges(newGraph.edges ?? []))
         const nextSubmodels = newGraph.submodels ?? {}
+        sourceRevisionRef.current = data.source_revision
         submodelsRef.current = nextSubmodels
         setSubmodelsRaw?.(nextSubmodels)
         addToast("success", `Submodel "${name}" created`)
@@ -74,16 +82,16 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
     const smName = nodeId.replace("submodel__", "")
     try {
-      const data = await loadSubmodel(smName)
+      const data = await loadSubmodel(smName, sourceFileRef.current)
       const smGraph = data.graph
       if (smGraph) {
         const parentSourceFile = sourceFileRef.current
-        const submodelSourceFile = `modules/${smName}.py`
+        const submodelSourceFile = data.submodel_file
         const parentNodes = [...graphRef.current.nodes]
         const parentEdges = [...graphRef.current.edges]
         parentGraphRef.current = { nodes: parentNodes, edges: parentEdges, submodels: { ...submodelsRef.current } }
@@ -102,84 +110,19 @@ export default function useSubmodelNavigation({
         sourceFileRef.current = submodelSourceFile
         setCurrentSourceFile?.(submodelSourceFile)
         setLastSelectedId?.(null)
-        const newNodes: Node[] = smGraph.nodes ?? []
-        const newEdges: Edge[] = normalizeEdges(smGraph.edges ?? [])
-
-        // Build input/output port nodes from parent cross-boundary edges
-        const smNodeId = `submodel__${smName}`
-        const parentNodeMap = new Map(parentNodes.map((n: Node) => [n.id, n]))
-        const childIds = new Set(newNodes.map((n: Node) => n.id))
-
-        // Input ports
-        const inputPortEdges = parentEdges.filter((e: Edge) => e.target === smNodeId)
-        const inputsBySource = new Map<string, string[]>()
-        for (const e of inputPortEdges) {
-          const handle = e.targetHandle
-          const childId = handle ? handle.replace("in__", "") : "__unconnected__"
-          const targets = inputsBySource.get(e.source) || []
-          targets.push(childId)
-          inputsBySource.set(e.source, targets)
-        }
-        for (const [srcId, targetChildIds] of inputsBySource) {
-          const srcNode = parentNodeMap.get(srcId)
-          const label = srcNode ? String(nodeData(srcNode).label || srcId) : srcId
-          const portId = `port_in__${srcId}`
-          newNodes.push(validateReactFlowNode({
-            id: portId,
-            type: NODE_TYPES.SUBMODEL_PORT,
-            position: { x: 0, y: 0 },
-            data: { label, portDirection: "input", portName: label },
-          }))
-          for (const childId of [...new Set(targetChildIds)]) {
-            if (!childIds.has(childId)) continue
-            newEdges.push({
-              id: `e_${portId}_${childId}`,
-              source: portId,
-              target: childId,
-              type: "default",
-              animated: false,
-              style: { strokeDasharray: "6 3", opacity: 0.5 },
-            } as Edge)
-          }
-        }
-
-        // Output ports
-        const outputPortEdges = parentEdges.filter(
-          (e: Edge) => e.source === smNodeId && e.sourceHandle
+        const projected = buildSubmodelViewGraph({
+          submodelName: smName,
+          childNodes: smGraph.nodes ?? [],
+          childEdges: normalizeEdges(smGraph.edges ?? []),
+          parentNodes,
+          parentEdges,
+        })
+        const layouted = await getLayoutedElements(
+          projected.nodes,
+          projected.edges,
         )
-        const outputsByTarget = new Map<string, string[]>()
-        for (const e of outputPortEdges) {
-          const childId = (e.sourceHandle as string).replace("out__", "")
-          if (!childIds.has(childId)) continue
-          const sources = outputsByTarget.get(e.target) || []
-          sources.push(childId)
-          outputsByTarget.set(e.target, sources)
-        }
-        for (const [tgtId, sourceChildIds] of outputsByTarget) {
-          const tgtNode = parentNodeMap.get(tgtId)
-          const label = tgtNode ? String(nodeData(tgtNode).label || tgtId) : tgtId
-          const portId = `port_out__${tgtId}`
-          newNodes.push(validateReactFlowNode({
-            id: portId,
-            type: NODE_TYPES.SUBMODEL_PORT,
-            position: { x: 0, y: 0 },
-            data: { label, portDirection: "output", portName: label },
-          }))
-          for (const childId of [...new Set(sourceChildIds)]) {
-            newEdges.push({
-              id: `e_${childId}_${portId}`,
-              source: childId,
-              target: portId,
-              type: "default",
-              animated: false,
-              style: { strokeDasharray: "6 3", opacity: 0.5 },
-            } as Edge)
-          }
-        }
-
-        const layouted = await getLayoutedElements(newNodes, newEdges)
         setNodesRaw(layouted)
-        setEdgesRaw(newEdges)
+        setEdgesRaw(projected.edges)
         setSelectedNode(null)
         setPreviewData(null)
         setTimeout(() => fitView({ padding: 0.8 }), 100)
@@ -193,21 +136,32 @@ export default function useSubmodelNavigation({
     const prev = viewStackRef.current
     if (depth >= prev.length - 1) return
     const target = prev[depth]
-    if (target._savedNodes && target._savedEdges) {
-      setNodesRaw(target._savedNodes)
-      setEdgesRaw(normalizeEdges(target._savedEdges))
+    const reconciledParent = depth === 0 ? parentGraphRef.current : null
+    const restoredNodes = reconciledParent?.nodes ?? target._savedNodes
+    const restoredEdges = reconciledParent?.edges ?? target._savedEdges
+    if (restoredNodes && restoredEdges) {
+      setNodesRaw(restoredNodes)
+      setEdgesRaw(normalizeEdges(restoredEdges))
       setSelectedNode(null)
       setLastSelectedId?.(null)
       setPreviewData(null)
       setTimeout(() => fitView({ padding: 0.8 }), 100)
     }
+    if (reconciledParent) {
+      submodelsRef.current = reconciledParent.submodels
+      setSubmodelsRaw?.(reconciledParent.submodels)
+    }
     if (depth === 0) parentGraphRef.current = null
     sourceFileRef.current = target.file
     setCurrentSourceFile?.(target.file || null)
     setViewStack(prev.slice(0, depth + 1))
-  }, [parentGraphRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, fitView])
+  }, [parentGraphRef, submodelsRef, sourceFileRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setSelectedNode, setLastSelectedId, setCurrentSourceFile, setPreviewData, fitView])
 
   const handleDissolveSubmodel = useCallback(async (smName: string) => {
+    if (parentGraphRef.current) {
+      addToast("error", "Return to the main pipeline before dissolving a submodel.")
+      return
+    }
     try {
       const graph = { nodes: graphRef.current.nodes, edges: graphRef.current.edges, submodels: submodelsRef.current }
       const data = await dissolveSubmodel({
@@ -217,15 +171,24 @@ export default function useSubmodelNavigation({
         source_file: sourceFileRef.current,
         pipeline_name: pipelineNameRef.current,
         pipeline_description: descriptionRef.current,
+        base_revision: sourceRevisionRef.current,
+        preserved_blocks: preservedBlocksRef.current,
       })
       const flat = data.graph
       if (flat) {
         setNodesRaw(flat.nodes ?? [])
         setEdgesRaw(normalizeEdges(flat.edges ?? []))
-        const nextSubmodels = data.graph?.submodels ?? submodelsRef.current
+        const nextSubmodels = flat.submodels ?? {}
+        const nextPreamble = flat.preamble ?? ""
+        setPreamble(nextPreamble)
+        preambleRef.current = nextPreamble
+        preservedBlocksRef.current = flat.preserved_blocks ?? []
+        sourceRevisionRef.current = data.source_revision
         submodelsRef.current = nextSubmodels
         setSubmodelsRaw?.(nextSubmodels)
-        addToast("success", `Submodel "${smName}" dissolved`)
+        addToast("success", data.retained_submodel_file
+          ? `Submodel "${smName}" dissolved; retained ${data.retained_submodel_file}`
+          : `Submodel "${smName}" dissolved`)
         // Dirty is derived — the graph replacement itself triggers the
         // selectIsDirty comparison at the next render.
         setTimeout(() => fitView({ padding: 0.8 }), 100)
@@ -233,7 +196,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, setNodesRaw, setEdgesRaw, setSubmodelsRaw, preambleRef, sourceRevisionRef, preservedBlocksRef, setPreamble, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
 
   return {
     viewStack,

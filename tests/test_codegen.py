@@ -2531,6 +2531,21 @@ class TestConnectDeduplication:
         assert "child_a" in message
         assert "Source" in message
 
+    def test_unassigned_input_draft_cannot_be_saved(self):
+        graph = self._submodel_graph(
+            [
+                {
+                    "id": "unassigned",
+                    "source": "src",
+                    "target": "submodel__sm1",
+                    "targetHandle": None,
+                }
+            ]
+        )
+
+        with pytest.raises(ParseError, match="targetHandle"):
+            graph_to_code_multi(graph, pipeline_name="main")
+
     def test_boundary_resolution_connect_pair_is_deduplicated(self):
         """A direct child edge and its boundary form resolve to one connect."""
         graph = self._submodel_graph(
@@ -2554,6 +2569,48 @@ class TestConnectDeduplication:
 
         assert main_code.count('pipeline.connect("Source", "ChildA")') == 1
         compile(main_code, "<test>", "exec")
+
+
+class TestDeclaredSubmodelOutputs:
+    @staticmethod
+    def _graph(output_ports: list[str]):
+        return _g(
+            {
+                "nodes": [],
+                "edges": [],
+                "submodels": {
+                    "sm1": {
+                        "file": "modules/sm1.py",
+                        "childNodeIds": ["child_export"],
+                        "outputPorts": output_ports,
+                        "graph": {
+                            "nodes": [
+                                {
+                                    "id": "child_export",
+                                    "data": {
+                                        "label": "child_export",
+                                        "nodeType": "dataInput",
+                                        "config": {"path": "d.parquet"},
+                                    },
+                                },
+                            ],
+                            "edges": [],
+                        },
+                    },
+                },
+            }
+        )
+
+    def test_unused_output_is_emitted_on_submodel_constructor(self):
+        files = graph_to_code_multi(self._graph(["child_export"]), pipeline_name="main")
+
+        assert 'outputs=["child_export"]' in files["modules/sm1.py"]
+        assert "pipeline.connect" not in files["main.py"]
+
+    @pytest.mark.parametrize("ports", [["missing"], ["child_export", "child_export"]])
+    def test_invalid_declared_outputs_fail_loudly(self, ports):
+        with pytest.raises(ParseError, match="output"):
+            graph_to_code_multi(self._graph(ports), pipeline_name="main")
 
 
 # ---------------------------------------------------------------------------

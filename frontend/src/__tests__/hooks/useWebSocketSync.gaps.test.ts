@@ -114,6 +114,8 @@ function makeHookParams() {
     setPreamble: vi.fn(),
     submodelsRef: { current: {} },
     preambleRef: { current: "" },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -164,6 +166,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: { label: "A" } }],
               edges: [],
             },
@@ -199,6 +203,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: {} }],
               edges: [],
             },
@@ -269,6 +275,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
               edges: [],
               // preamble key is intentionally absent
@@ -298,6 +306,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
               edges: [],
               preamble: "",
@@ -331,6 +341,8 @@ describe("useWebSocketSync — gap tests", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: { label: "first" } }],
           edges: [],
         },
@@ -339,6 +351,8 @@ describe("useWebSocketSync — gap tests", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "n1", position: { x: 10, y: 10 }, data: { label: "second" } },
             { id: "n2", position: { x: 20, y: 20 }, data: { label: "new" } },
@@ -381,6 +395,8 @@ describe("useWebSocketSync — gap tests", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [{ id, position: { x: 1, y: 1 }, data: {} }],
           edges: [],
         },
@@ -428,6 +444,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "node_99",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -446,6 +464,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "node_2",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -527,6 +547,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "after-unmount",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -567,6 +589,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 10, y: 10 }, data: {} }],
               edges: [],
             },

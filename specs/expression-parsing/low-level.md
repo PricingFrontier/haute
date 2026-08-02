@@ -23,8 +23,10 @@
   `nested_branches: list[str]`).
 - **`PipelineGraph`** (`src/haute/_types.py`, owned by
   [server-api](../server-api/low-level.md) and produced here) — `nodes`,
-  `edges`, `pipeline_name`, `pipeline_description`, `preamble`, `preserved_blocks`, `source_file`,
-  `warning`, `submodels`. Canonical structure shared with the executor, codegen, deploy, and the
+  `edges`, `pipeline_name`, `pipeline_description`, `preamble`,
+  `preserved_blocks`, `source_file`, `source_revision` (server-populated
+  live-document metadata), `warning`, `submodels`. Canonical structure shared
+  with the executor, codegen, deploy, and the
   server API layer.
 - **`_ExprConverter`** (`_expression_parser.py`) — one AST-node-type-dispatch method per handled
   node kind; accumulates `columns`, `constants`, `expr_type`, `sub_expressions`, and an
@@ -82,8 +84,11 @@ run the same structure-conservation gate as the healthy path.
 `submodel__<name>` placeholder node per child graph (via `build_submodel_placeholder`), with
 cross-boundary edges reconstructed from the raw `parent_edges` tuples (2/3/4-tuple shapes are all
 tolerated, for pre-port and ported edge forms) and rewired via `rewire_edges`/`classify_ports`
-(owned by [submodels](../submodels/low-level.md)) — then, only if `flatten=True`, hands the
-hierarchical graph to `flatten_graph` (`_flatten.py`) to dissolve every placeholder at once. This
+(owned by [submodels](../submodels/low-level.md)). A literal `outputs=` list on the
+`haute.Submodel(...)` constructor is validated as ordered, unique child function names and merged
+ahead of legacy cross-boundary-inferred outputs, so unused declarations survive. Then, only if
+`flatten=True`, the hierarchical graph is handed to `flatten_graph` (`_flatten.py`) to dissolve
+every placeholder at once. This
 keeps a single source of truth for the flatten algorithm rather than letting it exist in two
 places. If a submodel file being parsed itself contains a `pipeline.submodel(...)` call, parsing
 raises `ParseError` naming the containing file and every nested reference. Nesting remains one

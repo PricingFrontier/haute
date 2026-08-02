@@ -179,6 +179,60 @@ def extract_submodel_calls(tree: ast.Module) -> list[str]:
     return paths
 
 
+def _extract_declared_outputs(tree: ast.Module) -> list[str] | None:
+    """Return the literal ``outputs=`` interface from the Submodel constructor.
+
+    ``None`` distinguishes legacy source with no declaration from an authored
+    empty list. The parser never executes source, so dynamic expressions are
+    rejected rather than silently losing the public interface on save.
+    """
+    for node in ast.iter_child_nodes(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name) or target.id != "submodel":
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        for keyword in call.keywords:
+            if keyword.arg != "outputs":
+                continue
+            try:
+                value = ast.literal_eval(keyword.value)
+            except (SyntaxError, ValueError) as exc:
+                raise ParseError(
+                    "Submodel outputs must be a literal list of child node names.",
+                    field="outputs",
+                    line=getattr(keyword.value, "lineno", None),
+                ) from exc
+            if not isinstance(value, list):
+                raise ParseError(
+                    "Submodel outputs must be a literal list of child node names.",
+                    field="outputs",
+                    line=getattr(keyword.value, "lineno", None),
+                )
+
+            declared: list[str] = []
+            seen: set[str] = set()
+            for output in value:
+                if not isinstance(output, str) or not output:
+                    raise ParseError(
+                        "Each declared submodel output must be a non-empty child node name.",
+                        output=output,
+                    )
+                if output in seen:
+                    raise ParseError(
+                        "Submodel outputs contain a duplicate declaration.",
+                        output=output,
+                    )
+                seen.add(output)
+                declared.append(output)
+            return declared
+        return None
+    return None
+
+
 def parse_submodel_source(
     source: str,
     source_file: str = "",
@@ -248,6 +302,7 @@ def parse_submodel_source(
         str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
         for node in raw_nodes
     }
+    graph._parser_declared_outputs = _extract_declared_outputs(tree)
     return graph
 
 
@@ -359,6 +414,31 @@ def merge_submodels(
             resolved_parent_graph_edges,
             child_node_names,
         )
+        declared_outputs = sm_graph._parser_declared_outputs
+        if declared_outputs is not None:
+            if len(set(declared_outputs)) != len(declared_outputs):
+                raise ParseError(
+                    "Submodel outputs contain a duplicate declaration.",
+                    submodel=sm_name,
+                    outputs=declared_outputs,
+                )
+            unknown_outputs = [
+                output for output in declared_outputs if output not in child_node_names
+            ]
+            if unknown_outputs:
+                raise ParseError(
+                    "Submodel declared output does not reference a child node.",
+                    submodel=sm_name,
+                    unknown_outputs=unknown_outputs,
+                    known_children=child_node_ids,
+                )
+            declared_set = set(declared_outputs)
+            output_ports = [
+                *declared_outputs,
+                *(port for port in output_ports if port not in declared_set),
+            ]
+        child_node_labels = {node.id: node.data.label for node in sm_graph.nodes}
+        output_port_labels = {port: child_node_labels[port] for port in output_ports}
 
         # Build the submodel placeholder node
         sm_node = build_submodel_placeholder(
@@ -368,6 +448,7 @@ def merge_submodels(
             input_ports,
             output_ports,
             description=sm_graph.pipeline_description or "",
+            output_port_labels=output_port_labels,
         )
         parent_nodes.append(sm_node)
 

@@ -85,7 +85,14 @@ class TestCreateSubmodelGraph:
                             "config": {"path": "x.parquet"},
                         },
                     },
-                    {"id": "t1", "data": {"label": "t1", "nodeType": "polars", "config": {}}},
+                    {
+                        "id": "t1",
+                        "data": {
+                            "label": "Priced quotes",
+                            "nodeType": "polars",
+                            "config": {},
+                        },
+                    },
                     {"id": "out", "data": {"label": "out", "nodeType": "output", "config": {}}},
                 ],
                 "edges": [
@@ -103,6 +110,10 @@ class TestCreateSubmodelGraph:
         assert e.source == "submodel__inner"
         assert e.sourceHandle == "out__t1"
         assert e.target == "out"
+        sm_node = next(node for node in result.graph.nodes if node.id == "submodel__inner")
+        assert sm_node.data.config["outputPortLabels"] == {
+            "t1": "Priced quotes",
+        }
 
     def test_submodels_metadata_populated(self):
         """Submodel metadata includes child IDs, ports, and internal graph."""
@@ -184,17 +195,24 @@ class TestCreateSubmodelGraph:
         assert result.sm_name == "My_Sub_Model"
         assert "My_Sub_Model" in result.sm_file
 
-    def test_nonexistent_node_ids_filtered(self):
-        """Node IDs not present in the graph are filtered out; if <2 remain, raises."""
-        graph = _simple_graph()
-        with pytest.raises(ValueError, match="at least 2 nodes"):
-            create_submodel_graph(graph, ["t1", "does_not_exist"], "bad")
+    def test_nonexistent_node_ids_reject_the_whole_selection(self):
+        from haute.routes._submodel_ops import SubmodelValidationError
 
-    def test_duplicate_node_ids_counted_once(self):
-        """Duplicate node IDs in the list are treated as one node."""
         graph = _simple_graph()
-        with pytest.raises(ValueError, match="at least 2 nodes"):
+        with pytest.raises(SubmodelValidationError) as exc_info:
+            create_submodel_graph(graph, ["t1", "does_not_exist"], "bad")
+        assert (exc_info.value.code, exc_info.value.status_code) == ("stale_selection", 409)
+
+    def test_duplicate_node_ids_reject_the_whole_selection(self):
+        from haute.routes._submodel_ops import SubmodelValidationError
+
+        graph = _simple_graph()
+        with pytest.raises(SubmodelValidationError) as exc_info:
             create_submodel_graph(graph, ["t1", "t1", "t1"], "dup")
+        assert (exc_info.value.code, exc_info.value.status_code) == (
+            "duplicate_selection",
+            400,
+        )
 
     def test_all_nodes_selected(self):
         """Selecting all nodes in the graph creates a valid submodel."""
@@ -460,3 +478,72 @@ class TestCreateSubmodelGraph:
         )
         with pytest.raises(ValueError, match="cannot be nested"):
             create_submodel_graph(graph, ["a", "submodel__existing"], "outer")
+
+    def test_blank_name_uses_stable_submodel_error(self):
+        from haute.routes._submodel_ops import SubmodelValidationError
+
+        with pytest.raises(SubmodelValidationError) as exc_info:
+            create_submodel_graph(_simple_graph(), ["t1", "t2"], "   ")
+        assert exc_info.value.code == "blank_name"
+        assert exc_info.value.status_code == 400
+
+    def test_existing_name_is_conflict(self):
+        from haute.routes._submodel_ops import SubmodelValidationError
+
+        graph = _simple_graph().model_copy(
+            update={"submodels": {"group": {"file": "modules/group.py"}}}
+        )
+        with pytest.raises(SubmodelValidationError) as exc_info:
+            create_submodel_graph(graph, ["t1", "t2"], "group")
+        assert (exc_info.value.code, exc_info.value.status_code) == ("submodel_exists", 409)
+
+    def test_existing_name_is_a_case_insensitive_conflict(self):
+        from haute.routes._submodel_ops import SubmodelValidationError
+
+        graph = _simple_graph().model_copy(
+            update={"submodels": {"Group": {"file": "modules/Group.py"}}}
+        )
+        with pytest.raises(SubmodelValidationError) as exc_info:
+            create_submodel_graph(graph, ["t1", "t2"], "group")
+        assert (exc_info.value.code, exc_info.value.status_code) == ("submodel_exists", 409)
+
+    def test_child_order_context_and_managed_metadata(self):
+        graph = _simple_graph().model_copy(
+            update={"preamble": "HELPER = 1", "preserved_blocks": ["KEEP = 2"]}
+        )
+        result = create_submodel_graph(graph, ["t2", "t1"], "group")
+        embedded = result.graph.submodels["group"]
+        assert result.child_node_ids == ["t1", "t2"]
+        assert embedded["managed"] is True
+        assert embedded["graph"]["preamble"] == "HELPER = 1"
+        assert embedded["graph"]["preserved_blocks"] == ["KEEP = 2"]
+
+    def test_existing_placeholder_id_is_conflict(self):
+        from haute.routes._submodel_ops import SubmodelValidationError
+
+        graph = _simple_graph()
+        placeholder = graph.nodes[0].model_copy(update={"id": "submodel__group"})
+        graph = graph.model_copy(update={"nodes": [*graph.nodes, placeholder]})
+        with pytest.raises(SubmodelValidationError) as exc_info:
+            create_submodel_graph(graph, ["t1", "t2"], "group")
+        assert (exc_info.value.code, exc_info.value.status_code) == ("submodel_exists", 409)
+
+    def test_placeholder_uses_selected_bounding_box_centre(self):
+        graph = _simple_graph()
+        positions = {
+            "src": {"x": -500.0, "y": -500.0},
+            "t1": {"x": 20.0, "y": 40.0},
+            "t2": {"x": 100.0, "y": 200.0},
+        }
+        graph = graph.model_copy(
+            update={
+                "nodes": [
+                    node.model_copy(update={"position": positions[node.id]}) for node in graph.nodes
+                ]
+            }
+        )
+
+        result = create_submodel_graph(graph, ["t2", "t1"], "group")
+
+        placeholder = next(node for node in result.graph.nodes if node.id == "submodel__group")
+        assert placeholder.position == {"x": 60.0, "y": 120.0}

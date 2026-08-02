@@ -731,3 +731,36 @@ class Submodel(NodeRegistry):
 
         submodel.connect("policies", "frequency_model")
     """
+
+    def __init__(
+        self,
+        name: str,
+        description: str = "",
+        *,
+        outputs: list[str] | None = None,
+    ) -> None:
+        """Create a submodel with an optional ordered public output interface."""
+        if outputs is None:
+            declared_outputs: list[str] = []
+        elif not isinstance(outputs, list):
+            raise TypeError("Submodel outputs must be a list of non-empty node names.")
+        else:
+            declared_outputs = []
+            seen: set[str] = set()
+            for output in outputs:
+                if not isinstance(output, str):
+                    raise TypeError("Each submodel output must be a non-empty node name string.")
+                if not output:
+                    raise ValueError("Each submodel output must be a non-empty node name string.")
+                if output in seen:
+                    raise ValueError(f"Duplicate submodel output {output!r} is not allowed.")
+                seen.add(output)
+                declared_outputs.append(output)
+
+        super().__init__(name, description)
+        self._outputs = declared_outputs
+
+    @property
+    def outputs(self) -> list[str]:
+        """Ordered public output node names, returned as a defensive copy."""
+        return list(self._outputs)

@@ -10,19 +10,31 @@ import { render, screen, cleanup } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import SubmodelPortNode from "../../nodes/SubmodelPortNode"
 import type { SubmodelPortData, SubmodelPortFlowNode } from "../../types/node"
+import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 
 afterEach(cleanup)
 
 // ── Helpers ─────────────────────────────────────────────────────
 
-function makeProps(
-  data: Partial<SubmodelPortData> & { portDirection: "input" | "output"; portName: string },
-) {
-  const fullData: SubmodelPortData = {
-    label: data.label ?? data.portName,
-    ...data,
-  }
+type PortPropsData = Partial<SubmodelPortData> & {
+  portDirection: "input" | "output"
+  portName?: string
+}
 
+function makeProps(data: PortPropsData) {
+  const { portName, ...typedData } = data
+  const fallbackFrameLabel = portName || data.label || "frame"
+  const fullData: SubmodelPortData = {
+    ...typedData,
+    label: data.portDirection === "input" ? "INPUT" : "OUTPUT",
+    portDirection: data.portDirection,
+    ports: data.ports ?? (
+      portName === undefined
+        ? []
+        : [{ id: portName || fallbackFrameLabel, label: fallbackFrameLabel }]
+    ),
+    externalNodeIds: data.externalNodeIds ?? [],
+  }
   return {
     id: "test-port-node",
     type: "submodelPort",
@@ -37,14 +49,12 @@ function makeProps(
     parentId: undefined,
     sourcePosition: undefined,
     targetPosition: undefined,
-    width: 120,
-    height: 40,
+    width: 240,
+    height: 70,
   }
 }
 
-function renderPortNode(
-  data: Partial<SubmodelPortData> & { portDirection: "input" | "output"; portName: string },
-) {
+function renderPortNode(data: PortPropsData) {
   const props = makeProps(data)
   return render(
     <ReactFlowProvider>
@@ -76,13 +86,13 @@ describe("SubmodelPortNode", () => {
     expect(icon).toBeTruthy()
   })
 
-  it("renders ArrowLeft icon for output port", () => {
+  it("renders the same ArrowRight icon for output port", () => {
     const { container } = renderPortNode({
       portDirection: "output",
       portName: "result",
     })
-    const icon = container.querySelector("svg.lucide-arrow-left")
-    expect(icon).toBeTruthy()
+    expect(container.querySelector("svg.lucide-arrow-right")).toBeTruthy()
+    expect(container.querySelector("svg.lucide-arrow-left")).toBeNull()
   })
 
   it("renders source handle (right side) for input port direction", () => {
@@ -128,83 +138,113 @@ describe("SubmodelPortNode", () => {
       portName: "dimmed",
       _traceDimmed: true,
     })
-    const wrapper = container.querySelector(".rounded-full") as HTMLElement
+    const wrapper = screen.getByTestId("submodel-boundary-card")
     expect(wrapper.style.opacity).toBe("0.3")
+    expect(container).toContainElement(wrapper)
   })
 
-  it("has normal opacity (0.85) when _traceDimmed is false", () => {
-    const { container } = renderPortNode({
+  it("has full opacity when _traceDimmed is false", () => {
+    renderPortNode({
       portDirection: "input",
       portName: "bright",
       _traceDimmed: false,
     })
-    const wrapper = container.querySelector(".rounded-full") as HTMLElement
-    expect(wrapper.style.opacity).toBe("0.85")
+    expect(screen.getByTestId("submodel-boundary-card").style.opacity).toBe("1")
   })
 
-  it("uses solid border when _traceActive is true", () => {
-    const { container } = renderPortNode({
-      portDirection: "output",
-      portName: "active",
-      _traceActive: true,
-    })
-    const wrapper = container.querySelector(".rounded-full") as HTMLElement
-    expect(wrapper.style.border).toContain("solid")
-    expect(wrapper.style.border).not.toContain("dashed")
-  })
-
-  it("uses dashed border when _traceActive is false", () => {
-    const { container } = renderPortNode({
+  it("uses the standard solid card border", () => {
+    renderPortNode({
       portDirection: "output",
       portName: "inactive",
       _traceActive: false,
     })
-    const wrapper = container.querySelector(".rounded-full") as HTMLElement
-    expect(wrapper.style.border).toContain("dashed")
+    const wrapper = screen.getByTestId("submodel-boundary-card")
+    expect(wrapper.style.border).toContain("solid")
+    expect(wrapper.style.border).not.toContain("dashed")
   })
 
   it("disables trace motion transitions when requested by the tracing hook", () => {
-    const { container } = renderPortNode({
+    renderPortNode({
       portDirection: "input",
       portName: "motion_lite",
       _traceMotionDisabled: true,
     })
-    const wrapper = container.querySelector(".rounded-full") as HTMLElement
-    expect(wrapper.style.transition).toBe("none")
+    expect(screen.getByTestId("submodel-boundary-card").style.transition).toBe("none")
   })
 
-  it("has box-shadow glow when _traceActive is true", () => {
-    const { container } = renderPortNode({
+  it("has an accent glow when _traceActive is true", () => {
+    renderPortNode({
       portDirection: "input",
       portName: "glowing",
       _traceActive: true,
     })
-    const wrapper = container.querySelector(".rounded-full") as HTMLElement
+    const wrapper = screen.getByTestId("submodel-boundary-card")
     expect(wrapper.style.boxShadow).not.toBe("none")
-    expect(wrapper.style.boxShadow).toContain("var(--text-accent-glow)")
   })
 
-  it("displays portName when both portName and label are provided", () => {
+  it("renders all Input frames as individually connectable source rows", () => {
     renderPortNode({
       portDirection: "input",
-      portName: "actual_port",
-      label: "label_text",
+      ports: [
+        { id: "api-a:quote", label: "quote" },
+        { id: "api-a:claims", label: "claims" },
+      ],
     })
-    expect(screen.getByText("actual_port")).toBeTruthy()
-    expect(screen.queryByText("label_text")).toBeNull()
+
+    expect(screen.getByText("INPUT")).toBeTruthy()
+    const quoteRow = screen.getByTestId(
+      "submodel-input-frame-row-api-a:quote",
+    )
+    const claimsRow = screen.getByTestId(
+      "submodel-input-frame-row-api-a:claims",
+    )
+    expect(quoteRow.querySelector('[data-handleid="api-a:quote"]')).toHaveClass(
+      "react-flow__handle-right",
+    )
+    expect(claimsRow.querySelector('[data-handleid="api-a:claims"]')).toHaveClass(
+      "react-flow__handle-right",
+    )
   })
 
-  it("renders with missing portDirection gracefully", () => {
+  it("renders exactly one shared Output target and no exported-frame rows", () => {
+    const { container } = renderPortNode({
+      portDirection: "output",
+      ports: [
+        { id: "out__claims", label: "claims" },
+        { id: "out__quote", label: "quote" },
+      ],
+    })
+
+    expect(screen.getByText("OUTPUT")).toBeTruthy()
+    expect(screen.getByText("Connect frames to export")).toBeTruthy()
+    expect(screen.queryByText("claims")).toBeNull()
+    expect(screen.queryByText("quote")).toBeNull()
+    const targets = container.querySelectorAll(".react-flow__handle-left")
+    expect(targets).toHaveLength(1)
+    expect(targets[0]).toHaveAttribute("data-handleid", DEFAULT_TARGET_HANDLE)
+  })
+
+  it("renders the Input empty state without a handle row", () => {
+    renderPortNode({ portDirection: "input", ports: [] })
+    expect(screen.getByText("No input frames")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: /frame/i })).toBeNull()
+  })
+
+  it("keeps the shared Output target when no frame is exported", () => {
+    const { container } = renderPortNode({ portDirection: "output", ports: [] })
+    expect(screen.getByText("Connect frames to export")).toBeTruthy()
+    expect(container.querySelectorAll(".react-flow__handle-left")).toHaveLength(1)
+  })
+
+  it("fails loudly for an invalid boundary direction", () => {
     const props = makeProps({
       portDirection: undefined as unknown as "input",
       portName: "no_direction",
     })
-    const { container } = render(
+    expect(() => render(
       <ReactFlowProvider>
         <SubmodelPortNode {...(props as unknown as NodeProps<SubmodelPortFlowNode>)} />
       </ReactFlowProvider>,
-    )
-    expect(screen.getByText("no_direction")).toBeTruthy()
-    expect(container.querySelector(".rounded-full")).toBeTruthy()
+    )).toThrow(/portDirection/)
   })
 })

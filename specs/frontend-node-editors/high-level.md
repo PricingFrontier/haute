@@ -26,7 +26,10 @@ backend API modules own validation and persistence.
   code**, 1:1 with the generated function signature: an API-input frame edge's chip shows the
   frame label carried on the edge (`quotes` is displayed as `quotes` and callable as `quotes`),
   an ordinary source's chip shows the sanitised node label, and a submodel-output edge's chip
-  shows the child node's sanitised label (what the flattened code actually binds). The source
+  shows the child node's sanitised label (what the flattened code actually binds). Inside a
+  drilled submodel, an edge from the composite Input resolves its opaque row handle back to that
+  row's existing frame label and applies the same sanitisation; the literal boundary-card label
+  `INPUT` is never presented as the child's argument name. The source
   node is named in the chip tooltip. Two frames connected from one API input render as two
   distinct, individually removable chips with two distinct names. Live-switch mapping rows and
   output frame blocks present the same names — there is no separate display identity anywhere.

@@ -1,7 +1,7 @@
 /**
  * Tests for SubmodelNode component.
  *
- * Tests: label rendering, SUBMODEL badge, child count, file path display,
+ * Tests: SUBMODEL identity and name badge, frame-only body,
  * output port labels, per-port handles, opacity when dimmed,
  * border style (dashed vs solid).
  */
@@ -10,6 +10,7 @@ import { render, screen, cleanup } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import SubmodelNode from "../../nodes/SubmodelNode"
 import type { SubmodelFlowNode, SubmodelNodeData } from "../../types/node"
+import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 
 afterEach(cleanup)
 
@@ -60,42 +61,36 @@ function renderNode(
 // ── Tests ───────────────────────────────────────────────────────
 
 describe("SubmodelNode", () => {
-  it("renders the label text", () => {
-    renderNode({ label: "My Submodel" })
-    expect(screen.getByText("My Submodel")).toBeTruthy()
-  })
-
-  it('renders the "SUBMODEL" badge', () => {
-    renderNode({ label: "Test" })
-    expect(screen.getByText("SUBMODEL")).toBeTruthy()
-  })
-
-  it("renders the child node count", () => {
+  it("renders its identity and name once in the header", () => {
     renderNode({
-      label: "Test",
+      label: "My Submodel",
+      config: { file: "submodels/pricing.py" },
+    })
+    const header = screen.getByTestId("submodel-header")
+    expect(header).toHaveTextContent("SUBMODEL")
+    expect(header).toHaveTextContent("My Submodel")
+    expect(screen.getAllByText("My Submodel")).toHaveLength(1)
+  })
+
+  it("does not display the child node count", () => {
+    renderNode({
+      label: "Pricing",
       config: { childNodeIds: ["a", "b", "c"] },
     })
-    expect(screen.getByText("3 nodes")).toBeTruthy()
+    expect(screen.queryByText("3 nodes")).toBeNull()
   })
 
-  it("renders 0 nodes when no childNodeIds", () => {
-    renderNode({ label: "Test" })
-    expect(screen.getByText("0 nodes")).toBeTruthy()
-  })
-
-  it("renders file path when config.file is set", () => {
+  it("does not display the backing file path", () => {
     renderNode({
       label: "Test",
       config: { file: "submodels/pricing.py" },
     })
-    expect(screen.getByText("submodels/pricing.py")).toBeTruthy()
+    expect(screen.queryByText("submodels/pricing.py")).toBeNull()
   })
 
-  it("does not render file path when config.file is not set", () => {
+  it("does not render a body when there are no exported frames", () => {
     renderNode({ label: "Test" })
-    // Only the port labels use --text-muted; without a file, there should be none
-    // in the header area. We verify by ensuring the specific text is absent.
-    expect(screen.queryByText("submodels/pricing.py")).toBeNull()
+    expect(screen.queryByTestId("submodel-body")).toBeNull()
   })
 
   it("renders output port labels", () => {
@@ -103,6 +98,7 @@ describe("SubmodelNode", () => {
       label: "Test",
       config: { outputPorts: ["premium", "discount"] },
     })
+    expect(screen.getByTestId("submodel-body")).toBeTruthy()
     expect(screen.getByText(/premium/)).toBeTruthy()
     expect(screen.getByText(/discount/)).toBeTruthy()
   })
@@ -117,6 +113,12 @@ describe("SubmodelNode", () => {
     const handle2 = container.querySelector('[data-handleid="in__claims"]')
     expect(handle1).toBeTruthy()
     expect(handle2).toBeTruthy()
+    expect(handle1).not.toHaveClass("connectable")
+    expect(handle2).not.toHaveClass("connectable")
+    const defaultTarget = container.querySelector(
+      `[data-handleid="${DEFAULT_TARGET_HANDLE}"]`,
+    )
+    expect(defaultTarget).toHaveClass("connectable")
   })
 
   it("renders per-port output handles for each outputPort", () => {
@@ -177,29 +179,67 @@ describe("SubmodelNode", () => {
     expect(wrapper.style.border).not.toContain("dashed")
   })
 
-  it("positions multiple output port handles at different top percentages", () => {
-    const { container } = renderNode({
+  it("renders mapped frame labels with row-owned stable output handles", () => {
+    renderNode({
       label: "Multi Output",
-      config: { outputPorts: ["alpha", "beta", "gamma"] },
+      config: {
+        outputPorts: ["polars_12", "polars_13"],
+        outputPortLabels: {
+          polars_12: "add_drivers",
+          polars_13: "claims",
+        },
+      },
     })
-    const handleA = container.querySelector('[data-handleid="out__alpha"]') as HTMLElement
-    const handleB = container.querySelector('[data-handleid="out__beta"]') as HTMLElement
-    const handleC = container.querySelector('[data-handleid="out__gamma"]') as HTMLElement
-    expect(handleA).toBeTruthy()
-    expect(handleB).toBeTruthy()
-    expect(handleC).toBeTruthy()
-    const topA = handleA.style.top
-    const topB = handleB.style.top
-    const topC = handleC.style.top
-    expect(topA).toBe("25%")
-    expect(topB).toBe("50%")
-    expect(topC).toBe("75%")
+
+    const firstRow = screen.getByTestId(
+      "submodel-output-frame-row-out__polars_12",
+    )
+    const secondRow = screen.getByTestId(
+      "submodel-output-frame-row-out__polars_13",
+    )
+    expect(firstRow).toHaveTextContent("add_drivers")
+    expect(secondRow).toHaveTextContent("claims")
+
+    const firstLabel = screen.getByTestId(
+      "submodel-output-body-label-out__polars_12",
+    )
+    expect(firstLabel).toHaveClass(
+      "font-semibold",
+      "text-[13px]",
+      "leading-tight",
+    )
+
+    const firstHandle = firstRow.querySelector(
+      '[data-handleid="out__polars_12"]',
+    )
+    const secondHandle = secondRow.querySelector(
+      '[data-handleid="out__polars_13"]',
+    )
+    expect(firstHandle).toBeTruthy()
+    expect(secondHandle).toBeTruthy()
+    expect(firstHandle).toHaveStyle({ top: "50%" })
+    expect(secondHandle).toHaveStyle({ top: "50%" })
   })
 
-  it("renders a single default source handle when no output ports defined", () => {
+  it("falls back to stable child ids when output labels are absent", () => {
+    renderNode({
+      label: "Legacy",
+      config: { outputPorts: ["alpha", "beta"] },
+    })
+    expect(screen.getByText("alpha")).toBeTruthy()
+    expect(screen.getByText("beta")).toBeTruthy()
+  })
+
+  it("uses the standard full-width coloured header bar", () => {
+    renderNode({ label: "Header" })
+    const header = screen.getByTestId("submodel-header")
+    expect(header).toHaveClass("flex", "items-center")
+    expect(header.style.background).not.toBe("")
+  })
+
+  it("renders no source handle when no output frames are defined", () => {
     const { container } = renderNode({ label: "No Ports" })
-    const sourceHandle = container.querySelector(".react-flow__handle-right")
-    expect(sourceHandle).toBeTruthy()
+    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
   })
 
   it("switches from dashed to solid border when _traceActive toggles", () => {
@@ -222,15 +262,13 @@ describe("SubmodelNode", () => {
     expect(wrapper().style.border).not.toContain("dashed")
   })
 
-  it("renders very long file paths with truncation", () => {
-    const longPath = "submodels/deeply/nested/directory/structure/with/many/levels/pricing_model_v2.py"
-    renderNode({
-      label: "Long Path",
-      config: { file: longPath },
-    })
-    expect(screen.getByText(longPath)).toBeTruthy()
-    const el = screen.getByText(longPath)
-    expect(el.classList.contains("truncate")).toBe(true)
+  it("truncates very long names in the header badge", () => {
+    const longName = "Pricing submodel with a deliberately very long display name"
+    renderNode({ label: longName })
+    const badge = screen.getByTestId("submodel-name-badge")
+    expect(badge).toHaveTextContent(longName)
+    expect(badge).toHaveClass("truncate")
+    expect(badge).toHaveAttribute("title", longName)
   })
 
   it("dims node when _hoverDimmed is true", () => {
@@ -248,9 +286,7 @@ describe("SubmodelNode", () => {
       _traceMotionDisabled: true,
     })
     const wrapper = container.querySelector(".rounded-xl") as HTMLElement
-    const stripe = container.querySelector(".absolute.left-0") as HTMLElement
     expect(wrapper.style.transition).toBe("none")
-    expect(stripe.style.transition).toBe("none")
   })
 
   it("has full opacity when neither dimmed flag is set", () => {

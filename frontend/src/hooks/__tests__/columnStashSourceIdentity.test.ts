@@ -71,6 +71,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -112,7 +114,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     })
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     mockLoad.mockReset()
-    mockLoad.mockResolvedValue({ nodes: [], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" })
     mockPreview.mockReset()
   })
 
@@ -134,7 +136,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeNode("A")
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
     useSettingsStore.setState({ activeSource: "staging" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -154,7 +156,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A", "live")
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -173,7 +175,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A", "staging")
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
     useSettingsStore.setState({ activeSource: "staging" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
@@ -191,7 +193,7 @@ describe("column-stash source identity (cache-key completeness)", () => {
     const A = makeStashedNode("A") // no _columnsSource — unknown provenance
     const params = makeParams()
     params.graphRef.current = { nodes: [A], edges: [] }
-    mockLoad.mockResolvedValue({ nodes: [A], edges: [] })
+    mockLoad.mockResolvedValue({ nodes: [A], edges: [], preserved_blocks: [], source_revision: "revision-test" })
 
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
