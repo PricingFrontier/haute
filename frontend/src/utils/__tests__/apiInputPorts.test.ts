@@ -254,6 +254,62 @@ describe("edgeInputName", () => {
     ).toBe("Driver_claims_feed")
   })
 
+  it("resolves a drilled submodel Input edge through its existing frame row", () => {
+    const boundarySource: SimpleNode = {
+      id: "submodel-input",
+      type: "submodelPort",
+      data: {
+        label: "INPUT",
+        description: "",
+        nodeType: "submodelPort",
+        config: {},
+        portDirection: "input",
+        ports: [
+          { id: "row-quote", label: "quote_info" },
+          { id: "row-batch", label: "NB batch 2" },
+        ],
+        externalNodeIds: ["quote_api", "nb_batch"],
+      },
+    }
+
+    expect(
+      edgeInputName(
+        { ...sourceEdge("row-quote"), source: boundarySource.id },
+        boundarySource,
+        {},
+      ),
+    ).toBe("quote_info")
+    expect(
+      edgeInputName(
+        { ...sourceEdge("row-batch"), source: boundarySource.id },
+        boundarySource,
+        {},
+      ),
+    ).toBe("NB_batch_2")
+  })
+
+  it("rejects a drilled submodel Input edge whose frame row is missing", () => {
+    const boundarySource: SimpleNode = {
+      id: "submodel-input",
+      type: "submodelPort",
+      data: {
+        label: "INPUT",
+        description: "",
+        nodeType: "submodelPort",
+        config: {},
+        portDirection: "input",
+        ports: [{ id: "row-quote", label: "quote_info" }],
+        externalNodeIds: ["quote_api"],
+      },
+    }
+
+    expect(() => edgeInputName(
+      { ...sourceEdge("missing-row"), source: boundarySource.id },
+      boundarySource,
+      {},
+    )).toThrow(/missing-row/)
+  })
+
   it("resolves a flattened submodel out__ handle to the child node's sanitised label", () => {
     const child: SimpleNode = {
       ...sourceNode("polars"),

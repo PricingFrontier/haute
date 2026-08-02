@@ -142,6 +142,44 @@ describe("submodelBoundaryEditing", () => {
     expect(metadataOf(result!.submodels).inputPorts).toEqual(["child_a"])
   })
 
+  it("keeps both boundary cards fixed when an Input row is assigned", () => {
+    const state = editState({
+      parentEdges: [{
+        id: "input-frame",
+        source: "quote_input",
+        sourceHandle: "quote",
+        target: "submodel__pricing",
+        targetHandle: null,
+      }],
+    })
+    const inputId = boundary(state.viewNodes, "input").id
+    const outputId = boundary(state.viewNodes, "output").id
+    const inputPosition = { x: -420, y: 160 }
+    const outputPosition = { x: 880, y: 260 }
+    state.viewNodes = state.viewNodes.map((node) => {
+      if (node.id === inputId) return { ...node, position: inputPosition }
+      if (node.id === outputId) return { ...node, position: outputPosition }
+      return node
+    })
+    const input = boundary(state.viewNodes, "input")
+    const row = (input.data as unknown as SubmodelPortData).ports[0]
+
+    const result = applySubmodelBoundaryConnection(state, {
+      source: input.id,
+      sourceHandle: row.id,
+      target: "child_a",
+      targetHandle: null,
+    } as Connection)
+
+    expect(result).not.toBeNull()
+    expect(boundary(result!.viewNodes, "input").position).toEqual(
+      inputPosition,
+    )
+    expect(boundary(result!.viewNodes, "output").position).toEqual(
+      outputPosition,
+    )
+  })
+
   it("deleting the last Input mapping returns the parent frame to available", () => {
     const state = editState({
       inputPorts: ["child_a"],

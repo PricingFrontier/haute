@@ -107,9 +107,12 @@ Out of scope (owned by neighbouring components, linked where they exist):
   marker ellipse.
 - **Submodel nodes** use the same opaque card, full-width coloured header,
   and frame-row presentation as a full-detail API-input node. The header
-  retains the package icon, `SUBMODEL` identity, and live child-node count;
-  the body retains the backing file path when set and lists every exported
-  frame using the same semibold 13px primary-text typography as API-input
+  retains the package icon and `SUBMODEL` identity, and shows the submodel
+  name in its right-hand badge. The collapsed card does not repeat the name
+  in its body, expose the backing file path, or show the child-node count.
+  When exported frames exist, the body contains only those frame rows; with
+  no exported frames, it has no body. Frames use the same semibold 13px
+  primary-text typography as API-input
   frames. Each exported-frame row owns its `out__<child-id>` source handle,
   so the handle is vertically centred immediately beside the frame name
   instead of being independently spaced along the card boundary. Display
@@ -120,7 +123,10 @@ Out of scope (owned by neighbouring components, linked where they exist):
   frames renders no source handle.
 - **Drilled submodel boundaries** are exactly two composite
   `SUBMODEL_PORT` nodes, one Input and one Output, rather than one marker per
-  external source or target. The Input lists every distinct incoming logical
+  external source or target. Both boundary headers use the same right-pointing
+  arrow to communicate left-to-right graph flow; handle direction remains
+  source-right for Input and target-left for Output. The Input lists every
+  distinct incoming logical
   frame in parent-edge order and gives every row its own source handle. A new
   parent-to-submodel connection creates an available row only: it does not
   choose or connect an internal child. The user may explicitly connect that
@@ -139,9 +145,14 @@ Out of scope (owned by neighbouring components, linked where they exist):
   every parent edge consuming its handle as one atomic edit. Internal boundary
   mappings restore authored `targetPort`/`sourcePort` values at the child
   endpoint. Both composite nodes remain visible when empty. Each composite
-  records the external parent node ids it represents, so flat-graph trace
+  keeps its current canvas position when an Input mapping or Output export is
+  added or removed; boundary reconciliation updates topology and metadata but
+  never relays out or resets an existing card. Each composite records the
+  external parent node ids it represents, so flat-graph trace
   steps still highlight the corresponding Input or Output card after the
-  per-parent markers are collapsed.
+  per-parent markers are collapsed. Input-to-child and child-to-Output edges
+  use the same solid default edge rendering as ordinary main-canvas edges;
+  submodel boundaries add no private stroke or opacity styling.
 - **Graph state.** One store owns nodes, edges, imports preamble, and nested
   submodel metadata so a root-frame rename and its nested mapping changes are
   one coherent transaction. User-meaningful changes push one complete snapshot;

@@ -86,13 +86,13 @@ describe("SubmodelPortNode", () => {
     expect(icon).toBeTruthy()
   })
 
-  it("renders ArrowLeft icon for output port", () => {
+  it("renders the same ArrowRight icon for output port", () => {
     const { container } = renderPortNode({
       portDirection: "output",
       portName: "result",
     })
-    const icon = container.querySelector("svg.lucide-arrow-left")
-    expect(icon).toBeTruthy()
+    expect(container.querySelector("svg.lucide-arrow-right")).toBeTruthy()
+    expect(container.querySelector("svg.lucide-arrow-left")).toBeNull()
   })
 
   it("renders source handle (right side) for input port direction", () => {

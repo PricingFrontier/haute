@@ -1,5 +1,6 @@
 import type { Edge, Node } from "@xyflow/react"
 import type { PipelineEdge, SubmodelBoundaryEdgeData, SubmodelPortData } from "../types/node"
+import { normalizeEdges } from "./graphHelpers"
 import { NODE_TYPES } from "./nodeTypes"
 
 export interface SubmodelViewGraphInput {
@@ -55,7 +56,7 @@ export function buildSubmodelViewGraph({ submodelName, childNodes, childEdges, p
       if (!port) throw new Error(`Missing input port ${rowId}`)
       port.parentEdges = [...(port.parentEdges ?? []), edge]
       if (childId === null) continue
-      syntheticEdges.push({ id: uniqueEdgeId(stableId("input-edge", [rowId, childId, edge.id]), occupiedEdgeIds), source: inputId, sourceHandle: rowId, target: childId, targetHandle: edge.targetPort ?? null, type: "default", animated: false, style: { strokeDasharray: "6 3", opacity: 0.5 }, data: { submodelBoundary: { direction: "input", parentEdge: edge } } satisfies SubmodelBoundaryEdgeData })
+      syntheticEdges.push({ id: uniqueEdgeId(stableId("input-edge", [rowId, childId, edge.id]), occupiedEdgeIds), source: inputId, sourceHandle: rowId, target: childId, targetHandle: edge.targetPort ?? null, data: { submodelBoundary: { direction: "input", parentEdge: edge } } satisfies SubmodelBoundaryEdgeData })
       continue
     }
     if (edge.source === placeholderId && hasText(edge.sourceHandle)) {
@@ -69,7 +70,7 @@ export function buildSubmodelViewGraph({ submodelName, childNodes, childEdges, p
   for (const childId of outputChildren) {
     const handle = `out__${childId}`
     const consumers = parentEdges.filter((raw): raw is PipelineEdge => { const edge = raw as PipelineEdge; return edge.source === placeholderId && edge.sourceHandle === handle })
-    syntheticEdges.push({ id: uniqueEdgeId(stableId("output-edge", [childId, handle]), occupiedEdgeIds), source: childId, sourceHandle: consumers[0]?.sourcePort ?? null, target: outputId, targetHandle: null, type: "default", animated: false, style: { strokeDasharray: "6 3", opacity: 0.5 }, data: { submodelBoundary: { direction: "output", parentConsumerEdges: consumers } } satisfies SubmodelBoundaryEdgeData })
+    syntheticEdges.push({ id: uniqueEdgeId(stableId("output-edge", [childId, handle]), occupiedEdgeIds), source: childId, sourceHandle: consumers[0]?.sourcePort ?? null, target: outputId, targetHandle: null, data: { submodelBoundary: { direction: "output", parentConsumerEdges: consumers } } satisfies SubmodelBoundaryEdgeData })
   }
-  return { nodes: [...childNodes, boundaryNode(inputId, "input", inputPorts, inputExternalIds), boundaryNode(outputId, "output", [], outputExternalIds)], edges: [...childEdges, ...syntheticEdges] }
+  return { nodes: [...childNodes, boundaryNode(inputId, "input", inputPorts, inputExternalIds), boundaryNode(outputId, "output", [], outputExternalIds)], edges: normalizeEdges([...childEdges, ...syntheticEdges]) }
 }

@@ -1,7 +1,7 @@
 /**
  * Tests for SubmodelNode component.
  *
- * Tests: label rendering, SUBMODEL badge, child count, file path display,
+ * Tests: SUBMODEL identity and name badge, frame-only body,
  * output port labels, per-port handles, opacity when dimmed,
  * border style (dashed vs solid).
  */
@@ -61,42 +61,36 @@ function renderNode(
 // ── Tests ───────────────────────────────────────────────────────
 
 describe("SubmodelNode", () => {
-  it("renders the label text", () => {
-    renderNode({ label: "My Submodel" })
-    expect(screen.getByText("My Submodel")).toBeTruthy()
-  })
-
-  it('renders the "SUBMODEL" badge', () => {
-    renderNode({ label: "Test" })
-    expect(screen.getByText("SUBMODEL")).toBeTruthy()
-  })
-
-  it("renders the child node count", () => {
+  it("renders its identity and name once in the header", () => {
     renderNode({
-      label: "Test",
+      label: "My Submodel",
+      config: { file: "submodels/pricing.py" },
+    })
+    const header = screen.getByTestId("submodel-header")
+    expect(header).toHaveTextContent("SUBMODEL")
+    expect(header).toHaveTextContent("My Submodel")
+    expect(screen.getAllByText("My Submodel")).toHaveLength(1)
+  })
+
+  it("does not display the child node count", () => {
+    renderNode({
+      label: "Pricing",
       config: { childNodeIds: ["a", "b", "c"] },
     })
-    expect(screen.getByText("3 nodes")).toBeTruthy()
+    expect(screen.queryByText("3 nodes")).toBeNull()
   })
 
-  it("renders 0 nodes when no childNodeIds", () => {
-    renderNode({ label: "Test" })
-    expect(screen.getByText("0 nodes")).toBeTruthy()
-  })
-
-  it("renders file path when config.file is set", () => {
+  it("does not display the backing file path", () => {
     renderNode({
       label: "Test",
       config: { file: "submodels/pricing.py" },
     })
-    expect(screen.getByText("submodels/pricing.py")).toBeTruthy()
+    expect(screen.queryByText("submodels/pricing.py")).toBeNull()
   })
 
-  it("does not render file path when config.file is not set", () => {
+  it("does not render a body when there are no exported frames", () => {
     renderNode({ label: "Test" })
-    // Only the port labels use --text-muted; without a file, there should be none
-    // in the header area. We verify by ensuring the specific text is absent.
-    expect(screen.queryByText("submodels/pricing.py")).toBeNull()
+    expect(screen.queryByTestId("submodel-body")).toBeNull()
   })
 
   it("renders output port labels", () => {
@@ -104,6 +98,7 @@ describe("SubmodelNode", () => {
       label: "Test",
       config: { outputPorts: ["premium", "discount"] },
     })
+    expect(screen.getByTestId("submodel-body")).toBeTruthy()
     expect(screen.getByText(/premium/)).toBeTruthy()
     expect(screen.getByText(/discount/)).toBeTruthy()
   })
@@ -267,15 +262,13 @@ describe("SubmodelNode", () => {
     expect(wrapper().style.border).not.toContain("dashed")
   })
 
-  it("renders very long file paths with truncation", () => {
-    const longPath = "submodels/deeply/nested/directory/structure/with/many/levels/pricing_model_v2.py"
-    renderNode({
-      label: "Long Path",
-      config: { file: longPath },
-    })
-    expect(screen.getByText(longPath)).toBeTruthy()
-    const el = screen.getByText(longPath)
-    expect(el.classList.contains("truncate")).toBe(true)
+  it("truncates very long names in the header badge", () => {
+    const longName = "Pricing submodel with a deliberately very long display name"
+    renderNode({ label: longName })
+    const badge = screen.getByTestId("submodel-name-badge")
+    expect(badge).toHaveTextContent(longName)
+    expect(badge).toHaveClass("truncate")
+    expect(badge).toHaveAttribute("title", longName)
   })
 
   it("dims node when _hoverDimmed is true", () => {

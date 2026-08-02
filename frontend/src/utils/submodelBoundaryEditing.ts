@@ -44,7 +44,16 @@ function reconcile(state: SubmodelBoundaryEditState, parentEdges: PipelineEdge[]
   const metadata: Metadata = { ...oldMetadata, childNodeIds, inputPorts, outputPorts, outputPortLabels: labels, graph: { ...oldGraph, nodes: children.nodes, edges: children.edges } }
   const submodels = { ...state.submodels, [state.submodelName]: metadata }
   const view = buildSubmodelViewGraph({ submodelName: state.submodelName, childNodes: children.nodes, childEdges: children.edges, parentNodes, parentEdges })
-  return { submodelName: state.submodelName, viewNodes: view.nodes, viewEdges: view.edges as PipelineEdge[], parentNodes, parentEdges, submodels }
+  const boundaryPositions = new Map(
+    state.viewNodes
+      .filter(node => node.type === "submodelPort")
+      .map(node => [node.id, node.position]),
+  )
+  const viewNodes = view.nodes.map(node => {
+    const position = boundaryPositions.get(node.id)
+    return position ? { ...node, position } : node
+  })
+  return { submodelName: state.submodelName, viewNodes, viewEdges: view.edges as PipelineEdge[], parentNodes, parentEdges, submodels }
 }
 function nextId(base: string, edges: readonly PipelineEdge[]): string {
   const ids = new Set(edges.map(edge => edge.id)); let id = base; let n = 1

@@ -107,7 +107,8 @@ function SubmodelNode({
         className="flex items-center gap-2 px-3 py-1.5"
         style={{
           background: `${accent}30`,
-          borderRadius: "10.5px 10.5px 0 0",
+          borderRadius:
+            outputFrames.length > 0 ? "10.5px 10.5px 0 0" : "10.5px",
           ...headerInset,
         }}
       >
@@ -119,43 +120,29 @@ function SubmodelNode({
           SUBMODEL
         </span>
         <span
-          className="ml-auto shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[9px]"
+          data-testid="submodel-name-badge"
+          title={nodeData.label}
+          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 font-mono text-[9px]"
           style={{
             background: `${accent}18`,
             border: `1px solid ${accent}30`,
             color: accent,
           }}
         >
-          {childCount} {childCount === 1 ? "node" : "nodes"}
+          {nodeData.label}
         </span>
       </div>
 
-      <div className="px-3 py-2" style={bodyStyle}>
-        <div
-          className="truncate text-[13px] font-semibold leading-tight"
-          style={{ color: "var(--text-primary)" }}
-        >
-          {nodeData.label}
+      {outputFrames.length > 0 && (
+        <div data-testid="submodel-body" className="px-3 py-2" style={bodyStyle}>
+          <FramePortRows
+            ports={outputFrames}
+            direction="source"
+            accent={accent}
+            testIdPrefix="submodel-output"
+          />
         </div>
-        {config.file && (
-          <div
-            className="mt-0.5 truncate text-[10px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            {config.file}
-          </div>
-        )}
-        {outputFrames.length > 0 && (
-          <div className="mt-1.5">
-            <FramePortRows
-              ports={outputFrames}
-              direction="source"
-              accent={accent}
-              testIdPrefix="submodel-output"
-            />
-          </div>
-        )}
-      </div>
+      )}
     </div>
   )
 }

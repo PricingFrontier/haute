@@ -5,7 +5,7 @@ import {
   useUpdateNodeInternals,
   type NodeProps,
 } from "@xyflow/react"
-import { ArrowLeft, ArrowRight } from "lucide-react"
+import { ArrowRight } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import type { SubmodelPortFlowNode } from "../types/node"
 import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
@@ -42,7 +42,6 @@ function SubmodelPortNode({
   }
 
   const isInput = nodeData.portDirection === "input"
-  const Icon = isInput ? ArrowRight : ArrowLeft
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
@@ -80,7 +79,11 @@ function SubmodelPortNode({
           ...headerInset,
         }}
       >
-        <Icon size={16} style={{ color: portColor }} className="shrink-0" />
+        <ArrowRight
+          size={16}
+          style={{ color: portColor }}
+          className="shrink-0"
+        />
         <span
           className="shrink-0 text-[10px] font-bold uppercase tracking-[0.1em]"
           style={{ color: portColor }}

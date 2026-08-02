@@ -90,6 +90,48 @@ describe("buildSubmodelViewGraph", () => {
     expect(inputEdges[2].targetHandle).toBe("join")
   })
 
+  it("uses the standard main-canvas appearance for both boundary-edge directions", () => {
+    const childNodes = [
+      makeNode("child_input", "polars", { data: { label: "child_input" } }),
+      makeNode("child_output", "polars", { data: { label: "child_output" } }),
+    ]
+    const parentNodes = [
+      makeNode("quote_input", "apiInput", { data: { label: "QUOTE IN" } }),
+      makeNode("submodel__pricing", "submodel", {
+        data: {
+          label: "pricing",
+          config: {
+            outputPorts: ["child_output"],
+            outputPortLabels: { child_output: "child_output" },
+          },
+        },
+      }),
+    ]
+    const projected = buildSubmodelViewGraph({
+      submodelName: "pricing",
+      childNodes,
+      childEdges: [],
+      parentNodes,
+      parentEdges: [
+        parentEdge("input-map", "quote_input", "submodel__pricing", {
+          sourceHandle: "quote_info",
+          targetHandle: "in__child_input",
+        }),
+      ],
+    })
+    const boundaryEdges = projected.edges.filter((edge) => {
+      const data = edge.data as Record<string, unknown> | undefined
+      return data?.submodelBoundary !== undefined
+    })
+
+    expect(boundaryEdges).toHaveLength(2)
+    for (const edge of boundaryEdges) {
+      expect(edge.type).toBe("default")
+      expect(edge.animated).toBe(false)
+      expect(edge.style).toBeUndefined()
+    }
+  })
+
   it("shows a newly connected parent frame as unassigned without choosing a child", () => {
     const childNodes = [makeNode("child")]
     const parentNodes = [

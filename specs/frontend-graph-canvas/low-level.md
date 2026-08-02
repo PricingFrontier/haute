@@ -7,8 +7,8 @@
 | `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), and gates Save/Save-&-Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component on the full-detail body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail frame-row primitive used by API Input, the parent Submodel card, and drilled Input/Output boundary cards. It owns the common semibold 13px label typography, truncation/title behavior, and row-relative source/target handle placement. |
-| `frontend/src/nodes/SubmodelNode.tsx` | Renders a submodel boundary card with the standard opaque body/full-width accent header, label, child count, file path, hidden input handles, and shared exported-frame rows whose visible labels are separate from their stable `out__<child-id>` handles. |
-| `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Input turns its ordered `ports` into shared source-handle rows; Output renders one shared target handle and never lists exported frames. |
+| `frontend/src/nodes/SubmodelNode.tsx` | Renders a submodel boundary card with a full-width accent header containing its `SUBMODEL` identity and submodel-name badge, hidden input handles, and an optional frame-only body of shared exported-frame rows whose visible labels are separate from their stable `out__<child-id>` handles. The collapsed card does not display its child count or backing file path. |
+| `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Both headers use the same right-pointing arrow while their handles retain their graph semantics. Input turns its ordered `ports` into shared source-handle rows; Output renders one shared target handle and never lists exported frames. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
@@ -441,14 +441,24 @@
     connection. The Output has one default target handle. Placeholder
     `outputPorts`, not downstream consumer count, project as child → Output
     edges; each edge carries its child source port and exact parent consumers.
+    Both boundary-edge directions carry only topology, handles, and backing
+    metadata; `normalizeEdges` supplies the same `type: "default"` and
+    `animated: false` contract as main-canvas edges, while React Flow's shared
+    `defaultEdgeOptions` owns their solid stroke and opacity. The dashed
+    `connectionLineStyle` is reserved for the transient drag gesture.
 
     `useSubmodelBoundaryEditing` intercepts boundary connects and deletes before
     the generic edge handler. A child → Output connection declares an export;
     deleting it removes the declaration and every parent edge whose source
     handle is `out__<child>`. Each gesture computes visible edges, embedded
     child graph, placeholder config, parent boundary edges, and nested metadata
-    first, then commits them through one `setNodesAndEdgesAndSubmodels` call and
-    updates `parentGraphRef`. Synthetic edge/row backing metadata lets the same
+    first. `submodelBoundaryEditing.reconcile` rebuilds the two synthetic cards
+    from canonical topology, then restores each existing card's `position` by
+    its stable boundary id; an Input connection therefore cannot move either
+    the Input or Output card. ELK positions the cards only on initial drill-in
+    or an explicit layout action. The result commits through one
+    `setNodesAndEdgesAndSubmodels` call and updates `parentGraphRef`.
+    Synthetic edge/row backing metadata lets the same
     pure reconciliation run after undo or redo so the ref cannot drift from the
     restored snapshot. The projection records represented external ids for
     trace collapsing, uses `submodel_file`, lays out with ELK, and re-fits.
@@ -792,12 +802,14 @@ again through the editor and save paths.
     warning/trace adornments coexisting with rows, and medium/compact
     bodies unchanged).
   - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — standard coloured
-    header/body rendering; label/badge/child-count and file-path display;
-    output label-map fallback; shared row typography; row-owned stable output
-    handles; zero-output non-connectability; hidden input handles; dashed-vs-
+    header rendering with a single truncated submodel-name badge; omission of
+    child count and backing file path; optional frame-only body; output
+    label-map fallback; shared row typography; row-owned stable output handles;
+    zero-output non-connectability; hidden input handles; dashed-vs-
     solid border and trace/dim/motion states.
   - `frontend/src/__tests__/nodes/SubmodelPortNode.test.tsx` — the single
-    composite Input/Output cards; ordered multi-frame labels; per-row
+    composite Input/Output cards; their shared right-pointing header icon;
+    ordered multi-frame labels; per-row
     source-right vs target-left handle ids and nesting; shared typography;
     empty states; and trace border/glow/dim/motion states.
   - `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx` — one labelled

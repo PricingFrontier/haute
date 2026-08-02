@@ -237,6 +237,11 @@ mode only from persisted `params.mode`.
 - An ordinary source-label rename derives the old and new `edgeInputName` for every outgoing
   edge and uses the same duplicate preflight and atomic mapping migration as an API-frame rename.
   Sanitisation-only no-ops do not rewrite mappings.
+- `edgeInputName` resolves an editor-only edge sourced by a drilled submodel's composite Input by
+  matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id`, then
+  sanitising that port's `label`. A missing handle, non-Input boundary, or unknown row is an
+  invariant violation and throws rather than falling back to the composite node's literal
+  `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
   `out__`-prefixed source handle resolves to the referenced child node's sanitised label (via
   the graph context's `submodels`) — the same name the flattened code binds — and every other
