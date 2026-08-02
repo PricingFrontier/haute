@@ -128,6 +128,26 @@ class TestParseSubmodelSource:
         assert "base_rate" in node_ids
         assert "adjust" in node_ids
 
+    def test_parses_ordered_declared_outputs(self) -> None:
+        source = _VALID_SUBMODEL.replace(
+            'haute.Submodel("pricing", description="Pricing submodel")',
+            'haute.Submodel("pricing", description="Pricing submodel", '
+            'outputs=["adjust", "base_rate"])',
+        )
+
+        graph = parse_submodel_source(source, "modules/pricing.py")
+
+        assert graph._parser_declared_outputs == ["adjust", "base_rate"]
+
+    def test_duplicate_declared_output_fails_loudly(self) -> None:
+        source = _VALID_SUBMODEL.replace(
+            'haute.Submodel("pricing", description="Pricing submodel")',
+            'haute.Submodel("pricing", outputs=["adjust", "adjust"])',
+        )
+
+        with pytest.raises(ParseError, match="duplicate"):
+            parse_submodel_source(source, "modules/pricing.py")
+
     def test_edges_extracted(self) -> None:
         graph = parse_submodel_source(_VALID_SUBMODEL, "modules/pricing.py")
         edge_pairs = [(e.source, e.target) for e in graph.edges]
@@ -272,6 +292,39 @@ def _make_child_graph() -> PipelineGraph:
 
 
 class TestMergeSubmodels:
+    def test_declared_unused_output_is_retained_without_a_parent_consumer(self) -> None:
+        parent = _make_parent_graph()
+        child = _make_child_graph()
+        child._parser_declared_outputs = ["child_b"]
+
+        result = merge_submodels(
+            parent,
+            {"sub": child},
+            {"sub": "modules/sub.py"},
+            parent_edges=[("load", "child_a", None, None)],
+            flatten=False,
+        )
+
+        placeholder = next(node for node in result.nodes if node.id == "submodel__sub")
+        assert placeholder.data.config["outputPorts"] == ["child_b"]
+        assert result.submodels is not None
+        assert result.submodels["sub"]["outputPorts"] == ["child_b"]
+        assert not any(edge.source == "submodel__sub" for edge in result.edges)
+
+    def test_unknown_declared_output_fails_loudly(self) -> None:
+        parent = _make_parent_graph()
+        child = _make_child_graph()
+        child._parser_declared_outputs = ["missing_child"]
+
+        with pytest.raises(ParseError, match="declared output"):
+            merge_submodels(
+                parent,
+                {"sub": child},
+                {"sub": "modules/sub.py"},
+                parent_edges=[],
+                flatten=False,
+            )
+
     def test_no_submodels_returns_parent(self) -> None:
         parent = _make_parent_graph()
         result = merge_submodels(parent, {}, {}, [])
@@ -319,6 +372,10 @@ class TestMergeSubmodels:
         )
         node_ids = {n.id for n in result.nodes}
         assert "submodel__sub" in node_ids
+        placeholder = next(node for node in result.nodes if node.id == "submodel__sub")
+        assert placeholder.data.config["outputPortLabels"] == {
+            "child_b": next(node for node in child.nodes if node.id == "child_b").data.label,
+        }
 
     def test_hierarchical_rewires_edges(self) -> None:
         parent = _make_parent_graph()

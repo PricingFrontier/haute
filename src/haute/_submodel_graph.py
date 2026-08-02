@@ -6,7 +6,7 @@ Used by both ``_parser_submodels.py`` (parse-time hierarchical view) and
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from hashlib import blake2b
 
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, NodeType
@@ -30,7 +30,9 @@ def build_submodel_placeholder(
     input_ports: list[str],
     output_ports: list[str],
     *,
+    output_port_labels: Mapping[str, str] | None = None,
     description: str = "",
+    position: dict[str, float] | None = None,
 ) -> GraphNode:
     """Build a ``SUBMODEL`` placeholder node for the parent graph.
 
@@ -46,14 +48,18 @@ def build_submodel_placeholder(
         Node IDs that receive edges from outside the submodel.
     output_ports:
         Node IDs that send edges to outside the submodel.
+    output_port_labels:
+        Presentation labels for output ports, keyed by child node ID. Only
+        declared output ports are retained, in ``output_ports`` order.
     description:
         Optional submodel description.
     """
     sm_node_id = f"submodel__{sm_name}"
+    labels = output_port_labels or {}
     return GraphNode(
         id=sm_node_id,
         type=NodeType.SUBMODEL,
-        position={"x": 0, "y": 0},
+        position=position or {"x": 0, "y": 0},
         data=NodeData(
             label=sm_name,
             description=description,
@@ -63,6 +69,9 @@ def build_submodel_placeholder(
                 "childNodeIds": list(child_node_ids),
                 "inputPorts": list(input_ports),
                 "outputPorts": list(output_ports),
+                "outputPortLabels": {
+                    port: labels[port] for port in output_ports if port in labels
+                },
             },
         ),
     )

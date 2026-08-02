@@ -113,13 +113,26 @@ function liveHandles(node: Node, direction: HandleDirection): Set<string | null>
     const outputPorts = configuredPortNames(config, "outputPorts")
     return outputPorts.length > 0
       ? new Set(outputPorts.map(port => `out__${port}`))
-      : new Set([null])
+      : new Set()
   }
 
   if (type === NODE_TYPES.SUBMODEL_PORT) {
-    const isInput = nodeData(node).portDirection === "input"
-    if (isInput) return direction === "source" ? new Set([null]) : new Set()
-    return direction === "target" ? new Set([null]) : new Set()
+    const data = nodeData(node)
+    const portIds = Array.isArray(data.ports)
+      ? data.ports.flatMap((port) => {
+          if (!port || typeof port !== "object" || Array.isArray(port)) return []
+          const id = (port as Record<string, unknown>).id
+          return typeof id === "string" && id.length > 0 ? [id] : []
+        })
+      : []
+    const handles = new Set<string | null>(portIds)
+    if (data.portDirection === "input") {
+      return direction === "source" ? handles : new Set()
+    }
+    if (data.portDirection === "output") {
+      return direction === "target" ? handles : new Set()
+    }
+    return new Set()
   }
 
   if (direction === "source") {

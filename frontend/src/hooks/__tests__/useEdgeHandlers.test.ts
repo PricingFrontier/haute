@@ -32,6 +32,10 @@ function makeParams() {
     validateConnection: undefined as
       | undefined
       | ((connection: Connection) => ReturnType<typeof validatePipelineConnection>),
+    commitBoundaryConnection: undefined as
+      | undefined
+      | ((connection: Connection) => boolean),
+    deleteBoundaryEdge: undefined as undefined | ((edgeId: string) => boolean),
   }
 }
 
@@ -114,6 +118,31 @@ describe("useEdgeHandlers", () => {
     ])
   })
 
+  it("lets the drilled-boundary adapter atomically own a boundary connection", () => {
+    const params = makeParams()
+    params.commitBoundaryConnection = vi.fn(() => true)
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({
+          from: "child_a",
+          to: "submodel-output",
+          toHandleId: DEFAULT_TARGET_HANDLE,
+        }),
+      )
+    })
+
+    expect(params.commitBoundaryConnection).toHaveBeenCalledWith({
+      source: "child_a",
+      sourceHandle: null,
+      target: "submodel-output",
+      targetHandle: null,
+    })
+    expect(params.setEdges).not.toHaveBeenCalled()
+  })
+
   it("onConnectEnd creates a new edge for target-to-source handles", () => {
     const params = makeParams()
     const { result } = renderHook(() => useEdgeHandlers(params))
@@ -179,6 +208,31 @@ describe("useEdgeHandlers", () => {
     const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
     const newEdges = updater([])
     expect(newEdges[0]).toHaveProperty("targetHandle", "in__child1")
+  })
+
+  it("leaves a new collapsed submodel input unassigned", () => {
+    const params = makeParams()
+    params.graphRef.current.nodes = [
+      { id: "sm1", data: { label: "SM", nodeType: NODE_TYPES.SUBMODEL } } as unknown as Node,
+    ]
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.onConnectEnd(
+        mouseUpEvent,
+        connectionEndState({ from: "api", to: "sm1", toHandleId: DEFAULT_TARGET_HANDLE }),
+      )
+    })
+
+    expect(params.setEdges).toHaveBeenCalledOnce()
+    const updater = params.setEdges.mock.calls[0][0] as (eds: Edge[]) => Edge[]
+    expect(updater([])).toEqual([
+      expect.objectContaining({
+        source: "api",
+        target: "sm1",
+        targetHandle: null,
+      }),
+    ])
   })
 
   it("onConnectEnd blocks when target node has reached maxInputs", () => {
@@ -1231,6 +1285,19 @@ describe("useEdgeHandlers", () => {
     expect(params.fetchPreview).toHaveBeenNthCalledWith(1, first, {})
     expect(params.fetchPreview).toHaveBeenNthCalledWith(2, second, {})
     expect(params.lastSelectedNodeRef.current).toBe(second)
+  })
+
+  it("lets the drilled-boundary adapter atomically own boundary deletion", () => {
+    const params = makeParams()
+    params.deleteBoundaryEdge = vi.fn(() => true)
+    const { result } = renderHook(() => useEdgeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteEdge("boundary-export")
+    })
+
+    expect(params.deleteBoundaryEdge).toHaveBeenCalledWith("boundary-export")
+    expect(params.setEdges).not.toHaveBeenCalled()
   })
 
   it("handleDeleteEdge removes edge by id", () => {

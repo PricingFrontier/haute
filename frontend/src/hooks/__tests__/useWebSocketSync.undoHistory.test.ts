@@ -110,6 +110,8 @@ function makeHookParams() {
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -154,6 +156,8 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             nodes: [{ id: "n1", position: { x: 5, y: 6 }, data: { label: "A" } }],
             edges: [],
           },
@@ -182,7 +186,7 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
       latestWS().onmessage?.(new MessageEvent("message", {
         data: JSON.stringify({
           type: "graph_update",
-          graph: { nodes: incoming, edges: [], submodels: {} },
+          graph: { nodes: incoming, edges: [], submodels: {}, source_revision: "revision-test", preserved_blocks: [] },
         }),
       }))
     })
@@ -221,6 +225,8 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: `n${i}`, position: { x: i, y: i }, data: {} }],
               edges: [],
             },

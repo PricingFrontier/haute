@@ -276,6 +276,97 @@ class TestPreviewNode:
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
 
+    def test_preview_ignores_unassigned_submodel_input_draft(
+        self,
+        client: TestClient,
+        pipeline_dir: Path,
+    ) -> None:
+        from unittest.mock import patch
+
+        from haute.schemas import NodeResult
+
+        graph = {
+            "nodes": [
+                {
+                    "id": "nb_batch",
+                    "type": "pipelineNode",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "nb_batch2",
+                        "nodeType": "dataInput",
+                        "config": {},
+                    },
+                },
+                {
+                    "id": "submodel__sm",
+                    "type": "submodel",
+                    "position": {"x": 300, "y": 0},
+                    "data": {
+                        "label": "sm",
+                        "nodeType": "submodel",
+                        "config": {
+                            "childNodeIds": ["child_a", "child_b"],
+                            "inputPorts": [],
+                            "outputPorts": [],
+                        },
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "id": "unassigned",
+                    "source": "nb_batch",
+                    "target": "submodel__sm",
+                    "sourceHandle": None,
+                    "targetHandle": None,
+                }
+            ],
+            "pipeline_name": "draft_preview",
+            "source_file": str(pipeline_dir / "test_pipeline.py"),
+            "submodels": {
+                "sm": {
+                    "file": "modules/sm.py",
+                    "childNodeIds": ["child_a", "child_b"],
+                    "inputPorts": [],
+                    "outputPorts": [],
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": child_id,
+                                "type": "pipelineNode",
+                                "position": {"x": 0, "y": 0},
+                                "data": {
+                                    "label": child_id,
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            }
+                            for child_id in ("child_a", "child_b")
+                        ],
+                        "edges": [],
+                    },
+                }
+            },
+        }
+
+        with patch(
+            "haute.routes.pipeline.execute_graph",
+            return_value={"nb_batch": NodeResult(status="ok")},
+        ) as execute_graph:
+            response = client.post(
+                "/api/pipeline/preview",
+                json={"graph": graph, "node_id": "nb_batch"},
+            )
+
+        assert response.status_code == 200
+        execution_graph = execute_graph.call_args.args[0]
+        assert {node.id for node in execution_graph.nodes} == {
+            "nb_batch",
+            "child_a",
+            "child_b",
+        }
+        assert execution_graph.edges == []
+
     def test_preview_returns_relevant_ancestor_node_schema_maps(
         self,
         client: TestClient,

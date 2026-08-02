@@ -1,5 +1,8 @@
 {
   "status": "ok",
+  "source_revision": "revision-dissolve-1",
+  "submodel_file_deleted": true,
+  "retained_submodel_file": null,
   "graph": {
     "nodes": [
       {
@@ -15,6 +18,8 @@
         "data": { "label": "Right", "nodeType": "polars" }
       }
     ],
-    "edges": []
+    "edges": [],
+    "preserved_blocks": [],
+    "source_revision": "revision-dissolve-1"
   }
 }

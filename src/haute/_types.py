@@ -755,11 +755,13 @@ class PipelineGraph(BaseModel):
     preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
     source_file: str | None = None
+    source_revision: str | None = None
     submodels: dict[str, Any] | None = None
     warning: str | None = None
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     _parser_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+    _parser_declared_outputs: list[str] | None = PrivateAttr(default=None)
 
     # Names of ``@cached_property`` slots that must be invalidated when
     # ``model_copy`` produces a new instance with changed structure —

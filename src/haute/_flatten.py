@@ -126,6 +126,12 @@ def flatten_graph(
             boundary_rewired = True
 
         if tgt in submodel_node_ids:
+            # A null inbound handle is the editor's explicit "available but
+            # unassigned" draft. It has no executable child endpoint, so it
+            # must not participate in the flattened graph. Other malformed
+            # handles still flow through _boundary_child_id and fail loudly.
+            if edge.targetHandle is None:
+                continue
             # e.g. targetHandle="in__frequency_model" → target="frequency_model"
             original_tgt = tgt
             sm_name = tgt.removeprefix("submodel__")
@@ -208,17 +214,28 @@ def flatten_graph(
     remaining_submodels = {k: v for k, v in submodels.items() if k not in names_to_flatten} or None
     merged_preamble = graph.preamble
     merged_preserved_blocks = list(graph.preserved_blocks)
+    seen_preambles = (
+        {graph.preamble.strip()} if graph.preamble and graph.preamble.strip() else set()
+    )
+    seen_preserved_blocks = {block.strip() for block in merged_preserved_blocks}
     for sm_name in submodels:
         if sm_name not in names_to_flatten:
             continue
         embedded_graph = embedded_graphs[sm_name]
-        child_preamble = embedded_graph.preamble
-        if child_preamble and child_preamble.strip():
+        child_preamble = embedded_graph.preamble or ""
+        child_preamble_key = child_preamble.strip()
+        if child_preamble_key and child_preamble_key not in seen_preambles:
+            seen_preambles.add(child_preamble_key)
             if merged_preamble and merged_preamble.strip():
                 merged_preamble = f"{merged_preamble.rstrip()}\n\n{child_preamble.rstrip()}"
             else:
                 merged_preamble = child_preamble.rstrip()
-        merged_preserved_blocks.extend(embedded_graph.preserved_blocks)
+        for block in embedded_graph.preserved_blocks:
+            block_key = block.strip()
+            if block_key in seen_preserved_blocks:
+                continue
+            seen_preserved_blocks.add(block_key)
+            merged_preserved_blocks.append(block)
     return graph.model_copy(
         update={
             "nodes": nodes,

@@ -5,19 +5,23 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), and gates Save/Save-&-Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
-| `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted on the full-detail frame-row body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns the api-input frame-row body with instance-name suppression and the zero-frame "No emitted frames" state. |
-| `frontend/src/nodes/SubmodelNode.tsx` | Renders a submodel boundary card: label, child count, file path, and hidden per-port target/source handles mirroring `config.inputPorts`/`config.outputPorts`. |
-| `frontend/src/nodes/SubmodelPortNode.tsx` | Renders the input/output port marker shown when a submodel is drilled into; input ports get a source handle, output ports get a target handle. |
+| `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component on the full-detail body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
+| `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail frame-row primitive used by API Input, the parent Submodel card, and drilled Input/Output boundary cards. It owns the common semibold 13px label typography, truncation/title behavior, and row-relative source/target handle placement. |
+| `frontend/src/nodes/SubmodelNode.tsx` | Renders a submodel boundary card with the standard opaque body/full-width accent header, label, child count, file path, hidden input handles, and shared exported-frame rows whose visible labels are separate from their stable `out__<child-id>` handles. |
+| `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Input turns its ordered `ports` into shared source-handle rows; Output renders one shared target handle and never lists exported frames. |
 | `frontend/src/panels/useGraph.ts` | Defines `GraphContext` (`React.Context<GraphContextValue \| undefined>`) and the `useGraph()` consumer hook, which throws when called outside a provider. |
 | `frontend/src/panels/GraphContext.tsx` | `GraphProvider` component; memoises the context value on `{allNodes, edges, submodels, preamble}` identity. |
 | `frontend/src/stores/useGraphStore.ts` | Zustand store owning `nodes`/`edges`/`preamble`/`submodels`, undo/redo history (four-field graph snapshots interleaved with VC entries), and three derived fingerprints (`structuralFingerprint`, `panelContextFingerprint`, `persistedFingerprint`) plus the `dirty` boolean derived from them. |
 | `frontend/src/types/node.ts` | Shared node-data and persisted node-type contract owned by [frontend-shared](../frontend-shared/low-level.md) and consumed by the canvas. |
 | `frontend/src/hooks/useNodeHandlers.ts` | Node CRUD handlers: `handleDeleteNode` (atomic node+edges delete, deferred cache cleanup), `handleDuplicateNode`, `handleCreateInstance`, `handleRenameNode` (opens the rename dialog), `handleAutoLayout` (ELK, in-flight guarded). |
 | `frontend/src/hooks/useEdgeHandlers.ts` | Connection/gesture handlers: `onConnectStart` plus pointer movement maintain the transient compatible edge-join candidate; `commitConnection`/`onConnectEnd` interpret React Flow handle-drag endings into a normal edge or a revalidated edge-join insertion and always clear gesture feedback; the hook also owns `onSelectionChange`/`onNodeClick` (panel + debounced preview, gated while a structured API-input has no `tables[]` schema), `handleDeleteEdge`, `onNodeContextMenu`, and `onDragOver`/`onDrop` (palette node creation). |
-| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`), where every network preview path first awaits `ensureInputSnapshots` for the graph's snapshot-backed Data Inputs; an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`). |
+| `frontend/src/hooks/usePipelineAPI.ts` | Pipeline load-on-mount; request-facing source-revision and preserved-block refs; debounced, cache-first, concurrency-limited-cascade preview fetching (`fetchPreview`/`fetchPreviewImmediate`/`refreshPreview`/`previewNodeFrame`), where every network preview path first awaits `ensureInputSnapshots` for the graph's snapshot-backed Data Inputs; an active-source-change effect (`invalidateStaleColumnStashes`) that strips any node's column stash tagged with a different (or no) `_columnsSource`; and `handleSave` (config-ref/edge-join pre-save validation, snapshot-scoped save-concurrency guard, `markSaved`, committed-revision update). |
 | `frontend/src/hooks/ensureInputSnapshots.ts` | Pre-preview snapshot orchestration owned behaviourally by [caching](../caching/high-level.md): derives the graph's snapshot-backed Data Inputs (direct Parquet skipped), checks status, starts or joins builds (lazy-sink first, one admitted-eager retry on `snapshot_build_unsupported`), polls jobs to a terminal state with abort support, and notifies at most once when a build starts. |
-| `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying `graph_update`/`parse_error` frames (with dirty-blocking and rollback-on-failure), and session-expiry handling. |
-| `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — the view-stack state machine, cross-boundary port-node/edge synthesis on drill-in, and the three submodel API calls. |
+| `frontend/src/hooks/useWebSocketSync.ts` | The `/ws/sync` WebSocket client: connect/reconnect with exponential backoff, fingerprint-based resync, applying `graph_update`/`parse_error` frames (including preserved-block/revision refs, with dirty-blocking and rollback-on-failure), and session-expiry handling. |
+| `frontend/src/hooks/useSubmodelNavigation.ts` | `handleCreateSubmodel`/`handleDrillIntoSubmodel`/`handleBreadcrumbNavigate`/`handleDissolveSubmodel` — the view-stack state machine, parent-scoped drill lookup, revision-preconditioned mutations, retained-file UX, delegation to composite boundary projection, and the three submodel API calls. |
+| `frontend/src/utils/submodelViewGraph.ts` | Pure projection from a drilled child graph plus parent placeholder state into two composite boundary nodes. It includes assigned and unassigned logical Input rows, projects each declared export as a child-to-shared-Output edge, preserves backing parent-edge metadata for undo, and restores authored child handles. |
+| `frontend/src/utils/submodelBoundaryEditing.ts` | Pure drilled-boundary edit transform. It assigns/unassigns Input rows, declares/undeclares exports, prunes every collapsed consumer of a deleted export, and reconciles child graph + placeholder config + nested metadata + parent edges as one canonical result. |
+| `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts the pure boundary transform to React Flow connection/deletion events, the history-aware atomic graph setter, `parentGraphRef`, and undo/redo reconciliation while a drilled view is active. |
 | `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
 | `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
 | `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. |
@@ -62,6 +66,11 @@
   `sourcePort`/`targetPort`. Those fields retain an authored connect port while a submodel
   boundary temporarily consumes `sourceHandle`/`targetHandle`; API response types and outgoing
   `GraphPayload` use this shape explicitly.
+- **Request-facing document refs** — `sourceFileRef`, `sourceRevisionRef`, and
+  `preservedBlocksRef` mirror non-editable persisted metadata outside the
+  four-field undoable graph store. Load replaces all three; an accepted
+  WebSocket refresh replaces revision and preserved blocks for the same source
+  identity. Save/create/dissolve replace the revision only after success.
 - **`VcHistoryEntry`** (`{ kind: "vc"; label: string; undo: () => Promise<void>; redo: () => Promise<void> }`)
   — a version-control operation riding the same history stacks; carries its
   own async inverse. `HistoryEntry = GraphSnapshot | VcHistoryEntry`;
@@ -91,8 +100,16 @@
   staleness), `_status`, `_traceActive`, `_traceDimmed`, `_hoverDimmed`,
   `_traceValue`, `_traceMotionDisabled`, `_diffStatus`.
 - **`SubmodelNodeData`** extends `HauteNodeData` with
-  `config: { file?, childNodeIds?, inputPorts?, outputPorts? }`.
-- **`SubmodelPortData`** — `{ label, portDirection: "input" | "output", portName, _traceActive?, _traceDimmed?, _traceMotionDisabled? }`.
+  `config: { file?, childNodeIds?, inputPorts?, outputPorts?, outputPortLabels? }`;
+  `outputPortLabels` maps stable child ids to user-facing frame labels and is
+  optional for compatibility with older payloads.
+- **`SubmodelBoundaryPort`** — `{ id, label }`, separating the React Flow
+  handle id from the user-facing frame name.
+- **`SubmodelPortData`** — `{ label, portDirection: "input" | "output",
+  ports: SubmodelBoundaryPort[], externalNodeIds: string[], _traceActive?, _traceDimmed?,
+  _traceMotionDisabled? }`. The synthetic drill view contains one data object
+  per direction, not one per frame. `externalNodeIds` is the ordered, distinct
+  set of flat parent node ids whose trace steps collapse onto that card.
 - **`GraphContextValue`** (`useGraph.ts`) —
   `{ allNodes: SimpleNode[]; edges: SimpleEdge[]; submodels?; preamble? }`.
 - **`PanelGraphContextSnapshot`** (`usePanelGraphContext.ts`) —
@@ -312,6 +329,8 @@
     retries at 250ms base delay); the response is validated through
     `parsePipelineResponse` before touching the graph. On success, the hook
     canonicalises an omitted/null preamble to `""` and submodels to `{}`,
+    requires a non-empty, non-whitespace `source_revision` for a live document, copies
+    `preserved_blocks`/`source_revision` into their request-facing refs,
     updates the matching refs, then calls `loadGraphSnapshot` once with
     normalised edges and all four persisted fields. That one transition
     makes the response the clean saved baseline and clears history; no
@@ -368,12 +387,14 @@
     Snapshots the exact graph/preamble/submodels that will be sent
     (`captureGraphSnapshot`, `structuredClone`); snapshot cloning strips only
     React Flow UI fields and therefore retains `PipelineEdge.sourcePort`/
-    `targetPort`. It then stamps the attempt with
+    `targetPort`. The request also sends `preservedBlocksRef.current` unchanged.
+    It then stamps the attempt with
     `++saveRequestSeq.current`. On a successful `savePipeline()` response,
     calls `markSaved(savedSnapshot)` only if this request's id is still the
     newest applied (`saveRequestId > appliedSaveSeq.current`), then updates
     `useGitStore`'s last-save SHA and notifies its history-changed
-    subscribers. Never throws; resolves `false` on any failure after
+    subscribers and replaces `sourceRevisionRef.current` with the committed
+    `source_revision`. Never throws; resolves `false` on any failure after
     toasting the detail.
 19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
     `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
@@ -396,8 +417,9 @@
     every finite coordinate including `{x: 0, y: 0}` is retained. A
     `graphRefreshingRef` guard prevents React Flow's spurious
     `onSelectionChange` during the swap from clearing the open panel.
-    Nodes, edges, submodels/ref, and preamble are applied through raw
-    setters before `markSaved()`. A thrown error rolls all four back
+    Nodes, edges, submodels/ref, preamble, preserved blocks, and the required
+    live `source_revision` are applied before `markSaved()`. A thrown error
+    rolls the graph and request-facing refs back
     (best-effort) before re-throwing into the outer catch, which toasts.
     Reconnection backs off exponentially (`INITIAL_BACKOFF_MS` doubling to
     `MAX_BACKOFF_MS`, capped at `MAX_RETRIES` = 50). A `1008` close with a
@@ -405,22 +427,48 @@
     only a failed refresh emits the session-expired event. An abnormal (`1006`)
     pre-open close also attempts bootstrap before continuing the bounded retry
     loop, covering local backend restarts without putting a secret in a URL.
-20. **Submodel drill-in (`useSubmodelNavigation.handleDrillIntoSubmodel`).**
-    Loads the submodel's graph, snapshots the parent graph into
-    `parentGraphRef` and the outgoing view-stack entry (`_savedNodes`/
-    `_savedEdges`), then builds `SUBMODEL_PORT`-typed nodes: one input port
-    per distinct parent source feeding the submodel placeholder (grouped by
-    source, deduped by target child id via a `Set`, `in__`-prefixed handle
-    stripped for the child id), and one output port per distinct parent
-    target the placeholder feeds (grouped by target, `out__`-prefixed handle
-    stripped, edges lacking a `sourceHandle` are skipped since they carry no
-    child-id information). Lays the result out via ELK and re-fits after a
-    short delay.
-21. **Breadcrumb navigate (`handleBreadcrumbNavigate`).** Restores the
-    exact `_savedNodes`/`_savedEdges` captured on the way in for the target
-    depth (not a re-fetch); clears `parentGraphRef` only when returning all
-    the way to depth 0.
-22. **Comparison view mount (`ComparisonView`).** Freezes the current
+20. **Submodel drill-in and boundary editing.**
+    `useSubmodelNavigation.handleDrillIntoSubmodel` calls
+    `loadSubmodel(smName, sourceFileRef.current)`, snapshots the parent, and asks
+    `buildSubmodelViewGraph` for exactly one Input and one Output node. Input
+    rows are keyed by the collision-safe `(parent source id, sourceHandle)`
+    identity and include parent edges with either a valid `in__<child>` handle
+    or the deliberate unassigned `null` handle. Only valid mapped edges become
+    Input-row → child edges; an unassigned row renders without choosing a child.
+    Connecting it assigns one backing parent edge, or duplicates that logical
+    frame when it already feeds another child. Removing the last mapping turns
+    its backing edge back into an unassigned row rather than deleting the parent
+    connection. The Output has one default target handle. Placeholder
+    `outputPorts`, not downstream consumer count, project as child → Output
+    edges; each edge carries its child source port and exact parent consumers.
+
+    `useSubmodelBoundaryEditing` intercepts boundary connects and deletes before
+    the generic edge handler. A child → Output connection declares an export;
+    deleting it removes the declaration and every parent edge whose source
+    handle is `out__<child>`. Each gesture computes visible edges, embedded
+    child graph, placeholder config, parent boundary edges, and nested metadata
+    first, then commits them through one `setNodesAndEdgesAndSubmodels` call and
+    updates `parentGraphRef`. Synthetic edge/row backing metadata lets the same
+    pure reconciliation run after undo or redo so the ref cannot drift from the
+    restored snapshot. The projection records represented external ids for
+    trace collapsing, uses `submodel_file`, lays out with ELK, and re-fits.
+21. **Submodel create/dissolve.** Both requests send
+    `base_revision=sourceRevisionRef.current` and
+    `preserved_blocks=preservedBlocksRef.current`. Create changes no local
+    state until the response succeeds. Dissolve installs the returned graph's
+    merged `preamble` and `preserved_blocks` alongside its nodes, edges, and
+    submodels before updating `preambleRef`/`preservedBlocksRef`; this preserves
+    support code contributed by a hand-authored child on the next save. It also
+    consumes `submodel_file_deleted`/`retained_submodel_file` for its success
+    toast. Both mutations update `sourceRevisionRef` from the committed
+    response; `409` leaves graph and refs untouched and surfaces the backend
+    reload instruction.
+22. **Breadcrumb navigate (`handleBreadcrumbNavigate`).** Reconciles the
+    active drilled projection, then restores the synchronized parent graph
+    (not the stale entry snapshot and not a re-fetch). It clears
+    `parentGraphRef` only after returning all the way to depth 0, so declared
+    exports, removed consumers, and explicit input mappings appear on main.
+23. **Comparison view mount (`ComparisonView`).** Freezes the current
     nodes/edges into local state once on mount (so the right canvas stays
     stable even if the live pipeline changes underneath). Fetches the
     historical pipeline via `getCommitPipeline(sha)`; once both sides are
@@ -743,15 +791,15 @@ again through the editor and save paths.
     "No emitted frames" state, row/handle pairing and ordering, status/
     warning/trace adornments coexisting with rows, and medium/compact
     bodies unchanged).
-  - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — label/badge/
-    child-count rendering; per-port input and output handle rendering and
-    vertical positioning; file-path display and truncation; dashed-vs-solid
-    border by selected/`_traceActive`; dim and motion-disabled states.
-  - `frontend/src/__tests__/nodes/SubmodelPortNode.test.tsx` — input-vs-
-    output handle placement (source-right for input, target-left for
-    output); label fallback to `label` when `portName` is empty; trace
-    border/glow/dim/motion states; graceful rendering with a missing
-    `portDirection`.
+  - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — standard coloured
+    header/body rendering; label/badge/child-count and file-path display;
+    output label-map fallback; shared row typography; row-owned stable output
+    handles; zero-output non-connectability; hidden input handles; dashed-vs-
+    solid border and trace/dim/motion states.
+  - `frontend/src/__tests__/nodes/SubmodelPortNode.test.tsx` — the single
+    composite Input/Output cards; ordered multi-frame labels; per-row
+    source-right vs target-left handle ids and nesting; shared typography;
+    empty states; and trace border/glow/dim/motion states.
   - `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx` — one labelled
     source handle per eligible frame from one frame up, ids matching the
     raw labels (the sole-frame labelled handle explicitly pinned);
@@ -931,13 +979,16 @@ again through the editor and save paths.
     target depth, restores/clears the parent source file, no-ops when the
     target depth isn't strictly above the top); dissolve (API call + node
     update, error toast on failure).
-  - `frontend/src/hooks/__tests__/useSubmodelNavigation.gaps.test.ts` — input-port node+edge synthesis
-    from a parent cross-boundary edge; label fallback to source id when
-    `targetHandle` is missing and the child is absent; output-port
-    synthesis; output edges skipped when their child isn't part of the
-    submodel graph or lack a `sourceHandle`; `parentGraphRef` cleared only
-    when breadcrumb-navigating to depth 0; drill-in no-ops when the API
-    returns no graph.
+  - `frontend/src/hooks/__tests__/useSubmodelNavigation.gaps.test.ts` and
+    `frontend/src/utils/__tests__/submodelViewGraph.test.ts` — exactly one
+    Input/Output node; frame-level input identity and labels; one input frame
+    feeding several children; exported-child dedup across parent consumers;
+    child label resolution; authored child-handle restoration; stale/malformed
+    boundary omission with both empty cards retained; navigation ref behavior;
+    and the no-graph API response no-op.
+  - `frontend/src/hooks/__tests__/useTracing.test.ts` — flat external node ids
+    represented by a composite boundary resolve to that Input/Output card for
+    active/dim trace projection.
 - **Utils — `frontend/src/utils/__tests__/`:**
   - `frontend/src/utils/__tests__/buildGraph.test.ts` — payload serialisation (zeroed position,
     `type`/`data.nodeType` fallback precedence, submodels/preamble

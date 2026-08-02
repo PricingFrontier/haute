@@ -40,6 +40,8 @@ StreamingChunkSize = Annotated[
     Field(ge=1, le=10_000_000),
 ]
 
+RevisionToken = Annotated[str, Field(min_length=1, pattern=r"^\S+$")]
+
 JobStatus = Literal[
     "running",
     "completed",
@@ -214,6 +216,7 @@ class SavePipelineResponse(BaseModel):
     status: str = "saved"
     file: str
     pipeline_name: str
+    source_revision: RevisionToken
     # Non-fatal warnings surfaced to the UI (e.g. sanitized-name
     # collisions that dropped a node position).  An empty list means
     # "no issues" and callers can rely on truthiness for UX branches.
@@ -1295,7 +1298,9 @@ class CreateSubmodelRequest(BaseModel):
     node_ids: list[str]
     graph: Graph
     preamble: str = ""
+    preserved_blocks: list[str] = Field(default_factory=list)
     source_file: str = ""
+    base_revision: RevisionToken
     pipeline_name: str = "main"
     pipeline_description: str | None = None
 
@@ -1304,6 +1309,7 @@ class CreateSubmodelResponse(BaseModel):
     status: str = "ok"
     submodel_file: str = ""
     parent_file: str = ""
+    source_revision: RevisionToken
     graph: Graph = Field(default_factory=Graph)
 
 
@@ -1311,7 +1317,9 @@ class DissolveSubmodelRequest(BaseModel):
     submodel_name: str
     graph: Graph
     preamble: str = ""
+    preserved_blocks: list[str] = Field(default_factory=list)
     source_file: str = ""
+    base_revision: RevisionToken
     pipeline_name: str = "main"
     pipeline_description: str | None = None
 
@@ -1319,11 +1327,15 @@ class DissolveSubmodelRequest(BaseModel):
 class DissolveSubmodelResponse(BaseModel):
     status: str = "ok"
     graph: Graph = Field(default_factory=Graph)
+    source_revision: RevisionToken
+    submodel_file_deleted: bool
+    retained_submodel_file: str | None
 
 
 class SubmodelGraphResponse(BaseModel):
     status: str = "ok"
     submodel_name: str = ""
+    submodel_file: str
     graph: Graph = Field(default_factory=Graph)
 
 

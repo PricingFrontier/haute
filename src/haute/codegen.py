@@ -667,8 +667,12 @@ def _validate_duplicate_node_inputs(
 def _order_edge_join_incoming_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
+    *,
+    source_id_for_edge: Callable[[GraphEdge], str] | None = None,
 ) -> list[GraphEdge]:
     """Order each edgeJoin node's incoming edges as base then join."""
+    # A resolver changes only the identity used for role validation; the
+    # returned edges retain their canonical placeholder endpoints and handles.
     incoming_by_target: dict[str, list[GraphEdge]] = {}
     for edge in edges:
         incoming_by_target.setdefault(edge.target, []).append(edge)
@@ -687,7 +691,10 @@ def _order_edge_join_incoming_edges(
             ordered.extend(group)
             emitted_edge_join_targets.add(edge.target)
             continue
-        source_ids = [incoming.source for incoming in group]
+        source_ids = [
+            source_id_for_edge(incoming) if source_id_for_edge is not None else incoming.source
+            for incoming in group
+        ]
         target_handles = [incoming.targetHandle for incoming in group]
         base_index, join_index = resolve_edge_join_role_indices(
             target_node.data.config,
@@ -730,6 +737,7 @@ def _generate_pipeline_lines(
     node_source_func_names: dict[str, list[str]] | None = None,
     node_source_ids: dict[str, list[str]] | None = None,
     preserved_blocks: list[str] | None = None,
+    outputs: list[str] | None = None,
     submodel_imports: list[str] | None = None,
     node_to_code_fn: _NodeCodeFn = _node_to_code,
     dedup_connects: bool = False,
@@ -750,6 +758,11 @@ def _generate_pipeline_lines(
     # side recovers the exact name from the ``haute.Pipeline``/``Submodel``
     # constructor literal below, so re-saving is a fixpoint.
     if kind == "submodel":
+        outputs_kwarg = (
+            ""
+            if outputs is None
+            else f", outputs=[{', '.join(_safe_str(output) for output in outputs)}]"
+        )
         lines = [
             f'"""Submodel: {_sanitize_description(name)}"""',
             "",
@@ -761,7 +774,10 @@ def _generate_pipeline_lines(
             lines.append(preamble.rstrip())
         lines += [
             "",
-            f"{obj_name} = haute.Submodel({_safe_str(name)}, description={description!r})",
+            (
+                f"{obj_name} = haute.Submodel({_safe_str(name)}, "
+                f"description={description!r}{outputs_kwarg})"
+            ),
             "",
             "",
         ]
@@ -1073,7 +1089,7 @@ def graph_to_code_multi(
 
     nodes = graph.nodes
     node_map = {node.id: node for node in nodes}
-    edges = _order_edge_join_incoming_edges(graph.edges, node_map)
+    edges = list(graph.edges)
 
     # Root-level nodes: not children and not the submodel placeholder itself
     root_nodes = [n for n in nodes if n.id not in all_child_ids and n.id not in submodel_node_ids]
@@ -1112,6 +1128,51 @@ def graph_to_code_multi(
         sm_node_id = f"submodel__{sm_name}"
         sm_child_ids = {n.id for n in sm_nodes}
         submodel_child_ids[sm_node_id] = sm_child_ids
+        raw_output_ports = sm_meta.get("outputPorts")
+        if raw_output_ports is None:
+            inferred_output_ports: list[str] = []
+            for edge in edges:
+                if edge.source != sm_node_id:
+                    continue
+                output_handle = edge.sourceHandle or ""
+                if not output_handle.startswith("out__"):
+                    continue
+                output_child_id = output_handle.removeprefix("out__")
+                if output_child_id and output_child_id not in inferred_output_ports:
+                    inferred_output_ports.append(output_child_id)
+            raw_output_ports = inferred_output_ports
+        if not isinstance(raw_output_ports, list):
+            raise ParseError(
+                "Submodel outputPorts must be an ordered list of child node ids.",
+                submodel=sm_name,
+                output_ports=raw_output_ports,
+            )
+
+        declared_output_ids: list[str] = []
+        seen_output_ids: set[str] = set()
+        for output_id in raw_output_ports:
+            if not isinstance(output_id, str) or not output_id:
+                raise ParseError(
+                    "Each submodel output must be a non-empty child node id.",
+                    submodel=sm_name,
+                    output=output_id,
+                )
+            if output_id in seen_output_ids:
+                raise ParseError(
+                    "Submodel outputPorts contain a duplicate output.",
+                    submodel=sm_name,
+                    output=output_id,
+                )
+            if output_id not in sm_child_ids:
+                raise ParseError(
+                    "Submodel output references a child node that does not exist.",
+                    submodel=sm_name,
+                    output=output_id,
+                    known_children=sorted(sm_child_ids),
+                )
+            seen_output_ids.add(output_id)
+            declared_output_ids.append(output_id)
+        declared_output_names = [sm_id_to_func[output_id] for output_id in declared_output_ids]
         for edge in edges:
             if edge.target != sm_node_id:
                 continue
@@ -1229,6 +1290,7 @@ def graph_to_code_multi(
             node_source_func_names=sm_node_source_func_names,
             node_source_ids=sm_node_source_ids,
             preserved_blocks=sm_graph.get("preserved_blocks") or None,
+            outputs=declared_output_names,
             node_to_code_fn=_submodel_node_to_code,
             obj_name="submodel",
         )
@@ -1287,6 +1349,18 @@ def graph_to_code_multi(
                 known_children=sorted(known_children),
             )
         return child_id
+
+    edges = _order_edge_join_incoming_edges(
+        edges,
+        node_map,
+        source_id_for_edge=lambda edge: _resolve_submodel_endpoint(
+            edge,
+            edge.source,
+            edge.sourceHandle or "",
+            prefix="out__",
+            endpoint="source",
+        ),
+    )
 
     # Build source names per root node from root-level edges AND
     # cross-boundary edges (resolving submodel handles to child node names).

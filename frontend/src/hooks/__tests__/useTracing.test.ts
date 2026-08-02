@@ -408,6 +408,58 @@ describe("useTracing", () => {
     expect(statusMap.n2).toBe("error")
   })
 
+  it("maps flat external trace steps onto composite boundary cards", async () => {
+    const inputBoundary = makeNode("boundary-input", NODE_TYPES.SUBMODEL_PORT, {
+      data: {
+        label: "INPUT",
+        nodeType: NODE_TYPES.SUBMODEL_PORT,
+        portDirection: "input",
+        ports: [],
+        externalNodeIds: ["external-source-a", "external-source-b"],
+      },
+    })
+    const child = makeNode("child")
+    const outputBoundary = makeNode("boundary-output", NODE_TYPES.SUBMODEL_PORT, {
+      data: {
+        label: "OUTPUT",
+        nodeType: NODE_TYPES.SUBMODEL_PORT,
+        portDirection: "output",
+        ports: [],
+        externalNodeIds: ["external-target"],
+      },
+    })
+    const params = makeParams({
+      nodes: [inputBoundary, child, outputBoundary],
+      edges: [
+        makeEdge(inputBoundary.id, child.id),
+        makeEdge(child.id, outputBoundary.id),
+      ],
+      selectedNode: child,
+    })
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: makeTrace(["external-source-b", "child", "external-target"]),
+    })
+
+    const { result } = renderHook(() => useTracing(params))
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+
+    const projectedData = Object.fromEntries(
+      result.current.nodesWithStatus.map((node) => [node.id, node.data]),
+    )
+    expect(projectedData["boundary-input"]).toMatchObject({
+      _traceActive: true,
+      _traceDimmed: false,
+    })
+    expect(projectedData["boundary-output"]).toMatchObject({
+      _traceActive: true,
+      _traceDimmed: false,
+    })
+  })
+
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {
     const trace = {
       steps: [{ node_id: "n1", node_name: "N1", node_type: "polars", schema_diff: { columns_added: [], columns_removed: [], columns_modified: [], columns_passed: [] }, input_values: {}, output_values: {}, topological_rank: 0, column_relevant: true }],

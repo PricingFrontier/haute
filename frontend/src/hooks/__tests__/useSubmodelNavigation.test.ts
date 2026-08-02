@@ -28,11 +28,15 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
     submodelsRef: { current: {} as Record<string, unknown> },
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
+    setSubmodelsRaw: vi.fn(),
+    setPreamble: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
     preambleRef: { current: "" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
+    sourceRevisionRef: { current: "parent-rev-1" },
+    preservedBlocksRef: { current: ["import numpy as np"] },
     pipelineNameRef: { current: "test" },
     fitView: vi.fn(),
     ...overrides,
@@ -65,6 +69,7 @@ describe("useSubmodelNavigation", () => {
       status: "ok",
       submodel_file: "pricing.py",
       parent_file: "test.py",
+      source_revision: "parent-rev-2",
       graph: {
         nodes: [makeNode("submodel__pricing")],
         edges: [],
@@ -84,6 +89,28 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
+  it("creates against the current source revision and preserves source blocks", async () => {
+    mockCreate.mockResolvedValue({
+      status: "ok",
+      submodel_file: "modules/pricing.py",
+      parent_file: "main.py",
+      source_revision: "parent-rev-2",
+      graph: { nodes: [], edges: [], submodels: {} },
+    } as Awaited<ReturnType<typeof createSubmodel>>)
+    const params = makeParams()
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleCreateSubmodel("pricing", ["n1"])
+    })
+
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({
+      base_revision: "parent-rev-1",
+      preserved_blocks: ["import numpy as np"],
+    }))
+    expect(params.sourceRevisionRef.current).toBe("parent-rev-2")
+  })
+
   it("handleCreateSubmodel shows error toast on failure", async () => {
     mockCreate.mockRejectedValue(new Error("Create failed"))
     const params = makeParams()
@@ -100,6 +127,7 @@ describe("useSubmodelNavigation", () => {
     mockLoad.mockResolvedValue({
       status: "ok",
       submodel_name: "pricing",
+      submodel_file: "modules/pricing.py",
       graph: {
         nodes: [makeNode("child1")],
         edges: [],
@@ -121,6 +149,7 @@ describe("useSubmodelNavigation", () => {
     mockLoad.mockResolvedValue({
       status: "ok",
       submodel_name: "pricing",
+      submodel_file: "modules/pricing.py",
       graph: { nodes: [makeNode("child1")], edges: [] },
     })
     const params = makeParams({
@@ -133,6 +162,24 @@ describe("useSubmodelNavigation", () => {
     })
 
     expect(params.sourceFileRef.current).toBe("modules/pricing.py")
+  })
+
+  it("loads using the parent source file and trusts the backend submodel path", async () => {
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      submodel_file: "generated/submodels/pricing_v2.py",
+      graph: { nodes: [makeNode("child1")], edges: [] },
+    } as Awaited<ReturnType<typeof loadSubmodel>>)
+    const params = makeParams({ sourceFileRef: { current: "pipelines/parent.py" } })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+    })
+
+    expect(mockLoad).toHaveBeenCalledWith("pricing", "pipelines/parent.py")
+    expect(params.sourceFileRef.current).toBe("generated/submodels/pricing_v2.py")
   })
 
   it("handleDrillIntoSubmodel shows error toast on failure", async () => {
@@ -151,6 +198,7 @@ describe("useSubmodelNavigation", () => {
     mockLoad.mockResolvedValue({
       status: "ok",
       submodel_name: "pricing",
+      submodel_file: "modules/pricing.py",
       graph: { nodes: [makeNode("child1")], edges: [] },
     })
     const params = makeParams()
@@ -172,11 +220,53 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
+  it("handleBreadcrumbNavigate restores the reconciled parent graph and metadata", async () => {
+    vi.useFakeTimers()
+    mockLoad.mockResolvedValue({
+      status: "ok",
+      submodel_name: "pricing",
+      submodel_file: "modules/pricing.py",
+      graph: { nodes: [makeNode("child1")], edges: [] },
+    })
+    const params = makeParams()
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+    })
+
+    const updatedNodes = [makeNode("root-updated")]
+    const updatedEdges: Edge[] = [
+      { id: "updated-edge", source: "upstream", target: "submodel__pricing" },
+    ]
+    const updatedSubmodels = {
+      pricing: { file: "modules/pricing.py", outputPorts: ["child1"] },
+    }
+    params.parentGraphRef.current = {
+      nodes: updatedNodes,
+      edges: updatedEdges,
+      submodels: updatedSubmodels,
+    }
+
+    act(() => {
+      result.current.handleBreadcrumbNavigate(0)
+    })
+
+    expect(params.setNodesRaw).toHaveBeenLastCalledWith(updatedNodes)
+    expect(params.setEdgesRaw).toHaveBeenLastCalledWith(
+      expect.arrayContaining([expect.objectContaining({ id: "updated-edge" })]),
+    )
+    expect(params.setSubmodelsRaw).toHaveBeenLastCalledWith(updatedSubmodels)
+    expect(params.submodelsRef.current).toEqual(updatedSubmodels)
+    vi.useRealTimers()
+  })
+
   it("handleBreadcrumbNavigate restores the parent source file when returning to main", async () => {
     vi.useFakeTimers()
     mockLoad.mockResolvedValue({
       status: "ok",
       submodel_name: "pricing",
+      submodel_file: "modules/pricing.py",
       graph: { nodes: [makeNode("child1")], edges: [] },
     })
     const params = makeParams({
@@ -202,6 +292,7 @@ describe("useSubmodelNavigation", () => {
     mockLoad.mockResolvedValue({
       status: "ok",
       submodel_name: "pricing",
+      submodel_file: "modules/pricing.py",
       graph: { nodes: [makeNode("child1")], edges: [] },
     })
     const params = makeParams({
@@ -237,21 +328,65 @@ describe("useSubmodelNavigation", () => {
     vi.useFakeTimers()
     mockDissolve.mockResolvedValue({
       status: "ok",
+      source_revision: "parent-rev-2",
+      submodel_file_deleted: true,
+      retained_submodel_file: null,
       graph: {
         nodes: [makeNode("n1"), makeNode("n2")],
         edges: [],
       },
     })
-    const params = makeParams()
+    const params = makeParams({
+      submodelsRef: { current: { pricing: { file: "modules/pricing.py" } } },
+    })
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleDissolveSubmodel("pricing")
     })
     expect(mockDissolve).toHaveBeenCalledOnce()
     expect(params.setNodesRaw).toHaveBeenCalled()
+    expect(params.submodelsRef.current).toEqual({})
+    expect(params.setSubmodelsRaw).toHaveBeenCalledWith({})
     const toasts = useToastStore.getState().toasts
     expect(toasts.some((t) => t.type === "success" && t.text.includes("dissolved"))).toBe(true)
     vi.useRealTimers()
+  })
+
+  it("dissolves with concurrency metadata and reports retained submodel code", async () => {
+    mockDissolve.mockResolvedValue({
+      status: "ok",
+      source_revision: "parent-rev-2",
+      retained_submodel_file: "modules/pricing.py",
+      submodel_file_deleted: false,
+      graph: {
+        nodes: [],
+        edges: [],
+        submodels: {},
+        preamble: "MERGED = 1",
+        preserved_blocks: ["MERGED_KEEP = 2"],
+      },
+    } as Awaited<ReturnType<typeof dissolveSubmodel>>)
+    const params = makeParams({
+      preambleRef: { current: "PARENT = 1" },
+      preservedBlocksRef: { current: ["PARENT_KEEP = 2"] },
+    })
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+
+    await act(async () => {
+      await result.current.handleDissolveSubmodel("pricing")
+    })
+
+    expect(mockDissolve).toHaveBeenCalledWith(expect.objectContaining({
+      base_revision: "parent-rev-1",
+      preserved_blocks: ["PARENT_KEEP = 2"],
+    }))
+    expect(params.sourceRevisionRef.current).toBe("parent-rev-2")
+    expect(params.setPreamble).toHaveBeenCalledWith("MERGED = 1")
+    expect(params.preambleRef.current).toBe("MERGED = 1")
+    expect(params.preservedBlocksRef.current).toEqual(["MERGED_KEEP = 2"])
+    expect(useToastStore.getState().toasts.some((toast) =>
+      toast.type === "success" && toast.text.includes("retained") && toast.text.includes("modules/pricing.py"),
+    )).toBe(true)
   })
 
   it("handleDissolveSubmodel shows error toast on failure", async () => {

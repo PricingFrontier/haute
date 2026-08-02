@@ -165,6 +165,12 @@ here. A timeout that carries a still-running background task takes precedence ov
 supersession generation, so it remains a 504 and retains both the key and execution context
 until the worker exits.
 
+Live pipeline graph responses carry `source_revision`, a deterministic digest
+of the parsed document plus the parent and referenced child source/sidecar
+states. Successful save-shaped operations return the newly committed revision.
+Submodel create/dissolve use it as an optimistic precondition so a serialized
+but stale request cannot overwrite a newer document.
+
 **File browsing and schema inspection.** `GET /api/files` lists a directory for the file
 picker; when its `extensions` query is omitted, the effective readable extensions come from
 the installed I/O registry. Directory items omit file size in the backend model and therefore
@@ -237,7 +243,8 @@ become diagnostic-unavailable rather than a fabricated success.
   waiter never starts running — the alternative (semaphore-only limiting) does not, by
   itself, prevent stale results winning a race with fresh ones.
 - **Transactional core, post-commit cleanup.** Generated code, config JSON sidecars, the
-  position sidecar, and requested submodel deletions form the rollback-covered
+  parent position sidecar, managed child position/ownership sidecars, and
+  requested submodel source-plus-sidecar deletions form the rollback-covered
   transaction: previous bytes are snapshotted (or a file is recorded as new) before mutation,
   and a failure restores/deletes every touched path best-effort before re-raising. Stale-config
   deletion and git-ledger capture occur only after that transaction succeeds and are not
@@ -245,6 +252,15 @@ become diagnostic-unavailable rather than a fabricated success.
   already durable; an unexpected non-`GitError` still propagates. API-input cache mirroring is
   independently idempotent/best-effort: failures are logged and partial cache state is left
   for a later save to repair, outside `_TouchedFile` rollback.
+- **Generated child ownership is durable but never inferred.** A GUI-created
+  submodel sidecar records its canonical `managed_parent`. Save preserves that
+  marker and child positions only when the existing sidecar already names the
+  same parent, or when the create route supplies an explicit transaction-local
+  claim for a brand-new child whose source and sidecar both passed no-clobber.
+  A request body's `managed=true` flag alone is rejected and parsing or saving
+  a hand-authored child never creates the marker. Creation may require a
+  module output to be absent, with a case-insensitive preflight returning
+  `409` before any write.
 - **Self-write tracking instead of debounce-only.** The file watcher's 300ms debounce alone
   cannot distinguish a server-originated write from a user's IDE edit that happens to land in
   the same window. Every write the server makes is registered by absolute path just before
@@ -341,6 +357,11 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   the new graph no longer references) is deliberately *not* part of the transaction — it only
   runs after every write has succeeded, because those deletions are non-recoverable; a
   cleanup that never got the chance to run is simply retried on the next successful save.
+- **Write serialization is process-local, not optimistic concurrency.** The
+  shared `asyncio.Lock` prevents interleaving only inside one server process.
+  Routes that accept `base_revision` must compare it under that lock before
+  mutation; a mismatch returns `409`. Multiple Uvicorn worker processes remain
+  outside the lock contract.
 - **The event bus isolates handler failures**: a raising subscriber is logged
   (`event_bus_handler_failed`, with the handler's qualname) and the remaining subscribers
   still receive the event — the file watcher's own operation is never blocked by a

@@ -406,24 +406,43 @@ export default function useTracing({
     return map
   }, [nodes])
 
-  // Map external parent node IDs → port node IDs (separate in/out to avoid collision)
-  const parentToPortId = useMemo(() => {
-    const inMap = new Map<string, string>()
-    const outMap = new Map<string, string>()
-    for (const n of nodes) {
-      if (n.id.startsWith("port_in__")) {
-        inMap.set(n.id.replace("port_in__", ""), n.id)
-      } else if (n.id.startsWith("port_out__")) {
-        outMap.set(n.id.replace("port_out__", ""), n.id)
+  // Map external parent node IDs to the composite boundary card that represents
+  // them, keeping Input and Output separate to avoid collisions.
+  const parentToBoundaryId = useMemo(() => {
+    const inputMap = new Map<string, string>()
+    const outputMap = new Map<string, string>()
+    for (const node of nodes) {
+      const data = nodeData(node)
+      if (data.nodeType !== NODE_TYPES.SUBMODEL_PORT) continue
+      const externalNodeIds = data.externalNodeIds
+      if (!Array.isArray(externalNodeIds)) continue
+      const targetMap =
+        data.portDirection === "input"
+          ? inputMap
+          : data.portDirection === "output"
+            ? outputMap
+            : null
+      if (!targetMap) continue
+      for (const externalNodeId of externalNodeIds) {
+        if (
+          typeof externalNodeId === "string" &&
+          externalNodeId.length > 0 &&
+          !targetMap.has(externalNodeId)
+        ) {
+          targetMap.set(externalNodeId, node.id)
+        }
       }
     }
-    return { inMap, outMap }
+    return { inputMap, outputMap }
   }, [nodes])
 
   const resolveTraceId = useCallback(
     (id: string) =>
-      childToSubmodelId.get(id) || parentToPortId.inMap.get(id) || parentToPortId.outMap.get(id) || id,
-    [childToSubmodelId, parentToPortId],
+      childToSubmodelId.get(id) ||
+      parentToBoundaryId.inputMap.get(id) ||
+      parentToBoundaryId.outputMap.get(id) ||
+      id,
+    [childToSubmodelId, parentToBoundaryId],
   )
 
   const allTraceNodeIds = useMemo(() => {

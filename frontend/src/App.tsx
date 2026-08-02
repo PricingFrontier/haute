@@ -10,6 +10,7 @@ import {
   type Node,
   type Edge,
   type Connection,
+  type EdgeChange,
   BackgroundVariant,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -44,6 +45,7 @@ import useWebSocketSync from "./hooks/useWebSocketSync"
 import usePipelineAPI from "./hooks/usePipelineAPI"
 import useTracing from "./hooks/useTracing"
 import useSubmodelNavigation from "./hooks/useSubmodelNavigation"
+import useSubmodelBoundaryEditing from "./hooks/useSubmodelBoundaryEditing"
 import useKeyboardShortcuts from "./hooks/useKeyboardShortcuts"
 import useNodeHandlers from "./hooks/useNodeHandlers"
 import useEdgeHandlers from "./hooks/useEdgeHandlers"
@@ -334,6 +336,8 @@ function FlowEditor() {
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
   const sourceFileRef = useRef("")
+  const sourceRevisionRef = useRef("")
+  const preservedBlocksRef = useRef<string[]>([])
   const [currentSourceFile, setCurrentSourceFile] = useState<string | null>(null)
   const nodeIdCounter = useRef(0)
 
@@ -381,7 +385,7 @@ function FlowEditor() {
     selectedNode,
     graphRef, parentGraphRef, submodelsRef,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble,
-    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
+    preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
     nodeIdCounter,
   })
 
@@ -497,7 +501,7 @@ function FlowEditor() {
 
   const wsStatus = useWebSocketSync({
     setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble, preambleRef,
-    submodelsRef, graphRefreshingRef, sourceFileRef, nodeIdCounter, fitView,
+    submodelsRef, graphRefreshingRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, nodeIdCounter, fitView,
     enabled: !loading,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
@@ -525,9 +529,30 @@ function FlowEditor() {
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     setLastSelectedId,
     setCurrentSourceFile,
-    preambleRef, descriptionRef, sourceFileRef, pipelineNameRef,
+    preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, setPreamble,
     fitView,
   })
+
+  const activeView = viewStack[viewStack.length - 1]
+  const activeSubmodelName = activeView?.type === "submodel" ? activeView.name : null
+  const {
+    commitBoundaryConnection,
+    deleteBoundaryEdge,
+    onBoundaryEdgesChange,
+  } = useSubmodelBoundaryEditing({
+    activeSubmodelName,
+    nodes,
+    edges,
+    submodels,
+    graphRef,
+    parentGraphRef,
+    submodelsRef,
+    setNodesAndEdgesAndSubmodels,
+  })
+  const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
+    if (onBoundaryEdgesChange(changes)) return
+    onEdgesChange(changes)
+  }, [onBoundaryEdgesChange, onEdgesChange])
 
   useKeyboardShortcuts({
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
@@ -832,22 +857,34 @@ function FlowEditor() {
     return null
   }, [])
 
+  const isBoundaryConnection = useCallback((connection: Connection | Edge) => {
+    if (!activeSubmodelName) return false
+    return graphRef.current.nodes.some(
+      (node) =>
+        (node.id === connection.source || node.id === connection.target)
+        && nodeData(node).nodeType === NODE_TYPES.SUBMODEL_PORT,
+    )
+  }, [activeSubmodelName, graphRef])
+
   const isValidConnection = useCallback((connection: Connection | Edge) => {
+    if (isBoundaryConnection(connection)) return true
     return validatePipelineConnection(
       connection,
       panelGraph.allNodes,
       panelGraph.edges,
       submodelsRef.current,
     ).ok
-  }, [panelGraph])
+  }, [isBoundaryConnection, panelGraph])
 
-  const validateConnection = useCallback((connection: Connection): ConnectionValidationResult =>
-    validatePipelineConnection(
+  const validateConnection = useCallback((connection: Connection): ConnectionValidationResult => {
+    if (isBoundaryConnection(connection)) return { ok: true }
+    return validatePipelineConnection(
       connection,
       panelGraph.allNodes,
       panelGraph.edges,
       submodelsRef.current,
-    ), [panelGraph])
+    )
+  }, [isBoundaryConnection, panelGraph])
 
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
@@ -866,6 +903,8 @@ function FlowEditor() {
     graphRefreshingRef,
     findEdgeIdAtPoint,
     validateConnection,
+    commitBoundaryConnection,
+    deleteBoundaryEdge,
   })
 
   const presentedEdgeJoinCandidateEdgeId = useMemo(
@@ -1116,7 +1155,7 @@ function FlowEditor() {
                 nodes={nodesWithStatus}
                 edges={edgesWithEdgeJoinCandidate}
                 onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
+                onEdgesChange={handleEdgesChange}
                 onConnect={onConnect}
                 onConnectStart={onConnectStart}
                 onConnectEnd={onConnectEnd}

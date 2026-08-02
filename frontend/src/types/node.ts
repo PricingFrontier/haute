@@ -103,14 +103,33 @@ export interface SubmodelNodeData extends HauteNodeData {
     childNodeIds?: string[]
     inputPorts?: string[]
     outputPorts?: string[]
+    outputPortLabels?: Record<string, string>
   }
 }
 export type SubmodelFlowNode = Node<SubmodelNodeData>
 
+export interface SubmodelBoundaryPort {
+  id: string
+  label: string
+  /** Every persisted parent edge represented by this logical input frame. */
+  parentEdges?: PipelineEdge[]
+}
+
+export type SubmodelBoundaryEdgeData = {
+  submodelBoundary: {
+    direction: "input"
+    parentEdge: PipelineEdge
+  } | {
+    direction: "output"
+    parentConsumerEdges: PipelineEdge[]
+  }
+}
+
 export interface SubmodelPortData extends Record<string, unknown> {
   label: string
   portDirection: "input" | "output"
-  portName: string
+  ports: SubmodelBoundaryPort[]
+  externalNodeIds: string[]
   _traceActive?: boolean
   _traceDimmed?: boolean
   _traceMotionDisabled?: boolean

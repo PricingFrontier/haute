@@ -100,6 +100,8 @@ function makeHookParams() {
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -146,6 +148,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             // Note: "doomed_42" is NOT in the new nodes list
             nodes: [{ id: "survivor_1", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
@@ -176,6 +180,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             nodes: [
               { id: "keeper_1", position: { x: 10, y: 10 }, data: {} },
               { id: "other", position: { x: 20, y: 20 }, data: {} },
@@ -206,6 +212,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             // Missing "gone_b"
             nodes: [
               { id: "a", position: { x: 10, y: 10 }, data: {} },
@@ -235,6 +243,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             nodes: [
               { id: "a", position: { x: 10, y: 10 }, data: {} },
               { id: "b", position: { x: 20, y: 20 }, data: {} },
@@ -268,6 +278,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             nodes: [{ id: "a", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
           },

@@ -147,6 +147,8 @@ export interface PipelineResponse {
   warning?: string | null
   sources?: string[]
   active_source?: string
+  preserved_blocks: string[]
+  source_revision: string | null
 }
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -177,6 +179,23 @@ export function expectString(parser: string, value: unknown, field: string): str
     throw new Error(`${parser}: expected ${field} to be a string, got ${value === undefined ? "missing" : typeName(value)}`)
   }
   return value
+}
+
+export function expectNonBlankString(parser: string, value: unknown, field: string): string {
+  const parsed = expectString(parser, value, field)
+  if (parsed.trim() === "") {
+    throw new Error(`${parser}: expected ${field} to be non-blank`)
+  }
+  return parsed
+}
+
+function expectNullableNonBlankString(
+  parser: string,
+  value: unknown,
+  field: string,
+): string | null {
+  if (value === null) return null
+  return expectNonBlankString(parser, value, field)
 }
 
 export function expectNumber(parser: string, value: unknown, field: string): number {
@@ -956,16 +975,24 @@ export function isPipelineResponse(value: unknown): value is PipelineResponse {
       if (typeof item !== "string") return false
     }
   }
+  if (!Array.isArray(value.preserved_blocks) || !value.preserved_blocks.every((item) => typeof item === "string")) return false
+  if (
+    value.source_revision !== null
+    && (typeof value.source_revision !== "string" || value.source_revision.trim() === "")
+  ) return false
   return true
 }
 
 export function parsePipelineResponse(value: unknown): PipelineResponse {
+  // Integrity metadata is required for all graph documents.
   const obj = expectPlainObject("parsePipelineResponse", value)
   const nodes = expectArray("parsePipelineResponse", obj.nodes, "field `nodes`")
     .map(parsePipelineNode)
   const edges = expectArray("parsePipelineResponse", obj.edges, "field `edges`")
 
   return {
+    preserved_blocks: parseStringArray("parsePipelineResponse", obj.preserved_blocks, "preserved_blocks"),
+    source_revision: expectNullableNonBlankString("parsePipelineResponse", obj.source_revision, "source_revision"),
     nodes,
     edges: edges as PipelineEdge[],
     pipeline_name: obj.pipeline_name === undefined ? undefined : optionalNullableString("parsePipelineResponse", obj, "pipeline_name"),
@@ -995,6 +1022,7 @@ function parseNestedPipelineResponse(
 export function parseSavePipelineResponse(value: unknown): SavePipelineResponse {
   const obj = expectPlainObject("parseSavePipelineResponse", value)
   return {
+    source_revision: expectNonBlankString("parseSavePipelineResponse", obj.source_revision, "source_revision"),
     status: optionalString("parseSavePipelineResponse", obj, "status", "saved"),
     file: expectString("parseSavePipelineResponse", obj.file, "field `file`"),
     pipeline_name: expectString("parseSavePipelineResponse", obj.pipeline_name, "field `pipeline_name`"),
@@ -1007,9 +1035,10 @@ export function parseSubmodelCreateResponse(value: unknown): SubmodelCreateRespo
   const obj = expectPlainObject("parseSubmodelCreateResponse", value)
   return {
     status: optionalString("parseSubmodelCreateResponse", obj, "status", "ok"),
-    submodel_file: optionalString("parseSubmodelCreateResponse", obj, "submodel_file"),
-    parent_file: optionalString("parseSubmodelCreateResponse", obj, "parent_file"),
+    submodel_file: expectNonBlankString("parseSubmodelCreateResponse", obj.submodel_file, "submodel_file"),
+    parent_file: expectNonBlankString("parseSubmodelCreateResponse", obj.parent_file, "parent_file"),
     graph: parseNestedPipelineResponse("parseSubmodelCreateResponse", obj, "graph"),
+    source_revision: expectNonBlankString("parseSubmodelCreateResponse", obj.source_revision, "source_revision"),
   }
 }
 
@@ -1019,6 +1048,7 @@ export function parseSubmodelGraphResponse(value: unknown): SubmodelGraphRespons
     status: optionalString("parseSubmodelGraphResponse", obj, "status", "ok"),
     submodel_name: optionalString("parseSubmodelGraphResponse", obj, "submodel_name"),
     graph: parseNestedPipelineResponse("parseSubmodelGraphResponse", obj, "graph"),
+    submodel_file: expectNonBlankString("parseSubmodelGraphResponse", obj.submodel_file, "submodel_file"),
   }
 }
 
@@ -1027,6 +1057,13 @@ export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelR
   return {
     status: optionalString("parseDissolveSubmodelResponse", obj, "status", "ok"),
     graph: parseNestedPipelineResponse("parseDissolveSubmodelResponse", obj, "graph"),
+    source_revision: expectNonBlankString("parseDissolveSubmodelResponse", obj.source_revision, "source_revision"),
+    submodel_file_deleted: expectBoolean("parseDissolveSubmodelResponse", obj.submodel_file_deleted, "submodel_file_deleted"),
+    retained_submodel_file: expectNullableString(
+      "parseDissolveSubmodelResponse",
+      obj.retained_submodel_file,
+      "retained_submodel_file",
+    ),
   }
 }
 

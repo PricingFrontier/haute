@@ -106,7 +106,11 @@ Out of scope (owned by neighbouring components):
   submodel graph rather than silently returning an arbitrary one of the
   files. Each emitted submodel file carries that submodel's description,
   preamble, and module-level preserved blocks, so hand-authored module support
-  code survives parse → save cycles.
+  code survives parse → save cycles. Its `haute.Submodel(...)` constructor
+  also carries an ordered `outputs=[...]` declaration for every exported
+  child. That declaration is independent of root-level consumer edges, so an
+  available but unused export survives a parse/save/reload cycle. Legacy
+  submodel source without `outputs=` retains cross-boundary inference.
 - **Config-folder rewrite.** Node types with a declarative JSON sidecar
   (`haute._config_io.has_config_folder`) get their decorator's inline kwargs
   replaced with a single `config="config/<type>/<name>.json"` reference after
@@ -285,12 +289,14 @@ execution time on a mis-wired pipeline). Concretely:
   frontend rejects creating such a connection at drag time with the same
   rule, so this backend error is the authoritative backstop, not the first
   line of defence.
-- **Malformed submodel cross-boundary edge** (missing/wrong-prefixed handle,
+- **Unpersistable or malformed submodel cross-boundary edge** (the deliberate
+  null-handle inbound editor draft, a missing/wrong-prefixed mapped handle,
   or a handle referencing a child id that doesn't exist in that submodel) →
   `ParseError` from `graph_to_code_multi` / `_resolve_submodel_endpoint`,
   raised during submodel-file generation so the error names the exact
   submodel and edge rather than surfacing later as a confusing error on an
-  unrelated child node.
+  unrelated child node. Runtime flattening may omit the null-handle draft so
+  previews remain usable, but save still requires an explicit child mapping.
 - **`graph_to_code` called on a graph that actually has submodels** →
   `ConfigError`, because silently returning "the first file" would hand back
   an arbitrary submodel file instead of the main pipeline.

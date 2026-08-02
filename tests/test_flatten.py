@@ -322,8 +322,83 @@ class TestEdgeRewiring:
         rewired = [e for e in result.edges if e.source == "upstream" and e.target == "inner"]
         assert rewired[0].targetHandle is None
 
-    def test_boundary_edge_without_handle_raises(self) -> None:
-        """A boundary edge cannot be silently discarded when its handle is absent."""
+    def test_unassigned_inbound_draft_is_omitted_without_guessing_child(self) -> None:
+        graph = PipelineGraph(
+            nodes=[
+                _node("nb_batch", "dataInput"),
+                _node("submodel__sm"),
+            ],
+            edges=[_edge("nb_batch", "submodel__sm")],
+            submodels={
+                "sm": {
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "child_a",
+                                "data": {
+                                    "label": "child_a",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            },
+                            {
+                                "id": "child_b",
+                                "data": {
+                                    "label": "child_b",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            },
+                        ],
+                        "edges": [],
+                    }
+                }
+            },
+        )
+
+        result = flatten_graph(graph)
+
+        assert {node.id for node in result.nodes} == {"nb_batch", "child_a", "child_b"}
+        assert result.edges == []
+
+    @pytest.mark.parametrize("handle", ["wrong__child_a", "in__missing"])
+    def test_malformed_mapped_inbound_handle_still_raises(self, handle: str) -> None:
+        graph = PipelineGraph(
+            nodes=[
+                _node("nb_batch", "dataInput"),
+                _node("submodel__sm"),
+            ],
+            edges=[
+                _edge(
+                    "nb_batch",
+                    "submodel__sm",
+                    target_handle=handle,
+                )
+            ],
+            submodels={
+                "sm": {
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "child_a",
+                                "data": {
+                                    "label": "child_a",
+                                    "nodeType": "polars",
+                                    "config": {},
+                                },
+                            }
+                        ],
+                        "edges": [],
+                    }
+                }
+            },
+        )
+
+        with pytest.raises(ParseError):
+            flatten_graph(graph)
+
+    def test_outbound_boundary_edge_without_handle_raises(self) -> None:
+        """An outbound boundary always requires an explicit export handle."""
         graph = PipelineGraph(
             nodes=[
                 _node("a"),
@@ -331,7 +406,7 @@ class TestEdgeRewiring:
                 _node("b"),
             ],
             edges=[
-                # Edge without handles — source stays as submodel__sm, gets dropped
+                # An outbound placeholder edge is never an unassigned input draft.
                 _edge("submodel__sm", "b"),
             ],
             submodels={
@@ -347,7 +422,7 @@ class TestEdgeRewiring:
             flatten_graph(graph)
 
     @pytest.mark.parametrize("handle", ["wrong__inner", "out__missing"])
-    def test_invalid_boundary_handle_raises(self, handle: str) -> None:
+    def test_invalid_outbound_boundary_handle_raises(self, handle: str) -> None:
         graph = PipelineGraph(
             nodes=[_node("submodel__sm"), _node("downstream")],
             edges=[_edge("submodel__sm", "downstream", source_handle=handle)],
@@ -578,6 +653,29 @@ class TestMetadataPreserved:
         result = flatten_graph(graph, target_name="sm")
         assert result.preamble == "ROOT = 1\n\nCHILD = 2"
         assert result.preserved_blocks == ["ROOT_KEPT = 1", "CHILD_KEPT = 2"]
+
+    def test_targeted_flatten_deduplicates_copied_support_code(self) -> None:
+        graph = PipelineGraph(
+            nodes=[_node("submodel__sm")],
+            edges=[],
+            preamble="SHARED_HELPER = 1",
+            preserved_blocks=["SHARED_KEPT = 2"],
+            submodels={
+                "sm": {
+                    "graph": {
+                        "nodes": [],
+                        "edges": [],
+                        "preamble": "  SHARED_HELPER = 1\n",
+                        "preserved_blocks": ["\nSHARED_KEPT = 2  "],
+                    }
+                }
+            },
+        )
+
+        result = flatten_graph(graph, target_name="sm")
+
+        assert result.preamble == "SHARED_HELPER = 1"
+        assert result.preserved_blocks == ["SHARED_KEPT = 2"]
 
 
 # ---------------------------------------------------------------------------

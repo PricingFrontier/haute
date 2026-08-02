@@ -117,6 +117,8 @@ function makeHookParams() {
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceRevisionRef: { current: "revision-old" },
+    preservedBlocksRef: { current: ["OLD_KEEP = 1"] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -153,6 +155,30 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     globalThis.WebSocket = originalWebSocket
   })
 
+  it("installs source revision and preserved blocks with a successful graph update", async () => {
+    const params = makeHookParams()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            submodels: {},
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: ["NEW_KEEP = 2"],
+          },
+        }),
+      }))
+    })
+
+    expect(params.sourceRevisionRef.current).toBe("revision-new")
+    expect(params.preservedBlocksRef.current).toEqual(["NEW_KEEP = 2"])
+  })
+
   it("getLayoutedElements throws → graphRefreshingRef is restored to pre-handler value", async () => {
     // Catches: if graphRefreshingRef is incremented in a try block but
     // the finally doesn't run (e.g. a refactor uses async/await without
@@ -177,6 +203,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -205,6 +233,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -238,6 +268,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [{ id: "e1", source: "n1", target: "n2" }],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -269,6 +301,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -315,6 +349,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
             preamble: "new preamble",
+            source_revision: "revision-new",
+            preserved_blocks: ["NEW_KEEP = 2"],
           },
         }),
       }))
@@ -323,6 +359,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(params.setPreamble).toHaveBeenNthCalledWith(1, "new preamble")
     expect(params.setPreamble).toHaveBeenNthCalledWith(2, "old preamble")
     expect(params.preambleRef.current).toBe("old preamble")
+    expect(params.sourceRevisionRef.current).toBe("revision-old")
+    expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
     expect(params.setSubmodelsRaw).toHaveBeenNthCalledWith(1, incomingSubmodels)
     expect(params.setSubmodelsRaw).toHaveBeenNthCalledWith(2, previousSubmodels)
     expect(params.submodelsRef.current).toBe(previousSubmodels)
@@ -345,6 +383,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
           graph: {
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -357,6 +397,33 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("missing or invalid `submodels` map"),
+    )
+  })
+
+  it("rejects graph_update frames that omit the source revision", async () => {
+    const params = makeHookParams()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            submodels: {},
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [],
+            preserved_blocks: [],
+          },
+        }),
+      }))
+    })
+
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.sourceRevisionRef.current).toBe("revision-old")
+    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("source_revision"),
     )
   })
 
@@ -382,6 +449,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "bad", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
+            source_revision: "revision-failed",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -399,6 +468,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "good", position: { x: 10, y: 20 }, data: {} }],
             edges: [],
+            source_revision: "revision-good",
+            preserved_blocks: [],
           },
         }),
       }))

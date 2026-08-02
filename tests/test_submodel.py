@@ -345,9 +345,13 @@ class TestSchemas:
             name="scoring",
             node_ids=["tx", "out"],
             graph={"nodes": [], "edges": []},
+            preserved_blocks=["KEEP = 1"],
+            base_revision="revision-1",
         )
         assert req.name == "scoring"
         assert req.node_ids == ["tx", "out"]
+        assert req.preserved_blocks == ["KEEP = 1"]
+        assert req.base_revision == "revision-1"
 
     def test_create_submodel_response(self):
         from haute.schemas import CreateSubmodelResponse
@@ -356,10 +360,12 @@ class TestSchemas:
             status="ok",
             submodel_file="modules/scoring.py",
             parent_file="main.py",
+            source_revision="revision-2",
             graph={"nodes": [], "edges": []},
         )
         assert resp.status == "ok"
         assert resp.submodel_file == "modules/scoring.py"
+        assert resp.source_revision == "revision-2"
 
     def test_dissolve_submodel_request(self):
         from haute.schemas import DissolveSubmodelRequest
@@ -367,8 +373,42 @@ class TestSchemas:
         req = DissolveSubmodelRequest(
             submodel_name="scoring",
             graph={"nodes": [], "edges": []},
+            preserved_blocks=["KEEP = 1"],
+            base_revision="revision-1",
         )
         assert req.submodel_name == "scoring"
+        assert req.preserved_blocks == ["KEEP = 1"]
+        assert req.base_revision == "revision-1"
+
+    @pytest.mark.parametrize("operation", ["create", "dissolve"])
+    def test_submodel_mutation_revision_must_not_be_whitespace(self, operation: str):
+        from pydantic import ValidationError
+
+        from haute.schemas import CreateSubmodelRequest, DissolveSubmodelRequest
+
+        common = {
+            "graph": {"nodes": [], "edges": []},
+            "base_revision": "   ",
+        }
+        with pytest.raises(ValidationError, match="base_revision"):
+            if operation == "create":
+                CreateSubmodelRequest(name="scoring", node_ids=["tx", "out"], **common)
+            else:
+                DissolveSubmodelRequest(submodel_name="scoring", **common)
+
+    def test_dissolve_submodel_response(self):
+        from haute.schemas import DissolveSubmodelResponse
+
+        resp = DissolveSubmodelResponse(
+            status="ok",
+            graph={"nodes": [], "edges": []},
+            source_revision="revision-2",
+            submodel_file_deleted=False,
+            retained_submodel_file="modules/scoring.py",
+        )
+        assert resp.source_revision == "revision-2"
+        assert resp.submodel_file_deleted is False
+        assert resp.retained_submodel_file == "modules/scoring.py"
 
     def test_submodel_graph_response(self):
         from haute.schemas import SubmodelGraphResponse
@@ -376,7 +416,19 @@ class TestSchemas:
         resp = SubmodelGraphResponse(
             status="ok",
             submodel_name="scoring",
+            submodel_file="lib/scoring.py",
             graph={"nodes": [{"id": "tx"}], "edges": []},
         )
         assert resp.submodel_name == "scoring"
+        assert resp.submodel_file == "lib/scoring.py"
         assert len(resp.graph.nodes) == 1
+
+    def test_save_pipeline_response_carries_committed_revision(self):
+        from haute.schemas import SavePipelineResponse
+
+        resp = SavePipelineResponse(
+            file="main.py",
+            pipeline_name="main",
+            source_revision="revision-2",
+        )
+        assert resp.source_revision == "revision-2"

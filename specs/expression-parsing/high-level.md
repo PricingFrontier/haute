@@ -86,6 +86,11 @@ Out of scope (owned by neighbouring components, cross-linked below):
   or child function parameter names a node in the parent or another loaded child graph, the parser
   constructs the same implicit edge it would have constructed within one file; hierarchical and
   flattened results preserve it.
+- A submodel may declare its ordered public outputs with
+  `haute.Submodel(..., outputs=["child_name", ...])`. The parser validates
+  that every declaration is a unique child function and retains declared
+  outputs even when no parent edge consumes them. Source without `outputs=`
+  keeps the legacy behaviour of inferring exports from cross-boundary edges.
 - Nested submodels (a submodel file itself calling `pipeline.submodel(...)`) are capped at one
   level. Parsing raises `ParseError` naming the containing file and every nested path, because
   returning the outer graph while omitting the nested references would not conserve authored

@@ -10,6 +10,7 @@ import { render, screen, cleanup } from "@testing-library/react"
 import { ReactFlowProvider, type NodeProps } from "@xyflow/react"
 import SubmodelNode from "../../nodes/SubmodelNode"
 import type { SubmodelFlowNode, SubmodelNodeData } from "../../types/node"
+import { DEFAULT_TARGET_HANDLE } from "../../utils/flowHandles"
 
 afterEach(cleanup)
 
@@ -117,6 +118,12 @@ describe("SubmodelNode", () => {
     const handle2 = container.querySelector('[data-handleid="in__claims"]')
     expect(handle1).toBeTruthy()
     expect(handle2).toBeTruthy()
+    expect(handle1).not.toHaveClass("connectable")
+    expect(handle2).not.toHaveClass("connectable")
+    const defaultTarget = container.querySelector(
+      `[data-handleid="${DEFAULT_TARGET_HANDLE}"]`,
+    )
+    expect(defaultTarget).toHaveClass("connectable")
   })
 
   it("renders per-port output handles for each outputPort", () => {
@@ -177,29 +184,67 @@ describe("SubmodelNode", () => {
     expect(wrapper.style.border).not.toContain("dashed")
   })
 
-  it("positions multiple output port handles at different top percentages", () => {
-    const { container } = renderNode({
+  it("renders mapped frame labels with row-owned stable output handles", () => {
+    renderNode({
       label: "Multi Output",
-      config: { outputPorts: ["alpha", "beta", "gamma"] },
+      config: {
+        outputPorts: ["polars_12", "polars_13"],
+        outputPortLabels: {
+          polars_12: "add_drivers",
+          polars_13: "claims",
+        },
+      },
     })
-    const handleA = container.querySelector('[data-handleid="out__alpha"]') as HTMLElement
-    const handleB = container.querySelector('[data-handleid="out__beta"]') as HTMLElement
-    const handleC = container.querySelector('[data-handleid="out__gamma"]') as HTMLElement
-    expect(handleA).toBeTruthy()
-    expect(handleB).toBeTruthy()
-    expect(handleC).toBeTruthy()
-    const topA = handleA.style.top
-    const topB = handleB.style.top
-    const topC = handleC.style.top
-    expect(topA).toBe("25%")
-    expect(topB).toBe("50%")
-    expect(topC).toBe("75%")
+
+    const firstRow = screen.getByTestId(
+      "submodel-output-frame-row-out__polars_12",
+    )
+    const secondRow = screen.getByTestId(
+      "submodel-output-frame-row-out__polars_13",
+    )
+    expect(firstRow).toHaveTextContent("add_drivers")
+    expect(secondRow).toHaveTextContent("claims")
+
+    const firstLabel = screen.getByTestId(
+      "submodel-output-body-label-out__polars_12",
+    )
+    expect(firstLabel).toHaveClass(
+      "font-semibold",
+      "text-[13px]",
+      "leading-tight",
+    )
+
+    const firstHandle = firstRow.querySelector(
+      '[data-handleid="out__polars_12"]',
+    )
+    const secondHandle = secondRow.querySelector(
+      '[data-handleid="out__polars_13"]',
+    )
+    expect(firstHandle).toBeTruthy()
+    expect(secondHandle).toBeTruthy()
+    expect(firstHandle).toHaveStyle({ top: "50%" })
+    expect(secondHandle).toHaveStyle({ top: "50%" })
   })
 
-  it("renders a single default source handle when no output ports defined", () => {
+  it("falls back to stable child ids when output labels are absent", () => {
+    renderNode({
+      label: "Legacy",
+      config: { outputPorts: ["alpha", "beta"] },
+    })
+    expect(screen.getByText("alpha")).toBeTruthy()
+    expect(screen.getByText("beta")).toBeTruthy()
+  })
+
+  it("uses the standard full-width coloured header bar", () => {
+    renderNode({ label: "Header" })
+    const header = screen.getByTestId("submodel-header")
+    expect(header).toHaveClass("flex", "items-center")
+    expect(header.style.background).not.toBe("")
+  })
+
+  it("renders no source handle when no output frames are defined", () => {
     const { container } = renderNode({ label: "No Ports" })
-    const sourceHandle = container.querySelector(".react-flow__handle-right")
-    expect(sourceHandle).toBeTruthy()
+    expect(container.querySelector(".react-flow__handle-right")).toBeNull()
   })
 
   it("switches from dashed to solid border when _traceActive toggles", () => {
@@ -248,9 +293,7 @@ describe("SubmodelNode", () => {
       _traceMotionDisabled: true,
     })
     const wrapper = container.querySelector(".rounded-xl") as HTMLElement
-    const stripe = container.querySelector(".absolute.left-0") as HTMLElement
     expect(wrapper.style.transition).toBe("none")
-    expect(stripe.style.transition).toBe("none")
   })
 
   it("has full opacity when neither dimmed flag is set", () => {

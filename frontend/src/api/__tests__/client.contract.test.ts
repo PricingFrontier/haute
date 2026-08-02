@@ -95,6 +95,7 @@ describe("client runtime contracts", () => {
         graph: dummyGraph,
         preamble: "",
         source_file: "pricing.py",
+        preserved_blocks: [],
       }),
     ).rejects.toThrow(/parseSavePipelineResponse/i)
   })
@@ -561,13 +562,15 @@ describe("next-wave client runtime contracts", () => {
         preamble: "",
         source_file: "main.py",
         pipeline_name: "main",
+        base_revision: "revision-test",
+        preserved_blocks: [],
       }),
       error: /parseSubmodelCreateResponse/i,
     },
     {
       name: "loadSubmodel",
       response: { ...loadUiContractFixture<Record<string, unknown>>("submodel_graph_response"), submodel_name: 42 },
-      call: () => loadSubmodel("pricing"),
+      call: () => loadSubmodel("pricing", "main.py"),
       error: /parseSubmodelGraphResponse/i,
     },
     {
@@ -579,6 +582,8 @@ describe("next-wave client runtime contracts", () => {
         preamble: "",
         source_file: "main.py",
         pipeline_name: "main",
+        base_revision: "revision-test",
+        preserved_blocks: [],
       }),
       error: /parseDissolveSubmodelResponse/i,
     },

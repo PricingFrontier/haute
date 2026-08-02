@@ -105,14 +105,43 @@ Out of scope (owned by neighbouring components, linked where they exist):
   diff ring (solid glow for added/removed/changed, dashed outline for
   moved-only). Edge-join status and warning dots stay within the visible
   marker ellipse.
-- **Submodel nodes** show a package icon, a live child-node count, the
-  backing file path (when set), and hidden per-port handles that mirror the
-  submodel's stored `inputPorts`/`outputPorts` so edges into/out of the
-  submodel resolve correctly even without opening it.
-- **Submodel port nodes** are the boundary markers shown *inside* a
-  drilled-into submodel view: an input port shows a source handle (data
-  flows out of it into the submodel body); an output port shows a target
-  handle.
+- **Submodel nodes** use the same opaque card, full-width coloured header,
+  and frame-row presentation as a full-detail API-input node. The header
+  retains the package icon, `SUBMODEL` identity, and live child-node count;
+  the body retains the backing file path when set and lists every exported
+  frame using the same semibold 13px primary-text typography as API-input
+  frames. Each exported-frame row owns its `out__<child-id>` source handle,
+  so the handle is vertically centred immediately beside the frame name
+  instead of being independently spaced along the card boundary. Display
+  labels come from `config.outputPortLabels` and fall back to the child id
+  for legacy payloads, while handle ids continue to use the child id required
+  by the backend boundary contract. Hidden `in__<child-id>` target handles
+  continue to resolve existing inbound edges. A submodel with no exported
+  frames renders no source handle.
+- **Drilled submodel boundaries** are exactly two composite
+  `SUBMODEL_PORT` nodes, one Input and one Output, rather than one marker per
+  external source or target. The Input lists every distinct incoming logical
+  frame in parent-edge order and gives every row its own source handle. A new
+  parent-to-submodel connection creates an available row only: it does not
+  choose or connect an internal child. The user may explicitly connect that
+  row to one or more children; removing the last such mapping returns the row
+  to its available, unassigned state until the parent connection itself is
+  deleted on the main canvas. This null-handle draft is non-executable and is
+  omitted from runtime flattening, so automatic previews of the remaining
+  graph continue while the user finishes the mapping. An incoming API-input
+  edge is labelled by its
+  `sourceHandle`; an id-less ordinary source is labelled by its parent node
+  label. The Output has one target handle and no per-frame rows. Any number of
+  internal child outputs may connect to that target; each connection declares
+  one exported child frame, which appears as its own labelled
+  `out__<child-id>` row on the collapsed parent card even before it has a
+  downstream consumer. Removing an export removes that collapsed row and
+  every parent edge consuming its handle as one atomic edit. Internal boundary
+  mappings restore authored `targetPort`/`sourcePort` values at the child
+  endpoint. Both composite nodes remain visible when empty. Each composite
+  records the external parent node ids it represents, so flat-graph trace
+  steps still highlight the corresponding Input or Output card after the
+  per-parent markers are collapsed.
 - **Graph state.** One store owns nodes, edges, imports preamble, and nested
   submodel metadata so a root-frame rename and its nested mapping changes are
   one coherent transaction. User-meaningful changes push one complete snapshot;
@@ -200,7 +229,11 @@ Out of scope (owned by neighbouring components, linked where they exist):
   field, saved baseline, or history entry can survive from the prior
   document. Backend edge metadata that is not a React Flow UI-only field,
   including authored submodel `sourcePort`/`targetPort`, remains present in
-  the captured save snapshot and outgoing graph payload.
+  the captured save snapshot and outgoing graph payload. Non-editable
+  module-level preserved blocks and `source_revision` live in request-facing
+  refs alongside `sourceFileRef`: load records both, save sends the preserved
+  blocks unchanged, and a successful save replaces the revision with the
+  committed response value.
 - **Preview fetching.** Selecting or refreshing a node debounces, then
   fetches its preview; a cache hit for the same structural version, source,
   and row limit paints instantly and skips the network call, otherwise
@@ -229,15 +262,20 @@ Out of scope (owned by neighbouring components, linked where they exist):
   only missing/non-finite positions. Nodes, edges, preamble, and the required
   `submodels` value are applied as one guarded update, with the backend's
   explicit `null` empty-collection representation normalised to `{}` and the
-  submodel ref updated before `markSaved`; any apply failure restores all four
-  prior values. An omitted submodels field still fails loudly.
+  submodel, preserved-block, and source-revision refs updated before
+  `markSaved`; any apply failure restores the graph fields and request-facing
+  refs. An omitted submodels field or missing live `source_revision` fails
+  loudly.
   A resync on reconnect sends the last-applied graph fingerprint so the
   server can skip re-sending an unchanged graph.
 - **Submodel navigation.** Drilling into a submodel builds boundary port
   nodes from the parent graph's cross-boundary edges (matching on the
   `in__`/`out__` handle convention) and lays out the drilled-in view via
   ELK; breadcrumb navigation restores the exact saved node/edge state for
-  any ancestor level, not a re-fetch.
+  any ancestor level, not a re-fetch. The drill request always includes the
+  current parent `source_file` and uses the backend's recorded
+  `submodel_file` in the view stack rather than reconstructing a conventional
+  path from the name.
 - **Submodel creation is keyboard-triggered, not a context-menu item.**
   Selecting two or more nodes and pressing Ctrl+G opens `SubmodelDialog`
   for the name; there is no "Group as Submodel" right-click entry (a
@@ -246,7 +284,14 @@ Out of scope (owned by neighbouring components, linked where they exist):
   reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
   non-previewable node type — rather than the output-port summary table that
-  was once proposed and never built.
+  was once proposed and never built. Create and dissolve send the retained
+  parent `source_revision` as `base_revision` and include the untouched
+  preserved blocks. Successful responses replace that revision. A `409`
+  leaves the local graph unchanged and tells the user to reload. Dissolve
+  also installs the returned graph's merged preamble and preserved blocks so
+  support code contributed by a hand-authored child survives the next manual
+  save, and distinguishes a deleted managed child from a retained
+  shared/hand-authored file in its success toast.
 - **Version comparison.** A side-by-side (or, toggled, stacked) pair of
   read-only canvases shows a historical pipeline version against a frozen
   snapshot of the current one, with added/removed/changed/moved nodes ring-

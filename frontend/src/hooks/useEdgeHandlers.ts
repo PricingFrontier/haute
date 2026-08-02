@@ -115,6 +115,8 @@ type UseEdgeHandlersParams = {
   graphRefreshingRef: MutableRefObject<number>
   findEdgeIdAtPoint?: (point: { x: number; y: number }) => string | null
   validateConnection?: (connection: Connection) => ConnectionValidationResult
+  commitBoundaryConnection?: (connection: Connection) => boolean
+  deleteBoundaryEdge?: (edgeId: string) => boolean
 }
 
 const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
@@ -147,6 +149,8 @@ export default function useEdgeHandlers({
   graphRefreshingRef,
   findEdgeIdAtPoint = () => null,
   validateConnection,
+  commitBoundaryConnection,
+  deleteBoundaryEdge,
 }: UseEdgeHandlersParams) {
   const addToast = useToastStore((s) => s.addToast)
   const activeEdgeJoinSourceRef = useRef<{
@@ -201,6 +205,8 @@ export default function useEdgeHandlers({
       const targetHandle = normalizeDefaultTargetHandle(params.targetHandle)
       if (!params.source || !params.target) return
       if (params.source === params.target) return
+      const normalizedConnection = { ...params, targetHandle }
+      if (commitBoundaryConnection?.(normalizedConnection)) return
       const { edges: currentEdges, nodes: currentNodes } = graphRef.current
       const exists = currentEdges.some(
         (e) =>
@@ -269,7 +275,7 @@ export default function useEdgeHandlers({
         }),
       ])
     },
-    [addToast, graphRef, pushSnapshot, setEdges, setEdgesRaw, setNodesRaw],
+    [addToast, commitBoundaryConnection, graphRef, pushSnapshot, setEdges, setEdgesRaw, setNodesRaw],
   )
 
   const onConnect: OnConnect = useCallback(() => {
@@ -463,8 +469,9 @@ export default function useEdgeHandlers({
   ])
 
   const handleDeleteEdge = useCallback((edgeId: string) => {
+    if (deleteBoundaryEdge?.(edgeId)) return
     setEdges((eds) => eds.filter((e) => e.id !== edgeId))
-  }, [setEdges])
+  }, [deleteBoundaryEdge, setEdges])
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
     event.preventDefault()

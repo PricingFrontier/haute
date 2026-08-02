@@ -135,6 +135,8 @@ function makeHookParams(sourceFile = "") {
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -294,6 +296,8 @@ describe("useWebSocketSync", () => {
             graph_fingerprint: "applied-fp",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -330,6 +334,8 @@ describe("useWebSocketSync", () => {
             graph_fingerprint: "main-fp",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -421,6 +427,8 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "transform_3", position: { x: 100, y: 200 }, data: { label: "test" } },
             { id: "transform_4", position: { x: 400, y: 200 }, data: { label: "target" } },
@@ -498,6 +506,8 @@ describe("useWebSocketSync", () => {
               edges: [],
               preamble: "",
               submodels: incomingSubmodels,
+              source_revision: "revision-test",
+              preserved_blocks: [],
             },
           }),
         }))
@@ -531,6 +541,8 @@ describe("useWebSocketSync", () => {
               nodes: [],
               edges: [],
               submodels: null,
+              source_revision: "revision-test",
+              preserved_blocks: [],
             },
           }),
         }))
@@ -554,6 +566,8 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: { label: "test" } },
           ],
@@ -583,6 +597,8 @@ describe("useWebSocketSync", () => {
         source_file: "modules/foreign_submodel.py",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
           edges: [],
         },
@@ -609,6 +625,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "unidentified", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -631,6 +649,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "unmatched", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -658,6 +678,8 @@ describe("useWebSocketSync", () => {
             source_file: "modules/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "wrong-case", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -686,6 +708,8 @@ describe("useWebSocketSync", () => {
             source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -710,6 +734,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -738,6 +764,8 @@ describe("useWebSocketSync", () => {
             source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -766,6 +794,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "disk", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -814,6 +844,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "disk", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -862,6 +894,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "current", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -878,6 +912,8 @@ describe("useWebSocketSync", () => {
             source_file: "modules/foreign.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "foreign", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -909,6 +945,8 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "transform_1", position: { x: 100, y: 200 }, data: { label: "test" } },
           ],
@@ -974,6 +1012,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "stale", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -1026,6 +1066,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [
                 established,
                 {
@@ -1063,6 +1105,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [
                 {
                   id: "api",
@@ -1125,6 +1169,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "source",
                 position: { x: 10, y: 10 },
@@ -1159,6 +1205,8 @@ describe("useWebSocketSync", () => {
             graph_fingerprint: "applied-before-error",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },

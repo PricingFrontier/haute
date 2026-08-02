@@ -30,10 +30,15 @@ from fastapi import HTTPException
 from haute._api_input_schema import is_json_api_input_path
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
-from haute._submodel_paths import resolve_submodel_reference
+from haute._submodel_paths import (
+    MalformedSubmodelPathError,
+    SubmodelPathOutsideProjectError,
+    resolve_submodel_reference,
+)
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import (
     invalidate_pipeline_index,
+    load_sidecar,
     mark_self_write,
     save_sidecar,
     validate_safe_path,
@@ -63,6 +68,13 @@ class _TouchedFile(NamedTuple):
 
     target: Path
     previous_bytes: bytes | None
+
+
+class _ManagedChildSidecar(NamedTuple):
+    """A child sidecar whose ownership was proven before the transaction."""
+
+    source_path: Path
+    graph: PipelineGraph
 
 
 def _mark_self_write_cb(_path: Path) -> None:
@@ -103,6 +115,8 @@ class SavePipelineService:
         body: SavePipelineRequest,
         *,
         delete_module_files: Sequence[str] = (),
+        require_absent_module_files: Sequence[str] = (),
+        claim_managed_module_files: Sequence[str] = (),
     ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
@@ -121,6 +135,16 @@ class SavePipelineService:
         self._validate_no_load_errors(graph)
         py_path = self._resolve_source_file(body.source_file)
         self._validate_source_file_matches_pipeline_root(py_path)
+        absent_module_paths = self._require_module_files_absent(require_absent_module_files)
+        claimed_module_paths = self._resolve_managed_module_claims(
+            claim_managed_module_files,
+            absent_module_paths=absent_module_paths,
+        )
+        managed_child_sidecars = self._prepare_managed_child_sidecars(
+            parent_path=py_path,
+            graph=graph,
+            claimed_module_paths=claimed_module_paths,
+        )
         delete_targets = [
             self._resolve_existing_module_delete_file(rel_path)
             for rel_path in delete_module_files
@@ -147,6 +171,13 @@ class SavePipelineService:
             warnings.extend(
                 self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
             )
+            warnings.extend(
+                self._write_managed_submodel_sidecars(
+                    parent_path=py_path,
+                    managed_children=managed_child_sidecars,
+                    touched=touched,
+                )
+            )
             # Skip delete targets that casefold-match a file this save just
             # wrote, mirroring the stale-diff guard in
             # `_remove_stale_config_files`: after a case-only submodel rename
@@ -162,6 +193,19 @@ class SavePipelineService:
                 if str(target.resolve()).casefold() in written_folded:
                     continue
                 self._stage_delete(target, touched)
+                target_sidecar = target.with_suffix(".haute.json")
+                if str(target_sidecar.resolve()).casefold() not in written_folded:
+                    self._stage_delete(target_sidecar, touched)
+
+            from haute.routes import _helpers
+
+            committed_graph = _helpers.parse_pipeline_to_graph(
+                py_path,
+                project_root=self._root,
+            )
+            source_revision = committed_graph.source_revision
+            if not source_revision:
+                raise RuntimeError("Committed pipeline did not produce a source revision.")
         except BaseException:
             self._rollback(touched)
             raise
@@ -188,6 +232,7 @@ class SavePipelineService:
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
             pipeline_name=body.name,
+            source_revision=source_revision,
             warnings=warnings,
             git_sha=git_sha,
         )
@@ -244,6 +289,8 @@ class SavePipelineService:
         preamble: str | None,
         source_file: str,
         delete_module_files: Sequence[str] = (),
+        require_absent_module_files: Sequence[str] = (),
+        claim_managed_module_files: Sequence[str] = (),
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
 
@@ -266,6 +313,8 @@ class SavePipelineService:
                 preserved_blocks=graph.preserved_blocks,
             ),
             delete_module_files=delete_module_files,
+            require_absent_module_files=require_absent_module_files,
+            claim_managed_module_files=claim_managed_module_files,
         )
 
     # ------------------------------------------------------------------
@@ -650,6 +699,131 @@ class SavePipelineService:
                 )
             return target
         return self._resolve_module_delete_file(normalised)
+
+    def _require_module_files_absent(self, rel_paths: Sequence[str]) -> set[str]:
+        """Reject source/sidecar collisions and return canonical target keys."""
+        targets = [self._resolve_module_delete_file(rel_path) for rel_path in rel_paths]
+        seen: set[str] = set()
+        for target in targets:
+            folded_target = str(target).casefold()
+            if folded_target in seen:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The requested submodel module path is duplicated.",
+                )
+            seen.add(folded_target)
+            parent = target.parent
+            if not parent.exists():
+                continue
+            if not parent.is_dir():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The submodel modules path is already occupied by a file.",
+                )
+            candidates = {candidate.name.casefold(): candidate for candidate in parent.iterdir()}
+            protected_names = (
+                ("module", target.name),
+                ("sidecar", target.with_suffix(".haute.json").name),
+            )
+            for kind, protected_name in protected_names:
+                collision = candidates.get(protected_name.casefold())
+                if collision is None:
+                    continue
+                relative = collision.relative_to(self._root).as_posix()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Submodel {kind} {relative!r} already exists. "
+                        "Choose a different submodel name."
+                    ),
+                )
+        return seen
+
+    def _resolve_managed_module_claims(
+        self,
+        rel_paths: Sequence[str],
+        *,
+        absent_module_paths: set[str],
+    ) -> set[str]:
+        """Validate that ownership claims are exactly no-clobber targets."""
+        claimed: set[str] = set()
+        for rel_path in rel_paths:
+            target = self._resolve_module_delete_file(rel_path)
+            key = str(target).casefold()
+            if key in claimed:
+                raise ValueError("A managed submodel module claim was duplicated.")
+            if key not in absent_module_paths:
+                raise ValueError("Managed submodel module claims must also be no-clobber targets.")
+            claimed.add(key)
+        return claimed
+
+    def _prepare_managed_child_sidecars(
+        self,
+        *,
+        parent_path: Path,
+        graph: PipelineGraph,
+        claimed_module_paths: set[str],
+    ) -> list[_ManagedChildSidecar]:
+        """Resolve child ownership from disk or an explicit create-only claim."""
+        parent_relative = parent_path.relative_to(self._root).as_posix()
+        remaining_claims = set(claimed_module_paths)
+        prepared: list[_ManagedChildSidecar] = []
+        seen: set[str] = set()
+
+        for name, raw_metadata in (graph.submodels or {}).items():
+            if not isinstance(raw_metadata, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Submodel {name!r} has invalid metadata.",
+                )
+            recorded_path = raw_metadata.get("file")
+            if not isinstance(recorded_path, str) or not recorded_path:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Submodel {name!r} has no valid source file path.",
+                )
+            try:
+                child_path, _config_base = resolve_submodel_reference(
+                    recorded_path,
+                    pipeline_dir=parent_path.parent,
+                    project_root=self._root,
+                )
+            except MalformedSubmodelPathError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            except SubmodelPathOutsideProjectError:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot access paths outside the project root",
+                ) from None
+            key = str(child_path.resolve()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            is_claimed = key in claimed_module_paths
+            existing_owner = load_sidecar(child_path).get("managed_parent")
+            is_existing_owner = existing_owner == parent_relative
+            if raw_metadata.get("managed") is True and not (is_claimed or is_existing_owner):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Submodel {name!r} is not owned by this pipeline. Reload before saving."
+                    ),
+                )
+            if not (is_claimed or is_existing_owner):
+                continue
+
+            remaining_claims.discard(key)
+            prepared.append(
+                _ManagedChildSidecar(
+                    source_path=child_path,
+                    graph=PipelineGraph.model_validate(raw_metadata.get("graph", {})),
+                )
+            )
+
+        if remaining_claims:
+            raise ValueError("A managed submodel claim has no matching graph metadata.")
+        return prepared
 
     # ------------------------------------------------------------------
     # Writes — route every disk write through Writer for self-write safety
@@ -1148,6 +1322,8 @@ class SavePipelineService:
         sources: list[str],
         active_source: str,
         touched: list[_TouchedFile] | None = None,
+        *,
+        managed_parent: str | None = None,
     ) -> list[str]:
         """Persist node positions and source state to ``.haute.json``.
 
@@ -1166,7 +1342,30 @@ class SavePipelineService:
             if sidecar_path.exists():
                 previous_bytes = sidecar_path.read_bytes()
             touched.append(_TouchedFile(target=sidecar_path, previous_bytes=previous_bytes))
-        return save_sidecar(py_path, graph)
+        return save_sidecar(py_path, graph, managed_parent=managed_parent)
+
+    def _write_managed_submodel_sidecars(
+        self,
+        *,
+        parent_path: Path,
+        managed_children: Sequence[_ManagedChildSidecar],
+        touched: list[_TouchedFile],
+    ) -> list[str]:
+        """Persist positions for children whose ownership passed preflight."""
+        parent_relative = parent_path.relative_to(self._root).as_posix()
+        warnings: list[str] = []
+        for child in managed_children:
+            warnings.extend(
+                self._write_sidecar(
+                    child.source_path,
+                    child.graph,
+                    child.graph.sources,
+                    child.graph.active_source,
+                    touched,
+                    managed_parent=parent_relative,
+                )
+            )
+        return warnings
 
     # ------------------------------------------------------------------
     # Rollback — invoked by ``save`` when any step fails
