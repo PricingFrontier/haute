@@ -19,6 +19,11 @@
      decision — distinct from the dead app-declared-alias fallbacks
      removed elsewhere, which could never fire. */
   --font-data: var(--font-mono, monospace);
+  /* Code-shaped diagnostic text (error messages, stack dumps) — a separate
+     role from --font-data even though the face is currently the same: the
+     two interfaces can diverge independently.  The CodeMirror editor keeps
+     its own custom stack and is deliberately not on this token. */
+  --font-code: var(--font-mono, monospace);
 
   /* Surfaces - blue-black */
   --bg-base: #0f1117;

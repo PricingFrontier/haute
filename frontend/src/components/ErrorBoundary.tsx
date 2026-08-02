@@ -46,7 +46,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <p style={{ margin: "0 0 8px", fontWeight: 600, color: "var(--text-primary)" }}>
             Something went wrong
           </p>
-          <p style={{ margin: "0 0 12px", fontFamily: "monospace", fontSize: "11px" }}>
+          <p style={{ margin: "0 0 12px", fontFamily: "var(--font-code)", fontSize: "11px" }}>
             {this.state.error?.message}
           </p>
           <button

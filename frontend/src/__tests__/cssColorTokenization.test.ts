@@ -1022,18 +1022,22 @@ describe("ts/tsx source — design-token contract", () => {
     expect(orphaned).toEqual([])
   })
 
-  it("the typography role token is adopted in live source (adoption pin)", () => {
-    // The three trace-detail sites migrated to var(--font-data) are the
-    // role layer's seed adoption.  Nothing else pins them: a revert to a
-    // raw font stack (or to var(--font-mono, monospace)) would pass every
-    // resolution rule.  Requiring at least one live reference keeps the
-    // role token honest — a declared-but-unreferenced role token is a
-    // regression, not a tidy-up.
+  it("the typography role tokens are adopted in live source (adoption pin)", () => {
+    // The trace sites migrated to var(--font-data) and ErrorBoundary's
+    // var(--font-code) are the role layer's seed adoption.  Nothing else
+    // pins them: a revert to a raw font stack (or to
+    // var(--font-mono, monospace)) would pass every resolution rule.
+    // Requiring at least one live reference per role keeps each token
+    // honest — a declared-but-unreferenced role token is a regression,
+    // not a tidy-up.
     const files = collectSourceFiles(SRC_ROOT)
-    const referenced = files.some((f) =>
-      findVarRefs(stripComments(readFileSync(f, "utf8"))).some((r) => r.name === "--font-data"),
-    )
-    expect(referenced, "no live ts/tsx source references var(--font-data)").toBe(true)
+    const refs = files.flatMap((f) => findVarRefs(stripComments(readFileSync(f, "utf8"))))
+    for (const role of ["--font-data", "--font-code"]) {
+      expect(
+        refs.some((r) => r.name === role),
+        `no live ts/tsx source references var(${role})`,
+      ).toBe(true)
+    }
   })
 
   it("live source does not mention private primitive tokens (role-layer gate)", () => {

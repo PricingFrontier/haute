@@ -215,7 +215,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
         <span
           style={{
             color: "var(--text-primary)",
-            fontFamily: "monospace",
+            fontFamily: "var(--font-data)",
             fontWeight: 600,
           }}
         >
@@ -242,7 +242,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
         padding: "10px 12px",
         marginTop: 8,
         border: "1px solid rgba(255,255,255,.03)",
-        fontFamily: "monospace",
+        fontFamily: "var(--font-data)",
         fontSize: 12,
       }}>
         {/* Input/intermediate entries — top-down */}
@@ -328,7 +328,7 @@ const CalculationHero: React.FC<CalculationHeroProps> = (props) => {
         padding: "10px 12px",
         marginTop: 8,
         border: "1px solid rgba(255,255,255,.03)",
-        fontFamily: "monospace",
+        fontFamily: "var(--font-data)",
         fontSize: 12,
       }}>
         {entries.map((entry) => (
