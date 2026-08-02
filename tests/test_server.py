@@ -3924,10 +3924,15 @@ class TestSubmodelOutputPorts:
     ):
         """When a selected node has edges going OUT to unselected nodes,
         those should become output ports on the submodel."""
+        from haute._pipeline_revision import pipeline_document_revision
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "test_pipeline.py")
-        graph_dict = graph.model_dump()
+        parent = pipeline_dir / "test_pipeline.py"
+        graph = parse_pipeline_file(parent)
+        revision = pipeline_document_revision(
+            graph, pipeline_path=parent, project_root=pipeline_dir
+        )
+        graph_dict = graph.model_copy(update={"source_revision": revision}).model_dump()
 
         # Select only "source" -- it has an edge to "transform" which is outside
         # Need at least 2 nodes for submodel creation
@@ -3945,6 +3950,7 @@ class TestSubmodelOutputPorts:
                 "graph": graph_dict,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": revision,
             },
         )
         assert resp.status_code == 200
@@ -3991,10 +3997,15 @@ pipeline.connect("source", "middle")
 pipeline.connect("middle", "final")
 """
         (pipeline_dir / "rewire_test.py").write_text(code)
+        from haute._pipeline_revision import pipeline_document_revision
         from haute.parser import parse_pipeline_file
 
-        graph = parse_pipeline_file(pipeline_dir / "rewire_test.py")
-        graph_dict = graph.model_dump()
+        parent = pipeline_dir / "rewire_test.py"
+        graph = parse_pipeline_file(parent)
+        revision = pipeline_document_revision(
+            graph, pipeline_path=parent, project_root=pipeline_dir
+        )
+        graph_dict = graph.model_copy(update={"source_revision": revision}).model_dump()
 
         # Select only "middle" and "source" (2 nodes) -- "final" stays outside
         selected = ["source", "middle"]
@@ -4007,6 +4018,7 @@ pipeline.connect("middle", "final")
                 "graph": graph_dict,
                 "source_file": "rewire_test.py",
                 "pipeline_name": "rewire_test",
+                "base_revision": revision,
             },
         )
         assert resp.status_code == 200
@@ -4311,6 +4323,7 @@ class TestGetSubmodelSidecarPositions:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
@@ -4330,7 +4343,7 @@ class TestGetSubmodelSidecarPositions:
         )
 
         # Fetch the submodel
-        resp = client.get("/api/submodel/positioned")
+        resp = client.get("/api/submodel/positioned", params={"source_file": "test_pipeline.py"})
         assert resp.status_code == 200
         data = resp.json()
 
@@ -4363,6 +4376,7 @@ class TestDissolveEdgeCases:
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
+                "base_revision": three_node_graph["source_revision"],
             },
         )
         assert create_resp.status_code == 200
@@ -4375,6 +4389,7 @@ class TestDissolveEdgeCases:
                 "graph": updated_graph,
                 "source_file": "",
                 "pipeline_name": "test_pipeline",
+                "base_revision": create_resp.json()["source_revision"],
             },
         )
         assert resp.status_code == 400
