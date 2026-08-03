@@ -43,18 +43,37 @@ describe("ContextMenu", () => {
     expect(screen.queryByText("Duplicate")).not.toBeInTheDocument()
   })
 
-  it("shows Dissolve Submodel for submodel nodes", () => {
-    render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "submodel__pricing", onDissolveSubmodel: vi.fn() })} />)
+  it("shows Dissolve Submodel but no Delete for a definition owner", () => {
+    render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "instance_pricing", onDissolveSubmodel: vi.fn() })} />)
     expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
     expect(screen.queryByText("Delete")).not.toBeInTheDocument()
   })
 
-  it("never offers raw Delete for a submodel without a dissolve callback", () => {
+  it("never offers raw Delete for a submodel owner without a dissolve callback", () => {
     render(
-      <ContextMenu {...makeProps({ isSubmodel: true, nodeId: "submodel__pricing" })} />,
+      <ContextMenu {...makeProps({ isSubmodel: true, nodeId: "instance_pricing" })} />,
     )
 
     expect(screen.queryByText("Delete")).not.toBeInTheDocument()
+  })
+
+  it("offers Delete for a submodel instance copy", () => {
+    const onDelete = vi.fn()
+    render(
+      <ContextMenu
+        {...makeProps({
+          isSubmodel: true,
+          isSubmodelCopy: true,
+          nodeId: "instance_pricing_copy",
+          onDelete,
+          onDissolveSubmodel: vi.fn(),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("Delete"))
+    expect(onDelete).toHaveBeenCalledWith("instance_pricing_copy")
   })
 
   it("clicking Rename calls onRename with nodeId and closes", () => {

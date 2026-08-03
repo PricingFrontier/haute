@@ -88,11 +88,16 @@ def _definition_payload(
 def _occurrence(
     instance_id: str = "instance_primary",
     alias: str = "pricing",
+    *,
+    instance_of: str | None = None,
 ) -> GraphNode:
+    config: dict[str, object] = {"definitionId": "definition_pricing", "alias": alias}
+    if instance_of is not None:
+        config["instanceOf"] = instance_of
     return _node(
         instance_id,
         node_type=NodeType.SUBMODEL,
-        config={"definitionId": "definition_pricing", "alias": alias},
+        config=config,
     )
 
 
@@ -231,7 +236,11 @@ def test_definition_support_code_is_merged_once_for_repeated_occurrences() -> No
         {
             "nodes": [
                 _occurrence(),
-                _occurrence("instance_secondary", "pricing_2"),
+                _occurrence(
+                    "instance_secondary",
+                    "pricing_2",
+                    instance_of="instance_primary",
+                ),
             ],
             "preamble": "PARENT_HELPER = 1",
             "preserved_blocks": ["SHARED = 1"],

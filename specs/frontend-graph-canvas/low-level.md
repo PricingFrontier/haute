@@ -68,12 +68,24 @@ typed config; parsing `submodel__*` ids or display labels is forbidden.
 For ordinary pipeline nodes, Create Instance retains the established
 `config.instanceOf` behavior. For a canonical `SUBMODEL`, the action is a pure
 single-snapshot graph mutation that retains `definitionId`, allocates a fresh
-collision-free immutable node id and deterministic alias, copies only
-presentation defaults, and leaves all parent boundary bindings empty. Every
-submodel occurrence is rendered with `deletable: false`; its context menu omits
-Delete and Duplicate, and the raw delete and duplicate handlers fail visibly.
-Removal uses the instance-targeted dissolve lifecycle; reusable copying uses
-Create Instance.
+collision-free immutable node id and deterministic alias (copy numbering
+continues past nine: `scoring_10` clones to `scoring_11`, never
+`scoring_10_2`), copies only presentation defaults, and leaves all parent
+boundary bindings empty.
+
+Occurrence deletion is owner-aware and shares one predicate,
+`isProtectedSubmodelNodeData` in `frontend/src/types/node.ts`: a `submodel`
+node is protected when its canonical config is malformed or has no
+`instanceOf` (the definition owner). Every delete surface consults it —
+`handleDeleteNode`, the window keyboard Delete/Backspace handler (which
+partitions a mixed selection, toasts once for spared owners, and deletes the
+remainder), the context menu (which shows Delete only when `isSubmodelCopy`),
+and React Flow's native delete via an App-level `onBeforeDelete` filter that
+spares protected owners plus edges incident to them. Instance copies delete
+like ordinary nodes, with incident edges, in one undo step. Duplicate remains
+omitted for every submodel occurrence; owner removal uses the
+instance-targeted dissolve lifecycle and reusable copying uses Create
+Instance.
 
 Selection-based submodel creation obtains `nodes`, `edges`, and `submodels`
 from one synchronous `useGraphStore.getState()` read when the dialog is
@@ -943,10 +955,12 @@ again through the editor and save paths.
     snapshot at drag start, no mid-drag/selection-only history churn, and
     structural/non-structural change separation.
   - `frontend/src/hooks/__tests__/useNodeHandlers.test.ts` — ordinary
-    delete-as-one-atomic-step and `config.instanceOf` creation; submodel raw
-    deletion refusal; reusable occurrence creation with retained definition id,
-    collision-free immutable id, normalized deterministic alias suffix, empty
-    bindings, and one undo snapshot; duplicate and auto-layout behavior.
+    delete-as-one-atomic-step and `config.instanceOf` creation; owner and
+    malformed-identity deletion refusal with direct instance-copy deletion;
+    reusable occurrence creation with retained definition id, collision-free
+    immutable id, normalized deterministic alias suffix (including past-nine
+    numbering), empty bindings, and one undo snapshot; duplicate and
+    auto-layout behavior.
   - `frontend/src/hooks/__tests__/useNodeHandlers.gaps.test.ts` — `handleRenameNode` (opens dialog with
     correct id/label, no-ops for a missing node, coerces a non-string
     label); `lastSelectedNodeRef` clearing scoped to the deleted node only;

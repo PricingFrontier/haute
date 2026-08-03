@@ -122,6 +122,11 @@ Out of scope (owned by neighbouring components):
   skips the rewrite.
   The generated `_HAUTE_CONFIG_BASE` import and assignment are module
   infrastructure, emitted exactly once outside authored preamble ownership.
+  Its value always resolves to the parent pipeline directory: a pipeline file
+  uses its own directory, and a submodel file climbs one level per path
+  segment in its recorded registration path, so definitions registered at any
+  depth inside the project resolve config paths identically at parse time and
+  at generated-module runtime.
   Reverse parsing likewise removes the generated per-node loader scaffold;
   neither its imports nor its load call may enter editable node `code` or be
   executed by the user-code sandbox.

@@ -44,7 +44,7 @@ Out of scope (owned by neighbouring components, linked where they exist):
 - Trace overlay computation — the canvas only renders the resulting visual
   state.
 - Background job polling.
-- Backend submodel placeholder, port-classification, and endpoint behavior —
+- Backend submodel occurrence, public-port, and endpoint behavior —
   [submodels](../submodels/high-level.md). This component owns only browser
   navigation and endpoint consumption.
 
@@ -54,7 +54,7 @@ Out of scope (owned by neighbouring components, linked where they exist):
 
 The canvas treats a submodel definition as shared library state and each
 `SUBMODEL` node as an independent occurrence. A definition can be instantiated
-from an existing placeholder through **Create instance**. The action creates a
+from an existing occurrence through **Create instance**. The action creates a
 new node with a fresh immutable instance id and stable source alias, copies no
 internal graph or file, starts with no bindings, and participates in the normal
 undo/redo snapshot. It is available only in the parent view; nesting remains
@@ -192,7 +192,7 @@ well as occurrence-specific positions and bindings.
   saved baseline, clears undo and redo, and advances cache/context versions
   monotonically. Undo/redo restores all four persisted graph fields together.
 - **Authored boundary ports survive the client.** `PipelineEdge` extends the React Flow edge shape
-  with optional `sourcePort`/`targetPort` fields used while a submodel placeholder occupies the
+  with optional `sourcePort`/`targetPort` fields used while a submodel occurrence occupies the
   visible handle. Response parsing, edge normalisation, graph snapshots, and save payloads retain
   those fields unchanged; they are persisted metadata, not React Flow presentation state.
 - **Undo/redo** operates over a single stack that can hold either a graph
@@ -222,9 +222,16 @@ well as occurrence-specific positions and bindings.
   Creating an instance of a canonical `SUBMODEL` instead retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
-  step. Raw deletion of a submodel occurrence is disabled in React Flow, absent
-  from its context menu, and refused by the delete handler; "Dissolve Submodel"
-  is the only removal path. Auto-layout runs ELK asynchronously, guards against
+  step. Deleting a submodel occurrence is owner-aware: an instance copy (valid
+  `instanceOf`) deletes exactly like an ordinary node — together with its
+  incident edges, as one undo step — from the context menu, the delete handler,
+  the window keyboard shortcut, and React Flow's native delete. The definition
+  owner (or an occurrence with malformed identity) is refused on every one of
+  those surfaces with a visible explanation, because it anchors the shared
+  definition; "Dissolve Submodel" is its only removal path. A mixed keyboard or
+  canvas-native selection spares owners (and edges incident to spared owners)
+  while the rest of the selection still deletes.
+  Auto-layout runs ELK asynchronously, guards against
   overlapping runs from repeated clicks, and re-fits the view once positions
   land. Node-cache cleanup for an ordinary deleted node is deferred one task
   tick past the graph mutation so no component reads a torn state in the same
@@ -521,8 +528,8 @@ well as occurrence-specific positions and bindings.
   cascade, retry gating, and reconnect/backoff.
 - [tracing](../tracing/high-level.md) supplies active/dimmed/hover/value/motion
   state that nodes render; the canvas does not compute trace lineage.
-- [submodels](../submodels/high-level.md) owns backend placeholder construction
-  and port classification; this component consumes its endpoints and owns the
+- [submodels](../submodels/high-level.md) owns backend occurrence construction
+  and public-port derivation; this component consumes its endpoints and owns the
   browser's drill-in/out stack and port-marker presentation.
 - [git-integration](../git-integration/high-level.md) — version-control
   operations (branch switch, archive, delete) are recorded as

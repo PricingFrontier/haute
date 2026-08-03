@@ -204,7 +204,12 @@ document and returns the new revision.
    endpoint handles and all hidden-port components in deterministic edge ids.
 5. Remove only selected occurrence nodes and their incident boundary edges.
    Deduplicate exact six-field edge identities, assert that no selected
-   occurrence endpoint remains, and merge definition support code once.
+   occurrence endpoint remains, and merge definition support code once. A
+   definition preamble is appended only when its stripped line block is not
+   already contained (whole-line, contiguous) in the merged parent preamble —
+   exact-blob identity would re-append after a staged dissolve, and substring
+   matching would wrongly swallow `import a` when `import ab` is present.
+   Preserved blocks deduplicate by exact stripped identity per block.
 6. Retain every unselected occurrence and every definition it still references;
    set `submodels=None` only when no definition remains. The transform is pure.
 

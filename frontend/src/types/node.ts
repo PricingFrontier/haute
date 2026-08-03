@@ -180,6 +180,19 @@ export function isSubmodelInstanceConfig(value: unknown): value is SubmodelInsta
     && (config.instanceOf === undefined || isNonBlankText(config.instanceOf))
 }
 
+/**
+ * True for a submodel occurrence that anchors its shared definition — the
+ * owner — or whose identity is malformed. Such nodes are dissolved, never
+ * raw-deleted; instance copies (valid `instanceOf`) delete like any node.
+ */
+export function isProtectedSubmodelNodeData(
+  data: { nodeType?: unknown; config?: unknown },
+): boolean {
+  if (data.nodeType !== "submodel") return false
+  const config = data.config
+  return !isSubmodelInstanceConfig(config) || config.instanceOf === undefined
+}
+
 /** Per-node occurrence data. Definitions live in the graph registry, not here. */
 export interface SubmodelInstanceConfig extends Record<string, unknown> {
   definitionId: string

@@ -746,6 +746,7 @@ def _generate_pipeline_lines(
     definition_id: str | None = None,
     input_ports: list[SubmodelInputPort] | None = None,
     output_ports: list[SubmodelOutputPort] | None = None,
+    config_base_depth: int | None = None,
     dedup_connects: bool = False,
     obj_name: str = "pipeline",
 ) -> list[str]:
@@ -766,11 +767,18 @@ def _generate_pipeline_lines(
     config_base_import_lines: list[str] = []
     config_base_assignment: str | None = None
     if any(has_config_folder(node.data.nodeType) for node in sorted_nodes):
-        config_base_expr = (
-            "_HautePath(__file__).resolve().parent.parent"
-            if kind == "submodel"
-            else "_HautePath(__file__).resolve().parent"
-        )
+        if kind == "submodel":
+            if config_base_depth is None or config_base_depth < 0:
+                raise HauteError(
+                    "Submodel codegen requires the registration path depth to "
+                    "emit a correct config base."
+                )
+            # Config paths resolve against the parent pipeline directory, so
+            # the emitted base must climb exactly as many levels as the
+            # recorded registration path descends.
+            config_base_expr = f"_HautePath(__file__).resolve().parents[{config_base_depth}]"
+        else:
+            config_base_expr = "_HautePath(__file__).resolve().parent"
         config_base_import_lines = [
             "from pathlib import Path as _HautePath",
             "",
@@ -1181,12 +1189,23 @@ def _graph_to_code_multi_instances(
             definition_id=definition_id,
             input_ports=definition.input_ports,
             output_ports=definition.output_ports,
+            config_base_depth=definition.file.replace("\\", "/").count("/"),
             node_to_code_fn=_submodel_node_to_code,
             obj_name="submodel",
         )
         files[definition.file.replace("\\", "/")] = "\n".join(child_lines)
 
     node_map = {node.id: node for node in graph.nodes}
+    for edge in graph.edges:
+        for endpoint, node_id in (("source", edge.source), ("target", edge.target)):
+            if node_id not in root_node_ids and node_id not in instances:
+                raise ParseError(
+                    "Pipeline edge references a node that is not part of the parent graph; "
+                    "definition-owned child ids are never parent endpoints.",
+                    edge_id=edge.id,
+                    endpoint=endpoint,
+                    node_id=node_id,
+                )
     ordered_parent_edges = _order_edge_join_incoming_edges(
         list(graph.edges),
         node_map,

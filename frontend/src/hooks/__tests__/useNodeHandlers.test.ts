@@ -88,24 +88,78 @@ describe("useNodeHandlers", () => {
     expect(params.setPreviewData).not.toHaveBeenCalled()
   })
 
-  it("refuses raw deletion of a submodel occurrence", () => {
+  it("refuses raw deletion of a submodel definition owner", () => {
     const params = makeParams()
-    const submodel = makeNode("submodel_10", "submodel", {
+    const owner = makeNode("submodel_10", "submodel", {
       data: {
         label: "Scoring",
         nodeType: "submodel",
         config: { definitionId: "definition_scoring", alias: "scoring" },
       },
     })
-    params.graphRef.current = { nodes: [submodel], edges: [] }
+    params.graphRef.current = { nodes: [owner], edges: [] }
     const { result } = renderHook(() => useNodeHandlers(params))
 
     act(() => {
-      result.current.handleDeleteNode(submodel.id)
+      result.current.handleDeleteNode(owner.id)
     })
 
     expect(params.setNodesAndEdges).not.toHaveBeenCalled()
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
+  it("refuses raw deletion of a submodel occurrence with malformed identity", () => {
+    const params = makeParams()
+    const malformed = makeNode("submodel_10", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: {},
+      },
+    })
+    params.graphRef.current = { nodes: [malformed], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode(malformed.id)
+    })
+
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
+  it("deletes a submodel instance copy and its edges directly", () => {
+    const params = makeParams()
+    const copy = makeNode("submodel_11", "submodel", {
+      data: {
+        label: "Scoring instance",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: "submodel_10",
+        },
+      },
+    })
+    const upstream = makeNode("upstream", "polars")
+    params.graphRef.current = {
+      nodes: [upstream, copy],
+      edges: [
+        { id: "bind", source: "upstream", target: copy.id, targetHandle: "in__policy" } as Edge,
+      ],
+    }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode(copy.id)
+    })
+
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    const [nodesUpdater, edgesUpdater] = params.setNodesAndEdges.mock.calls[0]
+    expect((nodesUpdater as (n: Node[]) => Node[])(params.graphRef.current.nodes)
+      .map((node) => node.id)).toEqual(["upstream"])
+    expect((edgesUpdater as (e: Edge[]) => Edge[])(params.graphRef.current.edges)).toEqual([])
+    expect(useToastStore.getState().toasts).toEqual([])
   })
 
   it("handleDeleteNode clears selected node if it was selected", () => {
@@ -270,6 +324,39 @@ describe("useNodeHandlers", () => {
     expect(created.data.config).not.toHaveProperty("graph")
     expect(created.data.config).not.toHaveProperty("file")
     expect(created.data.config).not.toHaveProperty("childNodeIds")
+  })
+
+  it("continues copy numbering past nine instead of nesting suffixes", () => {
+    const params = makeParams()
+    const owner = makeNode("instance_owner", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    const copies = Array.from({ length: 9 }, (_, index) =>
+      makeNode(`instance_copy_${index + 2}`, "submodel", {
+        data: {
+          label: `Scoring ${index + 2}`,
+          nodeType: "submodel",
+          config: {
+            definitionId: "definition_scoring",
+            alias: `scoring_${index + 2}`,
+            instanceOf: "instance_owner",
+          },
+        },
+      }))
+    params.graphRef.current = { nodes: [owner, ...copies], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance("instance_copy_10")
+    })
+
+    const created = params.setNodes.mock.calls[0][0](params.graphRef.current.nodes)
+      .find((node: Node) => node.selected && !params.graphRef.current.nodes.includes(node))
+    expect((created?.data.config as { alias?: string }).alias).toBe("scoring_11")
   })
 
   it("allocates occurrence ids and aliases across the combined identity namespace", () => {

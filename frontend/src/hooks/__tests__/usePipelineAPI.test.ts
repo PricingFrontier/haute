@@ -533,8 +533,8 @@ describe("usePipelineAPI", () => {
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })
     const boundaryEdge: PipelineEdge = {
       id: "e_boundary",
-      source: "submodel__pricing",
-      target: "submodel__scoring",
+      source: "instance_pricing",
+      target: "instance_scoring",
       sourceHandle: "out__priced",
       targetHandle: "in__score",
       sourcePort: "quotes",
@@ -1019,7 +1019,7 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
-      result.current.fetchPreview(makeNode("submodel__model_stuff", nodeType), { debounceMs: 0 })
+      result.current.fetchPreview(makeNode("instance_model_stuff", nodeType), { debounceMs: 0 })
     })
 
     expect(result.current.previewData).toBeNull()
@@ -1060,7 +1060,7 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     act(() => {
-      result.current.refreshPreview(makeNode("submodel__model_stuff", nodeType))
+      result.current.refreshPreview(makeNode("instance_model_stuff", nodeType))
     })
 
     expect(result.current.previewData).toBeNull()
@@ -1094,11 +1094,11 @@ describe("usePipelineAPI", () => {
       column_count: 1,
     })
     const upstream = makeNode("upstream", NODE_TYPES.POLARS)
-    const submodel = makeNode("submodel__model_stuff", NODE_TYPES.SUBMODEL)
+    const submodel = makeNode("instance_model_stuff", NODE_TYPES.SUBMODEL)
     const params = makeParams()
     params.graphRef.current = {
       nodes: [upstream, submodel],
-      edges: [makeEdge("upstream", "submodel__model_stuff")],
+      edges: [makeEdge("upstream", "instance_model_stuff")],
     }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -1157,12 +1157,12 @@ describe("usePipelineAPI", () => {
       row_count: 1,
       column_count: 1,
     })
-    const submodel = makeNode("submodel__model_stuff", NODE_TYPES.SUBMODEL)
+    const submodel = makeNode("instance_model_stuff", NODE_TYPES.SUBMODEL)
     const target = makeNode("target", NODE_TYPES.POLARS)
     const params = makeParams()
     params.graphRef.current = {
       nodes: [submodel, target],
-      edges: [makeEdge("submodel__model_stuff", "target")],
+      edges: [makeEdge("instance_model_stuff", "target")],
     }
     const { result } = renderHook(() => usePipelineAPI(params))
     await waitFor(() => expect(result.current.loading).toBe(false))

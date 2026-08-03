@@ -90,6 +90,62 @@ describe("useKeyboardShortcuts", () => {
     expect(params.setPreviewData).toHaveBeenCalledWith(null)
   })
 
+  it("keyboard Delete removes selected copies but never a submodel owner", () => {
+    cleanup()
+    const owner = makeNode("submodel_owner", "submodel", {
+      selected: true,
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    const copy = makeNode("submodel_copy", "submodel", {
+      selected: true,
+      data: {
+        label: "Scoring instance",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: "submodel_owner",
+        },
+      },
+    })
+    const ordinary = { ...makeNode("plain", "polars"), selected: true }
+    params = makeParams({
+      graphRef: { current: { nodes: [owner, copy, ordinary], edges: [] } },
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    const [nextNodes] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
+    expect((nextNodes as Node[]).map((node) => node.id)).toEqual(["submodel_owner"])
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
+  it("keyboard Delete of only a submodel owner changes nothing but explains why", () => {
+    cleanup()
+    const owner = makeNode("submodel_owner", "submodel", {
+      selected: true,
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    params = makeParams({
+      graphRef: { current: { nodes: [owner], edges: [] } },
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
   it("leaves cleanup untouched when shared deletion is blocked", () => {
     cleanup()
     params = makeParams({

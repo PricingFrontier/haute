@@ -7,6 +7,8 @@ interface ContextMenuProps {
   nodeId: string
   nodeLabel: string
   isSubmodel?: boolean
+  /** A created instance copy: deletable directly, unlike its definition owner. */
+  isSubmodelCopy?: boolean
   isSingleton?: boolean
   onClose: () => void
   onDelete: (id: string) => void
@@ -27,6 +29,7 @@ export default function ContextMenu({
   onCreateInstance,
   onDissolveSubmodel,
   isSubmodel,
+  isSubmodelCopy,
   isSingleton,
   nodeId,
 }: ContextMenuProps) {
@@ -47,11 +50,11 @@ export default function ContextMenu({
     if (isSubmodel && onDissolveSubmodel) {
       list.push({ label: "Dissolve Submodel", icon: Ungroup, action: () => onDissolveSubmodel(nodeId), danger: true })
     }
-    if (!isSubmodel) {
+    if (!isSubmodel || isSubmodelCopy) {
       list.push({ label: "Delete", icon: Trash2, action: () => onDelete(nodeId), danger: true })
     }
     return list
-  }, [nodeId, isSubmodel, isSingleton, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel])
+  }, [nodeId, isSubmodel, isSubmodelCopy, isSingleton, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel])
 
   // Close on outside click
   useEffect(() => {

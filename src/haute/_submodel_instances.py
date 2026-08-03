@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
 
 from haute._graph_utils import _edge_id
 from haute._types import (
@@ -35,7 +33,6 @@ _NODE_REFERENCE_FIELDS: dict[NodeType, frozenset[str]] = {
     ),
     NodeType.OPTIMISER_APPLY: frozenset({"ratebook_input"}),
 }
-_ALIAS_SUFFIX = re.compile(r"^(?P<base>.+?)_(?P<number>[2-9][0-9]*)$")
 
 
 @dataclass(frozen=True)
@@ -489,15 +486,29 @@ def _deduplicate_edges(edges: list[GraphEdge]) -> list[GraphEdge]:
     return result
 
 
+def _contains_line_block(container: str, block: str) -> bool:
+    """True when *block*'s stripped lines appear contiguously in *container*.
+
+    Whole-line comparison, not substring search: ``import a`` must never be
+    treated as already present because ``import ab`` is.
+    """
+    block_lines = [line.strip() for line in block.strip().splitlines()]
+    if not block_lines:
+        return True
+    container_lines = [line.strip() for line in container.strip().splitlines()]
+    span = len(block_lines)
+    return any(
+        container_lines[start : start + span] == block_lines
+        for start in range(len(container_lines) - span + 1)
+    )
+
+
 def _merge_definition_support_code(
     graph: PipelineGraph,
     selected: list[ResolvedSubmodelInstance],
 ) -> tuple[str | None, list[str]]:
     merged_preamble = graph.preamble
     merged_blocks = list(graph.preserved_blocks)
-    seen_preambles = (
-        {graph.preamble.strip()} if graph.preamble and graph.preamble.strip() else set()
-    )
     seen_blocks = {block.strip() for block in merged_blocks}
     seen_definitions: set[str] = set()
 
@@ -507,14 +518,15 @@ def _merge_definition_support_code(
             continue
         seen_definitions.add(definition_id)
         child_graph = instance.definition.graph
-        child_preamble = child_graph.preamble or ""
-        child_preamble_identity = child_preamble.strip()
-        if child_preamble_identity and child_preamble_identity not in seen_preambles:
-            seen_preambles.add(child_preamble_identity)
+        child_preamble = (child_graph.preamble or "").strip()
+        # Containment, not set identity: a staged dissolve has already merged
+        # this definition's preamble into the parent blob, and re-appending it
+        # on the next expansion would duplicate the support code.
+        if child_preamble and not _contains_line_block(merged_preamble or "", child_preamble):
             if merged_preamble and merged_preamble.strip():
-                merged_preamble = f"{merged_preamble.rstrip()}\n\n{child_preamble.rstrip()}"
+                merged_preamble = f"{merged_preamble.rstrip()}\n\n{child_preamble}"
             else:
-                merged_preamble = child_preamble.rstrip()
+                merged_preamble = child_preamble
         for block in child_graph.preserved_blocks:
             identity = block.strip()
             if identity in seen_blocks:
@@ -660,80 +672,3 @@ def expand_submodel_instances(
             "submodels": remaining_definitions,
         }
     )
-
-
-def _next_alias(base_alias: str, aliases: set[str]) -> str:
-    match = _ALIAS_SUFFIX.fullmatch(base_alias)
-    base = match.group("base") if match else base_alias
-    if base not in aliases:
-        return base
-    index = 2
-    while f"{base}_{index}" in aliases:
-        index += 1
-    return f"{base}_{index}"
-
-
-def create_submodel_instance(
-    graph: PipelineGraph,
-    source_instance_id: str,
-    *,
-    instance_id: str | None = None,
-    alias: str | None = None,
-    position: dict[str, float] | None = None,
-) -> PipelineGraph:
-    """Add one unbound occurrence without copying definition-owned state."""
-    instances = resolve_submodel_instances(graph)
-    source = instances.get(source_instance_id)
-    if source is None:
-        raise ParseError(
-            "Source submodel instance does not exist.",
-            instance_id=source_instance_id,
-        )
-
-    if instance_id is not None and (not instance_id or instance_id != instance_id.strip()):
-        raise ParseError("Submodel instance id is invalid.", instance_id=instance_id)
-    if alias is not None and (not alias or alias != alias.strip()):
-        raise ParseError("Submodel instance alias is invalid.", alias=alias)
-
-    existing_aliases = {item.config.alias for item in instances.values()}
-    occupied_identities = {*graph.node_map, *existing_aliases}
-    new_instance_id = instance_id if instance_id is not None else f"submodel_instance_{uuid4().hex}"
-    if new_instance_id in occupied_identities:
-        raise ParseError(
-            "Submodel instance id collides with an existing node id or alias.",
-            instance_id=new_instance_id,
-        )
-    occupied_identities.add(new_instance_id)
-    new_alias = (
-        alias if alias is not None else _next_alias(source.config.alias, occupied_identities)
-    )
-    if new_alias in occupied_identities:
-        raise ParseError(
-            "Submodel instance alias collides with an existing node id or alias.",
-            alias=new_alias,
-        )
-    config = SubmodelInstanceConfig(
-        definitionId=source.config.definition_id,
-        alias=new_alias,
-        instanceOf=source.config.instance_of or source.node.id,
-    )
-    new_position = (
-        position
-        if position is not None
-        else {
-            "x": source.node.position.get("x", 0.0) + 60.0,
-            "y": source.node.position.get("y", 0.0) + 80.0,
-        }
-    )
-    new_node = GraphNode(
-        id=new_instance_id,
-        type=source.node.type,
-        position=new_position,
-        data=NodeData(
-            label=f"{source.node.data.label} instance",
-            description=source.node.data.description,
-            nodeType=NodeType.SUBMODEL,
-            config=config.model_dump(by_alias=True, exclude_none=True),
-        ),
-    )
-    return graph.model_copy(update={"nodes": [*graph.nodes, new_node]})

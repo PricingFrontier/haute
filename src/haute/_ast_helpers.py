@@ -517,24 +517,23 @@ def _slice_without_module_preserve_spans(
     return [lines[index] for index in range(start, stop) if index not in excluded]
 
 
-_CONFIG_BASE_ASSIGNMENT_LINES = frozenset(
-    {
-        "_HAUTE_CONFIG_BASE=_HautePath(__file__).resolve().parent",
-        "_HAUTE_CONFIG_BASE=_HautePath(__file__).resolve().parent.parent",
-    }
+# Pipelines emit ``.parent``; submodels emit ``.parents[N]`` with N derived
+# from the recorded registration path depth (see codegen).
+_CONFIG_BASE_ASSIGNMENT = re.compile(
+    r"^_HAUTE_CONFIG_BASE=_HautePath\(__file__\)\.resolve\(\)\.(?:parent|parents\[\d+\])$"
 )
-_CONFIG_BASE_SCAFFOLD_LINES = _CONFIG_BASE_ASSIGNMENT_LINES | {"frompathlibimportPathas_HautePath"}
+_CONFIG_BASE_IMPORT = "frompathlibimportPathas_HautePath"
 
 
 def _without_config_base_scaffold(lines: list[str]) -> list[str]:
     """Remove exact generated config-base lines from authored preamble text."""
     compacted = ["".join(line.split()) for line in lines]
-    if not any(line in _CONFIG_BASE_ASSIGNMENT_LINES for line in compacted):
+    if not any(_CONFIG_BASE_ASSIGNMENT.fullmatch(line) for line in compacted):
         return lines
     return [
         line
         for line, compact in zip(lines, compacted, strict=True)
-        if compact not in _CONFIG_BASE_SCAFFOLD_LINES
+        if compact != _CONFIG_BASE_IMPORT and not _CONFIG_BASE_ASSIGNMENT.fullmatch(compact)
     ]
 
 

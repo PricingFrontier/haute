@@ -71,7 +71,7 @@ import {
 import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/editors/_shared"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
-import { isSubmodelInstanceConfig, nodeData } from "./types/node"
+import { isProtectedSubmodelNodeData, isSubmodelInstanceConfig, nodeData } from "./types/node"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
@@ -275,7 +275,7 @@ function FlowEditor() {
     setComparisonInspectState(null)
     setGitOpen(false)
   }, [closeComparison, setGitOpen])
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSubmodelCopy?: boolean; isSingleton?: boolean } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
   // The raw setter avoids adding text edits to the graph undo stack.
@@ -565,6 +565,27 @@ function FlowEditor() {
     )
     if (presentationChanges.length > 0) onNodesChange(presentationChanges)
   }, [activeSubmodelReadOnly, commitSharedNodeDeletion, onNodesChange])
+
+  // React Flow's native delete (deleteKeyCode / deleteElements) must obey the
+  // same rule as the context menu, panel, and window keyboard handler: owner
+  // occurrences are dissolved, never raw-deleted. Copies still delete.
+  const onBeforeDelete = useCallback(async (
+    { nodes: doomedNodes, edges: doomedEdges }: { nodes: Node[]; edges: Edge[] },
+  ) => {
+    const sparedIds = new Set(
+      doomedNodes
+        .filter((node) => isProtectedSubmodelNodeData(nodeData(node)))
+        .map((node) => node.id),
+    )
+    if (sparedIds.size === 0) return true
+    addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
+    const keptNodes = doomedNodes.filter((node) => !sparedIds.has(node.id))
+    const keptEdges = doomedEdges.filter(
+      (edge) => !sparedIds.has(edge.source) && !sparedIds.has(edge.target),
+    )
+    if (keptNodes.length === 0 && keptEdges.length === 0) return false
+    return { nodes: keptNodes, edges: keptEdges }
+  }, [addToast])
 
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
     if (activeSubmodelReadOnly) {
@@ -1189,6 +1210,7 @@ function FlowEditor() {
                 edges={edgesWithEdgeJoinCandidate}
                 onNodesChange={handleNodesChange}
                 onEdgesChange={handleEdgesChange}
+                onBeforeDelete={onBeforeDelete}
                 onConnect={activeSubmodelReadOnly ? undefined : onConnect}
                 onConnectStart={activeSubmodelReadOnly ? undefined : onConnectStart}
                 onConnectEnd={activeSubmodelReadOnly ? undefined : onConnectEnd}
@@ -1336,6 +1358,7 @@ function FlowEditor() {
           onRename={handleRenameNode}
           onCreateInstance={handleCreateInstance}
           isSubmodel={contextMenu.isSubmodel}
+          isSubmodelCopy={contextMenu.isSubmodelCopy}
           isSingleton={contextMenu.isSingleton}
           onDissolveSubmodel={handleDissolveSubmodel}
         />

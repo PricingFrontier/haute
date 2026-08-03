@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,10 +12,9 @@ from pydantic import ValidationError
 
 from haute._flatten import flatten_graph
 from haute._graph_shape import validate_pipeline_graph_shape_contracts
-from haute._parser_submodels import extract_submodel_registrations
+from haute._parser_submodels import extract_submodel_registrations, parse_submodel_source
 from haute._polars_io_registry import validate_data_input_config
 from haute._submodel_instances import (
-    create_submodel_instance,
     qualified_runtime_node_id,
     validate_submodel_instances,
 )
@@ -329,56 +329,52 @@ def test_targeted_flatten_rejects_dissolving_owner_with_remaining_copy() -> None
         flatten_graph(graph, target_instance_id="instance_owner")
 
 
-def test_create_instance_rejects_blank_or_colliding_identity() -> None:
+def test_staged_dissolve_merges_definition_preamble_once() -> None:
+    child_graph = PipelineGraph(
+        nodes=[
+            _node("local_input"),
+            _node("local_output", config={"instanceOf": "local_input"}),
+        ],
+        edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
+        preamble="import child_helpers",
+    )
     graph = PipelineGraph(
         nodes=[
-            _instance("instance_primary", "scoring"),
-            _node("ordinary"),
+            _instance("instance_owner", "scoring"),
+            _instance("instance_copy", "scoring_copy", instance_of="instance_owner"),
         ],
         edges=[],
-        submodels={"definition_scoring": _definition()},
+        submodels={"definition_scoring": _definition(graph=child_graph)},
+        preamble="import parent_helpers",
     )
 
-    for kwargs in (
-        {"instance_id": ""},
-        {"alias": ""},
-        {"instance_id": "scoring"},
-        {"alias": "ordinary"},
-    ):
-        with pytest.raises(ParseError, match="identity|alias|id"):
-            create_submodel_instance(graph, "instance_primary", **kwargs)
+    after_copy = flatten_graph(graph, target_instance_id="instance_copy")
+    assert (after_copy.preamble or "").count("import child_helpers") == 1
+
+    after_owner = flatten_graph(after_copy)
+    assert (after_owner.preamble or "").count("import child_helpers") == 1
 
 
-def test_create_instance_is_a_pure_occurrence_mutation() -> None:
+def test_preamble_merge_never_skips_on_partial_line_overlap() -> None:
+    child_graph = PipelineGraph(
+        nodes=[
+            _node("local_input"),
+            _node("local_output", config={"instanceOf": "local_input"}),
+        ],
+        edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
+        preamble="import child",
+    )
     graph = PipelineGraph(
-        nodes=[_instance("instance_primary", "scoring", x=10, y=20)],
+        nodes=[_instance("instance_owner", "scoring")],
         edges=[],
-        submodels={"definition_scoring": _definition()},
+        submodels={"definition_scoring": _definition(graph=child_graph)},
+        preamble="import child_helpers",
     )
 
-    result = create_submodel_instance(
-        graph,
-        "instance_primary",
-        instance_id="instance_secondary",
-        alias="scoring_2",
-        position={"x": 210, "y": 120},
-    )
-
-    assert graph is not result
-    assert [node.id for node in graph.nodes] == ["instance_primary"]
-    assert [node.id for node in result.nodes] == ["instance_primary", "instance_secondary"]
-    created = result.node_map["instance_secondary"]
-    assert created.data.config == {
-        "definitionId": "definition_scoring",
-        "alias": "scoring_2",
-        "instanceOf": "instance_primary",
-    }
-    assert created.position == {"x": 210.0, "y": 120.0}
-    assert all(
-        edge.source != "instance_secondary" and edge.target != "instance_secondary"
-        for edge in result.edges
-    )
-    assert result.submodels == graph.submodels
+    flat = flatten_graph(graph)
+    lines = [line.strip() for line in (flat.preamble or "").splitlines() if line.strip()]
+    assert "import child" in lines
+    assert "import child_helpers" in lines
 
 
 def test_flatten_expands_two_instances_with_independent_bindings_and_references() -> None:
@@ -780,6 +776,63 @@ def test_codegen_emits_definition_once_and_two_stable_registrations() -> None:
     assert 'alias="scoring_a"' in main
     assert 'alias="scoring_b"' in main
     assert 'instance_of="instance_a"' in main
+
+
+def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Path) -> None:
+    score_config = {
+        "sourceType": "run",
+        "run_id": "abc123",
+        "artifact_path": "model.cbm",
+        "task": "regression",
+        "output_column": "prediction",
+    }
+    config_dir = tmp_path / "config" / "model_scoring"
+    config_dir.mkdir(parents=True)
+    (config_dir / "score.json").write_text(json.dumps(score_config), encoding="utf-8")
+
+    def emitted_child(file: str) -> str:
+        score = _node("score", NodeType.MODEL_SCORE, config=dict(score_config))
+        definition = SubmodelDefinition(
+            definition_id="definition_scoring",
+            file=file,
+            graph=PipelineGraph(nodes=[score], edges=[]),
+            input_ports=[
+                SubmodelInputPort(
+                    port_id="policy",
+                    label="Policy data",
+                    targets=[SubmodelEndpoint(node_id="score")],
+                )
+            ],
+            output_ports=[
+                SubmodelOutputPort(
+                    port_id="scored",
+                    label="Scored",
+                    source=SubmodelEndpoint(node_id="score"),
+                )
+            ],
+        )
+        graph = PipelineGraph(
+            nodes=[_instance("instance_a", "scoring")],
+            edges=[],
+            pipeline_name="main",
+            submodels={"definition_scoring": definition},
+        )
+        files = graph_to_code_multi(graph, pipeline_name="main", source_file="main.py")
+        return files[file]
+
+    depth_cases = {
+        "scoring.py": "parents[0]",
+        "modules/scoring.py": "parents[1]",
+        "modules/nested/scoring.py": "parents[2]",
+    }
+    for file, expected_base in depth_cases.items():
+        child_source = emitted_child(file)
+        assert (
+            f"_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().{expected_base}"
+            in child_source
+        ), file
+        reparsed = parse_submodel_source(child_source, source_file=file, _base_dir=tmp_path)
+        assert "_HAUTE_CONFIG_BASE" not in (reparsed.preamble or ""), file
 
 
 def test_codegen_parse_round_trip_preserves_occurrences_ports_labels_and_bindings(

@@ -92,12 +92,16 @@ by one shared **definition** and any number of parent-graph **instances**:
   port of the correct direction. Stale or malformed declared references fail
   with the affected definition, instance, and port identified.
 
-Creating another instance is a pure parent-graph mutation: it adds a new
-occurrence with a fresh immutable id and stable alias whose `instanceOf` points
-at the definition owner, and does not create or copy a file. Removing an
-instance removes only that occurrence. The owner cannot be dissolved while
-instances still reference it. Renaming an occurrence changes presentation
-only. Drilling into the owner opens the shared definition editor and states
+Creating another instance is a pure parent-graph mutation performed by the
+canvas: it adds a new occurrence with a fresh immutable id and stable alias
+whose `instanceOf` points at the definition owner, and does not create or copy
+a file. Removing an instance copy removes only that occurrence and its parent
+bindings, and is permitted from every canvas delete surface. The definition
+owner is never raw-deleted from any surface — it anchors the shared
+definition, so retiring it means dissolving the submodel (after its copies are
+removed or dissolved); blocked attempts say so visibly. The owner cannot be
+dissolved while instances still reference it. Renaming an occurrence changes
+presentation only. Drilling into the owner opens the shared definition editor and states
 that edits affect every instance; drilling into an instance opens the same
 definition as an explicitly read-only view. All mutation surfaces are disabled
 there, including config fields, labels, node/edge edits, boundary edits,
@@ -105,7 +109,12 @@ paste/delete/undo/redo, palette drops, imports, and auto-layout. Preview, trace,
 selection, copy, pan, and zoom remain available. In v1, an owner edit that
 removes or changes a public port in
 use is blocked atomically and lists every affected instance/port; per-instance
-internal overrides and nested submodels remain unsupported.
+internal overrides and nested submodels remain unsupported. The public input
+interface is derived once at grouping time: v1 offers no GUI affordance for
+adding a new public *input* port afterwards — existing input ports can be
+rebound, relabelled, or removed (subject to the in-use guard), and adding one
+means editing the definition source. New public *output* ports can be added in
+the drilled view by wiring a child output to the Output boundary.
 
 Flattening expands each occurrence independently. Runtime node ids are
 qualified from immutable `(instanceId, localNodeId)` values and retain a
@@ -244,8 +253,12 @@ must resolve the original pipeline-owned sidecars.
   child metadata and are re-emitted in that child file. When a submodel is
   flattened for execution or dissolve, its preamble and preserved blocks are
   merged into the parent graph so the inlined nodes retain their support code.
-  Exact support-code snapshots already present in the parent are not appended
-  a second time, so create then dissolve reaches a stable representation.
+  Support code already present in the parent is never appended a second time:
+  preamble presence is detected by whole-line block containment (not exact
+  blob identity), so a staged dissolve of one occurrence followed by a later
+  expansion of the owner still merges each definition preamble exactly once,
+  and a partial line overlap (`import a` vs `import ab`) never suppresses a
+  genuinely new line. Create then dissolve reaches a stable representation.
 - **Writes are serialised and freshness-checked.** Both create and dissolve acquire the same shared
   lock used by the manual pipeline save endpoint while reading the persisted
   revision and computing a transform. Before transforming anything,

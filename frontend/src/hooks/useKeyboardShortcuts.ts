@@ -3,7 +3,7 @@ import type { Node, Edge } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import { nodeData } from "../types/node"
+import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
 import { isSingletonType } from "../utils/nodeTypes"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
@@ -208,6 +208,17 @@ export default function useKeyboardShortcuts({
         const selectedNodeIds = new Set(currentNodes.filter((n) => n.selected).map((n) => n.id))
         const selectedEdgeIds = new Set(currentEdges.filter((ed) => ed.selected).map((ed) => ed.id))
         if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
+        // Owner occurrences anchor their shared definition: dissolve them,
+        // never raw-delete. Copies and ordinary nodes in the selection still
+        // delete, matching the context-menu and panel guards.
+        const protectedOwnerIds = currentNodes
+          .filter((n) => selectedNodeIds.has(n.id) && isProtectedSubmodelNodeData(nodeData(n)))
+          .map((n) => n.id)
+        if (protectedOwnerIds.length > 0) {
+          addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
+          for (const ownerId of protectedOwnerIds) selectedNodeIds.delete(ownerId)
+          if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
+        }
         if (selectedNodeIds.size > 0) {
           const sharedDeletion = commitSharedNodeDeletion?.(selectedNodeIds, selectedEdgeIds)
           if (sharedDeletion === "blocked") return

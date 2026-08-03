@@ -2561,11 +2561,11 @@ class TestBuildExtraKwargsEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-class TestConnectDeduplication:
-    """Separate invalid graph duplicates from boundary-resolution duplicates."""
+class TestCanonicalBindingRejection:
+    """Codegen refuses malformed or over-bound public-port bindings at save."""
 
     @staticmethod
-    def _submodel_graph(edges: list[dict]):
+    def _instance_graph(edges: list[dict]):
         return _g(
             {
                 "nodes": [
@@ -2578,15 +2578,20 @@ class TestConnectDeduplication:
                         },
                     },
                     {
-                        "id": "child_a",
-                        "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                        "id": "instance_sm1",
+                        "type": "submodel",
+                        "data": {
+                            "label": "sm1",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                        },
                     },
                 ],
                 "edges": edges,
                 "submodels": {
                     "sm1": {
+                        "definitionId": "sm1",
                         "file": "modules/sm1.py",
-                        "childNodeIds": ["child_a"],
                         "graph": {
                             "nodes": [
                                 {
@@ -2596,74 +2601,77 @@ class TestConnectDeduplication:
                             ],
                             "edges": [],
                         },
+                        "inputPorts": [
+                            {
+                                "portId": "records",
+                                "label": "Records",
+                                "targets": [{"nodeId": "child_a", "handleId": None}],
+                            }
+                        ],
+                        "outputPorts": [
+                            {
+                                "portId": "scored",
+                                "label": "Scored",
+                                "source": {"nodeId": "child_a", "handleId": None},
+                            }
+                        ],
                     },
                 },
             }
         )
 
-    def test_duplicate_graph_edges_raise_duplicate_input_name(self):
-        graph = self._submodel_graph(
+    def test_double_binding_one_public_input_port_cannot_be_saved(self):
+        graph = self._instance_graph(
             [
                 {
                     "id": "e1",
                     "source": "src",
-                    "target": "submodel__sm1",
-                    "targetHandle": "in__child_a",
+                    "target": "instance_sm1",
+                    "targetHandle": "in__records",
                 },
                 {
                     "id": "e2",
                     "source": "src",
-                    "target": "submodel__sm1",
-                    "targetHandle": "in__child_a",
+                    "target": "instance_sm1",
+                    "targetHandle": "in__records",
+                    "sourceHandle": "frame_b",
                 },
             ]
         )
 
-        with pytest.raises(ParseError) as exc_info:
+        with pytest.raises(ParseError, match="bound more than once") as exc_info:
             graph_to_code_multi(graph, pipeline_name="main")
 
-        message = str(exc_info.value)
-        assert "child_a" in message
-        assert "Source" in message
+        assert "records" in str(exc_info.value)
 
     def test_unassigned_input_draft_cannot_be_saved(self):
-        graph = self._submodel_graph(
+        graph = self._instance_graph(
             [
                 {
                     "id": "unassigned",
                     "source": "src",
-                    "target": "submodel__sm1",
+                    "target": "instance_sm1",
                     "targetHandle": None,
                 }
             ]
         )
 
-        with pytest.raises(ParseError, match="targetHandle"):
+        with pytest.raises(ParseError, match="public-port handle"):
             graph_to_code_multi(graph, pipeline_name="main")
 
-    def test_boundary_resolution_connect_pair_is_deduplicated(self):
-        """A direct child edge and its boundary form resolve to one connect."""
-        graph = self._submodel_graph(
+    def test_definition_child_ids_are_never_parent_endpoints(self):
+        graph = self._instance_graph(
             [
                 {
                     "id": "direct-child-edge",
                     "source": "src",
                     "target": "child_a",
-                },
-                {
-                    "id": "boundary-edge",
-                    "source": "src",
-                    "target": "submodel__sm1",
-                    "targetHandle": "in__child_a",
-                },
+                }
             ]
         )
 
-        files = graph_to_code_multi(graph, pipeline_name="main")
-        main_code = files["main.py"]
-
-        assert main_code.count('pipeline.connect("Source", "ChildA")') == 1
-        compile(main_code, "<test>", "exec")
+        with pytest.raises(ParseError):
+            graph_to_code_multi(graph, pipeline_name="main")
 
 
 class TestDeclaredSubmodelOutputs:

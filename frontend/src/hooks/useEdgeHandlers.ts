@@ -16,7 +16,7 @@ import {
   type OnConnectEnd,
   type OnSelectionChangeFunc,
 } from "@xyflow/react"
-import { effectiveNodeType, nodeData } from "../types/node"
+import { effectiveNodeType, isSubmodelInstanceConfig, nodeData } from "../types/node"
 import { NODE_TYPES, NODE_TYPE_META, isSingletonType, type NodeTypeValue } from "../utils/nodeTypes"
 import {
   insertEdgeJoinNode,
@@ -90,6 +90,7 @@ type ContextMenuData = {
   nodeId: string
   nodeLabel: string
   isSubmodel?: boolean
+  isSubmodelCopy?: boolean
   isSingleton?: boolean
 }
 
@@ -475,13 +476,17 @@ export default function useEdgeHandlers({
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
     event.preventDefault()
-    const nt = nodeData(node).nodeType
+    const data = nodeData(node)
+    const nt = data.nodeType
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
       nodeId: node.id,
       nodeLabel: String(node.data.label),
       isSubmodel: nt === NODE_TYPES.SUBMODEL,
+      isSubmodelCopy: nt === NODE_TYPES.SUBMODEL
+        && isSubmodelInstanceConfig(data.config)
+        && data.config.instanceOf !== undefined,
       isSingleton: isSingletonType(nt),
     })
   }, [setContextMenu])

@@ -10,7 +10,11 @@ import type { Node, Edge } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
-import { isSubmodelInstanceConfig, nodeData } from "../types/node"
+import {
+  isProtectedSubmodelNodeData,
+  isSubmodelInstanceConfig,
+  nodeData,
+} from "../types/node"
 import { NODE_TYPES, isSingletonType } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
@@ -34,7 +38,10 @@ type UseNodeHandlersParams = {
     selectedEdgeIds?: ReadonlySet<string>,
   ) => SharedNodeDeletionResult
 }
-const SUBMODEL_ALIAS_SUFFIX = /^(.*)_([2-9]\d*)$/
+// Strips one trailing copy-number so cloning "scoring_10" counts from
+// "scoring": _2–_9 plus any multi-digit suffix (_10, _11, …). A bare "_1"
+// is not a copy number — the base itself is the first occurrence.
+const SUBMODEL_ALIAS_SUFFIX = /^(.*)_([2-9]|[1-9]\d+)$/
 
 function nextSubmodelAlias(alias: string, aliases: Set<string>): string {
   const match = SUBMODEL_ALIAS_SUFFIX.exec(alias)
@@ -69,8 +76,8 @@ export default function useNodeHandlers({
 
   const handleDeleteNode = useCallback((id: string) => {
     const target = graphRef.current.nodes.find((node) => node.id === id)
-    if (target && nodeData(target).nodeType === NODE_TYPES.SUBMODEL) {
-      addToast("error", 'Use "Dissolve Submodel" to remove a submodel occurrence')
+    if (target && isProtectedSubmodelNodeData(nodeData(target))) {
+      addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
       return
     }
     const sharedDeletion = commitSharedNodeDeletion?.(new Set([id]))
@@ -191,7 +198,6 @@ export default function useNodeHandlers({
       type: original.type,
       position: { x: original.position.x + 60, y: original.position.y + 80 },
       selected: true,
-      deletable: !isSubmodel,
       data: {
         label: `${origData.label} instance`,
         description: `Instance of ${origData.label}`,

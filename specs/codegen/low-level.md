@@ -104,11 +104,18 @@ fresh markers.
 
 - `_generate_pipeline_lines` emits the reserved `_HautePath` import before
   the standard imports and the `_HAUTE_CONFIG_BASE` assignment immediately
-  after the `Pipeline`/`Submodel` constructor. `_extract_preamble` also
-  excludes those exact reserved scaffold lines when reading a file produced
-  before that boundary was established. Codegen -> parse -> codegen therefore
-  emits one config-base assignment and reaches a source-text fixpoint rather
-  than reclassifying generated infrastructure as authored preamble.
+  after the `Pipeline`/`Submodel` constructor. A pipeline file assigns
+  `_HautePath(__file__).resolve().parent`; a submodel file assigns
+  `_HautePath(__file__).resolve().parents[N]` where `N` is the number of path
+  separators in the recorded registration path — config paths always resolve
+  against the parent pipeline directory, so the emitted base climbs exactly as
+  many levels as the registration path descends (`modules/x.py` -> `parents[1]`,
+  `x.py` -> `parents[0]`, `a/b/x.py` -> `parents[2]`). Submodel codegen without
+  that depth is a `HauteError`. `_extract_preamble` excludes exactly those
+  reserved scaffold shapes (`.parent` and `.parents[N]`, matched structurally,
+  plus the `_HautePath` import) so codegen -> parse -> codegen emits one
+  config-base assignment and reaches a source-text fixpoint rather than
+  reclassifying generated infrastructure as authored preamble.
 - `_gen_data_input` emits the one retained tabular-input scaffold. It calls
   `resolve_data_input_from_config` using the generated sidecar path and file
   directory, assigns the returned lazy frame to `df`, appends optional user
@@ -262,6 +269,7 @@ text between the parens is non-whitespace).
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
 | Canonical submodel occurrence, definition, public handle, port id, or internal port endpoint is malformed | `ParseError` | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
+| Parent edge endpoint is neither a root node nor a registered occurrence (e.g. a definition-owned child id used as a parent endpoint) | `ParseError` naming the edge, endpoint side, and node id | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
 | `polars` transform has no code and no/multiple sources | `ConfigError` | `_codegen_builders._gen_transform` |

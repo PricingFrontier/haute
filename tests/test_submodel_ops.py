@@ -281,7 +281,7 @@ class TestCreateSubmodelGraph:
         assert set(files) == {"main.py", "modules/two_inputs.py"}
         child_source = files["modules/two_inputs.py"]
         assert child_source.count("@submodel.data_input") == 2
-        assert "_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent.parent" in child_source
+        assert "_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parents[1]" in child_source
         assert child_source.index("submodel = haute.Submodel") < child_source.index(
             "_HAUTE_CONFIG_BASE ="
         )
