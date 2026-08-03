@@ -1017,6 +1017,20 @@ def _submodel_node_to_code(
     return code
 
 
+def _registration_path_depth(recorded_path: str) -> int:
+    """Directory depth of a recorded registration path below the pipeline dir.
+
+    Counts real path segments — dot and empty segments (``./x.py``,
+    ``a//x.py``) must not inflate how far the emitted config base climbs.
+    """
+    segments = [
+        segment
+        for segment in recorded_path.replace("\\", "/").split("/")
+        if segment not in ("", ".")
+    ]
+    return max(len(segments) - 1, 0)
+
+
 def _canonical_port_id(
     handle: str | None,
     *,
@@ -1189,7 +1203,7 @@ def _graph_to_code_multi_instances(
             definition_id=definition_id,
             input_ports=definition.input_ports,
             output_ports=definition.output_ports,
-            config_base_depth=definition.file.replace("\\", "/").count("/"),
+            config_base_depth=_registration_path_depth(definition.file),
             node_to_code_fn=_submodel_node_to_code,
             obj_name="submodel",
         )

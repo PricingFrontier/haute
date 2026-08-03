@@ -80,8 +80,12 @@ node is protected when its canonical config is malformed or has no
 `handleDeleteNode`, the window keyboard Delete/Backspace handler (which
 partitions a mixed selection, toasts once for spared owners, and deletes the
 remainder), the context menu (which shows Delete only when `isSubmodelCopy`),
-and React Flow's native delete via an App-level `onBeforeDelete` filter that
-spares protected owners plus edges incident to them. Instance copies delete
+and React Flow's native delete through
+`frontend/src/utils/submodelDeletionPolicy.ts`: `withNativeDeletePolicy`
+stamps `deletable` on canvas nodes (owners and malformed occurrences false,
+copies true, other nodes untouched) and `spareProtectedOwners` backs the
+App-level `onBeforeDelete` filter that spares owners plus their incident
+edges while the rest of the selection deletes. Instance copies delete
 like ordinary nodes, with incident edges, in one undo step. Duplicate remains
 omitted for every submodel occurrence; owner removal uses the
 instance-targeted dissolve lifecycle and reusable copying uses Create

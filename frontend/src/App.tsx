@@ -71,7 +71,8 @@ import {
 import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/editors/_shared"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
-import { isProtectedSubmodelNodeData, isSubmodelInstanceConfig, nodeData } from "./types/node"
+import { isSubmodelInstanceConfig, nodeData } from "./types/node"
+import { spareProtectedOwners, withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
@@ -505,11 +506,7 @@ function FlowEditor() {
     refreshPreview,
   })
   const canvasNodes = useMemo(
-    () => nodesWithStatus.map((node) => (
-      nodeData(node).nodeType === NODE_TYPES.SUBMODEL && node.deletable !== false
-        ? { ...node, deletable: false }
-        : node
-    )),
+    () => withNativeDeletePolicy(nodesWithStatus),
     [nodesWithStatus],
   )
 
@@ -572,17 +569,12 @@ function FlowEditor() {
   const onBeforeDelete = useCallback(async (
     { nodes: doomedNodes, edges: doomedEdges }: { nodes: Node[]; edges: Edge[] },
   ) => {
-    const sparedIds = new Set(
-      doomedNodes
-        .filter((node) => isProtectedSubmodelNodeData(nodeData(node)))
-        .map((node) => node.id),
+    const { nodes: keptNodes, edges: keptEdges, sparedOwnerIds } = spareProtectedOwners(
+      doomedNodes,
+      doomedEdges,
     )
-    if (sparedIds.size === 0) return true
+    if (sparedOwnerIds.length === 0) return true
     addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
-    const keptNodes = doomedNodes.filter((node) => !sparedIds.has(node.id))
-    const keptEdges = doomedEdges.filter(
-      (edge) => !sparedIds.has(edge.source) && !sparedIds.has(edge.target),
-    )
     if (keptNodes.length === 0 && keptEdges.length === 0) return false
     return { nodes: keptNodes, edges: keptEdges }
   }, [addToast])

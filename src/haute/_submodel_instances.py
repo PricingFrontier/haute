@@ -487,15 +487,17 @@ def _deduplicate_edges(edges: list[GraphEdge]) -> list[GraphEdge]:
 
 
 def _contains_line_block(container: str, block: str) -> bool:
-    """True when *block*'s stripped lines appear contiguously in *container*.
+    """True when *block*'s lines appear contiguously in *container*.
 
     Whole-line comparison, not substring search: ``import a`` must never be
-    treated as already present because ``import ab`` is.
+    treated as already present because ``import ab`` is. Leading indentation
+    is significant — an ``import`` nested inside a function body must not
+    satisfy a top-level import the merge still needs to append.
     """
-    block_lines = [line.strip() for line in block.strip().splitlines()]
+    block_lines = [line.rstrip() for line in block.strip("\n").splitlines()]
     if not block_lines:
         return True
-    container_lines = [line.strip() for line in container.strip().splitlines()]
+    container_lines = [line.rstrip() for line in container.strip("\n").splitlines()]
     span = len(block_lines)
     return any(
         container_lines[start : start + span] == block_lines

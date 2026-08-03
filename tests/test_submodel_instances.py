@@ -355,6 +355,28 @@ def test_staged_dissolve_merges_definition_preamble_once() -> None:
     assert (after_owner.preamble or "").count("import child_helpers") == 1
 
 
+def test_preamble_merge_treats_indented_lines_as_distinct_from_top_level() -> None:
+    child_graph = PipelineGraph(
+        nodes=[
+            _node("local_input"),
+            _node("local_output", config={"instanceOf": "local_input"}),
+        ],
+        edges=[GraphEdge(id="local_edge", source="local_input", target="local_output")],
+        preamble="import child_helpers",
+    )
+    graph = PipelineGraph(
+        nodes=[_instance("instance_owner", "scoring")],
+        edges=[],
+        submodels={"definition_scoring": _definition(graph=child_graph)},
+        preamble="def load():\n    import child_helpers",
+    )
+
+    flat = flatten_graph(graph)
+    lines = (flat.preamble or "").splitlines()
+    assert "import child_helpers" in lines
+    assert "    import child_helpers" in lines
+
+
 def test_preamble_merge_never_skips_on_partial_line_overlap() -> None:
     child_graph = PipelineGraph(
         nodes=[
@@ -824,6 +846,11 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
         "scoring.py": "parents[0]",
         "modules/scoring.py": "parents[1]",
         "modules/nested/scoring.py": "parents[2]",
+        # Depth counts real path segments, not raw separators: dot and empty
+        # segments never inflate how far the emitted base climbs.
+        "./modules/scoring.py": "parents[1]",
+        "modules//scoring.py": "parents[1]",
+        "modules/./scoring.py": "parents[1]",
     }
     for file, expected_base in depth_cases.items():
         child_source = emitted_child(file)
