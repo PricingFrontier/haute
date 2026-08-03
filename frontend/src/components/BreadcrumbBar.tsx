@@ -1,13 +1,20 @@
-import { ChevronRight } from "lucide-react"
+import { ChevronRight, Lock } from "lucide-react"
 
-export interface ViewLevel {
-  type: "pipeline" | "submodel"
+interface ViewLevelBase {
   name: string
   file: string
   _savedNodes?: import("@xyflow/react").Node[]
   _savedEdges?: import("@xyflow/react").Edge[]
 }
 
+export type ViewLevel =
+  | ViewLevelBase & { type: "pipeline" }
+  | ViewLevelBase & {
+      type: "submodel"
+      instanceId: string
+      definitionId: string
+      readOnly: boolean
+    }
 interface BreadcrumbBarProps {
   viewStack: ViewLevel[]
   onNavigate: (depth: number) => void
@@ -38,6 +45,12 @@ export default function BreadcrumbBar({ viewStack, onNavigate }: BreadcrumbBarPr
             disabled={i === viewStack.length - 1}
           >
             {level.name}
+            {level.type === "submodel" && level.readOnly && (
+              <span className="ml-1 inline-flex items-center gap-1" title="Read-only submodel instance">
+                <Lock size={10} aria-hidden="true" />
+                <span className="sr-only">Read-only instance</span>
+              </span>
+            )}
           </button>
         </span>
       ))}

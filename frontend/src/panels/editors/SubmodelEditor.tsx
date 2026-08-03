@@ -1,64 +1,97 @@
 import { Package } from "lucide-react"
-import { configField } from "../../utils/configField"
-import { withAlpha } from "../../utils/color"
 import { EditorLabel } from "../../components/form"
+import useGraphStore from "../../stores/useGraphStore"
+import { isSubmodelDefinition, isSubmodelInstanceConfig } from "../../types/node"
+import { withAlpha } from "../../utils/color"
 
-export default function SubmodelEditor({
-  config,
-  accentColor,
-}: {
+interface SubmodelEditorProps {
   config: Record<string, unknown>
   accentColor: string
-}) {
-  const file = configField(config, "file", "")
-  const childNodeIds = configField<string[]>(config, "childNodeIds", [])
-  const inputPorts = configField<string[]>(config, "inputPorts", [])
-  const outputPorts = configField<string[]>(config, "outputPorts", [])
+}
+
+interface PortBadgeProps {
+  portId: string
+  label: string
+  accentColor: string
+}
+
+function PortBadge({ portId, label, accentColor }: PortBadgeProps) {
+  return (
+    <span
+      className="inline-flex items-center rounded px-2 py-0.5 font-mono text-[11px]"
+      style={{ background: withAlpha(accentColor, 0.1), color: accentColor }}
+    >
+      {label}
+      <span className="ml-1 opacity-60">[{portId}]</span>
+    </span>
+  )
+}
+
+export default function SubmodelEditor({ config, accentColor }: SubmodelEditorProps) {
+  const definition = useGraphStore((state) =>
+    isSubmodelInstanceConfig(config) ? state.submodels[config.definitionId] : undefined,
+  )
+  if (!isSubmodelInstanceConfig(config) || !isSubmodelDefinition(definition, config.definitionId)) {
+    return (
+      <div role="alert" className="px-4 py-3 text-xs" style={{ color: "var(--danger)" }}>
+        Submodel occurrence or definition is invalid.
+      </div>
+    )
+  }
 
   return (
-    <div className="px-4 py-3 space-y-3">
-      <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg" style={{ background: withAlpha(accentColor, 0.08), border: `1px solid ${withAlpha(accentColor, 0.2)}` }}>
+    <div className="space-y-3 px-4 py-3">
+      <div
+        className="flex items-center gap-2 rounded-lg px-2.5 py-2"
+        style={{
+          background: withAlpha(accentColor, 0.08),
+          border: `1px solid ${withAlpha(accentColor, 0.2)}`,
+        }}
+      >
         <Package size={14} style={{ color: accentColor }} />
         <span className="text-xs font-medium" style={{ color: accentColor }}>Submodel</span>
-        <span className="ml-auto text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>{childNodeIds.length} nodes</span>
+        <span className="ml-auto font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
+          {definition.graph.nodes.length} nodes
+        </span>
       </div>
 
-      {file && (
-        <div>
-          <EditorLabel>File</EditorLabel>
-          <div className="mt-1 text-xs font-mono px-2.5 py-1.5 rounded-lg" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}>
-            {file}
-          </div>
+      <div>
+        <EditorLabel>File</EditorLabel>
+        <div
+          className="mt-1 rounded-lg px-2.5 py-1.5 font-mono text-xs"
+          style={{
+            background: "var(--bg-input)",
+            border: "1px solid var(--border)",
+            color: "var(--text-secondary)",
+          }}
+        >
+          {definition.file}
         </div>
-      )}
+      </div>
 
-      {inputPorts.length > 0 && (
+      {definition.inputPorts.length > 0 && (
         <div>
           <EditorLabel>Inputs</EditorLabel>
           <div className="mt-1 flex flex-wrap gap-1.5">
-            {inputPorts.map((port) => (
-              <span key={port} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-                {port}
-              </span>
+            {definition.inputPorts.map((port) => (
+              <PortBadge key={port.portId} {...port} accentColor={accentColor} />
             ))}
           </div>
         </div>
       )}
 
-      {outputPorts.length > 0 && (
+      {definition.outputPorts.length > 0 && (
         <div>
           <EditorLabel>Outputs</EditorLabel>
           <div className="mt-1 flex flex-wrap gap-1.5">
-            {outputPorts.map((port) => (
-              <span key={port} className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-mono" style={{ background: withAlpha(accentColor, 0.1), color: accentColor }}>
-                {port}
-              </span>
+            {definition.outputPorts.map((port) => (
+              <PortBadge key={port.portId} {...port} accentColor={accentColor} />
             ))}
           </div>
         </div>
       )}
 
-      <div className="text-[11px] pt-1" style={{ color: 'var(--text-muted)' }}>
+      <div className="pt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
         Double-click to view internal nodes
       </div>
     </div>

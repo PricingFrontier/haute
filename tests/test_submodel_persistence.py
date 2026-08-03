@@ -1,4 +1,4 @@
-"""Filesystem contracts shared by submodel create/dissolve saves."""
+"""Explicit-Save filesystem contracts for submodel definition lifecycle."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute.routes._save_pipeline import SavePipelineService
+from haute.schemas import SavePipelineRequest
 from tests.conftest import make_graph
 
 
@@ -48,17 +49,15 @@ def _managed_graph():
             "pipeline_name": "main",
             "nodes": [
                 {
-                    "id": "submodel__child",
+                    "id": "child_instance",
                     "type": "submodel",
                     "position": {"x": 50.0, "y": 60.0},
                     "data": {
                         "label": "child",
                         "nodeType": "submodel",
                         "config": {
-                            "file": "modules/child.py",
-                            "childNodeIds": ["child_node"],
-                            "inputPorts": [],
-                            "outputPorts": [],
+                            "definitionId": "child",
+                            "alias": "child",
                         },
                     },
                 }
@@ -66,11 +65,10 @@ def _managed_graph():
             "edges": [],
             "submodels": {
                 "child": {
+                    "definitionId": "child",
                     "file": "modules/child.py",
-                    "childNodeIds": ["child_node"],
                     "inputPorts": [],
                     "outputPorts": [],
-                    "managed": True,
                     "graph": {
                         "nodes": [child],
                         "edges": [],
@@ -87,6 +85,19 @@ def _managed_graph():
 
 def _service(tmp_path: Path) -> SavePipelineService:
     return SavePipelineService(project_root=tmp_path, pipeline_root=tmp_path)
+
+
+def _save_request(graph) -> SavePipelineRequest:
+    return SavePipelineRequest(
+        name="main",
+        description="",
+        graph=graph,
+        preamble="",
+        source_file="main.py",
+        sources=["live"],
+        active_source="live",
+        preserved_blocks=[],
+    )
 
 
 def test_create_no_clobber_is_case_insensitive_and_precedes_writes(tmp_path: Path) -> None:
@@ -260,3 +271,105 @@ def test_unmatched_managed_claim_fails_400_before_writes(tmp_path: Path) -> None
     assert parent.read_bytes() == parent_original
     assert not (tmp_path / "modules" / "orphan.py").exists()
     assert not (tmp_path / "main.haute.json").exists()
+
+
+def test_explicit_save_derives_new_definition_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = _service(tmp_path)
+    service.save(_save_request(_flat_graph()))
+
+    response = service.save(_save_request(_managed_graph()))
+
+    child = tmp_path / "modules" / "child.py"
+    sidecar = child.with_suffix(".haute.json")
+    assert child.is_file()
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert payload["managed_parent"] == "main.py"
+    assert payload["positions"]["child_node"] == {"x": 17.0, "y": 29.0}
+    assert response.source_revision
+
+
+def test_explicit_save_deletes_a_removed_uniquely_owned_definition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = _service(tmp_path)
+    service.save(_save_request(_flat_graph()))
+    service.save(
+        _save_request(_managed_graph()),
+        require_absent_module_files=["modules/child.py"],
+        claim_managed_module_files=["modules/child.py"],
+    )
+    child = tmp_path / "modules" / "child.py"
+    sidecar = child.with_suffix(".haute.json")
+    assert child.is_file()
+    assert sidecar.is_file()
+
+    service.save(_save_request(_flat_graph()))
+
+    assert not child.exists()
+    assert not sidecar.exists()
+
+
+def test_explicit_save_retains_removed_definition_referenced_by_another_pipeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = _service(tmp_path)
+    service.save(_save_request(_flat_graph()))
+    service.save(_save_request(_managed_graph()))
+    child = tmp_path / "modules" / "child.py"
+    sidecar = child.with_suffix(".haute.json")
+    (tmp_path / "other.py").write_text(
+        """import haute
+
+pipeline = haute.Pipeline("other")
+pipeline.submodel(
+    "modules/child.py",
+    definition_id="child",
+    instance_id="other-child-instance",
+    alias="other-child",
+)
+""",
+        encoding="utf-8",
+    )
+
+    service.save(_save_request(_flat_graph()))
+
+    assert child.is_file()
+    assert sidecar.is_file()
+
+
+def test_explicit_save_retains_removed_definition_when_reference_audit_is_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = _service(tmp_path)
+    service.save(_save_request(_flat_graph()))
+    service.save(_save_request(_managed_graph()))
+    child = tmp_path / "modules" / "child.py"
+    sidecar = child.with_suffix(".haute.json")
+    (tmp_path / "broken.py").write_text(
+        """import haute
+
+pipeline = haute.Pipeline("broken")
+pipeline.submodel(
+    "modules/missing.py",
+    definition_id="missing-definition",
+    instance_id="missing-instance",
+    alias="missing",
+)
+""",
+        encoding="utf-8",
+    )
+
+    service.save(_save_request(_flat_graph()))
+
+    assert child.is_file()
+    assert sidecar.is_file()

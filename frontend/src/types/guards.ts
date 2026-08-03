@@ -1046,9 +1046,18 @@ export function parseSubmodelGraphResponse(value: unknown): SubmodelGraphRespons
   const obj = expectPlainObject("parseSubmodelGraphResponse", value)
   return {
     status: optionalString("parseSubmodelGraphResponse", obj, "status", "ok"),
-    submodel_name: optionalString("parseSubmodelGraphResponse", obj, "submodel_name"),
+    submodel_name: expectNonBlankString(
+      "parseSubmodelGraphResponse",
+      obj.submodel_name,
+      "submodel_name",
+    ),
     graph: parseNestedPipelineResponse("parseSubmodelGraphResponse", obj, "graph"),
     submodel_file: expectNonBlankString("parseSubmodelGraphResponse", obj.submodel_file, "submodel_file"),
+    definition_id: expectNonBlankString(
+      "parseSubmodelGraphResponse",
+      obj.definition_id,
+      "definition_id",
+    ),
   }
 }
 
@@ -1063,6 +1072,16 @@ export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelR
       "parseDissolveSubmodelResponse",
       obj.retained_submodel_file,
       "retained_submodel_file",
+    ),
+    instance_id: expectNonBlankString(
+      "parseDissolveSubmodelResponse",
+      obj.instance_id,
+      "instance_id",
+    ),
+    definition_id: expectNonBlankString(
+      "parseDissolveSubmodelResponse",
+      obj.definition_id,
+      "definition_id",
     ),
   }
 }

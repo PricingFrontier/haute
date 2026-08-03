@@ -431,12 +431,7 @@ _SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
     "returnresolve_data_input_from_config(",
 )
 
-_SOURCE_SETUP_STATEMENTS = frozenset(
-    {
-        "base=Path(__file__).resolve().parent",
-        "project_root=get_project_root(base)",
-    }
-)
+_SOURCE_SETUP_STATEMENTS = frozenset({"project_root=get_project_root(_HAUTE_CONFIG_BASE)"})
 
 
 def _is_source_setup_statement(line: str) -> bool:

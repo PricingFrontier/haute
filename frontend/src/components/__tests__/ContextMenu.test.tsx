@@ -32,19 +32,29 @@ describe("ContextMenu", () => {
     expect(screen.getByText("Delete")).toBeInTheDocument()
   })
 
-  it("shows Create Instance when onCreateInstance is provided and not submodel", () => {
+  it("hides Create Instance for ordinary nodes", () => {
     render(<ContextMenu {...makeProps({ onCreateInstance: vi.fn(), isSubmodel: false })} />)
-    expect(screen.getByText("Create Instance")).toBeInTheDocument()
+    expect(screen.queryByText("Create Instance")).not.toBeInTheDocument()
   })
 
-  it("hides Create Instance for submodel nodes", () => {
+  it("shows Create Instance for reusable submodel occurrences", () => {
     render(<ContextMenu {...makeProps({ onCreateInstance: vi.fn(), isSubmodel: true })} />)
-    expect(screen.queryByText("Create Instance")).not.toBeInTheDocument()
+    expect(screen.getByText("Create Instance")).toBeInTheDocument()
+    expect(screen.queryByText("Duplicate")).not.toBeInTheDocument()
   })
 
   it("shows Dissolve Submodel for submodel nodes", () => {
     render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "submodel__pricing", onDissolveSubmodel: vi.fn() })} />)
     expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument()
+  })
+
+  it("never offers raw Delete for a submodel without a dissolve callback", () => {
+    render(
+      <ContextMenu {...makeProps({ isSubmodel: true, nodeId: "submodel__pricing" })} />,
+    )
+
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument()
   })
 
   it("clicking Rename calls onRename with nodeId and closes", () => {
@@ -147,7 +157,7 @@ describe("ContextMenu", () => {
     expect(props.onClose).toHaveBeenCalled()
   })
 
-  it("clicking Dissolve Submodel calls onDissolveSubmodel with submodel name", () => {
+  it("clicking Dissolve Submodel preserves the immutable occurrence id", () => {
     const onDissolveSubmodel = vi.fn()
     render(
       <ContextMenu
@@ -159,7 +169,7 @@ describe("ContextMenu", () => {
       />,
     )
     fireEvent.click(screen.getByText("Dissolve Submodel"))
-    expect(onDissolveSubmodel).toHaveBeenCalledWith("pricing")
+    expect(onDissolveSubmodel).toHaveBeenCalledWith("submodel__pricing")
   })
 
   it("menu items have correct tabIndex based on focus", () => {

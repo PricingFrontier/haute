@@ -10,7 +10,7 @@ import type { Node, Edge } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useUIStore from "../stores/useUIStore"
-import { nodeData } from "../types/node"
+import { isSubmodelInstanceConfig, nodeData } from "../types/node"
 import { NODE_TYPES, isSingletonType } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
@@ -29,6 +29,19 @@ type UseNodeHandlersParams = {
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
 }
+const SUBMODEL_ALIAS_SUFFIX = /^(.*)_([2-9]\d*)$/
+
+function nextSubmodelAlias(alias: string, aliases: Set<string>): string {
+  const match = SUBMODEL_ALIAS_SUFFIX.exec(alias)
+  const base = match?.[1] || alias
+  if (!aliases.has(base)) return base
+  let suffix = 2
+  while (aliases.has(`${base}_${suffix}`)) {
+    suffix += 1
+  }
+  return `${base}_${suffix}`
+}
+
 
 export default function useNodeHandlers({
   graphRef,
@@ -49,6 +62,12 @@ export default function useNodeHandlers({
   const setSubmodelDialog = useUIStore((s) => s.setSubmodelDialog)
 
   const handleDeleteNode = useCallback((id: string) => {
+    const target = graphRef.current.nodes.find((node) => node.id === id)
+    if (target && nodeData(target).nodeType === NODE_TYPES.SUBMODEL) {
+      addToast("error", 'Use "Dissolve Submodel" to remove a submodel occurrence')
+      return
+    }
+
     // Node + its edges removed as ONE undo step. setNodes-then-setEdges would
     // push two snapshots, so a single delete would need two undos to reverse
     // (the undo-atomicity bug class).
@@ -75,12 +94,16 @@ export default function useNodeHandlers({
     if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
     const subDlg = uiState.submodelDialog
     if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
-  }, [setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog])
+  }, [graphRef, setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast])
 
   const handleDuplicateNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current
     const original = n.find((node) => node.id === id)
     if (!original) return
+    if (nodeData(original).nodeType === NODE_TYPES.SUBMODEL) {
+      addToast("error", "Use Create Instance to duplicate a reusable submodel")
+      return
+    }
     if (isSingletonType(nodeData(original).nodeType)) return
     nodeIdCounterRef.current += 1
     const newId = `${original.type}_${nodeIdCounterRef.current}`
@@ -94,26 +117,76 @@ export default function useNodeHandlers({
     setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), newNode])
     setSelectedNode(newNode)
     setLastSelectedId?.(newNode.id)
-  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId])
+  }, [graphRef, nodeIdCounterRef, setNodes, setSelectedNode, setLastSelectedId, addToast])
 
   const handleCreateInstance = useCallback((id: string) => {
     const { nodes: n } = graphRef.current
     const original = n.find((node) => node.id === id)
     if (!original) return
-    nodeIdCounterRef.current += 1
     const origData = nodeData(original)
     const origNodeType = origData.nodeType || NODE_TYPES.POLARS
-    const newId = `${origNodeType}_${nodeIdCounterRef.current}`
+    const isSubmodel = origNodeType === NODE_TYPES.SUBMODEL
+
+    let instanceConfig: Record<string, unknown>
+    const occupiedIdentities = new Set(n.map((node) => node.id))
+    for (const node of n) {
+      const nodeConfig = nodeData(node).config
+      if (
+        nodeData(node).nodeType === NODE_TYPES.SUBMODEL
+        && typeof nodeConfig?.alias === "string"
+      ) {
+        occupiedIdentities.add(nodeConfig.alias)
+      }
+    }
+    if (isSubmodel) {
+      const config = origData.config
+      if (!isSubmodelInstanceConfig(config)) {
+        addToast("error", `Cannot create instance of "${origData.label}": missing submodel definition identity`)
+        return
+      }
+      const ownerId = config.instanceOf ?? original.id
+      const owner = n.find((node) => node.id === ownerId)
+      const ownerConfig = owner ? nodeData(owner).config : undefined
+      if (
+        !owner
+        || nodeData(owner).nodeType !== NODE_TYPES.SUBMODEL
+        || !isSubmodelInstanceConfig(ownerConfig)
+        || ownerConfig.definitionId !== config.definitionId
+        || ownerConfig.instanceOf !== undefined
+      ) {
+        addToast(
+          "error",
+          `Cannot create instance of "${origData.label}": its editable definition owner is invalid`,
+        )
+        return
+      }
+      const newAlias = nextSubmodelAlias(config.alias, occupiedIdentities)
+      occupiedIdentities.add(newAlias)
+      instanceConfig = {
+        definitionId: config.definitionId,
+        alias: newAlias,
+        instanceOf: ownerId,
+      }
+    } else {
+      instanceConfig = { instanceOf: id }
+    }
+
+    let newId: string
+    do {
+      nodeIdCounterRef.current += 1
+      newId = `${origNodeType}_${nodeIdCounterRef.current}`
+    } while (occupiedIdentities.has(newId))
     const newNode: Node = {
       id: newId,
       type: original.type,
       position: { x: original.position.x + 60, y: original.position.y + 80 },
       selected: true,
+      deletable: !isSubmodel,
       data: {
         label: `${origData.label} instance`,
         description: `Instance of ${origData.label}`,
         nodeType: origNodeType,
-        config: { instanceOf: id },
+        config: instanceConfig,
       },
     }
     setNodes((nds) => [...nds.map((nd) => ({ ...nd, selected: false })), newNode])

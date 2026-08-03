@@ -23,10 +23,6 @@ import {
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
 
 interface WebSocketSyncParams {
-  setNodesRaw: (nodes: Node[]) => void
-  setEdgesRaw: (edges: Edge[]) => void
-  setSubmodelsRaw: (submodels: Record<string, unknown>) => void
-  setPreamble: (p: string) => void
   preambleRef: React.MutableRefObject<string>
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   sourceFileRef?: React.MutableRefObject<string>
@@ -139,8 +135,8 @@ function requireIntegrityMetadata(value: unknown): { sourceRevision: string; pre
 }
 
 export default function useWebSocketSync({
-  setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble, preambleRef, submodelsRef,
-  sourceFileRef, sourceRevisionRef, preservedBlocksRef, graphRefreshingRef, nodeIdCounter, fitView, enabled = true,
+  preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
+  graphRefreshingRef, nodeIdCounter, fitView, enabled = true,
 }: WebSocketSyncParams): WsStatus {
   const { setSyncBanner } = useUIStore()
   const { addToast } = useToastStore()
@@ -331,67 +327,37 @@ export default function useWebSocketSync({
               return
             }
 
-            const previousGraph = useGraphStore.getState() as Partial<{
-              nodes: Node[]
-              edges: Edge[]
-              preamble: string
-              submodels: Record<string, unknown>
-            }>
-            const canRollback =
-              Array.isArray(previousGraph.nodes) && Array.isArray(previousGraph.edges)
-            const previousPreamble =
-              typeof previousGraph.preamble === "string"
-                ? previousGraph.preamble
-                : preambleRef.current
-            const previousSubmodels =
-              previousGraph.submodels &&
-              typeof previousGraph.submodels === "object" &&
-              !Array.isArray(previousGraph.submodels)
-                ? previousGraph.submodels
-                : submodelsRef.current
             const previousSourceRevision = sourceRevisionRef.current
             const previousPreservedBlocks = preservedBlocksRef.current
+            const previousPreamble = preambleRef.current
+            const previousSubmodels = submodelsRef.current
+            const nextPreamble = g.preamble !== undefined
+              ? (g.preamble || "")
+              : preambleRef.current
 
             // Guard: prevent React Flow's onSelectionChange from clearing
             // the open panel while we replace nodes.
             graphRefreshingRef.current += 1
             activeSelectionGuardIncrements += 1
             try {
-              setNodesRaw(nodesToApply)
-              setEdgesRaw(newEdges)
               sourceRevisionRef.current = sourceRevision
               preservedBlocksRef.current = preservedBlocks
-              setSubmodelsRaw(newSubmodels)
               submodelsRef.current = newSubmodels
-              const nextPreamble = g.preamble !== undefined
-                ? (g.preamble || "")
-                : preambleRef.current
-              if (g.preamble !== undefined) {
-                setPreamble(nextPreamble)
-                preambleRef.current = nextPreamble
-              }
+              preambleRef.current = nextPreamble
+              useGraphStore.getState().loadGraphSnapshot({
+                nodes: nodesToApply,
+                edges: newEdges,
+                preamble: nextPreamble,
+                submodels: newSubmodels,
+              })
               nodeIdCounter.current = computeNextNodeId(newNodes)
               setSyncBanner(null)
-              useGraphStore.getState().markSaved()
               rememberAppliedFingerprint(incomingSource, msg.graph_fingerprint)
             } catch (err) {
-              if (canRollback) {
-                try {
-                  setNodesRaw(previousGraph.nodes!)
-                  setEdgesRaw(previousGraph.edges!)
-                  setSubmodelsRaw(previousSubmodels)
-                  submodelsRef.current = previousSubmodels
-                  sourceRevisionRef.current = previousSourceRevision
-                  preservedBlocksRef.current = previousPreservedBlocks
-                  if (g.preamble !== undefined) {
-                    setPreamble(previousPreamble)
-                    preambleRef.current = previousPreamble
-                  }
-                } catch {
-                  // Keep the original sync error; the toast below still
-                  // tells the user the refresh did not apply cleanly.
-                }
-              }
+              sourceRevisionRef.current = previousSourceRevision
+              preservedBlocksRef.current = previousPreservedBlocks
+              submodelsRef.current = previousSubmodels
+              preambleRef.current = previousPreamble
               throw err
             } finally {
               scheduleDelayed(releaseSelectionGuard, SELECTION_CHANGE_GUARD_MS)
@@ -485,8 +451,7 @@ export default function useWebSocketSync({
       ws?.close()
     }
   }, [
-    enabled, setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble,
-    preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef,
+    enabled, preambleRef, submodelsRef, sourceFileRef, sourceRevisionRef,
     preservedBlocksRef, nodeIdCounter, fitView, setSyncBanner, addToast,
     graphRefreshingRef,
   ])

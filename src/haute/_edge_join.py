@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import polars as pl
 
-from haute._types import EDGE_JOIN_CONFIG_KEYS, GraphNode, NodeType
+from haute._types import EDGE_JOIN_CONFIG_KEYS
 from haute.errors import ConfigError
 
 EDGE_JOIN_DEFAULT_HOW = "left"
@@ -322,33 +322,6 @@ def execute_edge_join(
     if collect_eager and not base_is_lazy and not join_is_lazy:
         return result.collect()
     return result
-
-
-def build_edge_join_boundary_target_roles(
-    submodels: Mapping[str, Mapping[str, Any]],
-    names_to_include: set[str] | None = None,
-) -> dict[tuple[str, str, str], str]:
-    """Map submodel boundary inputs to internal edge-join target roles."""
-    roles: dict[tuple[str, str, str], str] = {}
-    for sm_name, sm_meta in submodels.items():
-        if names_to_include is not None and sm_name not in names_to_include:
-            continue
-        sm_node_id = f"submodel__{sm_name}"
-        sm_graph = sm_meta.get("graph", {})
-        if not isinstance(sm_graph, Mapping):
-            continue
-        raw_nodes = sm_graph.get("nodes", [])
-        if not isinstance(raw_nodes, list):
-            continue
-        for raw_node in raw_nodes:
-            node = GraphNode.model_validate(raw_node) if isinstance(raw_node, dict) else raw_node
-            if not isinstance(node, GraphNode) or node.data.nodeType != NodeType.EDGE_JOIN:
-                continue
-            for config_key, role in (("baseInput", "base"), ("joinInput", "join")):
-                source_id = node.data.config.get(config_key)
-                if isinstance(source_id, str) and source_id:
-                    roles[(sm_node_id, node.id, source_id)] = role
-    return roles
 
 
 def _required_role(config: dict[str, Any], key: str) -> str:

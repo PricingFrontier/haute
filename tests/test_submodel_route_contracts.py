@@ -14,6 +14,10 @@ if TYPE_CHECKING:
 
 from haute.routes._helpers import invalidate_pipeline_index, parse_pipeline_to_graph, pipeline_dir
 
+DEFINITION_ID = "pricing-definition"
+INSTANCE_ID = "pricing-instance"
+ALIAS = "pricing"
+
 
 @pytest.fixture(autouse=True)
 def _isolated_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,7 +59,9 @@ import haute
 
 CHILD_HELPER = {node_name!r}
 
-submodel = haute.Submodel("pricing")
+submodel = haute.Submodel(
+    "pricing", definition_id="pricing-definition", input_ports=[], output_ports=[]
+)
 
 @submodel.polars
 def {node_name}() -> pl.LazyFrame:
@@ -81,7 +87,10 @@ def _write_parent_with_child(
         f"""import haute
 
 pipeline = haute.Pipeline({parent.stem!r})
-pipeline.submodel({child_reference!r})
+pipeline.submodel(
+    {child_reference!r}, definition_id="pricing-definition",
+    instance_id="pricing-instance", alias="pricing",
+)
 """,
         encoding="utf-8",
     )
@@ -103,7 +112,7 @@ def _current_graph(parent: Path, root: Path):
 
 def _dissolve_body(graph, *, source_file: str = "main.py") -> dict[str, object]:
     return {
-        "submodel_name": "pricing",
+        "instance_id": INSTANCE_ID,
         "graph": graph.model_dump(mode="json"),
         "preamble": graph.preamble or "",
         "preserved_blocks": graph.preserved_blocks,
@@ -173,7 +182,7 @@ def test_create_refuses_existing_module_under_different_casing(
 
 
 def test_drill_down_requires_parent_source_file(client: TestClient) -> None:
-    response = client.get("/api/submodel/pricing")
+    response = client.get(f"/api/submodel/{DEFINITION_ID}")
     assert response.status_code == 400
     assert "source_file" in response.json()["detail"]
 
@@ -196,7 +205,7 @@ def test_drill_down_is_scoped_when_two_parents_reuse_name(
     )
 
     response = client.get(
-        "/api/submodel/pricing",
+        f"/api/submodel/{DEFINITION_ID}",
         params={"source_file": "two/main.py"},
     )
 
@@ -206,7 +215,7 @@ def test_drill_down_is_scoped_when_two_parents_reuse_name(
     assert {node["id"] for node in payload["graph"]["nodes"]} == {"two_rate"}
 
 
-def test_dissolve_deletes_uniquely_owned_child_and_sidecar(
+def test_dissolve_retains_uniquely_owned_child_and_sidecar_until_save(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -220,11 +229,12 @@ def test_dissolve_deletes_uniquely_owned_child_and_sidecar(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["submodel_file_deleted"] is True
-    assert payload["retained_submodel_file"] is None
+    assert payload["submodel_file_deleted"] is False
+    assert payload["retained_submodel_file"] == "modules/pricing.py"
     assert payload["source_revision"]
-    assert not child.exists()
-    assert not sidecar.exists()
+    assert child.exists()
+    assert sidecar.exists()
+    assert parent.exists()
 
 
 def test_dissolve_retains_unowned_child_and_reports_path(
@@ -258,8 +268,10 @@ def test_dissolve_rejects_non_object_submitted_metadata(
 
     response = client.post("/api/submodel/dissolve", json=body)
 
-    assert response.status_code == 400
-    assert "metadata" in response.json()["detail"].lower()
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert isinstance(detail, list)
+    assert any("submodel" in str(error).lower() for error in detail)
     assert parent.read_bytes() == parent_before
     assert child.exists()
     assert sidecar.exists()
@@ -277,7 +289,12 @@ def test_dissolve_retains_child_referenced_by_another_pipeline(
         """import haute
 
 pipeline = haute.Pipeline("other")
-pipeline.submodel("modules/pricing.py")
+pipeline.submodel(
+    "modules/pricing.py",
+    definition_id="pricing-definition",
+    instance_id="pricing-instance",
+    alias="pricing",
+)
 """,
         encoding="utf-8",
     )
@@ -303,7 +320,12 @@ def test_dissolve_retains_child_when_sibling_audit_is_incomplete(
         """import haute
 
 pipeline = haute.Pipeline("broken")
-pipeline.submodel("modules/missing.py")
+pipeline.submodel(
+    "modules/missing.py",
+    definition_id="missing-definition",
+    instance_id="missing-instance",
+    alias="missing",
+)
 """,
         encoding="utf-8",
     )

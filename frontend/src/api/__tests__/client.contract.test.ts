@@ -577,7 +577,7 @@ describe("next-wave client runtime contracts", () => {
       name: "dissolveSubmodel",
       response: { ...loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response"), graph: { nodes: "bad", edges: [] } },
       call: () => dissolveSubmodel({
-        submodel_name: "pricing",
+        instance_id: "pricing",
         graph: dummyGraph,
         preamble: "",
         source_file: "main.py",

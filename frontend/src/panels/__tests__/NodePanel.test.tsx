@@ -124,6 +124,7 @@ type RenderPanelOverrides = Partial<Parameters<typeof NodePanel>[0]> & {
   allNodes?: SimpleNode[]
   submodels?: Record<string, unknown>
   preamble?: string
+  readOnly?: boolean
 }
 
 function renderPanel(overrides: RenderPanelOverrides = {}) {
@@ -220,6 +221,35 @@ describe("NodePanel", () => {
     expect(props.onUpdateNode).not.toHaveBeenCalled()
     fireEvent.blur(input)
     expect(props.onUpdateNode).toHaveBeenCalledWith("node_1", expect.objectContaining({ label: "Renamed" }))
+  })
+
+  it("makes a drilled instance label and data-input config read-only", () => {
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    renderPanel({
+      readOnly: true,
+      onUpdateNode,
+      node: makeNode({
+        id: "input_1",
+        data: {
+          label: "Claims input",
+          description: "",
+          nodeType: "dataInput",
+          config: { format: "parquet", path: "data/claims.parquet" },
+        },
+      }),
+    })
+
+    expect(screen.getByDisplayValue("Claims input")).toBeDisabled()
+    expect(screen.getByTestId("node-panel-editor")).toHaveAttribute("inert")
+    const onUpdate = dataInputEditorProps.at(-1)?.onUpdate as (
+      key: string,
+      value: unknown,
+    ) => { ok: boolean; error?: string }
+    expect(onUpdate("path", "data/other.parquet")).toEqual({
+      ok: false,
+      error: "This submodel instance is read-only.",
+    })
+    expect(onUpdateNode).not.toHaveBeenCalled()
   })
 
   it("clears cached result columns when config changes", () => {

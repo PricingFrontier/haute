@@ -16,25 +16,28 @@ Most pricing pipelines have a source, a sequence of transformations, and one
 terminal output:
 
 ```python
+from pathlib import Path as _HautePath
+
 import polars as pl
 import haute
 
 pipeline = haute.Pipeline("pricing", description="Short analyst-facing description")
 
+_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent
+
 
 @pipeline.data_input(config="config/data_input/quotes.json")
 def quotes() -> pl.LazyFrame:
-    from pathlib import Path
     from haute._project import get_project_root
     from haute.graph_utils import resolve_data_input_from_config
 
-    base = Path(__file__).resolve().parent
-    project_root = get_project_root(base)
-    return resolve_data_input_from_config(
+    project_root = get_project_root(_HAUTE_CONFIG_BASE)
+    df = resolve_data_input_from_config(
         "config/data_input/quotes.json",
-        base_dir=base,
+        base_dir=_HAUTE_CONFIG_BASE,
         project_root=project_root,
     )
+    return df
 
 
 @pipeline.polars

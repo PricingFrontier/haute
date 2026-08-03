@@ -26,13 +26,14 @@ interface KeyboardShortcutsParams {
   clearTrace: () => void
   closePanel: () => void
   isInsideSubmodel: boolean
+  readOnly: boolean
 }
 
 export default function useKeyboardShortcuts({
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-  isInsideSubmodel,
+  isInsideSubmodel, readOnly,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
@@ -53,17 +54,20 @@ export default function useKeyboardShortcuts({
       // Ctrl+Z → undo, Ctrl+Shift+Z → redo
       if (mod && e.key === "z" && !e.shiftKey && !isTyping) {
         e.preventDefault()
+        if (readOnly) return
         undo()
         return
       }
       if (mod && e.key === "z" && e.shiftKey && !isTyping) {
         e.preventDefault()
+        if (readOnly) return
         redo()
         return
       }
       // Ctrl+Y → redo (Windows convention)
       if (mod && e.key === "y" && !isTyping) {
         e.preventDefault()
+        if (readOnly) return
         redo()
         return
       }
@@ -84,6 +88,10 @@ export default function useKeyboardShortcuts({
 
       // Ctrl+V → paste copied nodes
       if (mod && e.key === "v" && !isTyping) {
+        if (readOnly) {
+          e.preventDefault()
+          return
+        }
         const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current
         if (copiedNodes.length === 0) return
         e.preventDefault()
@@ -166,6 +174,10 @@ export default function useKeyboardShortcuts({
       // Ctrl+G → group selected nodes into a submodel
       if (mod && e.key === "g" && !isTyping) {
         e.preventDefault()
+        if (readOnly) {
+          addToast("info", "This submodel instance is read-only")
+          return
+        }
         if (isInsideSubmodel) {
           addToast("info", "Submodels cannot be nested inside other submodels")
           return
@@ -182,6 +194,10 @@ export default function useKeyboardShortcuts({
 
       // Delete / Backspace → remove selected nodes and/or edges (unless typing)
       if ((e.key === "Delete" || e.key === "Backspace") && !isTyping) {
+        if (readOnly) {
+          e.preventDefault()
+          return
+        }
         const { nodes: currentNodes, edges: currentEdges } = graphRef.current
         const selectedNodeIds = new Set(currentNodes.filter((n) => n.selected).map((n) => n.id))
         const selectedEdgeIds = new Set(currentEdges.filter((ed) => ed.selected).map((ed) => ed.id))
@@ -214,6 +230,6 @@ export default function useKeyboardShortcuts({
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel,
+    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
   ])
 }

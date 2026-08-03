@@ -1051,8 +1051,8 @@ class TestTransactionalWrapperFieldForwarding:
     from an already-parsed graph.  Every graph field the save path
     consumes must be forwarded — a dropped field silently erases user
     content on the next save.  ``preserved_blocks`` was dropped: any
-    caller saving a parsed graph (submodel create/dissolve, assistant
-    edits) deleted every ``# haute:preserve`` block from the file.
+    caller saving a parsed graph (for example, assistant edits) deleted
+    every ``# haute:preserve`` block from the file.
     """
 
     def test_preserved_blocks_survive_transactional_save(self, project_root: Path) -> None:

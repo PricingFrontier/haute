@@ -100,9 +100,9 @@ non-empty, whitespace-free `RevisionToken`.
 dict[str, dict[str, float]]`, `sources: list[str]` (defaults to `["live"]`), `active_source:
 str`, and optional `managed_parent: str | None`. `managed_parent` is emitted
 only when the existing child sidecar already proves the same canonical
-project-relative owner, or for an explicit create-route claim after
-source-and-sidecar no-clobber. A request body's metadata cannot upgrade its
-absence to ownership. A
+project-relative owner, or when explicit Save derives a new definition from
+the persisted/submitted registry diff after source-and-sidecar no-clobber. A
+request body's metadata cannot upgrade its absence to ownership. A
 `model_validator(mode="after")` enforces `active_source in sources`. Written via
 `model_dump_json(exclude_defaults=True)` so a pipeline that never touched multi-source state
 produces a sidecar with only `positions`.
@@ -141,8 +141,8 @@ when a path/query/body fails model validation):
 | `GET /api/pipeline/{name}` | Pipeline name path parameter | `PipelineGraph` with `source_revision` |
 | `POST /api/pipeline/save` | `SavePipelineRequest {name="main", description="", graph={}, preamble=null, preserved_blocks=[], source_file="", sources=["live"], active_source="live"}` | `SavePipelineResponse {status="saved", file, pipeline_name, source_revision, warnings=[], git_sha=null}` |
 | `POST /api/pipeline/read-json` | `ReadJsonRequest {path}` | `ReadJsonResponse`, a root JSON object (arrays/scalars are rejected) |
-| `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}` | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
-| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}` | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
+| `POST /api/pipeline/preview` | `PreviewNodeRequest {graph, node_id, row_limit=100 (1..10000), source="live", requested_preview_columns=null (non-empty when present), streaming_chunk_size=null (1..10000000, bool rejected), port_label=null}`; `node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | `PreviewNodeResponse`, extending `NodeResult` with `node_id`, timings/memory, per-node schemas/statuses, and optional execution metrics |
+| `POST /api/pipeline/trace` | `TraceRequest {graph, row_index=0 (>=0), target_node_id=null, column=null, row_limit=100 (1..10000), source="live", row_values=null, streaming_chunk_size=null}`; a non-null `target_node_id` is the visible id for a root node and the occurrence-qualified runtime id for a drilled child | Explicit JSON `TraceResponse {status, trace}`. `trace` includes successful steps, typed omissions, correlation/waterfall evidence, UTC `generated_at`, source identity, and `execution_origin: fresh_execution|preview_cache|trace_cache`; the payload is serialized and `TraceResponse`-validated in the worker, then the returned `JSONResponse` skips a second event-loop validation pass |
 | `POST /api/pipeline/write-output` | `WriteOutputRequest {graph, node_id, source="live", streaming_chunk_size=null, overwrite=false}` | `WriteOutputResponse` with status, row count, destination path/table, format, publication outcome, and execution metrics |
 | `POST /api/pipeline/output-destination` | `OutputDestinationRequest {graph, node_id}` | Safe destination display path, format, and suffix-mismatch flag; performs no graph execution or filesystem write |
 | `GET /api/files` | Query `dir="."`, `extensions=null`; omission derives readable extensions from the I/O registry | `BrowseFilesResponse {dir, items:[{name,path,type,size?}]}`; files have numeric byte size, directories serialize `size: null` |
@@ -278,8 +278,14 @@ concurrent plain saves, but does not coordinate another worker process):
    sanitized node names (per-graph, then cross-module against every embedded submodel graph),
    and that no node carries a `_load_error` marker.
 2. Resolve and validate `source_file` against the active pipeline root.
-3. Resolve every `require_absent_module_files` entry against the same module
-   allowlist and reject `409` if either its source filename or sibling
+   Before the remaining preflights, parse the current persisted parent and
+   diff its canonical definition registry against the submitted graph. Every
+   added definition path becomes both a no-clobber target and a
+   transaction-local managed ownership claim. Every removed definition path
+   becomes a deletion candidate only when its persisted sidecar names this
+   parent and a complete project-wide reference audit finds no other parent.
+3. Resolve every derived or explicitly supplied no-clobber entry against the
+   same module allowlist and reject `409` if either its source filename or sibling
    `.haute.json` sidecar already exists case-insensitively. Resolve
    transaction-local `claim_managed_module_files` through the same allowlist;
    each claim must name one of those no-clobber targets. Resolve every child
@@ -305,8 +311,8 @@ concurrent plain saves, but does not coordinate another worker process):
 9. Write the parent `.haute.json` position sidecar. For each child whose
    ownership passed step 3, write positions plus `managed_parent`. All sidecar
    writes are transactional.
-10. Stage deletion of any explicitly-requested submodel source and its sibling
-    `.haute.json` sidecar (skipping any that casefold-collide with a path this
+10. Stage deletion of any derived or explicitly requested submodel source and
+    its sibling `.haute.json` sidecar (skipping any that casefold-collide with a path this
     same save just wrote).
 11. Reparse the fully staged document and compute the new
     `source_revision`. On any propagated exception in steps 5–11, roll back every staged write (restore
@@ -410,9 +416,10 @@ until the worker actually exits.
   while the watcher derives it from an *on-disk filename* — on case-insensitive filesystems
   (macOS, Windows) those can differ in case and must still match, or live-sync silently goes
   stale for that module.
-- **Sidecar position keys reconstruct the parser's node-id scheme.** Submodel
-  placeholders use `submodel__<name>` and ordinary nodes use their parser ids;
-  load and save use that same canonical key.
+- **Sidecar position keys use persisted node identity.** Submodel occurrences
+  use their explicit immutable `instance_id` and ordinary nodes use their
+  parser ids; load and save use those exact keys without deriving identities
+  from names or filenames.
 - **Every casefold-collision guard in `_save_pipeline.py`** (config sidecar paths, module
   output paths, save-vs-delete-target overlap) treats names differing only in case as the
   *same file*, even on case-sensitive Linux — the guard runs on every platform so a pipeline

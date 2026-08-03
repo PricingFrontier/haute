@@ -97,6 +97,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null },
+    activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
@@ -171,8 +172,19 @@ function makeSubmodelPortNode(id = "port_in__source"): Node {
     id,
     type: NODE_TYPES.SUBMODEL_PORT,
     position: { x: 0, y: 0 },
-    data: { label: "Source Port", portDirection: "input", portName: "Source Port" },
+    data: {
+      label: "Source Port",
+      nodeType: NODE_TYPES.SUBMODEL_PORT,
+      instanceId: "instance_primary",
+      definitionId: "definition_pricing",
+      portDirection: "input",
+      portName: "Source Port",
+    },
   } as unknown as Node
+}
+
+function makeActiveSubmodelIdentity() {
+  return { instanceId: "instance_primary", definitionId: "definition_pricing" }
 }
 
 function makeSnapshotInput(id = "snapshot-input"): Node {
@@ -1105,7 +1117,7 @@ describe("usePipelineAPI", () => {
   it("fetchPreview propagation skips downstream submodel ports typed by React Flow", async () => {
     mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockPreview.mockResolvedValue({
-      node_id: "upstream",
+      node_id: "submodel_runtime/instance_primary/upstream",
       status: "ok",
       columns: [{ name: "premium", dtype: "f64" }],
       preview: [{ premium: 100 }],
@@ -1114,7 +1126,7 @@ describe("usePipelineAPI", () => {
     })
     const upstream = makeNode("upstream", NODE_TYPES.POLARS)
     const port = makeSubmodelPortNode()
-    const params = makeParams()
+    const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
     params.graphRef.current = {
       nodes: [upstream, port],
       edges: [makeEdge("upstream", port.id)],
@@ -1130,7 +1142,9 @@ describe("usePipelineAPI", () => {
     await act(async () => { await Promise.resolve() })
 
     expect(mockPreview).toHaveBeenCalledOnce()
-    expect(mockPreview.mock.calls[0][0].nodeId).toBe("upstream")
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe(
+      "submodel_runtime/instance_primary/upstream",
+    )
   })
 
   it("refreshPreview skips stale upstream submodel placeholders", async () => {
@@ -1175,7 +1189,7 @@ describe("usePipelineAPI", () => {
     })
     const port = makeSubmodelPortNode()
     const target = makeNode("target", NODE_TYPES.POLARS)
-    const params = makeParams()
+    const params = makeParams({ activeSubmodelIdentity: makeActiveSubmodelIdentity() })
     params.graphRef.current = {
       nodes: [port, target],
       edges: [makeEdge(port.id, "target")],
@@ -1190,7 +1204,53 @@ describe("usePipelineAPI", () => {
     await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
 
     expect(mockPreview).toHaveBeenCalledOnce()
-    expect(mockPreview.mock.calls[0][0].nodeId).toBe("target")
+    expect(mockPreview.mock.calls[0][0].nodeId).toBe(
+      "submodel_runtime/instance_primary/target",
+    )
+  })
+
+  it("fetchPreview qualifies a drilled child only at the runtime request boundary", async () => {
+    mockLoad.mockResolvedValue({
+      nodes: [],
+      edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
+    })
+    mockPreview.mockResolvedValue({
+      node_id: "submodel_runtime/instance_primary/nb_batch",
+      status: "ok",
+      columns: [{ name: "quote_id", dtype: "str" }],
+      preview: [{ quote_id: "Q1" }],
+      row_count: 1,
+      column_count: 1,
+    })
+    const child = makeNode("nb_batch", NODE_TYPES.DATA_INPUT)
+    const params = makeParams({
+      activeSubmodelIdentity: makeActiveSubmodelIdentity(),
+      parentGraphRef: {
+        current: {
+          nodes: [makeNode("instance_primary", NODE_TYPES.SUBMODEL)],
+          edges: [],
+          submodels: { definition_pricing: {} },
+        },
+      },
+    })
+    params.graphRef.current = {
+      nodes: [child],
+      edges: [],
+    }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      result.current.fetchPreview(child, { debounceMs: 0 })
+    })
+
+    await waitFor(() => expect(result.current.previewData?.status).toBe("ok"))
+    expect(mockPreview.mock.calls.at(-1)?.[0].nodeId).toBe(
+      "submodel_runtime/instance_primary/nb_batch",
+    )
+    expect(result.current.previewData?.nodeId).toBe("nb_batch")
   })
 
   it("fetchPreview requests known preview columns for nodes with cached schema", async () => {

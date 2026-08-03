@@ -278,6 +278,7 @@ export interface SubmodelGraphResponse {
   submodel_name: string
   graph: PipelineGraph
   submodel_file: string
+  definition_id: string
 }
 
 export interface DissolveSubmodelResponse {
@@ -286,6 +287,8 @@ export interface DissolveSubmodelResponse {
   source_revision: string
   submodel_file_deleted: boolean
   retained_submodel_file: string | null
+  instance_id: string
+  definition_id: string
 }
 
 /** HTTP response envelope for /api/pipeline/trace (wraps TraceResult).

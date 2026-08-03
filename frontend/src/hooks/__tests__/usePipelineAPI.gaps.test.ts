@@ -74,6 +74,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null },
+    activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),

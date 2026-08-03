@@ -96,18 +96,13 @@ def submodel_graph() -> PipelineGraph:
                     },
                 },
                 {
-                    "id": "submodel__scoring",
+                    "id": "instance_scoring",
                     "type": "submodel",
                     "position": {"x": 200, "y": 0},
                     "data": {
                         "label": "scoring",
                         "nodeType": "submodel",
-                        "config": {
-                            "file": "modules/scoring.py",
-                            "childNodeIds": ["tx", "out"],
-                            "inputPorts": ["tx"],
-                            "outputPorts": ["out"],
-                        },
+                        "config": {"definitionId": "definition_scoring", "alias": "scoring"},
                     },
                 },
             ],
@@ -115,16 +110,18 @@ def submodel_graph() -> PipelineGraph:
                 {
                     "id": "e_src_submodel__scoring__tx",
                     "source": "src",
-                    "target": "submodel__scoring",
-                    "targetHandle": "in__tx",
+                    "target": "instance_scoring",
+                    "targetHandle": "in__source",
                 },
             ],
             "submodels": {
-                "scoring": {
+                "definition_scoring": {
+                    "definitionId": "definition_scoring",
                     "file": "modules/scoring.py",
-                    "childNodeIds": ["tx", "out"],
-                    "inputPorts": ["tx"],
-                    "outputPorts": ["out"],
+                    "inputPorts": [
+                        {"portId": "source", "label": "Source", "targets": [{"nodeId": "tx"}]}
+                    ],
+                    "outputPorts": [],
                     "graph": {
                         "nodes": [
                             {
@@ -177,10 +174,10 @@ class TestFlattenGraph:
         result = flatten_graph(submodel_graph)
         node_ids = {n.id for n in result.nodes}
         # Submodel placeholder should be gone
-        assert "submodel__scoring" not in node_ids
+        assert "instance_scoring" not in node_ids
         # Child nodes should be present
-        assert "tx" in node_ids
-        assert "out" in node_ids
+        assert "submodel_runtime/instance_scoring/tx" in node_ids
+        assert "submodel_runtime/instance_scoring/out" in node_ids
         # Source should still be there
         assert "src" in node_ids
 
@@ -189,9 +186,12 @@ class TestFlattenGraph:
         result = flatten_graph(submodel_graph)
         edge_pairs = [(e.source, e.target) for e in result.edges]
         # Should have src→tx edge (rewired from src→submodel__scoring)
-        assert ("src", "tx") in edge_pairs
+        assert ("src", "submodel_runtime/instance_scoring/tx") in edge_pairs
         # Internal edge tx→out should be present
-        assert ("tx", "out") in edge_pairs
+        assert (
+            "submodel_runtime/instance_scoring/tx",
+            "submodel_runtime/instance_scoring/out",
+        ) in edge_pairs
 
     def test_no_submodel_key_in_result(self, submodel_graph):
         """The flattened graph should not have a submodels dict."""
@@ -224,7 +224,7 @@ class TestCodegenMultiFile:
         assert "haute" in sm_code
 
     def test_submodel_preamble_and_preserved_block_are_emitted_once(self, submodel_graph):
-        subgraph = submodel_graph.submodels["scoring"]["graph"]
+        subgraph = submodel_graph.submodels["definition_scoring"].graph
         subgraph.update(
             {
                 "pipeline_description": "Score a policy",
@@ -269,7 +269,18 @@ class TestParserSubmodel:
             import polars as pl
             import haute
 
-            submodel = haute.Submodel("scoring")
+            submodel = haute.Submodel(
+                "scoring",
+                definition_id="definition_scoring",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "Transform"}],
+                    }
+                ],
+                output_ports=[],
+            )
 
             @submodel.polars
             def Transform(Source: pl.LazyFrame) -> pl.LazyFrame:
@@ -290,9 +301,14 @@ class TestParserSubmodel:
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
-            pipeline.submodel("modules/scoring.py")
+            pipeline.submodel(
+                "modules/scoring.py",
+                definition_id="definition_scoring",
+                instance_id="instance_scoring",
+                alias="scoring",
+            )
 
-            pipeline.connect("Source", "Transform")
+            pipeline.connect("Source", "scoring", target_port="source")
         """,
         )
 
@@ -371,14 +387,26 @@ class TestSchemas:
         from haute.schemas import DissolveSubmodelRequest
 
         req = DissolveSubmodelRequest(
-            submodel_name="scoring",
+            instance_id="instance_scoring",
             graph={"nodes": [], "edges": []},
             preserved_blocks=["KEEP = 1"],
             base_revision="revision-1",
         )
-        assert req.submodel_name == "scoring"
+        assert req.instance_id == "instance_scoring"
         assert req.preserved_blocks == ["KEEP = 1"]
         assert req.base_revision == "revision-1"
+
+    def test_dissolve_submodel_request_rejects_name_target(self):
+        from pydantic import ValidationError
+
+        from haute.schemas import DissolveSubmodelRequest
+
+        with pytest.raises(ValidationError, match="instance_id"):
+            DissolveSubmodelRequest(
+                submodel_name="scoring",
+                graph={"nodes": [], "edges": []},
+                base_revision="revision-1",
+            )
 
     @pytest.mark.parametrize("operation", ["create", "dissolve"])
     def test_submodel_mutation_revision_must_not_be_whitespace(self, operation: str):
@@ -394,7 +422,7 @@ class TestSchemas:
             if operation == "create":
                 CreateSubmodelRequest(name="scoring", node_ids=["tx", "out"], **common)
             else:
-                DissolveSubmodelRequest(submodel_name="scoring", **common)
+                DissolveSubmodelRequest(instance_id="instance_scoring", **common)
 
     def test_dissolve_submodel_response(self):
         from haute.schemas import DissolveSubmodelResponse
@@ -403,9 +431,13 @@ class TestSchemas:
             status="ok",
             graph={"nodes": [], "edges": []},
             source_revision="revision-2",
+            instance_id="instance_scoring",
+            definition_id="definition_scoring",
             submodel_file_deleted=False,
             retained_submodel_file="modules/scoring.py",
         )
+        assert resp.instance_id == "instance_scoring"
+        assert resp.definition_id == "definition_scoring"
         assert resp.source_revision == "revision-2"
         assert resp.submodel_file_deleted is False
         assert resp.retained_submodel_file == "modules/scoring.py"
@@ -416,10 +448,12 @@ class TestSchemas:
         resp = SubmodelGraphResponse(
             status="ok",
             submodel_name="scoring",
+            definition_id="definition_scoring",
             submodel_file="lib/scoring.py",
             graph={"nodes": [{"id": "tx"}], "edges": []},
         )
         assert resp.submodel_name == "scoring"
+        assert resp.definition_id == "definition_scoring"
         assert resp.submodel_file == "lib/scoring.py"
         assert len(resp.graph.nodes) == 1
 

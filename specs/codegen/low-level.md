@@ -29,12 +29,10 @@
    `submodels = graph.submodels or {}`.
 2. `validate_pipeline_graph_shape_contracts` — structural preflight (owned by
    `haute._graph_shape`), run before any source is generated.
-3. `_error_on_name_collisions` over every emitted logical node in the root
-   graph and every submodel — eager, so collisions are reported even when the
-   no-submodel fast path would otherwise short-circuit. Parent-list transport
-   copies whose id appears in a submodel's `childNodeIds` are counted only
-   through the authoritative embedded child graph.
-4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
+3. Resolve and validate canonical definitions and occurrences, reject
+   unreferenced definitions and shared-file collisions, then run
+   `_error_on_name_collisions` over root nodes plus each referenced
+   definition graph exactly once.4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
    nodes (`_topo_sort` via `haute._topo.topo_sort_ids`), build
    id→func-name maps and each node's per-edge input-name list
@@ -45,41 +43,18 @@
    `connect_pairs` directly from edges, call
    `_generate_pipeline_lines(kind="pipeline", ...)`, then
    `_assert_emitted_files_parse` on the single resulting file.
-5. **Submodel path:** for each submodel, rehydrate its stored
-   `GraphNode`/`GraphEdge` list (submodels may be stored as dicts or already-
-   validated models — `GraphNode.model_validate` is applied conditionally),
-   order edge-join edges, topo-sort, resolve cross-boundary `in__<child_id>`
-   edges targeting the submodel placeholder into that child's sources, and
-   reject the runtime-only null-handle inbound draft because it cannot be
-   represented in generated Python (raising `ParseError` on that draft or any
-   malformed/unknown mapped handle). Validate `out__<child_id>` edges leaving
-   the placeholder the same way, build that
-   submodel's `connect_pairs`, validate the ordered metadata `outputPorts`
-   against the embedded child ids, map each id to its emitted function name,
-   and emit its file via `_generate_pipeline_lines(kind="submodel",
-   obj_name="submodel", outputs=..., ...)`, passing the child graph's
-   description, preamble, and preserved blocks. Empty and unused declared
-   exports are emitted; duplicates or unknown child ids raise `ParseError`.
-   Then assemble the main file: root nodes are those not inside any
-   submodel's `childNodeIds` and not a `submodel__<name>` placeholder;
-   `_resolve_submodel_endpoint` maps a placeholder-boundary edge to the
-   actual child node id on either side. Root edge-join ordering uses that
-   resolved source id rather than the raw placeholder id, so an external join
-   can consume one or two distinct child outputs from the same submodel while
-   continuing to validate its configured roles strictly.
-   `root_connect_pairs` forwards ordinary `sourceHandle`/`targetHandle` values
-   on non-boundary edges and
-   restores the authored `sourcePort`/`targetPort` values hidden behind a
-   submodel boundary. Synthetic `out__<id>` / `in__<id>` handles are never
-   emitted as user-facing ports. Boundary detection gates on the endpoint
-   node being a placeholder, not on the string prefix, so a legitimately
-   named `apiInput` table called `"out__claims"` is not mistaken for a
-   boundary marker; submodel import lines
-   (`pipeline.submodel(<path>)`) are appended; the main file is emitted with
-   `dedup_connects=True` (root-level connect pairs can be reached both via a
-   direct edge and via boundary resolution, so duplicates are collapsed by
-   `(src, tgt, source_port, target_port)` identity). Finally
-   `_assert_emitted_files_parse` runs over the whole `files` dict.
+5. **Submodel path:** resolve every canonical occurrence and order definitions
+   by first occurrence. For each definition, topo-sort its internal graph,
+   derive child parameters from structured public input targets followed by
+   internal edges, validate every structured output source, and emit one
+   `haute.Submodel(..., definition_id=..., input_ports=...,
+   output_ports=...)` file. Then omit occurrence nodes from the root function
+   list, translate parent boundary handles only to declared public port ids,
+   derive downstream names as `<alias>__<portId>`, and emit one explicit
+   `pipeline.submodel(...)` registration per occurrence with its definition
+   id, instance id, alias, and label. Parent `connect` calls refer to aliases
+   plus public port ids; synthetic `in__`/`out__` handles never enter source.
+   Finally `_assert_emitted_files_parse` validates every emitted file.
 
 ### `_generate_pipeline_lines` (shared by both paths above)
 
@@ -127,11 +102,19 @@ fresh markers.
 
 ### Canonical data I/O and retained sidecar builders
 
+- `_generate_pipeline_lines` emits the reserved `_HautePath` import before
+  the standard imports and the `_HAUTE_CONFIG_BASE` assignment immediately
+  after the `Pipeline`/`Submodel` constructor. `_extract_preamble` also
+  excludes those exact reserved scaffold lines when reading a file produced
+  before that boundary was established. Codegen -> parse -> codegen therefore
+  emits one config-base assignment and reaches a source-text fixpoint rather
+  than reclassifying generated infrastructure as authored preamble.
 - `_gen_data_input` emits the one retained tabular-input scaffold. It calls
   `resolve_data_input_from_config` using the generated sidecar path and file
   directory, assigns the returned lazy frame to `df`, appends optional user
   code, and returns `df`. The `data_input` extraction matcher removes only
-  that generated load scaffold on the reverse parse.
+  its canonical imports, config-base setup, and load call on the reverse
+  parse. Only the optional transform remains in node `code`.
 - `_gen_data_output` emits a config-sidecar decorator and an ordinary
   pass-through body. It never writes during import or ordinary pipeline
   execution; explicit publication belongs to the output-write runtime path.
@@ -278,13 +261,13 @@ text between the parens is non-whitespace).
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
-| Submodel cross-boundary edge with a null inbound draft, missing/malformed `in__`/`out__` mapped handle, or unknown child id | `ParseError` | `codegen.graph_to_code_multi`, `codegen._resolve_submodel_endpoint`; save requires every available row to be explicitly mapped. |
+| Canonical submodel occurrence, definition, public handle, port id, or internal port endpoint is malformed | `ParseError` | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
 | `polars` transform has no code and no/multiple sources | `ConfigError` | `_codegen_builders._gen_transform` |
 | `edgeJoin` codegen called with `!= 2` sources, or missing `baseInput`/`joinInput` | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
-| Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` placeholder | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
+| Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
 | Extraction engine given an unknown `kind` | `KeyError` | `_code_extraction.extract_user_code` |
 | User code text fails to parse during extraction | `_UserCodeParseError` (`ParseError` + `ValueError`, chains original `SyntaxError`) | `_code_extraction._parse_user_code` |
 | `_rewrite_outer_returns_as_assignment` hits a `return` fragment matching neither `return <expr>` nor bare `return` | `AssertionError` (`# pragma: no cover`, defensive) | `_code_extraction._rewrite_outer_returns_as_assignment` |
@@ -328,7 +311,7 @@ than one file per module:
   multiline/bare decorator contract injection, `inputs_by_parent`
   preservation and stale-key dropping, unparseable-file refusal (both
   single-file and submodel-file), missing-decorator rejection, name-
-  collision reporting across root+submodel, and the submodel-placeholder
+  collision reporting across root+submodel, and the submodel-occurrence
   unreachability guard.
 - **`test_codegen_docstring_roundtrip.py`** — "Phase 5 Wave 9D #122
   pathological docstring round-trip tests": adversarial description strings

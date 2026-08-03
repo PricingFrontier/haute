@@ -517,6 +517,27 @@ def _slice_without_module_preserve_spans(
     return [lines[index] for index in range(start, stop) if index not in excluded]
 
 
+_CONFIG_BASE_ASSIGNMENT_LINES = frozenset(
+    {
+        "_HAUTE_CONFIG_BASE=_HautePath(__file__).resolve().parent",
+        "_HAUTE_CONFIG_BASE=_HautePath(__file__).resolve().parent.parent",
+    }
+)
+_CONFIG_BASE_SCAFFOLD_LINES = _CONFIG_BASE_ASSIGNMENT_LINES | {"frompathlibimportPathas_HautePath"}
+
+
+def _without_config_base_scaffold(lines: list[str]) -> list[str]:
+    """Remove exact generated config-base lines from authored preamble text."""
+    compacted = ["".join(line.split()) for line in lines]
+    if not any(line in _CONFIG_BASE_ASSIGNMENT_LINES for line in compacted):
+        return lines
+    return [
+        line
+        for line, compact in zip(lines, compacted, strict=True)
+        if compact not in _CONFIG_BASE_SCAFFOLD_LINES
+    ]
+
+
 def _extract_preamble_from_ast(
     source: str,
     tree: ast.Module,
@@ -606,6 +627,7 @@ def _extract_preamble_from_ast(
         last_standard_line,
         generated_start_line - 1,
     )
+    preamble_lines = _without_config_base_scaffold(preamble_lines)
     while preamble_lines and not preamble_lines[0].strip():
         preamble_lines.pop(0)
     while preamble_lines and not preamble_lines[-1].strip():
@@ -717,6 +739,7 @@ def _extract_preamble_textual(
         last_standard_idx + 1,
         generated_start_idx,
     )
+    preamble_lines = _without_config_base_scaffold(preamble_lines)
 
     # Strip leading/trailing blank lines
     while preamble_lines and not preamble_lines[0].strip():

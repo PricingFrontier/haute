@@ -1812,14 +1812,12 @@ class TestExtractSourceUserCode:
 
     def test_project_root_generated_loader_is_not_user_code(self):
         body = (
-            "    from pathlib import Path\n"
             "    from haute._project import get_project_root\n"
             "    from haute.graph_utils import resolve_data_input_from_config\n"
-            "    base = Path(__file__).resolve().parent\n"
-            "    project_root = get_project_root(base)\n"
+            "    project_root = get_project_root(_HAUTE_CONFIG_BASE)\n"
             "    df = resolve_data_input_from_config(\n"
             '        "config/data_input/input.json",\n'
-            "        base_dir=base, project_root=project_root,\n"
+            "        base_dir=_HAUTE_CONFIG_BASE, project_root=project_root,\n"
             "    )\n"
             "    return df"
         )

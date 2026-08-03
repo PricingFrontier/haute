@@ -1,134 +1,52 @@
 import { act, renderHook } from "@testing-library/react"
-import type { Edge } from "@xyflow/react"
+import type { Edge, Node } from "@xyflow/react"
 import { describe, expect, it, vi } from "vitest"
 import useSubmodelBoundaryEditing from "../useSubmodelBoundaryEditing"
 import { makeEdge, makeNode } from "../../test-utils/factories"
 import type { PipelineEdge, SubmodelPortData } from "../../types/node"
 import { buildSubmodelViewGraph } from "../../utils/submodelViewGraph"
 
-const SUBMODEL_NAME = "pricing"
-const PLACEHOLDER_ID = "submodel__pricing"
+const SUBMODEL_NAME = "Pricing"
+const PLACEHOLDER_ID = "instance_primary"
+const DEFINITION_ID = "definition_pricing"
 
-type FixtureOptions = {
-  unassignedInput?: boolean
-  outputPorts?: string[]
-  includeInternalEdge?: boolean
-}
-
-function makeFixture({
-  unassignedInput = false,
-  outputPorts = [],
-  includeInternalEdge = false,
-}: FixtureOptions = {}) {
+type FixtureOptions = { bindInput?: boolean; outputPorts?: string[]; includeInternalEdge?: boolean }
+function makeFixture({ bindInput = false, outputPorts = [], includeInternalEdge = false }: FixtureOptions = {}) {
   const childNodes = [makeNode("child_a"), makeNode("child_b")]
-  const childEdges = includeInternalEdge
-    ? [makeEdge("child_a", "child_b", { id: "internal" })]
-    : []
-  const placeholder = makeNode(PLACEHOLDER_ID, "submodel", {
-    data: {
-      label: SUBMODEL_NAME,
-      config: {
-        childNodeIds: childNodes.map((node) => node.id),
-        inputPorts: [],
-        outputPorts,
-      },
-    },
-  })
-  const parentNodes = [
-    makeNode("external"),
-    makeNode("consumer_a"),
-    makeNode("consumer_b"),
-    placeholder,
-  ]
+  const childEdges = includeInternalEdge ? [makeEdge("child_a", "child_b", { id: "internal" })] : []
+  const placeholder = makeNode(PLACEHOLDER_ID, "submodel", { data: { label: SUBMODEL_NAME, nodeType: "submodel", config: { definitionId: DEFINITION_ID, alias: "pricing" } } })
+  const parentNodes = [makeNode("external"), makeNode("consumer_a"), makeNode("consumer_b"), placeholder]
   const parentEdges: PipelineEdge[] = []
-  if (unassignedInput) {
-    parentEdges.push({
-      ...makeEdge("external", PLACEHOLDER_ID, { id: "incoming" }),
-      targetHandle: null,
-    })
-  }
-  for (const childId of outputPorts) {
-    parentEdges.push(
-      {
-        ...makeEdge(PLACEHOLDER_ID, "consumer_a", { id: `consumer-a-${childId}` }),
-        sourceHandle: `out__${childId}`,
-      },
-      {
-        ...makeEdge(PLACEHOLDER_ID, "consumer_b", { id: `consumer-b-${childId}` }),
-        sourceHandle: `out__${childId}`,
-      },
-    )
-  }
-  const submodels = {
-    [SUBMODEL_NAME]: {
-      file: "modules/pricing.py",
-      childNodeIds: childNodes.map((node) => node.id),
-      inputPorts: [],
-      outputPorts,
-      graph: { nodes: childNodes, edges: childEdges },
-    },
-  }
-  const view = buildSubmodelViewGraph({
-    submodelName: SUBMODEL_NAME,
-    childNodes,
-    childEdges,
-    parentNodes,
-    parentEdges,
-  })
+  if (bindInput) parentEdges.push({ ...makeEdge("external", PLACEHOLDER_ID, { id: "incoming" }), targetHandle: "in__incoming" })
+  for (const childId of outputPorts) parentEdges.push({ ...makeEdge(PLACEHOLDER_ID, "consumer_a", { id: `consumer-a-${childId}` }), sourceHandle: `out__${childId}` }, { ...makeEdge(PLACEHOLDER_ID, "consumer_b", { id: `consumer-b-${childId}` }), sourceHandle: `out__${childId}` })
+  const definition = { definitionId: DEFINITION_ID, file: "modules/pricing.py", graph: { nodes: childNodes, edges: childEdges }, inputPorts: [{ portId: "incoming", label: "Incoming", targets: [{ nodeId: "child_a", handleId: null }] }], outputPorts: outputPorts.map((portId) => ({ portId, label: portId, source: { nodeId: portId, handleId: null } })) }
+  const submodels = { [DEFINITION_ID]: definition }
+  const view = buildSubmodelViewGraph({ submodelName: SUBMODEL_NAME, instanceId: PLACEHOLDER_ID, definition, childNodes, childEdges, parentNodes, parentEdges })
   const graphRef = { current: { nodes: view.nodes, edges: view.edges as Edge[] } }
-  const parentGraphRef = {
-    current: {
-      nodes: parentNodes,
-      edges: parentEdges,
-      submodels: submodels as Record<string, unknown>,
-    },
-  }
+  const parentGraphRef = { current: { nodes: parentNodes, edges: parentEdges, submodels: submodels as Record<string, unknown> } }
   const submodelsRef = { current: submodels as Record<string, unknown> }
   const setNodesAndEdgesAndSubmodels = vi.fn()
-
-  return {
-    childNodes,
-    childEdges,
-    parentNodes,
-    parentEdges,
-    submodels: submodels as Record<string, unknown>,
-    view,
-    graphRef,
-    parentGraphRef,
-    submodelsRef,
-    setNodesAndEdgesAndSubmodels,
-  }
+  return { childNodes, childEdges, parentNodes, parentEdges, submodels: submodels as Record<string, unknown>, view, graphRef, parentGraphRef, submodelsRef, setNodesAndEdgesAndSubmodels }
 }
-
 function hookParams(fixture: ReturnType<typeof makeFixture>) {
-  return {
-    activeSubmodelName: SUBMODEL_NAME,
-    nodes: fixture.view.nodes,
-    edges: fixture.view.edges as PipelineEdge[],
-    submodels: fixture.submodels,
-    graphRef: fixture.graphRef,
-    parentGraphRef: fixture.parentGraphRef,
-    submodelsRef: fixture.submodelsRef,
-    setNodesAndEdgesAndSubmodels: fixture.setNodesAndEdgesAndSubmodels,
-  }
+  return { activeSubmodelName: SUBMODEL_NAME, activeSubmodelInstanceId: PLACEHOLDER_ID, activeSubmodelDefinitionId: DEFINITION_ID, nodes: fixture.view.nodes, edges: fixture.view.edges as PipelineEdge[], submodels: fixture.submodels, graphRef: fixture.graphRef, parentGraphRef: fixture.parentGraphRef, submodelsRef: fixture.submodelsRef, setNodesAndEdgesAndSubmodels: fixture.setNodesAndEdgesAndSubmodels }
 }
-
 describe("useSubmodelBoundaryEditing", () => {
-  it("keeps a new external frame unassigned until the user maps its Input row", () => {
-    const fixture = makeFixture({ unassignedInput: true })
+  it("adds a second internal target to a declared public input", () => {
+    const fixture = makeFixture({ bindInput: true })
     const input = fixture.view.nodes.find(
       (node) => (node.data as unknown as SubmodelPortData).portDirection === "input",
     )
     const inputData = input?.data as unknown as SubmodelPortData
     expect(inputData.ports).toHaveLength(1)
-    expect(fixture.view.edges).toHaveLength(0)
+    expect(fixture.view.edges).toHaveLength(1)
 
     const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
     act(() => {
       expect(result.current.commitBoundaryConnection({
         source: input!.id,
         sourceHandle: inputData.ports[0].id,
-        target: "child_a",
+        target: "child_b",
         targetHandle: null,
       })).toBe(true)
     })
@@ -137,12 +55,19 @@ describe("useSubmodelBoundaryEditing", () => {
     expect(fixture.parentGraphRef.current?.edges).toEqual([
       expect.objectContaining({
         id: "incoming",
-        targetHandle: "in__child_a",
+        targetHandle: "in__incoming",
       }),
+    ])
+    const definition = fixture.submodelsRef.current[DEFINITION_ID] as {
+      inputPorts: Array<{ targets: Array<{ nodeId: string }> }>
+    }
+    expect(definition.inputPorts[0].targets.map((target) => target.nodeId)).toEqual([
+      "child_a",
+      "child_b",
     ])
   })
 
-  it("deleting one declared export removes every collapsed parent consumer", () => {
+  it("blocks deletion of a public output used by the active instance", () => {
     const fixture = makeFixture({ outputPorts: ["child_a"] })
     const exportEdge = fixture.view.edges.find(
       (edge) => edge.source === "child_a" && edge.target.includes("boundary"),
@@ -153,16 +78,13 @@ describe("useSubmodelBoundaryEditing", () => {
       expect(result.current.deleteBoundaryEdge(exportEdge!.id)).toBe(true)
     })
 
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    expect(fixture.parentGraphRef.current?.edges).toEqual([])
-    const placeholder = fixture.parentGraphRef.current?.nodes.find(
-      (node) => node.id === PLACEHOLDER_ID,
-    )
-    const config = placeholder?.data.config as { outputPorts?: string[] }
-    expect(config.outputPorts).toEqual([])
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
+    const definition = fixture.submodelsRef.current[DEFINITION_ID] as { outputPorts: unknown[] }
+    expect(definition.outputPorts).toHaveLength(1)
   })
 
-  it("commits a mixed boundary and internal edge deletion as one atomic update", () => {
+  it("blocks a mixed boundary and internal edge deletion atomically", () => {
     const fixture = makeFixture({
       outputPorts: ["child_a"],
       includeInternalEdge: true,
@@ -179,13 +101,12 @@ describe("useSubmodelBoundaryEditing", () => {
       ])).toBe(true)
     })
 
-    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
-    const committedEdges = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0][1] as Edge[]
-    expect(committedEdges).toEqual([])
-    expect(fixture.parentGraphRef.current?.edges).toEqual([])
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+    expect(fixture.graphRef.current.edges.map((edge) => edge.id)).toContain("internal")
+    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
   })
 
-  it("reconciles parent refs when an undo-like rerender restores older visible state", () => {
+  it("blocks an undo-like rerender that would remove a bound public output", () => {
     const fixture = makeFixture({ outputPorts: ["child_a"] })
     const { rerender } = renderHook(
       (params: ReturnType<typeof hookParams>) => useSubmodelBoundaryEditing(params),
@@ -200,11 +121,11 @@ describe("useSubmodelBoundaryEditing", () => {
       submodels: restored.submodels,
     })
 
-    expect(fixture.parentGraphRef.current?.edges).toEqual([])
-    const metadata = fixture.submodelsRef.current[SUBMODEL_NAME] as {
-      outputPorts: string[]
+    expect(fixture.parentGraphRef.current?.edges).toEqual(fixture.parentEdges)
+    const metadata = fixture.submodelsRef.current[DEFINITION_ID] as {
+      outputPorts: Array<{ portId: string }>
     }
-    expect(metadata.outputPorts).toEqual([])
+    expect(metadata.outputPorts.map((port) => port.portId)).toEqual(["child_a"])
   })
 
   it("leaves parent refs untouched when history restores a non-drilled snapshot", () => {
@@ -222,12 +143,12 @@ describe("useSubmodelBoundaryEditing", () => {
       edges: fixture.parentEdges as PipelineEdge[],
     })
 
-    const metadata = fixture.submodelsRef.current[SUBMODEL_NAME] as {
-      childNodeIds: string[]
-      outputPorts: string[]
+    const metadata = fixture.submodelsRef.current[DEFINITION_ID] as {
+      graph: { nodes: Node[] }
+      outputPorts: Array<{ portId: string }>
     }
-    expect(metadata.childNodeIds).toEqual(["child_a", "child_b"])
-    expect(metadata.outputPorts).toEqual(["child_a"])
+    expect(metadata.graph.nodes.map((node) => node.id)).toEqual(["child_a", "child_b"])
+    expect(metadata.outputPorts.map((port) => port.portId)).toEqual(["child_a"])
     expect((fixture.parentGraphRef.current?.edges ?? []).map((edge) => edge.id)).toEqual([
       "consumer-a-child_a",
       "consumer-b-child_a",

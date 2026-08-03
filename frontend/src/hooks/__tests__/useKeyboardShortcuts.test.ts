@@ -22,6 +22,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
     isInsideSubmodel: false,
+    readOnly: false,
     ...overrides,
   }
 }
@@ -459,6 +460,36 @@ describe("useKeyboardShortcuts", () => {
       type: "info",
       text: expect.stringContaining("cannot be nested"),
     })
+  })
+
+  it("blocks mutation shortcuts in a read-only submodel instance", () => {
+    cleanup()
+    const readOnlyParams = makeParams({ readOnly: true, isInsideSubmodel: true })
+    readOnlyParams.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+    ]
+    readOnlyParams.graphRef.current.edges = [
+      { id: "e1", source: "n1", target: "n2", selected: true } as Edge,
+    ]
+    readOnlyParams.clipboard.current = {
+      nodes: [readOnlyParams.graphRef.current.nodes[0]],
+      edges: [],
+    }
+    renderHook(() => useKeyboardShortcuts(readOnlyParams))
+
+    fireKey("z", { ctrlKey: true })
+    fireKey("y", { ctrlKey: true })
+    fireKey("v", { ctrlKey: true })
+    fireKey("g", { ctrlKey: true })
+    fireKey("Delete")
+
+    expect(readOnlyParams.undo).not.toHaveBeenCalled()
+    expect(readOnlyParams.redo).not.toHaveBeenCalled()
+    expect(readOnlyParams.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(readOnlyParams.setNodes).not.toHaveBeenCalled()
+    expect(readOnlyParams.setEdges).not.toHaveBeenCalled()
+    expect(useUIStore.getState().submodelDialog).toBeNull()
   })
 
   it("Cmd+G (Mac) with 2+ selected opens submodel dialog", () => {

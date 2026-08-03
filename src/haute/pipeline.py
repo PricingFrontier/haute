@@ -16,7 +16,12 @@ from haute._edge_join import (
 )
 from haute._graph_utils import _edge_id
 from haute._logging import get_logger
-from haute._types import GraphEdge, NodeType
+from haute._types import (
+    GraphEdge,
+    NodeType,
+    SubmodelInputPort,
+    SubmodelOutputPort,
+)
 from haute.errors import ConfigError, ExecutionError
 from haute.graph_utils import topo_sort_ids
 
@@ -181,6 +186,18 @@ class RegisteredEdge:
     target_port: str | None = None
 
 
+@dataclass(frozen=True)
+class RegisteredSubmodel:
+    """One canonical file-backed submodel occurrence registered on a pipeline."""
+
+    file: str
+    definition_id: str
+    instance_id: str
+    alias: str
+    instance_of: str | None = None
+    label: str | None = None
+
+
 def _validate_port(value: str | None, name: str) -> None:
     if value is not None and not isinstance(value, str):
         raise TypeError(f"{name} must be a non-empty string or None")
@@ -202,6 +219,7 @@ class NodeRegistry:
         self._node_map: dict[str, Node] = {}
         self._edges: list[RegisteredEdge] = []
         self._submodel_files: list[str] = []
+        self._submodel_registrations: list[RegisteredSubmodel] = []
 
     def _register_node(self, fn: Callable | None = None, **config: Any) -> Callable:
         """Internal decorator to register a function as a node.
@@ -215,6 +233,19 @@ class NodeRegistry:
             params = [p for p in sig.parameters.values() if p.name != "self"]
             is_source = len(params) == 0
 
+            conflicting_registration = next(
+                (
+                    registered
+                    for registered in getattr(self, "_submodel_registrations", ())
+                    if f.__name__ in {registered.alias, registered.instance_id}
+                ),
+                None,
+            )
+            if conflicting_registration is not None:
+                raise ValueError(
+                    f"Pipeline node name {f.__name__!r} conflicts with a "
+                    "registered submodel identity."
+                )
             if f.__name__ in self._node_map:
                 raise ValueError(
                     f"Duplicate node name '{f.__name__}'. Each node must have a "
@@ -359,13 +390,17 @@ class NodeRegistry:
 
         Can be chained: ``registry.connect("a", "b").connect("b", "c")``
         """
-        if source not in self._node_map:
+        submodel_aliases = {registration.alias for registration in self._submodel_registrations}
+        known_endpoints = set(self._node_map) | submodel_aliases
+        if source not in known_endpoints:
             raise ValueError(
-                f"Source node '{source}' not found in pipeline. Known nodes: {list(self._node_map)}"
+                f"Source node '{source}' not found in pipeline. "
+                f"Known endpoints: {sorted(known_endpoints)}"
             )
-        if target not in self._node_map:
+        if target not in known_endpoints:
             raise ValueError(
-                f"Target node '{target}' not found in pipeline. Known nodes: {list(self._node_map)}"
+                f"Target node '{target}' not found in pipeline. "
+                f"Known endpoints: {sorted(known_endpoints)}"
             )
         _validate_port(source_port, "source_port")
         _validate_port(target_port, "target_port")
@@ -689,16 +724,63 @@ class Pipeline(NodeRegistry):
             ],
         }
 
-    def submodel(self, file: str) -> Pipeline:
-        """Import a submodel from a separate .py file.
+    def submodel(
+        self,
+        file: str,
+        *,
+        definition_id: str,
+        instance_id: str,
+        alias: str,
+        instance_of: str | None = None,
+        label: str | None = None,
+    ) -> Pipeline:
+        """Register one occurrence of a file-backed submodel definition."""
+        identities = {
+            "file": file,
+            "definition_id": definition_id,
+            "instance_id": instance_id,
+            "alias": alias,
+        }
+        for field_name, value in identities.items():
+            if not isinstance(value, str):
+                raise TypeError(f"Submodel {field_name} must be a string.")
+            if not value or value != value.strip():
+                raise ValueError(f"Submodel {field_name} must be a non-empty unpadded string.")
+        if instance_of is not None:
+            if not isinstance(instance_of, str):
+                raise TypeError("Submodel instance_of must be a string or None.")
+            if not instance_of or instance_of != instance_of.strip():
+                raise ValueError("Submodel instance_of must be a non-empty unpadded string.")
+        if label is not None:
+            if not isinstance(label, str):
+                raise TypeError("Submodel label must be a string.")
+            if not label or label != label.strip():
+                raise ValueError("Submodel label must be a non-empty unpadded string.")
 
-        The *file* path is stored for the parser/code-generator to resolve
-        and round-trip. This live object does not import or execute the
-        referenced submodel.
+        for field_name, value in {"alias": alias, "instance_id": instance_id}.items():
+            if value in self._node_map:
+                raise ValueError(
+                    f"Submodel {field_name} {value!r} conflicts with a registered node name."
+                )
 
-        Can be chained: ``pipeline.submodel("a.py").submodel("b.py")``
-        """
+        if any(
+            registered.instance_id == instance_id for registered in self._submodel_registrations
+        ):
+            raise ValueError(f"Duplicate submodel instance_id {instance_id!r}.")
+        if any(registered.alias == alias for registered in self._submodel_registrations):
+            raise ValueError(f"Duplicate submodel alias {alias!r}.")
+
         self._submodel_files.append(file)
+        self._submodel_registrations.append(
+            RegisteredSubmodel(
+                file=file,
+                definition_id=definition_id,
+                instance_id=instance_id,
+                alias=alias,
+                instance_of=instance_of,
+                label=label,
+            )
+        )
         return self
 
     @property
@@ -706,61 +788,47 @@ class Pipeline(NodeRegistry):
         """Paths passed to :meth:`submodel`."""
         return list(self._submodel_files)
 
+    @property
+    def submodel_registrations(self) -> list[RegisteredSubmodel]:
+        """Occurrence registrations, returned as an immutable-value copy."""
+        return list(self._submodel_registrations)
+
 
 class Submodel(NodeRegistry):
-    """A reusable group of nodes defined in a separate .py file.
-
-    Mirrors :class:`Pipeline`'s node/edge registration surface but is
-    intended for submodel files that the main pipeline imports via
-    ``pipeline.submodel("modules/x.py")``.  A ``Submodel`` is **not executed
-    directly** — it has no ``run``/``score``/``to_graph`` of its own; its
-    nodes and internal edges participate in execution once registered onto the
-    importing :class:`Pipeline`.
-
-    Usage::
-
-        submodel = haute.Submodel("model_scoring")
-
-        # A source node so downstream connects resolve; folder-backed types
-        # reference a JSON sidecar, matching the scaffold and the parser.
-        @submodel.data_input(config="config/data_input/policies.json")
-        def policies() -> pl.LazyFrame: ...
-
-        @submodel.external_file(config="config/load_file/frequency_model.json")
-        def frequency_model(policies: pl.LazyFrame) -> pl.LazyFrame: ...
-
-        submodel.connect("policies", "frequency_model")
-    """
+    """A reusable definition declared in a separate Python module."""
 
     def __init__(
         self,
         name: str,
         description: str = "",
         *,
-        outputs: list[str] | None = None,
+        definition_id: str,
+        input_ports: list[dict[str, Any] | SubmodelInputPort],
+        output_ports: list[dict[str, Any] | SubmodelOutputPort],
     ) -> None:
-        """Create a submodel with an optional ordered public output interface."""
-        if outputs is None:
-            declared_outputs: list[str] = []
-        elif not isinstance(outputs, list):
-            raise TypeError("Submodel outputs must be a list of non-empty node names.")
-        else:
-            declared_outputs = []
-            seen: set[str] = set()
-            for output in outputs:
-                if not isinstance(output, str):
-                    raise TypeError("Each submodel output must be a non-empty node name string.")
-                if not output:
-                    raise ValueError("Each submodel output must be a non-empty node name string.")
-                if output in seen:
-                    raise ValueError(f"Duplicate submodel output {output!r} is not allowed.")
-                seen.add(output)
-                declared_outputs.append(output)
+        if not isinstance(definition_id, str):
+            raise TypeError("Submodel definition_id must be a string.")
+        if not definition_id or definition_id != definition_id.strip():
+            raise ValueError("Submodel definition_id must be a non-empty unpadded string.")
+        if not isinstance(input_ports, list) or not isinstance(output_ports, list):
+            raise TypeError("Submodel input_ports and output_ports must be lists.")
 
         super().__init__(name, description)
-        self._outputs = declared_outputs
+        self._definition_id = definition_id
+        self._input_ports = [SubmodelInputPort.model_validate(port) for port in input_ports]
+        self._output_ports = [SubmodelOutputPort.model_validate(port) for port in output_ports]
 
     @property
-    def outputs(self) -> list[str]:
-        """Ordered public output node names, returned as a defensive copy."""
-        return list(self._outputs)
+    def definition_id(self) -> str:
+        """Stable reusable-definition identity."""
+        return self._definition_id
+
+    @property
+    def input_ports(self) -> list[SubmodelInputPort]:
+        """Typed public inputs, returned as a defensive copy."""
+        return list(self._input_ports)
+
+    @property
+    def output_ports(self) -> list[SubmodelOutputPort]:
+        """Typed public outputs, returned as a defensive copy."""
+        return list(self._output_ports)

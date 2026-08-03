@@ -637,9 +637,9 @@ def get_project_knowledge(
 def _publish_graph_update(source_file: str, graph: PipelineGraph) -> str:
     """Publish the exact graph-update payload used by the file watcher."""
 
-    from haute.server import _graph_payload_fingerprint, _wire_source_file
+    from haute.server import _graph_payload_fingerprint, _graph_wire_payload, _wire_source_file
 
-    graph_payload = graph.model_dump()
+    graph_payload = _graph_wire_payload(graph)
     fingerprint = _graph_payload_fingerprint(graph_payload)
     payload: dict[str, Any] = {
         "graph": graph_payload,

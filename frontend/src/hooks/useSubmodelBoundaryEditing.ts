@@ -8,6 +8,7 @@ import {
   type SubmodelBoundaryEditResult,
   type SubmodelBoundaryEditState,
 } from "../utils/submodelBoundaryEditing"
+import useToastStore from "../stores/useToastStore"
 
 type GraphRef = React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
 type ParentGraphRef = React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
@@ -15,6 +16,8 @@ type Setter = (nodes: Node[] | ((nodes: Node[]) => Node[]), edges: Edge[] | ((ed
 
 export interface UseSubmodelBoundaryEditingParams {
   activeSubmodelName: string | null
+  activeSubmodelInstanceId: string | null
+  activeSubmodelDefinitionId: string | null
   nodes: Node[]
   edges: PipelineEdge[]
   submodels: Record<string, unknown>
@@ -33,16 +36,59 @@ const isBoundaryEdge = (edge: Edge) => {
 }
 
 export default function useSubmodelBoundaryEditing({
-  activeSubmodelName, nodes, edges, submodels, graphRef, parentGraphRef, submodelsRef, setNodesAndEdgesAndSubmodels,
+  activeSubmodelName,
+  activeSubmodelInstanceId,
+  activeSubmodelDefinitionId,
+  nodes,
+  edges,
+  submodels,
+  graphRef,
+  parentGraphRef,
+  submodelsRef,
+  setNodesAndEdgesAndSubmodels,
 }: UseSubmodelBoundaryEditingParams) {
+  const addToast = useToastStore((store) => store.addToast)
+  const reportBoundaryError = useCallback((error: unknown) => {
+    addToast(
+      "error",
+      `Shared submodel edit blocked: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }, [addToast])
   const state = useCallback((): SubmodelBoundaryEditState | null => {
     if (!activeSubmodelName || !parentGraphRef.current) return null
     // Without both composite cards the visible graph is not a drilled
     // projection (e.g. history restored a pre-drill snapshot); reconciling it
     // would rewrite the submodel metadata from the parent canvas.
     if (!hasBoundaryCard(nodes, "input") || !hasBoundaryCard(nodes, "output")) return null
-    return { submodelName: activeSubmodelName, viewNodes: nodes, viewEdges: edges, parentNodes: parentGraphRef.current.nodes, parentEdges: parentGraphRef.current.edges, submodels }
-  }, [activeSubmodelName, nodes, edges, submodels, parentGraphRef])
+    if (
+      typeof activeSubmodelInstanceId !== "string"
+      || activeSubmodelInstanceId.length === 0
+      || activeSubmodelInstanceId.trim() !== activeSubmodelInstanceId
+      || typeof activeSubmodelDefinitionId !== "string"
+      || activeSubmodelDefinitionId.length === 0
+      || activeSubmodelDefinitionId.trim() !== activeSubmodelDefinitionId
+    ) {
+      throw new Error("The active submodel view requires canonical instance identity")
+    }
+    return {
+      submodelName: activeSubmodelName,
+      instanceId: activeSubmodelInstanceId,
+      definitionId: activeSubmodelDefinitionId,
+      viewNodes: nodes,
+      viewEdges: edges,
+      parentNodes: parentGraphRef.current.nodes,
+      parentEdges: parentGraphRef.current.edges,
+      submodels,
+    }
+  }, [
+    activeSubmodelName,
+    activeSubmodelInstanceId,
+    activeSubmodelDefinitionId,
+    nodes,
+    edges,
+    submodels,
+    parentGraphRef,
+  ])
   const commit = useCallback((result: SubmodelBoundaryEditResult) => {
     graphRef.current = { nodes: result.viewNodes, edges: result.viewEdges }
     parentGraphRef.current = { nodes: result.parentNodes, edges: result.parentEdges, submodels: result.submodels }
@@ -50,51 +96,85 @@ export default function useSubmodelBoundaryEditing({
     setNodesAndEdgesAndSubmodels(result.viewNodes, result.viewEdges, result.submodels)
   }, [graphRef, parentGraphRef, submodelsRef, setNodesAndEdgesAndSubmodels])
   const reconcileActiveSubmodel = useCallback(() => {
-    const current = state()
-    return current ? reconcileSubmodelBoundaryState(current) : null
-  }, [state])
+    try {
+      const current = state()
+      return current ? reconcileSubmodelBoundaryState(current) : null
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return null
+    }
+  }, [state, reportBoundaryError])
 
   useEffect(() => {
     const result = reconcileActiveSubmodel()
     if (!result) return
-    parentGraphRef.current = { nodes: result.parentNodes, edges: result.parentEdges, submodels: result.submodels }
+    parentGraphRef.current = {
+      nodes: result.parentNodes,
+      edges: result.parentEdges,
+      submodels: result.submodels,
+    }
     submodelsRef.current = result.submodels
   }, [reconcileActiveSubmodel, parentGraphRef, submodelsRef])
 
   const commitBoundaryConnection = useCallback((connection: Connection): boolean => {
-    const current = state()
-    if (!current) return false
-    const source = nodes.find(node => node.id === connection.source)
-    const target = nodes.find(node => node.id === connection.target)
-    if (!isBoundaryNode(source) && !isBoundaryNode(target)) return false
-    const result = applySubmodelBoundaryConnection(current, connection)
-    if (result) commit(result)
-    return true
-  }, [state, nodes, commit])
+    try {
+      const current = state()
+      if (!current) return false
+      const source = nodes.find((node) => node.id === connection.source)
+      const target = nodes.find((node) => node.id === connection.target)
+      if (!isBoundaryNode(source) && !isBoundaryNode(target)) return false
+      const result = applySubmodelBoundaryConnection(current, connection)
+      if (result) commit(result)
+      return true
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return true
+    }
+  }, [state, nodes, commit, reportBoundaryError])
 
   const deleteBoundaryEdge = useCallback((id: string): boolean => {
-    const current = state()
-    if (!current) return false
-    const edge = edges.find(candidate => candidate.id === id)
-    if (!edge || !isBoundaryEdge(edge)) return false
-    const result = removeSubmodelBoundaryEdges(current, [id])
-    if (result) commit(result)
-    return true
-  }, [state, edges, commit])
+    try {
+      const current = state()
+      if (!current) return false
+      const edge = edges.find((candidate) => candidate.id === id)
+      if (!edge || !isBoundaryEdge(edge)) return false
+      const result = removeSubmodelBoundaryEdges(current, [id])
+      if (result) commit(result)
+      return true
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return true
+    }
+  }, [state, edges, commit, reportBoundaryError])
 
   const onBoundaryEdgesChange = useCallback((changes: EdgeChange[]): boolean => {
-    const current = state()
-    if (!current) return false
-    const removedBoundaryIds = changes.filter((change): change is Extract<EdgeChange, { type: "remove" }> => change.type === "remove").filter(change => edges.some(edge => edge.id === change.id && isBoundaryEdge(edge))).map(change => change.id)
+    const removedBoundaryIds = changes
+      .filter((change): change is Extract<EdgeChange, { type: "remove" }> =>
+        change.type === "remove")
+      .filter((change) =>
+        edges.some((edge) => edge.id === change.id && isBoundaryEdge(edge)))
+      .map((change) => change.id)
     if (removedBoundaryIds.length === 0) return false
-    const removed = removeSubmodelBoundaryEdges(current, removedBoundaryIds)
-    if (!removed) return true
-    const remaining = changes.filter(change => !(change.type === "remove" && removedBoundaryIds.includes(change.id)))
-    const viewEdges = applyEdgeChanges(remaining, removed.viewEdges)
-    const reconciled = reconcileSubmodelBoundaryState({ ...removed, viewEdges: viewEdges as PipelineEdge[] })
-    if (reconciled) commit(reconciled)
-    return true
-  }, [state, edges, commit])
+    try {
+      const current = state()
+      if (!current) return false
+      const removed = removeSubmodelBoundaryEdges(current, removedBoundaryIds)
+      if (!removed) return true
+      const remaining = changes.filter(
+        (change) => !(change.type === "remove" && removedBoundaryIds.includes(change.id)),
+      )
+      const viewEdges = applyEdgeChanges(remaining, removed.viewEdges)
+      const reconciled = reconcileSubmodelBoundaryState({
+        ...removed,
+        viewEdges: viewEdges as PipelineEdge[],
+      })
+      if (reconciled) commit(reconciled)
+      return true
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return true
+    }
+  }, [state, edges, commit, reportBoundaryError])
 
   return { commitBoundaryConnection, deleteBoundaryEdge, onBoundaryEdgesChange, reconcileActiveSubmodel }
 }

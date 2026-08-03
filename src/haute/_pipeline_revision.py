@@ -80,8 +80,8 @@ def pipeline_document_revision(
     seen_children: set[str] = set()
     child_entries: list[dict[str, str]] = []
     for name, metadata in sorted((graph.submodels or {}).items()):
-        recorded_path = metadata.get("file") if isinstance(metadata, dict) else None
-        if not isinstance(recorded_path, str) or not recorded_path:
+        recorded_path = metadata.file
+        if not recorded_path:
             raise ValueError(f"Submodel {name!r} has no valid source file path.")
         child_path, _config_base = resolve_submodel_reference(
             recorded_path,

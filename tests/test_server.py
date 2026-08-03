@@ -276,7 +276,7 @@ class TestPreviewNode:
         assert node_id in data["node_statuses"]
         assert data["node_statuses"][node_id] == "ok"
 
-    def test_preview_ignores_unassigned_submodel_input_draft(
+    def test_preview_rejects_unassigned_submodel_input_draft(
         self,
         client: TestClient,
         pipeline_dir: Path,
@@ -305,9 +305,8 @@ class TestPreviewNode:
                         "label": "sm",
                         "nodeType": "submodel",
                         "config": {
-                            "childNodeIds": ["child_a", "child_b"],
-                            "inputPorts": [],
-                            "outputPorts": [],
+                            "definitionId": "sm",
+                            "alias": "sm",
                         },
                     },
                 },
@@ -325,8 +324,8 @@ class TestPreviewNode:
             "source_file": str(pipeline_dir / "test_pipeline.py"),
             "submodels": {
                 "sm": {
+                    "definitionId": "sm",
                     "file": "modules/sm.py",
-                    "childNodeIds": ["child_a", "child_b"],
                     "inputPorts": [],
                     "outputPorts": [],
                     "graph": {
@@ -359,13 +358,10 @@ class TestPreviewNode:
             )
 
         assert response.status_code == 200
-        execution_graph = execute_graph.call_args.args[0]
-        assert {node.id for node in execution_graph.nodes} == {
-            "nb_batch",
-            "child_a",
-            "child_b",
-        }
-        assert execution_graph.edges == []
+        payload = response.json()
+        assert payload["status"] == "error"
+        assert "missing or malformed public-port handle" in payload["error"]
+        execute_graph.assert_not_called()
 
     def test_preview_returns_relevant_ancestor_node_schema_maps(
         self,
@@ -914,6 +910,21 @@ def three_node_graph(pipeline_dir: Path) -> dict:
     return graph.model_dump()
 
 
+def _submodel_instance_node(graph: dict, definition_id: str) -> dict:
+    """Return the sole occurrence of one canonical submodel definition."""
+    matches = [
+        node
+        for node in graph["nodes"]
+        if node["data"]["nodeType"] == "submodel"
+        and node["data"]["config"].get("definitionId") == definition_id
+    ]
+    assert len(matches) == 1
+    instance = matches[0]
+    assert instance["id"].startswith("submodel_instance_")
+    assert instance["data"]["config"]["alias"] == definition_id
+    return instance
+
+
 class TestCreateSubmodel:
     def _create_payload(self, graph_dict: dict, node_ids: list[str]) -> dict:
         return {
@@ -945,15 +956,16 @@ class TestCreateSubmodel:
         assert data["parent_file"] == "test_pipeline.py"
         assert "nodes" in data["graph"]
 
-        # Verify the submodel node exists in the returned graph
+        # Verify a canonical, immutable occurrence exists in the returned graph.
         returned_node_ids = {n["id"] for n in data["graph"]["nodes"]}
-        assert "submodel__my_submodel" in returned_node_ids
+        instance = _submodel_instance_node(data["graph"], "my_submodel")
+        assert instance["id"] in returned_node_ids
         # Original selected nodes should be gone from parent
         for nid in selected:
             assert nid not in returned_node_ids
 
-        # Verify files were written to disk
-        assert (pipeline_dir / "modules" / "my_submodel.py").exists()
+        # Create is an in-memory edit; explicit Save owns all persistence.
+        assert not (pipeline_dir / "modules" / "my_submodel.py").exists()
         assert (pipeline_dir / "test_pipeline.py").exists()
 
     def test_create_submodel_too_few_nodes_returns_400(
@@ -1010,8 +1022,20 @@ class TestGetSubmodel:
             },
         )
         assert create_resp.status_code == 200
+        created = create_resp.json()
 
-        # Now fetch it
+        save_resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "test_pipeline",
+                "description": three_node_graph.get("pipeline_description") or "",
+                "graph": created["graph"],
+                "source_file": "test_pipeline.py",
+            },
+        )
+        assert save_resp.status_code == 200
+
+        # Fetch the persisted definition by its canonical identity.
         resp = client.get("/api/submodel/lookup", params={"source_file": "test_pipeline.py"})
         assert resp.status_code == 200
         data = resp.json()
@@ -1050,17 +1074,19 @@ class TestDissolveSubmodel:
             },
         )
         assert create_resp.status_code == 200
-        updated_graph = create_resp.json()["graph"]
+        created = create_resp.json()
+        updated_graph = created["graph"]
+        instance_id = _submodel_instance_node(updated_graph, "temp_group")["id"]
 
         # Dissolve it
         resp = client.post(
             "/api/submodel/dissolve",
             json={
-                "submodel_name": "temp_group",
+                "instance_id": instance_id,
                 "graph": updated_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
-                "base_revision": create_resp.json()["source_revision"],
+                "base_revision": created["source_revision"],
             },
         )
         assert resp.status_code == 200
@@ -1068,12 +1094,14 @@ class TestDissolveSubmodel:
         assert data["status"] == "ok"
 
         # The flattened graph should have the original nodes back
-        flat_ids = {n["id"] for n in data["graph"]["nodes"]}
-        assert "submodel__temp_group" not in flat_ids
-        for nid in node_ids:
-            assert nid in flat_ids
+        from haute._submodel_instances import qualified_runtime_node_id
 
-        # The submodel file should be deleted
+        flat_ids = {n["id"] for n in data["graph"]["nodes"]}
+        assert flat_ids == {qualified_runtime_node_id(instance_id, node_id) for node_id in node_ids}
+
+        # Dissolve is also in-memory and reports deferred persistence work.
+        assert data["submodel_file_deleted"] is False
+        assert data["retained_submodel_file"] == "modules/temp_group.py"
         assert not (pipeline_dir / "modules" / "temp_group.py").exists()
 
     def test_dissolve_nonexistent_submodel_returns_404(
@@ -1084,7 +1112,7 @@ class TestDissolveSubmodel:
         resp = client.post(
             "/api/submodel/dissolve",
             json={
-                "submodel_name": "ghost",
+                "instance_id": "ghost",
                 "graph": three_node_graph,
                 "source_file": "test_pipeline.py",
                 "pipeline_name": "test_pipeline",
@@ -1221,6 +1249,57 @@ class TestWebSocketResync:
         assert frame["source_file"] == "test_pipeline.py"
         assert isinstance(frame["graph"], dict)
         assert frame["graph_fingerprint"] == _graph_payload_fingerprint(frame["graph"])  # type: ignore[arg-type]
+
+    def test_resync_uses_canonical_submodel_wire_aliases(
+        self,
+        pipeline_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import asyncio
+        from unittest.mock import patch
+
+        from haute._types import PipelineGraph, SubmodelDefinition
+        from haute.server import _handle_ws_sync_message
+
+        monkeypatch.chdir(pipeline_dir)
+
+        definition_id = "browser_group"
+        pipeline_file = pipeline_dir / "test_pipeline.py"
+        graph = PipelineGraph(
+            submodels={
+                definition_id: SubmodelDefinition(
+                    definitionId=definition_id,
+                    file="modules/browser_group.py",
+                    graph=PipelineGraph(),
+                    inputPorts=[],
+                    outputPorts=[],
+                )
+            }
+        )
+
+        ws = self._CollectingWebSocket()
+        with (
+            patch("haute.server.discover_pipelines", return_value=[pipeline_file]),
+            patch("haute.server.parse_pipeline_to_graph", return_value=graph),
+        ):
+            asyncio.run(
+                _handle_ws_sync_message(
+                    ws,  # type: ignore[arg-type]
+                    json.dumps({"type": "resync", "source_file": "test_pipeline.py"}),
+                )
+            )
+
+        wire_graph = ws.frames[0]["graph"]
+        assert isinstance(wire_graph, dict)
+        wire_submodels = wire_graph["submodels"]
+        assert isinstance(wire_submodels, dict)
+        wire_definition = wire_submodels[definition_id]
+        assert wire_definition["definitionId"] == definition_id
+        assert wire_definition["inputPorts"] == []
+        assert wire_definition["outputPorts"] == []
+        assert "definition_id" not in wire_definition
+        assert "input_ports" not in wire_definition
+        assert "output_ports" not in wire_definition
 
     def test_resync_skips_graph_update_when_client_fingerprint_unchanged(
         self,
@@ -2912,7 +2991,7 @@ class TestFileWatcherJsonConfig:
         class _FakeGraph:
             nodes = [object()]
 
-            def model_dump(self) -> dict[str, object]:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [{"id": "after-config"}], "edges": []}
 
         async def _fake_awatch(*dirs, **kw):
@@ -2983,7 +3062,7 @@ class TestFileWatcherJsonConfig:
         class _FakeGraph:
             nodes = [object()]
 
-            def model_dump(self) -> dict[str, object]:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [{"id": "same-graph"}], "edges": []}
 
         async def _fake_awatch(*dirs, **kw):
@@ -3169,7 +3248,7 @@ class TestFileWatcherModuleChange:
         class _FakeGraph:
             nodes = [object()]
 
-            def model_dump(self) -> dict[str, object]:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [{"id": "after-module"}], "edges": []}
 
         async def _fake_awatch(*dirs, **kw):
@@ -3239,7 +3318,7 @@ class TestFileWatcherModuleChange:
         class _FakeGraph:
             nodes = [object()]
 
-            def model_dump(self) -> dict[str, object]:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [{"id": "same-graph"}], "edges": []}
 
         async def _fake_awatch(*dirs, **kw):
@@ -3521,7 +3600,7 @@ class TestFileWatcherRecovery:
         class _FakeGraph:
             nodes: list[object] = []
 
-            def model_dump(self) -> dict[str, object]:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [], "edges": []}
 
         async def _crashy_awatch(*dirs, **kw):
@@ -3665,7 +3744,7 @@ class TestFileWatcherRecovery:
         class _FakeGraph:
             nodes: list[object] = []
 
-            def model_dump(self) -> dict[str, object]:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [], "edges": []}
 
         class _BusStub:
@@ -3759,7 +3838,7 @@ class TestFileWatcherRecovery:
         class _FakeGraph:
             nodes: list[object] = []
 
-            def model_dump(self) -> dict[str, object]:
+            def model_dump(self, **_kwargs: object) -> dict[str, object]:
                 return {"nodes": [], "edges": []}
 
         class _BusStub:
@@ -3957,10 +4036,11 @@ class TestSubmodelOutputPorts:
         data = resp.json()
 
         # Verify the submodel node was created
-        sm_node = next(n for n in data["graph"]["nodes"] if n["id"] == "submodel__output_test")
+        sm_node = _submodel_instance_node(data["graph"], "output_test")
         config = sm_node["data"]["config"]
-        # childNodeIds should match selected
-        assert set(config["childNodeIds"]) == set(selected)
+        assert config["definitionId"] == "output_test"
+        definition_nodes = data["graph"]["submodels"]["output_test"]["graph"]["nodes"]
+        assert {node["id"] for node in definition_nodes} == set(selected)
 
 
 class TestSubmodelEdgeRewiring:
@@ -4023,21 +4103,25 @@ pipeline.connect("middle", "final")
         )
         assert resp.status_code == 200
         data = resp.json()
+        instance_id = _submodel_instance_node(data["graph"], "inner")["id"]
 
-        # Parent graph should have: submodel__inner + final
+        # Parent graph should have the immutable occurrence plus final.
         parent_ids = {n["id"] for n in data["graph"]["nodes"]}
-        assert "submodel__inner" in parent_ids
+        assert instance_id in parent_ids
         assert "final" in parent_ids
         assert "source" not in parent_ids
         assert "middle" not in parent_ids
 
-        # There should be a rewired edge from submodel__inner -> final
+        # There should be a rewired edge from the occurrence -> final.
         parent_edges = data["graph"]["edges"]
-        outgoing = [e for e in parent_edges if e["source"] == "submodel__inner"]
+        outgoing = [e for e in parent_edges if e["source"] == instance_id]
         assert len(outgoing) >= 1
         assert any(e["target"] == "final" for e in outgoing)
-        # The outgoing edge should have a sourceHandle referencing "middle"
-        assert any("middle" in (e.get("sourceHandle") or "") for e in outgoing)
+        # Parent handles expose stable public ids; internal endpoints stay private.
+        definition = data["graph"]["submodels"]["inner"]
+        expected_handles = {f"out__{port['portId']}" for port in definition["outputPorts"]}
+        assert {edge.get("sourceHandle") for edge in outgoing} == expected_handles
+        assert {port["source"]["nodeId"] for port in definition["outputPorts"]} == {"middle"}
 
 
 # ---------------------------------------------------------------------------
@@ -4327,6 +4411,18 @@ class TestGetSubmodelSidecarPositions:
             },
         )
         assert create_resp.status_code == 200
+        created = create_resp.json()
+
+        save_resp = client.post(
+            "/api/pipeline/save",
+            json={
+                "name": "test_pipeline",
+                "description": three_node_graph.get("pipeline_description") or "",
+                "graph": created["graph"],
+                "source_file": "test_pipeline.py",
+            },
+        )
+        assert save_resp.status_code == 200
 
         # Write a sidecar with custom positions
         sm_path = pipeline_dir / "modules" / "positioned.py"
@@ -4380,16 +4476,18 @@ class TestDissolveEdgeCases:
             },
         )
         assert create_resp.status_code == 200
-        updated_graph = create_resp.json()["graph"]
+        created = create_resp.json()
+        updated_graph = created["graph"]
+        instance_id = _submodel_instance_node(updated_graph, "will_dissolve")["id"]
 
         resp = client.post(
             "/api/submodel/dissolve",
             json={
-                "submodel_name": "will_dissolve",
+                "instance_id": instance_id,
                 "graph": updated_graph,
                 "source_file": "",
                 "pipeline_name": "test_pipeline",
-                "base_revision": create_resp.json()["source_revision"],
+                "base_revision": created["source_revision"],
             },
         )
         assert resp.status_code == 400

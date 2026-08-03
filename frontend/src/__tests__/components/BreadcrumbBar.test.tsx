@@ -22,8 +22,8 @@ const twoLevels: ViewLevel[] = [level("Main"), level("Sub")]
 
 const threeLevels: ViewLevel[] = [
   level("Root"),
-  { type: "submodel", name: "Child", file: "child.py" },
-  { type: "submodel", name: "Grandchild", file: "grandchild.py" },
+  { type: "submodel", name: "Child", file: "child.py", instanceId: "instance_child", definitionId: "definition_child", readOnly: false },
+  { type: "submodel", name: "Grandchild", file: "grandchild.py", instanceId: "instance_grandchild", definitionId: "definition_grandchild", readOnly: true },
 ]
 
 // ── Tests ────────────────────────────────────────────────────────
@@ -49,6 +49,13 @@ describe("BreadcrumbBar", () => {
     expect(screen.getByText("Root")).toBeTruthy()
     expect(screen.getByText("Child")).toBeTruthy()
     expect(screen.getByText("Grandchild")).toBeTruthy()
+  })
+
+  it("marks a drilled instance as read-only", () => {
+    render(<BreadcrumbBar viewStack={threeLevels} onNavigate={vi.fn()} />)
+
+    expect(screen.getByText("Read-only instance")).toBeInTheDocument()
+    expect(screen.getByTitle("Read-only submodel instance")).toBeInTheDocument()
   })
 
   it("renders viewStack.length - 1 chevron separators", () => {
