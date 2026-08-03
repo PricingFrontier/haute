@@ -3,6 +3,7 @@ import type { Node, Edge } from "@xyflow/react"
 import type { ViewLevel } from "../components/BreadcrumbBar"
 import { getLayoutedElements } from "../utils/layout"
 import { normalizeEdges } from "../utils/graphHelpers"
+import { serializeSnapshot } from "../utils/graphSnapshot"
 import { buildSubmodelViewGraph } from "../utils/submodelViewGraph"
 import { createSubmodel, dissolveSubmodel } from "../api/client"
 import useToastStore from "../stores/useToastStore"
@@ -50,6 +51,21 @@ interface CanonicalOccurrence {
   label: string
   readOnly: boolean
   definition: SubmodelDefinition
+}
+
+interface TransformRequestContext {
+  serial: number
+  graph: {
+    nodes: Node[]
+    edges: Edge[]
+    submodels: Record<string, unknown>
+  }
+  preamble: string
+  snapshot: string
+  sourceFile: string
+  pipelineName: string
+  sourceRevision: string
+  preservedBlocks: string[]
 }
 
 function canonicalOccurrence(
@@ -103,7 +119,44 @@ export default function useSubmodelNavigation({
   const addToast = useToastStore((s) => s.addToast)
   const [viewStack, setViewStack] = useState<ViewLevel[]>([{ type: "pipeline", name: "main", file: "" }])
   const viewStackRef = useRef(viewStack)
+  const transformRequestSerialRef = useRef(0)
   useEffect(() => { viewStackRef.current = viewStack }, [viewStack])
+
+  const beginTransformRequest = useCallback((): TransformRequestContext => {
+    const { nodes, edges, submodels, preamble } = useGraphStore.getState()
+    return {
+      serial: ++transformRequestSerialRef.current,
+      graph: { nodes, edges, submodels },
+      preamble,
+      snapshot: serializeSnapshot({ nodes, edges, preamble, submodels }),
+      sourceFile: sourceFileRef.current,
+      pipelineName: pipelineNameRef.current,
+      sourceRevision: sourceRevisionRef.current,
+      preservedBlocks: [...preservedBlocksRef.current],
+    }
+  }, [pipelineNameRef, preservedBlocksRef, sourceFileRef, sourceRevisionRef])
+
+  const transformRequestIsStale = useCallback((request: TransformRequestContext): boolean => {
+    const current = useGraphStore.getState()
+    return transformRequestSerialRef.current !== request.serial
+      || parentGraphRef.current !== null
+      || sourceFileRef.current !== request.sourceFile
+      || pipelineNameRef.current !== request.pipelineName
+      || sourceRevisionRef.current !== request.sourceRevision
+      || JSON.stringify(preservedBlocksRef.current) !== JSON.stringify(request.preservedBlocks)
+      || serializeSnapshot({
+        nodes: current.nodes,
+        edges: current.edges,
+        preamble: current.preamble,
+        submodels: current.submodels,
+      }) !== request.snapshot
+  }, [
+    parentGraphRef,
+    pipelineNameRef,
+    preservedBlocksRef,
+    sourceFileRef,
+    sourceRevisionRef,
+  ])
 
   const handleCreateSubmodel = useCallback(async (name: string, nodeIds: string[]) => {
     if (parentGraphRef.current) {
@@ -111,26 +164,29 @@ export default function useSubmodelNavigation({
       return
     }
     try {
-      const { nodes, edges, submodels } = useGraphStore.getState()
-      const graph = { nodes, edges, submodels }
+      const request = beginTransformRequest()
       const data = await createSubmodel({
         name,
         node_ids: nodeIds,
-        graph,
-        preamble: preambleRef.current,
-        source_file: sourceFileRef.current,
-        pipeline_name: pipelineNameRef.current,
+        graph: request.graph,
+        preamble: request.preamble,
+        source_file: request.sourceFile,
+        pipeline_name: request.pipelineName,
         pipeline_description: descriptionRef.current,
-        base_revision: sourceRevisionRef.current,
-        preserved_blocks: preservedBlocksRef.current,
+        base_revision: request.sourceRevision,
+        preserved_blocks: request.preservedBlocks,
       })
+      if (transformRequestIsStale(request)) {
+        addToast("error", "Create submodel was not applied because the workspace changed while the transform was running.")
+        return
+      }
       const newGraph = data.graph
       if (newGraph) {
         const nextNodes = newGraph.nodes ?? []
         const nextEdges = normalizeEdges(newGraph.edges ?? [])
         const nextSubmodels = newGraph.submodels ?? {}
-        const nextPreamble = newGraph.preamble ?? preambleRef.current
-        const nextPreservedBlocks = newGraph.preserved_blocks ?? preservedBlocksRef.current
+        const nextPreamble = newGraph.preamble ?? request.preamble
+        const nextPreservedBlocks = newGraph.preserved_blocks ?? request.preservedBlocks
         graphRef.current = { nodes: nextNodes, edges: nextEdges }
         submodelsRef.current = nextSubmodels
         preambleRef.current = nextPreamble
@@ -147,9 +203,10 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Create submodel failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale])
 
   const handleDrillIntoSubmodel = useCallback(async (nodeId: string) => {
+    transformRequestSerialRef.current += 1
     try {
       const parentNodes = [...graphRef.current.nodes]
       const parentEdges = [...graphRef.current.edges]
@@ -228,6 +285,7 @@ export default function useSubmodelNavigation({
   const handleBreadcrumbNavigate = useCallback((depth: number) => {
     const prev = viewStackRef.current
     if (depth >= prev.length - 1) return
+    transformRequestSerialRef.current += 1
     const target = prev[depth]
     const reconciledParent = depth === 0 ? parentGraphRef.current : null
     const restoredNodes = reconciledParent?.nodes ?? target._savedNodes
@@ -259,36 +317,36 @@ export default function useSubmodelNavigation({
       return
     }
     try {
+      const request = beginTransformRequest()
       const occurrence = canonicalOccurrence(
         instanceId,
-        graphRef.current.nodes,
-        submodelsRef.current,
+        request.graph.nodes,
+        request.graph.submodels,
       )
       const displayName = occurrence.label
-      const graph = {
-        nodes: graphRef.current.nodes,
-        edges: graphRef.current.edges,
-        submodels: submodelsRef.current,
-      }
       const data = await dissolveSubmodel({
         instance_id: occurrence.instanceId,
-        graph,
-        preamble: preambleRef.current,
-        source_file: sourceFileRef.current,
-        pipeline_name: pipelineNameRef.current,
+        graph: request.graph,
+        preamble: request.preamble,
+        source_file: request.sourceFile,
+        pipeline_name: request.pipelineName,
         pipeline_description: descriptionRef.current,
-        base_revision: sourceRevisionRef.current,
-        preserved_blocks: preservedBlocksRef.current,
+        base_revision: request.sourceRevision,
+        preserved_blocks: request.preservedBlocks,
       })
+      if (transformRequestIsStale(request)) {
+        addToast("error", "Dissolve submodel was not applied because the workspace changed while the transform was running.")
+        return
+      }
       const flat = data.graph
       if (flat) {
         const nextNodes = flat.nodes ?? []
         const nextEdges = normalizeEdges(flat.edges ?? [])
         const nextSubmodels = flat.submodels ?? {}
-        const nextPreamble = flat.preamble ?? preambleRef.current
+        const nextPreamble = flat.preamble ?? request.preamble
         graphRef.current = { nodes: nextNodes, edges: nextEdges }
         preambleRef.current = nextPreamble
-        preservedBlocksRef.current = flat.preserved_blocks ?? preservedBlocksRef.current
+        preservedBlocksRef.current = flat.preserved_blocks ?? request.preservedBlocks
         submodelsRef.current = nextSubmodels
         useGraphStore.getState().setNodesAndEdgesAndSubmodels(
           nextNodes,
@@ -302,7 +360,7 @@ export default function useSubmodelNavigation({
     } catch (err: unknown) {
       addToast("error", `Dissolve failed: ${err instanceof Error ? err.message : String(err)}`)
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, sourceRevisionRef, preservedBlocksRef, descriptionRef, sourceFileRef, pipelineNameRef, fitView, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, preservedBlocksRef, descriptionRef, fitView, addToast, beginTransformRequest, transformRequestIsStale])
 
   return {
     viewStack,

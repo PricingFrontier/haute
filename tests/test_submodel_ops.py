@@ -571,7 +571,82 @@ class TestCreateSubmodelGraph:
             create_submodel_graph(graph, ["t1", "t2"], "group")
         assert (exc_info.value.code, exc_info.value.status_code) == ("submodel_exists", 409)
 
-    def test_child_order_context_and_managed_metadata(self):
+    def test_existing_occurrence_alias_conflict_preserves_input_graph(self):
+        from haute._types import SubmodelDefinition
+        from haute.routes._submodel_ops import SubmodelValidationError
+
+        base = _simple_graph()
+        definition = SubmodelDefinition.model_validate(
+            {
+                "definitionId": "pricing",
+                "file": "modules/pricing.py",
+                "inputPorts": [],
+                "outputPorts": [],
+                "graph": {"nodes": [], "edges": []},
+            }
+        )
+        occurrence = type(base.nodes[0]).model_validate(
+            {
+                "id": "copy",
+                "data": {
+                    "label": "pricing copy",
+                    "nodeType": "submodel",
+                    "config": {"definitionId": "pricing", "alias": "Pricing_2"},
+                },
+            }
+        )
+        graph = base.model_copy(
+            deep=True,
+            update={
+                "nodes": [
+                    *base.nodes,
+                    occurrence,
+                ],
+                "submodels": {"pricing": definition},
+            },
+        )
+        before = graph.model_dump(mode="json")
+
+        with pytest.raises(SubmodelValidationError) as exc_info:
+            create_submodel_graph(graph, ["t1", "t2"], "pricing_2")
+
+        assert (exc_info.value.code, exc_info.value.status_code) == ("alias_conflict", 409)
+        assert graph.model_dump(mode="json") == before
+
+    def test_malformed_existing_occurrence_config_fails_before_mutation(self):
+        from haute.routes._submodel_ops import SubmodelValidationError
+
+        base = _simple_graph()
+        malformed_occurrence = type(base.nodes[0]).model_validate(
+            {
+                "id": "broken",
+                "data": {
+                    "label": "broken",
+                    "nodeType": "submodel",
+                    "config": {"definitionId": "pricing"},
+                },
+            }
+        )
+        graph = base.model_copy(
+            update={
+                "nodes": [
+                    *base.nodes,
+                    malformed_occurrence,
+                ]
+            }
+        )
+        before = graph.model_dump(mode="json")
+
+        with pytest.raises(SubmodelValidationError) as exc_info:
+            create_submodel_graph(graph, ["t1", "t2"], "new_group")
+
+        assert (exc_info.value.code, exc_info.value.status_code) == (
+            "invalid_submodel_instance",
+            400,
+        )
+        assert graph.model_dump(mode="json") == before
+
+    def test_child_order_and_graph_context(self):
         graph = _simple_graph().model_copy(
             update={"preamble": "HELPER = 1", "preserved_blocks": ["KEEP = 2"]}
         )

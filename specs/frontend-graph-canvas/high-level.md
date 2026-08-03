@@ -341,14 +341,14 @@ well as occurrence-specific positions and bindings.
   operations: while a drilled submodel view is active both handlers refuse to
   run and toast an instruction to return to the main pipeline — the same
   client-side gate as save — instead of sending a mis-scoped request that the
-  backend would reject with a misleading revision `409`. Create and dissolve send the retained
-  parent `source_revision` as `base_revision` and include the untouched
-  preserved blocks. Successful responses replace that revision. A `409`
-  leaves the local graph unchanged and tells the user to reload. Dissolve
-  also installs the returned graph's merged preamble and preserved blocks so
-  support code contributed by a hand-authored child survives the next manual
-  save, and distinguishes a deleted managed child from a retained
-  shared/hand-authored file in its success toast.
+  backend would reject with a misleading revision `409`. Create and dissolve
+  send the retained parent `source_revision` as `base_revision` and include
+  the untouched preserved blocks. Transform responses leave that persisted
+  revision unchanged until the user saves. A `409` leaves the local graph
+  unchanged and tells the user to reload. Dissolve also installs the returned
+  graph's merged preamble and preserved blocks so support code contributed by
+  a hand-authored child survives the next manual save. Its response and toast
+  expose no child-file lifecycle compatibility state.
 - **Version comparison.** A side-by-side (or, toggled, stacked) pair of
   read-only canvases shows a historical pipeline version against a frozen
   snapshot of the current one, with added/removed/changed/moved nodes ring-

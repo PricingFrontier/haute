@@ -229,15 +229,15 @@ def test_dissolve_retains_uniquely_owned_child_and_sidecar_until_save(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["submodel_file_deleted"] is False
-    assert payload["retained_submodel_file"] == "modules/pricing.py"
+    assert "submodel_file_deleted" not in payload
+    assert "retained_submodel_file" not in payload
     assert payload["source_revision"]
     assert child.exists()
     assert sidecar.exists()
     assert parent.exists()
 
 
-def test_dissolve_retains_unowned_child_and_reports_path(
+def test_dissolve_retains_unowned_child_without_exposing_lifecycle_state(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -248,8 +248,8 @@ def test_dissolve_retains_unowned_child_and_reports_path(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["submodel_file_deleted"] is False
-    assert payload["retained_submodel_file"] == "modules/pricing.py"
+    assert "submodel_file_deleted" not in payload
+    assert "retained_submodel_file" not in payload
     assert child.exists()
     assert sidecar.exists()
 
@@ -303,7 +303,7 @@ pipeline.submodel(
     response = client.post("/api/submodel/dissolve", json=_dissolve_body(graph))
 
     assert response.status_code == 200
-    assert response.json()["submodel_file_deleted"] is False
+    assert "submodel_file_deleted" not in response.json()
     assert child.exists()
     assert sidecar.exists()
 
@@ -334,6 +334,6 @@ pipeline.submodel(
     response = client.post("/api/submodel/dissolve", json=_dissolve_body(graph))
 
     assert response.status_code == 200
-    assert response.json()["submodel_file_deleted"] is False
+    assert "submodel_file_deleted" not in response.json()
     assert child.exists()
     assert sidecar.exists()

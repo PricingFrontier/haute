@@ -538,6 +538,7 @@ function FlowEditor() {
     commitBoundaryConnection,
     deleteBoundaryEdge,
     onBoundaryEdgesChange,
+    commitSharedNodeDeletion,
   } = useSubmodelBoundaryEditing({
     activeSubmodelName,
     activeSubmodelInstanceId,
@@ -552,6 +553,10 @@ function FlowEditor() {
   })
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     if (!activeSubmodelReadOnly) {
+      const removedNodeIds = new Set(changes
+        .filter((change): change is Extract<NodeChange, { type: "remove" }> => change.type === "remove")
+        .map((change) => change.id))
+      if (commitSharedNodeDeletion(removedNodeIds, new Set(), changes) !== "not-applicable") return
       onNodesChange(changes)
       return
     }
@@ -559,7 +564,7 @@ function FlowEditor() {
       (change) => change.type === "select" || change.type === "dimensions",
     )
     if (presentationChanges.length > 0) onNodesChange(presentationChanges)
-  }, [activeSubmodelReadOnly, onNodesChange])
+  }, [activeSubmodelReadOnly, commitSharedNodeDeletion, onNodesChange])
 
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
     if (activeSubmodelReadOnly) {
@@ -580,6 +585,7 @@ function FlowEditor() {
     closePanel,
     isInsideSubmodel: viewStack.length > 1,
     readOnly: activeSubmodelReadOnly,
+    commitSharedNodeDeletion,
   })
 
   // ---------------------------------------------------------------------------
@@ -845,6 +851,7 @@ function FlowEditor() {
     setNodes, setNodesAndEdges, setSelectedNode,
     setLastSelectedId,
     setPreviewData, fitView,
+    commitSharedNodeDeletion,
   })
 
   const shouldSkipAutomaticPreview = useCallback(

@@ -14,6 +14,7 @@ import { isSubmodelInstanceConfig, nodeData } from "../types/node"
 import { NODE_TYPES, isSingletonType } from "../utils/nodeTypes"
 import { getLayoutedElements } from "../utils/layout"
 import type { PreviewData } from "../panels/DataPreview"
+import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
 type UseNodeHandlersParams = {
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
@@ -28,6 +29,10 @@ type UseNodeHandlersParams = {
   setLastSelectedId?: (id: string | null) => void
   setPreviewData: (updater: React.SetStateAction<PreviewData | null>) => void
   fitView: (opts?: { padding?: number }) => void
+  commitSharedNodeDeletion?: (
+    nodeIds: ReadonlySet<string>,
+    selectedEdgeIds?: ReadonlySet<string>,
+  ) => SharedNodeDeletionResult
 }
 const SUBMODEL_ALIAS_SUFFIX = /^(.*)_([2-9]\d*)$/
 
@@ -53,6 +58,7 @@ export default function useNodeHandlers({
   setLastSelectedId,
   setPreviewData,
   fitView,
+  commitSharedNodeDeletion,
 }: UseNodeHandlersParams) {
   const layoutInFlightRef = useRef(false)
   const [isAutoLayouting, setIsAutoLayouting] = useState(false)
@@ -67,14 +73,18 @@ export default function useNodeHandlers({
       addToast("error", 'Use "Dissolve Submodel" to remove a submodel occurrence')
       return
     }
+    const sharedDeletion = commitSharedNodeDeletion?.(new Set([id]))
+    if (sharedDeletion === "blocked") return
 
     // Node + its edges removed as ONE undo step. setNodes-then-setEdges would
     // push two snapshots, so a single delete would need two undos to reverse
     // (the undo-atomicity bug class).
-    setNodesAndEdges(
-      (nds) => nds.filter((node) => node.id !== id),
-      (eds) => eds.filter((edge) => edge.source !== id && edge.target !== id),
-    )
+    if (sharedDeletion !== "committed") {
+      setNodesAndEdges(
+        (nds) => nds.filter((node) => node.id !== id),
+        (eds) => eds.filter((edge) => edge.source !== id && edge.target !== id),
+      )
+    }
     setSelectedNode((prev) => (prev?.id === id ? null : prev))
     setPreviewData((prev) => (prev?.nodeId === id ? null : prev))
     // Defer cache cleanup by one task tick (Issue #32). If `clearNode(id)`
@@ -94,7 +104,7 @@ export default function useNodeHandlers({
     if (uiState.renameDialog?.nodeId === id) setRenameDialog(null)
     const subDlg = uiState.submodelDialog
     if (subDlg && subDlg.nodeIds.includes(id)) setSubmodelDialog(null)
-  }, [graphRef, setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast])
+  }, [graphRef, setNodesAndEdges, lastSelectedNodeRef, setSelectedNode, setLastSelectedId, setPreviewData, clearNode, setRenameDialog, setSubmodelDialog, addToast, commitSharedNodeDeletion])
 
   const handleDuplicateNode = useCallback((id: string) => {
     const { nodes: n } = graphRef.current

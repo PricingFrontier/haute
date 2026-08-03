@@ -59,6 +59,35 @@ describe("useNodeHandlers", () => {
     expect(edgesUpdater(edges)).toEqual([])
   })
 
+  it("uses a committed shared deletion without a raw graph setter while cleaning selection", () => {
+    const n1 = makeNode("n1")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    const commitSharedNodeDeletion = vi.fn(() => "committed" as const)
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledOnce()
+    expect(params.setPreviewData).toHaveBeenCalledOnce()
+  })
+
+  it("leaves graph and cleanup untouched when shared deletion is blocked", () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const commitSharedNodeDeletion = vi.fn(() => "blocked" as const)
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+  })
+
   it("refuses raw deletion of a submodel occurrence", () => {
     const params = makeParams()
     const submodel = makeNode("submodel_10", "submodel", {

@@ -697,8 +697,8 @@ class TestDissolveSubmodel:
         data = resp.json()
         assert data["status"] == "ok"
         assert data["source_revision"] == _CURRENT_REVISION
-        assert data["submodel_file_deleted"] is False
-        assert data["retained_submodel_file"] == "modules/pricing.py"
+        assert "submodel_file_deleted" not in data
+        assert "retained_submodel_file" not in data
 
     def test_dissolve_uses_the_submitted_definition_without_reparsing_disk(
         self, client: TestClient, tmp_path: Path
@@ -1002,8 +1002,8 @@ class TestTransformOnlySubmodelRoutes:
         payload = response.json()
         assert payload["source_revision"] == _CURRENT_REVISION
         assert payload["graph"]["source_revision"] == _CURRENT_REVISION
-        assert payload["submodel_file_deleted"] is False
-        assert payload["retained_submodel_file"] == "modules/pricing.py"
+        assert "submodel_file_deleted" not in payload
+        assert "retained_submodel_file" not in payload
         save.assert_not_called()
         assert parent.read_text(encoding="utf-8") == "# mocked parent document\n"
         assert child.read_text(encoding="utf-8") == "# existing child\n"
@@ -1028,7 +1028,7 @@ class TestTransformOnlySubmodelRoutes:
         payload = response.json()
         assert payload["definition_id"] == DEFINITION_ID
         assert payload["source_revision"] == _CURRENT_REVISION
-        assert payload["retained_submodel_file"] == "modules/pricing.py"
+        assert "retained_submodel_file" not in payload
         submitted = flatten.call_args.args[0]
         assert submitted.submodels[DEFINITION_ID].graph.nodes[0].id == "base_rate"
         save.assert_not_called()

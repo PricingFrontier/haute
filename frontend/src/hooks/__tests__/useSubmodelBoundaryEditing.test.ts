@@ -174,4 +174,44 @@ describe("useSubmodelBoundaryEditing", () => {
     ])).toBe(false)
     expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
   })
+
+  it("blocks deletion of a bound child without committing", () => {
+    const fixture = makeFixture({ outputPorts: ["child_a"] })
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+    expect(result.current.commitSharedNodeDeletion(new Set(["child_a"]))).toBe("blocked")
+    expect(fixture.setNodesAndEdgesAndSubmodels).not.toHaveBeenCalled()
+  })
+
+  it("commits deletion of an unbound child exactly once", () => {
+    const fixture = makeFixture()
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+    expect(result.current.commitSharedNodeDeletion(new Set(["child_a"]))).toBe("committed")
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+  })
+
+  it("applies a mixed React Flow deletion batch in the same reconciled commit", () => {
+    const fixture = makeFixture()
+    const { result } = renderHook(() => useSubmodelBoundaryEditing(hookParams(fixture)))
+    expect(result.current.commitSharedNodeDeletion(
+      new Set(["child_a"]),
+      new Set(),
+      [
+        { type: "remove", id: "child_a" },
+        {
+          type: "position",
+          id: "child_b",
+          position: { x: 42, y: 24 },
+          dragging: false,
+        },
+      ],
+    )).toBe("committed")
+
+    expect(fixture.setNodesAndEdgesAndSubmodels).toHaveBeenCalledOnce()
+    const committedNodes = fixture.setNodesAndEdgesAndSubmodels.mock.calls[0][0] as Node[]
+    expect(committedNodes.some((node) => node.id === "child_a")).toBe(false)
+    expect(committedNodes.find((node) => node.id === "child_b")?.position).toEqual({
+      x: 42,
+      y: 24,
+    })
+  })
 })

@@ -915,45 +915,6 @@ class PipelineGraph(BaseModel):
             definitions[raw_key] = definition
         return definitions
 
-    @staticmethod
-    def _attribute_for_mapping_key(key: str) -> str:
-        return {
-            "pipelineName": "pipeline_name",
-            "pipelineDescription": "pipeline_description",
-            "preservedBlocks": "preserved_blocks",
-            "sourceFile": "source_file",
-            "sourceRevision": "source_revision",
-            "activeSource": "active_source",
-        }.get(key, key)
-
-    def __getitem__(self, key: str) -> Any:
-        """Compatibility access for code migrating from graph dictionaries."""
-        attribute = self._attribute_for_mapping_key(key)
-        if attribute in type(self).model_fields:
-            return getattr(self, attribute)
-        raise KeyError(key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return a graph field through the legacy mapping surface."""
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def update(self, values: Mapping[str, Any]) -> None:
-        """Validate and apply a legacy mapping-style graph update in place."""
-        if not isinstance(values, Mapping):
-            raise TypeError("PipelineGraph.update() requires a mapping.")
-        payload = self.model_dump(mode="python")
-        for key, value in values.items():
-            attribute = self._attribute_for_mapping_key(key)
-            if attribute not in type(self).model_fields:
-                raise KeyError(key)
-            payload[attribute] = value
-        validated = type(self).model_validate(payload)
-        for field_name in type(self).model_fields:
-            setattr(self, field_name, getattr(validated, field_name))
-
     warning: str | None = None
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"

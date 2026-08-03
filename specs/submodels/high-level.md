@@ -58,7 +58,9 @@ by one shared **definition** and any number of parent-graph **instances**:
 - `PipelineGraph.submodels` is a definition registry keyed by immutable,
   opaque `definitionId`. A definition owns its file, internal graph, metadata,
   and public port contract. Loading the same resolved file more than once must
-  resolve it once and reuse the same registry entry.
+  resolve it once and reuse the same registry entry. The canonical graph is a
+  typed model only; it exposes no dictionary-style compatibility access or
+  mutation API.
 - Every occurrence is represented solely by a `NodeType.SUBMODEL` node in the
   parent graph. Its node id is the immutable `instanceId`; its typed config
   contains `definitionId`, a stable source alias, and optional `instanceOf`.
@@ -176,7 +178,12 @@ must resolve the original pipeline-owned sidecars.
   action later persists the whole graph through the normal transaction,
   derives the new managed module from the persisted-versus-submitted
   definition diff, and repeats the no-clobber check before writing. Closing
-  the browser before Save discards the grouping.
+  the browser before Save discards the grouping. The browser serialises the
+  complete persisted graph snapshot used for each create or dissolve request
+  together with its pipeline identity, source revision, preserved blocks, and
+  request order. It commits the returned transform only while that complete
+  context is still current; a stale response is discarded with a visible error
+  instead of replacing intervening edits or a newer transform.
 - **Drill-down**
   uses the canonical definition graph already embedded in the current
   in-memory registry, so unsaved definitions open without a disk re-fetch.
@@ -197,7 +204,9 @@ must resolve the original pipeline-owned sidecars.
   source and sidecar are deleted only when the child carries a matching Haute
   ownership marker and no other parseable pipeline references the same resolved
   file. Hand-authored, shared, ambiguously owned, or potentially referenced
-  files are retained and that outcome is returned to the GUI.
+  files are retained. The transform response reports only the transformed
+  graph, unchanged source revision, and selected instance/definition identity;
+  it exposes no file-deletion compatibility state.
 - **Selection validity.** A submodel must contain at least 2 unique node ids,
   every requested id must exist in the submitted graph, and duplicates are an
   invalid client request rather than an instruction to coalesce entries. A
@@ -220,9 +229,9 @@ must resolve the original pipeline-owned sidecars.
   authored on Linux/macOS stays loadable on a Windows checkout.
 - **Names are validated at the API boundary.** Whitespace-only names are
   rejected rather than silently becoming `unnamed_node`; the trimmed name is
-  the input to sanitisation. A canonical name or occurrence identity already
-  present in the parent under any casing is a conflict, matching the
-  case-insensitive module no-clobber rule.
+  the input to sanitisation. A canonical name, occurrence alias, or occurrence
+  identity already present in the parent under any casing is a conflict,
+  matching the case-insensitive module no-clobber rule.
 - **Canonical boundary identity and presentation are separate.** Parent edges
   address only `in__<portId>` and `out__<portId>` handles. Public port labels
   are presentation, internal endpoint ids stay definition-private, and neither
@@ -375,8 +384,8 @@ must resolve the original pipeline-owned sidecars.
   rollback failure is logged and may leave partial state. See
   [server-api](../server-api/high-level.md) for the transaction's full
   contract.
-- Every dissolve response names the retained child path; the route never
-  deletes its source or sidecar.
+- Dissolve responses expose no child-file lifecycle state; the transform route
+  never deletes the child source or sidecar.
 - On explicit Save, a child without a matching ownership marker, a child
   referenced by another healthy pipeline, or any unparseable sibling that
   makes a complete reference audit impossible is retained. Uncertainty never

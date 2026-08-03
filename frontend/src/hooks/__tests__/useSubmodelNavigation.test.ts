@@ -77,9 +77,36 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
   }
 }
 
+function seedCanonicalGraph(params: ReturnType<typeof makeParams>) {
+  useGraphStore.getState().loadGraphSnapshot({
+    nodes: params.graphRef.current.nodes,
+    edges: params.graphRef.current.edges,
+    preamble: params.preambleRef.current,
+    submodels: params.submodelsRef.current,
+  })
+}
+
+function makeCreateResponse(
+  graph: Awaited<ReturnType<typeof createSubmodel>>["graph"],
+): Awaited<ReturnType<typeof createSubmodel>> {
+  return {
+    status: "ok",
+    submodel_file: "modules/pricing.py",
+    parent_file: "test.py",
+    source_revision: "parent-rev-1",
+    graph,
+  }
+}
+
 describe("useSubmodelNavigation", () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
+    useGraphStore.getState().loadGraphSnapshot({
+      nodes: [],
+      edges: [],
+      preamble: "",
+      submodels: {},
+    })
     useGraphStore.setState({ lastSavedSnapshot: null })
     mockCreate.mockReset()
     mockLoad.mockReset()
@@ -124,6 +151,106 @@ describe("useSubmodelNavigation", () => {
     ])
   })
 
+  it("does not apply a create response after a position-only canonical-store edit", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof createSubmodel>>) => void
+    mockCreate.mockReturnValue(new Promise((done) => { resolve = done }))
+    const params = makeParams()
+    seedCanonicalGraph(params)
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    const pending = result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
+    act(() => useGraphStore.getState().setNodesRaw((nodes) => nodes.map((node) =>
+      node.id === "n1" ? { ...node, position: { x: 99, y: 0 } } : node)))
+    await act(async () => {
+      resolve(makeCreateResponse({ nodes: [], edges: [], submodels: {} }))
+      await pending
+    })
+    expect(useGraphStore.getState().nodes.find((node) => node.id === "n1")?.position.x).toBe(99)
+    expect(params.graphRef.current.nodes.map((node) => node.id)).toContain("n1")
+    expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed")
+  })
+
+  it("does not apply a dissolve response after a submodel-only canonical-store edit", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof dissolveSubmodel>>) => void
+    mockDissolve.mockReturnValue(new Promise((done) => { resolve = done }))
+    const params = makeParams()
+    seedCanonicalGraph(params)
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    const pending = result.current.handleDissolveSubmodel(INSTANCE_ID)
+    const addedDefinition = {
+      ...makeDefinition(),
+      definitionId: "definition_other",
+      file: "modules/other.py",
+    }
+    act(() => useGraphStore.getState().setSubmodelsRaw({
+      ...useGraphStore.getState().submodels,
+      definition_other: addedDefinition,
+    }))
+    await act(async () => {
+      resolve({
+        status: "ok",
+        source_revision: "parent-rev-1",
+        instance_id: INSTANCE_ID,
+        definition_id: DEFINITION_ID,
+        graph: { nodes: [], edges: [], submodels: {} },
+      })
+      await pending
+    })
+    expect(useGraphStore.getState().submodels).toHaveProperty("definition_other")
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toContain(INSTANCE_ID)
+    expect(params.graphRef.current.nodes.map((node) => node.id)).toContain(INSTANCE_ID)
+    expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed")
+  })
+
+  it("does not apply a transform after the source revision changes", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof createSubmodel>>) => void
+    mockCreate.mockReturnValue(new Promise((done) => { resolve = done }))
+    const params = makeParams()
+    seedCanonicalGraph(params)
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    const pending = result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
+    params.sourceRevisionRef.current = "parent-rev-2"
+    await act(async () => {
+      resolve(makeCreateResponse({ nodes: [], edges: [], submodels: {} }))
+      await pending
+    })
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toContain("n1")
+    expect(params.graphRef.current.nodes.map((node) => node.id)).toContain("n1")
+    expect(useToastStore.getState().toasts.at(-1)?.text).toContain("workspace changed")
+  })
+
+  it("lets only the newest overlapping transform commit", async () => {
+    let resolveFirst!: (value: Awaited<ReturnType<typeof createSubmodel>>) => void
+    let resolveSecond!: (value: Awaited<ReturnType<typeof createSubmodel>>) => void
+    mockCreate
+      .mockReturnValueOnce(new Promise((done) => { resolveFirst = done }))
+      .mockReturnValueOnce(new Promise((done) => { resolveSecond = done }))
+    const params = makeParams()
+    seedCanonicalGraph(params)
+    const { result } = renderHook(() => useSubmodelNavigation(params))
+    const first = result.current.handleCreateSubmodel("first", ["n1", "n2"])
+    const second = result.current.handleCreateSubmodel("second", ["n1", "n2"])
+    await act(async () => {
+      resolveFirst(makeCreateResponse({
+        nodes: [makeNode("first_result")],
+        edges: [],
+        submodels: {},
+      }))
+      await first
+    })
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toContain("n1")
+
+    await act(async () => {
+      resolveSecond(makeCreateResponse({
+        nodes: [makeNode("second_result")],
+        edges: [],
+        submodels: {},
+      }))
+      await second
+    })
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(["second_result"])
+    expect(params.graphRef.current.nodes.map((node) => node.id)).toEqual(["second_result"])
+  })
+
   it("handleDissolveSubmodel refuses while a drilled view is active", async () => {
     const params = makeParams({
       parentGraphRef: {
@@ -163,6 +290,7 @@ describe("useSubmodelNavigation", () => {
       },
     })
     const params = makeParams()
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleCreateSubmodel("pricing", ["n1", "n2"])
@@ -226,6 +354,7 @@ describe("useSubmodelNavigation", () => {
       graph: { nodes: [], edges: [], submodels: {} },
     } as Awaited<ReturnType<typeof createSubmodel>>)
     const params = makeParams()
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -504,8 +633,6 @@ describe("useSubmodelNavigation", () => {
     mockDissolve.mockResolvedValue({
       status: "ok",
       source_revision: "parent-rev-2",
-      submodel_file_deleted: true,
-      retained_submodel_file: null,
       instance_id: INSTANCE_ID,
       definition_id: DEFINITION_ID,
       graph: {
@@ -514,6 +641,7 @@ describe("useSubmodelNavigation", () => {
       },
     })
     const params = makeParams()
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleDissolveSubmodel(INSTANCE_ID)
@@ -529,12 +657,10 @@ describe("useSubmodelNavigation", () => {
     vi.useRealTimers()
   })
 
-  it("dissolves with concurrency metadata and reports retained submodel code", async () => {
+  it("dissolves with concurrency metadata and preserves transform metadata", async () => {
     mockDissolve.mockResolvedValue({
       status: "ok",
       source_revision: "parent-rev-2",
-      retained_submodel_file: "modules/pricing.py",
-      submodel_file_deleted: false,
       instance_id: INSTANCE_ID,
       definition_id: DEFINITION_ID,
       graph: {
@@ -549,6 +675,7 @@ describe("useSubmodelNavigation", () => {
       preambleRef: { current: "PARENT = 1" },
       preservedBlocksRef: { current: ["PARENT_KEEP = 2"] },
     })
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -572,6 +699,7 @@ describe("useSubmodelNavigation", () => {
   it("handleDissolveSubmodel shows error toast on failure", async () => {
     mockDissolve.mockRejectedValue(new Error("Dissolve failed"))
     const params = makeParams()
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
       await result.current.handleDissolveSubmodel(INSTANCE_ID)
@@ -678,6 +806,7 @@ describe("useSubmodelNavigation", () => {
       graphRef: { current: { nodes: [occurrence], edges: [] } },
       submodelsRef: { current: {} },
     })
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -695,8 +824,6 @@ describe("useSubmodelNavigation", () => {
     mockDissolve.mockResolvedValue({
       status: "ok",
       source_revision: "parent-rev-2",
-      submodel_file_deleted: false,
-      retained_submodel_file: "modules/scoring.py",
       instance_id: "instance_primary",
       definition_id: "definition_scoring",
       graph: { nodes: [], edges: [], submodels: {} },
@@ -722,6 +849,7 @@ describe("useSubmodelNavigation", () => {
         },
       },
     })
+    seedCanonicalGraph(params)
     const { result } = renderHook(() => useSubmodelNavigation(params))
 
     await act(async () => {
@@ -823,8 +951,6 @@ describe("useSubmodelNavigation", () => {
     mockDissolve.mockResolvedValue({
       status: "ok",
       source_revision: "parent-rev-1",
-      retained_submodel_file: "modules/pricing.py",
-      submodel_file_deleted: false,
       instance_id: INSTANCE_ID,
       definition_id: DEFINITION_ID,
       graph: {

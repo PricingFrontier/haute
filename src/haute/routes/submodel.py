@@ -314,7 +314,7 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
                     f"definition {definition_id!r}."
                 ),
             )
-        sm_file, _sm_path, _config_base = _resolve_recorded_child(
+        _resolve_recorded_child(
             recorded_path=definition.file,
             parent_path=parent_path,
             project_root=project_root,
@@ -335,8 +335,6 @@ async def dissolve_submodel(body: DissolveSubmodelRequest) -> DissolveSubmodelRe
             definition_id=definition_id,
             graph=response_graph,
             source_revision=source_revision,
-            submodel_file_deleted=False,
-            retained_submodel_file=sm_file,
         )
 
     async with save_lock:

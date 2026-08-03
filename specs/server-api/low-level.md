@@ -102,7 +102,8 @@ str`, and optional `managed_parent: str | None`. `managed_parent` is emitted
 only when the existing child sidecar already proves the same canonical
 project-relative owner, or when explicit Save derives a new definition from
 the persisted/submitted registry diff after source-and-sidecar no-clobber. A
-request body's metadata cannot upgrade its absence to ownership. A
+graph request exposes no ownership metadata; only that derived disk state can
+establish ownership. A
 `model_validator(mode="after")` enforces `active_source in sources`. Written via
 `model_dump_json(exclude_defaults=True)` so a pipeline that never touched multi-source state
 produces a sidecar with only `positions`.
@@ -284,18 +285,16 @@ concurrent plain saves, but does not coordinate another worker process):
    transaction-local managed ownership claim. Every removed definition path
    becomes a deletion candidate only when its persisted sidecar names this
    parent and a complete project-wide reference audit finds no other parent.
-3. Resolve every derived or explicitly supplied no-clobber entry against the
-   same module allowlist and reject `409` if either its source filename or sibling
-   `.haute.json` sidecar already exists case-insensitively. Resolve
-   transaction-local `claim_managed_module_files` through the same allowlist;
-   each claim must name one of those no-clobber targets. Resolve every child
-   metadata path and prove ownership from its existing sidecar or one of those
-   claims; request-only `managed=true` fails `409`, and a claim that matches
-   no resolved child metadata path (for example a parent pipeline nested
-   below the pipeline root, whose recorded `modules/` path resolves to a
-   different directory than the allowlist target) fails `400` before writes.
-   All three checks compare fully resolved, casefolded paths. These
-   preflights run before all writes.
+   When the same canonical child path exists in both registries, its exact
+   `definitionId` must also match; identity substitution fails `409`.
+3. Resolve every derived no-clobber entry against the same module allowlist and
+   reject `409` if either its source filename or sibling `.haute.json` sidecar
+   already exists case-insensitively. Treat those derived additions as the only
+   transaction-local managed ownership claims. Resolve every child definition
+   path and prove ownership from its existing sidecar or one of those derived
+   additions. All checks compare fully resolved, casefolded paths and run
+   before all writes. No caller-supplied deletion, no-clobber, ownership, or
+   `managed` compatibility input exists.
 4. Snapshot the *on-disk* graph's config-file set (`_compute_disk_prev_config_files`) — the
    diff baseline for stale-file cleanup, computed **before** any write in this call.
 5. Generate code (`graph_to_code` or, if submodels are present, `graph_to_code_multi`),
@@ -311,7 +310,7 @@ concurrent plain saves, but does not coordinate another worker process):
 9. Write the parent `.haute.json` position sidecar. For each child whose
    ownership passed step 3, write positions plus `managed_parent`. All sidecar
    writes are transactional.
-10. Stage deletion of any derived or explicitly requested submodel source and
+10. Stage deletion of any derived submodel source and
     its sibling `.haute.json` sidecar (skipping any that casefold-collide with a path this
     same save just wrote).
 11. Reparse the fully staged document and compute the new

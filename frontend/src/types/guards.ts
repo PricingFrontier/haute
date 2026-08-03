@@ -1063,16 +1063,20 @@ export function parseSubmodelGraphResponse(value: unknown): SubmodelGraphRespons
 
 export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelResponse {
   const obj = expectPlainObject("parseDissolveSubmodelResponse", value)
+  for (const removedField of [
+    "submodel_file_deleted",
+    "retained_submodel_file",
+  ] as const) {
+    if (Object.hasOwn(obj, removedField)) {
+      throw new Error(
+        `parseDissolveSubmodelResponse: field \`${removedField}\` is no longer supported`,
+      )
+    }
+  }
   return {
     status: optionalString("parseDissolveSubmodelResponse", obj, "status", "ok"),
     graph: parseNestedPipelineResponse("parseDissolveSubmodelResponse", obj, "graph"),
     source_revision: expectNonBlankString("parseDissolveSubmodelResponse", obj.source_revision, "source_revision"),
-    submodel_file_deleted: expectBoolean("parseDissolveSubmodelResponse", obj.submodel_file_deleted, "submodel_file_deleted"),
-    retained_submodel_file: expectNullableString(
-      "parseDissolveSubmodelResponse",
-      obj.retained_submodel_file,
-      "retained_submodel_file",
-    ),
     instance_id: expectNonBlankString(
       "parseDissolveSubmodelResponse",
       obj.instance_id,

@@ -285,8 +285,6 @@ export interface DissolveSubmodelResponse {
   status: string
   graph: PipelineGraph
   source_revision: string
-  submodel_file_deleted: boolean
-  retained_submodel_file: string | null
   instance_id: string
   definition_id: string
 }

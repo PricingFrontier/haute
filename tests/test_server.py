@@ -1099,9 +1099,9 @@ class TestDissolveSubmodel:
         flat_ids = {n["id"] for n in data["graph"]["nodes"]}
         assert flat_ids == {qualified_runtime_node_id(instance_id, node_id) for node_id in node_ids}
 
-        # Dissolve is also in-memory and reports deferred persistence work.
-        assert data["submodel_file_deleted"] is False
-        assert data["retained_submodel_file"] == "modules/temp_group.py"
+        # Dissolve is in-memory; persistence artifacts remain untouched.
+        assert "submodel_file_deleted" not in data
+        assert "retained_submodel_file" not in data
         assert not (pipeline_dir / "modules" / "temp_group.py").exists()
 
     def test_dissolve_nonexistent_submodel_returns_404(

@@ -43,6 +43,10 @@ SubmodelInstanceConfig { definitionId, alias, instanceOf?: InstanceId }
 PipelineGraph { nodes[], edges[], submodels: map[definitionId, definition] }
 ```
 
+`PipelineGraph` is consumed through typed attributes and validated model-copy
+operations only. It deliberately has no legacy dictionary `[]`, `get`, or
+in-place `update` surface.
+
 Each `SUBMODEL` node is one occurrence and its node id is its immutable
 `instanceId`. Its config is validated as `SubmodelInstanceConfig`; node label
 and position remain ordinary mutable node fields. No parallel instance registry
@@ -142,10 +146,10 @@ file paths, the revised graph, and the unchanged persisted `source_revision`.
 `DissolveSubmodelRequest`
 requires one non-empty, unpadded `instance_id` plus the same parent-document
 fields. `DissolveSubmodelResponse` returns the resolved `instance_id` and
-`definition_id`, the revised graph and unchanged persisted revision, and
-reports that the child file remains on disk because the transform did not
-write. `SubmodelGraphResponse` requires `definition_id` and returns the child
-display name, file, and graph.
+`definition_id`, the revised graph, and unchanged persisted revision. It
+contains no child-file lifecycle fields and forbids extra fields so obsolete
+internal producers fail loudly. `SubmodelGraphResponse` requires
+`definition_id` and returns the child display name, file, and graph.
 ## Control flow
 
 ### `resolve_submodel_reference(rel_path, *, pipeline_dir, project_root)`
@@ -289,7 +293,9 @@ Acquires `save_lock` and runs the body in a threadpool:
    `flatten_graph(..., target_instance_id=instance_id)`. Only the selected
    occurrence is expanded.
 4. Keep the definition whenever another occurrence references it.
-5. Return the flat graph with the unchanged revision and retained file. Do not
+5. Return `DissolveSubmodelResponse(status="ok", instance_id,
+   definition_id, source_revision=current_graph.source_revision, graph=flat)`.
+   The response contains no deletion boolean or retained-file field. Do not
    read, write, or delete any child artifact.
 
 ## Edge cases and invariants
@@ -329,6 +335,10 @@ Acquires `save_lock` and runs the body in a threadpool:
   claim a new child after source and sibling sidecar pass no-clobber. Explicit
   Save alone may delete a removed child and still requires its marker plus a
   complete reference audit finding no other parent.
+- **Persisted identity cannot be substituted in place.** Explicit Save compares
+  definition ids for every canonical child path present in both the persisted
+  and submitted registries. A different id for the same path is a `409`, not
+  an unchanged definition or an implicit migration.
 
 ## Error handling
 
@@ -337,8 +347,7 @@ Acquires `save_lock` and runs the body in a threadpool:
 | Blank name, duplicate selection, too few nodes, or nesting | `SubmodelValidationError` → `HTTPException(400, <safe detail>)` | `routes/submodel.py::create_submodel`. |
 | Unknown selected id, existing canonical submodel, or stale `base_revision` | `SubmodelValidationError`/revision mismatch → `HTTPException(409, <safe detail>)` | Before transform. |
 | Existing case-insensitive target module or sibling sidecar | `HTTPException(409, <safe detail>)` | Create read-only preflight and explicit Save authoritative preflight. |
-| Request asserts managed ownership without a matching sidecar or create claim | `HTTPException(409, <reload/safety detail>)` | `SavePipelineService` ownership preflight, before writes. |
-| Create claim matches no resolved child metadata path (e.g. parent pipeline nested below the pipeline root) | `HTTPException(400, <specific message>)` | `SavePipelineService` ownership preflight, before writes. |
+| Submitted definition replaces the persisted definition id for the same canonical child path | `HTTPException(409, <identity detail>)` | `SavePipelineService` lifecycle diff, before writes. |
 | Submitted dissolve definition is malformed | Request validation or `ParseError` mapped to `400` | Before the pure flatten transform. |
 | Submodel name collides with a Windows reserved device filename | `HTTPException(400, <specific message>)` | `create_submodel`, before `create_submodel_graph` runs. |
 | Missing/blank `base_revision` on create/dissolve | FastAPI request validation → `422` | Before the route runs. |
@@ -351,7 +360,7 @@ Acquires `save_lock` and runs the body in a threadpool:
 | Missing or wrong-prefixed public handle, undeclared port id, or invalid definition endpoint passed to `flatten_graph` | `ParseError` with definition/instance/edge context | `_submodel_instances` validation; the transform returns no graph and touches no files. |
 | Sanitised node-name collision | `HTTPException(400, <specific collision detail>)` | `SavePipelineService` validation, before writes. |
 | Any write step in the later explicit Save transaction fails (config write, sidecar write, module delete) | Best-effort rollback by `SavePipelineService`, original error re-raised | The server's generic exception middleware produces `500 {"detail": "Internal server error"}`; a failed compensating operation is logged and can leave partial state. See [server-api](../server-api/high-level.md). |
-| Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Successful dissolve retains the path; later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
+| Child is hand-authored/shared, ownership is ambiguous, or reference audit is incomplete | Later explicit Save retains the source and sidecar | Uncertainty never authorises deletion. |
 
 ## Testing
 
@@ -384,7 +393,7 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
   pipeline-scoped drill-down/path failures.
 - `tests/test_submodel_route_contracts.py` — focused end-to-end response and
   revision contracts, scoped persisted drill-down, create no-clobber, and the
-  invariant that dissolve reports the child path without deleting it.
+  invariant that dissolve exposes no file-lifecycle compatibility state.
 - `tests/test_submodel.py` — public flatten/codegen integration, including
   per-child source generation, child preamble and preserved-block round trips,
   compilable parent output, parsing, and request/response model contracts.
@@ -403,9 +412,10 @@ Tests live in `tests/test_submodel_instances.py`, `tests/test_submodel_ops.py`,
 - `tests/test_submodel_persistence.py` — the explicit Save transaction's
   submodel-specific filesystem contract: derived new-definition ownership,
   case-insensitive no-clobber, managed child position sidecars, rejection of
-  request-only ownership and orphan-sidecar clobber, safe source-plus-sidecar
-  deletion with rollback, and retention when another pipeline references the
-  child or the project-wide audit is incomplete.
+  hand-authored/orphan-sidecar clobber and in-place definition-identity
+  replacement, safe source-plus-sidecar deletion with rollback, and retention
+  when another pipeline references the child or the project-wide audit is
+  incomplete.
 - `tests/test_parser_submodels.py` — expression parsing, recursive loading,
   canonical child metadata, cross-boundary port reconstruction, and
   hierarchical/flat parser behaviour.

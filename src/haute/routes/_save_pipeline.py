@@ -77,6 +77,14 @@ class _ManagedChildSidecar(NamedTuple):
     graph: PipelineGraph
 
 
+class _DefinitionFile(NamedTuple):
+    """Canonical module-path ownership recorded by one definition."""
+
+    recorded_path: str
+    resolved_path: Path
+    definition_id: str
+
+
 def _mark_self_write_cb(_path: Path) -> None:
     """Writer callback — signals the file-watcher for each rename.
 
@@ -113,10 +121,6 @@ class SavePipelineService:
     def save(
         self,
         body: SavePipelineRequest,
-        *,
-        delete_module_files: Sequence[str] = (),
-        require_absent_module_files: Sequence[str] = (),
-        claim_managed_module_files: Sequence[str] = (),
     ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
@@ -135,21 +139,9 @@ class SavePipelineService:
             parent_path=py_path,
             graph=graph,
         )
-        absent_files = self._merge_lifecycle_paths(
-            require_absent_module_files,
-            derived_new_files,
-        )
-        claimed_files = self._merge_lifecycle_paths(
-            claim_managed_module_files,
-            derived_new_files,
-        )
-        deleted_files = self._merge_lifecycle_paths(
-            delete_module_files,
-            derived_delete_files,
-        )
-        absent_module_paths = self._require_module_files_absent(absent_files)
+        absent_module_paths = self._require_module_files_absent(derived_new_files)
         claimed_module_paths = self._resolve_managed_module_claims(
-            claimed_files,
+            derived_new_files,
             absent_module_paths=absent_module_paths,
         )
         managed_child_sidecars = self._prepare_managed_child_sidecars(
@@ -159,7 +151,7 @@ class SavePipelineService:
         )
         delete_targets = [
             self._resolve_existing_module_delete_file(rel_path)
-            for rel_path in deleted_files
+            for rel_path in derived_delete_files
             if rel_path
         ]
 
@@ -298,9 +290,6 @@ class SavePipelineService:
         description: str,
         preamble: str | None,
         source_file: str,
-        delete_module_files: Sequence[str] = (),
-        require_absent_module_files: Sequence[str] = (),
-        claim_managed_module_files: Sequence[str] = (),
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
 
@@ -323,9 +312,6 @@ class SavePipelineService:
                 active_source=graph.active_source,
                 preserved_blocks=graph.preserved_blocks,
             ),
-            delete_module_files=delete_module_files,
-            require_absent_module_files=require_absent_module_files,
-            claim_managed_module_files=claim_managed_module_files,
         )
 
     # ------------------------------------------------------------------
@@ -354,22 +340,6 @@ class SavePipelineService:
     def validate_new_module_files(self, rel_paths: Sequence[str]) -> None:
         """Run the child source/sidecar no-clobber check without writing."""
         self._require_module_files_absent(rel_paths)
-
-    @staticmethod
-    def _merge_lifecycle_paths(
-        explicit: Sequence[str],
-        derived: Sequence[str],
-    ) -> list[str]:
-        """Merge internal lifecycle paths while retaining stable order."""
-        merged = list(explicit)
-        seen = {path.replace("\\", "/").casefold() for path in merged}
-        for path in derived:
-            key = path.replace("\\", "/").casefold()
-            if key in seen:
-                continue
-            merged.append(path)
-            seen.add(key)
-        return merged
 
     def _derive_definition_file_lifecycle(
         self,
@@ -406,16 +376,31 @@ class SavePipelineService:
 
         previous = self._definition_file_map(persisted, parent_path=parent_path)
         submitted = self._definition_file_map(graph, parent_path=parent_path)
-        added = [submitted[key][0] for key in sorted(submitted.keys() - previous.keys())]
+        for key in previous.keys() & submitted.keys():
+            previous_definition = previous[key]
+            submitted_definition = submitted[key]
+            if previous_definition.definition_id != submitted_definition.definition_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Submodel module path ownership changed for "
+                        f"{submitted_definition.recorded_path!r} "
+                        f"(persisted {previous_definition.recorded_path!r}): "
+                        f"definitionId {previous_definition.definition_id!r} cannot be "
+                        f"replaced by {submitted_definition.definition_id!r}. "
+                        "Reload the pipeline before saving."
+                    ),
+                )
+        added = [submitted[key].recorded_path for key in sorted(submitted.keys() - previous.keys())]
 
         removed: list[str] = []
         for key in sorted(previous.keys() - submitted.keys()):
-            recorded_path, child_path = previous[key]
+            definition_file = previous[key]
             if self._can_delete_managed_child(
-                child_path=child_path,
+                child_path=definition_file.resolved_path,
                 parent_path=parent_path,
             ):
-                removed.append(recorded_path)
+                removed.append(definition_file.recorded_path)
         return added, removed
 
     def _definition_file_map(
@@ -423,9 +408,9 @@ class SavePipelineService:
         graph: PipelineGraph,
         *,
         parent_path: Path,
-    ) -> dict[str, tuple[str, Path]]:
+    ) -> dict[str, _DefinitionFile]:
         """Resolve canonical definition files to cross-platform-safe keys."""
-        resolved: dict[str, tuple[str, Path]] = {}
+        resolved: dict[str, _DefinitionFile] = {}
         for definition in (graph.submodels or {}).values():
             recorded_path = definition.file
             try:
@@ -443,15 +428,21 @@ class SavePipelineService:
                 ) from None
             key = str(child_path.resolve()).casefold()
             existing = resolved.get(key)
-            if existing is not None and existing[0] != recorded_path:
+            if existing is not None:
                 raise HTTPException(
-                    status_code=400,
+                    status_code=409,
                     detail=(
-                        "Multiple submodel definitions resolve to the same module file. "
+                        f"Submodel definitions {existing.definition_id!r} and "
+                        f"{definition.definition_id!r} resolve to the same module file "
+                        f"({existing.recorded_path!r}, {recorded_path!r}). "
                         "Give each definition its own module path."
                     ),
                 )
-            resolved[key] = (recorded_path, child_path)
+            resolved[key] = _DefinitionFile(
+                recorded_path=recorded_path,
+                resolved_path=child_path,
+                definition_id=definition.definition_id,
+            )
         return resolved
 
     def _can_delete_managed_child(

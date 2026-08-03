@@ -1,5 +1,13 @@
 import { useCallback, useEffect } from "react"
-import { applyEdgeChanges, type Connection, type Edge, type EdgeChange, type Node } from "@xyflow/react"
+import {
+  applyEdgeChanges,
+  applyNodeChanges,
+  type Connection,
+  type Edge,
+  type EdgeChange,
+  type Node,
+  type NodeChange,
+} from "@xyflow/react"
 import type { PipelineEdge, SubmodelBoundaryEdgeData, SubmodelPortData } from "../types/node"
 import {
   applySubmodelBoundaryConnection,
@@ -26,6 +34,8 @@ export interface UseSubmodelBoundaryEditingParams {
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesAndEdgesAndSubmodels: Setter
 }
+
+export type SharedNodeDeletionResult = "not-applicable" | "committed" | "blocked"
 
 const isBoundaryNode = (node: Node | undefined) => node?.type === "submodelPort"
 const hasBoundaryCard = (nodes: Node[], direction: "input" | "output") =>
@@ -176,5 +186,41 @@ export default function useSubmodelBoundaryEditing({
     }
   }, [state, edges, commit, reportBoundaryError])
 
-  return { commitBoundaryConnection, deleteBoundaryEdge, onBoundaryEdgesChange, reconcileActiveSubmodel }
+  const commitSharedNodeDeletion = useCallback((
+    nodeIds: ReadonlySet<string>,
+    selectedEdgeIds: ReadonlySet<string> = new Set(),
+    nodeChanges?: NodeChange[],
+  ): SharedNodeDeletionResult => {
+    if (nodeIds.size === 0) return "not-applicable"
+    try {
+      const current = state()
+      if (!current) return "not-applicable"
+      const viewNodeIds = new Set(current.viewNodes.map((node) => node.id))
+      if (![...nodeIds].some((id) => viewNodeIds.has(id))) return "not-applicable"
+      const reconciled = reconcileSubmodelBoundaryState({
+        ...current,
+        viewNodes: nodeChanges
+          ? applyNodeChanges(nodeChanges, current.viewNodes)
+          : current.viewNodes.filter((node) => !nodeIds.has(node.id)),
+        viewEdges: current.viewEdges.filter((edge) =>
+          !nodeIds.has(edge.source)
+          && !nodeIds.has(edge.target)
+          && !selectedEdgeIds.has(edge.id)),
+      })
+      if (!reconciled) throw new Error("The shared submodel boundary could not be reconciled")
+      commit(reconciled)
+      return "committed"
+    } catch (error: unknown) {
+      reportBoundaryError(error)
+      return "blocked"
+    }
+  }, [state, commit, reportBoundaryError])
+
+  return {
+    commitBoundaryConnection,
+    deleteBoundaryEdge,
+    onBoundaryEdgesChange,
+    commitSharedNodeDeletion,
+    reconcileActiveSubmodel,
+  }
 }

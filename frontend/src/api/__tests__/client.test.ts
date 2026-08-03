@@ -260,8 +260,6 @@ function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
     instance_id: "instance_pricing",
     definition_id: "definition_pricing",
     source_revision: "revision-dissolve",
-    submodel_file_deleted: true,
-    retained_submodel_file: null,
     graph: {
       nodes: dummyGraph.nodes,
       edges: dummyGraph.edges,

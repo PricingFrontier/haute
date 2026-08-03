@@ -258,11 +258,10 @@ become diagnostic-unavailable rather than a fabricated success.
   marker and child positions only when the existing sidecar already names the
   same parent, or when explicit Save derives a brand-new definition from the
   difference between the persisted and submitted registries and its source and
-  sidecar both pass no-clobber. A request body's `managed=true` flag alone is
-  rejected and parsing or saving
-  a hand-authored child never creates the marker. Creation may require a
-  module output to be absent, with a case-insensitive preflight returning
-  `409` before any write.
+  sidecar both pass no-clobber. The graph schema contains no request-controlled
+  ownership field, and parsing or saving a hand-authored child never creates
+  the marker. Creation requires the derived module output to be absent, with a
+  case-insensitive preflight returning `409` before any write.
 - **Self-write tracking instead of debounce-only.** The file watcher's 300ms debounce alone
   cannot distinguish a server-originated write from a user's IDE edit that happens to land in
   the same window. Every write the server makes is registered by absolute path just before

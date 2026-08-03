@@ -79,6 +79,18 @@ Selection-based submodel creation obtains `nodes`, `edges`, and `submodels`
 from one synchronous `useGraphStore.getState()` read when the dialog is
 submitted. Request construction never uses the effect-mirrored `graphRef` or
 `submodelsRef`, so a just-loaded graph cannot submit an obsolete hidden node.
+Create and dissolve serialise that complete persisted snapshot with
+`serializeSnapshot` and capture the source file, pipeline name, source
+revision, preserved blocks, and a monotonically increasing transform request
+serial. Their responses commit only when that complete request context is
+still current and the store serialises identically. This catches position-only
+and submodel-only edits that deliberately do not increment
+`structuralVersion`, while excluding transient React Flow presentation
+fields. A local edit, pipeline/revision change, navigation action, or older
+overlapping transform response therefore causes the stale response to be
+rejected visibly without touching graph state.
+The dissolve response guard rejects the removed child-file lifecycle keys
+rather than silently accepting an old response shape.
 
 Navigation resolves canonical identity from the selected `SUBMODEL` node, not
 from an id prefix or label. Loading, response-identity validation, projection,
@@ -95,7 +107,11 @@ port yields a blocking dialog containing every
 affected instance label/id and port label/id. No setter, file request, dirty
 baseline, or undo history is updated on rejection. A compatible edit submits
 one definition update and refreshes every occurrence without changing its
-position or bindings.
+position or bindings. Node deletion from React Flow, the context menu, and the
+keyboard is staged with its incident edges and passed through this same
+compatibility check before the single graph setter is called. A mixed React
+Flow change batch applies its non-removal changes inside that same staged
+reconciliation rather than dropping them or committing a second mutation.
 
 Tests must precede implementation and cover: two independent occurrences of
 one definition; fresh identity/alias allocation; one-snapshot undo; navigation
@@ -104,6 +120,9 @@ checks; persistence through graph replacement; selection-based creation from
 an atomic store snapshot even when effect-mirrored refs are stale; grouping
 two disconnected input nodes; shared-edit messaging; and
 atomic interface-break rejection with all affected occurrences reported.
+Coverage includes every deletion entry point and stale create/dissolve
+responses after an intervening local mutation, request-context change, or
+newer overlapping transform.
 
 - **`GraphSnapshot`** (`{ nodes: Node[]; edges: PipelineEdge[]; preamble: string;
   submodels: Record<string, unknown> }`,

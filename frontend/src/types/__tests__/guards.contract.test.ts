@@ -1486,14 +1486,12 @@ describe("API response guards", () => {
     expect(loaded.definition_id).toBe("pricing-definition")
     expect(loaded.submodel_file).toBe("modules/pricing.py")
     expect(dissolved.source_revision).toBe("revision-dissolve-1")
-    expect(dissolved.retained_submodel_file).toBeNull()
-    expect(dissolved.submodel_file_deleted).toBe(true)
     expect(dissolved.instance_id).toBe("pricing-instance")
     expect(dissolved.definition_id).toBe("pricing-definition")
     expect(dissolved.graph.nodes).toHaveLength(2)
   })
 
-  it("rejects missing mandatory submodel identity, revision, and retention metadata", () => {
+  it("rejects missing mandatory submodel identity and revision metadata", () => {
     const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
     const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
     const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
@@ -1503,10 +1501,21 @@ describe("API response guards", () => {
     expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: undefined })).toThrow(/submodel_file/i)
     expect(() => parseSubmodelGraphResponse({ ...loaded, definition_id: undefined })).toThrow(/definition_id/i)
     expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: undefined })).toThrow(/source_revision/i)
-    expect(() => parseDissolveSubmodelResponse({ ...dissolve, submodel_file_deleted: undefined })).toThrow(/submodel_file_deleted/i)
-    expect(() => parseDissolveSubmodelResponse({ ...dissolve, retained_submodel_file: undefined })).toThrow(/retained_submodel_file/i)
     expect(() => parseDissolveSubmodelResponse({ ...dissolve, instance_id: undefined })).toThrow(/instance_id/i)
     expect(() => parseDissolveSubmodelResponse({ ...dissolve, definition_id: undefined })).toThrow(/definition_id/i)
+  })
+
+  it("rejects removed dissolve file-lifecycle fields", () => {
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseDissolveSubmodelResponse({
+      ...dissolve,
+      submodel_file_deleted: false,
+    })).toThrow(/submodel_file_deleted.*no longer supported/i)
+    expect(() => parseDissolveSubmodelResponse({
+      ...dissolve,
+      retained_submodel_file: "modules/pricing.py",
+    })).toThrow(/retained_submodel_file.*no longer supported/i)
   })
 
   it("parses modelling preflight payloads", () => {

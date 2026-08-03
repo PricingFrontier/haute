@@ -225,11 +225,17 @@ class TestCodegenMultiFile:
 
     def test_submodel_preamble_and_preserved_block_are_emitted_once(self, submodel_graph):
         subgraph = submodel_graph.submodels["definition_scoring"].graph
-        subgraph.update(
-            {
-                "pipeline_description": "Score a policy",
-                "preamble": "HELPER = 1",
-                "preserved_blocks": ["KEPT = 2"],
+        submodel_graph.submodels["definition_scoring"] = submodel_graph.submodels[
+            "definition_scoring"
+        ].model_copy(
+            update={
+                "graph": subgraph.model_copy(
+                    update={
+                        "pipeline_description": "Score a policy",
+                        "preamble": "HELPER = 1",
+                        "preserved_blocks": ["KEPT = 2"],
+                    }
+                )
             }
         )
         files = graph_to_code_multi(submodel_graph, pipeline_name="main")
@@ -433,14 +439,35 @@ class TestSchemas:
             source_revision="revision-2",
             instance_id="instance_scoring",
             definition_id="definition_scoring",
-            submodel_file_deleted=False,
-            retained_submodel_file="modules/scoring.py",
         )
         assert resp.instance_id == "instance_scoring"
         assert resp.definition_id == "definition_scoring"
         assert resp.source_revision == "revision-2"
-        assert resp.submodel_file_deleted is False
-        assert resp.retained_submodel_file == "modules/scoring.py"
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("submodel_file_deleted", False),
+            ("retained_submodel_file", "modules/scoring.py"),
+        ],
+    )
+    def test_dissolve_submodel_response_rejects_removed_lifecycle_fields(
+        self,
+        field,
+        value,
+    ):
+        from pydantic import ValidationError
+
+        from haute.schemas import DissolveSubmodelResponse
+
+        with pytest.raises(ValidationError, match=field):
+            DissolveSubmodelResponse(
+                graph={"nodes": [], "edges": []},
+                source_revision="revision-2",
+                instance_id="instance_scoring",
+                definition_id="definition_scoring",
+                **{field: value},
+            )
 
     def test_submodel_graph_response(self):
         from haute.schemas import SubmodelGraphResponse

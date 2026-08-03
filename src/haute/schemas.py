@@ -1354,13 +1354,13 @@ class DissolveSubmodelRequest(BaseModel):
 
 
 class DissolveSubmodelResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: str = "ok"
     graph: Graph = Field(default_factory=Graph)
     source_revision: RevisionToken
     instance_id: str
     definition_id: str
-    submodel_file_deleted: bool
-    retained_submodel_file: str | None
 
 
 class SubmodelGraphResponse(BaseModel):

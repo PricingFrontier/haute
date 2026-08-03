@@ -936,7 +936,6 @@ def parse_pipeline_to_graph(
         )
         resolved_submodels[name] = definition.model_copy(
             update={
-                "managed": child_sidecar.get("managed_parent") == parent_source_file,
                 "graph": child_graph,
             }
         )

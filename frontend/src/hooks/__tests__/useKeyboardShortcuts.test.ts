@@ -4,6 +4,7 @@ import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
+import { makeNode } from "../../test-utils/factories"
 
 function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0]> = {}) {
   return {
@@ -74,6 +75,32 @@ describe("useKeyboardShortcuts", () => {
   it("Ctrl+Y calls redo", () => {
     fireKey("y", { ctrlKey: true })
     expect(params.redo).toHaveBeenCalledOnce()
+  })
+
+  it("uses a committed shared deletion without raw graph mutation but cleans selection", () => {
+    cleanup()
+    params = makeParams({
+      graphRef: { current: { nodes: [{ ...makeNode("n1"), selected: true }], edges: [] } },
+      commitSharedNodeDeletion: vi.fn(() => "committed" as const),
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledWith(null)
+    expect(params.setPreviewData).toHaveBeenCalledWith(null)
+  })
+
+  it("leaves cleanup untouched when shared deletion is blocked", () => {
+    cleanup()
+    params = makeParams({
+      graphRef: { current: { nodes: [{ ...makeNode("n1"), selected: true }], edges: [] } },
+      commitSharedNodeDeletion: vi.fn(() => "blocked" as const),
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
   })
 
   it("ignores Ctrl+Z while target is INPUT", () => {

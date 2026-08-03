@@ -5,6 +5,7 @@ import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { nodeData } from "../types/node"
 import { isSingletonType } from "../utils/nodeTypes"
+import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
 interface KeyboardShortcutsParams {
   handleSave: () => void
@@ -27,6 +28,10 @@ interface KeyboardShortcutsParams {
   closePanel: () => void
   isInsideSubmodel: boolean
   readOnly: boolean
+  commitSharedNodeDeletion?: (
+    nodeIds: ReadonlySet<string>,
+    selectedEdgeIds?: ReadonlySet<string>,
+  ) => SharedNodeDeletionResult
 }
 
 export default function useKeyboardShortcuts({
@@ -34,6 +39,7 @@ export default function useKeyboardShortcuts({
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
   isInsideSubmodel, readOnly,
+  commitSharedNodeDeletion,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
@@ -203,13 +209,17 @@ export default function useKeyboardShortcuts({
         const selectedEdgeIds = new Set(currentEdges.filter((ed) => ed.selected).map((ed) => ed.id))
         if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
         if (selectedNodeIds.size > 0) {
+          const sharedDeletion = commitSharedNodeDeletion?.(selectedNodeIds, selectedEdgeIds)
+          if (sharedDeletion === "blocked") return
           // Nodes + their edges removed in ONE undo step. setNodes-then-setEdges
           // would push two snapshots, so one delete would take two undos to
           // reverse (the undo-atomicity bug class).
-          setNodesAndEdges(
-            currentNodes.filter((n) => !selectedNodeIds.has(n.id)),
-            currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
-          )
+          if (sharedDeletion !== "committed") {
+            setNodesAndEdges(
+              currentNodes.filter((n) => !selectedNodeIds.has(n.id)),
+              currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
+            )
+          }
           setSelectedNode(null)
           setLastSelectedId?.(null)
           setPreviewData(null)
@@ -230,6 +240,6 @@ export default function useKeyboardShortcuts({
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly,
+    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly, commitSharedNodeDeletion,
   ])
 }

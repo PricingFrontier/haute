@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import NoReturn
 from uuid import uuid4
 
+from pydantic import ValidationError
+
 from haute._graph_utils import _edge_id, edge_input_name
 from haute._types import (
     GraphEdge,
@@ -393,6 +395,19 @@ def create_submodel_graph(
         )
 
     existing_submodels = dict(graph.submodels or {})
+    existing_occurrence_aliases: set[str] = set()
+    for node in graph.nodes:
+        if node.data.nodeType != NodeType.SUBMODEL:
+            continue
+        try:
+            occurrence = SubmodelInstanceConfig.model_validate(node.data.config)
+        except ValidationError as exc:
+            raise SubmodelValidationError(
+                code="invalid_submodel_instance",
+                status_code=400,
+                detail=f"Submodel occurrence {node.id!r} has an invalid canonical config: {exc}",
+            ) from exc
+        existing_occurrence_aliases.add(occurrence.alias.casefold())
     instance_id = f"submodel_instance_{uuid4().hex}"
     existing_submodel_names = {existing.casefold() for existing in existing_submodels}
     existing_parent_node_ids = {node.id.casefold() for node in parent_nodes}
@@ -408,6 +423,12 @@ def create_submodel_graph(
             code="alias_conflict",
             status_code=409,
             detail=f"Submodel alias {sm_name!r} conflicts with a parent node id.",
+        )
+    if sm_name.casefold() in existing_occurrence_aliases:
+        raise SubmodelValidationError(
+            code="alias_conflict",
+            status_code=409,
+            detail=f"Submodel alias {sm_name!r} conflicts with an existing submodel occurrence.",
         )
 
     # Classify edges
