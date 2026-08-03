@@ -228,9 +228,12 @@ well as occurrence-specific positions and bindings.
   the window keyboard shortcut, and React Flow's native delete. The definition
   owner (or an occurrence with malformed identity) is refused on every one of
   those surfaces with a visible explanation, because it anchors the shared
-  definition; "Dissolve Submodel" is its only removal path. A mixed keyboard or
-  canvas-native selection spares owners (and edges incident to spared owners)
-  while the rest of the selection still deletes.
+  definition; "Dissolve Submodel" is its only removal path. A mixed keyboard
+  selection spares owners with an explanatory toast while the rest of the
+  selection still deletes; canvas-native deletion never includes an owner
+  because owners are stamped non-deletable, and React Flow preserves the
+  edges of nodes it does not delete. An explicitly selected boundary edge
+  remains deletable — removing a binding is an ordinary edit.
   Auto-layout runs ELK asynchronously, guards against
   overlapping runs from repeated clicks, and re-fits the view once positions
   land. Node-cache cleanup for an ordinary deleted node is deferred one task

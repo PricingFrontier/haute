@@ -82,11 +82,16 @@ partitions a mixed selection, toasts once for spared owners, and deletes the
 remainder), the context menu (which shows Delete only when `isSubmodelCopy`),
 and React Flow's native delete through
 `frontend/src/utils/submodelDeletionPolicy.ts`: `withNativeDeletePolicy`
-stamps `deletable` on canvas nodes (owners and malformed occurrences false,
-copies true, other nodes untouched) and `spareProtectedOwners` backs the
-App-level `onBeforeDelete` filter that spares owners plus their incident
-edges while the rest of the selection deletes. Instance copies delete
-like ordinary nodes, with incident edges, in one undo step. Duplicate remains
+stamps `deletable` on every canvas node (owners and malformed occurrences
+false, copies true, other nodes untouched), and that flag is the sole
+native gate — React Flow excludes non-deletable nodes from a deletion set
+before acting and preserves the edges of nodes it does not delete, so a
+mixed native selection deletes everything except owners. Explicitly
+selected boundary edges stay deletable everywhere (removing a binding is a
+legitimate edit, not occurrence removal). User-facing feedback for a
+blocked owner comes from the window keyboard handler's toast, which fires
+on the same Delete/Backspace gesture. Instance copies delete like
+ordinary nodes, with incident edges, in one undo step. Duplicate remains
 omitted for every submodel occurrence; owner removal uses the
 instance-targeted dissolve lifecycle and reusable copying uses Create
 Instance.

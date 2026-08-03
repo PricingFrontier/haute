@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest"
-import type { Edge, Node } from "@xyflow/react"
-import {
-  spareProtectedOwners,
-  withNativeDeletePolicy,
-} from "../submodelDeletionPolicy"
+import type { Node } from "@xyflow/react"
+import { withNativeDeletePolicy } from "../submodelDeletionPolicy"
 
 const owner: Node = {
   id: "instance_owner",
@@ -61,23 +58,3 @@ describe("withNativeDeletePolicy", () => {
   })
 })
 
-describe("spareProtectedOwners", () => {
-  it("spares owners and their incident edges while the rest still deletes", () => {
-    const edges: Edge[] = [
-      { id: "e_owner", source: "plain", target: "instance_owner" },
-      { id: "e_copy", source: "plain", target: "instance_copy" },
-    ]
-    const result = spareProtectedOwners([owner, copy, ordinary], edges)
-    expect(result.sparedOwnerIds).toEqual(["instance_owner"])
-    expect(result.nodes.map((node) => node.id)).toEqual(["instance_copy", "plain"])
-    expect(result.edges.map((edge) => edge.id)).toEqual(["e_copy"])
-  })
-
-  it("passes the selection through unchanged when no owner is doomed", () => {
-    const edges: Edge[] = [{ id: "e_copy", source: "plain", target: "instance_copy" }]
-    const result = spareProtectedOwners([copy, ordinary], edges)
-    expect(result.sparedOwnerIds).toEqual([])
-    expect(result.nodes.map((node) => node.id)).toEqual(["instance_copy", "plain"])
-    expect(result.edges).toEqual(edges)
-  })
-})
