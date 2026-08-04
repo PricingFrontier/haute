@@ -24,8 +24,18 @@ import pytest
 from haute import _json_shred
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
+    ShredSkipStats,
+    _assert_root_conservation,
+    _ChunkFailure,
+    _ChunkResult,
+    _EmittingTableSpec,
+    _iter_range_records,
     _jsonl_byte_ranges,
+    _merge_chunk_skip_stats,
+    _parallel_worker_count,
     _raise_chunk_error,
+    _raise_worker_failure,
+    _should_shred_in_parallel,
     _shred_chunk,
     build_per_port_cache,
     infer_v2_schema_from_data,
@@ -114,6 +124,82 @@ def test_byte_ranges_of_small_or_empty_file(tmp_path: Path) -> None:
     assert _jsonl_byte_ranges(small, 1 << 20) == [(0, small.stat().st_size)]
 
 
+def test_byte_ranges_pin_chunk_progression_and_exact_size_boundary(tmp_path: Path) -> None:
+    p = _write_jsonl(tmp_path / "uniform.jsonl", [{"n": i} for i in range(8)])
+    assert p.stat().st_size == 80
+    assert _jsonl_byte_ranges(p, 17) == [(0, 20), (20, 40), (40, 60), (60, 80)]
+    assert _jsonl_byte_ranges(p, p.stat().st_size) == [(0, p.stat().st_size)]
+
+
+@pytest.mark.parametrize("chunk_bytes", [0, -1])
+def test_byte_ranges_reject_non_positive_chunk_sizes(tmp_path: Path, chunk_bytes: int) -> None:
+    p = _write_jsonl(tmp_path / "data.jsonl", [{"n": 1}])
+    with pytest.raises(ValueError, match="chunk_bytes must be positive"):
+        _jsonl_byte_ranges(p, chunk_bytes)
+
+
+def test_range_reader_stops_at_exact_and_partial_end_boundaries(tmp_path: Path) -> None:
+    p = _write_jsonl(tmp_path / "range.jsonl", [{"n": i} for i in range(4)])
+    assert list(_iter_range_records(p, 0, 20)) == [{"n": 0}, {"n": 1}]
+    assert list(_iter_range_records(p, 0, 11)) == [{"n": 0}, {"n": 1}]
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "chunk_count", "expected"),
+    [(None, 20, 1), (1, 20, 1), (2, 20, 1), (8, 20, 7), (64, 3, 3), (64, 20, 8)],
+)
+def test_parallel_worker_count_respects_cpu_work_and_memory_caps(
+    monkeypatch: pytest.MonkeyPatch,
+    cpu_count: int | None,
+    chunk_count: int,
+    expected: int,
+) -> None:
+    monkeypatch.setattr(_json_shred.os, "cpu_count", lambda: cpu_count)
+    assert _parallel_worker_count(chunk_count) == expected
+
+
+def test_parallel_eligibility_pins_suffix_size_boundary_and_stat_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(_json_shred, "_PARALLEL_MIN_BYTES", 3)
+    exact = tmp_path / "exact.JSONL"
+    exact.write_bytes(b"123")
+    below = tmp_path / "below.ndjson"
+    below.write_bytes(b"12")
+    wrong_suffix = tmp_path / "data.json"
+    wrong_suffix.write_bytes(b"1234")
+
+    assert _should_shred_in_parallel(exact) is True
+    assert _should_shred_in_parallel(below) is False
+    assert _should_shred_in_parallel(wrong_suffix) is False
+    assert _should_shred_in_parallel(tmp_path / "missing.jsonl") is False
+
+
+def test_root_conservation_counts_emitted_and_skipped_rows() -> None:
+    child = _EmittingTableSpec("child", (("items", True),), ())
+    root = _EmittingTableSpec("root", (), ())
+    stats = ShredSkipStats(skipped_rows_by_table={"root": 3})
+    buffers = {"root": [{}, {}, {}]}
+
+    _assert_root_conservation((child, root), buffers, stats, 6)
+    with pytest.raises(RuntimeError, match=r"3 emitted \+ 3 skipped != 7 records"):
+        _assert_root_conservation((child, root), buffers, stats, 7)
+    with pytest.raises(RuntimeError, match=r"3 emitted \+ 3 skipped != 5 records"):
+        _assert_root_conservation((child, root), buffers, stats, 5)
+
+
+def test_chunk_skip_stats_are_summed_across_workers_and_labels() -> None:
+    def result(records: int, rows: dict[str, int]) -> _ChunkResult:
+        return _ChunkResult(0, 0, records, rows, {}, {})
+
+    combined = _merge_chunk_skip_stats(
+        [result(2, {"root": 3, "child": 5}), result(4, {"root": 3, "other": 7})]
+    )
+
+    assert combined.skipped_records == 6
+    assert combined.skipped_rows_by_table == {"root": 6, "child": 5, "other": 7}
+
+
 # ---------------------------------------------------------------------------
 # Parallel inference — complete-schema equivalence
 # ---------------------------------------------------------------------------
@@ -154,8 +240,9 @@ def test_parallel_inference_matches_serial_with_late_schema_changes(
     assert infer_v2_schema_from_data(src) == serial
 
 
+@pytest.mark.parametrize("sample_size", [1, 2])
 def test_explicitly_sampled_inference_stays_serial(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_size: int
 ) -> None:
     """Parallel dispatch must never turn an explicit bound into a full scan."""
     src = _write_jsonl(tmp_path / "sampled.jsonl", _records(50))
@@ -166,9 +253,47 @@ def test_explicitly_sampled_inference_stays_serial(
 
     monkeypatch.setattr(_json_shred, "_jsonl_byte_ranges", reject_range_scan)
 
-    schema = infer_v2_schema_from_data(src, sample_size=2)
+    schema = infer_v2_schema_from_data(src, sample_size=sample_size)
 
     assert schema["tables"]
+
+
+@pytest.mark.parametrize("sample_size", [0, -1])
+def test_non_positive_sample_size_keeps_unbounded_parallel_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sample_size: int
+) -> None:
+    src = _write_jsonl(tmp_path / "unbounded.jsonl", [{"id": 1}, {"id": 2}])
+    state = _json_shred._InferenceState()
+    state.walk({"id": 1})
+    monkeypatch.setattr(_json_shred, "_should_shred_in_parallel", lambda _path: True)
+    monkeypatch.setattr(_json_shred, "_jsonl_byte_ranges", lambda *_args: [(0, 1), (1, 2)])
+    monkeypatch.setattr(_json_shred, "_infer_jsonl_in_parallel", lambda *_args: state)
+
+    def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("non-positive sample size unexpectedly bounded inference")
+
+    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+
+    assert infer_v2_schema_from_data(src, sample_size=sample_size)["tables"]
+
+
+def test_single_range_inference_stays_serial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = _write_jsonl(tmp_path / "single-range.jsonl", [{"id": 1}])
+    monkeypatch.setattr(_json_shred, "_should_shred_in_parallel", lambda _path: True)
+    monkeypatch.setattr(
+        _json_shred,
+        "_jsonl_byte_ranges",
+        lambda path, _chunk_bytes: [(0, path.stat().st_size)],
+    )
+
+    def reject_parallel_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("one byte range unexpectedly started a process pool")
+
+    monkeypatch.setattr(_json_shred, "_infer_jsonl_in_parallel", reject_parallel_dispatch)
+
+    assert infer_v2_schema_from_data(src)["tables"]
 
 
 def test_parallel_inference_preserves_late_schema_error_context(
@@ -431,6 +556,97 @@ def test_parallel_json_decode_error_matches_serial_exactly(
     assert parallel_exc.value.doc == serial_exc.value.doc
     assert parallel_exc.value.pos == serial_exc.value.pos
     assert str(parallel_exc.value) == str(serial_exc.value)
+
+
+def test_worker_json_error_reconstruction_preserves_zero_position() -> None:
+    failure = _ChunkFailure(
+        type_name="JSONDecodeError",
+        module="orjson",
+        message="bad json",
+        doc="x",
+        pos=0,
+    )
+    with pytest.raises(orjson.JSONDecodeError) as excinfo:
+        _raise_worker_failure(failure)
+    assert excinfo.value.pos == 0
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _ChunkFailure("A", "custom", "not an API schema error"),
+        _ChunkFailure("Z", "custom", "not a JSON error", doc="x", pos=0),
+        _ChunkFailure("OSError", "aardvark", "not a builtin OS error"),
+        _ChunkFailure("OSError", "zoology", "not a builtin OS error"),
+        _ChunkFailure("ValueError", "aardvark", "not a builtin value error"),
+        _ChunkFailure("ValueError", "zoology", "not a builtin value error"),
+        _ChunkFailure("UnknownError", "builtins", "unknown builtin"),
+    ],
+)
+def test_worker_failure_dispatch_requires_exact_known_type_and_module(
+    failure: _ChunkFailure,
+) -> None:
+    with pytest.raises(RuntimeError, match="parallel json shred worker failed"):
+        _raise_worker_failure(failure)
+
+
+def test_worker_failure_dispatch_uses_module_value_equality() -> None:
+    non_interned_builtins = "".join(["built", "ins"])
+    with pytest.raises(PermissionError, match="denied"):
+        _raise_worker_failure(_ChunkFailure("PermissionError", non_interned_builtins, "denied"))
+    with pytest.raises(ValueError, match="invalid"):
+        _raise_worker_failure(_ChunkFailure("ValueError", non_interned_builtins, "invalid"))
+
+
+def test_worker_os_error_reconstruction_preserves_optional_arguments() -> None:
+    with pytest.raises(OSError) as message_only:
+        _raise_worker_failure(_ChunkFailure("OSError", "builtins", "plain"))
+    assert message_only.value.args == ("plain",)
+
+    with pytest.raises(PermissionError) as with_source:
+        _raise_worker_failure(
+            _ChunkFailure(
+                "PermissionError",
+                "builtins",
+                "denied",
+                errno=13,
+                strerror="denied",
+                filename="source.jsonl",
+                winerror=5,
+            )
+        )
+    assert with_source.value.errno == 13
+    assert with_source.value.filename == "source.jsonl"
+
+    with pytest.raises(OSError) as with_destination:
+        _raise_worker_failure(
+            _ChunkFailure(
+                "OSError",
+                "builtins",
+                "rename failed",
+                errno=5,
+                strerror="rename failed",
+                filename="source",
+                filename2="destination",
+            )
+        )
+    assert with_destination.value.filename == "source"
+    assert with_destination.value.filename2 == "destination"
+
+    with pytest.raises(OSError) as without_source:
+        _raise_worker_failure(
+            _ChunkFailure(
+                "OSError",
+                "builtins",
+                "no source",
+                errno=5,
+                strerror="no source",
+                winerror=123,
+                filename2="ignored",
+            )
+        )
+    assert without_source.value.filename is None
+    assert without_source.value.filename2 is None
 
 
 def test_parallel_missing_source_remains_file_not_found(tmp_path: Path) -> None:

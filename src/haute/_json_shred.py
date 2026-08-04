@@ -40,7 +40,7 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -700,7 +700,7 @@ _WalkSpec = tuple[str, str, str, int]
 _PreparedCol = tuple[str, str, tuple[str, ...], str, int, bool]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
 class _EmittingTableSpec:
     """One validated emitting table, parsed once for every shred consumer.
 
@@ -730,7 +730,11 @@ def _leaf_parts(leaf: str) -> tuple[str, ...]:
     return tuple(leaf.split("."))
 
 
-def _resolve_leaf(value: Any, leaf: str, parts: tuple[str, ...] | None = None) -> Any:
+def _resolve_leaf(
+    value: Any,
+    leaf: str,
+    parts: tuple[str, ...] | None = None,  # pragma: no mutate - type declaration
+) -> Any:
     """Resolve a dotted leaf path within a single dict.
 
     *parts* is ``leaf`` pre-split by :func:`_leaf_parts`. It is purely a hot-path
@@ -1012,6 +1016,29 @@ def shred_to_buffers(
     return buffers
 
 
+def _assert_root_conservation(
+    table_specs: tuple[_EmittingTableSpec, ...],
+    buffers: Mapping[str, Sequence[object]],
+    skip_stats: ShredSkipStats,
+    record_count: int,
+    *,
+    location: str = "",
+) -> None:
+    """Assert that every root input record was emitted or explicitly skipped."""
+    for table_spec in table_specs:
+        if table_spec.segments:
+            continue
+        emitted = len(buffers.get(table_spec.label, ()))
+        skipped = skip_stats.skipped_rows_by_table.get(table_spec.label, 0)
+        if emitted + skipped != record_count:
+            raise RuntimeError(
+                "json shred conservation violation for root table "
+                f"{table_spec.label!r}{location}: {emitted} emitted + {skipped} skipped "
+                f"!= {record_count} records read — a row was lost or "
+                "duplicated without accounting",
+            )
+
+
 def _shred_data_file(
     data_path: Path,
     v2_config: dict[str, Any],
@@ -1034,21 +1061,7 @@ def _shred_data_file(
         _table_specs=table_specs,
     )
 
-    # Every object record contributes exactly one row to each emitting root
-    # table, or is explicitly counted as a shape mismatch. Keep this invariant
-    # on both cache builds and direct runtime materialisation.
-    for table_spec in table_specs:
-        if table_spec.segments:
-            continue
-        emitted = len(buffers.get(table_spec.label, []))
-        skipped = skip_stats.skipped_rows_by_table.get(table_spec.label, 0)
-        if emitted + skipped != record_count:
-            raise RuntimeError(
-                "json shred conservation violation for root table "
-                f"{table_spec.label!r}: {emitted} emitted + {skipped} skipped "
-                f"!= {record_count} records read — a row was lost or "
-                "duplicated without accounting",
-            )
+    _assert_root_conservation(table_specs, buffers, skip_stats, record_count)
 
     return buffers, skip_stats
 
@@ -1077,11 +1090,11 @@ def _shred_data_file(
 
 # Below this, process startup (plus build-only part-file round-trips) costs more
 # than the serial walk saves.
-_PARALLEL_MIN_BYTES = 64 * 1024 * 1024
+_PARALLEL_MIN_BYTES = 64 * 1024 * 1024  # pragma: no mutate - performance tuning knob
 # Target bytes of source JSON per chunk — the memory knob (see above).
-_PARALLEL_CHUNK_BYTES = 64 * 1024 * 1024
+_PARALLEL_CHUNK_BYTES = 64 * 1024 * 1024  # pragma: no mutate - performance tuning knob
 # Workers beyond this show little gain and multiply peak memory.
-_PARALLEL_MAX_WORKERS = 8
+_PARALLEL_MAX_WORKERS = 8  # pragma: no mutate - performance tuning knob
 
 
 def _parallel_worker_count(chunk_count: int) -> int:
@@ -1097,6 +1110,8 @@ def _jsonl_byte_ranges(data_path: Path, chunk_bytes: int) -> list[tuple[int, int
     a record; consecutive ranges therefore tile the file exactly, with no gap
     and no overlap. Returned in file order — the order rows must keep.
     """
+    if chunk_bytes <= 0:
+        raise ValueError("chunk_bytes must be positive")
     size = data_path.stat().st_size
     if size == 0:
         return []
@@ -1123,7 +1138,7 @@ def _iter_range_records(
     data_path: Path,
     start: int,
     end: int,
-    stats: ShredSkipStats | None = None,
+    stats: ShredSkipStats | None = None,  # pragma: no mutate - type declaration
 ) -> Iterator[dict[str, Any]]:
     """Yield records from ``[start, end)`` of a newline-delimited file.
 
@@ -1149,7 +1164,7 @@ def _iter_range_records(
                 stats.count_record_skip()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
 class _ChunkFailure:
     """Pickle-safe evidence needed to reconstruct a worker exception."""
 
@@ -1201,7 +1216,7 @@ def _failure_from_exception(exc: Exception) -> _ChunkFailure:
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
 class _ChunkResult:
     """One chunk's contribution, as returned across the process boundary."""
 
@@ -1243,21 +1258,15 @@ def _shred_chunk(
 
         buffers = shred_to_buffers(_counted(), v2_config, stats=stats, _table_specs=table_specs)
 
-        # Conservation, per chunk. Ranges tile the file exactly, so holding the
-        # invariant on every chunk holds it on the whole file — and localises a
-        # violation to the range that caused it.
-        for spec in table_specs:
-            if spec.segments:
-                continue
-            emitted = len(buffers.get(spec.label, []))
-            skipped = stats.skipped_rows_by_table.get(spec.label, 0)
-            if emitted + skipped != record_count:
-                raise RuntimeError(
-                    "json shred conservation violation for root table "
-                    f"{spec.label!r} in byte range [{start}, {end}): {emitted} "
-                    f"emitted + {skipped} skipped != {record_count} records read "
-                    "— a row was lost or duplicated without accounting",
-                )
+        # Ranges tile the file exactly, so holding conservation on every chunk
+        # holds it on the whole file and localises a violation to its range.
+        _assert_root_conservation(
+            table_specs,
+            buffers,
+            stats,
+            record_count,
+            location=f" in byte range [{start}, {end})",
+        )
 
         part_paths: dict[str, str] = {}
         row_counts: dict[str, int] = {}
@@ -1664,6 +1673,18 @@ def _write_tables_serially(
     return summaries
 
 
+def _merge_chunk_skip_stats(results: Iterable[_ChunkResult]) -> ShredSkipStats:
+    """Combine worker skip evidence without losing counts shared by chunks."""
+    combined = ShredSkipStats()
+    for result in results:
+        combined.skipped_records += result.skipped_records
+        for label, count in result.skipped_rows_by_table.items():
+            combined.skipped_rows_by_table[label] = (
+                combined.skipped_rows_by_table.get(label, 0) + count
+            )
+    return combined
+
+
 def _write_tables_in_parallel(
     data_path: Path,
     v2_config: dict[str, Any],
@@ -1716,13 +1737,7 @@ def _write_tables_in_parallel(
         # flight (at most one per worker) rather than by the file's size.
         pool.shutdown(wait=True, cancel_futures=True)
 
-    skip_stats = ShredSkipStats()
-    for result in results:
-        skip_stats.skipped_records += result.skipped_records
-        for label, count in result.skipped_rows_by_table.items():
-            skip_stats.skipped_rows_by_table[label] = (
-                skip_stats.skipped_rows_by_table.get(label, 0) + count
-            )
+    skip_stats = _merge_chunk_skip_stats(results)
 
     summaries: list[dict[str, Any]] = []
     for spec in table_specs:
@@ -2303,12 +2318,16 @@ class _InferenceState:
     levels: dict[_InferenceLevel, dict[_InferenceObjectPath, str]] = field(
         default_factory=lambda: {(): {}}
     )
-    scalar_levels: dict[_InferenceLevel, str | None] = field(default_factory=dict)
+    scalar_levels: dict[_InferenceLevel, str | None] = field(  # pragma: no mutate
+        default_factory=dict
+    )
     container_paths: dict[_InferenceLevel, set[_InferenceObjectPath]] = field(default_factory=dict)
     null_leaves: dict[_InferenceLevel, dict[_InferenceObjectPath, None]] = field(
         default_factory=dict
     )
-    validated_keys: set[str] = field(default_factory=set, repr=False)
+    validated_keys: set[str] = field(  # pragma: no mutate - repr metadata only
+        default_factory=set, repr=False
+    )
 
     def _validate_key_once(self, key: str) -> None:
         if key in self.validated_keys:
@@ -2395,7 +2414,7 @@ def _infer_records(records: Iterable[dict[str, Any]]) -> _InferenceState:
     return state
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True)  # pragma: no mutate - declaration metadata, not runtime logic
 class _InferenceChunkResult:
     index: int
     state: _InferenceState | None = None
@@ -2448,7 +2467,10 @@ def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> 
         data_path=str(data_path),
         chunks=len(tasks),
         workers=workers,
-        duration_seconds=round(time.perf_counter() - started, 3),
+        duration_seconds=round(  # pragma: no mutate - diagnostic timing only
+            time.perf_counter() - started,
+            3,  # pragma: no mutate
+        ),
     )
     return merged
 
