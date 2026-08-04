@@ -526,7 +526,7 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     ),
     (
         "src/haute/_project_storage.py",
-        "<module>._scope_name",
+        "<module>._app_name",
         "DATABRICKS_APP_NAME",
         "os.environ.get",
     ),

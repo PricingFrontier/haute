@@ -208,6 +208,14 @@ class UCHead:
     tip_sha: str
     writer_id: str
     written_at: str | None = None
+    #: The bundle file this pointer describes. Writer-unique names make
+    #: bundle bytes immutable by construction (racing writers can never
+    #: overwrite each other's upload); ``None`` means a pointer written by
+    #: an earlier build, read as the legacy ``NNNNNN.bundle``.
+    bundle_name: str | None = None
+
+    def bundle_filename(self) -> str:
+        return self.bundle_name or f"{self.generation:06d}.bundle"
 
     def to_json(self) -> str:
         return json.dumps(
@@ -216,6 +224,7 @@ class UCHead:
                 "tip_sha": self.tip_sha,
                 "writer_id": self.writer_id,
                 "written_at": self.written_at,
+                "bundle_name": self.bundle_name,
             },
             indent=2,
             sort_keys=True,
@@ -223,24 +232,43 @@ class UCHead:
 
     @classmethod
     def from_payload(cls, payload: Any) -> UCHead:
-        """Parse a stored pointer, tolerating fields a newer haute added."""
+        """Parse a stored pointer, tolerating fields a newer haute added.
+
+        A malformed pointer raises :class:`StorageConfigError`: retrying
+        cannot fix a corrupted record, so the failure must classify as
+        terminal, not as retryable transport.
+        """
         if not isinstance(payload, dict):
-            raise StorageUnavailableError("The stored storage pointer is not an object.")
+            raise StorageConfigError(
+                "The stored storage pointer is not an object — the location may be "
+                "corrupted. Rebind the project, or restore the volume's contents."
+            )
         generation = payload.get("generation")
         tip_sha = payload.get("tip_sha")
         writer_id = payload.get("writer_id")
         if not isinstance(generation, int) or generation < 1:
-            raise StorageUnavailableError("The stored storage pointer has no valid generation.")
+            raise StorageConfigError(
+                "The stored storage pointer has no valid generation — the location "
+                "may be corrupted. Rebind the project, or restore the volume's contents."
+            )
         if not isinstance(tip_sha, str) or not tip_sha.strip():
-            raise StorageUnavailableError("The stored storage pointer has no tip commit.")
+            raise StorageConfigError(
+                "The stored storage pointer has no tip commit — the location may be "
+                "corrupted. Rebind the project, or restore the volume's contents."
+            )
         if not isinstance(writer_id, str) or not writer_id.strip():
-            raise StorageUnavailableError("The stored storage pointer has no writer identity.")
+            raise StorageConfigError(
+                "The stored storage pointer has no writer identity — the location "
+                "may be corrupted. Rebind the project, or restore the volume's contents."
+            )
         written_at = payload.get("written_at")
+        bundle_name = payload.get("bundle_name")
         return cls(
             generation=generation,
             tip_sha=tip_sha.strip(),
             writer_id=writer_id.strip(),
             written_at=written_at if isinstance(written_at, str) and written_at else None,
+            bundle_name=bundle_name if isinstance(bundle_name, str) and bundle_name else None,
         )
 
 
@@ -505,9 +533,21 @@ def _state_volume_root() -> str:
     return "/Volumes/" + "/".join(part.strip() for part in parts)
 
 
+def _app_name() -> str | None:
+    """The hosted app's platform name, or ``None`` off the platform.
+
+    The distinction matters to the claim layer: "one container per app"
+    is a platform guarantee, so it only justifies the own-app claim
+    takeover when a real app name exists — every process WITHOUT one
+    shares the fallback scope and must arbitrate by lease expiry.
+    """
+    raw = os.environ.get("DATABRICKS_APP_NAME", "").strip()
+    return raw or None
+
+
 def _scope_name() -> str:
     """Binding records are per app, so several apps can share one volume."""
-    return os.environ.get("DATABRICKS_APP_NAME", "").strip() or "local"
+    return _app_name() or "local"
 
 
 def binding_file_path() -> str:
@@ -606,8 +646,62 @@ def _uc_head_path(url: str) -> str:
     return f"{_uc_volume_path(url)}/{_UC_HEAD_FILE}"
 
 
-def _uc_bundle_path(url: str, generation: int) -> str:
-    return f"{_uc_volume_path(url)}/{_UC_BUNDLE_DIR}/{generation:06d}.bundle"
+def _uc_bundle_path(url: str, filename: str) -> str:
+    return f"{_uc_volume_path(url)}/{_UC_BUNDLE_DIR}/{filename}"
+
+
+def _uc_bundle_filename(generation: int) -> str:
+    """This writer's unique filename for *generation*.
+
+    The writer suffix is what makes bundle bytes immutable: two writers
+    racing to the same generation upload to different paths, so the loser
+    of the pointer race loses loudly at the fence — never by having its
+    bytes overwritten underneath a pointer that still names them.
+    """
+    return f"{generation:06d}-{_writer_id()}.bundle"
+
+
+#: Clone-side record of the generation this clone last embodied — what the
+#: `present` restore path verifies against before blessing the fence.
+_UC_GENERATION_RECORD = "uc-generation.json"
+
+
+def _write_uc_generation_record(project_dir: Path, head: UCHead) -> None:
+    """Remember, inside the clone, which published generation it embodies.
+
+    Mere presence of a commit is not identity — another writer can publish
+    a commit this clone also happens to contain — so the `present` path
+    needs an exact record to compare the volume's pointer against.
+    Best-effort: a failed write only leaves the fence armed (loud), never
+    lets it bless wrongly.
+    """
+    state_dir = project_dir / ".haute"
+    try:
+        state_dir.mkdir(exist_ok=True)
+        (state_dir / _UC_GENERATION_RECORD).write_text(
+            json.dumps(
+                {
+                    "generation": head.generation,
+                    "tip_sha": head.tip_sha,
+                    "writer_id": head.writer_id,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("uc_generation_record_write_failed", error=str(exc))
+
+
+def _read_uc_generation_record(project_dir: Path) -> dict[str, Any] | None:
+    """The clone's generation record, or ``None`` (missing/unreadable = armed fence)."""
+    path = project_dir / ".haute" / _UC_GENERATION_RECORD
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def read_uc_head(url: str) -> UCHead | None:
@@ -631,7 +725,10 @@ def read_uc_head(url: str) -> UCHead | None:
     try:
         payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
     except (UnicodeError, json.JSONDecodeError) as exc:
-        raise StorageUnavailableError("The project's storage pointer is unreadable.") from exc
+        raise StorageConfigError(
+            "The project's storage pointer is unreadable — the location may be "
+            "corrupted. Rebind the project, or restore the volume's contents."
+        ) from exc
     return UCHead.from_payload(payload)
 
 
@@ -746,10 +843,16 @@ def acquire_uc_claim(url: str, user: str | None = None) -> UCClaim:
     if (
         existing is not None
         and existing.writer_id != _writer_id()
-        and existing.app_name != _scope_name()
         and not _claim_is_stale(existing)
     ):
-        raise _claimed_error(existing)
+        # "One container per app" is a platform guarantee, so a claim
+        # carrying this app's own name can only be a predecessor's — but
+        # only when a real app name exists. Off the platform every process
+        # shares the fallback scope, and two local processes must arbitrate
+        # by lease expiry like strangers, not seize each other's claim.
+        own_predecessor = _app_name() is not None and existing.app_name == _app_name()
+        if not own_predecessor:
+            raise _claimed_error(existing)
 
     now = _now_iso()
     ours = UCClaim(
@@ -821,9 +924,18 @@ def _verify_uc_claim_for_publish(url: str) -> None:
     global _uc_claim, _uc_claim_url
 
     current = read_uc_claim(url)
-    if current is None:
-        return
     held = _uc_claim
+    if current is None:
+        if held is None:
+            return  # A claimless location and a non-claiming caller.
+        # Our live lease vanished — a departing predecessor's release can
+        # delete a successor's fresh claim (read-to-delete window, no CAS).
+        # That is "reassert", not "lost": we are demonstrably alive.
+        user = held.user
+        _uc_claim = None
+        _uc_claim_url = None
+        acquire_uc_claim(url, user=user)
+        return
     if held is not None and current.nonce == held.nonce and current.writer_id == held.writer_id:
         refreshed = UCClaim(
             app_name=held.app_name,
@@ -868,16 +980,24 @@ class _ClaimHeartbeat:
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="haute-uc-claim", daemon=True)
+            if not self._stop.is_set():
+                return
+            # A stop() raced this start(): the old thread will exit on its
+            # set event. It must not strand the NEW claim beatless, so hand
+            # the new thread its own fresh event rather than reusing one
+            # the outgoing thread still watches.
+            self._thread.join(timeout=2.0)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, args=(self._stop,), name="haute-uc-claim", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
 
-    def _run(self) -> None:
-        while not self._stop.wait(_UC_CLAIM_HEARTBEAT_SECONDS):
+    def _run(self, stop: threading.Event) -> None:
+        while not stop.wait(_UC_CLAIM_HEARTBEAT_SECONDS):
             if not self._beat():
                 return
 
@@ -895,7 +1015,20 @@ class _ClaimHeartbeat:
             current = read_uc_claim(url)
         except StorageUnavailableError:
             return True  # Transient API failure; the staleness margin absorbs it.
-        if current is None or current.nonce != claim.nonce:
+        if current is None:
+            # A departing predecessor's release deleted our live lease (no
+            # CAS on the Files API). Reassert it: we are alive, and leaving
+            # the location claimless would let a third writer bind with no
+            # 409 at all.
+            try:
+                _write_uc_claim(url, claim)
+            except StorageUnavailableError:
+                pass
+            return True
+        if current.nonce != claim.nonce:
+            # A FOREIGN record is different: never re-steal from a
+            # background thread — the loss surfaces loudly at the next
+            # publish's claim verification instead.
             logger.warning("uc_claim_lost", scope=_scope_name())
             return False
         refreshed = UCClaim(
@@ -971,10 +1104,11 @@ def fork_uc_location(
             "The fork target already has a stored project. Choose an empty location."
         )
 
+    target_bundle = _uc_bundle_filename(1)
     with tempfile.TemporaryDirectory(prefix="haute-uc-fork-") as tmp:
-        bundle = Path(tmp) / f"{head.generation:06d}.bundle"
+        bundle = Path(tmp) / head.bundle_filename()
         try:
-            response = _files_api().download(_uc_bundle_path(source, head.generation))
+            response = _files_api().download(_uc_bundle_path(source, head.bundle_filename()))
             bundle.write_bytes(response.contents.read())
         except Exception as exc:
             logger.warning("uc_fork_download_failed", generation=head.generation, error=str(exc))
@@ -990,7 +1124,7 @@ def fork_uc_location(
             ) from exc
         try:
             with bundle.open("rb") as handle:
-                _files_api().upload(_uc_bundle_path(target, 1), handle, overwrite=True)
+                _files_api().upload(_uc_bundle_path(target, target_bundle), handle, overwrite=True)
         except Exception as exc:
             logger.warning("uc_fork_upload_failed", error=str(exc))
             raise StorageUnavailableError(
@@ -1009,13 +1143,17 @@ def fork_uc_location(
         tip_sha=head.tip_sha,
         writer_id=_writer_id(),
         written_at=_now_iso(),
+        bundle_name=target_bundle,
     )
+    # Pointer first, provenance after: a crash between the two loses only
+    # the fork label — it can never leave a label describing a project
+    # that did not arrive.
     try:
         _files_api().upload(
-            _uc_lineage_path(target), io.BytesIO(lineage.to_json().encode("utf-8")), overwrite=True
+            _uc_head_path(target), io.BytesIO(pointer.to_json().encode("utf-8")), overwrite=True
         )
         _files_api().upload(
-            _uc_head_path(target), io.BytesIO(pointer.to_json().encode("utf-8")), overwrite=True
+            _uc_lineage_path(target), io.BytesIO(lineage.to_json().encode("utf-8")), overwrite=True
         )
     except Exception as exc:
         logger.warning("uc_fork_pointer_write_failed", error=str(exc))
@@ -1059,9 +1197,10 @@ def publish_to_uc(url: str, project_root: Path) -> None:
             "Restart the app to continue from the latest published project."
         )
     generation = (head.generation if head is not None else 0) + 1
+    bundle_filename = _uc_bundle_filename(generation)
 
     with tempfile.TemporaryDirectory(prefix="haute-uc-publish-") as tmp:
-        bundle = Path(tmp) / f"{generation:06d}.bundle"
+        bundle = Path(tmp) / bundle_filename
         try:
             tip_sha = _git.bundle_create(bundle, cwd=project_root)
             _git.bundle_verify(bundle, cwd=project_root)
@@ -1075,7 +1214,7 @@ def publish_to_uc(url: str, project_root: Path) -> None:
         bundle_bytes = bundle.stat().st_size
         try:
             with bundle.open("rb") as handle:
-                _files_api().upload(_uc_bundle_path(url, generation), handle, overwrite=True)
+                _files_api().upload(_uc_bundle_path(url, bundle_filename), handle, overwrite=True)
         except Exception as exc:
             logger.warning("uc_bundle_upload_failed", generation=generation, error=str(exc))
             raise StorageUnavailableError(
@@ -1083,11 +1222,28 @@ def publish_to_uc(url: str, project_root: Path) -> None:
                 "Saves are kept locally and will publish on the next save, or retry now."
             ) from exc
 
+    # The initial fence guarded the packaging; this one guards the pointer.
+    # Any movement in between means another writer published mid-flight —
+    # overwriting its pointer would silently discard its generation.
+    latest = read_uc_head(url)
+    moved = (latest is None) != (head is None) or (
+        latest is not None
+        and head is not None
+        and (latest.generation != head.generation or latest.writer_id != head.writer_id)
+    )
+    if moved:
+        raise StorageSupersededError(
+            "Another app container has published newer work to this project's "
+            "storage location — publishing stopped so nothing is overwritten. "
+            "Restart the app to continue from the latest published project."
+        )
+
     pointer = UCHead(
         generation=generation,
         tip_sha=tip_sha,
         writer_id=_writer_id(),
         written_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        bundle_name=bundle_filename,
     )
     try:
         _files_api().upload(
@@ -1100,6 +1256,7 @@ def publish_to_uc(url: str, project_root: Path) -> None:
             "Saves are kept locally and will publish on the next save, or retry now."
         ) from exc
     _uc_last_seen_generation = generation
+    _write_uc_generation_record(project_root, pointer)
     # Full-bundle publishes are O(history); the size is logged so growth is
     # visible long before incremental chains would be worth their complexity.
     logger.info("uc_project_published", generation=generation, bundle_bytes=bundle_bytes)
@@ -1126,7 +1283,10 @@ def _prune_uc_bundles(url: str, newest: int) -> None:
     for entry in entries:
         name = getattr(entry, "name", None) or ""
         stem, _, suffix = name.partition(".")
-        if suffix != "bundle" or not stem.isdigit() or int(stem) > cutoff:
+        # Both filename shapes prune by their leading generation number:
+        # writer-suffixed `000008-<writer>.bundle` and legacy `000008.bundle`.
+        generation_text = stem.split("-", 1)[0]
+        if suffix != "bundle" or not generation_text.isdigit() or int(generation_text) > cutoff:
             continue
         try:
             api.delete(f"{directory}/{name}")
@@ -1149,9 +1309,9 @@ def _restore_from_uc(url: str, project_dir: Path) -> None:
             "contents, before starting."
         )
     with tempfile.TemporaryDirectory(prefix="haute-uc-restore-") as tmp:
-        bundle = Path(tmp) / f"{head.generation:06d}.bundle"
+        bundle = Path(tmp) / head.bundle_filename()
         try:
-            response = _files_api().download(_uc_bundle_path(url, head.generation))
+            response = _files_api().download(_uc_bundle_path(url, head.bundle_filename()))
             bundle.write_bytes(response.contents.read())
         except Exception as exc:
             logger.warning("uc_bundle_download_failed", generation=head.generation, error=str(exc))
@@ -1162,11 +1322,21 @@ def _restore_from_uc(url: str, project_dir: Path) -> None:
         # A corrupt bundle fails the clone loudly; the durable-copy verify
         # already happened at publish time, before the bundle was trusted.
         _git.clone_project(str(bundle), project_dir, branch=None)
+    if not _git.commit_exists(head.tip_sha, cwd=project_dir):
+        # The pointer describes history its bundle does not contain — the
+        # trace a torn multi-writer publish leaves behind. Gate loudly
+        # rather than restore the wrong project as if it were the right one.
+        raise StorageUnavailableError(
+            "The stored project's pointer describes history its bundle does not "
+            "contain — the location may have been damaged by an interrupted "
+            "publish. Rebind the project, or restore the volume, before starting."
+        )
     # A bundle clone leaves origin pointing at the temporary bundle file;
     # repoint it at the uc:// location so the next boot's "is this clone the
     # bound project?" check recognises the directory.
     _git.ensure_remote(REMOTE_NAME, url, cwd=project_dir)
     _uc_last_seen_generation = head.generation
+    _write_uc_generation_record(project_dir, head)
 
 
 # ---------------------------------------------------------------------------
@@ -1465,13 +1635,22 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
             # over immediately.
             acquire_uc_claim(remote_url, user=binding.bound_by)
             # A new process means a new writer identity, so the supersession
-            # fence must learn which generation this clone derives from — but
-            # only when the clone really does contain the published tip. An
-            # unknown tip means the volume moved on without this directory;
-            # the fence stays armed and the first publish stops loudly
-            # instead of overwriting the newer generation.
+            # fence must learn which generation this clone derives from — and
+            # only an EXACT match against the clone's own generation record
+            # counts. Mere presence of the tip commit is not identity:
+            # another writer can legitimately publish a commit this clone
+            # also happens to contain. No record, or any mismatch, leaves
+            # the fence armed and the first publish stops loudly instead of
+            # overwriting the newer generation.
             head = read_uc_head(remote_url)
-            if head is not None and _git.commit_exists(head.tip_sha, cwd=project_dir):
+            record = _read_uc_generation_record(project_dir)
+            if (
+                head is not None
+                and record is not None
+                and record.get("generation") == head.generation
+                and record.get("tip_sha") == head.tip_sha
+                and record.get("writer_id") == head.writer_id
+            ):
                 _uc_last_seen_generation = head.generation
             _active_lineage = read_uc_lineage(remote_url)
         _active_binding = binding
@@ -1564,6 +1743,14 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
         # Origin carries the uc:// URL as the clone's identity marker, so the
         # restore path can recognise this directory as the bound project.
         _git.ensure_remote(REMOTE_NAME, remote_url, cwd=project_root)
+        # An aborted fork can leave a LINEAGE.json with no pointer; adopting
+        # this (empty) location must not let that label attach itself to an
+        # unrelated project.
+        try:
+            _files_api().delete(_uc_lineage_path(remote_url))
+        except Exception as exc:
+            if not _is_not_found(exc):
+                logger.warning("uc_lineage_cleanup_failed", error=str(exc))
         publish_to_uc(remote_url, project_root)
     else:
         _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)

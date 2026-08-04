@@ -735,9 +735,10 @@ _FORK_ROOT = "/Volumes/workspace/default/projects/pricing/fork"
 
 
 def _stored_bundle_generations(files_api: _FakeFiles, root: str = _UC_ROOT) -> list[int]:
+    """Leading generation numbers of stored bundles (either filename shape)."""
     prefix = f"{root}/bundles/"
     return sorted(
-        int(path[len(prefix) :].removesuffix(".bundle"))
+        int(path[len(prefix) :].split("-", 1)[0].removesuffix(".bundle"))
         for path in files_api.store
         if path.startswith(prefix)
     )
@@ -805,7 +806,9 @@ class TestUcHeadRecord:
         ],
     )
     def test_malformed_pointers_fail_loudly(self, payload: object) -> None:
-        with pytest.raises(StorageUnavailableError):
+        """As StorageConfigError: retrying cannot fix a corrupted pointer,
+        so the failure must classify as terminal, not retryable transport."""
+        with pytest.raises(StorageConfigError, match="corrupted"):
             UCHead.from_payload(payload)
 
     def test_unreadable_pointer_is_never_mistaken_for_empty(self, files_api: _FakeFiles) -> None:
@@ -911,6 +914,7 @@ class TestUcContainerDeathSurvival:
         Bind → save → publish → destroy the container → restore into a
         fresh directory → the save is there and publishing still works.
         """
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
         _project_storage.bind_remote(UC_URL, project)
 
         (project / "rating.py").write_text("# priced\n", encoding="utf-8")
@@ -966,6 +970,7 @@ class TestUcContainerDeathSurvival:
         which generation the surviving clone derives from, its own first
         publish would read as another writer's work.
         """
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
         _project_storage.bind_remote(UC_URL, project)
         # Same filesystem, new process: fresh writer id, no seen generation.
         monkeypatch.setattr(_project_storage, "_queue", PushQueue())
@@ -981,6 +986,7 @@ class TestUcContainerDeathSurvival:
         self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A published tip the clone does not contain is someone else's work."""
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
         _project_storage.bind_remote(UC_URL, project)
         # Another container published a generation this clone knows nothing of.
         files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
@@ -1097,6 +1103,65 @@ class TestUcContainerDeathSurvival:
         _project_storage.publish_bound_project(project)
         assert _stored_head(files_api).generation == 8
 
+    def test_bundle_filenames_are_writer_unique(self, project: Path, files_api: _FakeFiles) -> None:
+        """Racing writers can contend only on the pointer, never on bytes:
+        each generation's bundle carries its writer's name in the path."""
+        _project_storage.bind_remote(UC_URL, project)
+        head = _stored_head(files_api)
+        assert head.bundle_name is not None
+        assert head.bundle_name.startswith("000001-")
+        assert _project_storage._writer_id() in head.bundle_name
+        assert f"{_UC_ROOT}/bundles/{head.bundle_name}" in files_api.store
+
+    def test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The pre-pointer fence re-check: another writer landing a
+        generation while ours is packaging/uploading must not have its
+        pointer overwritten — that would silently discard its publish."""
+        _project_storage.bind_remote(UC_URL, project)
+        foreign = UCHead(
+            generation=2,
+            tip_sha="d" * 40,
+            writer_id="racing-container",
+            bundle_name="000002-racing-container.bundle",
+        )
+
+        original_upload = files_api.upload
+
+        def interleaved_upload(path: str, contents, overwrite: bool = False) -> None:
+            original_upload(path, contents, overwrite=overwrite)
+            if "/bundles/" in path:
+                # The rival's pointer lands while our bundle bytes are in
+                # flight — after our packaging fence, before our pointer.
+                files_api.store[f"{_UC_ROOT}/HEAD.json"] = foreign.to_json().encode("utf-8")
+
+        monkeypatch.setattr(files_api, "upload", interleaved_upload)
+        with pytest.raises(StorageSupersededError, match="Another app container"):
+            _project_storage.publish_to_uc(UC_URL, project)
+        # The rival's generation survives untouched.
+        assert _stored_head(files_api) == foreign
+
+    def test_restore_gates_when_pointer_and_bundle_disagree(
+        self, project: Path, files_api: _FakeFiles, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pointer describing history its bundle does not contain is the
+        trace of a torn multi-writer publish — never restore it silently."""
+        _project_storage.bind_remote(UC_URL, project)
+        head = _stored_head(files_api)
+        torn = UCHead(
+            generation=head.generation,
+            tip_sha="a" * 40,  # not a commit in the bundle
+            writer_id=head.writer_id,
+            bundle_name=head.bundle_name,
+        )
+        files_api.store[f"{_UC_ROOT}/HEAD.json"] = torn.to_json().encode("utf-8")
+
+        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        with pytest.raises(StorageUnavailableError, match="does not contain"):
+            _project_storage.restore_if_bound(tmp_path / "fresh")
+
     def test_restore_gates_when_the_pointer_is_missing(
         self, project: Path, files_api: _FakeFiles, tmp_path: Path
     ) -> None:
@@ -1155,11 +1220,22 @@ class TestUcClaim:
         assert stored is not None and stored.app_name == "local"
 
     def test_an_own_app_claim_is_taken_over_even_when_fresh(
-        self, project: Path, files_api: _FakeFiles
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """One container per app: our own name can only be a predecessor's."""
-        _plant_claim(files_api, "local", writer_id="predecessor-writer")
+        monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
+        _plant_claim(files_api, "test-app", writer_id="predecessor-writer")
         assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+    def test_the_own_app_shortcut_needs_a_real_app_name(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """Off the platform every process shares the fallback scope 'local' —
+        two local processes must arbitrate by lease expiry like strangers,
+        not seize each other's claim on sight."""
+        _plant_claim(files_api, "local", writer_id="another-local-process")
+        with pytest.raises(StorageClaimedError, match="local"):
+            _project_storage.bind_remote(UC_URL, project)
 
     def test_a_malformed_claim_reads_as_stale_not_as_a_gate(
         self, project: Path, files_api: _FakeFiles
@@ -1252,6 +1328,38 @@ class TestUcClaim:
         with pytest.raises(StorageClaimedError, match="other-app"):
             _project_storage.restore_if_bound(tmp_path / "fresh")
 
+    def test_publish_reasserts_a_vanished_lease(self, project: Path, files_api: _FakeFiles) -> None:
+        """A predecessor's release can delete a successor's live lease (no
+        compare-and-swap); the holder must reassert, not shrug — a claimless
+        location would let a third writer bind with no refusal at all."""
+        _project_storage.bind_remote(UC_URL, project)
+        del files_api.store[f"{_UC_ROOT}/CLAIM.json"]
+        _project_storage.publish_bound_project(project)
+        stored = _stored_claim(files_api)
+        assert stored is not None and stored.app_name == "local"
+
+    def test_heartbeat_reasserts_a_vanished_lease(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        _project_storage.bind_remote(UC_URL, project)
+        del files_api.store[f"{_UC_ROOT}/CLAIM.json"]
+        assert _project_storage._claim_heartbeat._beat() is True
+        assert _stored_claim(files_api) is not None
+
+    def test_restarting_the_heartbeat_after_stop_beats_again(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """A stop() racing a start() must not strand the new claim beatless
+        (the lease would silently expire and another writer take over)."""
+        _project_storage.bind_remote(UC_URL, project)
+        heartbeat = _project_storage._claim_heartbeat
+        first_thread = heartbeat._thread
+        heartbeat.stop()
+        heartbeat.start()
+        assert heartbeat._thread is not first_thread
+        assert not heartbeat._stop.is_set()
+        assert heartbeat._thread is not None and heartbeat._thread.is_alive()
+
 
 # ---------------------------------------------------------------------------
 # Fork — the honest way past a held location
@@ -1277,14 +1385,15 @@ class TestUcFork:
         assert lineage.parent_generation == 2
         # The fork holds the parent's newest bundle as its own generation 1...
         assert _stored_bundle_generations(files_api, _FORK_ROOT) == [1]
-        assert (
-            files_api.store[f"{_FORK_ROOT}/bundles/000001.bundle"]
-            == files_api.store[f"{_UC_ROOT}/bundles/000002.bundle"]
-        )
-        # ... with a pointer written last and provenance recorded.
+        source_head = _stored_head(files_api)
         fork_head = _stored_head(files_api, _FORK_ROOT)
+        assert (
+            files_api.store[f"{_FORK_ROOT}/bundles/{fork_head.bundle_filename()}"]
+            == files_api.store[f"{_UC_ROOT}/bundles/{source_head.bundle_filename()}"]
+        )
+        # ... with its own pointer and provenance recorded.
         assert fork_head.generation == 1
-        assert fork_head.tip_sha == _stored_head(files_api).tip_sha
+        assert fork_head.tip_sha == source_head.tip_sha
         stored_lineage = UCLineage.from_payload(
             json.loads(files_api.store[f"{_FORK_ROOT}/LINEAGE.json"])
         )
