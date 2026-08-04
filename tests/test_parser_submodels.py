@@ -143,6 +143,39 @@ class TestExtractSubmodelRegistrations:
         with pytest.raises(ParseError, match="string literal"):
             extract_submodel_registrations(tree)
 
+    @pytest.mark.parametrize(
+        ("source", "message"),
+        [
+            (
+                'pipeline.submodel("modules/pricing.py", '
+                'definition_id="definition_pricing", definition_id="duplicate", '
+                'instance_id="instance_primary", alias="pricing")',
+                "duplicate keyword",
+            ),
+            (
+                'pipeline.submodel("modules/pricing.py", '
+                'definition_id="definition_pricing", instance_id=instance_id, '
+                'alias="pricing")',
+                "string literal",
+            ),
+            (
+                'pipeline.submodel("modules/pricing.py", '
+                'definition_id="definition_pricing", instance_id="instance_primary", '
+                'alias=" pricing")',
+                "non-empty and unpadded",
+            ),
+            (
+                'pipeline.submodel(" modules/pricing.py", '
+                'definition_id="definition_pricing", instance_id="instance_primary", '
+                'alias="pricing")',
+                "path must be non-empty and unpadded",
+            ),
+        ],
+    )
+    def test_rejects_invalid_registration_literals(self, source: str, message: str) -> None:
+        with pytest.raises(ParseError, match=message):
+            extract_submodel_registrations(ast.parse(source))
+
     @pytest.mark.parametrize("field", ["instance_id", "alias"])
     def test_rejects_duplicate_occurrence_identity(self, field: str) -> None:
         first = {
@@ -199,6 +232,41 @@ class TestParseSubmodelSource:
         source = 'import haute\nsubmodel = haute.Submodel("pricing")\n'
 
         with pytest.raises(ParseError, match="requires definition_id"):
+            parse_submodel_source(source, "modules/pricing.py")
+
+    @pytest.mark.parametrize(
+        ("source", "message"),
+        [
+            (
+                'import haute\nsubmodel = haute.Submodel("pricing", '
+                'definition_id="one", definition_id="two", '
+                "input_ports=[], output_ports=[])\n",
+                "duplicate keyword",
+            ),
+            (
+                'import haute\nsubmodel = haute.Submodel("pricing", '
+                "definition_id=DEFINITION_ID, input_ports=[], output_ports=[])\n",
+                "literal value",
+            ),
+            (
+                'import haute\nsubmodel = haute.Submodel("pricing", '
+                'definition_id=" ", input_ports=[], output_ports=[])\n',
+                "non-empty unpadded",
+            ),
+            (
+                'import haute\nsubmodel = haute.Submodel("pricing", '
+                'definition_id="definition_pricing", input_ports={}, output_ports=[])\n',
+                "literal list",
+            ),
+            (
+                'import haute\nsubmodel = haute.Submodel("pricing", '
+                'definition_id="definition_pricing", input_ports=[{}], output_ports=[])\n',
+                "invalid public port",
+            ),
+        ],
+    )
+    def test_rejects_invalid_definition_contract(self, source: str, message: str) -> None:
+        with pytest.raises(ParseError, match=message):
             parse_submodel_source(source, "modules/pricing.py")
 
     def test_rejects_empty_source_instead_of_inventing_a_definition(self) -> None:

@@ -402,6 +402,19 @@ class TestSchemas:
         assert req.preserved_blocks == ["KEEP = 1"]
         assert req.base_revision == "revision-1"
 
+    @pytest.mark.parametrize("instance_id", ["", " instance_scoring", "instance_scoring "])
+    def test_dissolve_submodel_request_rejects_invalid_identity(self, instance_id: str):
+        from pydantic import ValidationError
+
+        from haute.schemas import DissolveSubmodelRequest
+
+        with pytest.raises(ValidationError, match="non-empty and unpadded"):
+            DissolveSubmodelRequest(
+                instance_id=instance_id,
+                graph={"nodes": [], "edges": []},
+                base_revision="revision-1",
+            )
+
     def test_dissolve_submodel_request_rejects_name_target(self):
         from pydantic import ValidationError
 

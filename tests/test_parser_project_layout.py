@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from haute.errors import ParseError
 from haute.parser import parse_pipeline_file
 from tests.conftest import write_data_input_config
 
@@ -148,3 +151,25 @@ pipeline.submodel(
     assert "root_scoring" not in graph.submodels
     child = graph.submodels["rating_scoring"].graph.nodes[0]
     assert child.data.config["path"] == "rating-data.parquet"
+
+
+def test_pipeline_rejects_submodel_outside_project_root(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    pipeline_file = tmp_path / "main.py"
+    _write(
+        pipeline_file,
+        """\
+import haute
+
+pipeline = haute.Pipeline("main")
+pipeline.submodel(
+    "../outside.py",
+    definition_id="outside",
+    instance_id="submodel__outside",
+    alias="outside",
+)
+""",
+    )
+
+    with pytest.raises(ParseError, match="escapes the project directory"):
+        parse_pipeline_file(pipeline_file)
