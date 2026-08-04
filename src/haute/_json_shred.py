@@ -44,7 +44,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 from weakref import WeakValueDictionary
 
 import orjson
@@ -692,6 +692,12 @@ _LeafSpec = tuple[str, str, str]  # (column_name, leaf_path_dotted, type_token)
 # lives (W1): equal to the table's depth for a normal column, shallower for
 # an ancestor column whose value distributes over descendant rows.
 _WalkSpec = tuple[str, str, str, int]
+# As _WalkSpec, plus the two per-column constants the walk would otherwise
+# re-derive on every emitted row: the leaf pre-split into hops, and whether the
+# leaf is the reserved scalar sentinel. Built once per shred in
+# :func:`shred_to_buffers`; never part of a stored config.
+# (column_name, leaf_path_dotted, leaf_parts, type_token, source_depth, is_scalar_leaf)
+_PreparedCol = tuple[str, str, tuple[str, ...], str, int, bool]
 
 
 @dataclass(frozen=True)
@@ -713,8 +719,22 @@ class _EmittingTableSpec:
         return [(name, leaf, type_token) for name, leaf, type_token, _depth in self.columns]
 
 
-def _resolve_leaf(value: Any, leaf: str) -> Any:
+def _leaf_parts(leaf: str) -> tuple[str, ...]:
+    """Split a dotted leaf into its hops once, for reuse across every row.
+
+    The leaf path is a constant of the column spec, but the shred resolves it
+    per row per column (millions of calls on a large file). Splitting there
+    re-derived the same tuple every time; callers on the hot path precompute
+    it with this and hand it to :func:`_resolve_leaf`.
+    """
+    return tuple(leaf.split("."))
+
+
+def _resolve_leaf(value: Any, leaf: str, parts: tuple[str, ...] | None = None) -> Any:
     """Resolve a dotted leaf path within a single dict.
+
+    *parts* is ``leaf`` pre-split by :func:`_leaf_parts`. It is purely a hot-path
+    optimisation — omitted, the split happens here and behaviour is identical.
 
     For ``leaf = "policy_id"`` returns ``value["policy_id"]`` (or None).
     For ``leaf = "profile.age"`` walks one level deeper.
@@ -740,10 +760,12 @@ def _resolve_leaf(value: Any, leaf: str) -> Any:
         return value if not isinstance(value, (dict, list)) else None
     if not isinstance(value, dict):
         return None
-    if "." not in leaf:
-        return value.get(leaf)
+    if parts is None:
+        parts = _leaf_parts(leaf)
+    if len(parts) == 1:
+        return value.get(parts[0])
     cur: Any = value
-    for part in leaf.split("."):
+    for part in parts:
         if isinstance(cur, dict):
             cur = cur.get(part)
         elif isinstance(cur, list):
@@ -863,9 +885,25 @@ def shred_to_buffers(
     emit_tables = [(spec.label, spec.segments, list(spec.columns)) for spec in table_specs]
 
     # Group tables by their full-segment position — the place the walk emits.
-    tables_by_pos: dict[tuple[PathSeg, ...], list[tuple[str, list[_WalkSpec]]]] = {}
+    #
+    # Everything constant for a (position, table) pair is derived ONCE here
+    # rather than per emitted row: the leaf path pre-split into hops, whether
+    # the leaf is the scalar sentinel, and whether the table is a scalar child
+    # table. On a large file the walk runs these millions of times, and they
+    # depend only on the spec and the position's array depth (fixed, since the
+    # position is the key) — never on the record being walked.
+    tables_by_pos: dict[tuple[PathSeg, ...], list[tuple[str, bool, list[_PreparedCol]]]] = {}
     for label, segments, col_specs in emit_tables:
-        tables_by_pos.setdefault(segments, []).append((label, col_specs))
+        pos_depth = array_depth(segments)
+        prepared: list[_PreparedCol] = [
+            (name, leaf, _leaf_parts(leaf), type_token, source_depth, leaf == _SCALAR_VALUE_LEAF)
+            for name, leaf, type_token, source_depth in col_specs
+        ]
+        is_scalar_table = any(
+            is_scalar_leaf and source_depth == pos_depth
+            for _n, _l, _p, _t, source_depth, is_scalar_leaf in prepared
+        )
+        tables_by_pos.setdefault(segments, []).append((label, is_scalar_table, prepared))
 
     # Descents: at each position, the (object-prefix, array-key) hops to reach a
     # child array, with the resulting child position. Object hops between arrays
@@ -896,7 +934,7 @@ def shred_to_buffers(
             stats.count_row_skip(label)
 
     def _emit_row(
-        col_specs: list[_WalkSpec],
+        col_specs: list[_PreparedCol],
         value: Any,
         ancestors: tuple[Any, ...],
         depth: int,
@@ -906,10 +944,10 @@ def shred_to_buffers(
         ancestor dict carried at that shallower depth — the same value
         distributed across every descendant row (W1)."""
         row: dict[str, Any] = {}
-        for col_name, leaf, type_token, src_depth in col_specs:
+        for col_name, leaf, parts, type_token, src_depth, is_scalar_leaf in col_specs:
             src = value if src_depth == depth else ancestors[src_depth]  # pragma: no mutate
-            resolved = _resolve_leaf(src, leaf)
-            if leaf == _SCALAR_VALUE_LEAF or (
+            resolved = _resolve_leaf(src, leaf, parts)
+            if is_scalar_leaf or (
                 type_token == "str" and not isinstance(resolved, (dict, list))
             ):
                 resolved = _coerce_scalar(resolved, type_token)
@@ -930,11 +968,7 @@ def shred_to_buffers(
         # elements; an object table takes only dict records. Skip the mismatched
         # shape — but COUNT it (W2 item 2.7): a mixed array loses that element's
         # row for this table, and the loss must be surfaced, never silent.
-        for label, col_specs in tables_by_pos.get(pos, []):
-            is_scalar_table = any(
-                leaf == _SCALAR_VALUE_LEAF and source_depth == depth
-                for _n, leaf, _t, source_depth in col_specs
-            )
+        for label, is_scalar_table, col_specs in tables_by_pos.get(pos, []):
             shape_matches = is_scalar if is_scalar_table else is_dict
             if not shape_matches:
                 _count_row_skip(label)
@@ -966,11 +1000,8 @@ def shred_to_buffers(
                 # A null *element* is a real value for a scalar child table (its
                 # $value resolves to None; ancestor columns still distribute), a
                 # non-record for an object table (counted as a dropped row).
-                for label, col_specs in tables_by_pos.get(pos, []):
-                    if any(
-                        leaf == _SCALAR_VALUE_LEAF and source_depth == depth
-                        for _n, leaf, _t, source_depth in col_specs
-                    ):
+                for label, is_scalar_table, col_specs in tables_by_pos.get(pos, []):
+                    if is_scalar_table:
                         buffers[label].append(_emit_row(col_specs, None, ancestors, depth))
                     else:
                         _count_row_skip(label)
@@ -1022,6 +1053,224 @@ def _shred_data_file(
             )
 
     return buffers, skip_stats
+
+
+# ---------------------------------------------------------------------------
+# Parallel shred (newline-delimited sources only)
+#
+# The shred is a per-record walk: ancestor values are distributed at walk time
+# and no state crosses records (``row_id_column`` names an EXISTING data column,
+# never a generated counter). Records are therefore independent, and the only
+# things a split must preserve are row ORDER and the skip/conservation
+# accounting.
+#
+# Chunk size and worker count are deliberately separate knobs. Decoded records
+# cost several times their JSON size as Python objects, so chunk size bounds
+# peak memory (one chunk resident per worker) while worker count bounds
+# parallelism. Sizing chunks by ``file_size / n_workers`` instead would make
+# memory grow with the file and OOM on exactly the large inputs this exists for.
+#
+# Only newline-delimited sources are split: a line boundary is findable without
+# parsing. A root JSON array would need a serial byte-level scan to locate
+# element boundaries, which costs about what it saves; XML is not delimited at
+# all. Both keep the serial path.
+# ---------------------------------------------------------------------------
+
+
+# Below this, process startup and part-file round-trips cost more than the
+# serial walk saves.
+_PARALLEL_MIN_BYTES = 64 * 1024 * 1024
+# Target bytes of source JSON per chunk — the memory knob (see above).
+_PARALLEL_CHUNK_BYTES = 64 * 1024 * 1024
+# Workers beyond this show little gain and multiply peak memory.
+_PARALLEL_MAX_WORKERS = 8
+
+
+def _parallel_worker_count(chunk_count: int) -> int:
+    """Workers to run for *chunk_count* chunks — never more than there is work."""
+    cpu = os.cpu_count() or 1
+    return max(1, min(_PARALLEL_MAX_WORKERS, cpu - 1, chunk_count))
+
+
+def _jsonl_byte_ranges(data_path: Path, chunk_bytes: int) -> list[tuple[int, int]]:
+    """Split a newline-delimited file into ``[start, end)`` byte ranges.
+
+    Each boundary is advanced to just past the next newline so no range splits
+    a record; consecutive ranges therefore tile the file exactly, with no gap
+    and no overlap. Returned in file order — the order rows must keep.
+    """
+    size = data_path.stat().st_size
+    if size == 0:
+        return []
+    if size <= chunk_bytes:
+        return [(0, size)]
+
+    bounds = [0]
+    with data_path.open("rb") as f:
+        target = chunk_bytes
+        while target < size:
+            f.seek(target)
+            f.readline()  # discard the partial line; the next one starts a record
+            pos = f.tell()
+            if pos >= size:
+                break
+            if pos > bounds[-1]:
+                bounds.append(pos)
+            target = pos + chunk_bytes
+    bounds.append(size)
+    return [(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
+
+
+def _iter_range_records(
+    data_path: Path,
+    start: int,
+    end: int,
+    stats: ShredSkipStats,
+) -> Iterator[dict[str, Any]]:
+    """Yield records from ``[start, end)`` of a newline-delimited file.
+
+    Mirrors the JSONL arm of :func:`_iter_records` exactly — blank lines are
+    formatting and never counted, a non-object line is a skipped record — but
+    reads bytes so a range can be seeked to directly. ``orjson`` validates
+    UTF-8 itself, so decoding stays inside the JSON parse.
+    """
+    with data_path.open("rb") as f:
+        f.seek(start)
+        remaining = end - start
+        for raw_line in f:
+            if remaining <= 0:
+                break
+            remaining -= len(raw_line)
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            obj = orjson.loads(stripped)
+            if isinstance(obj, dict):
+                yield obj
+            else:
+                stats.count_record_skip()
+
+
+@dataclass(frozen=True)
+class _ChunkResult:
+    """One chunk's contribution, as returned across the process boundary."""
+
+    index: int
+    record_count: int
+    skipped_records: int
+    skipped_rows_by_table: dict[str, int]
+    row_counts: dict[str, int]
+    # label -> Arrow IPC part path. Rows stay on disk: piping millions of rows
+    # back through the pool's result channel would cost more than the shred.
+    part_paths: dict[str, str]
+    # Set when the chunk raised. The exception is rebuilt in the parent rather
+    # than pickled, so a custom error class's signature can't break the return
+    # trip and the surfaced type/message/column stay exactly as the serial path.
+    error_type: str | None = None
+    error_message: str | None = None
+    error_column: str | None = None
+
+
+def _shred_chunk(
+    args: tuple[str, int, int, int, dict[str, Any], str],
+) -> _ChunkResult:
+    """Shred one byte range and write its rows as Arrow IPC parts.
+
+    Module-level and argument-driven so it survives ``spawn`` pickling on
+    Windows. Runs in a worker process: it must return, never raise, so a
+    failure is reported for the parent to re-raise in context.
+    """
+    data_path_s, start, end, index, v2_config, tmp_dir_s = args
+    data_path = Path(data_path_s)
+    tmp_dir = Path(tmp_dir_s)
+    try:
+        import pyarrow as pa
+
+        table_specs = _emitting_table_specs(v2_config)
+        stats = ShredSkipStats()
+        record_count = 0
+
+        def _counted() -> Iterator[dict[str, Any]]:
+            nonlocal record_count
+            for record in _iter_range_records(data_path, start, end, stats):
+                record_count += 1
+                yield record
+
+        buffers = shred_to_buffers(
+            _counted(), v2_config, stats=stats, _table_specs=table_specs
+        )
+
+        # Conservation, per chunk. Ranges tile the file exactly, so holding the
+        # invariant on every chunk holds it on the whole file — and localises a
+        # violation to the range that caused it.
+        for spec in table_specs:
+            if spec.segments:
+                continue
+            emitted = len(buffers.get(spec.label, []))
+            skipped = stats.skipped_rows_by_table.get(spec.label, 0)
+            if emitted + skipped != record_count:
+                raise RuntimeError(
+                    "json shred conservation violation for root table "
+                    f"{spec.label!r} in byte range [{start}, {end}): {emitted} "
+                    f"emitted + {skipped} skipped != {record_count} records read "
+                    "— a row was lost or duplicated without accounting",
+                )
+
+        part_paths: dict[str, str] = {}
+        row_counts: dict[str, int] = {}
+        for spec in table_specs:
+            frame = _buffer_to_frame(buffers.get(spec.label, []), spec.leaf_specs)
+            part = tmp_dir / f"{_sanitise_label(spec.label)}.{index:06d}.arrow"
+            # Arrow IPC, uncompressed: this part is read back once, by one
+            # process, on the same machine. Compressing it would trade away the
+            # CPU this whole path exists to save.
+            arrow_table = frame.to_arrow()
+            with pa.OSFile(str(part), "wb") as sink:
+                with pa.ipc.new_file(sink, arrow_table.schema) as ipc_writer:
+                    ipc_writer.write_table(arrow_table)
+            part_paths[spec.label] = str(part)
+            row_counts[spec.label] = frame.height
+
+        return _ChunkResult(
+            index=index,
+            record_count=record_count,
+            skipped_records=stats.skipped_records,
+            skipped_rows_by_table=dict(stats.skipped_rows_by_table),
+            row_counts=row_counts,
+            part_paths=part_paths,
+        )
+    except BaseException as exc:  # noqa: BLE001 — reported, then re-raised in the parent
+        return _ChunkResult(
+            index=index,
+            record_count=0,
+            skipped_records=0,
+            skipped_rows_by_table={},
+            row_counts={},
+            part_paths={},
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            error_column=getattr(exc, "column", None),
+        )
+
+
+def _raise_chunk_error(result: _ChunkResult) -> NoReturn:
+    """Re-raise a worker's failure in the parent, preserving type and column."""
+    message = result.error_message or "unknown error"
+    if result.error_type == "ApiInputSchemaError":
+        raise ApiInputSchemaError(message, column=result.error_column)
+    if result.error_type == "JSONDecodeError":
+        raise orjson.JSONDecodeError(message, "", 0)
+    raise RuntimeError(message)
+
+
+def _should_shred_in_parallel(data_path: Path) -> bool:
+    """True when splitting *data_path* is both possible and worth it."""
+    if data_path.suffix.lower() not in (".jsonl", ".ndjson"):
+        return False
+    try:
+        return data_path.stat().st_size >= _PARALLEL_MIN_BYTES
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1280,6 +1529,150 @@ def _per_frame_metadata(label: str, col_specs: list[_LeafSpec]) -> dict[bytes, b
     return {b"haute_per_frame_schema": orjson.dumps(payload)}
 
 
+def _table_summary(
+    label: str,
+    parquet_path: Path,
+    row_count: int,
+    schema_frame: pl.DataFrame,
+) -> dict[str, Any]:
+    """One ``tables[]`` manifest entry. Column shape comes from an empty frame
+    built through :func:`_buffer_to_frame`, so the serial and parallel paths
+    report identical dtypes by construction rather than by agreement."""
+    return {
+        "label": label,
+        "parquet": parquet_path.name,
+        "row_count": row_count,
+        "column_count": schema_frame.width,
+        "columns": {name: str(dtype) for name, dtype in schema_frame.schema.items()},
+        "content_signature": _file_content_signature(parquet_path),
+    }
+
+
+def _write_tables_serially(
+    buffers: dict[str, list[dict[str, Any]]],
+    table_specs: tuple[_EmittingTableSpec, ...],
+    tmp_dir: Path,
+) -> list[dict[str, Any]]:
+    """Write one parquet per emitting table from in-memory row buffers."""
+    import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
+
+    summaries: list[dict[str, Any]] = []
+    for spec in table_specs:
+        col_specs = spec.leaf_specs
+        frame = _buffer_to_frame(buffers.get(spec.label, []), col_specs)
+        parquet_path = tmp_dir / f"{_sanitise_label(spec.label)}.parquet"
+        # Convert to Arrow and attach the per-frame schema in the footer
+        # (DUAL_CACHE.md §3). Polars's DataFrame.write_parquet doesn't accept
+        # the bytes-keyed metadata shape PyArrow uses; going via Arrow directly
+        # matches the flat-cache writer.
+        arrow_tbl = frame.to_arrow().replace_schema_metadata(
+            _per_frame_metadata(spec.label, col_specs),
+        )
+        pq.write_table(arrow_tbl, parquet_path, compression="zstd")
+        summaries.append(_table_summary(spec.label, parquet_path, frame.height, frame))
+    return summaries
+
+
+def _write_tables_in_parallel(
+    data_path: Path,
+    v2_config: dict[str, Any],
+    table_specs: tuple[_EmittingTableSpec, ...],
+    tmp_dir: Path,
+    ranges: list[tuple[int, int]],
+) -> tuple[list[dict[str, Any]], ShredSkipStats]:
+    """Shred *ranges* across worker processes, then assemble one parquet each.
+
+    Parts are streamed into the final parquet in chunk order, so row order
+    matches the serial shred exactly. Each part is released as it is consumed,
+    keeping the parent's memory bounded by one part rather than the whole file.
+    """
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tasks = [
+        (str(data_path), start, end, index, v2_config, str(tmp_dir))
+        for index, (start, end) in enumerate(ranges)
+    ]
+    workers = _parallel_worker_count(len(tasks))
+    logger.info(
+        "json_shred_parallel_start",
+        data_path=str(data_path),
+        chunks=len(tasks),
+        workers=workers,
+    )
+
+    # "spawn" explicitly: it is the only start method available on Windows and
+    # the only one safe alongside the server's threads elsewhere, so every
+    # platform exercises the same picklable-arguments path.
+    results: list[_ChunkResult] = []
+    pool = ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=multiprocessing.get_context("spawn"),
+    )
+    try:
+        # ``map`` yields in submission order, which is file order.
+        for result in pool.map(_shred_chunk, tasks):
+            if result.error_type is not None:
+                _raise_chunk_error(result)
+            results.append(result)
+    finally:
+        # ``map`` submits every chunk up front, so a plain shutdown would wait
+        # for the whole file even when chunk 2 of 200 already failed. Cancelling
+        # the queued futures bounds a failed build by the chunks already in
+        # flight (at most one per worker) rather than by the file's size.
+        pool.shutdown(wait=True, cancel_futures=True)
+
+    skip_stats = ShredSkipStats()
+    for result in results:
+        skip_stats.skipped_records += result.skipped_records
+        for label, count in result.skipped_rows_by_table.items():
+            skip_stats.skipped_rows_by_table[label] = (
+                skip_stats.skipped_rows_by_table.get(label, 0) + count
+            )
+
+    summaries: list[dict[str, Any]] = []
+    for spec in table_specs:
+        col_specs = spec.leaf_specs
+        parquet_path = tmp_dir / f"{_sanitise_label(spec.label)}.parquet"
+        metadata = _per_frame_metadata(spec.label, col_specs)
+        schema_frame = _buffer_to_frame([], col_specs)
+        row_count = 0
+        writer: Any = None
+        try:
+            for result in results:
+                part = result.part_paths.get(spec.label)
+                if part is None:
+                    continue
+                # OSFile, not memory_map: a mapped part stays locked on Windows
+                # and could not be unlinked below. Reading it owns the buffers,
+                # and only one part is resident at a time by design.
+                with pa.OSFile(part, "rb") as source:
+                    part_table = pa.ipc.open_file(source).read_all()
+                part_table = part_table.replace_schema_metadata(metadata)
+                if writer is None:
+                    writer = pq.ParquetWriter(
+                        parquet_path, part_table.schema, compression="zstd"
+                    )
+                writer.write_table(part_table)
+                row_count += part_table.num_rows
+                del part_table
+                Path(part).unlink(missing_ok=True)
+            if writer is None:
+                # No chunk produced a part for this table (only reachable if
+                # every range was empty) — still write the empty artifact the
+                # manifest and readers expect.
+                empty = schema_frame.to_arrow().replace_schema_metadata(metadata)
+                pq.write_table(empty, parquet_path, compression="zstd")
+        finally:
+            if writer is not None:
+                writer.close()
+        summaries.append(_table_summary(spec.label, parquet_path, row_count, schema_frame))
+    return summaries, skip_stats
+
+
 def build_per_port_cache(
     data_path: str | Path,  # pragma: no mutate
     v2_config: dict[str, Any],
@@ -1344,53 +1737,36 @@ def build_per_port_cache(
                     "cache_dir": str(cd),
                 }
 
-        # The shared parsed specs drive both walking and frame construction;
-        # cache builds and direct runtime loads therefore have one selected-
-        # column/name/type/path contract.
-        emit_tables = [(spec.label, spec.leaf_specs) for spec in table_specs]
-
-        # Shred — single pass, with skip accounting (W2 item 2.7). The record
-        # iterator is consumed directly (not materialised into a list) so the
-        # build doesn't hold a full extra Python-object copy of the file
-        # alongside the row buffers (W1). The shared file-shred helper counts
-        # object records and asserts root conservation for cache and direct
-        # materialisation alike.
-        buffers, skip_stats = _shred_data_file(dp, v2_config, table_specs)
-
         # Fully materialise one generation in a sibling staging directory,
         # then atomically swap the directory into place. Unique temp names
-        # prevent collisions across xdist/CLI processes.
-        import pyarrow.parquet as pq  # local — keeps top-of-module import surface small
-
+        # prevent collisions across xdist/CLI processes. The staging directory
+        # is created BEFORE the shred so parallel workers have somewhere to
+        # write their parts, and a failure at any point removes the lot.
         fingerprint = _v2_fingerprint(v2_config)
         tmp_dir = _unique_build_tmp_dir(cd)
         tmp_dir.mkdir(parents=True)
         try:
-            table_summaries: list[dict[str, Any]] = []
-            for label, col_specs in emit_tables:
-                rows = buffers.get(label, [])
-                frame = _buffer_to_frame(rows, col_specs)
-                parquet_path = tmp_dir / f"{_sanitise_label(label)}.parquet"
-                # Convert to Arrow and attach the per-frame schema in the
-                # footer (DUAL_CACHE.md §3). Polars's DataFrame.write_parquet
-                # doesn't accept the bytes-keyed metadata shape PyArrow uses;
-                # going via Arrow directly matches the flat-cache writer.
-                arrow_tbl = frame.to_arrow()
-                arrow_tbl = arrow_tbl.replace_schema_metadata(
-                    _per_frame_metadata(label, col_specs),
+            # A newline-delimited source above the threshold is shredded across
+            # processes; everything else keeps the single-pass walk. Both paths
+            # write the same artifacts through the same frame construction.
+            ranges = (
+                _jsonl_byte_ranges(dp, _PARALLEL_CHUNK_BYTES)
+                if _should_shred_in_parallel(dp)
+                else []
+            )
+            if len(ranges) > 1:
+                table_summaries, skip_stats = _write_tables_in_parallel(
+                    dp, v2_config, table_specs, tmp_dir, ranges
                 )
-                pq.write_table(arrow_tbl, parquet_path, compression="zstd")
-                content_signature = _file_content_signature(parquet_path)
-                table_summaries.append(
-                    {
-                        "label": label,
-                        "parquet": parquet_path.name,
-                        "row_count": frame.height,
-                        "column_count": frame.width,
-                        "columns": {name: str(dtype) for name, dtype in frame.schema.items()},
-                        "content_signature": content_signature,
-                    },
-                )
+            else:
+                # Shred — single pass, with skip accounting (W2 item 2.7). The
+                # record iterator is consumed directly (not materialised into a
+                # list) so the build doesn't hold a full extra Python-object
+                # copy of the file alongside the row buffers (W1). The shared
+                # file-shred helper counts object records and asserts root
+                # conservation for cache and direct materialisation alike.
+                buffers, skip_stats = _shred_data_file(dp, v2_config, table_specs)
+                table_summaries = _write_tables_serially(buffers, table_specs, tmp_dir)
 
             meta_payload = {
                 "schema_mode": "v2",
@@ -1878,6 +2254,19 @@ def infer_v2_schema_from_data(
     # (W1). A level that stays ``None`` (only ever empty) defaults to ``str``
     # at table assembly.
     scalar_levels: dict[tuple[PathSeg, ...], str | None] = {}  # pragma: no mutate
+    # Level → object-paths ever seen holding a CONTAINER (dict or list). Such a
+    # path can never also be a flat scalar column: its data is carried by the
+    # folded dotted leaves (dict) or by a child table (list). Tracked so a
+    # ``null`` occurrence of a nullable object/array cannot mint a bogus scalar
+    # column at the container's own path (which then fails the strict build the
+    # moment a record actually holds the object).
+    container_paths: dict[tuple[PathSeg, ...], set[tuple[str, ...]]] = {}
+    # Level → object-paths seen holding ``null``. A null carries NO type
+    # evidence, so it must not widen a sibling value's type (a single null in
+    # an int column would otherwise retype it ``str``). Retained separately so
+    # a leaf that is ONLY ever null still becomes a column, defaulting to
+    # ``str`` at assembly — mirroring the empty-scalar-array convention above.
+    null_leaves: dict[tuple[PathSeg, ...], set[tuple[str, ...]]] = {}
 
     def _walk(value: Any, level: tuple[PathSeg, ...], obj_prefix: tuple[str, ...]) -> None:
         if value is None:
@@ -1895,8 +2284,10 @@ def infer_v2_schema_from_data(
             if isinstance(v, dict):
                 # 1-1 object — relationally transparent: stay in this level,
                 # deepen the object prefix (no new table).
+                container_paths.setdefault(level, set()).add(opath)
                 _walk(v, level, opath)
             elif isinstance(v, list):
+                container_paths.setdefault(level, set()).add(opath)
                 # An array of objects descends a level; it is LOCATED through the
                 # object prefix that wraps it (object hops carry is_array=False).
                 child = level + tuple((p, False) for p in obj_prefix) + ((k, True),)
@@ -1924,11 +2315,25 @@ def infer_v2_schema_from_data(
                             continue
                         elem_type = _widen_type(elem_type, _infer_type(item))
                     scalar_levels[child] = _widen_type(scalar_levels.get(child), elem_type or "str")
+            elif v is None:
+                # No type evidence — defer to assembly (see ``null_leaves``).
+                null_leaves.setdefault(level, set()).add(opath)
             else:
                 cols[opath] = _widen_type(cols.get(opath), _infer_type(v))
 
     for record in records:
         _walk(record, (), ())
+
+    # A leaf seen ONLY as null across every scanned record still earns a
+    # column — typed ``str``, the same default an all-empty scalar array
+    # takes. A path ever holding a container earns none: the dotted leaves or
+    # the child table already carry it.
+    for level, null_paths in null_leaves.items():
+        cols = levels.setdefault(level, {})
+        containers: set[tuple[str, ...]] = container_paths.get(level, set())
+        for opath in null_paths:
+            if opath not in cols and opath not in containers:
+                cols[opath] = "str"
 
     table_entries: list[tuple[tuple[PathSeg, ...], dict[str, Any], str]] = []
     all_levels = set(levels) | set(scalar_levels)

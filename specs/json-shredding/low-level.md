@@ -167,17 +167,66 @@ fields without another upstream read.
    (`table_is_emitting` plus parsed table/column paths); the walk and parquet frame
    construction consume the same specs. The signature is shared for this logical
    operation rather than rehashed by each consumer.
-6. `shred_to_buffers(_counted_records(), v2_config, stats=skip_stats)` — the shred
-   core (below) — consuming `_iter_records` directly (not materialised into a list).
-7. Conservation assertion at the root level: for every emit-true root table,
+6. Create the unique sibling staging temp dir. It precedes the shred because
+   parallel workers write their parts into it; a failure anywhere below removes
+   the whole directory.
+7. Shred, by one of two paths that produce identical artifacts:
+   - **Serial** (default) — `shred_to_buffers(_counted_records(), v2_config,
+     stats=skip_stats)`, the shred core (below), consuming `_iter_records`
+     directly (not materialised into a list). Then `_write_tables_serially`.
+   - **Parallel** (`_should_shred_in_parallel`: a `.jsonl`/`.ndjson` source of at
+     least `_PARALLEL_MIN_BYTES` that splits into more than one range) —
+     `_write_tables_in_parallel`, described below.
+8. Conservation assertion at the root level: for every emit-true root table,
    `emitted + skipped_rows_by_table[label] == record_count`, else `RuntimeError`.
-8. Stage output in a unique sibling temp dir: `_buffer_to_frame` per table →
-   `to_arrow()` → attach per-frame schema metadata (`_per_frame_metadata`) →
-   `pq.write_table(..., compression="zstd")`; after each final write, record its
-   derived filename plus `{size, sha256}` `content_signature` in the table summary;
-   then write `meta.json`.
-9. `_swap_dir_into_place(tmp_dir, cache_dir)` — recoverable two-rename publish
-   (below).
+   The parallel path asserts this per chunk; ranges tile the file exactly, so
+   holding it on every chunk holds it on the whole file.
+9. Each table: `_buffer_to_frame` → `to_arrow()` → attach per-frame schema
+   metadata (`_per_frame_metadata`) → `pq.write_table(..., compression="zstd")`;
+   after each final write, record its derived filename plus `{size, sha256}`
+   `content_signature` in the table summary; then write `meta.json`. Both paths
+   build the summary through `_table_summary` from a frame produced by
+   `_buffer_to_frame`, so their reported dtypes agree by construction.
+10. `_swap_dir_into_place(tmp_dir, cache_dir)` — recoverable two-rename publish
+    (below).
+
+**Parallel shred** — `_write_tables_in_parallel(...)`. Legitimate because the
+shred is a per-record walk: ancestor values are distributed at walk time, and
+`row_id_column` names an *existing* data column rather than a generated counter,
+so no state crosses records. A split must therefore preserve only row ORDER and
+the skip/conservation accounting.
+
+- `_jsonl_byte_ranges` splits the source into `[start, end)` ranges, each
+  boundary advanced past the next newline so no range splits a record. Ranges
+  tile the file exactly — gapless, non-overlapping, in file order.
+- Chunk size (`_PARALLEL_CHUNK_BYTES`) and worker count
+  (`_PARALLEL_MAX_WORKERS`, `_parallel_worker_count`) are deliberately separate
+  knobs. Decoded records cost several times their JSON size as Python objects,
+  so chunk size bounds peak memory (one chunk resident per worker) while worker
+  count bounds parallelism. Sizing chunks as `file_size / n_workers` would make
+  memory grow with the file and exhaust it on exactly the large inputs this
+  path exists for.
+- `_shred_chunk` runs in a worker process: it is module-level and
+  argument-driven so it survives `spawn` pickling, and it returns a
+  `_ChunkResult` rather than raising, so a failure can be re-raised in the
+  parent. Rows are written as uncompressed Arrow IPC parts in the staging dir,
+  never returned through the pool's result channel.
+- The parent streams each table's parts into one `pq.ParquetWriter` **in chunk
+  order** (so row order matches the serial shred exactly), unlinking each part
+  as it is consumed to keep parent memory bounded by a single part.
+- `_raise_chunk_error` rebuilds the worker's failure in the parent rather than
+  pickling the exception, so a custom error class's constructor signature cannot
+  break the return trip and the surfaced type/message/`column` match the serial
+  path.
+- Only newline-delimited sources are split: a line boundary is findable without
+  parsing. A root JSON array would need a serial byte-level scan to locate
+  element boundaries, costing about what it saves; XML is not delimited at all.
+  Both keep the serial path.
+- The `spawn` start method is selected explicitly, so every platform exercises
+  the same picklable-arguments path rather than only Windows. As with any
+  `spawn` user, a caller that invokes the build from module-level script code
+  must guard it with `if __name__ == "__main__":`; the packaged entry point
+  (`haute = haute.cli:cli`) already does.
 
 **Shred core** — `shred_to_buffers(records, v2_config, stats=None)`:
 1. Validate schema; collect emit-true tables' `(label, segments, col_specs)`, where
@@ -440,6 +489,11 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   regression coverage, plus non-mocked exercise of `infer_v2_schema_from_data`.
 - `tests/test_xml_api_input.py` — XML record normalisation, inference, cache
   build/load values, and fail-loud rejection of DTD/entity declarations.
+- `tests/test_json_shred_parallel.py` — byte-range splitting (exact tiling, no
+  record split, order preserved) and serial-equivalence of the parallel build:
+  identical frames and row order, identical skip accounting and manifest,
+  identical typed failures, staging cleaned up on failure, and the build driven
+  from a worker thread as the route drives it.
 - `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:
   reserved-key rejection, `$value`/sibling-column rejection, empty-array type
   non-poisoning.

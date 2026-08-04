@@ -458,3 +458,62 @@ def test_build_bool_in_numeric_column_fails_loud(tmp_path: Path) -> None:
         build_per_port_cache(_write(tmp_path, data), schema, tmp_path / "cache")
     assert "flag" in str(ei.value)
     assert "boolean" in str(ei.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Inference: a JSON ``null`` carries no type evidence
+#
+# A null is absence, not a value. It must neither widen a sibling's inferred
+# type nor mint a scalar column at a path that other records hold a container
+# at. The latter produced a schema declaring BOTH ``$[:].addr`` (str) and the
+# folded ``$[:].addr.city``; the strict build then failed on the first record
+# actually carrying the object ("column 'addr' has values that don't match its
+# declared type 'str'"). The array branch already skipped nulls — these pin the
+# scalar-leaf branch to the same convention.
+# ---------------------------------------------------------------------------
+
+
+def _leaf_types(schema: dict[str, Any]) -> dict[str, str]:
+    return {c["path"]: c["type"] for t in schema["tables"] for c in t.get("columns", [])}
+
+
+def test_infer_null_does_not_widen_a_numeric_column(tmp_path: Path) -> None:
+    """One null in an int column must leave it ``int``, not retype it ``str``."""
+    p = _write(tmp_path, [{"age": 30}, {"age": None}, {"age": 41}])
+    assert _leaf_types(infer_v2_schema_from_data(p)) == {"$[:].age": "int"}
+
+
+def test_infer_all_null_leaf_still_becomes_a_str_column(tmp_path: Path) -> None:
+    """A leaf with no non-null value anywhere keeps a column, defaulting to
+    ``str`` — the same default an only-ever-empty scalar array takes. Skipping
+    nulls must not silently drop the field."""
+    p = _write(tmp_path, [{"note": None}, {"note": None}])
+    assert _leaf_types(infer_v2_schema_from_data(p)) == {"$[:].note": "str"}
+
+
+def test_infer_nullable_object_mints_no_column_at_the_object_path(tmp_path: Path) -> None:
+    """The reported failure: a 1-1 object that is null in some records. Only
+    the folded dotted leaf is a column — the object's own path is not."""
+    p = _write(tmp_path, [{"addr": {"city": "Hull"}}, {"addr": None}])
+    assert _leaf_types(infer_v2_schema_from_data(p)) == {"$[:].addr.city": "str"}
+
+
+def test_infer_nullable_array_mints_no_column_at_the_array_path(tmp_path: Path) -> None:
+    """Same class as the nullable object: the child table carries the data, so
+    a null occurrence must not also mint a scalar column at the array path."""
+    p = _write(tmp_path, [{"claims": [{"amt": 5}]}, {"claims": None}])
+    assert _leaf_types(infer_v2_schema_from_data(p)) == {"$[:].claims[:].amt": "int"}
+
+
+def test_build_accepts_a_nullable_object_using_the_inferred_schema(tmp_path: Path) -> None:
+    """End-to-end: inference -> build must now succeed on nullable-object data,
+    with the null record's folded leaves read as null."""
+    data = [{"addr": {"city": "Hull"}}, {"addr": None}, {"addr": {"city": "Leeds"}}]
+    p = _write(tmp_path, data)
+    schema = _enable_all(infer_v2_schema_from_data(p))
+    build_per_port_cache(p, schema, tmp_path / "cache")
+    frames = load_per_port_cache(tmp_path / "cache", schema)
+    (frame,) = frames.values()
+    (column,) = [c for t in schema["tables"] for c in t["columns"]]
+    assert column["path"] == "$[:].addr.city"
+    assert frame.collect()[column["name"]].to_list() == ["Hull", None, "Leeds"]
