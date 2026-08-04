@@ -2,17 +2,20 @@
 
 The headline scenario is the one the feature exists for: a hosted
 container's filesystem is destroyed on every redeploy, so work must
-survive the container. ``TestContainerDeathSurvival`` proves it end to
-end against a real ``file://`` bare repository standing in for the
-remote — bind, save, destroy the "container", restore into a fresh
-directory, and find the history intact.
+survive the container. It is proven end to end once per transport —
+``TestContainerDeathSurvival`` against a real ``file://`` bare
+repository standing in for a git remote, and
+``TestUcContainerDeathSurvival`` against the in-memory Files API
+stand-in for a Unity Catalog volume — bind, save, destroy the
+"container", restore into a fresh directory, and find the history
+intact.
 
 The remaining classes pin the pieces that make that safe: URL
-validation (no credentials in URLs), binding-record semantics (an
-unreadable record must never read as "unbound"), the askpass helper
-(the token never reaches a file, a config, or a command line), and the
-push queue's state machine (coalescing, retry gating, terminal
-failures).
+validation (no credentials in URLs, no traversal in uc:// paths),
+binding-record and pointer semantics (an unreadable record must never
+read as "unbound"), the askpass helper (the token never reaches a
+file, a config, or a command line), the push queue's state machine
+(coalescing, retry gating, terminal failures), and transport dispatch.
 """
 
 from __future__ import annotations
@@ -32,7 +35,9 @@ from haute._project_storage import (
     PushQueue,
     StorageBinding,
     StorageConfigError,
+    StorageSupersededError,
     StorageUnavailableError,
+    UCHead,
 )
 from haute.schemas import GitPushRejection, GitRemoteLeg
 
@@ -57,6 +62,8 @@ def _isolated_storage_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
     monkeypatch.setattr(_project_storage, "_queue", PushQueue())
     monkeypatch.setattr(_project_storage, "_active_binding", None)
+    monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
+    monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
     yield
     _project_storage.push_queue().stop()
 
@@ -109,6 +116,33 @@ class _FakeFiles:
             raise self.fail_with
         self.store[path] = contents.read()
 
+    def delete(self, path: str) -> None:
+        if self.fail_with is not None:
+            raise self.fail_with
+        if path not in self.store:
+            raise _FakeNotFoundError(path)
+        del self.store[path]
+
+    def list_directory_contents(self, directory: str):
+        if self.fail_with is not None:
+            raise self.fail_with
+        prefix = directory.rstrip("/") + "/"
+        entries: dict[str, object] = {}
+        for path in self.store:
+            if not path.startswith(prefix):
+                continue
+            name = path[len(prefix) :].split("/", 1)[0]
+            entries[name] = type(
+                "_Entry",
+                (),
+                {
+                    "name": name,
+                    "path": prefix + name,
+                    "is_directory": "/" in path[len(prefix) :],
+                },
+            )()
+        return iter(entries.values())
+
 
 class _Reader:
     def __init__(self, payload: bytes) -> None:
@@ -160,6 +194,61 @@ class TestRemoteUrlValidation:
     def test_empty_url_asks_for_one(self) -> None:
         with pytest.raises(StorageConfigError, match="Enter the HTTPS URL"):
             _project_storage.validate_remote_url("   ")
+
+
+class TestUcUrlValidation:
+    """uc://catalog.schema.volume/path — the volume transport's URL form."""
+
+    def test_accepted_form_round_trips(self) -> None:
+        url = "uc://workspace.default.projects/pricing/demo"
+        assert _project_storage.validate_remote_url(f"  {url} ") == url
+
+    def test_trailing_slash_is_normalised_away(self) -> None:
+        assert (
+            _project_storage.validate_remote_url("uc://workspace.default.projects/demo/")
+            == "uc://workspace.default.projects/demo"
+        )
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "uc://workspace.default/demo",  # two-part volume name
+            "uc://workspace.default.projects.extra/demo",  # four-part
+            "uc://workspace..projects/demo",  # empty part
+            "uc://workspace.default.projects",  # no project path
+            "uc://workspace.default.projects/",  # empty project path
+        ],
+    )
+    def test_malformed_forms_name_the_accepted_shape(self, url: str) -> None:
+        with pytest.raises(StorageConfigError, match="uc://catalog.schema.volume"):
+            _project_storage.validate_remote_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "uc://workspace.default.projects/../escape",
+            "uc://workspace.default.projects/a/../b",
+            "uc://workspace.default.projects/a//b",
+            "uc://workspace.default.projects/./a",
+        ],
+    )
+    def test_traversal_segments_are_refused(self, url: str) -> None:
+        """The path is joined under /Volumes/, so `..` would escape the volume."""
+        with pytest.raises(StorageConfigError, match="segments"):
+            _project_storage.validate_remote_url(url)
+
+    def test_volume_path_resolution(self) -> None:
+        assert (
+            _project_storage._uc_volume_path("uc://workspace.default.projects/pricing/demo")
+            == "/Volumes/workspace/default/projects/pricing/demo"
+        )
+
+    def test_uc_urls_need_no_credential_host_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No git credential travels to a uc:// location — the SDK auths itself."""
+        monkeypatch.setenv(GIT_TOKEN_ENV, "t")
+        assert _project_storage.validate_remote_url("uc://workspace.default.projects/demo")
 
 
 class TestCredentialHostAllowlist:
@@ -625,6 +714,367 @@ class TestContainerDeathSurvival:
         """Without somewhere durable to record it, a binding is a false promise."""
         with pytest.raises(StorageConfigError, match=STATE_VOLUME_ENV):
             _project_storage.bind_remote(f"file://{bare_remote}", project)
+
+
+# ---------------------------------------------------------------------------
+# Unity Catalog bundle transport
+# ---------------------------------------------------------------------------
+
+UC_URL = "uc://workspace.default.projects/pricing/demo"
+_UC_ROOT = "/Volumes/workspace/default/projects/pricing/demo"
+
+
+def _stored_bundle_generations(files_api: _FakeFiles) -> list[int]:
+    prefix = f"{_UC_ROOT}/bundles/"
+    return sorted(
+        int(path[len(prefix) :].removesuffix(".bundle"))
+        for path in files_api.store
+        if path.startswith(prefix)
+    )
+
+
+def _stored_head(files_api: _FakeFiles) -> UCHead:
+    return UCHead.from_payload(json.loads(files_api.store[f"{_UC_ROOT}/HEAD.json"]))
+
+
+class TestUcHeadRecord:
+    def test_round_trips_through_json(self) -> None:
+        head = UCHead(
+            generation=42,
+            tip_sha="a" * 40,
+            writer_id="haute-spike-abc123",
+            written_at="2026-08-04T00:00:00+00:00",
+        )
+        assert UCHead.from_payload(json.loads(head.to_json())) == head
+
+    def test_unknown_fields_are_tolerated(self) -> None:
+        head = UCHead.from_payload(
+            {"generation": 1, "tip_sha": "s", "writer_id": "w", "future": {"x": 1}}
+        )
+        assert head.generation == 1
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            [],
+            {},
+            {"generation": 0, "tip_sha": "s", "writer_id": "w"},
+            {"generation": "1", "tip_sha": "s", "writer_id": "w"},
+            {"generation": 1, "tip_sha": " ", "writer_id": "w"},
+            {"generation": 1, "tip_sha": "s", "writer_id": ""},
+        ],
+    )
+    def test_malformed_pointers_fail_loudly(self, payload: object) -> None:
+        with pytest.raises(StorageUnavailableError):
+            UCHead.from_payload(payload)
+
+    def test_unreadable_pointer_is_never_mistaken_for_empty(self, files_api: _FakeFiles) -> None:
+        files_api.fail_with = RuntimeError("volume unreachable")
+        with pytest.raises(StorageUnavailableError):
+            _project_storage.read_uc_head(UC_URL)
+
+    def test_absent_pointer_reads_as_never_published(self, files_api: _FakeFiles) -> None:
+        assert _project_storage.read_uc_head(UC_URL) is None
+
+
+class TestPublishDispatch:
+    """publish_bound_project selects the transport from the binding's scheme."""
+
+    def test_no_binding_defaults_to_the_git_push(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A queue started without a binding behaves exactly as before."""
+        push = _RecordingPush()
+        monkeypatch.setattr(_git, "push_working_pair", push)
+        _project_storage.publish_bound_project(project)
+        assert push.calls == 1
+
+    def test_uc_binding_routes_to_the_bundle_publish(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        published: list[str] = []
+        monkeypatch.setattr(
+            _project_storage, "publish_to_uc", lambda url, root: published.append(url)
+        )
+        monkeypatch.setattr(
+            _git, "push_working_pair", _RecordingPush(AssertionError("no git push for uc://"))
+        )
+        monkeypatch.setattr(
+            _project_storage, "_active_binding", StorageBinding(remote_url=UC_URL, branch=WORKING)
+        )
+        _project_storage.publish_bound_project(project)
+        assert published == [UC_URL]
+
+    def test_supersession_classifies_as_terminal_rejection(self) -> None:
+        failure, message, terminal = _project_storage._classify_push_failure(
+            StorageSupersededError("Another app container has published newer work.")
+        )
+        assert failure == "rejected"
+        assert terminal is True
+        assert "Another app container" in message
+
+    def test_unavailable_storage_classifies_as_retryable_transport(self) -> None:
+        failure, message, terminal = _project_storage._classify_push_failure(
+            StorageUnavailableError("The project bundle could not be uploaded.")
+        )
+        assert failure == "transport"
+        assert terminal is False
+        assert "bundle" in message
+
+
+class TestUcContainerDeathSurvival:
+    """Bind to a volume, work, lose the container, and get the work back."""
+
+    def test_bind_adopts_an_empty_location_and_publishes(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        outcome = _project_storage.bind_remote(UC_URL, project, bound_by="someone@example.com")
+        assert outcome == "adopted"
+
+        # A complete first generation and its pointer are on the volume...
+        assert _stored_bundle_generations(files_api) == [1]
+        head = _stored_head(files_api)
+        assert head.generation == 1
+        assert head.tip_sha
+        # ... origin carries the uc:// URL as the clone's identity marker...
+        assert _git.remote_url("origin", cwd=project) == UC_URL
+        # ... and the binding was recorded durably.
+        binding = _project_storage.read_binding()
+        assert binding is not None
+        assert binding.remote_url == UC_URL
+        assert binding.branch == WORKING
+
+    def test_populated_location_defers_to_a_restart(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """A location with published history is another project — never adopt it."""
+        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
+            UCHead(generation=3, tip_sha="s", writer_id="another-app").to_json().encode("utf-8")
+        )
+
+        outcome = _project_storage.bind_remote(UC_URL, project)
+        assert outcome == "restart-required"
+        assert _project_storage.read_binding() is not None
+        assert _project_storage.active_binding() is None
+        # Nothing was published over the existing generations.
+        assert _stored_bundle_generations(files_api) == []
+
+    def test_saved_work_survives_container_replacement(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The headline guarantee over the volume transport, end to end.
+
+        Bind → save → publish → destroy the container → restore into a
+        fresh directory → the save is there and publishing still works.
+        """
+        _project_storage.bind_remote(UC_URL, project)
+
+        (project / "rating.py").write_text("# priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], WORKING, cwd=project)
+        assert sha is not None
+        _project_storage.publish_bound_project(project)
+        assert _stored_head(files_api).generation == 2
+
+        # The container is replaced: fresh filesystem, fresh process state,
+        # same volume. A new writer identity is minted in the new container.
+        restored_root = tmp_path / "new-container"
+        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
+        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+        outcome = _project_storage.restore_if_bound(restored_root)
+
+        assert outcome == "restored"
+        ledger_log = _run_git(restored_root, "log", "--format=%H", f"{WORKING}-save")
+        assert sha in ledger_log.splitlines()
+
+        # Usable, not merely present: local working pair, recorded branch,
+        # and origin repointed from the temporary bundle file to the uc://
+        # URL (the clone-identity check depends on it).
+        local_branches = _run_git(restored_root, "branch", "--format=%(refname:short)").splitlines()
+        assert WORKING in local_branches
+        assert f"{WORKING}-save" in local_branches
+        from haute._git_state import read_working_branch
+
+        assert read_working_branch(restored_root) == WORKING
+        assert _git.remote_url("origin", cwd=restored_root) == UC_URL
+
+        # A further save publishes the next generation — the restored-from
+        # pointer is exempt from the supersession fence even though it was
+        # written by the previous container's writer identity.
+        (restored_root / "rating.py").write_text("# repriced\n", encoding="utf-8")
+        next_sha = _git.commit_save(["rating.py"], WORKING, cwd=restored_root)
+        assert next_sha is not None
+        _project_storage.publish_bound_project(restored_root)
+        assert _stored_head(files_api).generation == 3
+
+    def test_restore_reuses_an_existing_clone(self, project: Path, files_api: _FakeFiles) -> None:
+        """Origin carrying the uc:// URL is what identifies the directory."""
+        _project_storage.bind_remote(UC_URL, project)
+        assert _project_storage.restore_if_bound(project) == "present"
+
+    def test_process_restart_over_a_surviving_clone_can_still_publish(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `present` path must arm the fence, not trip over it.
+
+        A new process mints a new writer identity, so without learning
+        which generation the surviving clone derives from, its own first
+        publish would read as another writer's work.
+        """
+        _project_storage.bind_remote(UC_URL, project)
+        # Same filesystem, new process: fresh writer id, no seen generation.
+        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
+        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+
+        assert _project_storage.restore_if_bound(project) == "present"
+        _project_storage.publish_bound_project(project)
+        assert _stored_head(files_api).generation == 2
+
+    def test_a_surviving_clone_the_volume_moved_past_stops_publishing(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A published tip the clone does not contain is someone else's work."""
+        _project_storage.bind_remote(UC_URL, project)
+        # Another container published a generation this clone knows nothing of.
+        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
+            UCHead(generation=2, tip_sha="e" * 40, writer_id="replacement-container")
+            .to_json()
+            .encode("utf-8")
+        )
+        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
+        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+
+        assert _project_storage.restore_if_bound(project) == "present"
+        with pytest.raises(StorageSupersededError, match="Another app container"):
+            _project_storage.publish_bound_project(project)
+
+    def test_a_generation_without_its_pointer_is_never_restored(
+        self, project: Path, files_api: _FakeFiles, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pointer-written-last is the read-side contract for torn uploads.
+
+        A bundle uploaded without its pointer (the container died between
+        the two writes) must be invisible: restore follows HEAD.json only.
+        """
+        _project_storage.bind_remote(UC_URL, project)
+        sha_gen1 = _stored_head(files_api).tip_sha
+        # A torn publish: generation 2's bundle arrived, its pointer did not.
+        files_api.store[f"{_UC_ROOT}/bundles/000002.bundle"] = b"torn partial upload"
+
+        restored_root = tmp_path / "new-container"
+        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        assert _project_storage.restore_if_bound(restored_root) == "restored"
+        assert _run_git(restored_root, "rev-parse", "HEAD") == sha_gen1
+
+    def test_retention_prunes_beyond_the_newest_five(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        _project_storage.bind_remote(UC_URL, project)
+        for generation in range(2, 8):
+            (project / "rating.py").write_text(f"# rev {generation}\n", encoding="utf-8")
+            assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+            _project_storage.publish_bound_project(project)
+
+        assert _stored_head(files_api).generation == 7
+        assert _stored_bundle_generations(files_api) == [3, 4, 5, 6, 7]
+
+    def test_a_superseding_writer_stops_publishing(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """Two containers, one project: the loser stops loudly, not silently."""
+        _project_storage.bind_remote(UC_URL, project)
+        # A replacement container published generation 2 behind our back.
+        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
+            UCHead(generation=2, tip_sha="f" * 40, writer_id="replacement-container")
+            .to_json()
+            .encode("utf-8")
+        )
+
+        with pytest.raises(StorageSupersededError, match="Another app container"):
+            _project_storage.publish_to_uc(UC_URL, project)
+        # Nothing was uploaded over the superseding generation.
+        assert _stored_head(files_api).writer_id == "replacement-container"
+
+    def test_failed_upload_leaves_the_previous_pointer_intact(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The write-side of pointer-written-last: a torn publish is retryable.
+
+        When the bundle upload dies, the pointer must still name the last
+        complete generation — the failure surfaces as retryable transport,
+        and a restore meanwhile would get generation 1, not garbage.
+        """
+        _project_storage.bind_remote(UC_URL, project)
+
+        def broken_upload(path: str, contents, overwrite: bool = False) -> None:
+            raise RuntimeError("volume went away mid-upload")
+
+        monkeypatch.setattr(files_api, "upload", broken_upload)
+        with pytest.raises(StorageUnavailableError, match="uploaded"):
+            _project_storage.publish_to_uc(UC_URL, project)
+        assert _stored_head(files_api).generation == 1
+
+    def test_bundle_packaging_failure_is_retryable_and_names_the_action(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A corrupt bundle must never be uploaded as the only durable copy."""
+        _project_storage.bind_remote(UC_URL, project)
+
+        def failing_verify(bundle: Path, cwd: Path | None = None) -> None:
+            raise _git.GitError("bundle verify stderr")
+
+        monkeypatch.setattr(_git, "bundle_verify", failing_verify)
+        with pytest.raises(StorageUnavailableError, match="packaged"):
+            _project_storage.publish_to_uc(UC_URL, project)
+        assert _stored_head(files_api).generation == 1
+        failure, _, terminal = _project_storage._classify_push_failure(
+            StorageUnavailableError("The project could not be packaged for the storage volume.")
+        )
+        assert (failure, terminal) == ("transport", False)
+
+    def test_retention_failure_never_fails_a_publish(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pruning is best-effort: the publish already succeeded."""
+        _project_storage.bind_remote(UC_URL, project)
+        for generation in range(2, 8):
+            _project_storage.publish_bound_project(project)
+
+        def broken_listing(directory: str):
+            raise RuntimeError("listing unavailable")
+
+        monkeypatch.setattr(files_api, "list_directory_contents", broken_listing)
+        _project_storage.publish_bound_project(project)
+        assert _stored_head(files_api).generation == 8
+
+    def test_restore_gates_when_the_pointer_is_missing(
+        self, project: Path, files_api: _FakeFiles, tmp_path: Path
+    ) -> None:
+        """A binding promises history; an empty location must gate, not seed."""
+        _project_storage.write_binding(StorageBinding(remote_url=UC_URL, branch=WORKING))
+        with pytest.raises(StorageUnavailableError, match="no published"):
+            _project_storage.restore_if_bound(tmp_path / "fresh")
+
+    def test_restore_gates_when_the_bundle_is_missing(
+        self, project: Path, files_api: _FakeFiles, tmp_path: Path
+    ) -> None:
+        """A pointer to a vanished generation is unreadable state, not 'unbound'."""
+        _project_storage.write_binding(StorageBinding(remote_url=UC_URL, branch=WORKING))
+        files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
+            UCHead(generation=9, tip_sha="s", writer_id="w").to_json().encode("utf-8")
+        )
+        with pytest.raises(StorageUnavailableError, match="Generation 9"):
+            _project_storage.restore_if_bound(tmp_path / "fresh")
 
 
 # ---------------------------------------------------------------------------

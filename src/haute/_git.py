@@ -2815,6 +2815,49 @@ def clone_project(url: str, destination: Path, branch: str | None = None) -> Non
         raise GitError("The remote could not be cloned.")
 
 
+@_serialized_mutation
+def bundle_create(destination: Path, cwd: Path | None = None) -> str:
+    """Write the whole repository — every ref and its history — to *destination*.
+
+    A bundle is git's own single-file repository interchange format and
+    ``git clone`` reads one directly, which is what lets hosted storage
+    mirror a repository over a channel git cannot speak (the Files API).
+    ``--all`` carries every branch, tag, and ``HEAD``, so each bundle is
+    independently complete. Runs under the repository mutation lock so the
+    snapshot can never capture a save mid-commit. Returns the bundled
+    ``HEAD`` commit so the caller can label the artefact.
+    """
+    _assert_git_repo(cwd)
+    _run_git("bundle", "create", str(destination), "--all", cwd=cwd)
+    sha = _rev_parse("HEAD", cwd=cwd)
+    if sha is None:  # pragma: no cover - _assert_git_repo guarantees a HEAD
+        raise GitError("bundled HEAD did not resolve")
+    return sha
+
+
+def bundle_verify(bundle: Path, cwd: Path | None = None) -> None:
+    """Prove *bundle* is a readable, self-contained bundle.
+
+    Hosted storage's bundle is the only durable copy of the project, so it
+    must be verified before it is trusted. ``git bundle verify`` checks the
+    format and that every prerequisite is present — a ``--all`` bundle has
+    none, so a pass means the file stands alone. Needs a repository for
+    context (*cwd*); any repository will do.
+    """
+    _run_git("bundle", "verify", str(bundle), cwd=cwd)
+
+
+def commit_exists(sha: str, cwd: Path | None = None) -> bool:
+    """Whether *sha* names a commit object present in this repository.
+
+    Hosted storage uses this to decide whether an existing clone derives
+    from the durable location's published tip (the tip resolves locally)
+    or the location has moved on without it (it does not).
+    """
+    _validate_ref_name(sha)
+    return _rev_parse(f"{sha}^{{commit}}", cwd=cwd) is not None
+
+
 def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLeg:
     """Divergence of one local *branch* vs ``<remote>/<branch>`` from the
     locally-known remote-tracking ref only — no fetch (callers freshen via

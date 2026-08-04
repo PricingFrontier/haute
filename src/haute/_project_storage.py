@@ -2,26 +2,37 @@
 
 A hosted container's filesystem — including the seeded git repository —
 is destroyed by every redeploy, restart, and stop. This module gives a
-hosted session a durable home: the project is bound to a git remote, the
-binding record lives outside the container, and every save and milestone
-commit is published to that remote in the background.
+hosted session a durable home: the project is bound to a durable
+location, the binding record lives outside the container, and every save
+and milestone commit is published to that location in the background.
 
 Design: ``specs/hosted-project-storage/``. The shape in one line: git is
-the store, the remote is the durable location, and the container holds a
-clone.
+the store, the bound location is the durable copy, and the container
+holds a clone. Two transports share that shape:
 
-Three collaborating pieces:
+* an **https git remote** — the location IS a git remote and publishing
+  is ``push_working_pair``;
+* a **Unity Catalog volume** (``uc://catalog.schema.volume/path``) — the
+  container has no volume mounts, so the volume is reachable only via
+  the Files API, which git cannot speak. The bridge is ``git bundle``:
+  each publish uploads a complete, generation-numbered bundle and then
+  writes a small ``HEAD.json`` pointer LAST, so a torn upload is never
+  followed; restore clones straight from the pointed-at bundle.
+
+The collaborating pieces:
 
 * **Binding record** — ``{remote_url, branch, bound_by, bound_at}`` as
-  JSON on a Unity Catalog volume via the Files API (the container has no
-  volume mounts, so REST is the only channel; JSON travels fine over it,
-  git does not — hence a git host for the repo itself).
+  JSON on a Unity Catalog volume via the Files API (JSON travels fine
+  over REST; a git *remote protocol* does not — hence the bundle bridge
+  when the project itself lives on a volume).
 * **Credentials** — a token from an app secret resource, reaching git
   exclusively through a generated ``GIT_ASKPASS`` helper. The token is
   never written into a URL, a git config, a command line, or a log.
+  ``uc://`` locations involve no git credential: the Files API uses the
+  workspace SDK's own authentication.
 * **Push queue** — a single background worker that coalesces pending
-  commits into one ``push_working_pair`` per attempt, so saves never wait
-  on the network and a failure is visible rather than silent.
+  commits into one publish per attempt, so saves never wait on the
+  network and a failure is visible rather than silent.
 
 Every git subprocess belongs to :mod:`haute._git` (the repository's
 one-chokepoint-per-tool rule); this module orchestrates and never shells
@@ -65,6 +76,14 @@ _BINDING_PREFIX = "haute-apps"
 # would carry a token in clear, the latter needs key material this deployment
 # model has nowhere to put.
 _ALLOWED_SCHEMES = ("https://", "file://")
+# The Unity Catalog volume transport: uc://catalog.schema.volume/path/to/project
+# resolves to /Volumes/catalog/schema/volume/path/to/project, reachable only via
+# the Files API. Validated separately from the git schemes above.
+_UC_SCHEME = "uc://"
+_UC_BUNDLE_DIR = "bundles"
+_UC_HEAD_FILE = "HEAD.json"
+#: Generations kept after a publish — cheap rollback without unbounded growth.
+_UC_BUNDLE_RETAIN = 5
 
 StorageState = Literal["unbound", "bound", "unsupported"]
 SyncState = Literal["synced", "pending", "failed"]
@@ -87,6 +106,17 @@ class StorageUnavailableError(StorageError):
     Distinct from "no binding exists": an unreadable record must gate the
     session, never be mistaken for an unbound one (that would silently
     start a fresh project over durable work).
+    """
+
+
+class StorageSupersededError(StorageError):
+    """Another container advanced this project's ``uc://`` pointer.
+
+    Single-writer is the design assumption (one container, one project),
+    but a replacement container can start while the old one still holds
+    queued saves. The read-before-write fence turns that into a loud,
+    terminal stop instead of two writers silently interleaving
+    generations.
     """
 
 
@@ -144,6 +174,55 @@ class SyncStatus:
     message: str | None = None
 
 
+@dataclass(frozen=True)
+class UCHead:
+    """The ``HEAD.json`` pointer under a ``uc://`` location.
+
+    Written LAST on every publish — the Files API has no atomic rename,
+    so the pointer arriving after its bundle is what makes a torn upload
+    harmless: readers only ever follow a generation that is complete.
+    """
+
+    generation: int
+    tip_sha: str
+    writer_id: str
+    written_at: str | None = None
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "generation": self.generation,
+                "tip_sha": self.tip_sha,
+                "writer_id": self.writer_id,
+                "written_at": self.written_at,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> UCHead:
+        """Parse a stored pointer, tolerating fields a newer haute added."""
+        if not isinstance(payload, dict):
+            raise StorageUnavailableError("The stored storage pointer is not an object.")
+        generation = payload.get("generation")
+        tip_sha = payload.get("tip_sha")
+        writer_id = payload.get("writer_id")
+        if not isinstance(generation, int) or generation < 1:
+            raise StorageUnavailableError("The stored storage pointer has no valid generation.")
+        if not isinstance(tip_sha, str) or not tip_sha.strip():
+            raise StorageUnavailableError("The stored storage pointer has no tip commit.")
+        if not isinstance(writer_id, str) or not writer_id.strip():
+            raise StorageUnavailableError("The stored storage pointer has no writer identity.")
+        written_at = payload.get("written_at")
+        return cls(
+            generation=generation,
+            tip_sha=tip_sha.strip(),
+            writer_id=writer_id.strip(),
+            written_at=written_at if isinstance(written_at, str) and written_at else None,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Remote URL validation
 # ---------------------------------------------------------------------------
@@ -179,6 +258,45 @@ def _assert_credential_may_reach(host: str) -> None:
         )
 
 
+def is_uc_url(url: str) -> bool:
+    """Whether *url* names a Unity Catalog volume location."""
+    return url.startswith(_UC_SCHEME)
+
+
+def _validate_uc_url(candidate: str) -> str:
+    """Validate ``uc://catalog.schema.volume/path/to/project`` and return it.
+
+    The path is joined under ``/Volumes/`` for the Files API, so empty,
+    ``.`` and ``..`` segments are refused — a traversal segment would
+    escape the volume. A trailing slash is normalised away.
+    """
+    accepted = "A Unity Catalog storage URL looks like uc://catalog.schema.volume/path/to/project."
+    rest = candidate[len(_UC_SCHEME) :]
+    volume, _, path = rest.partition("/")
+    parts = volume.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise StorageConfigError(
+            f"'{volume}' is not a three-part Unity Catalog volume name. {accepted}"
+        )
+    path = path.rstrip("/")
+    if not path:
+        raise StorageConfigError(
+            f"Add a project path inside the volume so the project has its own home. {accepted}"
+        )
+    if any(segment in ("", ".", "..") for segment in path.split("/")):
+        raise StorageConfigError(
+            f"The project path cannot contain empty or dot segments. {accepted}"
+        )
+    return f"{_UC_SCHEME}{volume}/{path}"
+
+
+def _uc_volume_path(url: str) -> str:
+    """The ``/Volumes/...`` root a validated ``uc://`` URL resolves to."""
+    rest = url[len(_UC_SCHEME) :]
+    volume, _, path = rest.partition("/")
+    return "/Volumes/" + "/".join(volume.split(".")) + "/" + path
+
+
 def validate_remote_url(url: str) -> str:
     """Return the normalised *url*, or raise with the accepted forms.
 
@@ -186,16 +304,24 @@ def validate_remote_url(url: str) -> str:
     secret resource, and a URL with a password in it would be written into
     ``.git/config`` and every remote-tracking log line. Also enforces the
     credential host allowlist — see :func:`_assert_credential_may_reach`.
+    ``uc://`` locations take their own validation path: no host, no git
+    credential — just a volume name and a project path.
     """
     candidate = (url or "").strip()
     if not candidate:
-        raise StorageConfigError("Enter the HTTPS URL of the git repository to store this project.")
+        raise StorageConfigError(
+            "Enter the HTTPS URL of the git repository — or the uc:// volume "
+            "location — to store this project."
+        )
     if any(char.isspace() for char in candidate):
         raise StorageConfigError("A repository URL cannot contain spaces.")
+    if is_uc_url(candidate):
+        return _validate_uc_url(candidate)
     if not candidate.startswith(_ALLOWED_SCHEMES):
         raise StorageConfigError(
             f"'{candidate.split('://')[0]}' URLs are not supported for project storage. "
-            "Use an https:// repository URL."
+            "Use an https:// repository URL, or uc://catalog.schema.volume/path for a "
+            "Unity Catalog volume."
         )
     authority = candidate.split("://", 1)[1]
     host = authority.split("/", 1)[0]
@@ -302,6 +428,207 @@ def write_binding(binding: StorageBinding) -> None:
             "The project's storage binding could not be saved to the state volume."
         ) from exc
     logger.info("binding_written", scope=_scope_name())
+
+
+# ---------------------------------------------------------------------------
+# Unity Catalog bundle transport
+# ---------------------------------------------------------------------------
+#
+# Layout under /Volumes/<catalog>/<schema>/<volume>/<path>:
+#   bundles/000042.bundle   — generation-numbered, each a complete `--all` bundle
+#   HEAD.json               — {generation, tip_sha, writer_id, written_at}, LAST
+#
+# Full bundles, not incremental: O(history) rather than O(diff), but a pricing
+# project (code + config JSON; data gitignored) is small, and every generation
+# being independently complete removes the whole partial-chain failure class.
+
+# Fencing state, per process: who this writer is, and the newest generation it
+# has itself written or restored from. See publish_to_uc for the rule.
+_uc_writer_id: str | None = None
+_uc_last_seen_generation: int | None = None
+
+
+def _writer_id() -> str:
+    """This process's fencing identity, minted once per container process."""
+    global _uc_writer_id
+    if _uc_writer_id is None:
+        import uuid
+
+        _uc_writer_id = f"{_scope_name()}-{uuid.uuid4().hex[:12]}"
+    return _uc_writer_id
+
+
+def _uc_head_path(url: str) -> str:
+    return f"{_uc_volume_path(url)}/{_UC_HEAD_FILE}"
+
+
+def _uc_bundle_path(url: str, generation: int) -> str:
+    return f"{_uc_volume_path(url)}/{_UC_BUNDLE_DIR}/{generation:06d}.bundle"
+
+
+def read_uc_head(url: str) -> UCHead | None:
+    """Return *url*'s pointer, or ``None`` when nothing was ever published.
+
+    Raises :class:`StorageUnavailableError` when the pointer exists but
+    cannot be read — like the binding record, an unreadable pointer must
+    never be mistaken for an empty location.
+    """
+    path = _uc_head_path(url)
+    try:
+        response = _files_api().download(path)
+        raw = response.contents.read()
+    except Exception as exc:
+        if _is_not_found(exc):
+            return None
+        logger.warning("uc_head_read_failed", error=str(exc))
+        raise StorageUnavailableError(
+            "The project's storage pointer could not be read from the volume."
+        ) from exc
+    try:
+        payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise StorageUnavailableError("The project's storage pointer is unreadable.") from exc
+    return UCHead.from_payload(payload)
+
+
+def publish_to_uc(url: str, project_root: Path) -> None:
+    """Publish the whole repository to *url* as the next bundle generation.
+
+    Order matters: bundle locally (the only step under the repository
+    mutation lock) → verify — the upload is the only durable copy, so it
+    is proven readable before it is trusted → upload the bundle → write
+    the pointer LAST → prune old generations (best-effort). A torn upload
+    therefore leaves the previous pointer intact and harmless.
+    """
+    global _uc_last_seen_generation
+    import io
+    import tempfile
+
+    from haute import _git
+
+    head = read_uc_head(url)
+    # The generation this process restored from is exempt: that pointer was
+    # legitimately written by the predecessor container whose lineage this
+    # one adopted. Anything newer from another writer means we lost the race.
+    if (
+        head is not None
+        and head.writer_id != _writer_id()
+        and head.generation != _uc_last_seen_generation
+    ):
+        raise StorageSupersededError(
+            "Another app container has published newer work to this project's "
+            "storage location — publishing stopped so nothing is overwritten. "
+            "Restart the app to continue from the latest published project."
+        )
+    generation = (head.generation if head is not None else 0) + 1
+
+    with tempfile.TemporaryDirectory(prefix="haute-uc-publish-") as tmp:
+        bundle = Path(tmp) / f"{generation:06d}.bundle"
+        try:
+            tip_sha = _git.bundle_create(bundle, cwd=project_root)
+            _git.bundle_verify(bundle, cwd=project_root)
+        except _git.GitDomainError:
+            raise  # Hand-authored and user-facing; surfaces verbatim.
+        except _git.GitError as exc:
+            raise StorageUnavailableError(
+                "The project could not be packaged for the storage volume. "
+                "Saves are kept locally and will publish on the next save, or retry now."
+            ) from exc
+        bundle_bytes = bundle.stat().st_size
+        try:
+            with bundle.open("rb") as handle:
+                _files_api().upload(_uc_bundle_path(url, generation), handle, overwrite=True)
+        except Exception as exc:
+            logger.warning("uc_bundle_upload_failed", generation=generation, error=str(exc))
+            raise StorageUnavailableError(
+                "The project bundle could not be uploaded to the storage volume. "
+                "Saves are kept locally and will publish on the next save, or retry now."
+            ) from exc
+
+    pointer = UCHead(
+        generation=generation,
+        tip_sha=tip_sha,
+        writer_id=_writer_id(),
+        written_at=datetime.now(UTC).isoformat(timespec="seconds"),
+    )
+    try:
+        _files_api().upload(
+            _uc_head_path(url), io.BytesIO(pointer.to_json().encode("utf-8")), overwrite=True
+        )
+    except Exception as exc:
+        logger.warning("uc_head_write_failed", generation=generation, error=str(exc))
+        raise StorageUnavailableError(
+            "The project's storage pointer could not be written to the volume. "
+            "Saves are kept locally and will publish on the next save, or retry now."
+        ) from exc
+    _uc_last_seen_generation = generation
+    # Full-bundle publishes are O(history); the size is logged so growth is
+    # visible long before incremental chains would be worth their complexity.
+    logger.info("uc_project_published", generation=generation, bundle_bytes=bundle_bytes)
+    _prune_uc_bundles(url, generation)
+
+
+def _prune_uc_bundles(url: str, newest: int) -> None:
+    """Drop generations older than the newest ``_UC_BUNDLE_RETAIN`` ones.
+
+    Best-effort by design: retention failing must never fail a publish
+    that already succeeded — it is logged, and the next publish retries
+    it implicitly.
+    """
+    cutoff = newest - _UC_BUNDLE_RETAIN
+    if cutoff < 1:
+        return
+    directory = f"{_uc_volume_path(url)}/{_UC_BUNDLE_DIR}"
+    api = _files_api()
+    try:
+        entries = list(api.list_directory_contents(directory))
+    except Exception as exc:
+        logger.warning("uc_bundle_prune_failed", error=str(exc))
+        return
+    for entry in entries:
+        name = getattr(entry, "name", None) or ""
+        stem, _, suffix = name.partition(".")
+        if suffix != "bundle" or not stem.isdigit() or int(stem) > cutoff:
+            continue
+        try:
+            api.delete(f"{directory}/{name}")
+        except Exception as exc:
+            logger.warning("uc_bundle_prune_failed", name=name, error=str(exc))
+
+
+def _restore_from_uc(url: str, project_dir: Path) -> None:
+    """Materialise the pointed-at generation of *url* into *project_dir*."""
+    global _uc_last_seen_generation
+    import tempfile
+
+    from haute import _git
+
+    head = read_uc_head(url)
+    if head is None:
+        raise StorageUnavailableError(
+            "This app is bound to a storage location that has no published "
+            "project to restore. Rebind the app, or restore the volume's "
+            "contents, before starting."
+        )
+    with tempfile.TemporaryDirectory(prefix="haute-uc-restore-") as tmp:
+        bundle = Path(tmp) / f"{head.generation:06d}.bundle"
+        try:
+            response = _files_api().download(_uc_bundle_path(url, head.generation))
+            bundle.write_bytes(response.contents.read())
+        except Exception as exc:
+            logger.warning("uc_bundle_download_failed", generation=head.generation, error=str(exc))
+            raise StorageUnavailableError(
+                f"Generation {head.generation} of the stored project could not be "
+                "downloaded from the storage volume."
+            ) from exc
+        # A corrupt bundle fails the clone loudly; the durable-copy verify
+        # already happened at publish time, before the bundle was trusted.
+        _git.clone_project(str(bundle), project_dir, branch=None)
+    # A bundle clone leaves origin pointing at the temporary bundle file;
+    # repoint it at the uc:// location so the next boot's "is this clone the
+    # bound project?" check recognises the directory.
+    _git.ensure_remote(REMOTE_NAME, url, cwd=project_dir)
+    _uc_last_seen_generation = head.generation
 
 
 # ---------------------------------------------------------------------------
@@ -445,10 +772,8 @@ class PushQueue:
             self._attempt(batch, project_root)
 
     def _attempt(self, batch: int, project_root: Path) -> None:
-        from haute import _git
-
         try:
-            _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+            publish_bound_project(project_root)
         except Exception as exc:
             failure, message, terminal = _classify_push_failure(exc)
             with self._condition:
@@ -466,13 +791,22 @@ class PushQueue:
 
 
 def _classify_push_failure(exc: Exception) -> tuple[FailureClass, str, bool]:
-    """Map a push exception to (class, user-facing message, terminal).
+    """Map a publish exception to (class, user-facing message, terminal).
 
     Messages name the object and the action, never raw git stderr — which
     routinely carries the remote URL and any credential inside it.
     """
     from haute._git import GitDomainError, GitPushRejectedError
 
+    if isinstance(exc, StorageSupersededError):
+        # The uc:// analogue of a rejected push: someone else moved the
+        # durable state, so only a deliberate act may resume publishing.
+        return "rejected", str(exc), True
+    if isinstance(exc, StorageConfigError):
+        return "config", str(exc), True
+    if isinstance(exc, StorageUnavailableError):
+        # Hand-authored transport prose; retried on the next save.
+        return "transport", str(exc), False
     if isinstance(exc, GitPushRejectedError):
         return (
             "rejected",
@@ -510,6 +844,24 @@ def enqueue_push() -> None:
     _queue.enqueue()
 
 
+def publish_bound_project(project_root: Path) -> None:
+    """Publish current history to the bound location, per its transport.
+
+    The transport is selected from the active binding's URL scheme: a
+    ``uc://`` binding publishes a bundle generation, anything else — a git
+    binding, or no recorded binding at all — is the pre-existing push to
+    ``origin``. The no-binding default keeps a queue started without a
+    binding (harnesses, tests) behaving exactly as before.
+    """
+    binding = _active_binding
+    if binding is not None and is_uc_url(binding.remote_url):
+        publish_to_uc(binding.remote_url, project_root)
+        return
+    from haute import _git
+
+    _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+
+
 # ---------------------------------------------------------------------------
 # Project directory, restore, bind
 # ---------------------------------------------------------------------------
@@ -535,7 +887,7 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
     a hosted boot must gate rather than quietly start a fresh project
     over durable work.
     """
-    global _active_binding
+    global _active_binding, _uc_last_seen_generation
 
     if not state_volume_configured():
         return "unbound"
@@ -557,12 +909,25 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
                 "The project directory holds a clone of a different repository than "
                 "this app is bound to. Remove it, or rebind, before starting."
             )
+        if is_uc_url(remote_url):
+            # A new process means a new writer identity, so the supersession
+            # fence must learn which generation this clone derives from — but
+            # only when the clone really does contain the published tip. An
+            # unknown tip means the volume moved on without this directory;
+            # the fence stays armed and the first publish stops loudly
+            # instead of overwriting the newer generation.
+            head = read_uc_head(remote_url)
+            if head is not None and _git.commit_exists(head.tip_sha, cwd=project_dir):
+                _uc_last_seen_generation = head.generation
         _active_binding = binding
         _queue.start(project_dir)
         return "present"
 
     logger.info("project_restore_started", scope=_scope_name())
-    _git.clone_project(remote_url, project_dir, branch=None)
+    if is_uc_url(remote_url):
+        _restore_from_uc(remote_url, project_dir)
+    else:
+        _git.clone_project(remote_url, project_dir, branch=None)
     if binding.branch:
         from haute._git_state import write_working_branch
 
@@ -610,8 +975,13 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
             "volume (catalog.schema.volume) the app can write."
         )
 
-    _git.ensure_remote(REMOTE_NAME, remote_url, cwd=project_root)
-    populated = _git.remote_has_content(REMOTE_NAME, cwd=project_root)
+    if is_uc_url(remote_url):
+        # `git ls-remote` cannot inspect a uc:// location, so "is the remote
+        # empty?" becomes "was anything ever published there?".
+        populated = read_uc_head(remote_url) is not None
+    else:
+        _git.ensure_remote(REMOTE_NAME, remote_url, cwd=project_root)
+        populated = _git.remote_has_content(REMOTE_NAME, cwd=project_root)
     binding = StorageBinding(
         remote_url=remote_url,
         branch=read_working_branch(project_root),
@@ -629,7 +999,13 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
 
     # Publish first: a binding that points at a remote we could not write to
     # would promise durability the next boot cannot deliver.
-    _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
+    if is_uc_url(remote_url):
+        # Origin carries the uc:// URL as the clone's identity marker, so the
+        # restore path can recognise this directory as the bound project.
+        _git.ensure_remote(REMOTE_NAME, remote_url, cwd=project_root)
+        publish_to_uc(remote_url, project_root)
+    else:
+        _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
     write_binding(binding)
     _active_binding = binding
     _queue.start(project_root)
