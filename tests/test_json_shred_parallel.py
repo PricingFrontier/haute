@@ -125,9 +125,10 @@ def test_byte_ranges_of_small_or_empty_file(tmp_path: Path) -> None:
 
 
 def test_byte_ranges_pin_chunk_progression_and_exact_size_boundary(tmp_path: Path) -> None:
-    p = _write_jsonl(tmp_path / "uniform.jsonl", [{"n": i} for i in range(8)])
-    assert p.stat().st_size == 80
-    assert _jsonl_byte_ranges(p, 17) == [(0, 20), (20, 40), (40, 60), (60, 80)]
+    p = tmp_path / "uniform.jsonl"
+    p.write_bytes(b"".join(orjson.dumps({"n": i}) + b"\n" for i in range(8)))
+    assert p.stat().st_size == 64
+    assert _jsonl_byte_ranges(p, 17) == [(0, 24), (24, 48), (48, 64)]
     assert _jsonl_byte_ranges(p, p.stat().st_size) == [(0, p.stat().st_size)]
 
 
@@ -139,9 +140,10 @@ def test_byte_ranges_reject_non_positive_chunk_sizes(tmp_path: Path, chunk_bytes
 
 
 def test_range_reader_stops_at_exact_and_partial_end_boundaries(tmp_path: Path) -> None:
-    p = _write_jsonl(tmp_path / "range.jsonl", [{"n": i} for i in range(4)])
-    assert list(_iter_range_records(p, 0, 20)) == [{"n": 0}, {"n": 1}]
-    assert list(_iter_range_records(p, 0, 11)) == [{"n": 0}, {"n": 1}]
+    p = tmp_path / "range.jsonl"
+    p.write_bytes(b"".join(orjson.dumps({"n": i}) + b"\n" for i in range(4)))
+    assert list(_iter_range_records(p, 0, 16)) == [{"n": 0}, {"n": 1}]
+    assert list(_iter_range_records(p, 0, 9)) == [{"n": 0}, {"n": 1}]
 
 
 @pytest.mark.parametrize(
