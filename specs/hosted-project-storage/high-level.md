@@ -44,7 +44,11 @@ The session lifecycle, from the user's chair:
    on any fresh clone). Given an empty repository, the current project —
    seeded scaffold plus any work already done — is initialised onto it
    (remote added as `origin`, initial push). The binding is recorded
-   durably, outside the container.
+   durably, outside the container. A `uc://` location is additionally
+   *claimed* at bind (see Design rationale): a location another app
+   instance actively holds is refused with the holder named, and the
+   user is offered the two honest ways forward — bind somewhere else,
+   or fork the held location into a new one (provenance recorded).
 3. **Save / milestone commit**: after the existing git machinery commits
    locally, the commit is pushed to `origin` asynchronously. Saves never
    wait on the network; the UI carries a small sync state — synced /
@@ -131,6 +135,34 @@ the lock; the slow part — the upload — runs outside it.
   project), but a read-before-write comparison lets a superseded
   container stop loudly instead of silently interleaving generations
   with its replacement.
+- **A claim makes the location behave like a locally-owned file.** The
+  fence prevents corruption but only fires at write time; the claim
+  (`CLAIM.json` beside the pointer) is the *steering* layer that stops
+  two writers binding to one location in the first place. It is a
+  lease: the holder refreshes it on a heartbeat and on every publish,
+  and a claim whose heartbeat is older than the staleness threshold is
+  dead and may be taken over. "Has the holding session ended?" is
+  deliberately NOT a liveness probe of another container (unknowable):
+  it is lease expiry, plus one shortcut — a claim held by this app's
+  own name is always taken over immediately, because the platform runs
+  one container per app, so that claim can only be a predecessor's.
+  Clean shutdown releases the claim best-effort; unclean death (every
+  redeploy, restart, and stop) is the normal case and is what the
+  lease expiry exists for. The Files API has no compare-and-swap, so
+  acquisition is write-then-verify (claim with a fresh nonce, read
+  back, proceed only if yours); the claim is advisory — the per-write
+  fence remains the correctness layer underneath it, and publishing
+  additionally verifies the claim so a stolen lease stops the old
+  holder loudly rather than letting two writers interleave.
+- **Fork now, merge later.** Binding to a location someone else
+  actively holds is refused with the holder named — and with a way
+  forward: fork the location. A fork copies the parent's latest
+  *published* generation to a fresh location as its generation 1 and
+  records the provenance (`LINEAGE.json`: parent URL, generation, tip)
+  so the fork is signposted, not silent. Synchronising a fork back up
+  its lineage is deliberately deferred — it is the auto-merge this
+  spec rules out for v1 — but the recorded lineage is what makes that
+  feature possible later.
 - **Async push** honours the ruling that close requires no action: if
   close needed a flush, close would become a failure point. The pending
   counter makes the exposure visible instead.
@@ -181,3 +213,13 @@ and the action, never raw library text.
 - Bound `uc://` location with no published generation at boot: gates
   with the location named rather than seeding a fresh project — a
   binding promises history that should exist.
+- Bind to a location under a live claim: refused with the holder named
+  (app, who bound it, how fresh the heartbeat is) and the two ways
+  forward stated — bind elsewhere, or fork it into a new location.
+- Boot restore of a location under a live foreign claim: gates (a boot
+  cannot offer a dialog); the message names the holder. The normal
+  restart case never hits this — the predecessor's claim carries this
+  app's own name and is taken over immediately.
+- Claim lost mid-session (lease expired while the process was stalled
+  and another writer took over): the next publish stops terminally with
+  the new holder named; local commits remain intact.
