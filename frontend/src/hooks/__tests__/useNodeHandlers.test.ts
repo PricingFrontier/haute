@@ -415,6 +415,32 @@ describe("useNodeHandlers", () => {
     expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/identity/)
   })
 
+  it("rejects an occurrence whose editable definition owner is missing", () => {
+    const params = makeParams()
+    const source = makeNode("instance_copy", "submodel", {
+      data: {
+        label: "Scoring copy",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: "missing_owner",
+        },
+      },
+    })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance(source.id)
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(
+      /editable definition owner is invalid/,
+    )
+  })
+
   it("normalises a suffixed source alias before choosing the next occurrence alias", () => {
     const params = makeParams()
     const base = makeNode("submodel_10", "submodel", {

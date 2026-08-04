@@ -29,7 +29,12 @@ def test_nested_pipeline_uses_file_relative_configs_and_pipeline_relative_submod
 import polars as pl
 import haute
 
-submodel = haute.Submodel("scoring")
+submodel = haute.Submodel(
+    "scoring",
+    definition_id="scoring",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.polars
@@ -51,7 +56,12 @@ def raw_rows() -> pl.LazyFrame:
     return pl.scan_parquet("data/sample.parquet")
 
 
-pipeline.submodel("modules/scoring.py")
+pipeline.submodel(
+    "modules/scoring.py",
+    definition_id="scoring",
+    instance_id="submodel__scoring",
+    alias="scoring",
+)
 """,
     )
 
@@ -61,7 +71,7 @@ pipeline.submodel("modules/scoring.py")
     assert "raw_rows" in node_ids
     assert "submodel__scoring" in node_ids
     assert graph.submodels is not None
-    assert graph.submodels["scoring"]["file"] == "modules/scoring.py"
+    assert graph.submodels["scoring"].file == "modules/scoring.py"
 
 
 def test_nested_pipeline_prefers_pipeline_local_submodels(
@@ -79,7 +89,12 @@ def test_nested_pipeline_prefers_pipeline_local_submodels(
 import polars as pl
 import haute
 
-submodel = haute.Submodel("root_scoring")
+submodel = haute.Submodel(
+    "root_scoring",
+    definition_id="root_scoring",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.polars
@@ -93,7 +108,12 @@ def root_score(raw_rows: pl.LazyFrame) -> pl.LazyFrame:
 import polars as pl
 import haute
 
-submodel = haute.Submodel("rating_scoring")
+submodel = haute.Submodel(
+    "rating_scoring",
+    definition_id="rating_scoring",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.data_input(config="config/data_input/rating_source.json")
@@ -112,7 +132,12 @@ def rating_score() -> pl.LazyFrame:
 import haute
 
 pipeline = haute.Pipeline("nested_paths")
-pipeline.submodel("modules/scoring.py")
+pipeline.submodel(
+    "modules/scoring.py",
+    definition_id="rating_scoring",
+    instance_id="submodel__rating_scoring",
+    alias="rating_scoring",
+)
 """,
     )
 
@@ -121,5 +146,5 @@ pipeline.submodel("modules/scoring.py")
     assert graph.submodels is not None
     assert "rating_scoring" in graph.submodels
     assert "root_scoring" not in graph.submodels
-    child = graph.submodels["rating_scoring"]["graph"]["nodes"][0]
-    assert child["data"]["config"]["path"] == "rating-data.parquet"
+    child = graph.submodels["rating_scoring"].graph.nodes[0]
+    assert child.data.config["path"] == "rating-data.parquet"

@@ -14,7 +14,12 @@ def _write_pipeline(py_path: Path, *submodels: str) -> None:
         "import haute",
         'pipeline = haute.Pipeline("test")',
     ]
-    lines.extend(f'pipeline.submodel("{path}")' for path in submodels)
+    for path in submodels:
+        definition_id = Path(path).stem
+        lines.append(
+            f'pipeline.submodel("{path}", definition_id="{definition_id}", '
+            f'instance_id="submodel__{definition_id}", alias="{definition_id}")'
+        )
     lines.extend(
         [
             "@pipeline.polars",

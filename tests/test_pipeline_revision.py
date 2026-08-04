@@ -34,13 +34,22 @@ def _document(tmp_path: Path):
                         "nodeType": "polars",
                         "config": {"code": "return df"},
                     },
-                }
+                },
+                {
+                    "id": "child-instance",
+                    "type": "submodel",
+                    "data": {
+                        "label": "child",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "child", "alias": "child"},
+                    },
+                },
             ],
             "edges": [],
             "submodels": {
                 "child": {
+                    "definitionId": "child",
                     "file": "modules/child.py",
-                    "childNodeIds": ["child"],
                     "graph": {
                         "nodes": [
                             {
@@ -56,6 +65,8 @@ def _document(tmp_path: Path):
                         "pipeline_name": "child",
                         "source_file": str(child),
                     },
+                    "inputPorts": [],
+                    "outputPorts": [],
                 }
             },
         }
