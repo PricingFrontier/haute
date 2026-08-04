@@ -1466,6 +1466,7 @@ def _build_funcs(
         # OUTPUT uses each source port to distinguish frames from one apiInput.
         src_ports = [edge.sourceHandle or id_to_name[edge.source] for edge in connected_edges]
         src_names: list[str] = []
+        has_invalid_api_input_binding = False
         for edge in connected_edges:
             source_node = node_map[edge.source]
             try:
@@ -1476,6 +1477,7 @@ def _build_funcs(
                     source_node.data.nodeType == NodeType.API_INPUT and edge.sourceHandle is None
                 ):
                     raise
+                has_invalid_api_input_binding = True
         duplicates = duplicate_input_names(src_names)
         if duplicates:
             raise ConfigError(
@@ -1514,6 +1516,13 @@ def _build_funcs(
             ),
             execution_profile=execution_profile.value if execution_profile is not None else None,
         )
+        if has_invalid_api_input_binding:
+            # ``edge_input_name`` cannot name this input, but the incoming edge
+            # still makes the consumer a non-source.  Let runtime frame
+            # selection report the missing sourceHandle and available ports;
+            # otherwise a code-free transform is misclassified as a standalone
+            # source and its incomplete-transform error masks the wiring defect.
+            is_source = False
         funcs[nid] = (fn, is_source)
     return funcs
 
