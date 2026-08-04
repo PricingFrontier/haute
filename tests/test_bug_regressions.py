@@ -404,6 +404,8 @@ class TestBugB5PrunerLiveBranchSelection:
 class TestBugB7DissolveTargetOnly:
     def test_dissolve_preserves_other_submodels(self) -> None:
         """Dissolving one submodel should not flatten others."""
+        from haute._submodel_instances import qualified_runtime_node_id
+        from haute._types import SubmodelDefinition
         from haute.graph_utils import (
             GraphEdge,
             GraphNode,
@@ -413,86 +415,92 @@ class TestBugB7DissolveTargetOnly:
             flatten_graph,
         )
 
-        def node(node_id: str, node_type: NodeType) -> GraphNode:
+        def node(node_id: str, node_type: NodeType, **config: str) -> GraphNode:
             return GraphNode(
-                id=node_id,
-                data=NodeData(label=node_id, nodeType=node_type, config={}),
+                id=node_id, data=NodeData(label=node_id, nodeType=node_type, config=config)
+            )
+
+        def definition(definition_id: str, first: str, second: str) -> SubmodelDefinition:
+            return SubmodelDefinition.model_validate(
+                {
+                    "definitionId": definition_id,
+                    "file": f"modules/{definition_id}.py",
+                    "graph": {
+                        "nodes": [
+                            node(first, NodeType.POLARS).model_dump(),
+                            node(second, NodeType.POLARS).model_dump(),
+                        ],
+                        "edges": [
+                            GraphEdge(
+                                id=f"e_{definition_id}_internal", source=first, target=second
+                            ).model_dump()
+                        ],
+                    },
+                    "inputPorts": [
+                        {"portId": "base", "label": "base", "targets": [{"nodeId": first}]}
+                    ],
+                    "outputPorts": [
+                        {"portId": "quotes", "label": "quotes", "source": {"nodeId": second}}
+                    ],
+                }
             )
 
         graph = PipelineGraph(
             nodes=[
                 node("src", NodeType.DATA_INPUT),
-                node("submodel__rating", NodeType.SUBMODEL),
-                node("submodel__pricing", NodeType.SUBMODEL),
+                node("rating_instance", NodeType.SUBMODEL, definitionId="rating", alias="rating"),
+                node(
+                    "pricing_instance", NodeType.SUBMODEL, definitionId="pricing", alias="pricing"
+                ),
                 node("out", NodeType.OUTPUT),
             ],
             edges=[
                 GraphEdge(
                     id="e_src_rating",
                     source="src",
-                    target="submodel__rating",
-                    targetHandle="in__rating_step_1",
+                    target="rating_instance",
+                    targetHandle="in__base",
+                    targetPort="base",
                 ),
                 GraphEdge(
                     id="e_rating_pricing",
-                    source="submodel__rating",
-                    target="submodel__pricing",
-                    sourceHandle="out__rating_step_2",
-                    targetHandle="in__pricing_step_1",
+                    source="rating_instance",
+                    target="pricing_instance",
+                    sourceHandle="out__quotes",
+                    sourcePort="quotes",
+                    targetHandle="in__base",
+                    targetPort="base",
                 ),
                 GraphEdge(
                     id="e_pricing_out",
-                    source="submodel__pricing",
+                    source="pricing_instance",
                     target="out",
-                    sourceHandle="out__pricing_step_2",
+                    sourceHandle="out__quotes",
+                    sourcePort="quotes",
                 ),
             ],
             submodels={
-                "rating": {
-                    "graph": {
-                        "nodes": [
-                            node("rating_step_1", NodeType.POLARS).model_dump(),
-                            node("rating_step_2", NodeType.POLARS).model_dump(),
-                        ],
-                        "edges": [
-                            GraphEdge(
-                                id="e_rating_internal",
-                                source="rating_step_1",
-                                target="rating_step_2",
-                            ).model_dump()
-                        ],
-                    }
-                },
-                "pricing": {
-                    "graph": {
-                        "nodes": [
-                            node("pricing_step_1", NodeType.POLARS).model_dump(),
-                            node("pricing_step_2", NodeType.POLARS).model_dump(),
-                        ],
-                        "edges": [
-                            GraphEdge(
-                                id="e_pricing_internal",
-                                source="pricing_step_1",
-                                target="pricing_step_2",
-                            ).model_dump()
-                        ],
-                    }
-                },
+                "rating": definition("rating", "rating_step_1", "rating_step_2"),
+                "pricing": definition("pricing", "pricing_step_1", "pricing_step_2"),
             },
         )
 
-        flattened = flatten_graph(graph, target_name="rating")
+        flattened = flatten_graph(graph, target_instance_id="rating_instance")
+        rating_step_1 = qualified_runtime_node_id("rating_instance", "rating_step_1")
+        rating_step_2 = qualified_runtime_node_id("rating_instance", "rating_step_2")
+        pricing_step_1 = qualified_runtime_node_id("pricing_instance", "pricing_step_1")
+        pricing_step_2 = qualified_runtime_node_id("pricing_instance", "pricing_step_2")
         node_ids = {n.id for n in flattened.nodes}
         edge_pairs = {(e.source, e.target) for e in flattened.edges}
 
-        assert "submodel__rating" not in node_ids
-        assert {"rating_step_1", "rating_step_2"} <= node_ids
-        assert "submodel__pricing" in node_ids
-        assert "pricing_step_1" not in node_ids
-        assert "pricing_step_2" not in node_ids
+        assert "rating_instance" not in node_ids
+        assert {rating_step_1, rating_step_2} <= node_ids
+        assert "pricing_instance" in node_ids
+        assert pricing_step_1 not in node_ids
+        assert pricing_step_2 not in node_ids
         assert set((flattened.submodels or {}).keys()) == {"pricing"}
-        assert ("src", "rating_step_1") in edge_pairs
-        assert ("rating_step_2", "submodel__pricing") in edge_pairs
+        assert ("src", rating_step_1) in edge_pairs
+        assert (rating_step_2, "pricing_instance") in edge_pairs
 
 
 # ---------------------------------------------------------------------------

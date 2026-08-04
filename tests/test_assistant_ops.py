@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from haute._graph_utils import _sanitize_func_name
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.assistant._ops import OpValidationError, apply_ops, parse_ops
 
 # ---------------------------------------------------------------------------
@@ -353,17 +353,18 @@ class TestUpdatePreamble:
 
 class TestSubmodelBoundary:
     def _graph_with_submodel(self) -> PipelineGraph:
-        placeholder = _node("submodel__sm1", "submodel")
+        placeholder = _node("submodel__sm1", "submodel", definitionId="sm1", alias="sm1")
         graph = _graph([_node("a"), placeholder], [])
         return graph.model_copy(
             update={
                 "submodels": {
-                    "sm1": {
-                        "graph": {
-                            "nodes": [_node("inner_child").model_dump()],
-                            "edges": [],
-                        }
-                    }
+                    "sm1": SubmodelDefinition(
+                        definition_id="sm1",
+                        file="modules/sm1.py",
+                        graph=PipelineGraph(nodes=[_node("inner_child")], edges=[]),
+                        input_ports=[],
+                        output_ports=[],
+                    )
                 }
             }
         )

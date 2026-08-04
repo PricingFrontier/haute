@@ -855,8 +855,7 @@ def test_codegen_derives_child_config_base_from_registration_depth(tmp_path: Pat
     for file, expected_base in depth_cases.items():
         child_source = emitted_child(file)
         assert (
-            f"_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().{expected_base}"
-            in child_source
+            f"_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().{expected_base}" in child_source
         ), file
         reparsed = parse_submodel_source(child_source, source_file=file, _base_dir=tmp_path)
         assert "_HAUTE_CONFIG_BASE" not in (reparsed.preamble or ""), file

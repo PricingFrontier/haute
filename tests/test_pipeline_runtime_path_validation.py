@@ -14,7 +14,7 @@ from haute._path_resolution import (
     RuntimePathError,
     RuntimePathOutsideProjectError,
 )
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeData, NodeType, PipelineGraph, SubmodelDefinition
 from haute.routes import modelling as modelling_routes
 from haute.routes import optimiser as optimiser_routes
 from haute.routes._runtime_path_errors import runtime_path_http_exception
@@ -201,14 +201,24 @@ def test_prepare_runtime_graph_validates_paths_inside_submodels() -> None:
     )
     graph = PipelineGraph(
         source_file="main.py",
+        nodes=[
+            GraphNode(
+                id="nested-instance",
+                data=NodeData(
+                    label="nested",
+                    nodeType=NodeType.SUBMODEL,
+                    config={"definitionId": "nested", "alias": "nested"},
+                ),
+            )
+        ],
         submodels={
-            "nested": {
-                "file": "modules/nested.py",
-                "graph": {
-                    "nodes": [child.model_dump(mode="json")],
-                    "edges": [],
-                },
-            }
+            "nested": SubmodelDefinition(
+                definition_id="nested",
+                file="modules/nested.py",
+                graph=PipelineGraph(nodes=[child], edges=[]),
+                input_ports=[],
+                output_ports=[],
+            )
         },
     )
 
@@ -314,10 +324,13 @@ def test_case_only_collision_between_parent_and_submodel_rejected(
     graph = PipelineGraph(nodes=[_config_node("parent", "Shared")], edges=[])
     child = _config_node("child", "shared")
     graph.submodels = {
-        "pricing": {
-            "file": "modules/pricing.py",
-            "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-        }
+        "pricing": SubmodelDefinition(
+            definition_id="pricing",
+            file="modules/pricing.py",
+            graph=PipelineGraph(nodes=[child], edges=[]),
+            input_ports=[],
+            output_ports=[],
+        )
     }
 
     with pytest.raises(HTTPException) as exc_info:
@@ -464,10 +477,13 @@ def test_reserved_device_label_in_submodel_graph_rejected(tmp_path: Path) -> Non
     graph = PipelineGraph(nodes=[_config_node("parent", "Safe")], edges=[])
     child = _config_node("child", "NUL")
     graph.submodels = {
-        "pricing": {
-            "file": "modules/pricing.py",
-            "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-        }
+        "pricing": SubmodelDefinition(
+            definition_id="pricing",
+            file="modules/pricing.py",
+            graph=PipelineGraph(nodes=[child], edges=[]),
+            input_ports=[],
+            output_ports=[],
+        )
     }
 
     with pytest.raises(HTTPException) as exc_info:

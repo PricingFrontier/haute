@@ -35,7 +35,11 @@ const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 // undo/redo state, and commits boundary connection/deletion gestures
 // synchronously. The merged initial bundle is 247.7 KiB; 249 KiB retains about
 // 1 KiB of headroom without weakening the lazy-editor/vendor checks below.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 249
+// Reusable submodel instances add another ~3.3 KiB of deliberate eager core:
+// occurrence-aware navigation, runtime targeting, read-only copies, and shared
+// boundary edits must all be available on the mounted canvas. The merged initial
+// bundle is 251.3 KiB; 253 KiB retains about 1.7 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 253
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

@@ -1478,7 +1478,7 @@ describe("API response guards", () => {
     const loaded = parseSubmodelGraphResponse(loadUiContractFixture("submodel_graph_response"))
     const dissolved = parseDissolveSubmodelResponse(loadUiContractFixture("dissolve_submodel_response"))
 
-    expect(created.submodel_file).toBe("pricing.py")
+    expect(created.submodel_file).toBe("modules/pricing.py")
     expect(created.source_revision).toBe("revision-create-1")
     expect(created.graph.edges[0].targetPort).toBe("base")
     expect(created.graph.edges[1].sourcePort).toBe("quotes")
