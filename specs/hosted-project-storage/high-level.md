@@ -1,6 +1,6 @@
-# Hosted Project Storage — High-Level Specification (DRAFT)
+# Hosted Project Storage — High-Level Specification
 
-Status: DRAFT for review. Nothing in this spec is implemented; the change
+Status: DELIVERED; this spec describes shipped behaviour. The change
 contract lives in [low-level.md](low-level.md) §Approved change contract.
 Companion to [specs/hosted-databricks-app](../hosted-databricks-app/high-level.md),
 which established the constraint this component answers: the app
@@ -35,9 +35,10 @@ The session lifecycle, from the user's chair:
 
 1. **Open, no binding**: the startup flow (the same surface that today
    handles git readiness states) reports the project is **volatile** and
-   offers to bind a storage location — a git remote URL. The user may
-   decline; the session then runs with a persistent "work here is
-   volatile" indicator.
+   offers to bind a storage location — either a git remote URL or a
+   Unity Catalog volume location (`uc://catalog.schema.volume/path`).
+   The user may decline; the session then runs with a persistent "work
+   here is volatile" indicator.
 2. **Bind**: given a remote whose repository has content, the project is
    lifted from it (clone; the working branch machinery then proceeds as
    on any fresh clone). Given an empty repository, the current project —
@@ -73,7 +74,10 @@ Invariants:
   to a host the deployment has not approved: `GIT_ASKPASS` is
   process-wide and git offers the credential to whatever host a URL
   names, so a token without `HAUTE_GIT_ALLOWED_HOSTS` refuses every bind
-  rather than letting a caller choose the recipient.
+  rather than letting a caller choose the recipient. A `uc://` binding
+  involves no git credential at all: the volume is reached through the
+  workspace SDK's own authentication, and git only ever touches local
+  bundle files.
 - A restored session is USABLE, not merely present: the working branch
   and its ledger exist as local refs and the session can publish again
   without the user re-adopting a branch.
@@ -85,7 +89,9 @@ the *network*, but git serialises operations per repository, so a save
 issued while a publish is in flight waits for that publish — bounded by
 the push timeout. Removing this would mean relaxing the repository
 mutation lock for the publish path, which is a change to the git
-engine's serialisation policy and deserves its own review.
+engine's serialisation policy and deserves its own review. The `uc://`
+transport is barely exposed to it: only the local bundle creation holds
+the lock; the slow part — the upload — runs outside it.
 
 ## Design rationale
 
@@ -99,11 +105,32 @@ engine's serialisation policy and deserves its own review.
   has no `/Volumes`, `/Workspace` or `/dbfs` mounts; UC volumes are
   reachable only via the Files REST API, which git cannot speak — and
   laptops do not mount volumes either. Therefore a *volume cannot be a
-  plain git remote*. Transport #1 is an HTTPS git host. A volume-backed
-  remote remains possible behind the same seam as transport #2: a custom
-  git remote helper (`uc::`) shuttling `git bundle` artefacts over the
-  Files API — git-native content over the only available channel —
-  designed but deferred.
+  plain git remote*. Transport #1 is an HTTPS git host. Transport #2
+  keeps everything inside the workspace: the repository is mirrored to
+  a UC volume as `git bundle` artefacts — git-native content over the
+  only available channel. (The original sketch was a custom git remote
+  helper, `uc::`; the delivered shape is simpler — the storage module
+  owns both ends of the channel, so no helper protocol is needed and
+  git only ever sees local bundle files.)
+- **Full bundles, not incremental.** Each published generation is a
+  complete `git bundle create --all` — O(history), not O(diff) — which
+  for a pricing project (code plus config JSON; data is gitignored) is
+  small, and every generation being independently complete removes a
+  whole class of partial-chain failure. The bundle size is logged on
+  every publish so growth is visible; incremental chains are a
+  possible future optimisation only if that log shows real growth.
+- **Pointer written last.** The Files API offers upload-with-overwrite
+  but no atomic rename, so the volume layout is generation-numbered
+  bundles plus a small `HEAD.json` pointer written only after its
+  bundle is fully uploaded and verified. A torn or partial upload is
+  therefore harmless: readers only ever follow a generation that is
+  already complete. The last five generations are retained as cheap
+  rollback; older ones are pruned best-effort.
+- **Single-writer fencing.** The pointer carries a `writer_id`.
+  Single-writer remains the design assumption (one container, one
+  project), but a read-before-write comparison lets a superseded
+  container stop loudly instead of silently interleaving generations
+  with its replacement.
 - **Async push** honours the ruling that close requires no action: if
   close needed a flush, close would become a failure point. The pending
   counter makes the exposure visible instead.
@@ -145,5 +172,12 @@ and the action, never raw library text.
   both tips, and directs to resolve outside the app (v1).
 - Auth failure: message names the secret resource and env var to check,
   echoes no value.
-- Invalid binding target (not a git remote, non-HTTPS scheme): rejected
-  at bind time with the accepted forms stated.
+- Invalid binding target (not a git remote, unsupported scheme, or a
+  malformed `uc://` location): rejected at bind time with the accepted
+  forms stated.
+- Superseded writer (`uc://`): another container has published a newer
+  generation — publishing stops terminally so nothing is overwritten;
+  the message says the storage moved on and directs to a restart.
+- Bound `uc://` location with no published generation at boot: gates
+  with the location named rather than seeding a fresh project — a
+  binding promises history that should exist.
