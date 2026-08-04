@@ -1,5 +1,23 @@
 # Databricks Apps deployment spike — learnings
 
+> Update (4 August 2026): the `uc://` bundle transport was proven live on
+> this app. Bind to `uc://workspace.default.haute_state/projects/uc-live-demo`
+> → `adopted`, generation 1 bundle + HEAD.json on the volume; a pipeline
+> save published generation 2 through the background queue; `apps stop` +
+> `apps start` (container replaced) restored the project from the bundle —
+> working branch `pricing/nick/uc-demo` resumed, ledger checked out, head
+> at the pre-stop save, origin repointed to the uc:// URL; a post-restore
+> save published generation 3 under a NEW writer_id (the restored-from
+> generation exemption in the supersession fence, exercised for real).
+> Two operational notes: `apps start` kicks off its own deployment of the
+> last-synced source, so a deploy issued while it settles fails with
+> "active deployment in progress" (retry); and a restored clone has no git
+> identity (`identity_set: false` — same as the https transport), so the
+> UI prompts for one before the first commit. Cleanup: the binding record
+> was deleted (an older build cannot parse a uc:// binding and would gate
+> at boot) and the app stopped; the demo bundles remain on the volume at
+> `projects/uc-live-demo/` for inspection.
+
 > Update (30 July 2026): the spike's shim has been graduated into haute
 > proper as `haute.hosted` (spec: specs/hosted-databricks-app/), with
 > SP-OAuth support in `_databricks_io` + `routes/databricks.py`, a
