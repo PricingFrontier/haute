@@ -38,6 +38,7 @@ import type {
   GitFastForwardResponse,
   GitBranchAwayResponse,
   GitBindStorageResponse,
+  GitForkStorageResponse,
   GitCommitContext,
   GitGraphResponse,
   GitMoveResponse,
@@ -109,6 +110,7 @@ import {
   parseGitPrefs,
   parseGitRemotesResponse,
   parseGitBindStorageResponse,
+  parseGitForkStorageResponse,
   parseGitPushResponse,
   parseGitFastForwardResponse,
   parseGitGraphResponse,
@@ -1343,6 +1345,19 @@ export function bindGitStorage(
   return post<unknown>("/api/git/storage/bind", { remote_url: remoteUrl }, options).then(
     parseGitBindStorageResponse,
   )
+}
+
+/** Fork a held uc:// location's published state into an empty one. */
+export function forkGitStorage(
+  sourceUrl: string,
+  targetUrl: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitForkStorageResponse> {
+  return post<unknown>(
+    "/api/git/storage/fork",
+    { source_url: sourceUrl, target_url: targetUrl },
+    options,
+  ).then(parseGitForkStorageResponse)
 }
 
 /** Retry a failed sync to the bound remote and return refreshed readiness. */

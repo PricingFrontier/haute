@@ -10,8 +10,8 @@
  */
 import { create } from "zustand"
 
-import { bindGitStorage, getWorkingBranch, retryGitStorageSync } from "../api/client"
-import type { GitBindStorageResponse, GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
+import { bindGitStorage, forkGitStorage, getWorkingBranch, retryGitStorageSync } from "../api/client"
+import type { GitBindStorageResponse, GitForkStorageResponse, GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
 
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
@@ -111,6 +111,8 @@ interface GitState {
   setLastSaveSha: (sha: string | null) => void
   /** Bind the state volume to a remote for durable storage, then refresh readiness. */
   bindStorage: (remoteUrl: string) => Promise<GitBindStorageResponse>
+  /** Fork a held uc:// location's published state into an empty location. */
+  forkStorage: (sourceUrl: string, targetUrl: string) => Promise<GitForkStorageResponse>
   /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
   retrySync: () => Promise<GitWorkingBranchResponse | null>
 }
@@ -193,6 +195,11 @@ const useGitStore = create<GitState>()((set, get) => ({
     const result = await bindGitStorage(remoteUrl)
     await get().loadStatus()
     return result
+  },
+  forkStorage: async (sourceUrl, targetUrl) => {
+    // No readiness refresh: forking writes only to the volume — this
+    // session's own binding is untouched until the user binds the fork.
+    return forkGitStorage(sourceUrl, targetUrl)
   },
   retrySync: async () => {
     const status = await retryGitStorageSync()

@@ -1935,6 +1935,9 @@ class GitWorkingBranchResponse(BaseModel):
     storage: GitStorageState = "unsupported"
     # The bound remote's URL, for display beside the sync state.
     storage_remote: str | None = None
+    # Parent uc:// URL when the bound location is a fork — provenance
+    # signposting, read once at bind/restore and cached off the Files API.
+    storage_forked_from: str | None = None
     sync: GitStorageSync | None = None
     # Drives whether the startup modal fires (S27) and which variant (S14).
     state: GitWorkingBranchState = "unset"
@@ -1969,6 +1972,34 @@ class GitBindStorageResponse(BaseModel):
     # server's project directory underneath it is not safe to do live).
     outcome: Literal["adopted", "restart-required"]
     remote_url: str
+    message: str
+
+
+class GitStorageClaim(BaseModel):
+    """Who holds a uc:// location's lease — the 409 body at bind time.
+
+    Steering, not stonewalling: the UI names the holder and offers the
+    two ways forward (bind elsewhere, or fork the location).
+    """
+
+    app_name: str
+    user: str | None = None
+    refreshed_at: str | None = None
+    message: str
+
+
+class GitForkStorageRequest(BaseModel):
+    # Both uc:// locations; the target must be empty.
+    source_url: str
+    target_url: str
+
+
+class GitForkStorageResponse(BaseModel):
+    outcome: Literal["forked"] = "forked"
+    target_url: str
+    parent_url: str
+    # Which published generation of the parent the fork copied.
+    parent_generation: int
     message: str
 
 

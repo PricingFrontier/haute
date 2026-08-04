@@ -34,10 +34,13 @@ from haute._project_storage import (
     STATE_VOLUME_ENV,
     PushQueue,
     StorageBinding,
+    StorageClaimedError,
     StorageConfigError,
     StorageSupersededError,
     StorageUnavailableError,
+    UCClaim,
     UCHead,
+    UCLineage,
 )
 from haute.schemas import GitPushRejection, GitRemoteLeg
 
@@ -64,8 +67,13 @@ def _isolated_storage_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(_project_storage, "_active_binding", None)
     monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
     monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+    monkeypatch.setattr(_project_storage, "_uc_claim", None)
+    monkeypatch.setattr(_project_storage, "_uc_claim_url", None)
+    monkeypatch.setattr(_project_storage, "_active_lineage", None)
+    monkeypatch.setattr(_project_storage, "_claim_heartbeat", _project_storage._ClaimHeartbeat())
     yield
     _project_storage.push_queue().stop()
+    _project_storage._claim_heartbeat.stop()
 
 
 @pytest.fixture()
@@ -722,10 +730,12 @@ class TestContainerDeathSurvival:
 
 UC_URL = "uc://workspace.default.projects/pricing/demo"
 _UC_ROOT = "/Volumes/workspace/default/projects/pricing/demo"
+FORK_URL = "uc://workspace.default.projects/pricing/fork"
+_FORK_ROOT = "/Volumes/workspace/default/projects/pricing/fork"
 
 
-def _stored_bundle_generations(files_api: _FakeFiles) -> list[int]:
-    prefix = f"{_UC_ROOT}/bundles/"
+def _stored_bundle_generations(files_api: _FakeFiles, root: str = _UC_ROOT) -> list[int]:
+    prefix = f"{root}/bundles/"
     return sorted(
         int(path[len(prefix) :].removesuffix(".bundle"))
         for path in files_api.store
@@ -733,8 +743,38 @@ def _stored_bundle_generations(files_api: _FakeFiles) -> list[int]:
     )
 
 
-def _stored_head(files_api: _FakeFiles) -> UCHead:
-    return UCHead.from_payload(json.loads(files_api.store[f"{_UC_ROOT}/HEAD.json"]))
+def _stored_head(files_api: _FakeFiles, root: str = _UC_ROOT) -> UCHead:
+    return UCHead.from_payload(json.loads(files_api.store[f"{root}/HEAD.json"]))
+
+
+def _stored_claim(files_api: _FakeFiles, root: str = _UC_ROOT) -> UCClaim | None:
+    raw = files_api.store.get(f"{root}/CLAIM.json")
+    return UCClaim.from_payload(json.loads(raw)) if raw is not None else None
+
+
+def _plant_claim(
+    files_api: _FakeFiles,
+    app_name: str,
+    *,
+    age_seconds: float = 0.0,
+    writer_id: str = "other-writer",
+    user: str | None = None,
+    root: str = _UC_ROOT,
+) -> UCClaim:
+    """Write another holder's claim into the fake store, *age_seconds* old."""
+    from datetime import UTC, datetime, timedelta
+
+    stamp = (datetime.now(UTC) - timedelta(seconds=age_seconds)).isoformat(timespec="seconds")
+    claim = UCClaim(
+        app_name=app_name,
+        writer_id=writer_id,
+        nonce=f"nonce-{app_name}",
+        user=user,
+        claimed_at=stamp,
+        refreshed_at=stamp,
+    )
+    files_api.store[f"{root}/CLAIM.json"] = claim.to_json().encode("utf-8")
+    return claim
 
 
 class TestUcHeadRecord:
@@ -1075,6 +1115,246 @@ class TestUcContainerDeathSurvival:
         )
         with pytest.raises(StorageUnavailableError, match="Generation 9"):
             _project_storage.restore_if_bound(tmp_path / "fresh")
+
+
+# ---------------------------------------------------------------------------
+# Claim lease — the location behaves like a locally-owned file
+# ---------------------------------------------------------------------------
+
+
+class TestUcClaim:
+    def test_bind_claims_the_location(self, project: Path, files_api: _FakeFiles) -> None:
+        _project_storage.bind_remote(UC_URL, project, bound_by="someone@example.com")
+        claim = _stored_claim(files_api)
+        assert claim is not None
+        assert claim.app_name == "local"  # _scope_name() without an app name
+        assert claim.user == "someone@example.com"
+        assert claim.refreshed_at is not None
+
+    def test_bind_refuses_a_location_under_a_live_claim(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """The refusal names the holder — steering, not stonewalling."""
+        _plant_claim(files_api, "other-app", user="colleague@example.com")
+        with pytest.raises(StorageClaimedError, match="other-app") as excinfo:
+            _project_storage.bind_remote(UC_URL, project)
+        assert "colleague@example.com" in str(excinfo.value)
+        assert "fork" in str(excinfo.value)
+        # Nothing was bound or published behind the holder's back.
+        assert _project_storage.read_binding() is None
+        assert _stored_bundle_generations(files_api) == []
+        # The holder's claim is untouched.
+        stored = _stored_claim(files_api)
+        assert stored is not None and stored.app_name == "other-app"
+
+    def test_a_stale_claim_is_taken_over(self, project: Path, files_api: _FakeFiles) -> None:
+        """Lease expiry, not liveness probing, is what declares a session dead."""
+        _plant_claim(files_api, "other-app", age_seconds=600.0)
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+        stored = _stored_claim(files_api)
+        assert stored is not None and stored.app_name == "local"
+
+    def test_an_own_app_claim_is_taken_over_even_when_fresh(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """One container per app: our own name can only be a predecessor's."""
+        _plant_claim(files_api, "local", writer_id="predecessor-writer")
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+    def test_a_malformed_claim_reads_as_stale_not_as_a_gate(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """A corrupt lease must not brick the location it guards."""
+        files_api.store[f"{_UC_ROOT}/CLAIM.json"] = b"{not json"
+        assert _project_storage.bind_remote(UC_URL, project) == "adopted"
+
+    def test_losing_the_write_race_names_the_winner(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No compare-and-swap on the Files API: write-then-verify catches it."""
+        winner = UCClaim(app_name="racing-app", writer_id="w-race", nonce="race-nonce")
+
+        original_upload = files_api.upload
+
+        def interleaved_upload(path: str, contents, overwrite: bool = False) -> None:
+            original_upload(path, contents, overwrite=overwrite)
+            if path.endswith("CLAIM.json"):
+                files_api.store[path] = winner.to_json().encode("utf-8")
+
+        monkeypatch.setattr(files_api, "upload", interleaved_upload)
+        with pytest.raises(StorageClaimedError, match="racing-app"):
+            _project_storage.acquire_uc_claim(UC_URL)
+
+    def test_release_removes_only_our_own_claim(self, project: Path, files_api: _FakeFiles) -> None:
+        _project_storage.bind_remote(UC_URL, project)
+        _project_storage.release_uc_claim()
+        assert _stored_claim(files_api) is None
+
+        # A foreign claim is never deleted by our release.
+        _project_storage.acquire_uc_claim(UC_URL)
+        _plant_claim(files_api, "thief-app")
+        _project_storage.release_uc_claim()
+        stored = _stored_claim(files_api)
+        assert stored is not None and stored.app_name == "thief-app"
+
+    def test_publish_stops_when_the_lease_was_stolen(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """A stolen lease stops the old holder loudly — no interleaving."""
+        _project_storage.bind_remote(UC_URL, project)
+        _plant_claim(files_api, "thief-app")
+        with pytest.raises(StorageClaimedError, match="thief-app"):
+            _project_storage.publish_to_uc(UC_URL, project)
+        failure, _, terminal = _project_storage._classify_push_failure(
+            StorageClaimedError("x", _plant_claim(files_api, "thief-app"))
+        )
+        assert (failure, terminal) == ("rejected", True)
+
+    def test_publish_refreshes_the_held_lease(self, project: Path, files_api: _FakeFiles) -> None:
+        _project_storage.bind_remote(UC_URL, project)
+        held = _stored_claim(files_api)
+        assert held is not None
+        # Age the stored record; the next publish must re-stamp it.
+        stale_copy = UCClaim(
+            app_name=held.app_name,
+            writer_id=held.writer_id,
+            nonce=held.nonce,
+            user=held.user,
+            claimed_at=held.claimed_at,
+            refreshed_at="2020-01-01T00:00:00+00:00",
+        )
+        files_api.store[f"{_UC_ROOT}/CLAIM.json"] = stale_copy.to_json().encode("utf-8")
+        _project_storage.publish_to_uc(UC_URL, project)
+        refreshed = _stored_claim(files_api)
+        assert refreshed is not None
+        assert refreshed.nonce == held.nonce
+        assert refreshed.refreshed_at != "2020-01-01T00:00:00+00:00"
+
+    def test_heartbeat_refreshes_ours_and_stops_on_foreign(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """A stolen lease is never re-stolen by a background thread."""
+        _project_storage.bind_remote(UC_URL, project)
+        beat = _project_storage._claim_heartbeat._beat
+        assert beat() is True  # ours: refreshed, keep beating
+
+        _plant_claim(files_api, "thief-app")
+        assert beat() is False  # foreign: stop, do not overwrite
+        stored = _stored_claim(files_api)
+        assert stored is not None and stored.app_name == "thief-app"
+
+    def test_restore_gates_when_a_foreign_claim_is_live(
+        self, project: Path, files_api: _FakeFiles, tmp_path: Path
+    ) -> None:
+        """A boot cannot offer a dialog, so it gates with the holder named."""
+        _project_storage.write_binding(StorageBinding(remote_url=UC_URL, branch=WORKING))
+        _plant_claim(files_api, "other-app")
+        with pytest.raises(StorageClaimedError, match="other-app"):
+            _project_storage.restore_if_bound(tmp_path / "fresh")
+
+
+# ---------------------------------------------------------------------------
+# Fork — the honest way past a held location
+# ---------------------------------------------------------------------------
+
+
+class TestUcFork:
+    def _bind_and_publish_two_generations(self, project: Path) -> str:
+        _project_storage.bind_remote(UC_URL, project)
+        (project / "rating.py").write_text("# priced\n", encoding="utf-8")
+        sha = _git.commit_save(["rating.py"], WORKING, cwd=project)
+        assert sha is not None
+        _project_storage.publish_bound_project(project)
+        return sha
+
+    def test_fork_copies_the_latest_published_generation(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        self._bind_and_publish_two_generations(project)
+        lineage = _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
+
+        assert lineage.parent_url == UC_URL
+        assert lineage.parent_generation == 2
+        # The fork holds the parent's newest bundle as its own generation 1...
+        assert _stored_bundle_generations(files_api, _FORK_ROOT) == [1]
+        assert (
+            files_api.store[f"{_FORK_ROOT}/bundles/000001.bundle"]
+            == files_api.store[f"{_UC_ROOT}/bundles/000002.bundle"]
+        )
+        # ... with a pointer written last and provenance recorded.
+        fork_head = _stored_head(files_api, _FORK_ROOT)
+        assert fork_head.generation == 1
+        assert fork_head.tip_sha == _stored_head(files_api).tip_sha
+        stored_lineage = UCLineage.from_payload(
+            json.loads(files_api.store[f"{_FORK_ROOT}/LINEAGE.json"])
+        )
+        assert stored_lineage == lineage
+        # The fork takes no claim — binding to it later claims it.
+        assert _stored_claim(files_api, _FORK_ROOT) is None
+
+    def test_fork_copies_published_state_only(self, project: Path, files_api: _FakeFiles) -> None:
+        """The holder's unpublished work is theirs alone."""
+        self._bind_and_publish_two_generations(project)
+        (project / "rating.py").write_text("# unpublished\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+        # No publish: the fork must carry generation 2, not the local commit.
+        lineage = _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
+        assert lineage.parent_generation == 2
+
+    def test_fork_refuses_a_populated_target(self, project: Path, files_api: _FakeFiles) -> None:
+        """A fork never overwrites."""
+        self._bind_and_publish_two_generations(project)
+        files_api.store[f"{_FORK_ROOT}/HEAD.json"] = (
+            UCHead(generation=1, tip_sha="s", writer_id="w").to_json().encode("utf-8")
+        )
+        with pytest.raises(StorageConfigError, match="already has a stored project"):
+            _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
+
+    def test_fork_refuses_an_unpublished_source(self, project: Path, files_api: _FakeFiles) -> None:
+        with pytest.raises(StorageConfigError, match="nothing to copy"):
+            _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
+
+    def test_fork_refuses_self_and_non_uc_urls(self, project: Path, files_api: _FakeFiles) -> None:
+        with pytest.raises(StorageConfigError, match="onto itself"):
+            _project_storage.fork_uc_location(UC_URL, UC_URL, project)
+        with pytest.raises(StorageConfigError, match="uc://"):
+            _project_storage.fork_uc_location("https://host/r.git", FORK_URL, project)
+
+    def test_a_fork_restores_and_reports_its_provenance(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Bind → publish → fork → restore the fork elsewhere: history and
+        lineage both come through, and the fork publishes independently."""
+        sha = self._bind_and_publish_two_generations(project)
+        _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
+
+        # A different container binds to the fork.
+        _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
+        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
+        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+        monkeypatch.setattr(_project_storage, "_uc_claim", None)
+        monkeypatch.setattr(_project_storage, "_uc_claim_url", None)
+
+        restored_root = tmp_path / "fork-container"
+        assert _project_storage.restore_if_bound(restored_root) == "restored"
+        ledger_log = _run_git(restored_root, "log", "--format=%H", f"{WORKING}-save")
+        assert sha in ledger_log.splitlines()
+        assert _git.remote_url("origin", cwd=restored_root) == FORK_URL
+        lineage = _project_storage.active_lineage()
+        assert lineage is not None and lineage.parent_url == UC_URL
+
+        # The fork publishes to its own location, not the parent's.
+        (restored_root / "rating.py").write_text("# forked work\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=restored_root) is not None
+        _project_storage.publish_bound_project(restored_root)
+        assert _stored_head(files_api, _FORK_ROOT).generation == 2
+        assert _stored_head(files_api).generation == 2  # parent untouched
 
 
 # ---------------------------------------------------------------------------

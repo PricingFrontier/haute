@@ -82,8 +82,16 @@ _ALLOWED_SCHEMES = ("https://", "file://")
 _UC_SCHEME = "uc://"
 _UC_BUNDLE_DIR = "bundles"
 _UC_HEAD_FILE = "HEAD.json"
+_UC_CLAIM_FILE = "CLAIM.json"
+_UC_LINEAGE_FILE = "LINEAGE.json"
 #: Generations kept after a publish — cheap rollback without unbounded growth.
 _UC_BUNDLE_RETAIN = 5
+#: Lease cadence: the holder refreshes CLAIM.json this often...
+_UC_CLAIM_HEARTBEAT_SECONDS = 30.0
+#: ... and a claim whose heartbeat is older than this is dead and may be
+#: taken over (5 missed beats — far above one slow API call, far below a
+#: human waiting at a bind dialog).
+_UC_CLAIM_STALE_SECONDS = 150.0
 
 StorageState = Literal["unbound", "bound", "unsupported"]
 SyncState = Literal["synced", "pending", "failed"]
@@ -118,6 +126,19 @@ class StorageSupersededError(StorageError):
     terminal stop instead of two writers silently interleaving
     generations.
     """
+
+
+class StorageClaimedError(StorageError):
+    """The ``uc://`` location is under another holder's live lease.
+
+    Carries the structured holder record so the refusal can name who
+    holds the location and how fresh their heartbeat is — the user is
+    steered, not stonewalled (bind elsewhere, or fork the location).
+    """
+
+    def __init__(self, message: str, claim: UCClaim) -> None:
+        super().__init__(message)
+        self.claim = claim
 
 
 @dataclass(frozen=True)
@@ -220,6 +241,129 @@ class UCHead:
             tip_sha=tip_sha.strip(),
             writer_id=writer_id.strip(),
             written_at=written_at if isinstance(written_at, str) and written_at else None,
+        )
+
+
+@dataclass(frozen=True)
+class UCClaim:
+    """The ``CLAIM.json`` lease beside a location's pointer.
+
+    The claim makes a shared volume location behave like a locally-owned
+    file: one holder at a time, visible to everyone else by name. It is
+    a lease, not a liveness probe — the holder refreshes ``refreshed_at``
+    on a heartbeat and on every publish, and a record whose heartbeat is
+    older than ``_UC_CLAIM_STALE_SECONDS`` is dead. The ``nonce`` exists
+    because the Files API has no compare-and-swap: acquisition writes a
+    fresh nonce and reads it back to detect a lost race.
+    """
+
+    app_name: str
+    writer_id: str
+    nonce: str
+    user: str | None = None
+    claimed_at: str | None = None
+    refreshed_at: str | None = None
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "app_name": self.app_name,
+                "writer_id": self.writer_id,
+                "nonce": self.nonce,
+                "user": self.user,
+                "claimed_at": self.claimed_at,
+                "refreshed_at": self.refreshed_at,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> UCClaim | None:
+        """Parse a stored claim; a malformed record reads as ``None``.
+
+        Deliberately lenient where the pointer parser is strict: a corrupt
+        lease must not brick the location it guards — it reads as stale
+        and is taken over, and the publish fence still backstops writes.
+        """
+        if not isinstance(payload, dict):
+            return None
+        app_name = payload.get("app_name")
+        writer_id = payload.get("writer_id")
+        nonce = payload.get("nonce")
+        if not isinstance(app_name, str) or not app_name.strip():
+            return None
+        if not isinstance(writer_id, str) or not writer_id.strip():
+            return None
+        if not isinstance(nonce, str) or not nonce.strip():
+            return None
+        user = payload.get("user")
+        claimed_at = payload.get("claimed_at")
+        refreshed_at = payload.get("refreshed_at")
+        return cls(
+            app_name=app_name.strip(),
+            writer_id=writer_id.strip(),
+            nonce=nonce.strip(),
+            user=user if isinstance(user, str) and user else None,
+            claimed_at=claimed_at if isinstance(claimed_at, str) and claimed_at else None,
+            refreshed_at=refreshed_at if isinstance(refreshed_at, str) and refreshed_at else None,
+        )
+
+
+@dataclass(frozen=True)
+class UCLineage:
+    """The ``LINEAGE.json`` provenance record on a forked location.
+
+    Written once at fork time and never updated: it is what makes a fork
+    signposted rather than silent, and what a future synchronise-from-
+    upstream feature would walk.
+    """
+
+    parent_url: str
+    parent_generation: int
+    parent_tip_sha: str
+    forked_at: str | None = None
+    forked_by: str | None = None
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "parent_url": self.parent_url,
+                "parent_generation": self.parent_generation,
+                "parent_tip_sha": self.parent_tip_sha,
+                "forked_at": self.forked_at,
+                "forked_by": self.forked_by,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> UCLineage | None:
+        """Parse a stored lineage record; malformed reads as ``None``.
+
+        Lineage is informational provenance — a corrupt record degrades
+        to "not a fork", never to a gated session.
+        """
+        if not isinstance(payload, dict):
+            return None
+        parent_url = payload.get("parent_url")
+        parent_generation = payload.get("parent_generation")
+        parent_tip_sha = payload.get("parent_tip_sha")
+        if not isinstance(parent_url, str) or not parent_url.strip():
+            return None
+        if not isinstance(parent_generation, int) or parent_generation < 1:
+            return None
+        if not isinstance(parent_tip_sha, str) or not parent_tip_sha.strip():
+            return None
+        forked_at = payload.get("forked_at")
+        forked_by = payload.get("forked_by")
+        return cls(
+            parent_url=parent_url.strip(),
+            parent_generation=parent_generation,
+            parent_tip_sha=parent_tip_sha.strip(),
+            forked_at=forked_at if isinstance(forked_at, str) and forked_at else None,
+            forked_by=forked_by if isinstance(forked_by, str) and forked_by else None,
         )
 
 
@@ -491,6 +635,397 @@ def read_uc_head(url: str) -> UCHead | None:
     return UCHead.from_payload(payload)
 
 
+# -- claim lease ------------------------------------------------------------
+
+# The claim this process holds, if any. One hosted container serves one
+# project, so a single held claim is the invariant, not a limitation.
+_uc_claim: UCClaim | None = None
+_uc_claim_url: str | None = None
+_uc_release_registered = False
+
+
+def _uc_claim_path(url: str) -> str:
+    return f"{_uc_volume_path(url)}/{_UC_CLAIM_FILE}"
+
+
+def _uc_lineage_path(url: str) -> str:
+    return f"{_uc_volume_path(url)}/{_UC_LINEAGE_FILE}"
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def read_uc_claim(url: str) -> UCClaim | None:
+    """Return the location's lease, or ``None`` when unclaimed.
+
+    A malformed record also reads as ``None`` (a corrupt lease must not
+    brick the location it guards — the publish fence still backstops
+    writes). An API failure other than not-found raises: an unreadable
+    lease store must gate a bind, not read as "unclaimed".
+    """
+    path = _uc_claim_path(url)
+    try:
+        response = _files_api().download(path)
+        raw = response.contents.read()
+    except Exception as exc:
+        if _is_not_found(exc):
+            return None
+        logger.warning("uc_claim_read_failed", error=str(exc))
+        raise StorageUnavailableError(
+            "The storage location's claim record could not be read from the volume."
+        ) from exc
+    try:
+        payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    return UCClaim.from_payload(payload)
+
+
+def _write_uc_claim(url: str, claim: UCClaim) -> None:
+    import io
+
+    try:
+        _files_api().upload(
+            _uc_claim_path(url), io.BytesIO(claim.to_json().encode("utf-8")), overwrite=True
+        )
+    except Exception as exc:
+        logger.warning("uc_claim_write_failed", error=str(exc))
+        raise StorageUnavailableError(
+            "The storage location's claim record could not be written to the volume."
+        ) from exc
+
+
+def _claim_age_seconds(claim: UCClaim) -> float | None:
+    """Seconds since the claim's last heartbeat, or ``None`` if unparseable."""
+    stamp = claim.refreshed_at or claim.claimed_at
+    if not stamp:
+        return None
+    try:
+        last = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    return (datetime.now(UTC) - last).total_seconds()
+
+
+def _claim_is_stale(claim: UCClaim) -> bool:
+    """A lease with no parseable heartbeat, or one past the threshold, is dead."""
+    age = _claim_age_seconds(claim)
+    return age is None or age > _UC_CLAIM_STALE_SECONDS
+
+
+def _claimed_error(claim: UCClaim) -> StorageClaimedError:
+    age = _claim_age_seconds(claim)
+    freshness = f"{int(age)} seconds ago" if age is not None else "recently"
+    holder = f"app '{claim.app_name}'"
+    if claim.user:
+        holder += f" (bound by {claim.user})"
+    return StorageClaimedError(
+        f"This storage location is in use by {holder} — its last heartbeat was "
+        f"{freshness}. Bind a different location, or fork this one to work on "
+        "a copy.",
+        claim,
+    )
+
+
+def acquire_uc_claim(url: str, user: str | None = None) -> UCClaim:
+    """Take the lease on *url*, or raise naming the live holder.
+
+    Absent, stale, malformed, and own-app claims are taken over (the
+    platform runs one container per app, so a claim carrying this app's
+    own name can only be a predecessor's). The Files API has no
+    compare-and-swap, so acquisition is write-then-verify: write a claim
+    with a fresh nonce, read it back, and proceed only if the nonce is
+    ours — a lost race raises with whoever won. On success the heartbeat
+    starts and a best-effort release is registered for clean shutdown.
+    """
+    global _uc_claim, _uc_claim_url, _uc_release_registered
+    import uuid
+
+    existing = read_uc_claim(url)
+    if (
+        existing is not None
+        and existing.writer_id != _writer_id()
+        and existing.app_name != _scope_name()
+        and not _claim_is_stale(existing)
+    ):
+        raise _claimed_error(existing)
+
+    now = _now_iso()
+    ours = UCClaim(
+        app_name=_scope_name(),
+        writer_id=_writer_id(),
+        nonce=uuid.uuid4().hex,
+        user=user,
+        claimed_at=now,
+        refreshed_at=now,
+    )
+    _write_uc_claim(url, ours)
+    written = read_uc_claim(url)
+    if written is None or written.nonce != ours.nonce or written.writer_id != ours.writer_id:
+        # Someone else wrote between our write and read-back. Whoever the
+        # record now names holds the lease; if it is unreadable, say so
+        # without pretending to know the holder.
+        if written is not None:
+            raise _claimed_error(written)
+        raise StorageUnavailableError(
+            "The storage location's claim could not be confirmed after writing it. Retry the bind."
+        )
+
+    _uc_claim = ours
+    _uc_claim_url = url
+    if not _uc_release_registered:
+        import atexit
+
+        atexit.register(release_uc_claim)
+        _uc_release_registered = True
+    _claim_heartbeat.start()
+    logger.info("uc_claim_acquired", scope=_scope_name())
+    return ours
+
+
+def release_uc_claim() -> None:
+    """Release the held lease if it is still ours (best-effort).
+
+    Called at clean shutdown. Unclean death is the platform's normal
+    case and is what lease expiry exists for, so every failure here is
+    logged and swallowed — release must never turn a shutdown into an
+    error.
+    """
+    global _uc_claim, _uc_claim_url
+
+    _claim_heartbeat.stop()
+    claim, url = _uc_claim, _uc_claim_url
+    _uc_claim = None
+    _uc_claim_url = None
+    if claim is None or url is None:
+        return
+    try:
+        current = read_uc_claim(url)
+        if current is not None and current.nonce == claim.nonce:
+            _files_api().delete(_uc_claim_path(url))
+            logger.info("uc_claim_released", scope=_scope_name())
+    except Exception as exc:
+        logger.warning("uc_claim_release_failed", error=str(exc))
+
+
+def _verify_uc_claim_for_publish(url: str) -> None:
+    """Publishing only while holding the lease — the local-file analogy.
+
+    Absent claims proceed (pre-claim locations, non-claiming callers);
+    ours proceeds and refreshes the lease; a stale foreign claim is taken
+    over (the writing session IS the live one); a live foreign claim
+    stops the publish — a stolen lease must stop the old holder loudly,
+    not let two writers interleave.
+    """
+    global _uc_claim, _uc_claim_url
+
+    current = read_uc_claim(url)
+    if current is None:
+        return
+    held = _uc_claim
+    if held is not None and current.nonce == held.nonce and current.writer_id == held.writer_id:
+        refreshed = UCClaim(
+            app_name=held.app_name,
+            writer_id=held.writer_id,
+            nonce=held.nonce,
+            user=held.user,
+            claimed_at=held.claimed_at,
+            refreshed_at=_now_iso(),
+        )
+        try:
+            _write_uc_claim(url, refreshed)
+            _uc_claim = refreshed
+        except StorageUnavailableError:
+            # A missed refresh is what the staleness margin absorbs; the
+            # publish itself should not fail over it.
+            logger.warning("uc_claim_refresh_skipped")
+        return
+    if current.writer_id == _writer_id() or _claim_is_stale(current):
+        # Our own record under a lost local handle, or a dead lease:
+        # reassert ownership with a fresh nonce before writing.
+        user = held.user if held is not None else None
+        _uc_claim = None
+        _uc_claim_url = None
+        acquire_uc_claim(url, user=user)
+        return
+    raise _claimed_error(current)
+
+
+class _ClaimHeartbeat:
+    """One daemon thread refreshing the held lease while the process lives.
+
+    Each beat re-reads the claim and refreshes ``refreshed_at`` only if
+    the record is still ours. A foreign record stops the beat without
+    overwriting: re-stealing a stolen lease from a background thread
+    would turn one loud stop into a silent tug-of-war — the publish-time
+    verification is where the loss surfaces.
+    """
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="haute-uc-claim", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while not self._stop.wait(_UC_CLAIM_HEARTBEAT_SECONDS):
+            if not self._beat():
+                return
+
+    def _beat(self) -> bool:
+        """One refresh attempt; ``False`` means the beat must stop.
+
+        Factored out of the thread loop so tests can drive a beat
+        synchronously instead of waiting out the cadence.
+        """
+        global _uc_claim
+        claim, url = _uc_claim, _uc_claim_url
+        if claim is None or url is None:
+            return False
+        try:
+            current = read_uc_claim(url)
+        except StorageUnavailableError:
+            return True  # Transient API failure; the staleness margin absorbs it.
+        if current is None or current.nonce != claim.nonce:
+            logger.warning("uc_claim_lost", scope=_scope_name())
+            return False
+        refreshed = UCClaim(
+            app_name=claim.app_name,
+            writer_id=claim.writer_id,
+            nonce=claim.nonce,
+            user=claim.user,
+            claimed_at=claim.claimed_at,
+            refreshed_at=_now_iso(),
+        )
+        try:
+            _write_uc_claim(url, refreshed)
+            _uc_claim = refreshed
+        except StorageUnavailableError:
+            pass  # Retry on the next beat; the staleness margin absorbs it.
+        return True
+
+
+_claim_heartbeat = _ClaimHeartbeat()
+
+
+# -- fork and lineage -------------------------------------------------------
+
+
+def read_uc_lineage(url: str) -> UCLineage | None:
+    """The location's fork provenance, or ``None`` when it is not a fork.
+
+    Lenient on every failure: lineage is informational, and an unreadable
+    record degrades to "not a fork", never to a gated session.
+    """
+    try:
+        response = _files_api().download(_uc_lineage_path(url))
+        raw = response.contents.read()
+        payload = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception as exc:
+        if not _is_not_found(exc):
+            logger.warning("uc_lineage_read_failed", error=str(exc))
+        return None
+    return UCLineage.from_payload(payload)
+
+
+def fork_uc_location(
+    source_url: str, target_url: str, project_root: Path, forked_by: str | None = None
+) -> UCLineage:
+    """Copy *source_url*'s latest published generation to empty *target_url*.
+
+    The honest way past a held location: work on a copy, with provenance
+    recorded (``LINEAGE.json``) so the fork is signposted and a future
+    synchronise-from-upstream feature has something to walk. Copies only
+    PUBLISHED state — the holder's unpublished work is theirs alone —
+    and takes no claim: binding to the target later claims it. The
+    pointer is written last, as everywhere.
+    """
+    import io
+    import tempfile
+
+    from haute import _git
+
+    source = validate_remote_url(source_url)
+    target = validate_remote_url(target_url)
+    if not is_uc_url(source) or not is_uc_url(target):
+        raise StorageConfigError("Forking is only defined between uc:// storage locations.")
+    if source == target:
+        raise StorageConfigError("A location cannot be forked onto itself.")
+
+    head = read_uc_head(source)
+    if head is None:
+        raise StorageConfigError(
+            "The location to fork has no published project yet — there is nothing to copy."
+        )
+    if read_uc_head(target) is not None:
+        raise StorageConfigError(
+            "The fork target already has a stored project. Choose an empty location."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="haute-uc-fork-") as tmp:
+        bundle = Path(tmp) / f"{head.generation:06d}.bundle"
+        try:
+            response = _files_api().download(_uc_bundle_path(source, head.generation))
+            bundle.write_bytes(response.contents.read())
+        except Exception as exc:
+            logger.warning("uc_fork_download_failed", generation=head.generation, error=str(exc))
+            raise StorageUnavailableError(
+                f"Generation {head.generation} of the project to fork could not be "
+                "downloaded from the storage volume."
+            ) from exc
+        try:
+            _git.bundle_verify(bundle, cwd=project_root)
+        except _git.GitError as exc:
+            raise StorageUnavailableError(
+                "The stored project to fork failed verification — it cannot be copied as-is."
+            ) from exc
+        try:
+            with bundle.open("rb") as handle:
+                _files_api().upload(_uc_bundle_path(target, 1), handle, overwrite=True)
+        except Exception as exc:
+            logger.warning("uc_fork_upload_failed", error=str(exc))
+            raise StorageUnavailableError(
+                "The forked project bundle could not be uploaded to the storage volume."
+            ) from exc
+
+    lineage = UCLineage(
+        parent_url=source,
+        parent_generation=head.generation,
+        parent_tip_sha=head.tip_sha,
+        forked_at=_now_iso(),
+        forked_by=forked_by,
+    )
+    pointer = UCHead(
+        generation=1,
+        tip_sha=head.tip_sha,
+        writer_id=_writer_id(),
+        written_at=_now_iso(),
+    )
+    try:
+        _files_api().upload(
+            _uc_lineage_path(target), io.BytesIO(lineage.to_json().encode("utf-8")), overwrite=True
+        )
+        _files_api().upload(
+            _uc_head_path(target), io.BytesIO(pointer.to_json().encode("utf-8")), overwrite=True
+        )
+    except Exception as exc:
+        logger.warning("uc_fork_pointer_write_failed", error=str(exc))
+        raise StorageUnavailableError(
+            "The forked location's records could not be written to the storage volume."
+        ) from exc
+    logger.info("uc_location_forked", parent_generation=head.generation)
+    return lineage
+
+
 def publish_to_uc(url: str, project_root: Path) -> None:
     """Publish the whole repository to *url* as the next bundle generation.
 
@@ -506,6 +1041,9 @@ def publish_to_uc(url: str, project_root: Path) -> None:
 
     from haute import _git
 
+    # Publishing only while holding the lease (or on a claimless location);
+    # a live foreign claim stops here, before any bytes move.
+    _verify_uc_claim_for_publish(url)
     head = read_uc_head(url)
     # The generation this process restored from is exempt: that pointer was
     # legitimately written by the predecessor container whose lineage this
@@ -802,6 +1340,10 @@ def _classify_push_failure(exc: Exception) -> tuple[FailureClass, str, bool]:
         # The uc:// analogue of a rejected push: someone else moved the
         # durable state, so only a deliberate act may resume publishing.
         return "rejected", str(exc), True
+    if isinstance(exc, StorageClaimedError):
+        # The lease was taken over while this process stalled; the new
+        # holder is named and only a deliberate act may resume.
+        return "rejected", str(exc), True
     if isinstance(exc, StorageConfigError):
         return "config", str(exc), True
     if isinstance(exc, StorageUnavailableError):
@@ -829,6 +1371,9 @@ _queue = PushQueue()
 # The binding in force for this process, cached once at restore/bind time so
 # the readiness endpoint (polled by the UI) never costs a Files API round trip.
 _active_binding: StorageBinding | None = None
+# The bound location's fork provenance, cached at the same moment and for the
+# same reason (readiness must stay off the Files API).
+_active_lineage: UCLineage | None = None
 
 
 def push_queue() -> PushQueue:
@@ -837,6 +1382,10 @@ def push_queue() -> PushQueue:
 
 def active_binding() -> StorageBinding | None:
     return _active_binding
+
+
+def active_lineage() -> UCLineage | None:
+    return _active_lineage
 
 
 def enqueue_push() -> None:
@@ -887,7 +1436,7 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
     a hosted boot must gate rather than quietly start a fresh project
     over durable work.
     """
-    global _active_binding, _uc_last_seen_generation
+    global _active_binding, _active_lineage, _uc_last_seen_generation
 
     if not state_volume_configured():
         return "unbound"
@@ -910,6 +1459,11 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
                 "this app is bound to. Remove it, or rebind, before starting."
             )
         if is_uc_url(remote_url):
+            # Take the lease before reusing the clone — a boot cannot offer
+            # a dialog, so a live foreign claim gates with its holder named;
+            # a predecessor's claim carries this app's own name and is taken
+            # over immediately.
+            acquire_uc_claim(remote_url, user=binding.bound_by)
             # A new process means a new writer identity, so the supersession
             # fence must learn which generation this clone derives from — but
             # only when the clone really does contain the published tip. An
@@ -919,13 +1473,16 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
             head = read_uc_head(remote_url)
             if head is not None and _git.commit_exists(head.tip_sha, cwd=project_dir):
                 _uc_last_seen_generation = head.generation
+            _active_lineage = read_uc_lineage(remote_url)
         _active_binding = binding
         _queue.start(project_dir)
         return "present"
 
     logger.info("project_restore_started", scope=_scope_name())
     if is_uc_url(remote_url):
+        acquire_uc_claim(remote_url, user=binding.bound_by)
         _restore_from_uc(remote_url, project_dir)
+        _active_lineage = read_uc_lineage(remote_url)
     else:
         _git.clone_project(remote_url, project_dir, branch=None)
     if binding.branch:
@@ -955,7 +1512,7 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
     directory is not safe to do live, and the boot path already does it
     cleanly.
     """
-    global _active_binding
+    global _active_binding, _active_lineage
 
     from haute import _git
     from haute._git_state import read_working_branch
@@ -976,6 +1533,10 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
         )
 
     if is_uc_url(remote_url):
+        # Claim first: the emptiness check and everything after it happen
+        # under our lease, and a location another app actively holds is
+        # refused with its holder named before any state is touched.
+        acquire_uc_claim(remote_url, user=bound_by)
         # `git ls-remote` cannot inspect a uc:// location, so "is the remote
         # empty?" becomes "was anything ever published there?".
         populated = read_uc_head(remote_url) is not None
@@ -1008,6 +1569,8 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
         _git.push_working_pair(REMOTE_NAME, project_root, cwd=project_root)
     write_binding(binding)
     _active_binding = binding
+    # An adopted location was empty, so it cannot be a fork.
+    _active_lineage = None
     _queue.start(project_root)
     logger.info("project_bound", outcome="adopted")
     return "adopted"

@@ -70,6 +70,8 @@ import type {
   GitPushResponse,
   GitSetIdentityResponse,
   GitBindStorageResponse,
+  GitForkStorageResponse,
+  GitStorageClaim,
   GitSetWorkingBranchResponse,
   GitStorageSync,
   GitWorkingBranchResponse,
@@ -2520,7 +2522,45 @@ export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchR
         ? "unsupported"
         : expectStringLiteral("parseGitWorkingBranchResponse", obj.storage, "field `storage`", STORAGE_STATES),
     storage_remote: optionalNullableString("parseGitWorkingBranchResponse", obj, "storage_remote"),
+    storage_forked_from: optionalNullableString(
+      "parseGitWorkingBranchResponse",
+      obj,
+      "storage_forked_from",
+    ),
     sync: parseGitStorageSync("parseGitWorkingBranchResponse", obj, "sync"),
+  }
+}
+
+/** Lenient reader for the structured 409 body a claimed bind returns.
+ *  Returns null when the payload is not claim-shaped (e.g. a plain-string
+ *  detail from an older backend) so callers fall back to generic error text. */
+export function gitStorageClaimFromDetail(value: unknown): GitStorageClaim | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
+  const obj = value as Record<string, unknown>
+  if (typeof obj.app_name !== "string" || !obj.app_name) return null
+  if (typeof obj.message !== "string" || !obj.message) return null
+  return {
+    app_name: obj.app_name,
+    user: typeof obj.user === "string" && obj.user ? obj.user : null,
+    refreshed_at: typeof obj.refreshed_at === "string" && obj.refreshed_at ? obj.refreshed_at : null,
+    message: obj.message,
+  }
+}
+
+export function parseGitForkStorageResponse(value: unknown): GitForkStorageResponse {
+  const obj = expectPlainObject("parseGitForkStorageResponse", value)
+  return {
+    outcome: expectStringLiteral("parseGitForkStorageResponse", obj.outcome, "field `outcome`", [
+      "forked",
+    ] as const),
+    target_url: expectString("parseGitForkStorageResponse", obj.target_url, "field `target_url`"),
+    parent_url: expectString("parseGitForkStorageResponse", obj.parent_url, "field `parent_url`"),
+    parent_generation: expectNumber(
+      "parseGitForkStorageResponse",
+      obj.parent_generation,
+      "field `parent_generation`",
+    ),
+    message: expectString("parseGitForkStorageResponse", obj.message, "field `message`"),
   }
 }
 

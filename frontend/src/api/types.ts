@@ -1227,12 +1227,30 @@ export interface GitWorkingBranchResponse {
    *  parser defaults it to "unsupported" (hide the storage surface). */
   storage?: StorageState
   storage_remote?: string | null
+  /** Parent uc:// URL when the bound location is a fork (provenance). */
+  storage_forked_from?: string | null
   sync?: GitStorageSync | null
 }
 
 export interface GitBindStorageResponse {
   outcome: "adopted" | "restart-required"
   remote_url: string
+  message: string
+}
+
+/** Who holds a uc:// location's lease — the structured 409 body at bind time. */
+export interface GitStorageClaim {
+  app_name: string
+  user: string | null
+  refreshed_at: string | null
+  message: string
+}
+
+export interface GitForkStorageResponse {
+  outcome: "forked"
+  target_url: string
+  parent_url: string
+  parent_generation: number
   message: string
 }
 

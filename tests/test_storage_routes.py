@@ -32,6 +32,7 @@ def _isolated_storage_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 
     # Reset module-level singletons so tests are order-independent.
     monkeypatch.setattr(_project_storage, "_active_binding", None)
+    monkeypatch.setattr(_project_storage, "_active_lineage", None)
     monkeypatch.setattr(_project_storage, "_queue", PushQueue())
 
     yield
@@ -98,6 +99,122 @@ def test_bind_with_no_state_volume_names_the_env_var(client: TestClient) -> None
     assert resp.status_code == 400
     detail = resp.json()["detail"]
     assert _project_storage.STATE_VOLUME_ENV in detail
+
+
+# ---------------------------------------------------------------------------
+# 3b. POST /api/git/storage/bind — 409 with the structured holder record
+# ---------------------------------------------------------------------------
+
+
+def test_bind_on_a_claimed_location_returns_the_holder(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is a structured 409 the UI can steer from, not a string."""
+    from haute._project_storage import StorageClaimedError, UCClaim
+
+    claim = UCClaim(
+        app_name="other-app",
+        writer_id="w-other",
+        nonce="n",
+        user="colleague@example.com",
+        refreshed_at="2026-08-04T17:00:00+00:00",
+    )
+
+    def claimed(*args: object, **kwargs: object):
+        raise StorageClaimedError(
+            "This storage location is in use by app 'other-app' (bound by "
+            "colleague@example.com) — its last heartbeat was 12 seconds ago. "
+            "Bind a different location, or fork this one to work on a copy.",
+            claim,
+        )
+
+    monkeypatch.setattr(_project_storage, "bind_remote", claimed)
+    resp = client.post(
+        "/api/git/storage/bind",
+        json={"remote_url": "uc://workspace.default.projects/demo"},
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["app_name"] == "other-app"
+    assert detail["user"] == "colleague@example.com"
+    assert detail["refreshed_at"] == "2026-08-04T17:00:00+00:00"
+    assert "fork" in detail["message"]
+
+
+# ---------------------------------------------------------------------------
+# 3c. POST /api/git/storage/fork — copy a held location's published state
+# ---------------------------------------------------------------------------
+
+
+def test_fork_returns_the_lineage(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from haute._project_storage import UCLineage
+
+    def forked(source_url: str, target_url: str, project_root: Path, forked_by=None) -> UCLineage:
+        return UCLineage(
+            parent_url="uc://workspace.default.projects/demo",
+            parent_generation=7,
+            parent_tip_sha="a" * 40,
+        )
+
+    monkeypatch.setattr(_project_storage, "fork_uc_location", forked)
+    resp = client.post(
+        "/api/git/storage/fork",
+        json={
+            "source_url": "uc://workspace.default.projects/demo",
+            "target_url": "uc://workspace.default.projects/demo-fork",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["outcome"] == "forked"
+    assert body["parent_url"] == "uc://workspace.default.projects/demo"
+    assert body["parent_generation"] == 7
+    assert body["target_url"] == "uc://workspace.default.projects/demo-fork"
+    assert "Bind" in body["message"]
+
+
+def test_fork_config_errors_surface_verbatim(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._project_storage import StorageConfigError
+
+    def refused(*args: object, **kwargs: object):
+        raise StorageConfigError("The fork target already has a stored project.")
+
+    monkeypatch.setattr(_project_storage, "fork_uc_location", refused)
+    resp = client.post(
+        "/api/git/storage/fork",
+        json={
+            "source_url": "uc://workspace.default.projects/demo",
+            "target_url": "uc://workspace.default.projects/demo",
+        },
+    )
+    assert resp.status_code == 400
+    assert "already has a stored project" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# 3d. Readiness — fork provenance surfaces without touching the Files API
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_reports_fork_provenance(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from haute._project_storage import UCLineage
+
+    monkeypatch.setattr(
+        _project_storage,
+        "_active_lineage",
+        UCLineage(
+            parent_url="uc://workspace.default.projects/demo",
+            parent_generation=3,
+            parent_tip_sha="b" * 40,
+        ),
+    )
+    resp = client.get("/api/git/working-branch")
+    assert resp.status_code == 200
+    assert resp.json()["storage_forked_from"] == "uc://workspace.default.projects/demo"
 
 
 # ---------------------------------------------------------------------------

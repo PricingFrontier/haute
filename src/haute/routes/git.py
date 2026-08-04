@@ -70,6 +70,8 @@ from haute.schemas import (
     GitDeleteBranchResponse,
     GitFastForwardRequest,
     GitFastForwardResponse,
+    GitForkStorageRequest,
+    GitForkStorageResponse,
     GitGraphResponse,
     GitLedgerSavesResponse,
     GitMilestoneFork,
@@ -87,6 +89,7 @@ from haute.schemas import (
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
+    GitStorageClaim,
     GitStorageSync,
     GitUndeleteRequest,
     GitUndeleteResponse,
@@ -134,11 +137,13 @@ def _with_storage_state(status: GitWorkingBranchResponse) -> GitWorkingBranchRes
     through the sync state instead.
     """
     binding = _project_storage.active_binding()
+    lineage = _project_storage.active_lineage()
     sync = _project_storage.push_queue().status()
     return status.model_copy(
         update={
             "storage": _project_storage.storage_state(),
             "storage_remote": binding.remote_url if binding is not None else None,
+            "storage_forked_from": lineage.parent_url if lineage is not None else None,
             "sync": GitStorageSync(
                 state=sync.state,
                 pending=sync.pending,
@@ -579,6 +584,20 @@ def git_bind_storage(body: GitBindStorageRequest, request: Request) -> GitBindSt
             # Platform-authenticated visitor, when hosted behind an SSO proxy.
             bound_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
         )
+    except _project_storage.StorageClaimedError as e:
+        # Another app instance holds the location's lease. 409 with the
+        # structured holder so the UI can name them and offer the ways
+        # forward (bind elsewhere, or fork).
+        logger.warning("storage_bind_claimed", holder=e.claim.app_name)
+        raise HTTPException(
+            status_code=409,
+            detail=GitStorageClaim(
+                app_name=e.claim.app_name,
+                user=e.claim.user,
+                refreshed_at=e.claim.refreshed_at,
+                message=str(e),
+            ).model_dump(),
+        )
     except _project_storage.StorageConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except _project_storage.StorageUnavailableError as e:
@@ -604,6 +623,45 @@ def git_bind_storage(body: GitBindStorageRequest, request: Request) -> GitBindSt
         outcome=outcome,
         remote_url=_project_storage.validate_remote_url(body.remote_url),
         message=message,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/fork — copy a held location's published state
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/fork", response_model=GitForkStorageResponse)
+def git_fork_storage(body: GitForkStorageRequest, request: Request) -> GitForkStorageResponse:
+    """Fork a uc:// location's latest published generation to an empty one.
+
+    The honest way past a location someone else holds: work on a copy,
+    with provenance recorded so the fork is signposted, not silent. Takes
+    no claim — binding to the target afterwards claims it."""
+    try:
+        lineage = _project_storage.fork_uc_location(
+            body.source_url,
+            body.target_url,
+            Path.cwd(),
+            forked_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
+        )
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error("storage_fork_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    target = _project_storage.validate_remote_url(body.target_url)
+    return GitForkStorageResponse(
+        target_url=target,
+        parent_url=lineage.parent_url,
+        parent_generation=lineage.parent_generation,
+        message=(
+            f"Forked generation {lineage.parent_generation} into {target}. "
+            "Bind this session to the new location to work on the copy."
+        ),
     )
 
 
