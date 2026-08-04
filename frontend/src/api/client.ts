@@ -1197,6 +1197,24 @@ export function deleteJsonCache(
 }
 
 /**
+ * Records scanned by *Infer Tables* unless the caller overrides it.
+ *
+ * The backend default is `None` (scan every record), which is right for CLI
+ * and programmatic use but not behind this button: infer is interactive and
+ * shares the 30s default request timeout, and a multi-GB JSONL takes minutes
+ * to walk in full. Sampling is safe because the *build* still reads every
+ * record — a type that widens past the sample fails loud with a clear error
+ * rather than silently producing a wrong cache.
+ *
+ * 10k is far past where the schema stops changing (a 1M-row, 4 KB/record
+ * file converges by ~100 records) while staying ~1s and leaving an order of
+ * magnitude of headroom under the timeout for fatter records. Note the
+ * backend head-samples, so a file sorted such that a field only appears late
+ * still relies on the build-time failure as the backstop.
+ */
+export const JSON_CACHE_INFER_SAMPLE_SIZE = 10_000
+
+/**
  * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
  * Drives the ApiInputEditor's *Infer Tables* button.
  *
@@ -1209,7 +1227,7 @@ export function inferJsonCacheSchema(
 ): Promise<{ tables: Array<Record<string, unknown>> }> {
   return post<unknown>(
     "/api/json-cache/infer",
-    payload,
+    { ...payload, sample_size: payload.sample_size ?? JSON_CACHE_INFER_SAMPLE_SIZE },
     options,
   ).then(parseJsonCacheSchemaInferenceResponse)
 }

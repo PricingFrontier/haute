@@ -38,6 +38,7 @@ import {
   getModels,
   getRuns,
   inferJsonCacheSchema,
+  JSON_CACHE_INFER_SAMPLE_SIZE,
   gitArchiveBranch,
   gitDeleteBranch,
   listUtilityFiles,
@@ -772,4 +773,31 @@ describe("shared client trust-boundary endpoints", () => {
       await expect(testCase.call()).rejects.toThrow()
     })
   }
+})
+
+describe("inferJsonCacheSchema sample cap", () => {
+  const sentBody = () =>
+    JSON.parse((mockFetch.mock.calls[0]?.[1] as RequestInit).body as string)
+
+  it("caps the scan by default so infer cannot outrun the 30s request timeout", async () => {
+    // The backend default is an unbounded scan (minutes on a multi-GB JSONL).
+    // Infer is interactive, so the client — not the caller — supplies the cap.
+    mockFetch.mockReturnValue(jsonResponse({ tables: [] }))
+
+    await inferJsonCacheSchema({ path: "/data/quotes.jsonl" })
+
+    expect(sentBody()).toEqual({
+      path: "/data/quotes.jsonl",
+      sample_size: JSON_CACHE_INFER_SAMPLE_SIZE,
+    })
+    expect(JSON_CACHE_INFER_SAMPLE_SIZE).toBe(10_000)
+  })
+
+  it("lets an explicit sample_size win over the default", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ tables: [] }))
+
+    await inferJsonCacheSchema({ path: "/data/quotes.jsonl", sample_size: 50 })
+
+    expect(sentBody().sample_size).toBe(50)
+  })
 })
