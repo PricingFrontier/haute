@@ -1063,6 +1063,11 @@ def _build_model_score(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     config = ctx.config
     _src_names = list(ctx.source_names)
+    # ``source_ids`` preserves physical incoming-edge count even when an
+    # invalid API-input edge has no handle and therefore no executable input
+    # name.  Direct builder callers commonly provide names without IDs, so the
+    # larger count is the authoritative transform arity in both paths.
+    incoming_count = max(len(ctx.source_ids), len(_src_names))
     code = str(config.get("code") or "").strip()
     _orig_src = list(ctx.orig_source_names) if ctx.orig_source_names else None
     _in_map = dict(config.get("inputMapping", {})) or None
@@ -1092,9 +1097,9 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # guard — which exists to catch genuinely-broken graphs where a
         # downstream node lost its parents, not self-contained code
         # snippets.
-        is_source = not _src_names
+        is_source = incoming_count == 0
         return ctx.func_name, transform_fn, is_source
-    if len(_src_names) == 1:
+    if incoming_count == 1:
         return ctx.func_name, _passthrough_fn, False
 
     def incomplete_transform_fn(
@@ -1105,7 +1110,7 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
 
     # With no upstream, mark the node as a source so the executor invokes the
     # placeholder instead of failing first with its generic no-input guard.
-    return ctx.func_name, incomplete_transform_fn, not _src_names
+    return ctx.func_name, incomplete_transform_fn, incoming_count == 0
 
 
 @_register(NodeType.EDGE_JOIN, opaque=True)
