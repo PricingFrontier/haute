@@ -30,6 +30,7 @@ import math
 from collections.abc import Callable
 from typing import Any
 
+from haute._code_extraction import INCOMPLETE_TRANSFORM_BODY
 from haute._config_io import config_path_for_node
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
@@ -879,21 +880,19 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
         decorator = "@pipeline.polars"
 
     if not code:
-        if not source_names:
-            raise ConfigError(
-                "polars transform has no user code and no upstream sources; "
-                "either connect an input or provide code.",
-                node_id=node.id,
-                label=node.data.label,
-            )
-        if len(source_names) > 1:
-            raise ConfigError(
-                "polars transform has no user code but multiple upstream "
-                "sources; add code that explicitly combines the inputs or "
-                "reduce to a single upstream.",
-                node_id=node.id,
-                label=node.data.label,
-                sources=list(source_names),
+        if len(source_names) != 1:
+            # Not written yet: with no upstream there is nothing to return, and
+            # with several there is no defined way to combine them. Neither is a
+            # reason to block a SAVE — a half-built graph is a normal state to
+            # leave the editor in — so emit a body that is valid Python, keeps
+            # the node's inputs bound, and fails loudly if the pipeline is run.
+            # Save surfaces this as a warning (see `_validate_transforms_are_runnable`),
+            # and the placeholder round-trips back to "no code" in the editor.
+            return (
+                f"{decorator}\n"
+                f"def {func_name}({params}) -> pl.LazyFrame:\n"
+                f'    """{description}"""\n'
+                f"{INCOMPLETE_TRANSFORM_BODY}"
             )
         return (
             f"{decorator}\n"

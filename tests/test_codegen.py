@@ -292,20 +292,20 @@ class TestNodeToCode:
         assert "return upstream" in code
         _compile_node_code(code)
 
-    def test_transform_without_code_no_sources_raises(self):
-        """Post Item #22: an orphan polars transform (no code, no inputs)
-        is incoherent — must raise ``ConfigError`` rather than emit
-        ``return df`` where ``df`` is unbound."""
-        from haute.errors import ConfigError
-
+    def test_transform_without_code_no_sources_emits_a_raising_placeholder(self):
+        """An orphan polars transform (no code, no inputs) is incoherent to RUN
+        but is an ordinary half-built state to SAVE. It emits a placeholder that
+        raises — never ``return df`` where ``df`` is unbound."""
         node = _n(
             {
                 "id": "t",
                 "data": {"label": "Pass", "nodeType": "polars", "config": {}},
             }
         )
-        with pytest.raises(ConfigError):
-            _node_to_code(node, source_names=[])
+        code = _node_to_code(node, source_names=[])
+        assert "raise NotImplementedError" in code
+        assert "return df" not in code
+        _compile_node_code(code)
 
     def test_output_references_sidecar_and_passes_through(self):
         node = _n(
