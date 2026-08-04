@@ -226,6 +226,12 @@ text between the parens is non-whitespace).
   node they deliberately left empty. Anything the user adds AFTER the
   placeholder is preserved (`generated_scaffold=True`): the placeholder binds no
   `df` alias, so a following `df = <param>` is authored code, not scaffold.
+  The live executor keeps the same invariant: exactly one upstream remains the
+  intentional passthrough, while zero or multiple upstreams install a callable
+  that raises the same `NotImplementedError` instead of routing through the
+  shared first-input passthrough. Save validation scans both the root graph and
+  every embedded submodel definition, so every generated placeholder is named
+  in a non-blocking warning.
 - **Empty/cleared code box producing a degenerate `df = (\n)`** — parses as
   `df = ()` (an empty tuple), recognized by `_is_empty_chain_assignment` as
   leftover scaffolding and collapsed to empty user code, not left as
@@ -333,7 +339,9 @@ than one file per module:
   rather than block the whole pipeline. Pins that the generated body fails
   loudly if run instead of silently passing one input through, that it
   round-trips back to an empty node rather than being adopted as user code, and
-  that the well-defined single-upstream passthrough is untouched.
+  that the well-defined single-upstream passthrough is untouched. Executor-level
+  cases pin the same zero/multiple-input failure in the live canvas, and a
+  submodel case proves save warnings cover embedded definitions.
 - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
   `_gen_data_input`, `_gen_data_output`) plus `TestCodegenExecValidation`, which executes

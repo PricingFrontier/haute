@@ -522,9 +522,9 @@ def _iter_records(
         yield from _iter_xml_records(data_path)
         return
     if suffix in (".jsonl", ".ndjson"):
-        with data_path.open("r", encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
+        with data_path.open("rb") as f:
+            for raw_line in f:
+                stripped = raw_line.strip()
                 if not stripped:
                     continue
                 obj = orjson.loads(stripped)
@@ -947,9 +947,7 @@ def shred_to_buffers(
         for col_name, leaf, parts, type_token, src_depth, is_scalar_leaf in col_specs:
             src = value if src_depth == depth else ancestors[src_depth]  # pragma: no mutate
             resolved = _resolve_leaf(src, leaf, parts)
-            if is_scalar_leaf or (
-                type_token == "str" and not isinstance(resolved, (dict, list))
-            ):
+            if is_scalar_leaf or (type_token == "str" and not isinstance(resolved, (dict, list))):
                 resolved = _coerce_scalar(resolved, type_token)
             row[col_name] = resolved
         return row
@@ -1056,13 +1054,13 @@ def _shred_data_file(
 
 
 # ---------------------------------------------------------------------------
-# Parallel shred (newline-delimited sources only)
+# Parallel JSON processing (newline-delimited sources only)
 #
-# The shred is a per-record walk: ancestor values are distributed at walk time
+# Shredding is a per-record walk: ancestor values are distributed at walk time
 # and no state crosses records (``row_id_column`` names an EXISTING data column,
-# never a generated counter). Records are therefore independent, and the only
-# things a split must preserve are row ORDER and the skip/conservation
-# accounting.
+# never a generated counter). Inference records only mergeable path/type
+# evidence. The build preserves row order and skip/conservation accounting;
+# inference preserves first-observation order and applies associative widening.
 #
 # Chunk size and worker count are deliberately separate knobs. Decoded records
 # cost several times their JSON size as Python objects, so chunk size bounds
@@ -1077,8 +1075,8 @@ def _shred_data_file(
 # ---------------------------------------------------------------------------
 
 
-# Below this, process startup and part-file round-trips cost more than the
-# serial walk saves.
+# Below this, process startup (plus build-only part-file round-trips) costs more
+# than the serial walk saves.
 _PARALLEL_MIN_BYTES = 64 * 1024 * 1024
 # Target bytes of source JSON per chunk — the memory knob (see above).
 _PARALLEL_CHUNK_BYTES = 64 * 1024 * 1024
@@ -1125,14 +1123,14 @@ def _iter_range_records(
     data_path: Path,
     start: int,
     end: int,
-    stats: ShredSkipStats,
+    stats: ShredSkipStats | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield records from ``[start, end)`` of a newline-delimited file.
 
     Mirrors the JSONL arm of :func:`_iter_records` exactly — blank lines are
-    formatting and never counted, a non-object line is a skipped record — but
-    reads bytes so a range can be seeked to directly. ``orjson`` validates
-    UTF-8 itself, so decoding stays inside the JSON parse.
+    formatting and never counted, and a non-object line is recorded through
+    optional *stats* — but reads bytes so a range can be seeked to directly.
+    ``orjson`` validates UTF-8 itself, so decoding stays inside the JSON parse.
     """
     with data_path.open("rb") as f:
         f.seek(start)
@@ -1147,8 +1145,60 @@ def _iter_range_records(
             obj = orjson.loads(stripped)
             if isinstance(obj, dict):
                 yield obj
-            else:
+            elif stats is not None:
                 stats.count_record_skip()
+
+
+@dataclass(frozen=True)
+class _ChunkFailure:
+    """Pickle-safe evidence needed to reconstruct a worker exception."""
+
+    type_name: str
+    module: str
+    message: str
+    context: dict[str, Any] = field(default_factory=dict)
+    doc: str | None = None
+    pos: int | None = None
+    errno: int | None = None
+    strerror: str | None = None
+    filename: Any = None
+    winerror: int | None = None
+    filename2: Any = None
+
+
+def _failure_from_exception(exc: Exception) -> _ChunkFailure:
+    """Capture only the stable, pickle-safe evidence for a worker failure."""
+    if isinstance(exc, ApiInputSchemaError):
+        return _ChunkFailure(
+            type_name=type(exc).__name__,
+            module=type(exc).__module__,
+            message=exc.message,
+            context=dict(exc.context),
+        )
+    if isinstance(exc, orjson.JSONDecodeError):
+        return _ChunkFailure(
+            type_name=type(exc).__name__,
+            module=type(exc).__module__,
+            message=exc.msg,
+            doc=exc.doc,
+            pos=exc.pos,
+        )
+    if isinstance(exc, OSError):
+        return _ChunkFailure(
+            type_name=type(exc).__name__,
+            module=type(exc).__module__,
+            message=str(exc),
+            errno=exc.errno,
+            strerror=exc.strerror,
+            filename=exc.filename,
+            winerror=getattr(exc, "winerror", None),
+            filename2=exc.filename2,
+        )
+    return _ChunkFailure(
+        type_name=type(exc).__name__,
+        module=type(exc).__module__,
+        message=str(exc),
+    )
 
 
 @dataclass(frozen=True)
@@ -1163,12 +1213,7 @@ class _ChunkResult:
     # label -> Arrow IPC part path. Rows stay on disk: piping millions of rows
     # back through the pool's result channel would cost more than the shred.
     part_paths: dict[str, str]
-    # Set when the chunk raised. The exception is rebuilt in the parent rather
-    # than pickled, so a custom error class's signature can't break the return
-    # trip and the surfaced type/message/column stay exactly as the serial path.
-    error_type: str | None = None
-    error_message: str | None = None
-    error_column: str | None = None
+    failure: _ChunkFailure | None = None
 
 
 def _shred_chunk(
@@ -1177,8 +1222,8 @@ def _shred_chunk(
     """Shred one byte range and write its rows as Arrow IPC parts.
 
     Module-level and argument-driven so it survives ``spawn`` pickling on
-    Windows. Runs in a worker process: it must return, never raise, so a
-    failure is reported for the parent to re-raise in context.
+    Windows. Ordinary failures return structured evidence for the parent to
+    re-raise; process-control ``BaseException`` subclasses deliberately escape.
     """
     data_path_s, start, end, index, v2_config, tmp_dir_s = args
     data_path = Path(data_path_s)
@@ -1196,9 +1241,7 @@ def _shred_chunk(
                 record_count += 1
                 yield record
 
-        buffers = shred_to_buffers(
-            _counted(), v2_config, stats=stats, _table_specs=table_specs
-        )
+        buffers = shred_to_buffers(_counted(), v2_config, stats=stats, _table_specs=table_specs)
 
         # Conservation, per chunk. Ranges tile the file exactly, so holding the
         # invariant on every chunk holds it on the whole file — and localises a
@@ -1239,7 +1282,7 @@ def _shred_chunk(
             row_counts=row_counts,
             part_paths=part_paths,
         )
-    except BaseException as exc:  # noqa: BLE001 — reported, then re-raised in the parent
+    except Exception as exc:  # noqa: BLE001 — reported, then re-raised in the parent
         return _ChunkResult(
             index=index,
             record_count=0,
@@ -1247,20 +1290,68 @@ def _shred_chunk(
             skipped_rows_by_table={},
             row_counts={},
             part_paths={},
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-            error_column=getattr(exc, "column", None),
+            failure=_failure_from_exception(exc),
         )
 
 
+def _raise_worker_failure(failure: _ChunkFailure) -> NoReturn:
+    """Reconstruct one ordinary worker failure in the parent process."""
+    if failure.type_name == "ApiInputSchemaError":
+        raise ApiInputSchemaError(failure.message, **failure.context)
+    if failure.type_name == "JSONDecodeError":
+        raise orjson.JSONDecodeError(failure.message, failure.doc or "", failure.pos or 0)
+
+    os_error_types: dict[str, type[OSError]] = {
+        "OSError": OSError,
+        "BlockingIOError": BlockingIOError,
+        "ChildProcessError": ChildProcessError,
+        "ConnectionError": ConnectionError,
+        "BrokenPipeError": BrokenPipeError,
+        "ConnectionAbortedError": ConnectionAbortedError,
+        "ConnectionRefusedError": ConnectionRefusedError,
+        "ConnectionResetError": ConnectionResetError,
+        "FileExistsError": FileExistsError,
+        "FileNotFoundError": FileNotFoundError,
+        "InterruptedError": InterruptedError,
+        "IsADirectoryError": IsADirectoryError,
+        "NotADirectoryError": NotADirectoryError,
+        "PermissionError": PermissionError,
+        "ProcessLookupError": ProcessLookupError,
+        "TimeoutError": TimeoutError,
+    }
+    os_error_type = os_error_types.get(failure.type_name)
+    if failure.module == "builtins" and os_error_type is not None:
+        if failure.errno is None:
+            raise os_error_type(failure.message)
+        args: list[Any] = [failure.errno, failure.strerror]
+        if failure.filename is not None:
+            args.append(failure.filename)
+            if failure.winerror is not None or failure.filename2 is not None:
+                args.append(failure.winerror)
+                if failure.filename2 is not None:
+                    args.append(failure.filename2)
+        raise os_error_type(*args)
+
+    builtin_error_types: dict[str, type[Exception]] = {
+        "MemoryError": MemoryError,
+        "RuntimeError": RuntimeError,
+        "ValueError": ValueError,
+    }
+    builtin_error_type = builtin_error_types.get(failure.type_name)
+    if failure.module == "builtins" and builtin_error_type is not None:
+        raise builtin_error_type(failure.message)
+
+    qualified_type = f"{failure.module}.{failure.type_name}"
+    raise RuntimeError(
+        f"parallel json shred worker failed with {qualified_type}: {failure.message}"
+    )
+
+
 def _raise_chunk_error(result: _ChunkResult) -> NoReturn:
-    """Re-raise a worker's failure in the parent, preserving type and column."""
-    message = result.error_message or "unknown error"
-    if result.error_type == "ApiInputSchemaError":
-        raise ApiInputSchemaError(message, column=result.error_column)
-    if result.error_type == "JSONDecodeError":
-        raise orjson.JSONDecodeError(message, "", 0)
-    raise RuntimeError(message)
+    """Re-raise a shred worker failure without pickling arbitrary exceptions."""
+    if result.failure is None:
+        raise RuntimeError("parallel json shred chunk has no recorded failure")
+    _raise_worker_failure(result.failure)
 
 
 def _should_shred_in_parallel(data_path: Path) -> bool:
@@ -1615,7 +1706,7 @@ def _write_tables_in_parallel(
     try:
         # ``map`` yields in submission order, which is file order.
         for result in pool.map(_shred_chunk, tasks):
-            if result.error_type is not None:
+            if result.failure is not None:
                 _raise_chunk_error(result)
             results.append(result)
     finally:
@@ -1653,9 +1744,7 @@ def _write_tables_in_parallel(
                     part_table = pa.ipc.open_file(source).read_all()
                 part_table = part_table.replace_schema_metadata(metadata)
                 if writer is None:
-                    writer = pq.ParquetWriter(
-                        parquet_path, part_table.schema, compression="zstd"
-                    )
+                    writer = pq.ParquetWriter(parquet_path, part_table.schema, compression="zstd")
                 writer.write_table(part_table)
                 row_count += part_table.num_rows
                 del part_table
@@ -2203,6 +2292,254 @@ def _reject_unexpressible_key(key: str) -> None:
         )
 
 
+_InferenceLevel = tuple[PathSeg, ...]
+_InferenceObjectPath = tuple[str, ...]
+
+
+@dataclass
+class _InferenceState:
+    """Compact, mergeable evidence collected by exact schema inference."""
+
+    levels: dict[_InferenceLevel, dict[_InferenceObjectPath, str]] = field(
+        default_factory=lambda: {(): {}}
+    )
+    scalar_levels: dict[_InferenceLevel, str | None] = field(default_factory=dict)
+    container_paths: dict[_InferenceLevel, set[_InferenceObjectPath]] = field(default_factory=dict)
+    null_leaves: dict[_InferenceLevel, dict[_InferenceObjectPath, None]] = field(
+        default_factory=dict
+    )
+    validated_keys: set[str] = field(default_factory=set, repr=False)
+
+    def _validate_key_once(self, key: str) -> None:
+        if key in self.validated_keys:
+            return
+        _reject_unexpressible_key(key)
+        self.validated_keys.add(key)
+
+    def walk(
+        self,
+        value: Any,
+        level: _InferenceLevel = (),
+        obj_prefix: _InferenceObjectPath = (),
+    ) -> None:
+        """Merge one JSON value's schema evidence into this state."""
+        if value is None:
+            return
+        if isinstance(value, list):
+            for item in value:
+                self.walk(item, level, obj_prefix)
+            return
+        if not isinstance(value, dict):
+            return
+
+        cols = self.levels.setdefault(level, {})
+        for key, child_value in value.items():
+            self._validate_key_once(key)
+            object_path = obj_prefix + (key,)
+            if isinstance(child_value, dict):
+                self.container_paths.setdefault(level, set()).add(object_path)
+                self.walk(child_value, level, object_path)
+            elif isinstance(child_value, list):
+                self.container_paths.setdefault(level, set()).add(object_path)
+                child_level = level + tuple((part, False) for part in obj_prefix) + ((key, True),)
+                if not child_value:
+                    self.scalar_levels.setdefault(child_level, None)
+                elif any(isinstance(item, dict) for item in child_value):
+                    self.walk(child_value, child_level, ())
+                else:
+                    element_type: str | None = None
+                    for item in child_value:
+                        if isinstance(item, list):
+                            dotted_path = ".".join(object_path)
+                            raise ApiInputSchemaError(
+                                f"column {dotted_path!r}: nested arrays "
+                                "(array of arrays) cannot be expressed as a flat "
+                                "table column; flatten this field in the source data",
+                                column=dotted_path,
+                            )
+                        if item is None:
+                            continue
+                        element_type = _widen_type(element_type, _infer_type(item))
+                    self.scalar_levels[child_level] = _widen_type(
+                        self.scalar_levels.get(child_level), element_type or "str"
+                    )
+            elif child_value is None:
+                self.null_leaves.setdefault(level, {})[object_path] = None
+            else:
+                cols[object_path] = _widen_type(cols.get(object_path), _infer_type(child_value))
+
+    def merge(self, other: _InferenceState) -> None:
+        """Merge a later file range while preserving serial observation order."""
+        for level, observed_columns in other.levels.items():
+            columns = self.levels.setdefault(level, {})
+            for object_path, observed_type in observed_columns.items():
+                columns[object_path] = _widen_type(columns.get(object_path), observed_type)
+
+        for level, scalar_type in other.scalar_levels.items():
+            if level not in self.scalar_levels:
+                self.scalar_levels[level] = scalar_type
+            elif scalar_type is not None:
+                self.scalar_levels[level] = _widen_type(self.scalar_levels[level], scalar_type)
+
+        for level, container_paths in other.container_paths.items():
+            self.container_paths.setdefault(level, set()).update(container_paths)
+        for level, null_paths in other.null_leaves.items():
+            self.null_leaves.setdefault(level, {}).update(null_paths)
+        self.validated_keys.update(other.validated_keys)
+
+
+def _infer_records(records: Iterable[dict[str, Any]]) -> _InferenceState:
+    state = _InferenceState()
+    for record in records:
+        state.walk(record)
+    return state
+
+
+@dataclass(frozen=True)
+class _InferenceChunkResult:
+    index: int
+    state: _InferenceState | None = None
+    failure: _ChunkFailure | None = None
+
+
+def _infer_chunk(args: tuple[str, int, int, int]) -> _InferenceChunkResult:
+    """Infer one newline-delimited byte range in a spawned worker."""
+    data_path_s, start, end, index = args
+    try:
+        state = _infer_records(_iter_range_records(Path(data_path_s), start, end))
+        return _InferenceChunkResult(index=index, state=state)
+    except Exception as exc:  # noqa: BLE001 — reconstructed in the parent
+        return _InferenceChunkResult(index=index, failure=_failure_from_exception(exc))
+
+
+def _infer_jsonl_in_parallel(data_path: Path, ranges: list[tuple[int, int]]) -> _InferenceState:
+    """Infer all *ranges* concurrently and merge them in file order."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    tasks = [(str(data_path), start, end, index) for index, (start, end) in enumerate(ranges)]
+    workers = _parallel_worker_count(len(tasks))
+    logger.info(
+        "json_schema_infer_parallel_start",
+        data_path=str(data_path),
+        chunks=len(tasks),
+        workers=workers,
+    )
+
+    started = time.perf_counter()
+    merged = _InferenceState()
+    pool = ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=multiprocessing.get_context("spawn"),
+    )
+    try:
+        for result in pool.map(_infer_chunk, tasks):
+            if result.failure is not None:
+                _raise_worker_failure(result.failure)
+            if result.state is None:
+                raise RuntimeError(
+                    f"parallel schema inference chunk {result.index} returned no state"
+                )
+            merged.merge(result.state)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    logger.info(
+        "json_schema_infer_parallel_complete",
+        data_path=str(data_path),
+        chunks=len(tasks),
+        workers=workers,
+        duration_seconds=round(time.perf_counter() - started, 3),
+    )
+    return merged
+
+
+def _assemble_inference_schema(state: _InferenceState) -> dict[str, Any]:
+    """Convert accumulated evidence into the public v2 inference payload."""
+    levels = state.levels
+    scalar_levels = state.scalar_levels
+
+    # A leaf seen ONLY as null across every scanned record still earns a
+    # column — typed ``str``, the same default an all-empty scalar array
+    # takes. A path ever holding a container earns none: the dotted leaves or
+    # the child table already carry it.
+    for level, null_paths in state.null_leaves.items():
+        cols = levels.setdefault(level, {})
+        containers = state.container_paths.get(level, set())
+        for object_path in null_paths:
+            if object_path not in cols and object_path not in containers:
+                cols[object_path] = "str"
+
+    table_entries: list[tuple[_InferenceLevel, dict[str, Any], str]] = []
+    all_levels = set(levels) | set(scalar_levels)
+    for level in sorted(all_levels, key=lambda s: (array_depth(s), len(s), tuple(s))):
+        table_path = make_table_path(level)
+        if level in scalar_levels and level not in levels:
+            columns: list[dict[str, Any]] = [
+                {
+                    "name": _SCALAR_VALUE_COLUMN,
+                    "path": f"{table_path}.{_SCALAR_VALUE_LEAF}",
+                    "type": scalar_levels[level] or "str",
+                    "status": "Inferred",
+                    "selected": True,
+                    "levels": None,
+                }
+            ]
+        else:
+            column_paths = list(levels.get(level, {}).keys())
+            names = _assign_column_names(column_paths)
+            columns = [
+                {
+                    "name": names[object_path],
+                    "path": f"{table_path}." + ".".join(object_path),
+                    "type": levels[level][object_path],
+                    "status": "Inferred",
+                    "selected": True,
+                    "levels": None,
+                }
+                for object_path in column_paths
+            ]
+        base_label = "quote_info" if not level else derive_identifier_label(level[-1][0])
+        table_entries.append(
+            (
+                level,
+                {
+                    "path": table_path,
+                    "label": base_label,
+                    "displayPath": table_path,
+                    "emit": array_depth(level) == 0,  # pragma: no mutate  # root only
+                    "row_id_column": None,
+                    "columns": columns,
+                },
+                base_label,
+            ),
+        )
+
+    base_label_counts: dict[str, int] = {}
+    for _level, _table, base_label in table_entries:
+        folded = base_label.casefold()
+        base_label_counts[folded] = base_label_counts.get(folded, 0) + 1
+
+    assigned_labels: list[tuple[dict[str, Any], str]] = []
+    for level, table, base_label in table_entries:
+        if base_label_counts[base_label.casefold()] > 1 and level:
+            label = "_".join(derive_identifier_label(key) for key, _is_array in level)
+        else:
+            label = base_label
+        assigned_labels.append((table, label))
+
+    used_labels: set[str] = set()
+    for table, label in assigned_labels:
+        candidate = label
+        suffix = 2
+        while candidate.casefold() in used_labels:
+            candidate = f"{label}_{suffix}"
+            suffix += 1
+        table["label"] = candidate
+        used_labels.add(candidate.casefold())
+
+    return {"tables": [table for _level, table, _base_label in table_entries]}
+
+
 def infer_v2_schema_from_data(
     data_path: str | Path,  # pragma: no mutate
     *,  # pragma: no mutate
@@ -2240,175 +2577,35 @@ def infer_v2_schema_from_data(
     Each table is ``emit=True`` only for the root; nested tables are off so
     the user opts in explicitly.
     """
-    records = _iter_records_for_inference(Path(data_path), sample_size=sample_size)
+    source_path = Path(data_path)
+    unbounded = sample_size is None or sample_size <= 0
+    if unbounded and _should_shred_in_parallel(source_path):
+        initial_stat = source_path.stat()
+        ranges = _jsonl_byte_ranges(source_path, _PARALLEL_CHUNK_BYTES)
+        if len(ranges) > 1:
+            state = _infer_jsonl_in_parallel(source_path, ranges)
+            final_stat = source_path.stat()
+            initial_identity = (
+                initial_stat.st_dev,
+                initial_stat.st_ino,
+                initial_stat.st_size,
+                initial_stat.st_mtime_ns,
+            )
+            final_identity = (
+                final_stat.st_dev,
+                final_stat.st_ino,
+                final_stat.st_size,
+                final_stat.st_mtime_ns,
+            )
+            if final_identity != initial_identity:
+                raise ApiInputSchemaError(
+                    "data file changed while its schema was inferred; retry inference",
+                    path=str(source_path),
+                )
+            return _assemble_inference_schema(state)
 
-    # Relational level (full ``(key, is_array)`` segments, ending at an array or
-    # root ``()``) → {object-path-within-level: widened type}. Object nesting is
-    # FOLDED into the enclosing array level (the 2026-06-17 ruling): a 1-1
-    # object mints no table — its scalars become dotted-leaf columns here.
-    levels: dict[tuple[PathSeg, ...], dict[tuple[str, ...], str]] = {(): {}}
-    # Level → widened element type, for scalar-array child tables. ``None``
-    # marks a level seen ONLY as an empty array (``[]``): its type is still
-    # unknown, so it must not seed a concrete token that would then poison
-    # widening — a later ``[1, 2]`` must type the column ``int``, not ``str``
-    # (W1). A level that stays ``None`` (only ever empty) defaults to ``str``
-    # at table assembly.
-    scalar_levels: dict[tuple[PathSeg, ...], str | None] = {}  # pragma: no mutate
-    # Level → object-paths ever seen holding a CONTAINER (dict or list). Such a
-    # path can never also be a flat scalar column: its data is carried by the
-    # folded dotted leaves (dict) or by a child table (list). Tracked so a
-    # ``null`` occurrence of a nullable object/array cannot mint a bogus scalar
-    # column at the container's own path (which then fails the strict build the
-    # moment a record actually holds the object).
-    container_paths: dict[tuple[PathSeg, ...], set[tuple[str, ...]]] = {}
-    # Level → object-paths seen holding ``null``. A null carries NO type
-    # evidence, so it must not widen a sibling value's type (a single null in
-    # an int column would otherwise retype it ``str``). Retained separately so
-    # a leaf that is ONLY ever null still becomes a column, defaulting to
-    # ``str`` at assembly — mirroring the empty-scalar-array convention above.
-    null_leaves: dict[tuple[PathSeg, ...], set[tuple[str, ...]]] = {}
-
-    def _walk(value: Any, level: tuple[PathSeg, ...], obj_prefix: tuple[str, ...]) -> None:
-        if value is None:
-            return
-        if isinstance(value, list):
-            for item in value:
-                _walk(item, level, obj_prefix)
-            return
-        if not isinstance(value, dict):
-            return
-        cols = levels.setdefault(level, {})
-        for k, v in value.items():
-            _reject_unexpressible_key(k)
-            opath = obj_prefix + (k,)
-            if isinstance(v, dict):
-                # 1-1 object — relationally transparent: stay in this level,
-                # deepen the object prefix (no new table).
-                container_paths.setdefault(level, set()).add(opath)
-                _walk(v, level, opath)
-            elif isinstance(v, list):
-                container_paths.setdefault(level, set()).add(opath)
-                # An array of objects descends a level; it is LOCATED through the
-                # object prefix that wraps it (object hops carry is_array=False).
-                child = level + tuple((p, False) for p in obj_prefix) + ((k, True),)
-                if not v:
-                    # Empty array — ambiguous. Tentatively a (currently empty)
-                    # scalar child table; a later record with objects records
-                    # columns here and wins at table-assembly time. Seed ``None``
-                    # (type-unknown), NOT ``"str"``: a concrete seed would widen
-                    # a later pure-int array to ``str`` (W1). ``setdefault`` keeps
-                    # any type already learned from an earlier non-empty array.
-                    scalar_levels.setdefault(child, None)
-                elif any(isinstance(item, dict) for item in v):
-                    _walk(v, child, ())  # array of objects → object child table
-                else:
-                    elem_type: str | None = None
-                    for item in v:
-                        if isinstance(item, list):
-                            raise ApiInputSchemaError(
-                                f"column {'.'.join(opath)!r}: nested arrays "
-                                "(array of arrays) cannot be expressed as a flat "
-                                "table column; flatten this field in the source data",
-                                column=".".join(opath),
-                            )
-                        if item is None:
-                            continue
-                        elem_type = _widen_type(elem_type, _infer_type(item))
-                    scalar_levels[child] = _widen_type(scalar_levels.get(child), elem_type or "str")
-            elif v is None:
-                # No type evidence — defer to assembly (see ``null_leaves``).
-                null_leaves.setdefault(level, set()).add(opath)
-            else:
-                cols[opath] = _widen_type(cols.get(opath), _infer_type(v))
-
-    for record in records:
-        _walk(record, (), ())
-
-    # A leaf seen ONLY as null across every scanned record still earns a
-    # column — typed ``str``, the same default an all-empty scalar array
-    # takes. A path ever holding a container earns none: the dotted leaves or
-    # the child table already carry it.
-    for level, null_paths in null_leaves.items():
-        cols = levels.setdefault(level, {})
-        containers: set[tuple[str, ...]] = container_paths.get(level, set())
-        for opath in null_paths:
-            if opath not in cols and opath not in containers:
-                cols[opath] = "str"
-
-    table_entries: list[tuple[tuple[PathSeg, ...], dict[str, Any], str]] = []
-    all_levels = set(levels) | set(scalar_levels)
-    for level in sorted(all_levels, key=lambda s: (array_depth(s), len(s), tuple(s))):
-        table_path = make_table_path(level)
-        # A level ever dict-walked is an object table; a level only ever reached
-        # as a scalar array is a scalar child table.
-        if level in scalar_levels and level not in levels:
-            columns: list[dict[str, Any]] = [
-                {
-                    "name": _SCALAR_VALUE_COLUMN,
-                    "path": f"{table_path}.{_SCALAR_VALUE_LEAF}",
-                    # ``None`` = only-ever-empty array (type never observed):
-                    # default to ``str`` so the column has a concrete type.
-                    "type": scalar_levels[level] or "str",
-                    "status": "Inferred",
-                    "selected": True,
-                    "levels": None,
-                }
-            ]
-        else:
-            col_paths = list(levels.get(level, {}).keys())
-            names = _assign_column_names(col_paths)
-            columns = [
-                {
-                    "name": names[opath],
-                    "path": f"{table_path}." + ".".join(opath),
-                    "type": levels[level][opath],
-                    "status": "Inferred",
-                    "selected": True,
-                    "levels": None,
-                }
-                for opath in col_paths
-            ]
-        base_label = "quote_info" if not level else derive_identifier_label(level[-1][0])
-        table_entries.append(
-            (
-                level,
-                {
-                    "path": table_path,
-                    "label": base_label,
-                    "displayPath": table_path,
-                    "emit": array_depth(level) == 0,  # pragma: no mutate  # root level only
-                    "row_id_column": None,
-                    "columns": columns,
-                },
-                base_label,
-            ),
-        )
-
-    base_label_counts: dict[str, int] = {}
-    for _level, _table, base_label in table_entries:
-        folded = base_label.casefold()
-        base_label_counts[folded] = base_label_counts.get(folded, 0) + 1
-
-    assigned_labels: list[tuple[dict[str, Any], str]] = []
-    for level, table, base_label in table_entries:
-        if base_label_counts[base_label.casefold()] > 1 and level:
-            label = "_".join(derive_identifier_label(key) for key, _is_array in level)
-        else:
-            label = base_label
-        assigned_labels.append((table, label))
-
-    used_labels: set[str] = set()
-    for table, label in assigned_labels:
-        candidate = label
-        suffix = 2
-        while candidate.casefold() in used_labels:
-            candidate = f"{label}_{suffix}"
-            suffix += 1
-        table["label"] = candidate
-        used_labels.add(candidate.casefold())
-
-    tables = [table for _level, table, _base_label in table_entries]
-    return {"tables": tables}
+    records = _iter_records_for_inference(source_path, sample_size=sample_size)
+    return _assemble_inference_schema(_infer_records(records))
 
 
 def read_per_port_cache_meta(cache_dir: str | Path) -> dict[str, Any] | None:  # pragma: no mutate

@@ -1197,25 +1197,18 @@ export function deleteJsonCache(
 }
 
 /**
- * Records scanned by *Infer Tables* unless the caller overrides it.
+ * Request budget for complete *Infer Tables* schema discovery.
  *
- * The backend default is `None` (scan every record), which is right for CLI
- * and programmatic use but not behind this button: infer is interactive and
- * shares the 30s default request timeout, and a multi-GB JSONL takes minutes
- * to walk in full. Sampling is safe because the *build* still reads every
- * record — a type that widens past the sample fails loud with a clear error
- * rather than silently producing a wrong cache.
- *
- * 10k is far past where the schema stops changing (a 1M-row, 4 KB/record
- * file converges by ~100 records) while staying ~1s and leaving an order of
- * magnitude of headroom under the timeout for fatter records. Note the
- * backend head-samples, so a file sorted such that a field only appears late
- * still relies on the build-time failure as the backstop.
+ * The shared client timeout is 30 seconds, but a multi-GB structured input can
+ * legitimately take minutes to scan. We keep inference complete by default
+ * and give it the same budget as cache construction. A hidden head sample is
+ * unsafe: a wholly new field appearing after the sample is ignored by build,
+ * not rejected as a type widening, so it would disappear without warning.
  */
-export const JSON_CACHE_INFER_SAMPLE_SIZE = 10_000
+export const JSON_CACHE_INFER_TIMEOUT_MS = 1_800_000
 
 /**
- * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+ * Sniff a v2 schema mapping from a structured input file.
  * Drives the ApiInputEditor's *Infer Tables* button.
  *
  * Returns a v2-shaped ``tables`` array; the caller stitches it into the
@@ -1223,12 +1216,12 @@ export const JSON_CACHE_INFER_SAMPLE_SIZE = 10_000
  */
 export function inferJsonCacheSchema(
   payload: { path: string; sample_size?: number },
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<{ tables: Array<Record<string, unknown>> }> {
   return post<unknown>(
     "/api/json-cache/infer",
-    { ...payload, sample_size: payload.sample_size ?? JSON_CACHE_INFER_SAMPLE_SIZE },
-    options,
+    payload,
+    { timeout: JSON_CACHE_INFER_TIMEOUT_MS, ...options },
   ).then(parseJsonCacheSchemaInferenceResponse)
 }
 

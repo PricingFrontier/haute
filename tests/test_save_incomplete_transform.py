@@ -24,6 +24,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
+from haute._types import PipelineGraph, SubmodelDefinition
+from haute.executor import execute_graph
+from haute.routes._save_pipeline import SavePipelineService
+
 
 @pytest.fixture
 def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
@@ -63,6 +68,20 @@ def _source_node(node_id: str, label: str, path: str) -> dict[str, Any]:
                 "path": path,
                 "arguments": {},
             },
+        },
+    }
+
+
+def _frame_source_node(node_id: str, label: str) -> dict[str, Any]:
+    """Self-contained polars source for executor tests (no snapshot dependency)."""
+    return {
+        "id": node_id,
+        "type": "pipelineNode",
+        "position": {"x": 0, "y": 0},
+        "data": {
+            "label": label,
+            "nodeType": "polars",
+            "config": {"code": f"df = pl.DataFrame({{'source': ['{label}']}})"},
         },
     }
 
@@ -186,3 +205,63 @@ def test_a_single_input_transform_with_no_code_still_passes_through(
     assert "raise NotImplementedError" not in source
     warnings = response.json().get("warnings") or []
     assert not any("passthrough" in w for w in warnings), warnings
+
+
+def test_live_executor_rejects_a_transform_with_several_inputs_and_no_code() -> None:
+    """Canvas execution must keep the same fail-loud contract as generated code.
+
+    The generic passthrough helper returns the first frame, so wiring an empty
+    multi-input transform to it silently discarded every other input.
+    """
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                _frame_source_node("src_a", "left"),
+                _frame_source_node("src_b", "right"),
+                _transform_node("polars_3", "claims"),
+            ],
+            "edges": [
+                {"id": "e1", "source": "src_a", "target": "polars_3"},
+                {"id": "e2", "source": "src_b", "target": "polars_3"},
+            ],
+        }
+    )
+
+    result = execute_graph(graph, target_node_id="polars_3")
+
+    assert result["polars_3"].error is not None
+    assert INCOMPLETE_TRANSFORM_MESSAGE in result["polars_3"].error
+
+
+def test_live_executor_rejects_a_transform_with_no_inputs_and_no_code() -> None:
+    """An orphan empty transform raises the same actionable placeholder error."""
+    graph = PipelineGraph.model_validate(
+        {"nodes": [_transform_node("polars_1", "todo")], "edges": []}
+    )
+
+    result = execute_graph(graph, target_node_id="polars_1")
+
+    assert result["polars_1"].error is not None
+    assert INCOMPLETE_TRANSFORM_MESSAGE in result["polars_1"].error
+
+
+def test_save_warning_includes_an_incomplete_transform_inside_a_submodel(
+    isolated_cwd: Path,
+) -> None:
+    """Every generated placeholder must be named, not only root-graph nodes."""
+    child = PipelineGraph.model_validate(
+        {"nodes": [_transform_node("child_todo", "child todo")], "edges": []}
+    )
+    definition = SubmodelDefinition(
+        definitionId="pricing",
+        file="modules/pricing.py",
+        graph=child,
+        inputPorts=[],
+        outputPorts=[],
+    )
+    graph = PipelineGraph(submodels={"pricing": definition})
+    warnings: list[str] = []
+
+    SavePipelineService(isolated_cwd)._validate_transforms_are_runnable(graph, warnings)
+
+    assert any("child todo" in warning for warning in warnings), warnings

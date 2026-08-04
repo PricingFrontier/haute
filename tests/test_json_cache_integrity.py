@@ -1380,9 +1380,7 @@ class TestStatusFallsBackToCommitted:
         frames = load_v2_api_source(str(data), cfg)
         assert frames["root"].collect()["id"].to_list() == [1, 2]
 
-    def test_status_stays_false_when_neither_layer_is_valid(
-        self, isolated_cwd: Path
-    ) -> None:
+    def test_status_stays_false_when_neither_layer_is_valid(self, isolated_cwd: Path) -> None:
         """The fallback must not turn 'no cache' into a false positive."""
         import shutil
 
@@ -1398,9 +1396,7 @@ class TestStatusFallsBackToCommitted:
 
         assert _v2_status_response(str(data), cfg, "data.json").cached is False
 
-    def test_working_still_wins_when_both_layers_are_valid(
-        self, isolated_cwd: Path
-    ) -> None:
+    def test_working_still_wins_when_both_layers_are_valid(self, isolated_cwd: Path) -> None:
         """Precedence is unchanged: working/ is what the next run reads, so a
         rebuilt working/ must be reported even while committed/ holds an older
         generation with a different row count."""
@@ -1414,11 +1410,34 @@ class TestStatusFallsBackToCommitted:
         # Re-cache working/ over a wider data file; committed/ keeps 1 row.
         _write_json(data, [{"id": 1}, {"id": 2}, {"id": 3}])
         build_per_port_cache(str(data), cfg, _json_cache_dir(str(data), "working"))
-        assert read_per_port_cache_meta(
-            _json_cache_dir(str(data), "committed")
-        )["tables"][0]["row_count"] == 1
+        assert (
+            read_per_port_cache_meta(_json_cache_dir(str(data), "committed"))["tables"][0][
+                "row_count"
+            ]
+            == 1
+        )
 
         assert _v2_status_response(str(data), cfg, "data.json").row_count == 3
+
+    def test_status_uses_committed_when_working_fingerprint_is_stale(
+        self, isolated_cwd: Path
+    ) -> None:
+        """The reported non-missing fallback case: working exists but is stale."""
+        from haute.routes.json_cache import _v2_status_response
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}, {"id": 2}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        self._prepare_both_layers(data, cfg)
+
+        working_meta_path = _json_cache_dir(str(data), "working") / "meta.json"
+        working_meta = orjson.loads(working_meta_path.read_bytes())
+        working_meta["schema_fingerprint"] = "stale"
+        working_meta_path.write_bytes(orjson.dumps(working_meta))
+
+        status = _v2_status_response(str(data), cfg, "data.json")
+        assert status.cached is True
+        assert status.row_count == 2
 
     def test_status_route_reports_cached_from_committed_after_restart(
         self, client: TestClient, isolated_cwd: Path

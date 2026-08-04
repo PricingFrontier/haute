@@ -466,10 +466,7 @@ def _is_incomplete_transform_placeholder(source: str) -> bool:
     if len(call.args) != 1:
         return False
     argument = call.args[0]
-    return (
-        isinstance(argument, ast.Constant)
-        and argument.value == INCOMPLETE_TRANSFORM_MESSAGE
-    )
+    return isinstance(argument, ast.Constant) and argument.value == INCOMPLETE_TRANSFORM_MESSAGE
 
 
 def _match_polars(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
@@ -494,9 +491,7 @@ def _match_polars(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherRe
             # input parameters. Unlike the single-upstream body, the placeholder
             # binds no ``df`` alias, so a following ``df = <param>`` is the
             # user's own line and must not be stripped as scaffold.
-            return MatcherResult(
-                start_idx=end_idx, return_vars=("df",), generated_scaffold=True
-            )
+            return MatcherResult(start_idx=end_idx, return_vars=("df",), generated_scaffold=True)
     return MatcherResult(start_idx=0, return_vars=("df",))
 
 

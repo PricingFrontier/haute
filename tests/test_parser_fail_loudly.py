@@ -885,9 +885,7 @@ class TestItem22EmptyPolarsCodeExplicit:
         (the placeholder binds no ``df`` alias, so ``df = <param>`` here is the
         user's line, not scaffold to strip)."""
         body = f'    """d"""\n    raise NotImplementedError("{_INCOMPLETE_MSG}")\n    df = left\n'
-        assert (
-            extract_user_code(body, kind="polars", param_names=("left",)) == "df = left"
-        )
+        assert extract_user_code(body, kind="polars", param_names=("left",)) == "df = left"
 
     def test_multi_source_empty_code_is_explicit(self) -> None:
         """With multiple upstreams and no code, the behaviour must be

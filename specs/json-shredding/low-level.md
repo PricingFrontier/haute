@@ -215,9 +215,18 @@ the skip/conservation accounting.
   order** (so row order matches the serial shred exactly), unlinking each part
   as it is consumed to keep parent memory bounded by a single part.
 - `_raise_chunk_error` rebuilds the worker's failure in the parent rather than
-  pickling the exception, so a custom error class's constructor signature cannot
-  break the return trip and the surfaced type/message/`column` match the serial
-  path.
+  pickling arbitrary exception objects. The envelope carries an
+  `ApiInputSchemaError`'s raw `message` plus complete `context`, an
+  `orjson.JSONDecodeError`'s `msg`/`doc`/`pos`, and the constructor evidence for
+  documented builtin failures (`OSError` subclasses, `RuntimeError`,
+  `MemoryError`, and `ValueError`). Those failures surface with the same type,
+  message, and structured context as the serial path. The worker catches
+  `Exception`, not `BaseException`; process-control exceptions are never
+  disguised as data failures. A genuinely unexpected ordinary exception is a
+  parent `RuntimeError` that names its original qualified type instead of
+  pretending it was a conservation failure. Serial/parallel comparison tests
+  pin the structured schema and JSON parser evidence, filesystem exception
+  identity, and the process-control escape boundary.
 - Only newline-delimited sources are split: a line boundary is findable without
   parsing. A root JSON array would need a serial byte-level scan to locate
   element boundaries, costing about what it saves; XML is not delimited at all.
@@ -326,24 +335,39 @@ concurrent reader can still observe an absent live path and reject that
 candidate; cross-process publishers and mid-swap process death are not covered.
 
 **Schema inference** — `infer_v2_schema_from_data(data_path, sample_size=None)`:
-1. `_iter_records_for_inference` — full scan; a bounded `islice` for JSONL, NDJSON,
-   or XML; or, for a root JSON array, a bounded sample via
-   `_iter_sampled_json_array_records`, which hand-parses just enough of the array
-   byte-by-byte to avoid materialising the whole file for a sample.
-2. Recursive `_walk(value, level, obj_prefix)`: a nested dict stays at the same
-   `level`, deepening `obj_prefix` (object folding); a nested list of objects
-   descends to a new `level` keyed by the full `(key, is_array)` segment tuple; a
-   nested scalar list widens a `scalar_levels[level]` type; a bare scalar widens
-   `levels[level][obj_prefix + (k,)]`. `_reject_unexpressible_key` fails loud on a
-   `$value`-colliding or dot-containing source key before it can be silently
-   mis-addressed later.
-3. Table assembly, per observed level, in `(array_depth, len, tuple)` sort order:
+1. Input dispatch preserves a complete scan by default. JSONL/NDJSON at or above
+   `_PARALLEL_MIN_BYTES` is split at newline boundaries with the same exact byte
+   tiling used by parallel cache construction. Spawned workers infer compact
+   `_InferenceState` accumulators, and the parent merges results in file order;
+   it never transfers records between processes. Smaller newline-delimited
+   files, XML, root JSON arrays, and every explicit bounded sample remain serial.
+   A root-array sample uses `_iter_sampled_json_array_records`, which hand-parses
+   only enough of the array to avoid materialising the whole file. Parallel
+   inference compares source device/inode/size/mtime before and after the worker
+   scan and fails clearly if the source changed instead of returning evidence
+   merged from different file generations.
+2. Recursive `_InferenceState.walk(value, level, obj_prefix)`: a nested dict
+   stays at the same `level`, deepening `obj_prefix` (object folding); a nested
+   list of objects descends to a new `level` keyed by the full
+   `(key, is_array)` segment tuple; a nested scalar list widens a
+   `scalar_levels[level]` type; a bare scalar widens
+   `levels[level][obj_prefix + (k,)]`. `_reject_unexpressible_key` fails loud on
+   a `$value`-colliding or dot-containing source key before it can be silently
+   mis-addressed later. Each distinct key is validated once per accumulator;
+   repeated records do not rerun the same identifier checks.
+3. `_InferenceState.merge` unions container/null evidence and applies the same
+   associative `_widen_type` operation to scalar and object leaves. States are
+   merged in range order and dictionaries keep first-observation order, making
+   parallel output byte-for-byte identical to serial output, including column
+   and table ordering. Worker failures use the same structured reconstruction
+   envelope as parallel cache construction.
+4. Table assembly, per observed level, in `(array_depth, len, tuple)` sort order:
    a level only ever seen as a scalar array becomes a one-column `$value` table
    (`_SCALAR_VALUE_COLUMN`); otherwise its object-folded columns are named via
    `_assign_column_names` (bare leaf where unique, else the underscore-joined full
    path, with a final numeric-suffix dedup pass) and typed via the widened
    `levels` map. Only the root level defaults `emit=True`.
-4. Label assignment — inferred `label`s are B4-valid identifiers, never raw
+5. Label assignment — inferred `label`s are B4-valid identifiers, never raw
    table paths (`path`/`displayPath` still carry the path). The root level is
    labelled `quote_info`; every other level is labelled by its innermost array key
    through `derive_identifier_label(raw)` (`_api_input_schema.py`): the
@@ -362,6 +386,16 @@ candidate; cross-process publishers and mid-swap process death are not covered.
    its label. The closure property — inference output passes
    `validate_v2_schema` unchanged (B4 + unique labels) — is a contract, not
    a coincidence.
+
+The frontend's ordinary **Infer Tables** action requests the complete inference
+contract: `inferJsonCacheSchema` omits `sample_size` unless a caller explicitly
+supplies one, and gives this endpoint the same 30-minute request budget as a
+cache build instead of the shared 30-second default. A hidden head-sample is not
+permitted here. A field that first appears after the sample is not a type
+widening of a declared column; the subsequent build legitimately ignores that
+unknown field, so it cannot act as a completeness backstop. Bounded inference
+therefore remains an explicit programmatic opt-in whose caller owns the
+incomplete-schema trade-off.
 
 **Edge-join execution** — `execute_edge_join(base, join, config,
 collect_eager=False)`: normalises both frames to `LazyFrame`, calls
@@ -479,7 +513,8 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
 
 - `tests/test_json_shred_properties.py` — Hypothesis property tests: exactly one
   root row per record, one scalar-array child row per element, order-independent
-  inference (set-based type widening), full conservation accounting.
+  inference (set-based type widening), exact partition/merge equivalence across
+  nested/null/scalar-array evidence, and full conservation accounting.
 - `tests/test_v2_codec_and_shred.py` — canonical schema validation and layered
   per-port shred behaviour, including that an ancestor `$value` distributed into
   a descendant object table does not suppress that object's rows.
@@ -490,10 +525,11 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
 - `tests/test_xml_api_input.py` — XML record normalisation, inference, cache
   build/load values, and fail-loud rejection of DTD/entity declarations.
 - `tests/test_json_shred_parallel.py` — byte-range splitting (exact tiling, no
-  record split, order preserved) and serial-equivalence of the parallel build:
-  identical frames and row order, identical skip accounting and manifest,
-  identical typed failures, staging cleaned up on failure, and the build driven
-  from a worker thread as the route drives it.
+  record split, order preserved) and serial-equivalence of parallel inference
+  and build: identical inferred schema ordering, late-field discovery and type
+  widening, identical frames and row order, identical skip accounting and
+  manifest, identical typed failures, staging cleaned up on failure, and the
+  build driven from a worker thread as the route drives it.
 - `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:
   reserved-key rejection, `$value`/sibling-column rejection, empty-array type
   non-poisoning.

@@ -149,6 +149,13 @@ base·2ⁿ]`) before the next attempt, itself abortable by the external
 signal. A non-timeout `AbortError` from `backoffSleep`/`attemptFetch`
 propagates as-is.
 
+`inferJsonCacheSchema` is an endpoint-specific timeout exception: ordinary
+Infer Tables calls omit `sample_size` and use a 30-minute timeout, matching the
+cache-build budget, because schema discovery is complete by default and can
+legitimately exceed the shared 30-second interactive timeout on multi-GB
+inputs. Supplying `sample_size` remains an explicit caller choice; the client
+never inserts one silently.
+
 **Local session bootstrap (`main.tsx` + `api/client.ts`)**:
 `bootstrapHauteSession()` deduplicates concurrent calls, POSTs
 `/api/session/bootstrap` with `credentials:"same-origin"` and `cache:"no-store"`,
@@ -343,7 +350,9 @@ same Vitest config.
   retry/backoff/abort semantics directly; the contract suite covers concrete
   endpoint families with shared fixtures from
   `frontend/src/testSupport/uiContractFixtures.ts` plus explicit request/response
-  matrices for the remaining trust-boundary endpoints. Generic transport,
+  matrices for the remaining trust-boundary endpoints. The structured-input
+  inference cases pin complete-default request shape, the 30-minute timeout,
+  and explicit sampling passthrough. Generic transport,
   raw-stream, and caller-generic JSON helpers are tested at their transport
   boundary rather than pretending to know a concrete response schema.
 - **Assistant split boundary** (`frontend/src/api/__tests__/assistant.test.ts`):

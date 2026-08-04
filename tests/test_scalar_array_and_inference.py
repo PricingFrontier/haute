@@ -483,6 +483,21 @@ def test_infer_null_does_not_widen_a_numeric_column(tmp_path: Path) -> None:
     assert _leaf_types(infer_v2_schema_from_data(p)) == {"$[:].age": "int"}
 
 
+def test_bounded_inference_explicitly_owns_late_field_omission(tmp_path: Path) -> None:
+    """Sampling is an explicit completeness trade-off, never a hidden default.
+
+    This pins why the frontend may not silently add a head-sample: the build
+    succeeds over every row while a never-inferred field remains absent.
+    """
+    p = _write(tmp_path, [{"id": 1}, {"id": 2}, {"id": 3, "late": "value"}])
+    schema = _enable_all(infer_v2_schema_from_data(p, sample_size=2))
+    assert _leaf_types(schema) == {"$[:].id": "int"}
+
+    build_per_port_cache(p, schema, tmp_path / "cache")
+    frame = next(iter(load_per_port_cache(tmp_path / "cache", schema).values()))
+    assert frame.collect().columns == ["id"]
+
+
 def test_infer_all_null_leaf_still_becomes_a_str_column(tmp_path: Path) -> None:
     """A leaf with no non-null value anywhere keeps a column, defaulting to
     ``str`` — the same default an only-ever-empty scalar array takes. Skipping

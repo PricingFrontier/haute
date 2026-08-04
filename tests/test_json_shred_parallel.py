@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import orjson
 import polars as pl
 import pytest
 
@@ -24,13 +25,15 @@ from haute import _json_shred
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
     _jsonl_byte_ranges,
+    _raise_chunk_error,
+    _shred_chunk,
     build_per_port_cache,
     infer_v2_schema_from_data,
     load_per_port_cache,
 )
 
 
-def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> Path:
+def _write_jsonl(path: Path, records: list[Any]) -> Path:
     path.write_text(
         "\n".join(json.dumps(r) for r in records) + "\n",
         encoding="utf-8",
@@ -112,6 +115,154 @@ def test_byte_ranges_of_small_or_empty_file(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Parallel inference — complete-schema equivalence
+# ---------------------------------------------------------------------------
+
+
+def test_parallel_inference_matches_serial_with_late_schema_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every range contributes to one deterministic, complete schema.
+
+    The fields and widening below first occur well beyond an early head sample;
+    equality of the entire payload also pins first-observation column ordering.
+    """
+    records: list[dict[str, Any]] = [
+        {
+            "id": i,
+            "premium": i,
+            "profile": {"name": f"driver-{i}"},
+            "tags": ["base"],
+        }
+        for i in range(300)
+    ]
+    records[25]["first_null_only"] = None
+    records[125]["late_flag"] = True
+    records[190]["premium"] = 190.5
+    records[250]["policy"] = {"events": [{"code": "renewal"}]}
+    records[275]["second_null_only"] = None
+    src = _write_jsonl(tmp_path / "late.jsonl", [*records, 42])
+    serial = infer_v2_schema_from_data(src)
+
+    _force_parallel(monkeypatch, chunk_bytes=400)
+
+    def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
+
+    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+
+    assert infer_v2_schema_from_data(src) == serial
+
+
+def test_explicitly_sampled_inference_stays_serial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parallel dispatch must never turn an explicit bound into a full scan."""
+    src = _write_jsonl(tmp_path / "sampled.jsonl", _records(50))
+    _force_parallel(monkeypatch, chunk_bytes=100)
+
+    def reject_range_scan(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("bounded inference unexpectedly partitioned the whole file")
+
+    monkeypatch.setattr(_json_shred, "_jsonl_byte_ranges", reject_range_scan)
+
+    schema = infer_v2_schema_from_data(src, sample_size=2)
+
+    assert schema["tables"]
+
+
+def test_parallel_inference_preserves_late_schema_error_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A late invalid key remains the exact same public contract failure."""
+    records = [{"id": i} for i in range(300)]
+    records[250]["not.addressable"] = "late"
+    src = _write_jsonl(tmp_path / "bad-key.jsonl", records)
+
+    with pytest.raises(ApiInputSchemaError) as serial_exc:
+        infer_v2_schema_from_data(src)
+
+    _force_parallel(monkeypatch, chunk_bytes=300)
+
+    def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
+
+    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+    with pytest.raises(ApiInputSchemaError) as parallel_exc:
+        infer_v2_schema_from_data(src)
+
+    assert parallel_exc.value.message == serial_exc.value.message
+    assert parallel_exc.value.context == serial_exc.value.context
+    assert str(parallel_exc.value) == str(serial_exc.value)
+
+
+def test_parallel_inference_preserves_late_json_error_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malformed tail data reports the same parser detail as a serial scan."""
+    src = tmp_path / "bad-tail.jsonl"
+    src.write_text(
+        "\n".join([*(json.dumps({"id": i}) for i in range(300)), "{bad"]) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(orjson.JSONDecodeError) as serial_exc:
+        infer_v2_schema_from_data(src)
+
+    _force_parallel(monkeypatch, chunk_bytes=300)
+
+    def reject_serial_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("large JSONL inference unexpectedly used the serial iterator")
+
+    monkeypatch.setattr(_json_shred, "_iter_records_for_inference", reject_serial_dispatch)
+    with pytest.raises(orjson.JSONDecodeError) as parallel_exc:
+        infer_v2_schema_from_data(src)
+
+    assert parallel_exc.value.msg == serial_exc.value.msg
+    assert parallel_exc.value.doc == serial_exc.value.doc
+    assert parallel_exc.value.pos == serial_exc.value.pos
+    assert str(parallel_exc.value) == str(serial_exc.value)
+
+
+def test_parallel_inference_rejects_a_source_changed_during_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ranges from different source generations must never be merged."""
+    src = _write_jsonl(tmp_path / "changing.jsonl", _records(100))
+    _force_parallel(monkeypatch, chunk_bytes=100)
+
+    def mutate_source(
+        data_path: Path, _ranges: list[tuple[int, int]]
+    ) -> _json_shred._InferenceState:
+        with data_path.open("ab") as output:
+            output.write(b'{"late": true}\n')
+        return _json_shred._InferenceState()
+
+    monkeypatch.setattr(_json_shred, "_infer_jsonl_in_parallel", mutate_source)
+
+    with pytest.raises(ApiInputSchemaError) as excinfo:
+        infer_v2_schema_from_data(src)
+
+    assert "changed while its schema was inferred" in excinfo.value.message
+    assert excinfo.value.context == {"path": str(src)}
+
+
+def test_parallel_inference_runs_off_the_main_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The HTTP route starts inference inside Starlette's worker thread."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    src = _write_jsonl(tmp_path / "threaded.jsonl", _records(300))
+    _force_parallel(monkeypatch, chunk_bytes=300)
+
+    with ThreadPoolExecutor(max_workers=1) as thread_pool:
+        schema = thread_pool.submit(infer_v2_schema_from_data, src).result()
+
+    assert schema["tables"]
+
+
+# ---------------------------------------------------------------------------
 # Serial equivalence — the whole contract
 # ---------------------------------------------------------------------------
 
@@ -121,9 +272,7 @@ def _build(path: Path, cache: Path) -> tuple[dict[str, Any], dict[str, pl.DataFr
     for table in schema["tables"]:
         table["emit"] = True
     summary = build_per_port_cache(path, schema, cache)
-    frames = {
-        label: lf.collect() for label, lf in load_per_port_cache(cache, schema).items()
-    }
+    frames = {label: lf.collect() for label, lf in load_per_port_cache(cache, schema).items()}
     return summary, frames
 
 
@@ -229,10 +378,115 @@ def test_parallel_worker_type_mismatch_raises_with_the_column_named(
         ]
     }
 
+    with pytest.raises(ApiInputSchemaError) as serial_exc:
+        build_per_port_cache(src, schema, tmp_path / "serial_cache")
+
     _force_parallel(monkeypatch)
-    with pytest.raises(ApiInputSchemaError) as excinfo:
-        build_per_port_cache(src, schema, tmp_path / "cache")
-    assert "premium" in str(excinfo.value)
+    with pytest.raises(ApiInputSchemaError) as parallel_exc:
+        build_per_port_cache(src, schema, tmp_path / "parallel_cache")
+
+    assert parallel_exc.value.message == serial_exc.value.message
+    assert parallel_exc.value.context == serial_exc.value.context
+    assert str(parallel_exc.value) == str(serial_exc.value)
+
+
+def test_parallel_json_decode_error_matches_serial_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON error reconstruction preserves parser evidence and public detail."""
+    src = tmp_path / "bad-json.jsonl"
+    src.write_text(
+        "\n".join([*(json.dumps({"id": i}) for i in range(200)), "{bad"]) + "\n",
+        encoding="utf-8",
+    )
+    schema = {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:].id",
+                        "type": "int",
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(orjson.JSONDecodeError) as serial_exc:
+        build_per_port_cache(src, schema, tmp_path / "serial_cache")
+
+    _force_parallel(monkeypatch)
+    with pytest.raises(orjson.JSONDecodeError) as parallel_exc:
+        build_per_port_cache(src, schema, tmp_path / "parallel_cache")
+
+    assert parallel_exc.value.msg == serial_exc.value.msg
+    assert parallel_exc.value.doc == serial_exc.value.doc
+    assert parallel_exc.value.pos == serial_exc.value.pos
+    assert str(parallel_exc.value) == str(serial_exc.value)
+
+
+def test_parallel_missing_source_remains_file_not_found(tmp_path: Path) -> None:
+    """Expected filesystem failures must not be collapsed into RuntimeError."""
+    schema = {
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "root",
+                "emit": True,
+                "row_id_column": None,
+                "columns": [
+                    {
+                        "name": "id",
+                        "path": "$[:].id",
+                        "type": "int",
+                        "status": "Confirmed",
+                        "selected": True,
+                        "levels": None,
+                    }
+                ],
+            }
+        ]
+    }
+    missing = tmp_path / "missing.jsonl"
+    with pytest.raises(FileNotFoundError) as serial_exc:
+        missing.open("rb")
+
+    result = _shred_chunk((str(missing), 0, 1, 0, schema, str(tmp_path)))
+
+    with pytest.raises(FileNotFoundError) as parallel_exc:
+        _raise_chunk_error(result)
+
+    assert str(parallel_exc.value) == str(serial_exc.value)
+
+
+def test_worker_does_not_disguise_process_control_signals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker envelope is for data failures, not ``BaseException`` control flow."""
+
+    class WorkerStop(BaseException):
+        pass
+
+    src = _write_jsonl(tmp_path / "data.jsonl", [{"id": 1}])
+    schema = infer_v2_schema_from_data(src)
+    for table in schema["tables"]:
+        table["emit"] = True
+
+    def interrupt_read(*_args: object, **_kwargs: object) -> Any:
+        raise WorkerStop
+
+    monkeypatch.setattr(_json_shred, "_iter_range_records", interrupt_read)
+
+    with pytest.raises(WorkerStop):
+        _shred_chunk((str(src), 0, src.stat().st_size, 0, schema, str(tmp_path)))
 
 
 def test_failed_parallel_build_leaves_no_staging_directory(
@@ -289,9 +543,7 @@ def test_parallel_build_runs_off_the_main_thread(
 
     _force_parallel(monkeypatch)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        summary = pool.submit(
-            build_per_port_cache, src, schema, tmp_path / "cache"
-        ).result()
+        summary = pool.submit(build_per_port_cache, src, schema, tmp_path / "cache").result()
 
     root_label = next(t["label"] for t in schema["tables"] if t["path"] == "$[:]")
     row_counts = {t["label"]: t["row_count"] for t in summary["tables"]}

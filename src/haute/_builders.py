@@ -21,6 +21,7 @@ from typing import Any, cast
 import polars as pl
 
 import haute.projection as projection
+from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
 from haute._contracts import (
     _DEPLOY_MODEL_INPUT_COLUMNS_CONFIG_KEY,
 )
@@ -1093,8 +1094,18 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # snippets.
         is_source = not _src_names
         return ctx.func_name, transform_fn, is_source
-    else:
+    if len(_src_names) == 1:
         return ctx.func_name, _passthrough_fn, False
+
+    def incomplete_transform_fn(
+        *_dfs_positional: _Frame,
+        **_dfs_by_name: _Frame,
+    ) -> _Frame:
+        raise NotImplementedError(INCOMPLETE_TRANSFORM_MESSAGE)
+
+    # With no upstream, mark the node as a source so the executor invokes the
+    # placeholder instead of failing first with its generic no-input guard.
+    return ctx.func_name, incomplete_transform_fn, not _src_names
 
 
 @_register(NodeType.EDGE_JOIN, opaque=True)
