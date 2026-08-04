@@ -11,6 +11,7 @@ import {
   type Edge,
   type Connection,
   type EdgeChange,
+  type NodeChange,
   BackgroundVariant,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
@@ -66,12 +67,12 @@ import {
   applyApiInputConfigChange,
   edgeInputName,
   incomingEdgeInputNames,
-  resolveSubmodelBoundaryNode,
-  submodelGraphFromMetadata,
 } from "./utils/apiInputPorts"
 import type { OnUpdateConfigResult, SimpleEdge, SimpleNode } from "./panels/editors/_shared"
 import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
-import { nodeData } from "./types/node"
+import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
+import { isSubmodelInstanceConfig, nodeData } from "./types/node"
+import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
@@ -128,23 +129,6 @@ type AffectedRenameTarget = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function submodelScopeForBoundary(
-  boundaryNode: Node,
-  submodels: Record<string, unknown>,
-): RenameGraphScope {
-  if (!boundaryNode.id.startsWith("submodel__")) {
-    throw new Error(`Node ${boundaryNode.id} is not a submodel boundary`)
-  }
-  const name = boundaryNode.id.slice("submodel__".length)
-  const graph = submodelGraphFromMetadata(submodels[name])
-  if (!graph) throw new Error(`Submodel ${name} has no graph to migrate`)
-  return {
-    nodes: graph.nodes as unknown as Node[],
-    edges: graph.edges as unknown as Edge[],
-    submodels: graph.submodels,
-  }
 }
 
 function remapRecordKeys(
@@ -231,6 +215,7 @@ function FlowEditor() {
   const gitOpen = useUIStore((s) => s.gitOpen)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
+  const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
   const shortcutsOpen = useUIStore((s) => s.shortcutsOpen)
   const setShortcutsOpen = useUIStore((s) => s.setShortcutsOpen)
   const submodelDialog = useUIStore((s) => s.submodelDialog)
@@ -291,7 +276,7 @@ function FlowEditor() {
     setComparisonInspectState(null)
     setGitOpen(false)
   }, [closeComparison, setGitOpen])
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSingleton?: boolean } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string; nodeLabel: string; isSubmodel?: boolean; isSubmodelCopy?: boolean; isSingleton?: boolean } | null>(null)
   // Preamble lives in useGraphStore. Subscribe to the string directly so
   // sibling state slices can change without re-rendering this component.
   // The raw setter avoids adding text edits to the graph undo stack.
@@ -332,6 +317,7 @@ function FlowEditor() {
   const clipboard = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   const graphRef = useRef<{ nodes: Node[]; edges: Edge[] }>({ nodes: [], edges: [] })
   const parentGraphRef = useRef<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>(null)
+  const [activeSubmodelIdentity, setActiveSubmodelIdentity] = useState<DrilledOccurrenceIdentity | null>(null)
   const preambleRef = useRef("")
   const pipelineNameRef = useRef("main")
   const descriptionRef = useRef("")
@@ -383,7 +369,7 @@ function FlowEditor() {
     fetchPreview, cancelPreview, refreshPreview, previewNodeFrame, handleSave,
   } = usePipelineAPI({
     selectedNode,
-    graphRef, parentGraphRef, submodelsRef,
+    graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw, setCurrentSourceFile, setPreamble,
     preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
     nodeIdCounter,
@@ -500,8 +486,8 @@ function FlowEditor() {
   }, [loadGitReadiness, addToast])
 
   const wsStatus = useWebSocketSync({
-    setNodesRaw, setEdgesRaw, setSubmodelsRaw, setPreamble, preambleRef,
-    submodelsRef, graphRefreshingRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, nodeIdCounter, fitView,
+    preambleRef, submodelsRef, graphRefreshingRef, sourceFileRef,
+    sourceRevisionRef, preservedBlocksRef, nodeIdCounter, fitView,
     enabled: !loading,
   })
   useEffect(() => { setPreviewDataRef.current = setPreviewData }, [setPreviewData])
@@ -512,35 +498,48 @@ function FlowEditor() {
     nodesWithStatus, edgesWithTrace,
   } = useTracing({
     nodes, edges, selectedNode,
-    graphRef, parentGraphRef, submodelsRef,
+    submodels,
+    graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
     preambleRef,
     nodeStatuses,
     hoveredNodeId,
     refreshPreview,
   })
+  const canvasNodes = useMemo(
+    () => withNativeDeletePolicy(nodesWithStatus),
+    [nodesWithStatus],
+  )
+
 
   const {
     viewStack,
     handleDrillIntoSubmodel, handleBreadcrumbNavigate,
     handleCreateSubmodel, handleDissolveSubmodel,
   } = useSubmodelNavigation({
-    graphRef, parentGraphRef, submodelsRef,
+    graphRef, parentGraphRef, setActiveSubmodelIdentity, submodelsRef,
     setNodesRaw, setEdgesRaw, setSubmodelsRaw,
     setSelectedNode, setPreviewData: (d: null) => setPreviewData(d),
     setLastSelectedId,
     setCurrentSourceFile,
-    preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, setPreamble,
+    preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef,
     fitView,
   })
 
   const activeView = viewStack[viewStack.length - 1]
   const activeSubmodelName = activeView?.type === "submodel" ? activeView.name : null
+  const activeSubmodelInstanceId = activeView?.type === "submodel" ? activeView.instanceId ?? null : null
+  const activeSubmodelDefinitionId = activeView?.type === "submodel" ? activeView.definitionId ?? null : null
+  const activeSubmodelReadOnly = activeView?.type === "submodel" && activeView.readOnly
+
   const {
     commitBoundaryConnection,
     deleteBoundaryEdge,
     onBoundaryEdgesChange,
+    commitSharedNodeDeletion,
   } = useSubmodelBoundaryEditing({
     activeSubmodelName,
+    activeSubmodelInstanceId,
+    activeSubmodelDefinitionId,
     nodes,
     edges,
     submodels,
@@ -549,10 +548,30 @@ function FlowEditor() {
     submodelsRef,
     setNodesAndEdgesAndSubmodels,
   })
+  const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    if (!activeSubmodelReadOnly) {
+      const removedNodeIds = new Set(changes
+        .filter((change): change is Extract<NodeChange, { type: "remove" }> => change.type === "remove")
+        .map((change) => change.id))
+      if (commitSharedNodeDeletion(removedNodeIds, new Set(), changes) !== "not-applicable") return
+      onNodesChange(changes)
+      return
+    }
+    const presentationChanges = changes.filter(
+      (change) => change.type === "select" || change.type === "dimensions",
+    )
+    if (presentationChanges.length > 0) onNodesChange(presentationChanges)
+  }, [activeSubmodelReadOnly, commitSharedNodeDeletion, onNodesChange])
+
   const handleEdgesChange = useCallback((changes: EdgeChange[]) => {
+    if (activeSubmodelReadOnly) {
+      const selectionChanges = changes.filter((change) => change.type === "select")
+      if (selectionChanges.length > 0) onEdgesChange(selectionChanges)
+      return
+    }
     if (onBoundaryEdgesChange(changes)) return
     onEdgesChange(changes)
-  }, [onBoundaryEdgesChange, onEdgesChange])
+  }, [activeSubmodelReadOnly, onBoundaryEdgesChange, onEdgesChange])
 
   useKeyboardShortcuts({
     handleSave: requestSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
@@ -562,6 +581,8 @@ function FlowEditor() {
     clearTrace,
     closePanel,
     isInsideSubmodel: viewStack.length > 1,
+    readOnly: activeSubmodelReadOnly,
+    commitSharedNodeDeletion,
   })
 
   // ---------------------------------------------------------------------------
@@ -570,6 +591,9 @@ function FlowEditor() {
 
   const onUpdateNode = useCallback(
     (id: string, data: Record<string, unknown>): OnUpdateConfigResult => {
+      if (activeSubmodelReadOnly) {
+        return { ok: false, error: "This submodel instance is read-only." }
+      }
       // Capture the pre-update node BEFORE committing, so apiInput edge
       // maintenance below can diff old vs new frame identities.
       const currentGraph = graphRef.current
@@ -631,29 +655,19 @@ function FlowEditor() {
         RenameGraphScope,
         Map<string, AffectedRenameTarget>
       >()
-      const submodelScopes = new Map<string, RenameGraphScope>()
 
       for (const change of rebound) {
         const boundaryTarget = nodeById.get(change.edge.target)
         if (!boundaryTarget) throw new Error(`Cannot derive rename target ${change.edge.target}`)
-        let targetScope = rootScope
-        let target = boundaryTarget
+        const targetScope = rootScope
+        const target = boundaryTarget
         if (boundaryTarget.data.nodeType === NODE_TYPES.SUBMODEL) {
-          target = resolveSubmodelBoundaryNode(
-            boundaryTarget as unknown as SimpleNode,
-            change.edge.targetHandle,
-            "in",
-            rootScope.submodels,
-          ) as unknown as Node
-          if (!target) {
-            throw new Error(
-              `Cannot migrate frame rename through submodel ${boundaryTarget.id}: `
-              + `edge ${change.edge.id} has no resolvable target handle`,
-            )
+          if (!isSubmodelInstanceConfig(boundaryTarget.data.config)) {
+            throw new Error(`Submodel instance ${boundaryTarget.id} has malformed identity config`)
           }
-          targetScope = submodelScopes.get(boundaryTarget.id) ??
-            submodelScopeForBoundary(boundaryTarget, rootScope.submodels)
-          submodelScopes.set(boundaryTarget.id, targetScope)
+          // Public port ids are immutable definition-owned input names, so an
+          // external frame rename changes only the parent edge binding.
+          continue
         }
         const targets = affectedByScope.get(targetScope) ?? new Map<string, AffectedRenameTarget>()
         const affected = targets.get(target.id) ?? {
@@ -823,7 +837,7 @@ function FlowEditor() {
       }
       return { ok: true }
     },
-    [setNodesAndEdgesAndSubmodels, graphRef, addToast, setSelectedNode, submodelsRef],
+    [activeSubmodelReadOnly, setNodesAndEdgesAndSubmodels, graphRef, addToast, setSelectedNode, submodelsRef],
   )
 
   const {
@@ -834,6 +848,7 @@ function FlowEditor() {
     setNodes, setNodesAndEdges, setSelectedNode,
     setLastSelectedId,
     setPreviewData, fitView,
+    commitSharedNodeDeletion,
   })
 
   const shouldSkipAutomaticPreview = useCallback(
@@ -867,6 +882,7 @@ function FlowEditor() {
   }, [activeSubmodelName, graphRef])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => {
+    if (activeSubmodelReadOnly) return false
     if (isBoundaryConnection(connection)) return true
     return validatePipelineConnection(
       connection,
@@ -874,9 +890,15 @@ function FlowEditor() {
       panelGraph.edges,
       submodelsRef.current,
     ).ok
-  }, [isBoundaryConnection, panelGraph])
+  }, [activeSubmodelReadOnly, isBoundaryConnection, panelGraph])
 
   const validateConnection = useCallback((connection: Connection): ConnectionValidationResult => {
+    if (activeSubmodelReadOnly) {
+      return {
+        ok: false,
+        reason: { kind: "invalid-connection", message: "This submodel instance is read-only." },
+      }
+    }
     if (isBoundaryConnection(connection)) return { ok: true }
     return validatePipelineConnection(
       connection,
@@ -884,7 +906,7 @@ function FlowEditor() {
       panelGraph.edges,
       submodelsRef.current,
     )
-  }, [isBoundaryConnection, panelGraph])
+  }, [activeSubmodelReadOnly, isBoundaryConnection, panelGraph])
 
   const {
     onConnect, onSelectionChange, onNodeClick, handleDeleteEdge,
@@ -909,12 +931,12 @@ function FlowEditor() {
 
   const presentedEdgeJoinCandidateEdgeId = useMemo(
     () => (
-      edgeJoinCandidateEdgeId
+      !activeSubmodelReadOnly && edgeJoinCandidateEdgeId
         && edgesWithTrace.some((edge) => edge.id === edgeJoinCandidateEdgeId)
         ? edgeJoinCandidateEdgeId
         : null
     ),
-    [edgeJoinCandidateEdgeId, edgesWithTrace],
+    [activeSubmodelReadOnly, edgeJoinCandidateEdgeId, edgesWithTrace],
   )
   const edgesWithEdgeJoinCandidate = useMemo(
     () => withEdgeJoinInsertionCandidate(edgesWithTrace, presentedEdgeJoinCandidateEdgeId),
@@ -922,6 +944,7 @@ function FlowEditor() {
   )
 
   const handleSwapEdgeJoinInputs = useCallback((nodeId: string) => {
+    if (activeSubmodelReadOnly) return
     const result = swapEdgeJoinInputs({
       nodes: graphRef.current.nodes,
       edges: graphRef.current.edges,
@@ -942,6 +965,7 @@ function FlowEditor() {
     clearTrace()
     cancelPreview()
   }, [
+    activeSubmodelReadOnly,
     addToast,
     cancelPreview,
     clearTrace,
@@ -1054,6 +1078,7 @@ function FlowEditor() {
         wsStatus={wsStatus}
         timings={previewData?.timings}
         memory={previewData?.memory}
+        editingDisabled={activeSubmodelReadOnly}
       />
 
       {comparison ? (
@@ -1101,7 +1126,12 @@ function FlowEditor() {
         </div>
       ) : (
       <div className="flex-1 flex min-h-0">
-        <nav aria-label="Node palette">
+        <nav
+          aria-label="Node palette"
+          aria-disabled={activeSubmodelReadOnly}
+          inert={activeSubmodelReadOnly ? true : undefined}
+          style={activeSubmodelReadOnly ? { opacity: 0.45 } : undefined}
+        >
           {paletteOpen ? (
             <ErrorBoundary name="NodePalette">
               <NodePalette onCollapse={() => setPaletteOpen(false)} nodes={nodes} />
@@ -1145,33 +1175,44 @@ function FlowEditor() {
           <ErrorBoundary name="Canvas">
             <div
               className="flex-1 min-h-0 relative"
-              onPointerMove={(event) => onConnectionPointerMove(event)}
+              onPointerMove={(event) => { if (!activeSubmodelReadOnly) onConnectionPointerMove(event) }}
               onPointerLeave={clearEdgeJoinCandidate}
             >
               <BreadcrumbBar viewStack={viewStack} onNavigate={handleBreadcrumbNavigate} />
               <EdgeJoinInsertionFeedback candidateEdgeId={presentedEdgeJoinCandidateEdgeId} />
               <ReactFlow
                 className={useLiteGraphEffects ? "graph-effects-lite" : undefined}
-                nodes={nodesWithStatus}
+                nodes={canvasNodes}
                 edges={edgesWithEdgeJoinCandidate}
-                onNodesChange={onNodesChange}
+                onNodesChange={handleNodesChange}
                 onEdgesChange={handleEdgesChange}
-                onConnect={onConnect}
-                onConnectStart={onConnectStart}
-                onConnectEnd={onConnectEnd}
+                onConnect={activeSubmodelReadOnly ? undefined : onConnect}
+                onConnectStart={activeSubmodelReadOnly ? undefined : onConnectStart}
+                onConnectEnd={activeSubmodelReadOnly ? undefined : onConnectEnd}
+                nodesDraggable={!activeSubmodelReadOnly}
+                nodesConnectable={!activeSubmodelReadOnly}
                 onSelectionChange={onSelectionChange}
                 onNodeMouseEnter={(_event, node) => setHoveredNodeId(node.id)}
                 onNodeMouseLeave={() => setHoveredNodeId(null)}
                 onNodeClick={(event, node) => { setUtilityOpen(false); setImportsOpen(false); setGitOpen(false); setHoveredNodeId(null); onNodeClick(event, node) }}
-                onNodeContextMenu={onNodeContextMenu}
+                onNodeContextMenu={activeSubmodelReadOnly ? undefined : onNodeContextMenu}
                 onNodeDoubleClick={(_event, node) => {
                   if (nodeData(node).nodeType === NODE_TYPES.SUBMODEL) {
+                    const config = nodeData(node).config
+                    if (isSubmodelInstanceConfig(config) && config.instanceOf !== undefined) {
+                      setUtilityOpen(false)
+                      setImportsOpen(false)
+                      setAssistantOpen(false)
+                      setContextMenu(null)
+                      setRenameDialog(null)
+                      setSubmodelDialog(null)
+                    }
                     handleDrillIntoSubmodel(node.id)
                   }
                 }}
                 onPaneClick={() => { setContextMenu(null); clearTrace(); closePanel() }}
-                onDrop={onDrop}
-                onDragOver={onDragOver}
+                onDrop={activeSubmodelReadOnly ? undefined : onDrop}
+                onDragOver={activeSubmodelReadOnly ? undefined : onDragOver}
                 nodeTypes={nodeTypes}
                 panOnDrag={[2]}
                 selectionOnDrag
@@ -1252,8 +1293,9 @@ function FlowEditor() {
                   node={panelNode}
                   onClose={closePanel}
                   onUpdateNode={onUpdateNode}
-                  onDeleteEdge={handleDeleteEdge}
-                  onSwapEdgeJoinInputs={handleSwapEdgeJoinInputs}
+                  onDeleteEdge={activeSubmodelReadOnly ? undefined : handleDeleteEdge}
+                  onSwapEdgeJoinInputs={activeSubmodelReadOnly ? undefined : handleSwapEdgeJoinInputs}
+                  readOnly={activeSubmodelReadOnly}
                   onRefreshPreview={() => {
                     if (!panelNode) return
                     const refreshTarget = graphRef.current.nodes.find((n) => n.id === panelNode.id)
@@ -1279,7 +1321,7 @@ function FlowEditor() {
       </div>
       )}
 
-      {contextMenu && (
+      {contextMenu && !activeSubmodelReadOnly && (
         <ContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
@@ -1291,6 +1333,7 @@ function FlowEditor() {
           onRename={handleRenameNode}
           onCreateInstance={handleCreateInstance}
           isSubmodel={contextMenu.isSubmodel}
+          isSubmodelCopy={contextMenu.isSubmodelCopy}
           isSingleton={contextMenu.isSingleton}
           onDissolveSubmodel={handleDissolveSubmodel}
         />

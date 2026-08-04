@@ -406,15 +406,26 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     },
                 },
                 {
-                    "id": "child_a",
-                    "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                    "id": "submodel__sm1",
+                    "type": "submodel",
+                    "data": {
+                        "label": "sm1",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                    },
                 },
             ],
             "edges": [edge_dict],
             "submodels": {
                 "sm1": {
+                    "definitionId": "sm1",
                     "file": "modules/sm1.py",
-                    "childNodeIds": ["child_a"],
+                    "inputPorts": [
+                        {"portId": "child_a", "label": "ChildA", "targets": [{"nodeId": "child_a"}]}
+                    ],
+                    "outputPorts": [
+                        {"portId": "result", "label": "Result", "source": {"nodeId": "child_a"}}
+                    ],
                     "graph": {
                         "nodes": [
                             {
@@ -449,15 +460,26 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     "data": {"label": "Out", "nodeType": "output", "config": {}},
                 },
                 {
-                    "id": "child_a",
-                    "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                    "id": "submodel__sm1",
+                    "type": "submodel",
+                    "data": {
+                        "label": "sm1",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                    },
                 },
             ],
             "edges": [edge_dict],
             "submodels": {
                 "sm1": {
+                    "definitionId": "sm1",
                     "file": "modules/sm1.py",
-                    "childNodeIds": ["child_a"],
+                    "inputPorts": [
+                        {"portId": "child_a", "label": "ChildA", "targets": [{"nodeId": "child_a"}]}
+                    ],
+                    "outputPorts": [
+                        {"portId": "result", "label": "Result", "source": {"nodeId": "child_a"}}
+                    ],
                     "graph": {
                         "nodes": [
                             {

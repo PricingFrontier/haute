@@ -15,6 +15,7 @@ import polars as pl
 import pytest
 
 from haute._config_io import collect_node_configs
+from haute._submodel_instances import qualified_runtime_node_id
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.executor import execute_graph
@@ -638,9 +639,6 @@ class TestSubmodelLifecycle:
             _make_edge("t2", "out"),
         ]
         graph = PipelineGraph(nodes=nodes, edges=edges, pipeline_name="submodel_test")
-        orig_node_ids = {n.id for n in graph.nodes}
-        orig_edge_pairs = {(e.source, e.target) for e in graph.edges}
-
         # Step 1: Execute original
         results = execute_graph(graph)
         assert results["out"].status == "ok"
@@ -650,15 +648,17 @@ class TestSubmodelLifecycle:
         result = create_submodel_graph(graph, ["t1", "t2"], "inner_group")
         new_graph = result.graph
 
-        # Verify submodel placeholder is present
-        sm_node_ids = [n.id for n in new_graph.nodes if n.data.nodeType == NodeType.SUBMODEL]
-        assert len(sm_node_ids) == 1
-        assert "submodel__inner_group" in sm_node_ids
-
-        # Verify submodel metadata
-        assert "inner_group" in (new_graph.submodels or {})
-        sm_meta = new_graph.submodels["inner_group"]
-        assert set(sm_meta["childNodeIds"]) == {"t1", "t2"}
+        # Verify the canonical occurrence and shared definition are present.
+        sm_nodes = [node for node in new_graph.nodes if node.data.nodeType == NodeType.SUBMODEL]
+        assert len(sm_nodes) == 1
+        sm_node = sm_nodes[0]
+        assert sm_node.id.startswith("submodel_instance_")
+        assert sm_node.data.config == {
+            "definitionId": "inner_group",
+            "alias": "inner_group",
+        }
+        sm_definition = new_graph.submodels["inner_group"]
+        assert {node.id for node in sm_definition.graph.nodes} == {"t1", "t2"}
 
         # Step 3: Generate code for submodel file
         files = graph_to_code_multi(
@@ -673,12 +673,18 @@ class TestSubmodelLifecycle:
         # Step 4: Dissolve submodel back
         flat = flatten_graph(new_graph)
 
-        # Verify dissolution restores original structure
+        # Dissolution preserves topology with occurrence-qualified child ids.
+        runtime_t1 = qualified_runtime_node_id(sm_node.id, "t1")
+        runtime_t2 = qualified_runtime_node_id(sm_node.id, "t2")
         flat_node_ids = {n.id for n in flat.nodes}
-        assert flat_node_ids == orig_node_ids
+        assert flat_node_ids == {"src", "out", runtime_t1, runtime_t2}
 
         flat_edge_pairs = {(e.source, e.target) for e in flat.edges}
-        assert flat_edge_pairs == orig_edge_pairs
+        assert flat_edge_pairs == {
+            ("src", runtime_t1),
+            (runtime_t1, runtime_t2),
+            (runtime_t2, "out"),
+        }
 
         # Step 5: Execute the dissolved graph — should produce same results
         results2 = execute_graph(flat)

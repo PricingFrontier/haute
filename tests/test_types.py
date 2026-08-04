@@ -354,6 +354,15 @@ class TestPipelineGraph:
         assert g.active_source == "test_batch"
         assert g.nodes[0].data.nodeType == NodeType.DATA_INPUT
 
+    def test_pipeline_graph_has_no_legacy_mapping_surface(self):
+        graph = PipelineGraph(nodes=[], edges=[])
+
+        with pytest.raises(TypeError, match="not subscriptable"):
+            _ = graph["nodes"]  # type: ignore[index]
+
+        assert not hasattr(graph, "get")
+        assert not hasattr(graph, "update")
+
     def test_preserved_blocks_default_factory(self):
         g1 = PipelineGraph()
         g2 = PipelineGraph()

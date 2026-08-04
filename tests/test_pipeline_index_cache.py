@@ -548,8 +548,14 @@ class TestConcurrentReadsDoNotRace:
             if read_count == 1:
                 build_started.set()
                 assert allow_build_to_finish.wait(2)
-                return 'pipeline.submodel("modules/stale.py")\n'
-            return 'pipeline.submodel("modules/fresh.py")\n'
+                return (
+                    'pipeline.submodel("modules/stale.py", definition_id="stale", '
+                    'instance_id="submodel__stale", alias="stale")\n'
+                )
+            return (
+                'pipeline.submodel("modules/fresh.py", definition_id="fresh", '
+                'instance_id="submodel__fresh", alias="fresh")\n'
+            )
 
         monkeypatch.setattr(helpers, "read_user_text", _slow_read)
 

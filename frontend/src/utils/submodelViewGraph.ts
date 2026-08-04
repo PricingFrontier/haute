@@ -1,10 +1,19 @@
 import type { Edge, Node } from "@xyflow/react"
-import type { PipelineEdge, SubmodelBoundaryEdgeData, SubmodelPortData } from "../types/node"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  type PipelineEdge,
+  type SubmodelBoundaryEdgeData,
+  type SubmodelDefinition,
+  type SubmodelPortData,
+} from "../types/node"
 import { normalizeEdges } from "./graphHelpers"
 import { NODE_TYPES } from "./nodeTypes"
 
 export interface SubmodelViewGraphInput {
   submodelName: string
+  instanceId: string
+  definition: SubmodelDefinition
   childNodes: Node[]
   childEdges: Edge[]
   parentNodes: Node[]
@@ -16,61 +25,184 @@ export interface SubmodelViewGraph {
   edges: Edge[]
 }
 
-type BoundaryData = SubmodelPortData & { nodeType: typeof NODE_TYPES.SUBMODEL_PORT }
-const hasText = (value: unknown): value is string => typeof value === "string" && value.length > 0
-function stableId(kind: string, values: readonly (string | null)[]): string { return `submodel-view__${kind}__${encodeURIComponent(JSON.stringify(values))}` }
-function uniqueEdgeId(base: string, occupied: Set<string>): string { let candidate = base; let suffix = 1; while (occupied.has(candidate)) candidate = `${base}__${suffix++}`; occupied.add(candidate); return candidate }
-function boundaryNode(id: string, direction: "input" | "output", ports: SubmodelPortData["ports"], externalNodeIds: string[]): Node<BoundaryData> {
-  return { id, type: NODE_TYPES.SUBMODEL_PORT, position: { x: 0, y: 0 }, data: { label: direction === "input" ? "INPUT" : "OUTPUT", nodeType: NODE_TYPES.SUBMODEL_PORT, portDirection: direction, ports, externalNodeIds } }
-}
+function buildCanonicalSubmodelViewGraph(
+  input: SubmodelViewGraphInput,
+): SubmodelViewGraph {
+  const {
+    submodelName,
+    instanceId,
+    definition,
+    childNodes,
+    childEdges,
+    parentNodes,
+    parentEdges,
+  } = input
+  const definitionCandidate: unknown = definition
+  if (!isSubmodelDefinition(definitionCandidate, definition.definitionId)) {
+    throw new Error(`Submodel definition ${definition.definitionId} is malformed`)
+  }
+  const placeholder = parentNodes.find((node) => node.id === instanceId)
+  if (!placeholder) throw new Error(`Submodel instance ${instanceId} is missing from the parent graph`)
+  const config = placeholder.data.config
+  if (!isSubmodelInstanceConfig(config) || config.definitionId !== definition.definitionId) {
+    throw new Error(
+      `Submodel instance ${instanceId} does not reference definition ${definition.definitionId}`,
+    )
+  }
 
-export function buildSubmodelViewGraph({ submodelName, childNodes, childEdges, parentNodes, parentEdges }: SubmodelViewGraphInput): SubmodelViewGraph {
-  const childIds = new Set(childNodes.map(node => node.id))
-  const inputId = stableId("boundary", [submodelName, "input"])
-  const outputId = stableId("boundary", [submodelName, "output"])
-  if (childIds.has(inputId) || childIds.has(outputId)) throw new Error(`Submodel boundary id collides with a child node for ${submodelName}`)
-  const placeholderId = `submodel__${submodelName}`
-  const parentById = new Map(parentNodes.map(node => [node.id, node]))
+  const childIds = new Set(childNodes.map((node) => node.id))
+  const inputId = stableId("boundary", [instanceId, "input"])
+  const outputId = stableId("boundary", [instanceId, "output"])
+  if (childIds.has(inputId) || childIds.has(outputId)) {
+    throw new Error(`Submodel boundary id collides with a child node for ${submodelName}`)
+  }
+
+  const inputHandles = new Set(definition.inputPorts.map((port) => `in__${port.portId}`))
+  const outputHandles = new Set(definition.outputPorts.map((port) => `out__${port.portId}`))
+  for (const edge of parentEdges as PipelineEdge[]) {
+    if (
+      edge.target === instanceId
+      && (typeof edge.targetHandle !== "string" || !inputHandles.has(edge.targetHandle))
+    ) {
+      throw new Error(
+        `Submodel instance ${instanceId} has undeclared input handle ${String(edge.targetHandle)}`,
+      )
+    }
+    if (
+      edge.source === instanceId
+      && (typeof edge.sourceHandle !== "string" || !outputHandles.has(edge.sourceHandle))
+    ) {
+      throw new Error(
+        `Submodel instance ${instanceId} has undeclared output handle ${String(edge.sourceHandle)}`,
+      )
+    }
+  }
+
   const inputPorts: SubmodelPortData["ports"] = []
   const inputExternalIds: string[] = []
   const outputExternalIds: string[] = []
-  const inputRows = new Map<string, string>()
   const syntheticEdges: Edge[] = []
-  const occupiedEdgeIds = new Set(childEdges.map(edge => edge.id))
+  const occupiedEdgeIds = new Set(childEdges.map((edge) => edge.id))
 
-  for (const rawEdge of parentEdges) {
-    const edge = rawEdge as PipelineEdge
-    if (edge.target === placeholderId) {
-      const childId = edge.targetHandle === null || edge.targetHandle === undefined ? null : edge.targetHandle.startsWith("in__") ? edge.targetHandle.slice("in__".length) : ""
-      if (childId !== null && (!hasText(childId) || !childIds.has(childId))) continue
-      if (!inputExternalIds.includes(edge.source)) inputExternalIds.push(edge.source)
-      const frameKey = JSON.stringify([edge.source, edge.sourceHandle ?? null])
-      let rowId = inputRows.get(frameKey)
-      if (!rowId) {
-        rowId = stableId("input-row", [edge.source, edge.sourceHandle ?? null])
-        inputRows.set(frameKey, rowId)
-        const parentLabel = parentById.get(edge.source)?.data.label
-        inputPorts.push({ id: rowId, label: hasText(edge.sourceHandle) ? edge.sourceHandle : hasText(parentLabel) ? parentLabel : edge.source, parentEdges: [] })
+  for (const port of definition.inputPorts) {
+    const handle = `in__${port.portId}`
+    const consumers = (parentEdges as PipelineEdge[]).filter(
+      (edge) => edge.target === instanceId && edge.targetHandle === handle,
+    )
+    inputPorts.push({
+      id: port.portId,
+      label: port.label,
+      parentEdges: consumers,
+    })
+    for (const consumer of consumers) {
+      if (!inputExternalIds.includes(consumer.source)) inputExternalIds.push(consumer.source)
+    }
+    for (const [index, target] of port.targets.entries()) {
+      if (!childIds.has(target.nodeId)) {
+        throw new Error(
+          `Submodel definition ${definition.definitionId} input port ${port.portId} references missing child ${target.nodeId}`,
+        )
       }
-      const port = inputPorts.find(candidate => candidate.id === rowId)
-      if (!port) throw new Error(`Missing input port ${rowId}`)
-      port.parentEdges = [...(port.parentEdges ?? []), edge]
-      if (childId === null) continue
-      syntheticEdges.push({ id: uniqueEdgeId(stableId("input-edge", [rowId, childId, edge.id]), occupiedEdgeIds), source: inputId, sourceHandle: rowId, target: childId, targetHandle: edge.targetPort ?? null, data: { submodelBoundary: { direction: "input", parentEdge: edge } } satisfies SubmodelBoundaryEdgeData })
-      continue
-    }
-    if (edge.source === placeholderId && hasText(edge.sourceHandle)) {
-      const childId = edge.sourceHandle.startsWith("out__") ? edge.sourceHandle.slice("out__".length) : ""
-      if (hasText(childId) && childIds.has(childId) && !outputExternalIds.includes(edge.target)) outputExternalIds.push(edge.target)
+      syntheticEdges.push({
+        id: uniqueEdgeId(
+          stableId("input-edge", [instanceId, port.portId, target.nodeId, String(index)]),
+          occupiedEdgeIds,
+        ),
+        source: inputId,
+        sourceHandle: port.portId,
+        target: target.nodeId,
+        targetHandle: target.handleId,
+        data: {
+          submodelBoundary: {
+            direction: "input",
+            portId: port.portId,
+            parentEdges: consumers,
+          },
+        } satisfies SubmodelBoundaryEdgeData,
+      })
     }
   }
 
-  const config = parentById.get(placeholderId)?.data.config as { outputPorts?: unknown } | undefined
-  const outputChildren = Array.isArray(config?.outputPorts) ? config.outputPorts.filter((id): id is string => hasText(id) && childIds.has(id)) : []
-  for (const childId of outputChildren) {
-    const handle = `out__${childId}`
-    const consumers = parentEdges.filter((raw): raw is PipelineEdge => { const edge = raw as PipelineEdge; return edge.source === placeholderId && edge.sourceHandle === handle })
-    syntheticEdges.push({ id: uniqueEdgeId(stableId("output-edge", [childId, handle]), occupiedEdgeIds), source: childId, sourceHandle: consumers[0]?.sourcePort ?? null, target: outputId, targetHandle: null, data: { submodelBoundary: { direction: "output", parentConsumerEdges: consumers } } satisfies SubmodelBoundaryEdgeData })
+  for (const port of definition.outputPorts) {
+    if (!childIds.has(port.source.nodeId)) {
+      throw new Error(
+        `Submodel definition ${definition.definitionId} output port ${port.portId} references missing child ${port.source.nodeId}`,
+      )
+    }
+    const handle = `out__${port.portId}`
+    const consumers = (parentEdges as PipelineEdge[]).filter(
+      (edge) => edge.source === instanceId && edge.sourceHandle === handle,
+    )
+    for (const consumer of consumers) {
+      if (!outputExternalIds.includes(consumer.target)) outputExternalIds.push(consumer.target)
+    }
+    syntheticEdges.push({
+      id: uniqueEdgeId(stableId("output-edge", [instanceId, port.portId]), occupiedEdgeIds),
+      source: port.source.nodeId,
+      sourceHandle: port.source.handleId,
+      target: outputId,
+      targetHandle: null,
+      data: {
+        submodelBoundary: {
+          direction: "output",
+          portId: port.portId,
+          parentConsumerEdges: consumers,
+        },
+      } satisfies SubmodelBoundaryEdgeData,
+    })
   }
-  return { nodes: [...childNodes, boundaryNode(inputId, "input", inputPorts, inputExternalIds), boundaryNode(outputId, "output", [], outputExternalIds)], edges: normalizeEdges([...childEdges, ...syntheticEdges]) }
+
+  return {
+    nodes: [
+      ...childNodes,
+      boundaryNode(
+        inputId,
+        "input",
+        inputPorts,
+        inputExternalIds,
+        instanceId,
+        definition.definitionId,
+      ),
+      boundaryNode(
+        outputId,
+        "output",
+        [],
+        outputExternalIds,
+        instanceId,
+        definition.definitionId,
+      ),
+    ],
+    edges: normalizeEdges([...childEdges, ...syntheticEdges]),
+  }
+}
+
+type BoundaryData = SubmodelPortData & { nodeType: typeof NODE_TYPES.SUBMODEL_PORT }
+function stableId(kind: string, values: readonly (string | null)[]): string { return `submodel-view__${kind}__${encodeURIComponent(JSON.stringify(values))}` }
+function uniqueEdgeId(base: string, occupied: Set<string>): string { let candidate = base; let suffix = 1; while (occupied.has(candidate)) candidate = `${base}__${suffix++}`; occupied.add(candidate); return candidate }
+function boundaryNode(
+  id: string,
+  direction: "input" | "output",
+  ports: SubmodelPortData["ports"],
+  externalNodeIds: string[],
+  instanceId: string,
+  definitionId: string,
+): Node<BoundaryData> {
+  return {
+    id,
+    type: NODE_TYPES.SUBMODEL_PORT,
+    position: { x: 0, y: 0 },
+    data: {
+      label: direction === "input" ? "INPUT" : "OUTPUT",
+      nodeType: NODE_TYPES.SUBMODEL_PORT,
+      instanceId,
+      definitionId,
+      portDirection: direction,
+      ports,
+      externalNodeIds,
+    },
+  }
+}
+
+export function buildSubmodelViewGraph(input: SubmodelViewGraphInput): SubmodelViewGraph {
+  return buildCanonicalSubmodelViewGraph(input)
 }

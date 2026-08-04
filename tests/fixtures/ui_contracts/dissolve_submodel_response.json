@@ -1,8 +1,8 @@
 {
   "status": "ok",
+  "instance_id": "pricing-instance",
+  "definition_id": "pricing-definition",
   "source_revision": "revision-dissolve-1",
-  "submodel_file_deleted": true,
-  "retained_submodel_file": null,
   "graph": {
     "nodes": [
       {

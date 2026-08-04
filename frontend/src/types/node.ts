@@ -97,14 +97,112 @@ export type PipelineEdge = Edge & {
   targetPort?: string | null
 }
 
+/** A definition-owned endpoint; never used as the parent graph handle id. */
+export interface SubmodelEndpoint {
+  nodeId: string
+  handleId: string | null
+}
+
+export interface SubmodelInputPort {
+  portId: string
+  label: string
+  targets: SubmodelEndpoint[]
+}
+
+export interface SubmodelOutputPort {
+  portId: string
+  label: string
+  source: SubmodelEndpoint
+}
+
+/** Reusable submodel graph and its public boundary contract. */
+export interface SubmodelDefinition {
+  definitionId: string
+  file: string
+  graph: { nodes: Node[]; edges: Edge[] }
+  inputPorts: SubmodelInputPort[]
+  outputPorts: SubmodelOutputPort[]
+}
+
+const isNonBlankText = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 && value.trim() === value
+
+export function isSubmodelEndpoint(value: unknown): value is SubmodelEndpoint {
+  if (typeof value !== "object" || value === null) return false
+  const endpoint = value as Partial<SubmodelEndpoint>
+  return isNonBlankText(endpoint.nodeId)
+    && (endpoint.handleId === null || isNonBlankText(endpoint.handleId))
+}
+
+export function isSubmodelInputPort(value: unknown): value is SubmodelInputPort {
+  if (typeof value !== "object" || value === null) return false
+  const port = value as Partial<SubmodelInputPort>
+  return isNonBlankText(port.portId)
+    && isNonBlankText(port.label)
+    && Array.isArray(port.targets)
+    && port.targets.length > 0
+    && port.targets.every(isSubmodelEndpoint)
+}
+
+export function isSubmodelOutputPort(value: unknown): value is SubmodelOutputPort {
+  if (typeof value !== "object" || value === null) return false
+  const port = value as Partial<SubmodelOutputPort>
+  return isNonBlankText(port.portId)
+    && isNonBlankText(port.label)
+    && isSubmodelEndpoint(port.source)
+}
+
+export function isSubmodelDefinition(
+  value: unknown,
+  expectedDefinitionId?: string,
+): value is SubmodelDefinition {
+  if (typeof value !== "object" || value === null) return false
+  const definition = value as Partial<SubmodelDefinition>
+  if (!isNonBlankText(definition.definitionId)) return false
+  if (expectedDefinitionId !== undefined && definition.definitionId !== expectedDefinitionId) return false
+  if (!isNonBlankText(definition.file)) return false
+  if (typeof definition.graph !== "object" || definition.graph === null) return false
+  if (!Array.isArray(definition.graph.nodes) || !Array.isArray(definition.graph.edges)) return false
+  if (!Array.isArray(definition.inputPorts) || !definition.inputPorts.every(isSubmodelInputPort)) return false
+  if (!Array.isArray(definition.outputPorts) || !definition.outputPorts.every(isSubmodelOutputPort)) return false
+  const portIds = [
+    ...definition.inputPorts.map((port) => port.portId),
+    ...definition.outputPorts.map((port) => port.portId),
+  ]
+  return new Set(portIds).size === portIds.length
+}
+
+export function isSubmodelInstanceConfig(value: unknown): value is SubmodelInstanceConfig {
+  if (typeof value !== "object" || value === null) return false
+  const config = value as Partial<SubmodelInstanceConfig>
+  return isNonBlankText(config.definitionId)
+    && isNonBlankText(config.alias)
+    && (config.instanceOf === undefined || isNonBlankText(config.instanceOf))
+}
+
+/**
+ * True for a submodel occurrence that anchors its shared definition — the
+ * owner — or whose identity is malformed. Such nodes are dissolved, never
+ * raw-deleted; instance copies (valid `instanceOf`) delete like any node.
+ */
+export function isProtectedSubmodelNodeData(
+  data: { nodeType?: unknown; config?: unknown },
+): boolean {
+  if (data.nodeType !== "submodel") return false
+  const config = data.config
+  return !isSubmodelInstanceConfig(config) || config.instanceOf === undefined
+}
+
+/** Per-node occurrence data. Definitions live in the graph registry, not here. */
+export interface SubmodelInstanceConfig extends Record<string, unknown> {
+  definitionId: string
+  alias: string
+  /** Present only on a read-only occurrence; points directly to the editable owner. */
+  instanceOf?: string
+}
+
 export interface SubmodelNodeData extends HauteNodeData {
-  config?: {
-    file?: string
-    childNodeIds?: string[]
-    inputPorts?: string[]
-    outputPorts?: string[]
-    outputPortLabels?: Record<string, string>
-  }
+  config: SubmodelInstanceConfig
 }
 export type SubmodelFlowNode = Node<SubmodelNodeData>
 
@@ -112,21 +210,25 @@ export interface SubmodelBoundaryPort {
   id: string
   label: string
   /** Every persisted parent edge represented by this logical input frame. */
-  parentEdges?: PipelineEdge[]
+  parentEdges: PipelineEdge[]
 }
 
 export type SubmodelBoundaryEdgeData = {
   submodelBoundary: {
     direction: "input"
-    parentEdge: PipelineEdge
+    parentEdges: PipelineEdge[]
+    portId: string
   } | {
     direction: "output"
     parentConsumerEdges: PipelineEdge[]
+    portId: string
   }
 }
 
 export interface SubmodelPortData extends Record<string, unknown> {
   label: string
+  instanceId: string
+  definitionId: string
   portDirection: "input" | "output"
   ports: SubmodelBoundaryPort[]
   externalNodeIds: string[]

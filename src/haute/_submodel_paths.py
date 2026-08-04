@@ -10,18 +10,23 @@ class SubmodelPathError(ValueError):
 
 
 class MalformedSubmodelPathError(SubmodelPathError):
-    """A route path segment cannot represent one submodel name."""
+    """A route path segment cannot represent one submodel definition id."""
 
 
 class SubmodelPathOutsideProjectError(SubmodelPathError):
     """A submodel reference resolves outside the project root."""
 
 
-def validate_submodel_name(name: str) -> None:
-    """Validate a route-level submodel name before any filesystem lookup."""
-    if not name or "\x00" in name or "/" in name or "\\" in name:
+def validate_submodel_definition_id(definition_id: str) -> None:
+    """Validate a route definition identity before registry lookup."""
+    if (
+        not definition_id
+        or "\x00" in definition_id
+        or "/" in definition_id
+        or "\\" in definition_id
+    ):
         raise MalformedSubmodelPathError(
-            "Submodel name must be one non-empty path segment.",
+            "Submodel definition id must be one non-empty path segment.",
         )
 
 
@@ -49,18 +54,3 @@ def resolve_submodel_reference(
             f"Submodel path {rel_path!r} escapes project directory"
         )
     return submodel_path, active_dir
-
-
-def resolve_submodel_by_name(
-    name: str,
-    *,
-    pipeline_dir: Path,
-    project_root: Path,
-) -> tuple[Path, Path]:
-    """Resolve ``<name>.py`` relative to the active pipeline directory."""
-    validate_submodel_name(name)
-    return resolve_submodel_reference(
-        f"modules/{name}.py",
-        pipeline_dir=pipeline_dir,
-        project_root=project_root,
-    )

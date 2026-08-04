@@ -1,216 +1,27 @@
-import type { Connection, Edge, Node } from "@xyflow/react"
-import type { PipelineEdge, SubmodelBoundaryEdgeData, SubmodelPortData } from "../types/node"
-import { normalizeDefaultTargetHandle } from "./flowHandles"
-import { buildSubmodelViewGraph } from "./submodelViewGraph"
+import type { Connection, Node } from "@xyflow/react"
+import type { PipelineEdge } from "../types/node"
+import {
+  applyCanonicalSubmodelBoundaryConnection,
+  reconcileCanonicalSubmodelBoundaryState,
+  removeCanonicalSubmodelBoundaryEdges,
+} from "./canonicalSubmodelBoundaryEditing"
 
 export interface SubmodelBoundaryEditState {
   submodelName: string
+  instanceId: string
+  definitionId: string
   viewNodes: Node[]
   viewEdges: PipelineEdge[]
   parentNodes: Node[]
   parentEdges: PipelineEdge[]
   submodels: Record<string, unknown>
 }
-export type SubmodelBoundaryEditResult = Pick<SubmodelBoundaryEditState, "submodelName" | "viewNodes" | "viewEdges" | "parentNodes" | "parentEdges" | "submodels">
 
-type Metadata = Record<string, unknown>
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value)
-const boundary = (node: Node | undefined, direction: "input" | "output") => node?.type === "submodelPort" && (node.data as unknown as SubmodelPortData).portDirection === direction
-type BoundaryEdge = Edge & { data: SubmodelBoundaryEdgeData }
-const isBoundaryEdge = (edge: Edge): edge is BoundaryEdge => isRecord(edge.data) && isRecord(edge.data.submodelBoundary) && (edge.data.submodelBoundary.direction === "input" || edge.data.submodelBoundary.direction === "output")
-const placeholderId = (name: string) => `submodel__${name}`
+export type SubmodelBoundaryEditResult = SubmodelBoundaryEditState
 
-function childGraph(state: SubmodelBoundaryEditState): { nodes: Node[]; edges: Edge[] } {
-  return {
-    nodes: state.viewNodes.filter(node => node.type !== "submodelPort"),
-    edges: state.viewEdges.filter(edge => !isBoundaryEdge(edge)),
-  }
-}
-function configFor(state: SubmodelBoundaryEditState): Record<string, unknown> {
-  const node = state.parentNodes.find(candidate => candidate.id === placeholderId(state.submodelName))
-  return isRecord(node?.data.config) ? node.data.config : {}
-}
-function reconcile(state: SubmodelBoundaryEditState, parentEdges: PipelineEdge[], inputPorts: string[], outputPorts: string[], labels: Record<string, string>): SubmodelBoundaryEditResult {
-  const children = childGraph(state)
-  const childNodeIds = children.nodes.map(node => node.id)
-  const oldConfig = configFor(state)
-  const config = { ...oldConfig, childNodeIds, inputPorts, outputPorts, outputPortLabels: labels }
-  const parentNodes = state.parentNodes.map(node => node.id === placeholderId(state.submodelName)
-    ? { ...node, data: { ...node.data, config } }
-    : node)
-  const oldMetadata = state.submodels[state.submodelName]
-  if (!isRecord(oldMetadata)) throw new Error(`Submodel ${state.submodelName} metadata is missing`)
-  const oldGraph = isRecord(oldMetadata.graph) ? oldMetadata.graph : {}
-  const metadata: Metadata = { ...oldMetadata, childNodeIds, inputPorts, outputPorts, outputPortLabels: labels, graph: { ...oldGraph, nodes: children.nodes, edges: children.edges } }
-  const submodels = { ...state.submodels, [state.submodelName]: metadata }
-  const view = buildSubmodelViewGraph({ submodelName: state.submodelName, childNodes: children.nodes, childEdges: children.edges, parentNodes, parentEdges })
-  const boundaryPositions = new Map(
-    state.viewNodes
-      .filter(node => node.type === "submodelPort")
-      .map(node => [node.id, node.position]),
-  )
-  const viewNodes = view.nodes.map(node => {
-    const position = boundaryPositions.get(node.id)
-    return position ? { ...node, position } : node
-  })
-  return { submodelName: state.submodelName, viewNodes, viewEdges: view.edges as PipelineEdge[], parentNodes, parentEdges, submodels }
-}
-function nextId(base: string, edges: readonly PipelineEdge[]): string {
-  const ids = new Set(edges.map(edge => edge.id)); let id = base; let n = 1
-  while (ids.has(id)) id = `${base}__${n++}`
-  return id
-}
-function currentPorts(state: SubmodelBoundaryEditState) {
-  const config = configFor(state)
-  return {
-    input: Array.isArray(config.inputPorts) ? config.inputPorts.filter((id): id is string => typeof id === "string") : [],
-    output: Array.isArray(config.outputPorts) ? config.outputPorts.filter((id): id is string => typeof id === "string") : [],
-    labels: isRecord(config.outputPortLabels) ? Object.fromEntries(Object.entries(config.outputPortLabels).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {},
-  }
-}
-
-export function applySubmodelBoundaryConnection(state: SubmodelBoundaryEditState, connection: Connection): SubmodelBoundaryEditResult | null {
-  const source = state.viewNodes.find(node => node.id === connection.source)
-  const target = state.viewNodes.find(node => node.id === connection.target)
-  const ports = currentPorts(state)
-  if (source && boundary(source, "input") && connection.sourceHandle) {
-    const port = (source.data as unknown as SubmodelPortData).ports.find(candidate => candidate.id === connection.sourceHandle)
-    if (!port || !connection.target || !state.viewNodes.some(node => node.id === connection.target && node.type !== "submodelPort")) return null
-    const targetPort = normalizeDefaultTargetHandle(connection.targetHandle)
-    const handle = `in__${connection.target}`
-    if (state.parentEdges.some(edge => edge.target === placeholderId(state.submodelName) && edge.targetHandle === handle && (edge.targetPort ?? null) === targetPort && port.parentEdges?.some(backing => backing.id === edge.id))) return null
-    const available = port.parentEdges?.find(edge => edge.targetHandle === null || edge.targetHandle === undefined)
-    const backing = available ?? port.parentEdges?.[0]
-    if (!backing) return null
-    const replacement: PipelineEdge = { ...backing, id: available ? backing.id : nextId(backing.id, state.parentEdges), target: placeholderId(state.submodelName), targetHandle: handle, targetPort }
-    const parentEdges = available ? state.parentEdges.map(edge => edge.id === backing.id ? replacement : edge) : [...state.parentEdges, replacement]
-    return reconcile(state, parentEdges, [...new Set([...ports.input, connection.target])], ports.output, ports.labels)
-  }
-  if (boundary(target, "output") && connection.source && state.viewNodes.some(node => node.id === connection.source && node.type !== "submodelPort")) {
-    if (ports.output.includes(connection.source)) return null
-    const label = state.viewNodes.find(node => node.id === connection.source)?.data.label
-    return reconcile(state, state.parentEdges, ports.input, [...ports.output, connection.source], { ...ports.labels, [connection.source]: typeof label === "string" && label.length > 0 ? label : connection.source })
-  }
-  return null
-}
-
-export function removeSubmodelBoundaryEdges(state: SubmodelBoundaryEditState, edgeIds: string[]): SubmodelBoundaryEditResult | null {
-  const wanted = new Set(edgeIds)
-  const selected = state.viewEdges.filter(edge => wanted.has(edge.id) && isBoundaryEdge(edge))
-  if (selected.length === 0) return null
-  let parentEdges = [...state.parentEdges]
-  let { input, output, labels } = currentPorts(state)
-  for (const edge of selected) {
-    const info = (edge.data as SubmodelBoundaryEdgeData).submodelBoundary
-    if (info.direction === "input") {
-      const backing = info.parentEdge
-      // Evaluate survivors against the running list, not the entry snapshot:
-      // removing every mapping of one frame in a single batch must still end
-      // with the last removal converting its backing edge to a draft.
-      const logical = parentEdges.filter(candidate => candidate.target === placeholderId(state.submodelName) && candidate.source === backing.source && (candidate.sourceHandle ?? null) === (backing.sourceHandle ?? null))
-      const otherMappings = logical.filter(candidate => candidate.id !== backing.id && candidate.targetHandle !== null && candidate.targetHandle !== undefined)
-      if (otherMappings.length === 0) parentEdges = parentEdges.map(candidate => candidate.id === backing.id ? { ...candidate, targetHandle: null, targetPort: null } : candidate)
-      else parentEdges = parentEdges.filter(candidate => candidate.id !== backing.id)
-      const childId = edge.target
-      if (!parentEdges.some(candidate => candidate.target === placeholderId(state.submodelName) && candidate.targetHandle === `in__${childId}`)) input = input.filter(id => id !== childId)
-    } else {
-      const childId = edge.source
-      parentEdges = parentEdges.filter(candidate => !(candidate.source === placeholderId(state.submodelName) && candidate.sourceHandle === `out__${childId}`))
-      output = output.filter(id => id !== childId)
-      const { [childId]: _removed, ...rest } = labels
-      labels = rest
-    }
-  }
-  return reconcile(state, parentEdges, input, output, labels)
-}
-
-
-
-
-/**
- * Rebuild persisted submodel state from a visible drilled-in snapshot.
- *
- * Confirmation-based: a persisted mapped inbound edge survives only while a
- * drilled mapping edge still represents it, so deletions that bypass the
- * boundary gesture handlers (keyboard Delete, node-panel delete) cannot
- * resurrect a mapping from stale card metadata. An unrepresented mapping —
- * including one that was already stale when the view opened — returns to the
- * available null-handle draft, or is dropped when its logical frame keeps
- * another surviving edge, mirroring `removeSubmodelBoundaryEdges`. Retained
- * parent edges keep their original list positions. Returns `null` when the
- * view lacks either composite card: that graph is not a drilled projection
- * (e.g. history restored a pre-drill snapshot) and must not be reconciled as
- * if the parent canvas were the child graph.
- */
-export function reconcileSubmodelBoundaryState(state: SubmodelBoundaryEditState): SubmodelBoundaryEditResult | null {
-  const inputNode = state.viewNodes.find(node => boundary(node, "input"))
-  const outputNode = state.viewNodes.find(node => boundary(node, "output"))
-  if (!inputNode || !outputNode) return null
-  const placeholder = placeholderId(state.submodelName)
-  const childIds = new Set(state.viewNodes.filter(node => node.type !== "submodelPort").map(node => node.id))
-
-  const inputEdges = state.viewEdges.filter(edge => edge.source === inputNode.id && isBoundaryEdge(edge) && childIds.has(edge.target))
-  const outputEdges = state.viewEdges.filter(edge => edge.target === outputNode.id && isBoundaryEdge(edge) && childIds.has(edge.source))
-  const confirmedInput = new Map<string, PipelineEdge>()
-  for (const edge of inputEdges) {
-    const info = (edge.data as SubmodelBoundaryEdgeData).submodelBoundary
-    if (info.direction === "input") confirmedInput.set(info.parentEdge.id, info.parentEdge)
-  }
-  const confirmedConsumers = new Map<string, PipelineEdge>()
-  for (const edge of outputEdges) {
-    const info = (edge.data as SubmodelBoundaryEdgeData).submodelBoundary
-    if (info.direction === "output") for (const consumer of info.parentConsumerEdges) confirmedConsumers.set(consumer.id, consumer)
-  }
-
-  const isInbound = (edge: PipelineEdge) => edge.target === placeholder && (edge.targetHandle === null || edge.targetHandle === undefined || edge.targetHandle.startsWith("in__"))
-  const isOutbound = (edge: PipelineEdge) => edge.source === placeholder && typeof edge.sourceHandle === "string" && edge.sourceHandle.startsWith("out__")
-  const frameKey = (edge: PipelineEdge) => JSON.stringify([edge.source, edge.sourceHandle ?? null])
-
-  // A logical frame stays represented by a confirmed mapping or a draft; only
-  // then may an unrepresented mapping be dropped instead of draft-converted.
-  const framesWithSurvivor = new Set<string>()
-  for (const edge of state.parentEdges) {
-    if (!isInbound(edge)) continue
-    if (confirmedInput.has(edge.id) || edge.targetHandle === null || edge.targetHandle === undefined) framesWithSurvivor.add(frameKey(edge))
-  }
-
-  const parentEdges: PipelineEdge[] = []
-  for (const edge of state.parentEdges) {
-    if (isInbound(edge)) {
-      const confirmed = confirmedInput.get(edge.id)
-      if (confirmed) {
-        parentEdges.push(confirmed)
-        confirmedInput.delete(edge.id)
-        continue
-      }
-      if (edge.targetHandle === null || edge.targetHandle === undefined) {
-        parentEdges.push(edge)
-        continue
-      }
-      if (framesWithSurvivor.has(frameKey(edge))) continue
-      framesWithSurvivor.add(frameKey(edge))
-      parentEdges.push({ ...edge, targetHandle: null, targetPort: null })
-      continue
-    }
-    if (isOutbound(edge)) {
-      const confirmed = confirmedConsumers.get(edge.id)
-      if (confirmed) {
-        parentEdges.push(confirmed)
-        confirmedConsumers.delete(edge.id)
-      }
-      continue
-    }
-    parentEdges.push(edge)
-  }
-  // Backing edges the view still represents but the persisted list lost are
-  // re-appended so undo/redo of a drilled edit cannot drop a live mapping.
-  parentEdges.push(...confirmedInput.values(), ...confirmedConsumers.values())
-
-  const inputPorts = [...new Set(inputEdges.map(edge => edge.target))]
-  const outputPorts = [...new Set(outputEdges.map(edge => edge.source))]
-  const labels = Object.fromEntries(outputPorts.map(id => {
-    const label = state.viewNodes.find(node => node.id === id)?.data.label
-    return [id, typeof label === "string" && label.length > 0 ? label : id]
-  }))
-  return reconcile(state, parentEdges, inputPorts, outputPorts, labels)
-}
+export const applySubmodelBoundaryConnection = (state: SubmodelBoundaryEditState, connection: Connection) =>
+  applyCanonicalSubmodelBoundaryConnection(state, connection)
+export const removeSubmodelBoundaryEdges = (state: SubmodelBoundaryEditState, edgeIds: string[]) =>
+  removeCanonicalSubmodelBoundaryEdges(state, edgeIds)
+export const reconcileSubmodelBoundaryState = (state: SubmodelBoundaryEditState) =>
+  reconcileCanonicalSubmodelBoundaryState(state)

@@ -1046,23 +1046,46 @@ export function parseSubmodelGraphResponse(value: unknown): SubmodelGraphRespons
   const obj = expectPlainObject("parseSubmodelGraphResponse", value)
   return {
     status: optionalString("parseSubmodelGraphResponse", obj, "status", "ok"),
-    submodel_name: optionalString("parseSubmodelGraphResponse", obj, "submodel_name"),
+    submodel_name: expectNonBlankString(
+      "parseSubmodelGraphResponse",
+      obj.submodel_name,
+      "submodel_name",
+    ),
     graph: parseNestedPipelineResponse("parseSubmodelGraphResponse", obj, "graph"),
     submodel_file: expectNonBlankString("parseSubmodelGraphResponse", obj.submodel_file, "submodel_file"),
+    definition_id: expectNonBlankString(
+      "parseSubmodelGraphResponse",
+      obj.definition_id,
+      "definition_id",
+    ),
   }
 }
 
 export function parseDissolveSubmodelResponse(value: unknown): DissolveSubmodelResponse {
   const obj = expectPlainObject("parseDissolveSubmodelResponse", value)
+  for (const removedField of [
+    "submodel_file_deleted",
+    "retained_submodel_file",
+  ] as const) {
+    if (Object.hasOwn(obj, removedField)) {
+      throw new Error(
+        `parseDissolveSubmodelResponse: field \`${removedField}\` is no longer supported`,
+      )
+    }
+  }
   return {
     status: optionalString("parseDissolveSubmodelResponse", obj, "status", "ok"),
     graph: parseNestedPipelineResponse("parseDissolveSubmodelResponse", obj, "graph"),
     source_revision: expectNonBlankString("parseDissolveSubmodelResponse", obj.source_revision, "source_revision"),
-    submodel_file_deleted: expectBoolean("parseDissolveSubmodelResponse", obj.submodel_file_deleted, "submodel_file_deleted"),
-    retained_submodel_file: expectNullableString(
+    instance_id: expectNonBlankString(
       "parseDissolveSubmodelResponse",
-      obj.retained_submodel_file,
-      "retained_submodel_file",
+      obj.instance_id,
+      "instance_id",
+    ),
+    definition_id: expectNonBlankString(
+      "parseDissolveSubmodelResponse",
+      obj.definition_id,
+      "definition_id",
     ),
   }
 }

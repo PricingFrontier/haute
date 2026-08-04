@@ -608,7 +608,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/DissolveSubmodelResponse"},
         },
     },
-    "/api/submodel/{name}": {
+    "/api/submodel/{definition_id}": {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/SubmodelGraphResponse"},

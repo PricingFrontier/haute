@@ -1335,7 +1335,15 @@ class CreateSubmodelResponse(BaseModel):
 
 
 class DissolveSubmodelRequest(BaseModel):
-    submodel_name: str
+    instance_id: str
+
+    @field_validator("instance_id")
+    @classmethod
+    def _validate_target_identity(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("Dissolve target identity must be non-empty and unpadded.")
+        return value
+
     graph: Graph
     preamble: str = ""
     preserved_blocks: list[str] = Field(default_factory=list)
@@ -1346,16 +1354,19 @@ class DissolveSubmodelRequest(BaseModel):
 
 
 class DissolveSubmodelResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: str = "ok"
     graph: Graph = Field(default_factory=Graph)
     source_revision: RevisionToken
-    submodel_file_deleted: bool
-    retained_submodel_file: str | None
+    instance_id: str
+    definition_id: str
 
 
 class SubmodelGraphResponse(BaseModel):
     status: str = "ok"
-    submodel_name: str = ""
+    submodel_name: str
+    definition_id: str
     submodel_file: str
     graph: Graph = Field(default_factory=Graph)
 

@@ -55,10 +55,29 @@ vi.mock("../../stores/useUIStore.ts", () => {
   return { default: useUIStore }
 })
 
-// Wave 7E: dirty tracking moved from useUIStore to useGraphStore.  The
-// hook only reads markSaved from it; stub a no-op mock.
+// The hook reads dirty-state from useGraphStore and applies incoming graphs
+// through loadGraphSnapshot; the mock must provide both or every
+// graph_update rolls back before reaching the dialog cleanup under test.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { nodes: [], edges: [], submodels: {}, preamble: "", markSaved: vi.fn() }
+  const store = {
+    dirty: false,
+    nodes: [] as unknown[],
+    edges: [] as unknown[],
+    submodels: {} as Record<string, unknown>,
+    preamble: "",
+    markSaved: vi.fn(),
+    loadGraphSnapshot: vi.fn((snapshot: {
+      nodes: unknown[]
+      edges: unknown[]
+      preamble: string
+      submodels: Record<string, unknown>
+    }) => {
+      store.nodes = snapshot.nodes
+      store.edges = snapshot.edges
+      store.preamble = snapshot.preamble
+      store.submodels = snapshot.submodels
+    }),
+  }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),

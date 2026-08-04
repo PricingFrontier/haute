@@ -1,16 +1,17 @@
 import { memo, useEffect } from "react"
-import {
-  Handle,
-  Position,
-  useUpdateNodeInternals,
-  type NodeProps,
-} from "@xyflow/react"
+import { useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { Package } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
-import type { SubmodelFlowNode } from "../types/node"
-import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  type SubmodelFlowNode,
+  type SubmodelInputPort,
+  type SubmodelOutputPort,
+} from "../types/node"
 import FramePortRows from "./FramePortRows"
+import useGraphStore from "../stores/useGraphStore"
 
 const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
 const headerInset = {
@@ -31,28 +32,25 @@ function SubmodelNode({
   data: nodeData,
   selected,
 }: NodeProps<SubmodelFlowNode>) {
-  const config = nodeData.config || {}
-  const inputPorts = config.inputPorts || []
-  const outputPorts = config.outputPorts || []
-  const outputPortLabels = config.outputPortLabels || {}
-  const outputFrames = outputPorts.map((childId) => {
-    const configuredLabel = outputPortLabels[childId]
-    return {
-      id: `out__${childId}`,
-      label:
-        typeof configuredLabel === "string" && configuredLabel.length > 0
-          ? configuredLabel
-          : childId,
-    }
-  })
-  const childCount = (config.childNodeIds || []).length
+  const config = nodeData.config
+  const canonicalIdentityValid = isSubmodelInstanceConfig(config)
+  const definitionId = canonicalIdentityValid ? config.definitionId : ""
+  const definition = useGraphStore((state) => state.submodels[definitionId])
+  const canonicalDefinition = canonicalIdentityValid && isSubmodelDefinition(definition, definitionId)
+    ? definition
+    : undefined
+  const definitionInvalid = canonicalDefinition === undefined
+  const inputFrames = canonicalDefinition?.inputPorts.map(toInputFrame) ?? []
+  const outputFrames = canonicalDefinition?.outputPorts.map(toOutputFrame) ?? []
+  const childCount = canonicalDefinition?.graph.nodes.length ?? 0
+  const hasBody = inputFrames.length > 0 || outputFrames.length > 0 || definitionInvalid
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
   const updateNodeInternals = useUpdateNodeInternals()
   const portSignature = JSON.stringify([
-    inputPorts,
+    inputFrames.map((frame) => frame.id),
     outputFrames.map((frame) => frame.id),
   ])
 
@@ -79,36 +77,12 @@ function SubmodelNode({
           : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
       }}
     >
-      {inputPorts.map((childId) => (
-        <Handle
-          key={`in__${childId}`}
-          id={`in__${childId}`}
-          type="target"
-          position={Position.Left}
-          isConnectable={false}
-          style={{
-            top: "50%",
-            width: 0,
-            height: 0,
-            opacity: 0,
-            pointerEvents: "none",
-          }}
-        />
-      ))}
-      <Handle
-        type="target"
-        position={Position.Left}
-        id={DEFAULT_TARGET_HANDLE}
-        style={{ background: accent }}
-      />
-
       <div
         data-testid="submodel-header"
         className="flex items-center gap-2 px-3 py-1.5"
         style={{
           background: `${accent}30`,
-          borderRadius:
-            outputFrames.length > 0 ? "10.5px 10.5px 0 0" : "10.5px",
+          borderRadius: hasBody ? "10.5px 10.5px 0 0" : "10.5px",
           ...headerInset,
         }}
       >
@@ -133,18 +107,46 @@ function SubmodelNode({
         </span>
       </div>
 
-      {outputFrames.length > 0 && (
+      {hasBody && (
         <div data-testid="submodel-body" className="px-3 py-2" style={bodyStyle}>
-          <FramePortRows
-            ports={outputFrames}
-            direction="source"
-            accent={accent}
-            testIdPrefix="submodel-output"
-          />
+          {definitionInvalid && (
+            <div
+              role="alert"
+              data-testid="submodel-definition-error"
+              className="text-[11px] font-semibold"
+              style={{ color: "var(--danger)" }}
+            >
+              Definition unavailable or invalid
+            </div>
+          )}
+          {inputFrames.length > 0 && (
+            <FramePortRows
+              ports={inputFrames}
+              direction="target"
+              accent={accent}
+              testIdPrefix="submodel-input"
+            />
+          )}
+          {outputFrames.length > 0 && (
+            <FramePortRows
+              ports={outputFrames}
+              direction="source"
+              accent={accent}
+              testIdPrefix="submodel-output"
+            />
+          )}
         </div>
       )}
     </div>
   )
+}
+
+function toInputFrame(port: SubmodelInputPort) {
+  return { id: `in__${port.portId}`, label: port.label, parentEdges: [] }
+}
+
+function toOutputFrame(port: SubmodelOutputPort) {
+  return { id: `out__${port.portId}`, label: port.label, parentEdges: [] }
 }
 
 export default memo(SubmodelNode)

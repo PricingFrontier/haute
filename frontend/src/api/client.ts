@@ -794,19 +794,19 @@ export function createSubmodel(
 }
 
 export function loadSubmodel(
-  name: string,
+  definitionId: string,
   parentSourceFile: string,
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelGraphResponse> {
   return request<unknown>(
-    `/api/submodel/${encodeURIComponent(name)}?source_file=${encodeURIComponent(parentSourceFile)}`,
+    `/api/submodel/${encodeURIComponent(definitionId)}?source_file=${encodeURIComponent(parentSourceFile)}`,
     options,
   ).then(parseSubmodelGraphResponse)
 }
 
 export function dissolveSubmodel(
   payload: {
-    submodel_name: string
+    instance_id: string
     graph: GraphPayload
     preamble: string
     source_file: string

@@ -552,7 +552,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
               </div>
             )}
             <FramePortRows
-              ports={frameLabels.map((label) => ({ id: label, label }))}
+              ports={frameLabels.map((label) => ({ id: label, label, parentEdges: [] }))}
               direction="source"
               accent={accent}
               testIdPrefix="api-input"

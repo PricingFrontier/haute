@@ -27,7 +27,14 @@ from pydantic import BaseModel, ValidationError
 from haute._config_io import NODE_TYPE_TO_FOLDER
 from haute._config_validation import VALID_KEYS
 from haute._graph_utils import _edge_id, _sanitize_func_name
-from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    SubmodelDefinition,
+)
 from haute.assistant._catalog import capability_manifest
 from haute.assistant._wire_ops import (
     AddEdgeOp,
@@ -69,44 +76,11 @@ def _mapping(value: object) -> Mapping[str, Any] | None:
     return value if isinstance(value, Mapping) else None
 
 
-def _nested_submodel_node_ids(submodels: object) -> set[str]:
-    """Collect ids from graphs nested below ``PipelineGraph.submodels``."""
-
-    result: set[str] = set()
-
-    def walk(value: object) -> None:
-        mapped = _mapping(value)
-        if mapped is None:
-            if isinstance(value, (list, tuple)):
-                for item in value:
-                    walk(item)
-            return
-
-        raw_nodes = mapped.get("nodes")
-        if isinstance(raw_nodes, (list, tuple)):
-            for raw_node in raw_nodes:
-                node = _mapping(raw_node)
-                if node is not None and isinstance(node.get("id"), str):
-                    result.add(node["id"])
-
-        raw_child_ids = mapped.get("childNodeIds")
-        if isinstance(raw_child_ids, (list, tuple)):
-            result.update(child_id for child_id in raw_child_ids if isinstance(child_id, str))
-
-        if "graph" in mapped:
-            walk(mapped["graph"])
-        if "submodels" in mapped:
-            walk(mapped["submodels"])
-
-        # A submodels mapping is normally keyed by submodel name and contains
-        # a ``graph`` field.  Walk other containers as well so the check also
-        # handles a directly embedded graph and recursively nested models.
-        if "nodes" not in mapped and "graph" not in mapped and "submodels" not in mapped:
-            for item in mapped.values():
-                walk(item)
-
-    walk(submodels)
-    return result
+def _nested_submodel_node_ids(
+    submodels: dict[str, SubmodelDefinition] | None,
+) -> set[str]:
+    """Collect child ids owned by canonical submodel definitions."""
+    return {node.id for definition in (submodels or {}).values() for node in definition.graph.nodes}
 
 
 def _node_index(graph: PipelineGraph, node_id: str) -> int | None:

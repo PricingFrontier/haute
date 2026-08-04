@@ -943,7 +943,7 @@ class TestPathTraversalInPayloads:
         where the submodel_name is used to construct file paths.
         """
         body = {
-            "submodel_name": "..\\..\\etc\\passwd",
+            "instance_id": "..\\..\\etc\\passwd",
             "graph": _minimal_graph_dict(),
             "source_file": "pipeline.py",
             "base_revision": "revision-test",

@@ -1045,38 +1045,87 @@ class TestPipelineEdgeCases:
 
 class TestSubmodel:
     def test_basic_creation(self):
-        s = Submodel("scoring", description="score sub")
+        s = Submodel(
+            "scoring",
+            description="score sub",
+            definition_id="definition_scoring",
+            input_ports=[
+                {
+                    "portId": "quotes",
+                    "label": "Quotes",
+                    "targets": [{"nodeId": "transform"}],
+                }
+            ],
+            output_ports=[],
+        )
         assert s.name == "scoring"
         assert s.description == "score sub"
+        assert s.definition_id == "definition_scoring"
+        assert s.input_ports[0].port_id == "quotes"
+        assert s.output_ports == []
         assert s.nodes == []
         assert s.edges == []
 
-    def test_declared_outputs_are_ordered_and_copy_on_read(self):
-        s = Submodel("scoring", outputs=["score", "audit"])
+    def test_submodel_ports_are_defensive_copies(self):
+        s = Submodel(
+            "scoring",
+            definition_id="definition_scoring",
+            input_ports=[],
+            output_ports=[
+                {
+                    "portId": "score",
+                    "label": "Score",
+                    "source": {"nodeId": "score_node"},
+                }
+            ],
+        )
+        returned = s.output_ports
+        returned.clear()
+        assert [port.port_id for port in s.output_ports] == ["score"]
 
-        assert s.outputs == ["score", "audit"]
-        returned = s.outputs
-        returned.append("mutated")
-        assert s.outputs == ["score", "audit"]
-
-    @pytest.mark.parametrize(
-        "outputs",
-        [["score", "score"], [""], ["score", 1], "score"],
-    )
-    def test_invalid_declared_outputs_fail_loudly(self, outputs):
-        with pytest.raises((TypeError, ValueError), match="output"):
-            Submodel("scoring", outputs=outputs)
-
-    def test_submodel_chaining(self):
+    def test_submodel_chaining_records_canonical_occurrences(self):
         p = Pipeline("main")
-        result = p.submodel("a.py").submodel("b.py")
+        result = p.submodel(
+            "a.py", definition_id="definition_a", instance_id="instance_a", alias="a"
+        ).submodel("b.py", definition_id="definition_b", instance_id="instance_b", alias="b")
         assert result is p
         assert p.submodel_files == ["a.py", "b.py"]
+        assert [
+            (item.definition_id, item.instance_id, item.alias) for item in p.submodel_registrations
+        ] == [
+            ("definition_a", "instance_a", "a"),
+            ("definition_b", "instance_b", "b"),
+        ]
 
-    def test_submodel_files_property(self):
+    def test_reusable_alias_cannot_shadow_node_registered_first(self):
         p = Pipeline("main")
-        p.submodel("one.py").submodel("two.py").submodel("three.py")
-        assert p.submodel_files == ["one.py", "two.py", "three.py"]
+
+        @p.polars
+        def scoring(df):
+            return df
+
+        with pytest.raises(ValueError, match="alias.*node"):
+            p.submodel(
+                "modules/scoring.py",
+                definition_id="definition_scoring",
+                instance_id="instance_scoring",
+                alias="scoring",
+            )
+
+    def test_node_cannot_shadow_reusable_alias_registered_first(self):
+        p = Pipeline("main")
+        p.submodel(
+            "modules/scoring.py",
+            definition_id="definition_scoring",
+            instance_id="instance_scoring",
+            alias="scoring",
+        )
+
+        with pytest.raises(ValueError, match="node name.*submodel"):
+
+            @p.polars
+            def scoring(df):
+                return df
 
 
 # ---------------------------------------------------------------------------

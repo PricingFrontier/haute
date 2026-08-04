@@ -1328,8 +1328,45 @@ describe("useEdgeHandlers", () => {
       nodeId: "n1",
       nodeLabel: "Test Node",
       isSubmodel: false,
+      isSubmodelCopy: false,
       isSingleton: false,
     })
+  })
+
+  it("onNodeContextMenu flags a submodel instance copy as deletable", () => {
+    const params = makeParams()
+    const owner = {
+      id: "instance_owner",
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    } as unknown as Node
+    const copy = {
+      id: "instance_copy",
+      data: {
+        label: "Scoring instance",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: "instance_owner",
+        },
+      },
+    } as unknown as Node
+    const { result } = renderHook(() => useEdgeHandlers(params))
+    const event = { preventDefault: vi.fn(), clientX: 0, clientY: 0 } as unknown as React.MouseEvent
+
+    act(() => { result.current.onNodeContextMenu(event, owner) })
+    expect(params.setContextMenu).toHaveBeenLastCalledWith(
+      expect.objectContaining({ isSubmodel: true, isSubmodelCopy: false }),
+    )
+
+    act(() => { result.current.onNodeContextMenu(event, copy) })
+    expect(params.setContextMenu).toHaveBeenLastCalledWith(
+      expect.objectContaining({ isSubmodel: true, isSubmodelCopy: true }),
+    )
   })
 
   it("onNodeContextMenu marks apiInput nodes as singleton", () => {

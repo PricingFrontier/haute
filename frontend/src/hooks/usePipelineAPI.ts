@@ -20,6 +20,10 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { apiInputFrameLabels } from "../utils/apiInputPorts"
+import {
+  runtimeNodeIdForVisibleNode,
+  type DrilledOccurrenceIdentity,
+} from "../utils/submodelRuntimeTarget"
 import { ensureInputSnapshots } from "./ensureInputSnapshots"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
@@ -27,6 +31,7 @@ interface PipelineAPIParams {
   selectedNode: Node | null
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[] }>
   parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
+  activeSubmodelIdentity: DrilledOccurrenceIdentity | null
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[]) => void
@@ -245,7 +250,7 @@ function previewErrorDetail(err: unknown): string {
 
 export default function usePipelineAPI({
   selectedNode,
-  graphRef, parentGraphRef, submodelsRef,
+  graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
   setNodesRaw, setCurrentSourceFile,
   preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   nodeIdCounter: nodeIdCounterRef,
@@ -532,7 +537,11 @@ export default function usePipelineAPI({
           const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
           previewNode({
             graph: cascadeGraph,
-            nodeId,
+            nodeId: runtimeNodeIdForVisibleNode(
+              graphRef.current.nodes,
+              nodeId,
+              activeSubmodelIdentity,
+            ),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: dsNode ? previewColumnNamesForNode(dsNode) : undefined,
@@ -588,7 +597,11 @@ export default function usePipelineAPI({
       }
       return previewNode({
         graph,
-        nodeId: node.id,
+        nodeId: runtimeNodeIdForVisibleNode(
+          graphRef.current.nodes,
+          node.id,
+          activeSubmodelIdentity,
+        ),
         rowLimit: snapshotRowLimit,
         source: snapshotSource,
         requestedPreviewColumns: previewColumnNamesForNode(node),
@@ -675,7 +688,7 @@ export default function usePipelineAPI({
           }
         })
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
@@ -806,7 +819,11 @@ export default function usePipelineAPI({
           activeCount += 1
           previewNode({
             graph,
-            nodeId: upstream.id,
+            nodeId: runtimeNodeIdForVisibleNode(
+              graphRef.current.nodes,
+              upstream.id,
+              activeSubmodelIdentity,
+            ),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream),
@@ -862,7 +879,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
@@ -892,7 +909,11 @@ export default function usePipelineAPI({
         }
         return previewNode({
           graph,
-          nodeId: node.id,
+          nodeId: runtimeNodeIdForVisibleNode(
+            graphRef.current.nodes,
+            node.id,
+            activeSubmodelIdentity,
+          ),
           rowLimit: rowLimitRef.current,
           source: activeSourceRef.current,
           portLabel,
@@ -918,7 +939,7 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, addToast, ensureSnapshotsForNodes])
 
   // Returns true when the save succeeded, false on failure — callers that
   // chain follow-on work (e.g. save & commit) await this so they only proceed

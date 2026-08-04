@@ -1,732 +1,256 @@
-"""Tests for haute._flatten — graph flattening of submodel nodes."""
+"""Edge-case coverage for canonical submodel flattening."""
 
 from __future__ import annotations
 
 import pytest
 
 from haute._flatten import flatten_graph
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute._submodel_instances import qualified_runtime_node_id
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.errors import ParseError
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
-
-def _node(nid: str, ntype: str = "polars", config: dict | None = None) -> GraphNode:
+def _node(
+    node_id: str,
+    *,
+    node_type: NodeType = NodeType.POLARS,
+    config: dict[str, object] | None = None,
+) -> GraphNode:
     return GraphNode(
-        id=nid,
-        data=NodeData(label=nid, nodeType=ntype, config=config or {}),
+        id=node_id,
+        data=NodeData(
+            label=node_id,
+            nodeType=node_type,
+            config=config or {},
+        ),
     )
 
 
 def _edge(
-    src: str,
-    tgt: str,
+    edge_id: str,
+    source: str,
+    target: str,
     *,
     source_handle: str | None = None,
     target_handle: str | None = None,
 ) -> GraphEdge:
     return GraphEdge(
-        id=f"e_{src}_{tgt}",
-        source=src,
-        target=tgt,
+        id=edge_id,
+        source=source,
+        target=target,
         sourceHandle=source_handle,
         targetHandle=target_handle,
     )
 
 
-# ---------------------------------------------------------------------------
-# No submodels — graph returned unchanged
-# ---------------------------------------------------------------------------
+def _definition_graph(
+    *,
+    duplicate_internal_edge: bool = False,
+    preamble: str | None = None,
+    preserved_blocks: list[str] | None = None,
+) -> PipelineGraph:
+    edges = [_edge("internal", "child_input", "child_output")]
+    if duplicate_internal_edge:
+        edges.append(_edge("internal_duplicate", "child_input", "child_output"))
+    return PipelineGraph(
+        nodes=[_node("child_input"), _node("child_output")],
+        edges=edges,
+        preamble=preamble,
+        preserved_blocks=preserved_blocks or [],
+    )
 
 
-class TestNoSubmodels:
-    def test_no_submodels_returns_same_graph(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("a"), _node("b")],
-            edges=[_edge("a", "b")],
-            submodels=None,
-        )
-        result = flatten_graph(graph)
-        assert result is graph
-
-    def test_empty_submodels_dict_returns_same_graph(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("a")],
-            edges=[],
-            submodels={},
-        )
-        result = flatten_graph(graph)
-        assert result is graph
-
-
-# ---------------------------------------------------------------------------
-# Target name not in submodels — graph returned unchanged
-# ---------------------------------------------------------------------------
-
-
-class TestTargetNameNotInSubmodels:
-    def test_target_name_not_matching_returns_same_graph(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("a"), _node("submodel__freq")],
-            edges=[],
-            submodels={"freq": {"graph": {"nodes": [], "edges": []}}},
-        )
-        result = flatten_graph(graph, target_name="nonexistent")
-        assert result is graph
+def _definition_payload(
+    *,
+    graph: PipelineGraph | None = None,
+) -> dict[str, object]:
+    return {
+        "definitionId": "definition_pricing",
+        "file": "modules/pricing.py",
+        "graph": graph or _definition_graph(),
+        "inputPorts": [
+            {
+                "portId": "records",
+                "label": "Records",
+                "targets": [{"nodeId": "child_input", "handleId": None}],
+            }
+        ],
+        "outputPorts": [
+            {
+                "portId": "priced",
+                "label": "Priced",
+                "source": {"nodeId": "child_output", "handleId": None},
+            }
+        ],
+    }
 
 
-# ---------------------------------------------------------------------------
-# Flatten all submodels (target_name=None)
-# ---------------------------------------------------------------------------
+def _occurrence(
+    instance_id: str = "instance_primary",
+    alias: str = "pricing",
+    *,
+    instance_of: str | None = None,
+) -> GraphNode:
+    config: dict[str, object] = {"definitionId": "definition_pricing", "alias": alias}
+    if instance_of is not None:
+        config["instanceOf"] = instance_of
+    return _node(
+        instance_id,
+        node_type=NodeType.SUBMODEL,
+        config=config,
+    )
 
 
-class TestFlattenAll:
-    def test_single_submodel_flattened(self) -> None:
-        """A single submodel with one child node is dissolved."""
-        graph = PipelineGraph(
-            nodes=[
-                _node("data_src"),
-                _node("submodel__freq"),
-                _node("output"),
-            ],
-            edges=[
-                _edge("data_src", "submodel__freq", target_handle="in__freq_child"),
-                _edge("submodel__freq", "output", source_handle="out__freq_child"),
-            ],
-            submodels={
-                "freq": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "freq_child",
-                                "data": {"label": "freq_child", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph)
-
-        node_ids = {n.id for n in result.nodes}
-        # Submodel placeholder removed, child node inlined
-        assert "submodel__freq" not in node_ids
-        assert "freq_child" in node_ids
-        assert "data_src" in node_ids
-        assert "output" in node_ids
-
-        # Edges rewired: data_src -> freq_child -> output
-        edge_pairs = [(e.source, e.target) for e in result.edges]
-        assert ("data_src", "freq_child") in edge_pairs
-        assert ("freq_child", "output") in edge_pairs
-
-        # Submodels cleared
-        assert result.submodels is None
-
-    def test_multiple_submodels_flattened(self) -> None:
-        """Two submodels are both dissolved when target_name is None."""
-        graph = PipelineGraph(
-            nodes=[
-                _node("data"),
-                _node("submodel__alpha"),
-                _node("submodel__beta"),
-                _node("out"),
-            ],
-            edges=[
-                _edge("data", "submodel__alpha", target_handle="in__alpha_child"),
-                _edge(
-                    "submodel__alpha",
-                    "submodel__beta",
-                    source_handle="out__alpha_child",
-                    target_handle="in__beta_child",
-                ),
-                _edge("submodel__beta", "out", source_handle="out__beta_child"),
-            ],
-            submodels={
-                "alpha": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "alpha_child",
-                                "data": {
-                                    "label": "alpha_child",
-                                    "nodeType": "polars",
-                                    "config": {},
-                                },
-                            },
-                        ],
-                        "edges": [],
-                    }
-                },
-                "beta": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "beta_child",
-                                "data": {"label": "beta_child", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [],
-                    }
-                },
-            },
-        )
-        result = flatten_graph(graph)
-
-        node_ids = {n.id for n in result.nodes}
-        assert "submodel__alpha" not in node_ids
-        assert "submodel__beta" not in node_ids
-        assert "alpha_child" in node_ids
-        assert "beta_child" in node_ids
-
-        edge_pairs = [(e.source, e.target) for e in result.edges]
-        assert ("data", "alpha_child") in edge_pairs
-        assert ("alpha_child", "beta_child") in edge_pairs
-        assert ("beta_child", "out") in edge_pairs
-
-        assert result.submodels is None
-
-
-# ---------------------------------------------------------------------------
-# Flatten targeted submodel only
-# ---------------------------------------------------------------------------
-
-
-class TestFlattenTargeted:
-    def test_only_targeted_submodel_flattened(self) -> None:
-        """When target_name is given, only that submodel is dissolved."""
-        graph = PipelineGraph(
-            nodes=[
-                _node("data"),
-                _node("submodel__alpha"),
-                _node("submodel__beta"),
-                _node("out"),
-            ],
-            edges=[
-                _edge("data", "submodel__alpha", target_handle="in__alpha_child"),
-                _edge("submodel__alpha", "out", source_handle="out__alpha_child"),
-                _edge("data", "submodel__beta"),
-            ],
-            submodels={
-                "alpha": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "alpha_child",
-                                "data": {
-                                    "label": "alpha_child",
-                                    "nodeType": "polars",
-                                    "config": {},
-                                },
-                            },
-                        ],
-                        "edges": [],
-                    }
-                },
-                "beta": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "beta_child",
-                                "data": {"label": "beta_child", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [],
-                    }
-                },
-            },
-        )
-        result = flatten_graph(graph, target_name="alpha")
-
-        node_ids = {n.id for n in result.nodes}
-        # alpha dissolved
-        assert "submodel__alpha" not in node_ids
-        assert "alpha_child" in node_ids
-        # beta preserved
-        assert "submodel__beta" in node_ids
-        assert "beta_child" not in node_ids
-
-        # remaining_submodels should only have beta
-        assert result.submodels is not None
-        assert "beta" in result.submodels
-        assert "alpha" not in result.submodels
-
-
-# ---------------------------------------------------------------------------
-# Edge rewiring details
-# ---------------------------------------------------------------------------
-
-
-class TestEdgeRewiring:
-    def test_source_handle_rewired(self) -> None:
-        """out__child_node on a submodel edge rewires source to child_node."""
-        graph = PipelineGraph(
-            nodes=[
-                _node("submodel__sm"),
-                _node("downstream"),
-            ],
-            edges=[
-                _edge("submodel__sm", "downstream", source_handle="out__inner"),
-            ],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "inner",
-                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph)
-        edge_pairs = [(e.source, e.target) for e in result.edges]
-        assert ("inner", "downstream") in edge_pairs
-        # sourceHandle should be cleared after rewiring
-        rewired = [e for e in result.edges if e.source == "inner" and e.target == "downstream"]
-        assert rewired[0].sourceHandle is None
-
-    def test_target_handle_rewired(self) -> None:
-        """in__child_node on a submodel edge rewires target to child_node."""
-        graph = PipelineGraph(
-            nodes=[
+def _bound_graph(
+    *,
+    input_handle: str | None = "in__records",
+    output_handle: str | None = "out__priced",
+    definition: dict[str, object] | None = None,
+) -> PipelineGraph:
+    return PipelineGraph.model_validate(
+        {
+            "pipeline_name": "main",
+            "pipeline_description": "Canonical flatten fixture",
+            "nodes": [
                 _node("upstream"),
-                _node("submodel__sm"),
+                _occurrence(),
+                _node("downstream", node_type=NodeType.OUTPUT),
             ],
-            edges=[
-                _edge("upstream", "submodel__sm", target_handle="in__inner"),
-            ],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "inner",
-                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph)
-        edge_pairs = [(e.source, e.target) for e in result.edges]
-        assert ("upstream", "inner") in edge_pairs
-        rewired = [e for e in result.edges if e.source == "upstream" and e.target == "inner"]
-        assert rewired[0].targetHandle is None
-
-    def test_unassigned_inbound_draft_is_omitted_without_guessing_child(self) -> None:
-        graph = PipelineGraph(
-            nodes=[
-                _node("nb_batch", "dataInput"),
-                _node("submodel__sm"),
-            ],
-            edges=[_edge("nb_batch", "submodel__sm")],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "child_a",
-                                "data": {
-                                    "label": "child_a",
-                                    "nodeType": "polars",
-                                    "config": {},
-                                },
-                            },
-                            {
-                                "id": "child_b",
-                                "data": {
-                                    "label": "child_b",
-                                    "nodeType": "polars",
-                                    "config": {},
-                                },
-                            },
-                        ],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-
-        result = flatten_graph(graph)
-
-        assert {node.id for node in result.nodes} == {"nb_batch", "child_a", "child_b"}
-        assert result.edges == []
-
-    @pytest.mark.parametrize("handle", ["wrong__child_a", "in__missing"])
-    def test_malformed_mapped_inbound_handle_still_raises(self, handle: str) -> None:
-        graph = PipelineGraph(
-            nodes=[
-                _node("nb_batch", "dataInput"),
-                _node("submodel__sm"),
-            ],
-            edges=[
+            "edges": [
                 _edge(
-                    "nb_batch",
-                    "submodel__sm",
-                    target_handle=handle,
-                )
-            ],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "child_a",
-                                "data": {
-                                    "label": "child_a",
-                                    "nodeType": "polars",
-                                    "config": {},
-                                },
-                            }
-                        ],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-
-        with pytest.raises(ParseError):
-            flatten_graph(graph)
-
-    def test_outbound_boundary_edge_without_handle_raises(self) -> None:
-        """An outbound boundary always requires an explicit export handle."""
-        graph = PipelineGraph(
-            nodes=[
-                _node("a"),
-                _node("submodel__sm"),
-                _node("b"),
-            ],
-            edges=[
-                # An outbound placeholder edge is never an unassigned input draft.
-                _edge("submodel__sm", "b"),
-            ],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-        with pytest.raises(ParseError, match="handle"):
-            flatten_graph(graph)
-
-    @pytest.mark.parametrize("handle", ["wrong__inner", "out__missing"])
-    def test_invalid_outbound_boundary_handle_raises(self, handle: str) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("submodel__sm"), _node("downstream")],
-            edges=[_edge("submodel__sm", "downstream", source_handle=handle)],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "inner",
-                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
-                            }
-                        ],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-        with pytest.raises(ParseError):
-            flatten_graph(graph)
-
-    def test_internal_submodel_edges_preserved(self) -> None:
-        """Internal edges within a submodel graph are added to the flat graph."""
-        graph = PipelineGraph(
-            nodes=[
-                _node("submodel__sm"),
-            ],
-            edges=[],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "child_a",
-                                "data": {"label": "a", "nodeType": "polars", "config": {}},
-                            },
-                            {
-                                "id": "child_b",
-                                "data": {"label": "b", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [
-                            {"id": "e_ca_cb", "source": "child_a", "target": "child_b"},
-                        ],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph)
-        edge_pairs = [(e.source, e.target) for e in result.edges]
-        assert ("child_a", "child_b") in edge_pairs
-
-
-# ---------------------------------------------------------------------------
-# Edge deduplication
-# ---------------------------------------------------------------------------
-
-
-class TestEdgeDeduplication:
-    def test_duplicate_edges_deduplicated(self) -> None:
-        """If the same (source, target, sourceHandle, targetHandle) appears
-        multiple times after rewiring, only one copy is kept."""
-        graph = PipelineGraph(
-            nodes=[
-                _node("upstream"),
-                _node("submodel__sm"),
-                _node("downstream"),
-            ],
-            edges=[
-                # Two edges that will rewire to the same (upstream, inner) pair
-                GraphEdge(
-                    id="e1", source="upstream", target="submodel__sm", targetHandle="in__inner"
+                    "incoming",
+                    "upstream",
+                    "instance_primary",
+                    target_handle=input_handle,
                 ),
-                GraphEdge(
-                    id="e2", source="upstream", target="submodel__sm", targetHandle="in__inner"
+                _edge(
+                    "outgoing",
+                    "instance_primary",
+                    "downstream",
+                    source_handle=output_handle,
                 ),
             ],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "inner",
-                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [],
-                    }
+            "submodels": {
+                "definition_pricing": definition or _definition_payload(),
+            },
+        }
+    )
+
+
+def test_no_occurrences_returns_the_same_graph() -> None:
+    graph = PipelineGraph(nodes=[_node("ordinary")])
+
+    assert flatten_graph(graph) is graph
+
+
+def test_unknown_target_instance_fails_loudly() -> None:
+    graph = _bound_graph()
+
+    with pytest.raises(ParseError, match="instance not found"):
+        flatten_graph(graph, target_instance_id="instance_missing")
+
+
+@pytest.mark.parametrize("handle", [None, "records", "in__", "wrong__records"])
+def test_malformed_public_input_handles_fail_loudly(handle: str | None) -> None:
+    graph = _bound_graph(input_handle=handle)
+
+    with pytest.raises(ParseError, match="public-port handle|empty public port"):
+        flatten_graph(graph)
+
+
+@pytest.mark.parametrize("handle", [None, "priced", "out__", "wrong__priced"])
+def test_malformed_public_output_handles_fail_loudly(handle: str | None) -> None:
+    graph = _bound_graph(output_handle=handle)
+
+    with pytest.raises(ParseError, match="public-port handle|empty public port"):
+        flatten_graph(graph)
+
+
+def test_internal_edges_are_preserved_with_qualified_endpoints() -> None:
+    result = flatten_graph(_bound_graph())
+
+    expected = (
+        qualified_runtime_node_id("instance_primary", "child_input"),
+        qualified_runtime_node_id("instance_primary", "child_output"),
+    )
+    assert expected in {(edge.source, edge.target) for edge in result.edges}
+
+
+def test_duplicate_internal_edges_are_deduplicated_by_full_identity() -> None:
+    definition = _definition_payload(
+        graph=_definition_graph(duplicate_internal_edge=True),
+    )
+
+    result = flatten_graph(_bound_graph(definition=definition))
+
+    source = qualified_runtime_node_id("instance_primary", "child_input")
+    target = qualified_runtime_node_id("instance_primary", "child_output")
+    matching = [edge for edge in result.edges if edge.source == source and edge.target == target]
+    assert len(matching) == 1
+
+
+def test_empty_unbound_definition_dissolves_cleanly() -> None:
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [_node("ordinary"), _occurrence()],
+            "submodels": {
+                "definition_pricing": {
+                    "definitionId": "definition_pricing",
+                    "file": "modules/pricing.py",
+                    "graph": {"nodes": [], "edges": []},
+                    "inputPorts": [],
+                    "outputPorts": [],
                 }
             },
-        )
-        result = flatten_graph(graph)
-        # Both edges rewire to (upstream, inner, None, None) — should be deduped to 1
-        matching = [
-            (e.source, e.target)
-            for e in result.edges
-            if e.source == "upstream" and e.target == "inner"
-        ]
-        assert len(matching) == 1
+        }
+    )
 
-    def test_targeted_flatten_keeps_distinct_port_metadata_and_ids(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("source"), _node("submodel__sm")],
-            edges=[
-                GraphEdge(
-                    id="left",
-                    source="source",
-                    target="submodel__sm",
-                    targetHandle="in__inner",
-                    sourcePort="left",
-                ),
-                GraphEdge(
-                    id="right",
-                    source="source",
-                    target="submodel__sm",
-                    targetHandle="in__inner",
-                    sourcePort="right",
+    result = flatten_graph(graph)
+
+    assert set(result.node_map) == {"ordinary"}
+    assert result.submodels is None
+
+
+def test_graph_metadata_is_preserved() -> None:
+    graph = _bound_graph().model_copy(
+        update={
+            "source_file": "rating/main.py",
+            "source_revision": "sha256:" + "a" * 64,
+        }
+    )
+
+    result = flatten_graph(graph)
+
+    assert result.pipeline_name == "main"
+    assert result.pipeline_description == "Canonical flatten fixture"
+    assert result.source_file == "rating/main.py"
+    assert result.source_revision == "sha256:" + "a" * 64
+
+
+def test_definition_support_code_is_merged_once_for_repeated_occurrences() -> None:
+    child_graph = _definition_graph(
+        preamble="CHILD_HELPER = 2",
+        preserved_blocks=["SHARED = 1", "CHILD_KEEP = 3"],
+    )
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                _occurrence(),
+                _occurrence(
+                    "instance_secondary",
+                    "pricing_2",
+                    instance_of="instance_primary",
                 ),
             ],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "inner",
-                                "data": {"label": "inner", "nodeType": "polars", "config": {}},
-                            }
-                        ],
-                        "edges": [],
-                    }
-                }
+            "preamble": "PARENT_HELPER = 1",
+            "preserved_blocks": ["SHARED = 1"],
+            "submodels": {
+                "definition_pricing": _definition_payload(graph=child_graph),
             },
-        )
-        result = flatten_graph(graph, target_name="sm")
-        edges = [
-            edge for edge in result.edges if edge.source == "source" and edge.target == "inner"
-        ]
-        assert {edge.sourcePort for edge in edges} == {"left", "right"}
-        assert len({edge.id for edge in edges}) == 2
+        }
+    )
 
+    result = flatten_graph(graph)
 
-# ---------------------------------------------------------------------------
-# Submodel with empty graph
-# ---------------------------------------------------------------------------
-
-
-class TestEmptySubmodelGraph:
-    def test_empty_submodel_graph_dissolves_cleanly(self) -> None:
-        """A submodel with no children or edges is just removed."""
-        graph = PipelineGraph(
-            nodes=[_node("a"), _node("submodel__empty")],
-            edges=[],
-            submodels={
-                "empty": {
-                    "graph": {
-                        "nodes": [],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph)
-        node_ids = {n.id for n in result.nodes}
-        assert "submodel__empty" not in node_ids
-        assert "a" in node_ids
-        assert result.submodels is None
-
-    def test_submodel_with_missing_graph_key(self) -> None:
-        """A submodel entry with no 'graph' key should not crash."""
-        graph = PipelineGraph(
-            nodes=[_node("a"), _node("submodel__sm")],
-            edges=[],
-            submodels={"sm": {}},
-        )
-        result = flatten_graph(graph)
-        node_ids = {n.id for n in result.nodes}
-        assert "submodel__sm" not in node_ids
-
-
-# ---------------------------------------------------------------------------
-# Graph metadata preserved
-# ---------------------------------------------------------------------------
-
-
-class TestMetadataPreserved:
-    def test_pipeline_name_preserved(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("submodel__sm")],
-            edges=[],
-            pipeline_name="test_pipeline",
-            submodels={"sm": {"graph": {"nodes": [], "edges": []}}},
-        )
-        result = flatten_graph(graph)
-        assert result.pipeline_name == "test_pipeline"
-
-    def test_other_fields_preserved(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("submodel__sm")],
-            edges=[],
-            pipeline_description="desc",
-            preamble="preamble_code",
-            sources=["live", "test"],
-            active_source="test",
-            submodels={"sm": {"graph": {"nodes": [], "edges": []}}},
-        )
-        result = flatten_graph(graph)
-        assert result.pipeline_description == "desc"
-        assert result.preamble == "preamble_code"
-        assert result.sources == ["live", "test"]
-        assert result.active_source == "test"
-
-    def test_targeted_flatten_merges_submodel_preamble_and_preserved_blocks(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("submodel__sm")],
-            edges=[],
-            preamble="ROOT = 1",
-            preserved_blocks=["ROOT_KEPT = 1"],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [],
-                        "edges": [],
-                        "preamble": "CHILD = 2",
-                        "preserved_blocks": ["CHILD_KEPT = 2"],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph, target_name="sm")
-        assert result.preamble == "ROOT = 1\n\nCHILD = 2"
-        assert result.preserved_blocks == ["ROOT_KEPT = 1", "CHILD_KEPT = 2"]
-
-    def test_targeted_flatten_deduplicates_copied_support_code(self) -> None:
-        graph = PipelineGraph(
-            nodes=[_node("submodel__sm")],
-            edges=[],
-            preamble="SHARED_HELPER = 1",
-            preserved_blocks=["SHARED_KEPT = 2"],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [],
-                        "edges": [],
-                        "preamble": "  SHARED_HELPER = 1\n",
-                        "preserved_blocks": ["\nSHARED_KEPT = 2  "],
-                    }
-                }
-            },
-        )
-
-        result = flatten_graph(graph, target_name="sm")
-
-        assert result.preamble == "SHARED_HELPER = 1"
-        assert result.preserved_blocks == ["SHARED_KEPT = 2"]
-
-
-# ---------------------------------------------------------------------------
-# Child nodes as dicts vs GraphNode objects
-# ---------------------------------------------------------------------------
-
-
-class TestChildNodeFormats:
-    def test_child_nodes_as_graph_node_objects(self) -> None:
-        """Child nodes that are already GraphNode objects (not dicts)."""
-        child = _node("child_obj")
-        graph = PipelineGraph(
-            nodes=[_node("submodel__sm")],
-            edges=[],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [child],
-                        "edges": [],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph)
-        node_ids = {n.id for n in result.nodes}
-        assert "child_obj" in node_ids
-
-    def test_child_edges_as_graph_edge_objects(self) -> None:
-        """Child edges that are already GraphEdge objects (not dicts)."""
-        child_edge = _edge("c1", "c2")
-        graph = PipelineGraph(
-            nodes=[_node("submodel__sm")],
-            edges=[],
-            submodels={
-                "sm": {
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "c1",
-                                "data": {"label": "c1", "nodeType": "polars", "config": {}},
-                            },
-                            {
-                                "id": "c2",
-                                "data": {"label": "c2", "nodeType": "polars", "config": {}},
-                            },
-                        ],
-                        "edges": [child_edge],
-                    }
-                }
-            },
-        )
-        result = flatten_graph(graph)
-        edge_pairs = [(e.source, e.target) for e in result.edges]
-        assert ("c1", "c2") in edge_pairs
+    assert result.preamble == "PARENT_HELPER = 1\n\nCHILD_HELPER = 2"
+    assert result.preserved_blocks == ["SHARED = 1", "CHILD_KEEP = 3"]

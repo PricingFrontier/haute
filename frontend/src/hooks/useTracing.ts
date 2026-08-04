@@ -3,9 +3,18 @@ import type { Node, Edge } from "@xyflow/react"
 import { MarkerType, useStore } from "@xyflow/react"
 import type { TraceResult } from "../types/trace"
 import { NODE_TYPES } from "../utils/nodeTypes"
-import { nodeData } from "../types/node"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  nodeData,
+} from "../types/node"
 import { traceCell } from "../api/client"
 import { resolveGraphFromRefs } from "../utils/buildGraph"
+import {
+  qualifiedRuntimeNodeId,
+  runtimeNodeIdForVisibleNode,
+  type DrilledOccurrenceIdentity,
+} from "../utils/submodelRuntimeTarget"
 import {
   GRAPH_EFFECTS_LITE_GRAPH_SIZE_LIMIT,
   shouldUseLiteGraphEffects,
@@ -22,9 +31,11 @@ export const TRACE_PROGRESS_DELAY_MS = 500
 interface TracingParams {
   nodes: Node[]
   edges: Edge[]
+  submodels: Record<string, unknown>
   selectedNode: Node | null
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
   parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null>
+  activeSubmodelIdentity: DrilledOccurrenceIdentity | null
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   preambleRef: React.MutableRefObject<string>
   nodeStatuses: Record<string, "ok" | "error" | "running">
@@ -203,8 +214,8 @@ function errorDetail(err: unknown): string {
 }
 
 export default function useTracing({
-  nodes, edges, selectedNode,
-  graphRef, parentGraphRef, submodelsRef,
+  nodes, edges, submodels, selectedNode,
+  graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
   preambleRef,
   nodeStatuses,
   hoveredNodeId,
@@ -335,7 +346,11 @@ export default function useTracing({
     traceCell({
       graph,
       row_index: rowIndex,
-      target_node_id: selectedNode.id,
+      target_node_id: runtimeNodeIdForVisibleNode(
+        nodes,
+        selectedNode.id,
+        activeSubmodelIdentity,
+      ),
       column,
       row_limit: rowLimit,
       source: activeSource,
@@ -379,7 +394,7 @@ export default function useTracing({
           traceAbort.current = null
         }
       })
-  }, [selectedNode, graphRef, parentGraphRef, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, refreshPreview])
+  }, [selectedNode, nodes, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, rowLimit, streamingChunkSize, activeSource, semanticContext, semanticContextToken, refreshPreview])
 
   const handleCellClick = startTrace
   const cancelTrace = clearTrace
@@ -390,22 +405,56 @@ export default function useTracing({
     }
   }, [semanticContextToken, startTrace])
 
-  // Map child node IDs → submodel placeholder node IDs
+  // Runtime child IDs are qualified by the explicit occurrence identity.
+  // Collapse them onto the occurrence in the parent view, or onto the actual
+  // child node while drilled into that occurrence.
   const childToSubmodelId = useMemo(() => {
     const map = new Map<string, string>()
-    for (const n of nodes) {
-      const d = nodeData(n)
-      if (d.nodeType === NODE_TYPES.SUBMODEL) {
-        const cfg = d.config || {}
-        const childIds: string[] = (cfg.childNodeIds as string[]) || []
-        for (const cid of childIds) {
-          map.set(cid, n.id)
-        }
+    const visibleChildNodes: Node[] = []
+    const drilledIdentity = activeSubmodelIdentity
+
+    for (const node of nodes) {
+      const data = nodeData(node)
+      if (data.nodeType === NODE_TYPES.SUBMODEL_PORT) continue
+
+      visibleChildNodes.push(node)
+      if (data.nodeType !== NODE_TYPES.SUBMODEL) continue
+      if (!isSubmodelInstanceConfig(data.config)) {
+        throw new Error(
+          "Submodel instance " + node.id + " has malformed canonical identity config",
+        )
+      }
+      const definition = submodels[data.config.definitionId]
+      if (!isSubmodelDefinition(definition, data.config.definitionId)) {
+        throw new Error(
+          "Submodel instance " + node.id + " references missing or malformed definition "
+          + data.config.definitionId,
+        )
+      }
+      for (const child of definition.graph.nodes) {
+        map.set(qualifiedRuntimeNodeId(node.id, child.id), node.id)
       }
     }
-    return map
-  }, [nodes])
 
+    if (drilledIdentity) {
+      const definition = submodels[drilledIdentity.definitionId]
+      if (!isSubmodelDefinition(definition, drilledIdentity.definitionId)) {
+        throw new Error(
+          "Drilled submodel instance " + drilledIdentity.instanceId
+          + " references missing or malformed definition "
+          + drilledIdentity.definitionId,
+        )
+      }
+      for (const child of visibleChildNodes) {
+        map.set(
+          runtimeNodeIdForVisibleNode(nodes, child.id, drilledIdentity),
+          child.id,
+        )
+      }
+    }
+
+    return map
+  }, [nodes, submodels, activeSubmodelIdentity])
   // Map external parent node IDs to the composite boundary card that represents
   // them, keeping Input and Output separate to avoid collisions.
   const parentToBoundaryId = useMemo(() => {

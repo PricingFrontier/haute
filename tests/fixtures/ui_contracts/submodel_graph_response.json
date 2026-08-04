@@ -1,6 +1,7 @@
 {
   "status": "ok",
   "submodel_name": "pricing",
+  "definition_id": "pricing-definition",
   "submodel_file": "modules/pricing.py",
   "graph": {
     "nodes": [

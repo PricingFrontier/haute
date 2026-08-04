@@ -429,13 +429,24 @@ class TestPipelineNameDocstringSafety:
 
         graph = PipelineGraph.model_validate(
             {
-                "nodes": [],
+                "nodes": [
+                    {
+                        "id": "instance_sm",
+                        "type": "submodel",
+                        "data": {
+                            "label": sm_name,
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "definition_sm", "alias": sm_name},
+                        },
+                    }
+                ],
                 "edges": [],
                 "submodels": {
-                    sm_name: {
+                    "definition_sm": {
+                        "definitionId": "definition_sm",
                         "file": "modules/sm.py",
-                        "childNodeIds": ["src"],
                         "graph": {
+                            "pipeline_name": sm_name,
                             "nodes": [
                                 {
                                     "id": "src",
@@ -448,6 +459,8 @@ class TestPipelineNameDocstringSafety:
                             ],
                             "edges": [],
                         },
+                        "inputPorts": [],
+                        "outputPorts": [],
                     },
                 },
             }
@@ -506,12 +519,22 @@ class TestTortureEndToEnd:
         """
         graph = PipelineGraph.model_validate(
             {
-                "nodes": [],
+                "nodes": [
+                    {
+                        "id": "torture_instance",
+                        "type": "submodel",
+                        "data": {
+                            "label": "torture_sm",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "torture_sm", "alias": "torture_sm"},
+                        },
+                    }
+                ],
                 "edges": [],
                 "submodels": {
                     "torture_sm": {
+                        "definitionId": "torture_sm",
                         "file": "modules/torture_sm.py",
-                        "childNodeIds": ["src", "inner"],
                         "graph": {
                             "nodes": [
                                 {
@@ -536,6 +559,8 @@ class TestTortureEndToEnd:
                                 {"id": "e", "source": "src", "target": "inner"},
                             ],
                         },
+                        "inputPorts": [],
+                        "outputPorts": [],
                     },
                 },
             }
@@ -570,12 +595,22 @@ class TestTortureEndToEnd:
         description = 'a """ b — café — # haute:preserve-start — 数学'
         graph = PipelineGraph.model_validate(
             {
-                "nodes": [],
+                "nodes": [
+                    {
+                        "id": "torture_instance",
+                        "type": "submodel",
+                        "data": {
+                            "label": "torture_sm",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "torture_sm", "alias": "torture_sm"},
+                        },
+                    }
+                ],
                 "edges": [],
                 "submodels": {
                     "torture_sm": {
+                        "definitionId": "torture_sm",
                         "file": "modules/torture_sm.py",
-                        "childNodeIds": ["src", "inner"],
                         "graph": {
                             "nodes": [
                                 {
@@ -600,6 +635,8 @@ class TestTortureEndToEnd:
                                 {"id": "e", "source": "src", "target": "inner"},
                             ],
                         },
+                        "inputPorts": [],
+                        "outputPorts": [],
                     },
                 },
             }

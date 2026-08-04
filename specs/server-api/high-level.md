@@ -167,9 +167,10 @@ until the worker exits.
 
 Live pipeline graph responses carry `source_revision`, a deterministic digest
 of the parsed document plus the parent and referenced child source/sidecar
-states. Successful save-shaped operations return the newly committed revision.
-Submodel create/dissolve use it as an optimistic precondition so a serialized
-but stale request cannot overwrite a newer document.
+states. Explicit Save returns the newly committed revision. Submodel create and
+dissolve use the current revision as an optimistic precondition, return it
+unchanged, and perform no persistence, so a stale transform cannot be applied
+over a newer document.
 
 **File browsing and schema inspection.** `GET /api/files` lists a directory for the file
 picker; when its `extensions` query is omitted, the effective readable extensions come from
@@ -255,12 +256,12 @@ become diagnostic-unavailable rather than a fabricated success.
 - **Generated child ownership is durable but never inferred.** A GUI-created
   submodel sidecar records its canonical `managed_parent`. Save preserves that
   marker and child positions only when the existing sidecar already names the
-  same parent, or when the create route supplies an explicit transaction-local
-  claim for a brand-new child whose source and sidecar both passed no-clobber.
-  A request body's `managed=true` flag alone is rejected and parsing or saving
-  a hand-authored child never creates the marker. Creation may require a
-  module output to be absent, with a case-insensitive preflight returning
-  `409` before any write.
+  same parent, or when explicit Save derives a brand-new definition from the
+  difference between the persisted and submitted registries and its source and
+  sidecar both pass no-clobber. The graph schema contains no request-controlled
+  ownership field, and parsing or saving a hand-authored child never creates
+  the marker. Creation requires the derived module output to be absent, with a
+  case-insensitive preflight returning `409` before any write.
 - **Self-write tracking instead of debounce-only.** The file watcher's 300ms debounce alone
   cannot distinguish a server-originated write from a user's IDE edit that happens to land in
   the same window. Every write the server makes is registered by absolute path just before

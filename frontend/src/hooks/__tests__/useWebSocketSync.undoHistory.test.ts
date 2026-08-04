@@ -1,18 +1,11 @@
 /**
  * Phase 1 Package 1H — Item #8: WebSocket sync must not corrupt undo history.
  *
- * The hook calls `setNodesRaw` (a history-bypassing setter) on a WS
- * `graph_update` message.  That is by design — file-watcher updates are the
- * source of truth and must not be undoable.  However, if a local undo is in
- * flight when the WS event arrives, we must ensure:
+ * A WebSocket `graph_update` is an external source-of-truth snapshot. It must:
  *
- *   - The WS update does not mutate `past` / `future` history stacks.
- *   - After the WS update, calling `undo` still pops a *structural* state
- *     (never accidentally popping to the WS-injected state).
- *
- * Failure mode pre-fix: a sloppy refactor that swapped `setNodesRaw` for the
- * history-aware `setNodes` would silently grow the undo stack on every file
- * save, making Ctrl+Z behave unpredictably.
+ *   - install nodes, edges, preamble, and submodels atomically;
+ *   - bypass local edit history; and
+ *   - clear stale undo/redo entries so Ctrl+Z cannot resurrect pre-sync state.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, act, cleanup } from "@testing-library/react"
@@ -59,12 +52,29 @@ vi.mock("../../stores/useUIStore.ts", () => {
   return { default: useUIStore }
 })
 
-// After Wave 7E, the hook calls `useGraphStore.getState().markSaved()`.
-// We mock a minimal store surface: markSaved is the only method touched,
-// and state assertions in these tests focus on the setter params (not
-// store reads) so the stub does nothing.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { nodes: [], edges: [], submodels: {}, preamble: "", markSaved: vi.fn() }
+  const store = {
+    dirty: false,
+    nodes: [] as unknown[],
+    edges: [] as unknown[],
+    submodels: {} as Record<string, unknown>,
+    preamble: "",
+    undoStack: [] as unknown[],
+    redoStack: [] as unknown[],
+    loadGraphSnapshot: vi.fn((snapshot: {
+      nodes: unknown[]
+      edges: unknown[]
+      submodels: Record<string, unknown>
+      preamble: string
+    }) => {
+      store.nodes = snapshot.nodes
+      store.edges = snapshot.edges
+      store.submodels = snapshot.submodels
+      store.preamble = snapshot.preamble
+      store.undoStack = []
+      store.redoStack = []
+    }),
+  }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -127,9 +137,15 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     originalWebSocket = globalThis.WebSocket
     globalThis.WebSocket = createMockWebSocket() as unknown as typeof WebSocket
 
-    // Clear the mocked-store spies so call counts / args don't leak across
-    // tests (mirrors src/__tests__/hooks/useWebSocketSync.test.ts).
-    vi.mocked(useGraphStore.getState().markSaved).mockClear()
+    const graphStore = useGraphStore.getState()
+    vi.mocked(graphStore.loadGraphSnapshot).mockClear()
+    graphStore.dirty = false
+    graphStore.nodes = []
+    graphStore.edges = []
+    graphStore.submodels = {}
+    graphStore.preamble = ""
+    graphStore.undoStack = []
+    graphStore.redoStack = []
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useToastStore.getState().dismissToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
@@ -141,10 +157,7 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
     globalThis.WebSocket = originalWebSocket
   })
 
-  it("graph_update calls the history-bypassing setNodesRaw, not setNodes", async () => {
-    // The hook params spec only exposes `setNodesRaw` — confirm the contract
-    // that the hook uses this setter explicitly and never reaches a
-    // history-aware setter that would push snapshots onto the undo stack.
+  it("atomically loads graph_update as a clean snapshot", async () => {
     const params = makeHookParams()
     renderHook(() => useWebSocketSync(params))
 
@@ -165,16 +178,20 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
       }))
     })
 
-    // Only the raw (history-bypassing) setter should be called
-    expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
-    expect(params.setEdgesRaw).toHaveBeenCalledTimes(1)
+    const graphStore = useGraphStore.getState()
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledWith({
+      nodes: [expect.objectContaining({ id: "n1" })],
+      edges: [],
+      preamble: "",
+      submodels: {},
+    })
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(graphStore.undoStack).toEqual([])
+    expect(graphStore.redoStack).toEqual([])
   })
 
-  it("setNodesRaw receives the exact WS payload — no transformation pushed through history", async () => {
-    // Catches: any refactor that re-dispatches WS updates via the
-    // history-aware path would serialise nodes differently (e.g. apply
-    // React Flow's internal id mapping or strip selected flag), leaving
-    // a fingerprint we can detect.
+  it("loads the exact WS node payload without creating local history", async () => {
     const params = makeHookParams()
     renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
@@ -191,31 +208,29 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
       }))
     })
 
-    // The payload is forwarded directly to setNodesRaw (no ancillary
-    // calls that could add history entries)
-    expect(params.setNodesRaw).toHaveBeenCalledWith(incoming)
+    expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ nodes: incoming }),
+    )
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
   })
 
-  it("concurrent WS graph_update messages only hit setNodesRaw (history stays clean)", async () => {
-    // If one of the handlers ever called a history-aware setter by
-    // mistake, N rapid file-watcher events would inject N bogus entries
-    // into the undo stack.  We assert by counting raw-setter calls and
-    // confirming no other setter ever fires.
+  it("repeated graph_update messages replace the clean baseline without history", async () => {
     const params = makeHookParams()
-    const historyAwareSetter = vi.fn()
-    // Surface any unexpected setter usage via a proxy; if the hook
-    // ever tries to invoke anything besides setNodesRaw/setEdgesRaw/
-    // setPreamble/fitView, test would fail (proxied props below).
-    renderHook(() => useWebSocketSync({
-      ...params,
-      // Augment with a dummy historyAwareSetter that we'll verify is
-      // NEVER invoked. The hook does not accept such a param, so the
-      // only path that could ever push history is inside setNodesRaw
-      // — which must stay history-free.
-      //
-      // This test is intentionally simple: it drives 5 messages and
-      // confirms both raw setters are called 5× each.
-    }))
+    const graphStore = useGraphStore.getState()
+    graphStore.undoStack = [{
+      nodes: [],
+      edges: [],
+      preamble: "stale undo",
+      submodels: {},
+    }]
+    graphStore.redoStack = [{
+      nodes: [],
+      edges: [],
+      preamble: "stale redo",
+      submodels: {},
+    }]
+    renderHook(() => useWebSocketSync(params))
     act(() => { latestWS().onopen?.(new Event("open")) })
 
     for (let i = 0; i < 5; i++) {
@@ -235,10 +250,12 @@ describe("useWebSocketSync — WS sync must not corrupt undo history (#8)", () =
       })
     }
 
-    expect(params.setNodesRaw).toHaveBeenCalledTimes(5)
-    expect(params.setEdgesRaw).toHaveBeenCalledTimes(5)
-    // The bonus setter we pretended to wire up should never fire —
-    // the hook has no code path that could touch it.
-    expect(historyAwareSetter).not.toHaveBeenCalled()
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(5)
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
+    expect(params.setPreamble).not.toHaveBeenCalled()
+    expect(graphStore.undoStack).toEqual([])
+    expect(graphStore.redoStack).toEqual([])
   })
 })

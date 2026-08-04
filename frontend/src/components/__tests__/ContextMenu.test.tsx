@@ -32,19 +32,48 @@ describe("ContextMenu", () => {
     expect(screen.getByText("Delete")).toBeInTheDocument()
   })
 
-  it("shows Create Instance when onCreateInstance is provided and not submodel", () => {
+  it("hides Create Instance for ordinary nodes", () => {
     render(<ContextMenu {...makeProps({ onCreateInstance: vi.fn(), isSubmodel: false })} />)
-    expect(screen.getByText("Create Instance")).toBeInTheDocument()
-  })
-
-  it("hides Create Instance for submodel nodes", () => {
-    render(<ContextMenu {...makeProps({ onCreateInstance: vi.fn(), isSubmodel: true })} />)
     expect(screen.queryByText("Create Instance")).not.toBeInTheDocument()
   })
 
-  it("shows Dissolve Submodel for submodel nodes", () => {
-    render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "submodel__pricing", onDissolveSubmodel: vi.fn() })} />)
+  it("shows Create Instance for reusable submodel occurrences", () => {
+    render(<ContextMenu {...makeProps({ onCreateInstance: vi.fn(), isSubmodel: true })} />)
+    expect(screen.getByText("Create Instance")).toBeInTheDocument()
+    expect(screen.queryByText("Duplicate")).not.toBeInTheDocument()
+  })
+
+  it("shows Dissolve Submodel but no Delete for a definition owner", () => {
+    render(<ContextMenu {...makeProps({ isSubmodel: true, nodeId: "instance_pricing", onDissolveSubmodel: vi.fn() })} />)
     expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument()
+  })
+
+  it("never offers raw Delete for a submodel owner without a dissolve callback", () => {
+    render(
+      <ContextMenu {...makeProps({ isSubmodel: true, nodeId: "instance_pricing" })} />,
+    )
+
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument()
+  })
+
+  it("offers Delete for a submodel instance copy", () => {
+    const onDelete = vi.fn()
+    render(
+      <ContextMenu
+        {...makeProps({
+          isSubmodel: true,
+          isSubmodelCopy: true,
+          nodeId: "instance_pricing_copy",
+          onDelete,
+          onDissolveSubmodel: vi.fn(),
+        })}
+      />,
+    )
+
+    expect(screen.getByText("Dissolve Submodel")).toBeInTheDocument()
+    fireEvent.click(screen.getByText("Delete"))
+    expect(onDelete).toHaveBeenCalledWith("instance_pricing_copy")
   })
 
   it("clicking Rename calls onRename with nodeId and closes", () => {
@@ -147,7 +176,7 @@ describe("ContextMenu", () => {
     expect(props.onClose).toHaveBeenCalled()
   })
 
-  it("clicking Dissolve Submodel calls onDissolveSubmodel with submodel name", () => {
+  it("clicking Dissolve Submodel preserves the immutable occurrence id", () => {
     const onDissolveSubmodel = vi.fn()
     render(
       <ContextMenu
@@ -159,7 +188,7 @@ describe("ContextMenu", () => {
       />,
     )
     fireEvent.click(screen.getByText("Dissolve Submodel"))
-    expect(onDissolveSubmodel).toHaveBeenCalledWith("pricing")
+    expect(onDissolveSubmodel).toHaveBeenCalledWith("submodel__pricing")
   })
 
   it("menu items have correct tabIndex based on focus", () => {

@@ -222,9 +222,8 @@ _MODEL_SCORE = '''\
 @pipeline.model_score({decorator_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import score_from_config
-    base = str(Path(__file__).parent)
+    base = str(_HAUTE_CONFIG_BASE)
     df = score_from_config({first_param}, config={config_path_repr}, base_dir=base)
     return df
 '''
@@ -236,10 +235,9 @@ def _retained_api_input_template(config_path: str) -> str:
 @pipeline.api_input()
 def {{func_name}}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
     """{{description}}"""
-    from pathlib import Path
     from haute.graph_utils import resolve_api_input_from_config
     return resolve_api_input_from_config(
-        {_safe_path(config_path)}, base_dir=Path(__file__).resolve().parent
+        {_safe_path(config_path)}, base_dir=_HAUTE_CONFIG_BASE
     )
 '''
 
@@ -249,9 +247,8 @@ _BANDING_SINGLE = '''\
                output_column={output_column_repr}{rules_kw}{default_kw})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_banding_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
     return df
 '''
@@ -260,9 +257,8 @@ _BANDING_MULTI = '''\
 @pipeline.banding(factors={factors_repr})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_banding_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
     return df
 '''
@@ -271,9 +267,8 @@ _RATING_STEP = '''\
 @pipeline.rating_step(tables={tables_repr}{extra_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_rating_step_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)
     return df
 '''
@@ -282,9 +277,8 @@ _SCENARIO_EXPANDER = '''\
 @pipeline.scenario_expander({dec_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import expand_scenarios_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     return expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)
 '''
 
@@ -302,9 +296,8 @@ _OPTIMISER_APPLY = '''\
 @pipeline.optimiser_apply({dec_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_optimiser_apply_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     return apply_optimiser_apply_from_config(
         {args}, config={config_path_repr}, base_dir=base,
         source_names={source_names_repr}, source_ids={source_ids_repr},
@@ -336,10 +329,9 @@ _RETAINED_EXTERNAL = '''\
 @pipeline.external_file()
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import load_external_object_from_config
     obj = load_external_object_from_config(
-        {config_path_repr}, base_dir=Path(__file__).resolve().parent
+        {config_path_repr}, base_dir=_HAUTE_CONFIG_BASE
     )
 {body}
 '''
@@ -510,9 +502,8 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
             f"@pipeline.model_score({decorator_kwargs})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
-            f"    from pathlib import Path\n"
             f"    from haute.graph_utils import score_from_config\n"
-            f"    base = str(Path(__file__).parent)\n"
+            f"    base = str(_HAUTE_CONFIG_BASE)\n"
             f"    df = score_from_config(\n"
             f"        {first_param}, config={_safe_path(cfg_path)},\n"
             f"        base_dir=base,\n"
@@ -621,9 +612,8 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
             f"@pipeline.rating_step(tables={emit_tables!r}{extra_kwargs})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
-            f"    from pathlib import Path\n"
             f"    from haute.graph_utils import apply_rating_step_from_config\n"
-            f"    base = Path(__file__).parent\n"
+            f"    base = _HAUTE_CONFIG_BASE\n"
             f"    df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)\n"
             f"{user_body}\n"
         )
@@ -679,9 +669,8 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
         f"@pipeline.scenario_expander({dec_kwargs})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    from pathlib import Path\n"
         f"    from haute.graph_utils import expand_scenarios_from_config\n"
-        f"    base = Path(__file__).parent\n"
+        f"    base = _HAUTE_CONFIG_BASE\n"
         f"    df = expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)\n"
         f"{user_body}\n"
     )
@@ -824,13 +813,11 @@ def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
         f"@pipeline.data_input(config={_safe_path(cfg_path)})\n"
         f"def {func_name}() -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    from pathlib import Path\n"
         f"    from haute._project import get_project_root\n"
         f"    from haute.graph_utils import resolve_data_input_from_config\n"
-        f"    base = Path(__file__).resolve().parent\n"
-        f"    project_root = get_project_root(base)\n"
+        f"    project_root = get_project_root(_HAUTE_CONFIG_BASE)\n"
         f"    df = resolve_data_input_from_config(\n"
-        f"        {_safe_path(cfg_path)}, base_dir=base, "
+        f"        {_safe_path(cfg_path)}, base_dir=_HAUTE_CONFIG_BASE, "
         f"project_root=project_root\n"
         f"    )\n"
         f"{body}\n"
@@ -868,12 +855,11 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
         f"@pipeline.output(config={_safe_path(cfg_path)})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    from pathlib import Path\n"
         f"    from haute.graph_utils import assemble_output_from_config\n"
         f"    return assemble_output_from_config(\n"
         f"{args}"
         f"        config={_safe_path(cfg_path)},\n"
-        f"        base_dir=Path(__file__).parent,\n"
+        f"        base_dir=_HAUTE_CONFIG_BASE,\n"
         f"        source_names={param_names!r},\n"
         f"    )\n"
     )

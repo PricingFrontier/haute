@@ -44,7 +44,38 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from tests.conftest import make_file_input_config
+
+
+def _submodel_occurrence(definition_id: str) -> GraphNode:
+    return GraphNode(
+        id=f"submodel_instance__{definition_id}",
+        data=NodeData(
+            label=definition_id,
+            nodeType="submodel",
+            config={
+                "definitionId": definition_id,
+                "alias": definition_id,
+            },
+        ),
+    )
+
+
+def _submodel_definition(
+    definition_id: str,
+    *nodes: GraphNode,
+    file: str | None = None,
+    edges: list[GraphEdge] | None = None,
+) -> SubmodelDefinition:
+    return SubmodelDefinition(
+        definitionId=definition_id,
+        file=file or f"modules/{definition_id}.py",
+        graph=PipelineGraph(nodes=list(nodes), edges=edges or []),
+        inputPorts=[],
+        outputPorts=[],
+    )
+
 
 # ---------------------------------------------------------------------------
 # Common fixtures
@@ -212,10 +243,17 @@ class TestWatcherLongSaveRace:
         ``Writer.__exit__`` to count writes, and ensure the number of
         sentinel invocations matches the number of .py files created.
         """
-        from haute._types import GraphNode, NodeData, PipelineGraph
         from haute.routes._save_pipeline import SavePipelineService
         from haute.schemas import SavePipelineRequest
 
+        child = GraphNode(
+            id="a",
+            data=NodeData(
+                label="a",
+                nodeType="polars",
+                config={"code": "df"},
+            ),
+        )
         graph = PipelineGraph(
             nodes=[
                 GraphNode(
@@ -226,27 +264,10 @@ class TestWatcherLongSaveRace:
                         config=make_file_input_config("d.parquet"),
                     ),
                 ),
+                _submodel_occurrence("sm1"),
             ],
             edges=[],
-            submodels={
-                "sm1": {
-                    "file": "modules/sm1.py",
-                    "childNodeIds": ["a"],
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "a",
-                                "data": {
-                                    "label": "a",
-                                    "nodeType": "polars",
-                                    "config": {"code": "df"},
-                                },
-                            },
-                        ],
-                        "edges": [],
-                    },
-                }
-            },
+            submodels={"sm1": _submodel_definition("sm1", child)},
         )
         req = SavePipelineRequest(
             name="main",
@@ -335,49 +356,36 @@ class TestGraphToCodeMultiPathTraversal:
     and raise a loud HTTPException on anything else.
     """
 
-    def _make_graph_with_crafted_submodel_file(self, sm_file: str) -> dict:
-        return {
-            "nodes": [
-                {
-                    "id": "submodel__evil",
-                    "type": "pipelineNode",
-                    "position": {"x": 0, "y": 0},
-                    "data": {
-                        "label": "evil",
-                        "nodeType": "submodel",
-                        "config": {"childNodeIds": ["a", "b"]},
-                    },
-                },
-            ],
-            "edges": [],
-            "submodels": {
-                "evil": {
-                    "file": sm_file,
-                    "childNodeIds": ["a", "b"],
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "a",
-                                "data": {
-                                    "label": "a",
-                                    "nodeType": "dataInput",
-                                    "config": make_file_input_config("data.parquet"),
-                                },
-                            },
-                            {
-                                "id": "b",
-                                "data": {
-                                    "label": "b",
-                                    "nodeType": "polars",
-                                    "config": {"code": "df"},
-                                },
-                            },
-                        ],
-                        "edges": [{"id": "e1", "source": "a", "target": "b"}],
-                    },
-                },
+    def _make_graph_with_crafted_submodel_file(self, sm_file: str) -> PipelineGraph:
+        child_a = GraphNode(
+            id="a",
+            data=NodeData(
+                label="a",
+                nodeType="dataInput",
+                config=make_file_input_config("data.parquet"),
+            ),
+        )
+        child_b = GraphNode(
+            id="b",
+            data=NodeData(
+                label="b",
+                nodeType="polars",
+                config={"code": "df"},
+            ),
+        )
+        return PipelineGraph(
+            nodes=[_submodel_occurrence("evil")],
+            edges=[],
+            submodels={
+                "evil": _submodel_definition(
+                    "evil",
+                    child_a,
+                    child_b,
+                    file=sm_file,
+                    edges=[GraphEdge(id="e1", source="a", target="b")],
+                )
             },
-        }
+        )
 
     @pytest.mark.parametrize(
         "bad_rel_path",
@@ -411,11 +419,11 @@ class TestGraphToCodeMultiPathTraversal:
 
         svc = SavePipelineService(project_root)
 
-        graph_dict = self._make_graph_with_crafted_submodel_file(bad_rel_path)
+        graph = self._make_graph_with_crafted_submodel_file(bad_rel_path)
         req = SavePipelineRequest(
             name="main",
             description="",
-            graph=graph_dict,
+            graph=graph,
             preamble="",
             source_file="main.py",
         )
@@ -462,11 +470,11 @@ class TestGraphToCodeMultiPathTraversal:
 
         svc = SavePipelineService(project_root)
 
-        graph_dict = self._make_graph_with_crafted_submodel_file("modules/evil.py")
+        graph = self._make_graph_with_crafted_submodel_file("modules/evil.py")
         req = SavePipelineRequest(
             name="main",
             description="",
-            graph=graph_dict,
+            graph=graph,
             preamble="",
             source_file="main.py",
         )
@@ -514,11 +522,11 @@ class TestGraphToCodeMultiPathTraversal:
         from haute.schemas import SavePipelineRequest
 
         svc = SavePipelineService(project_root)
-        graph_dict = self._make_graph_with_crafted_submodel_file("../escape/oops.py")
+        graph = self._make_graph_with_crafted_submodel_file("../escape/oops.py")
         req = SavePipelineRequest(
             name="main",
             description="",
-            graph=graph_dict,
+            graph=graph,
             preamble="",
             source_file="main.py",
         )
@@ -669,7 +677,6 @@ class TestSaveServiceTransaction:
         absent (staged-and-never-renamed) or rolled back (deleted on
         failure).
         """
-        from haute._types import GraphNode, NodeData, PipelineGraph
         from haute.routes._save_pipeline import SavePipelineService
         from haute.schemas import SavePipelineRequest
 
@@ -681,37 +688,18 @@ class TestSaveServiceTransaction:
         # module file does NOT exist before save
         assert not module_path.exists()
 
+        child = GraphNode(
+            id="a",
+            data=NodeData(
+                label="a",
+                nodeType="polars",
+                config={"code": "df"},
+            ),
+        )
         graph = PipelineGraph(
-            nodes=[
-                GraphNode(
-                    id="a",
-                    data=NodeData(
-                        label="a",
-                        nodeType="polars",
-                        config={"code": "df"},
-                    ),
-                ),
-            ],
+            nodes=[_submodel_occurrence("sm1")],
             edges=[],
-            submodels={
-                "sm1": {
-                    "file": "modules/sm1.py",
-                    "childNodeIds": ["a"],
-                    "graph": {
-                        "nodes": [
-                            {
-                                "id": "a",
-                                "data": {
-                                    "label": "a",
-                                    "nodeType": "polars",
-                                    "config": {"code": "df"},
-                                },
-                            },
-                        ],
-                        "edges": [],
-                    },
-                }
-            },
+            submodels={"sm1": _submodel_definition("sm1", child)},
         )
         req = SavePipelineRequest(
             name="main",
@@ -1051,8 +1039,8 @@ class TestTransactionalWrapperFieldForwarding:
     from an already-parsed graph.  Every graph field the save path
     consumes must be forwarded — a dropped field silently erases user
     content on the next save.  ``preserved_blocks`` was dropped: any
-    caller saving a parsed graph (submodel create/dissolve, assistant
-    edits) deleted every ``# haute:preserve`` block from the file.
+    caller saving a parsed graph (for example, assistant edits) deleted
+    every ``# haute:preserve`` block from the file.
     """
 
     def test_preserved_blocks_survive_transactional_save(self, project_root: Path) -> None:

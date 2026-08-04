@@ -100,7 +100,7 @@ class TestGenApiInput:
         assert "def PolicyData()" in code
         assert "resolve_api_input_from_config" in code
         assert "data/api_input.parquet" not in code
-        assert "base_dir=Path(__file__).resolve().parent" in code
+        assert "base_dir=_HAUTE_CONFIG_BASE" in code
         _compile_node_code(code)
 
     def test_csv_api_input(self) -> None:
@@ -1102,6 +1102,7 @@ class TestCodegenExecValidation:
         exec(
             "import polars as pl\nimport haute\n"
             "from pathlib import Path\n"
+            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
             "pipeline = haute.Pipeline('exec_test')\n\n"
             f"{code}\n",
             ns,
@@ -1247,6 +1248,7 @@ class TestCodegenExecValidation:
         exec(
             "import polars as pl\nimport haute\n"
             "from pathlib import Path\n"
+            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
             "pipeline = haute.Pipeline('exec_test')\n\n"
             f"{code}\n",
             ns,
@@ -1297,6 +1299,7 @@ class TestCodegenExecValidation:
         exec(
             "import polars as pl\nimport haute\n"
             "from pathlib import Path\n"
+            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
             "pipeline = haute.Pipeline('exec_test')\n\n"
             f"{code}\n",
             ns,
@@ -1350,6 +1353,7 @@ class TestCodegenExecValidation:
         exec(
             "import polars as pl\nimport haute\n"
             "from pathlib import Path\n"
+            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
             "pipeline = haute.Pipeline('exec_test')\n\n"
             f"{code}\n",
             ns,
@@ -1430,6 +1434,7 @@ class TestCodegenExecValidation:
         exec(
             "import polars as pl\nimport haute\n"
             "from pathlib import Path\n"
+            "_HAUTE_CONFIG_BASE = Path(__file__).resolve().parent\n"
             "pipeline = haute.Pipeline('exec_test')\n\n"
             f"{code}\n",
             ns,

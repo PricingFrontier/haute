@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 import re
 from collections.abc import Iterator
+from os.path import normcase
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +42,8 @@ from haute._parser_conservation import (
     missing_submodel_error,
 )
 from haute._parser_submodels import (
-    build_unique_submodel_maps,
-    extract_submodel_calls,
+    SubmodelRegistration,
+    extract_submodel_registrations,
     merge_submodels,
     parse_submodel_source,
 )
@@ -786,8 +787,8 @@ def _resolve_kwarg_value(arg_name: str, value_node: ast.expr) -> Any:
         ) from exc
 
 
-def _recover_submodel_paths(source: str) -> list[str]:
-    """Recover ``pipeline.submodel("path")`` literal paths from broken source.
+def _recover_submodel_registrations(source: str) -> list[SubmodelRegistration]:
+    """Recover canonical ``pipeline.submodel(...)`` calls from broken source.
 
     The submodel calls live at module top level, so a syntax error deeper in
     a function body usually leaves them intact and extractable.  The scan is
@@ -796,7 +797,7 @@ def _recover_submodel_paths(source: str) -> list[str]:
     while silently dropping these would make the fallback graph unsafe to
     save.
     """
-    paths: list[str] = []
+    registrations: list[SubmodelRegistration] = []
     unrecoverable: list[dict[str, str | int]] = []
     for m in _iter_top_level_anchor_matches(source, _RE_SUBMODEL_ANCHOR):
         line_no = source.count("\n", 0, m.start()) + 1
@@ -819,7 +820,7 @@ def _recover_submodel_paths(source: str) -> list[str]:
             unrecoverable.append({"line": line_no, "source": span.strip()})
             continue
         try:
-            paths.extend(extract_submodel_calls(span_tree))
+            registrations.extend(extract_submodel_registrations(span_tree))
         except ParseError:
             unrecoverable.append({"line": line_no, "source": span.strip()})
             continue
@@ -828,7 +829,25 @@ def _recover_submodel_paths(source: str) -> list[str]:
             "Regex fallback could not recover submodel reference(s).",
             unrecoverable_references=unrecoverable,
         )
-    return paths
+
+    aliases: dict[str, int | None] = {}
+    instance_ids: dict[str, int | None] = {}
+    for registration in registrations:
+        if registration.alias in aliases:
+            raise ParseError(
+                "Submodel instance alias is duplicated in the parent source.",
+                alias=registration.alias,
+                lines=[aliases[registration.alias], registration.line],
+            )
+        if registration.instance_id in instance_ids:
+            raise ParseError(
+                "Submodel instance id is duplicated in the parent source.",
+                instance_id=registration.instance_id,
+                lines=[instance_ids[registration.instance_id], registration.line],
+            )
+        aliases[registration.alias] = registration.line
+        instance_ids[registration.instance_id] = registration.line
+    return registrations
 
 
 def _recover_submodels(
@@ -840,50 +859,104 @@ def _recover_submodels(
     submodel_base_dir: Path,
     *,
     flatten: bool,
-) -> tuple[PipelineGraph, dict[str, PipelineGraph], dict[str, str], list[str]]:
+) -> tuple[
+    PipelineGraph,
+    dict[str, PipelineGraph],
+    dict[str, str],
+    list[str],
+    set[str],
+]:
     """Recover and merge submodels for the fallback graph (healthy-path parity)."""
-    submodel_paths = _recover_submodel_paths(source)
-    if not submodel_paths:
-        return graph, {}, {}, []
+    registrations = _recover_submodel_registrations(source)
+    if not registrations:
+        return graph, {}, {}, [], set()
 
     resolved_root = submodel_base_dir.resolve()
-    resolved: list[tuple[str, Path, Path]] = []
+    resolved: list[tuple[SubmodelRegistration, Path, Path, str]] = []
     missing_paths: list[str] = []
 
-    for rel_path in submodel_paths:
+    for registration in registrations:
         try:
             sm_filepath, sm_base_dir = resolve_submodel_reference(
-                rel_path,
+                registration.path,
                 pipeline_dir=base_dir,
                 project_root=resolved_root,
             )
         except ValueError as exc:
             raise ParseError(
                 "pipeline.submodel() path escapes the project directory",
-                path=rel_path,
+                path=registration.path,
             ) from exc
         if not sm_filepath.is_file():
-            missing_paths.append(rel_path)
+            missing_paths.append(registration.path)
             continue
-        resolved.append((rel_path, sm_filepath, sm_base_dir))
+        resolved.append(
+            (registration, sm_filepath, sm_base_dir, normcase(str(sm_filepath.resolve())))
+        )
 
     if missing_paths:
         raise missing_submodel_error(missing_paths)
 
-    parsed_submodels: list[tuple[str, PipelineGraph]] = []
-    for rel_path, sm_filepath, sm_base_dir in resolved:
+    by_source: dict[
+        str,
+        tuple[str, Path, Path, list[SubmodelRegistration]],
+    ] = {}
+    for registration, sm_filepath, sm_base_dir, source_key in resolved:
+        existing = by_source.get(source_key)
+        if existing is None:
+            by_source[source_key] = (
+                registration.path,
+                sm_filepath,
+                sm_base_dir,
+                [registration],
+            )
+        else:
+            existing[3].append(registration)
+
+    submodel_graphs: dict[str, PipelineGraph] = {}
+    submodel_files: dict[str, str] = {}
+    definition_sources: dict[str, str] = {}
+    for source_key, (rel_path, sm_filepath, sm_base_dir, source_registrations) in by_source.items():
+        definition_ids = {registration.definition_id for registration in source_registrations}
+        if len(definition_ids) != 1:
+            raise ParseError(
+                "One resolved submodel file is registered with conflicting definition ids.",
+                source_file=str(sm_filepath),
+                definition_ids=sorted(definition_ids),
+            )
+        definition_id = next(iter(definition_ids))
+        previous_source = definition_sources.get(definition_id)
+        if previous_source is not None and previous_source != source_key:
+            raise ParseError(
+                "One submodel definition id resolves to multiple files.",
+                definition_id=definition_id,
+                source_files=[previous_source, source_key],
+            )
+        definition_sources[definition_id] = source_key
         sm_source = read_user_text(sm_filepath)
         sm_graph = parse_submodel_source(
             sm_source,
             source_file=str(sm_filepath),
             _base_dir=sm_base_dir,
         )
-        parsed_submodels.append((rel_path, sm_graph))
+        submodel_graphs[definition_id] = sm_graph
+        submodel_files[definition_id] = rel_path
 
-    submodel_graphs, submodel_files = build_unique_submodel_maps(parsed_submodels)
-
-    merged = merge_submodels(graph, submodel_graphs, submodel_files, connect_pairs, flatten=flatten)
-    return merged, submodel_graphs, submodel_files, submodel_paths
+    merged = merge_submodels(
+        graph,
+        submodel_graphs,
+        submodel_files,
+        connect_pairs,
+        registrations=registrations,
+        flatten=flatten,
+    )
+    return (
+        merged,
+        submodel_graphs,
+        submodel_files,
+        [registration.path for registration in registrations],
+        {registration.alias for registration in registrations},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1039,8 +1112,15 @@ def fallback_parse(
     submodel_graphs: dict[str, PipelineGraph] = {}
     submodel_files: dict[str, str] = {}
     submodel_paths: list[str] = []
+    submodel_aliases: set[str] = set()
     if submodel_base_dir is not None:
-        graph, submodel_graphs, submodel_files, submodel_paths = _recover_submodels(
+        (
+            graph,
+            submodel_graphs,
+            submodel_files,
+            submodel_paths,
+            submodel_aliases,
+        ) = _recover_submodels(
             graph,
             source,
             source_file,
@@ -1058,6 +1138,8 @@ def fallback_parse(
         submodel_paths=submodel_paths,
         submodel_graphs=submodel_graphs,
         submodel_files=submodel_files,
+        submodel_instance_paths=submodel_paths,
+        submodel_aliases=submodel_aliases,
     )
 
     return graph

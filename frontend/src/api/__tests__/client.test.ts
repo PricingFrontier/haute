@@ -242,6 +242,7 @@ function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
   return {
     status: "ok",
     submodel_name: "pricing",
+    definition_id: "definition_pricing",
     submodel_file: "modules/pricing.py",
     graph: {
       nodes: [dummyGraph.nodes[0]],
@@ -256,9 +257,9 @@ function makeSubmodelGraphResponse(overrides: Record<string, unknown> = {}) {
 function makeDissolveSubmodelResponse(overrides: Record<string, unknown> = {}) {
   return {
     status: "ok",
+    instance_id: "instance_pricing",
+    definition_id: "definition_pricing",
     source_revision: "revision-dissolve",
-    submodel_file_deleted: true,
-    retained_submodel_file: null,
     graph: {
       nodes: dummyGraph.nodes,
       edges: dummyGraph.edges,
@@ -627,7 +628,7 @@ describe("endpoint contracts", () => {
       preserved_blocks: ["import polars as pl"],
     })
     await dissolveSubmodel({
-      submodel_name: "pricing", graph: dummyGraph, preamble: "", source_file: "pipe.py",
+      instance_id: "pricing", graph: dummyGraph, preamble: "", source_file: "pipe.py",
       pipeline_name: "test", base_revision: "rev-1", preserved_blocks: ["import polars as pl"],
     })
 

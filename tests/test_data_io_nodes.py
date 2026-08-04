@@ -1410,5 +1410,6 @@ def test_data_input_codegen_passes_discovered_project_root() -> None:
         [],
     )
 
-    assert "get_project_root(base)" in code
+    assert "get_project_root(_HAUTE_CONFIG_BASE)" in code
+    assert "base_dir=_HAUTE_CONFIG_BASE" in code
     assert "project_root=project_root" in code

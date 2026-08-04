@@ -119,11 +119,28 @@ function makeNode(overrides: Partial<SimpleNode> = {}): SimpleNode {
   }
 }
 
+function makeDefinition(
+  definitionId: string,
+  nodes: SimpleNode[],
+  edges: SimpleEdge[] = [],
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    definitionId,
+    file: `modules/${definitionId}.py`,
+    graph: { nodes, edges },
+    inputPorts: [],
+    outputPorts: [],
+    ...overrides,
+  }
+}
+
 type RenderPanelOverrides = Partial<Parameters<typeof NodePanel>[0]> & {
   edges?: SimpleEdge[]
   allNodes?: SimpleNode[]
   submodels?: Record<string, unknown>
   preamble?: string
+  readOnly?: boolean
 }
 
 function renderPanel(overrides: RenderPanelOverrides = {}) {
@@ -220,6 +237,35 @@ describe("NodePanel", () => {
     expect(props.onUpdateNode).not.toHaveBeenCalled()
     fireEvent.blur(input)
     expect(props.onUpdateNode).toHaveBeenCalledWith("node_1", expect.objectContaining({ label: "Renamed" }))
+  })
+
+  it("makes a drilled instance label and data-input config read-only", () => {
+    const onUpdateNode = vi.fn(() => ({ ok: true as const }))
+    renderPanel({
+      readOnly: true,
+      onUpdateNode,
+      node: makeNode({
+        id: "input_1",
+        data: {
+          label: "Claims input",
+          description: "",
+          nodeType: "dataInput",
+          config: { format: "parquet", path: "data/claims.parquet" },
+        },
+      }),
+    })
+
+    expect(screen.getByDisplayValue("Claims input")).toBeDisabled()
+    expect(screen.getByTestId("node-panel-editor")).toHaveAttribute("inert")
+    const onUpdate = dataInputEditorProps.at(-1)?.onUpdate as (
+      key: string,
+      value: unknown,
+    ) => { ok: boolean; error?: string }
+    expect(onUpdate("path", "data/other.parquet")).toEqual({
+      ok: false,
+      error: "This submodel instance is read-only.",
+    })
+    expect(onUpdateNode).not.toHaveBeenCalled()
   })
 
   it("clears cached result columns when config changes", () => {
@@ -892,7 +938,7 @@ describe("NodePanel", () => {
       expect(sources[2].frameUnresolved).not.toBe(true)
     })
 
-    it("renders drilled submodel Input frame names instead of the composite label", () => {
+    it("renders drilled submodel Input public port ids as input names", () => {
       const target = makeNode({
         id: "quote",
         data: { label: "quote", description: "", nodeType: "polars", config: {} },
@@ -905,10 +951,12 @@ describe("NodePanel", () => {
           description: "",
           nodeType: "submodelPort",
           config: {},
+          instanceId: "instance_pricing",
+          definitionId: "pricing",
           portDirection: "input",
           ports: [
-            { id: "row-quote", label: "quote_info" },
-            { id: "row-batch", label: "nb_batch2" },
+            { id: "quote_info", label: "Quote info", parentEdges: [] },
+            { id: "nb_batch2", label: "NB batch", parentEdges: [] },
           ],
           externalNodeIds: ["quote_api", "nb_batch"],
         },
@@ -917,14 +965,14 @@ describe("NodePanel", () => {
         {
           id: "edge_quote",
           source: boundaryInput.id,
-          sourceHandle: "row-quote",
+          sourceHandle: "quote_info",
           target: target.id,
           targetHandle: null,
         },
         {
           id: "edge_batch",
           source: boundaryInput.id,
-          sourceHandle: "row-batch",
+          sourceHandle: "nb_batch2",
           target: target.id,
           targetHandle: null,
         },
@@ -1226,18 +1274,18 @@ describe("NodePanel", () => {
       expect(props.onDeleteEdge).toHaveBeenNthCalledWith(2, "edge_drivers")
     })
 
-    it("derives a flattened submodel output name from the referenced child label", () => {
+    it("derives a submodel-fed input name from the occurrence alias and public port id", () => {
       const target = makeNode({
         id: "target",
         data: { label: "Target", description: "", nodeType: "polars", config: {} },
       })
-      const placeholder = makeNode({
-        id: "submodel__pricing",
+      const occurrence = makeNode({
+        id: "instance_pricing",
         data: {
           label: "Pricing Module",
           description: "",
           nodeType: "submodel",
-          config: { childNodeIds: ["child_output"], outputPorts: ["child_output"] },
+          config: { definitionId: "pricing", alias: "pricing" },
         },
       })
       const child = makeNode({
@@ -1252,22 +1300,32 @@ describe("NodePanel", () => {
 
       renderPanel({
         node: target,
-        allNodes: [placeholder, target],
+        allNodes: [occurrence, target],
         edges: [
           {
             id: "edge_child",
-            source: placeholder.id,
+            source: occurrence.id,
             target: target.id,
-            sourceHandle: "out__child_output",
+            sourceHandle: "out__premium",
           },
         ],
-        submodels: { pricing: { graph: { nodes: [child], edges: [] } } },
+        submodels: {
+          pricing: makeDefinition("pricing", [child], [], {
+            outputPorts: [
+              {
+                portId: "premium",
+                label: "Premium",
+                source: { nodeId: "child_output", handleId: null },
+              },
+            ],
+          }),
+        },
       })
 
       expect(latestTransformInputSources()).toEqual([
         expect.objectContaining({
           edgeId: "edge_child",
-          name: "Child_Output",
+          name: "pricing__premium",
           sourceLabel: "Pricing Module",
         }),
       ])
@@ -1436,13 +1494,11 @@ describe("NodePanel", () => {
       { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
     ]
     const submodels = {
-      model_stuff: {
-        file: "modules/model_stuff.py",
-        graph: {
-          nodes: [saleFlagNode, originalNode],
-          edges: [{ id: "original-input", source: "sale_flag", target: "competitor_features" }],
-        },
-      },
+      model_stuff: makeDefinition(
+        "model_stuff",
+        [saleFlagNode, originalNode],
+        [{ id: "original-input", source: "sale_flag", target: "competitor_features" }],
+      ),
     }
 
     renderPanel({
@@ -1474,8 +1530,13 @@ describe("NodePanel", () => {
       data: { label: "premium", description: "", nodeType: "scenarioExpander", config: {} },
     })
     const submodelNode = makeNode({
-      id: "submodel__model_stuff",
-      data: { label: "model_stuff", description: "", nodeType: "submodel", config: {} },
+      id: "instance_model_stuff",
+      data: {
+        label: "model_stuff",
+        description: "",
+        nodeType: "submodel",
+        config: { definitionId: "model_stuff", alias: "model_stuff" },
+      },
     })
     const instanceNode = makeNode({
       id: "competitor_features_scenarios",
@@ -1490,8 +1551,8 @@ describe("NodePanel", () => {
       {
         id: "boundary-input",
         source: "sale_flag",
-        target: "submodel__model_stuff",
-        targetHandle: "in__competitor_features",
+        target: "instance_model_stuff",
+        targetHandle: "in__competitor",
       },
       { id: "instance-input", source: "premium", target: "competitor_features_scenarios" },
     ]
@@ -1501,12 +1562,15 @@ describe("NodePanel", () => {
       edges,
       allNodes: [saleFlagNode, premiumNode, submodelNode, instanceNode],
       submodels: {
-        model_stuff: {
-          graph: {
-            nodes: [originalNode],
-            edges: [],
-          },
-        },
+        model_stuff: makeDefinition("model_stuff", [originalNode], [], {
+          inputPorts: [
+            {
+              portId: "competitor",
+              label: "Competitor",
+              targets: [{ nodeId: "competitor_features", handleId: null }],
+            },
+          ],
+        }),
       },
     })
 
@@ -1539,7 +1603,7 @@ describe("NodePanel", () => {
       node: instanceNode,
       allNodes: [visibleOriginal, instanceNode],
       submodels: {
-        hidden_model: { graph: { nodes: [hiddenOriginal], edges: [] } },
+        hidden_model: makeDefinition("hidden_model", [hiddenOriginal]),
       },
     })
 
@@ -1572,8 +1636,8 @@ describe("NodePanel", () => {
       node: instanceNode,
       allNodes: [instanceNode],
       submodels: {
-        first_model: { graph: { nodes: [firstOriginal], edges: [] } },
-        second_model: { graph: { nodes: [secondOriginal], edges: [] } },
+        first_model: makeDefinition("first_model", [firstOriginal]),
+        second_model: makeDefinition("second_model", [secondOriginal]),
       },
     })
 
@@ -1606,7 +1670,7 @@ describe("NodePanel", () => {
       node: instanceNode,
       allNodes: [instanceNode],
       submodels: {
-        duplicated_model: { graph: { nodes: [firstOriginal, secondOriginal], edges: [] } },
+        duplicated_model: makeDefinition("duplicated_model", [firstOriginal, secondOriginal]),
       },
     })
 
@@ -1637,7 +1701,9 @@ describe("NodePanel", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("Broken instance reference")
     expect(screen.getByRole("alert")).toHaveTextContent("broken_model")
-    expect(screen.getByRole("alert")).toHaveTextContent("graph.nodes")
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "does not satisfy the canonical identity and port contract",
+    )
   })
 
   it("renders an in-panel diagnostic for malformed instanceOf values", () => {
