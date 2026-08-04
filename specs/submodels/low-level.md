@@ -102,9 +102,13 @@ Expansion is a pure transform per instance:
    parent binding before removing an occurrence.
 2. Clone definition nodes and edges with qualified ids derived from the
    immutable instance id plus local id; record reversible origin metadata.
-3. Rewrite all schema-declared local-node references through one registry
-   keyed by node type/config field. A declared reference outside the local
-   graph is an error. Unregistered opaque fields are unchanged, never guessed.
+3. Build one schema-declared reference map per occurrence from local node ids
+   to qualified runtime ids and from each bound public input port id to its
+   upstream parent identity. Rewrite cloned child configs through that map.
+   Also rewrite remaining parent consumers from the selected occurrence's
+   canonical `<alias>__<outputPortId>` identity to the qualified runtime
+   output source. An unbound, ambiguous, or otherwise stale declared reference
+   is an error. Unregistered opaque fields are unchanged, never guessed.
 4. Expand each input binding to the port's ordered targets and each output
    binding from the port's single source, preserving authored endpoint handles
    and regenerating deterministic edge ids.
@@ -240,7 +244,10 @@ document and returns the new revision.
 7. Create one typed `SubmodelDefinition` and one `SUBMODEL` occurrence whose
    config is exactly `{definitionId, alias}`. Rewire parent edges only through
    `in__<portId>`/`out__<portId>` handles, preserving still-hidden authored
-   ports in both edge data and deterministic ids.
+   ports in both edge data and deterministic ids. For every outgoing boundary,
+   rewrite schema-declared references on its remaining parent consumer from
+   the selected internal source id to the canonical
+   `<alias>__<outputPortId>` identity in the same pure transform.
 8. Return a new parent graph with the prior registry entries preserved plus the
    definition and occurrence. Return `SubmodelGraphResult` metadata for the
    transform-only route; the input graph is untouched.
@@ -322,7 +329,13 @@ Acquires `save_lock` and runs the body in a threadpool:
 - **Flatten is identity-preserving when the graph has no occurrences.** An
   explicit unknown `target_instance_id` is an error rather than a no-op.
 - **Inbound edge-join roles survive flattening.** A public input port targeting
-  an edge-join endpoint restores its authored base/join `targetHandle`.
+  an edge-join endpoint restores its authored base/join `targetHandle` and
+  rewrites the port-id role reference to the bound upstream parent identity.
+- **Outbound edge-join roles survive extraction and flattening.** A remaining
+  edge join fed by one or more selected sources uses distinct canonical
+  `<alias>__<outputPortId>` role identities while hierarchical, then qualified
+  runtime source ids after expansion; two outputs of one occurrence never
+  collapse to the shared occurrence id.
 - **`_submodel_paths.py` checks the resolved pipeline-relative path before
   returning it** — a relative reference that escapes the project fails closed.
 - **The Windows reserved-name check is platform-unconditional.** It runs on

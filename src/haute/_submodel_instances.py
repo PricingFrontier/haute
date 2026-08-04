@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
-from haute._graph_utils import _edge_id
+from haute._graph_utils import _edge_id, _sanitize_func_name
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -49,6 +49,13 @@ def qualified_runtime_node_id(instance_id: str, local_node_id: str) -> str:
     if not instance_id or not local_node_id:
         raise ValueError("Runtime submodel ids require non-empty instance and local ids.")
     return f"submodel_runtime/{quote(instance_id, safe='')}/{quote(local_node_id, safe='')}"
+
+
+def canonical_downstream_identity(alias: str, port_id: str) -> str:
+    """Return the stable config identity of one public submodel output."""
+    if not alias or not port_id:
+        raise ValueError("Canonical submodel output identities require alias and port id.")
+    return _sanitize_func_name(f"{alias}__{port_id}")
 
 
 def _definition_registry(graph: PipelineGraph) -> dict[str, SubmodelDefinition]:
@@ -300,19 +307,21 @@ def _node_reference_fields(node_type: NodeType) -> frozenset[str]:
     )
 
 
-def rewrite_submodel_alias_references(
+def rewrite_node_references(
     nodes: list[GraphNode],
-    alias_to_instance_id: dict[str, str],
+    reference_map_by_node: dict[str, dict[str, str]],
 ) -> list[GraphNode]:
-    """Rewrite schema-declared parent config references from aliases to ids."""
+    """Rewrite only schema-declared node-reference config fields."""
     rewritten: list[GraphNode] = []
     for node in nodes:
         config = dict(node.data.config)
         changed = False
+        references = reference_map_by_node.get(node.id, {})
         for field in _node_reference_fields(node.data.nodeType):
             reference = config.get(field)
-            if isinstance(reference, str) and reference in alias_to_instance_id:
-                config[field] = alias_to_instance_id[reference]
+            replacement = references.get(reference) if isinstance(reference, str) else None
+            if replacement is not None:
+                config[field] = replacement
                 changed = True
         if not changed:
             rewritten.append(node)
@@ -328,11 +337,19 @@ def rewrite_submodel_alias_references(
     return rewritten
 
 
+def rewrite_submodel_alias_references(
+    nodes: list[GraphNode],
+    alias_to_instance_id: dict[str, str],
+) -> list[GraphNode]:
+    """Rewrite schema-declared parent config references from aliases to ids."""
+    return rewrite_node_references(nodes, {node.id: alias_to_instance_id for node in nodes})
+
+
 def _rewrite_config_references(
     node: GraphNode,
     *,
     instance: ResolvedSubmodelInstance,
-    id_map: dict[str, str],
+    reference_map: dict[str, str],
 ) -> dict[str, Any]:
     config = dict(node.data.config)
     for field in _node_reference_fields(node.data.nodeType):
@@ -350,7 +367,7 @@ def _rewrite_config_references(
                 field=field,
                 value=raw_reference,
             )
-        qualified = id_map.get(raw_reference)
+        qualified = reference_map.get(raw_reference)
         if qualified is None:
             raise ParseError(
                 "Submodel config contains a stale declared node-id reference.",
@@ -359,7 +376,7 @@ def _rewrite_config_references(
                 local_node_id=node.id,
                 field=field,
                 reference=raw_reference,
-                known_local_node_ids=sorted(id_map),
+                known_reference_ids=sorted(reference_map),
             )
         config[field] = qualified
 
@@ -368,6 +385,7 @@ def _rewrite_config_references(
 
 def _clone_definition(
     instance: ResolvedSubmodelInstance,
+    reference_map: dict[str, str],
 ) -> tuple[list[GraphNode], list[GraphEdge], dict[str, str]]:
     definition_graph = instance.definition.graph
     local_ids = [node.id for node in definition_graph.nodes]
@@ -398,7 +416,7 @@ def _clone_definition(
                     config=_rewrite_config_references(
                         node,
                         instance=instance,
-                        id_map=id_map,
+                        reference_map=reference_map,
                     ),
                 ),
             },
@@ -567,14 +585,69 @@ def expand_submodel_instances(
         )
 
     selected = [instances[node.id] for node in graph.nodes if node.id in selected_ids]
+    id_maps = {
+        instance.node.id: {
+            node.id: qualified_runtime_node_id(instance.node.id, node.id)
+            for node in instance.definition.graph.nodes
+        }
+        for instance in selected
+    }
+    reference_maps = {instance_id: dict(id_map) for instance_id, id_map in id_maps.items()}
+
+    def add_reference(
+        reference_map: dict[str, str],
+        *,
+        key: str,
+        value: str,
+        instance: ResolvedSubmodelInstance,
+        edge: GraphEdge,
+    ) -> None:
+        previous = reference_map.get(key)
+        if previous is not None and previous != value:
+            raise ParseError(
+                "Submodel boundary reference maps ambiguously to multiple runtime ids.",
+                instance_id=instance.node.id,
+                definition_id=instance.config.definition_id,
+                edge_id=edge.id,
+                reference=key,
+                runtime_ids=sorted({previous, value}),
+            )
+        reference_map[key] = value
+
+    for edge in graph.edges:
+        target_instance = instances.get(edge.target)
+        if target_instance is None or edge.target not in selected_ids:
+            continue
+        input_port = _input_port(target_instance, edge)
+        source_instance = instances.get(edge.source)
+        if edge.source in selected_ids:
+            if source_instance is None:
+                raise ParseError(
+                    "Selected submodel source instance could not be resolved.", edge_id=edge.id
+                )
+            output = _output_port(source_instance, edge)
+            source_identity = id_maps[edge.source][output.source.node_id]
+        elif source_instance is not None:
+            output = _output_port(source_instance, edge)
+            source_identity = canonical_downstream_identity(
+                source_instance.config.alias, output.port_id
+            )
+        else:
+            source_identity = edge.source
+        add_reference(
+            reference_maps[edge.target],
+            key=input_port.port_id,
+            value=source_identity,
+            instance=target_instance,
+            edge=edge,
+        )
+
     cloned_nodes: list[GraphNode] = []
     cloned_edges: list[GraphEdge] = []
-    id_maps: dict[str, dict[str, str]] = {}
     for instance in selected:
-        nodes, edges, id_map = _clone_definition(instance)
+        nodes, edges, _ = _clone_definition(instance, reference_maps[instance.node.id])
         cloned_nodes.extend(nodes)
         cloned_edges.extend(edges)
-        id_maps[instance.node.id] = id_map
 
     remaining_node_ids = {node.id for node in graph.nodes if node.id not in selected_ids}
     runtime_ids = [node.id for node in cloned_nodes]
@@ -652,7 +725,35 @@ def expand_submodel_instances(
                     )
                 )
 
-    remaining_nodes = [node for node in graph.nodes if node.id not in selected_ids]
+    parent_reference_maps: dict[str, dict[str, str]] = {}
+    for edge in graph.edges:
+        source_instance = instances.get(edge.source)
+        if (
+            source_instance is None
+            or edge.source not in selected_ids
+            or edge.target in selected_ids
+        ):
+            continue
+        output = _output_port(source_instance, edge)
+        key = canonical_downstream_identity(source_instance.config.alias, output.port_id)
+        value = id_maps[edge.source][output.source.node_id]
+        target_map = parent_reference_maps.setdefault(edge.target, {})
+        previous = target_map.get(key)
+        if previous is not None and previous != value:
+            raise ParseError(
+                "Parent boundary reference maps ambiguously to multiple runtime ids.",
+                instance_id=edge.source,
+                edge_id=edge.id,
+                target_id=edge.target,
+                reference=key,
+                runtime_ids=sorted({previous, value}),
+            )
+        target_map[key] = value
+
+    remaining_nodes = rewrite_node_references(
+        [node for node in graph.nodes if node.id not in selected_ids],
+        parent_reference_maps,
+    )
     remaining_instances = {
         instance.config.definition_id
         for instance_id, instance in instances.items()

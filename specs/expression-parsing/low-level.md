@@ -7,7 +7,7 @@
 | `src/haute/parser.py` | Public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates the AST-vs-regex-fallback branch, pipeline metadata/node/edge extraction, submodel resolution + merge, graph-shape validation, and warning aggregation for a whole pipeline `.py` file. |
 | `src/haute/_parser_conservation.py` | Shared fail-loud acceptance gate for both parser paths. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_regex.py` | `fallback_parse` and its helpers: a regex-anchored + AST-fragment recovery parser used when `ast.parse` fails on the whole file. Locates `@pipeline.<type>` decorator blocks, `pipeline.connect()`/`pipeline.submodel()` call sites, and pipeline metadata textually, then re-parses each recovered fragment with real `ast` wherever possible. |
-| `src/haute/_parser_submodels.py` | `extract_submodel_calls` / `parse_submodel_source` / `merge_submodels`: resolves `pipeline.submodel("path")` references, parses each referenced submodel file into its own `PipelineGraph`, and merges child graphs into the parent (hierarchical occurrence or flattened). |
+| `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
 
 ## Key types and data structures
@@ -276,7 +276,7 @@ Tests live under `tests/`, split by concern:
   decorator-kwarg value-parsing policy (literals + `Contract(...)` only, everything else fails
   loud) across scalar/compound/multiple/degenerate/invalid-syntax cases; a dedicated TDD gate
   regression-tests one specific historical codebase-review finding.
-- **`test_parser_submodels.py`** — `extract_submodel_calls`, `parse_submodel_source`,
+- **`test_parser_submodels.py`** — `extract_submodel_registrations`, `parse_submodel_source`,
   `merge_submodels`, and cross-boundary-edge reconstruction.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node

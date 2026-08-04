@@ -39,7 +39,7 @@ from haute._graph_utils import (
 )
 from haute._logging import get_logger
 from haute._registry import NODE_REGISTRY
-from haute._submodel_instances import resolve_submodel_instances
+from haute._submodel_instances import canonical_downstream_identity, resolve_submodel_instances
 from haute._topo import topo_sort_ids
 from haute._types import (
     NODE_TYPE_TO_DECORATOR,
@@ -1220,9 +1220,23 @@ def _graph_to_code_multi_instances(
                     endpoint=endpoint,
                     node_id=node_id,
                 )
+
+    def parent_edge_source_identity(edge: GraphEdge) -> str:
+        source_instance = instances.get(edge.source)
+        if source_instance is None:
+            return edge.source
+        port_id = _canonical_port_id(
+            edge.sourceHandle,
+            prefix="out__",
+            edge=edge,
+            endpoint="source",
+        )
+        return canonical_downstream_identity(source_instance.config.alias, port_id)
+
     ordered_parent_edges = _order_edge_join_incoming_edges(
         list(graph.edges),
         node_map,
+        source_id_for_edge=parent_edge_source_identity,
     )
     sorted_root_nodes = _topo_sort(
         root_nodes,
@@ -1253,9 +1267,10 @@ def _graph_to_code_multi_instances(
                 edge=edge,
                 endpoint="source",
             )
-            source_name = _sanitize_func_name(f"{source_instance.config.alias}__{port_id}")
-            source_id = edge.source
-            source_func_name = source_instance.config.alias
+            source_identity = canonical_downstream_identity(source_instance.config.alias, port_id)
+            source_name = source_identity
+            source_id = source_identity
+            source_func_name = source_identity
         root_node_sources.setdefault(edge.target, []).append(source_name)
         root_node_source_ids.setdefault(edge.target, []).append(source_id)
         root_node_source_func_names.setdefault(edge.target, []).append(source_func_name)

@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from haute._graph_utils import _edge_id, edge_input_name
+from haute._submodel_instances import canonical_downstream_identity, rewrite_node_references
 from haute._types import (
     GraphEdge,
     GraphNode,
@@ -465,6 +466,26 @@ def create_submodel_graph(
         child_node_id_set,
         graph.node_map,
     )
+    parent_reference_maps: dict[str, dict[str, str]] = {}
+    for edge in cross_edges:
+        if edge.source not in child_node_id_set:
+            continue
+        port_id = output_ids[(edge.source, edge.sourceHandle)]
+        target_map = parent_reference_maps.setdefault(edge.target, {})
+        identity = canonical_downstream_identity(sm_name, port_id)
+        previous = target_map.get(edge.source)
+        if previous is not None and previous != identity:
+            raise SubmodelValidationError(
+                code="boundary_reference_collision",
+                status_code=400,
+                detail=(
+                    "Cannot create submodel: parent node "
+                    f"{edge.target!r} would map source {edge.source!r} to both "
+                    f"{previous!r} and {identity!r}."
+                ),
+            )
+        target_map[edge.source] = identity
+    parent_nodes = rewrite_node_references(parent_nodes, parent_reference_maps)
     local_child_nodes = _normalise_public_input_config_names(
         local_child_nodes,
         cross_edges,

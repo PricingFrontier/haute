@@ -127,6 +127,13 @@ Edge Join role, trace, and projection references). Unknown or stale declared
 references fail loudly; opaque config fields are never guessed. Cross-instance
 data flow is legal only from a declared public output to a declared public
 input.
+Extraction rewrites those declared references on remaining parent consumers
+from a selected internal source id to the canonical
+`<alias>__<outputPortId>` identity at the same time as it rewires the edge.
+Expansion resolves bound public-input ids to their upstream parent identities
+inside cloned child configs and resolves parent `<alias>__<outputPortId>`
+references to the qualified runtime source id. Edge and config rewrites are one
+atomic transform, so role-bearing consumers never retain a stale identity.
 
 When the editor is drilled into one occurrence, preview and trace requests use
 the parent hierarchical graph and qualify the clicked child from the explicit

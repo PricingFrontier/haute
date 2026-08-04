@@ -14,6 +14,7 @@ from haute._edge_join import (
     resolve_edge_join_role_indices,
 )
 from haute._flatten import flatten_graph
+from haute._submodel_instances import qualified_runtime_node_id
 from haute._types import GraphEdge, GraphNode, NodeData, NodeType, PipelineGraph
 from haute.codegen import graph_to_code, graph_to_code_multi
 from haute.errors import ConfigError
@@ -439,24 +440,12 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                 ),
             ),
             GraphNode(
-                id="join",
+                id="rating-instance",
+                type="submodel",
                 data=NodeData(
-                    label="Join",
-                    nodeType=NodeType.EDGE_JOIN,
-                    config={
-                        "baseInput": "src",
-                        "joinInput": "lookup",
-                        "how": "left",
-                        "on": ["id"],
-                    },
-                ),
-            ),
-            GraphNode(
-                id="lookup",
-                data=NodeData(
-                    label="Lookup",
-                    nodeType=NodeType.CONSTANT,
-                    config={"values": [{"name": "id", "value": "1"}]},
+                    label="rating",
+                    nodeType=NodeType.SUBMODEL,
+                    config={"definitionId": "rating", "alias": "rating"},
                 ),
             ),
         ],
@@ -464,15 +453,16 @@ def _submodel_edge_join_graph() -> PipelineGraph:
             GraphEdge(
                 id="e-src-sm",
                 source="src",
-                target="submodel__rating",
-                targetHandle="in__join",
+                target="rating-instance",
+                targetHandle="in__base",
             ),
         ],
         submodels={
             "rating": {
+                "definitionId": "rating",
                 "file": "modules/rating.py",
-                "childNodeIds": ["join", "lookup"],
                 "graph": {
+                    "pipeline_name": "rating",
                     "nodes": [
                         {
                             "id": "join",
@@ -480,7 +470,7 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                                 "label": "Join",
                                 "nodeType": "edgeJoin",
                                 "config": {
-                                    "baseInput": "src",
+                                    "baseInput": "base",
                                     "joinInput": "lookup",
                                     "how": "left",
                                     "on": ["id"],
@@ -505,6 +495,14 @@ def _submodel_edge_join_graph() -> PipelineGraph:
                         },
                     ],
                 },
+                "inputPorts": [
+                    {
+                        "portId": "base",
+                        "label": "Base",
+                        "targets": [{"nodeId": "join", "handleId": "base"}],
+                    }
+                ],
+                "outputPorts": [],
             },
         },
     )
@@ -513,22 +511,16 @@ def _submodel_edge_join_graph() -> PipelineGraph:
 def test_submodel_parent_codegen_preserves_external_edge_join_target_role() -> None:
     files = graph_to_code_multi(_submodel_edge_join_graph(), pipeline_name="main")
 
-    assert 'pipeline.connect("Src", "Join", target_port="base")' in files["main.py"]
+    assert 'pipeline.connect("Src", "rating", target_port="base")' in files["main.py"]
     assert "pipeline._apply_edge_join" not in files["modules/rating.py"]
     assert "submodel._apply_edge_join" in files["modules/rating.py"]
 
 
-def test_submodel_edge_join_decorator_kwargs_use_emitted_function_names() -> None:
-    """Cross-boundary roles must also be rewritten to emitted function names.
-
-    The submodel join's ``baseInput`` references the parent graph node id
-    ``src``; the emitted submodel file declares that input as the boundary
-    parameter ``Src``, so the decorator must reference ``Src``/``Lookup``
-    or the submodel file can never be reloaded.
-    """
+def test_submodel_edge_join_decorator_kwargs_use_public_input_identity() -> None:
+    """A child edge join names a boundary input by its declared public port id."""
     files = graph_to_code_multi(_submodel_edge_join_graph(), pipeline_name="main")
 
-    assert 'base_input="Src"' in files["modules/rating.py"]
+    assert 'base_input="base"' in files["modules/rating.py"]
     assert 'join_input="Lookup"' in files["modules/rating.py"]
 
 
@@ -608,13 +600,57 @@ def test_submodel_parent_codegen_resolves_external_edge_join_source_roles(
         "inputs",
     )
 
+    occurrence = next(
+        node for node in result.graph.nodes if node.data.nodeType == NodeType.SUBMODEL
+    )
+    definition = result.graph.submodels[occurrence.data.config["definitionId"]]
+    output_port_by_source = {port.source.node_id: port.port_id for port in definition.output_ports}
+
+    def role_identity(source_id: str) -> str:
+        if source_id not in selected_ids:
+            return source_id
+        return f"inputs__{output_port_by_source[source_id]}"
+
+    expected_base_id = role_identity("base")
+    expected_join_id = role_identity("lookup")
+    join_config = result.graph.node_map["join"].data.config
+    assert join_config["baseInput"] == expected_base_id
+    assert join_config["joinInput"] == expected_join_id
+
     files = graph_to_code_multi(result.graph, pipeline_name="main")
 
     main = files["main.py"]
-    assert '@pipeline.edge_join(base_input="Base", join_input="Lookup"' in main
-    assert 'pipeline.connect("Base", "Join", target_port="base")' in main
-    assert 'pipeline.connect("Lookup", "Join", target_port="join")' in main
+    expected_base_name = expected_base_id if "base" in selected_ids else "Base"
+    expected_join_name = expected_join_id if "lookup" in selected_ids else "Lookup"
+    assert (
+        f'@pipeline.edge_join(base_input="{expected_base_name}", join_input="{expected_join_name}"'
+    ) in main
+    for source_id, target_port, root_name in (
+        ("base", "base", "Base"),
+        ("lookup", "join", "Lookup"),
+    ):
+        if source_id in selected_ids:
+            output_port = output_port_by_source[source_id]
+            expected_connect = (
+                f'pipeline.connect("inputs", "Join", source_port="{output_port}", '
+                f'target_port="{target_port}")'
+            )
+        else:
+            expected_connect = (
+                f'pipeline.connect("{root_name}", "Join", target_port="{target_port}")'
+            )
+        assert expected_connect in main
     assert "modules/inputs.py" in files
+
+    flattened = flatten_graph(result.graph)
+    flattened_join_config = flattened.node_map["join"].data.config
+    assert flattened_join_config["baseInput"] == (
+        qualified_runtime_node_id(occurrence.id, "base") if "base" in selected_ids else "base"
+    )
+    assert flattened_join_config["joinInput"] == (
+        qualified_runtime_node_id(occurrence.id, "lookup") if "lookup" in selected_ids else "lookup"
+    )
+    graph_to_code(flattened, pipeline_name="main")
 
 
 def test_save_validation_accepts_cross_boundary_submodel_edge_join(tmp_path: Path) -> None:
@@ -632,53 +668,20 @@ def test_save_validation_accepts_cross_boundary_submodel_edge_join(tmp_path: Pat
 
 
 def test_flattening_submodel_restores_external_edge_join_target_role() -> None:
-    graph = PipelineGraph(
-        nodes=[
-            GraphNode(
-                id="src",
-                data=NodeData(label="Src", nodeType=NodeType.CONSTANT, config={}),
-            ),
-            GraphNode(
-                id="submodel__rating",
-                data=NodeData(label="rating", nodeType=NodeType.SUBMODEL, config={}),
-            ),
-        ],
-        edges=[
-            GraphEdge(
-                id="e-src-sm",
-                source="src",
-                target="submodel__rating",
-                targetHandle="in__join",
-            ),
-        ],
-        submodels={
-            "rating": {
-                "graph": {
-                    "nodes": [
-                        {
-                            "id": "join",
-                            "data": {
-                                "label": "Join",
-                                "nodeType": "edgeJoin",
-                                "config": {
-                                    "baseInput": "src",
-                                    "joinInput": "lookup",
-                                    "how": "left",
-                                    "on": ["id"],
-                                },
-                            },
-                        },
-                    ],
-                    "edges": [],
-                },
-            },
-        },
+    flattened = flatten_graph(_submodel_edge_join_graph())
+
+    join_id = qualified_runtime_node_id("rating-instance", "join")
+    lookup_id = qualified_runtime_node_id("rating-instance", "lookup")
+    edge = next(
+        candidate
+        for candidate in flattened.edges
+        if candidate.source == "src" and candidate.target == join_id
     )
-
-    flattened = flatten_graph(graph)
-
-    edge = next(e for e in flattened.edges if e.source == "src" and e.target == "join")
     assert edge.targetHandle == "base"
+    join_config = flattened.node_map[join_id].data.config
+    assert join_config["baseInput"] == "src"
+    assert join_config["joinInput"] == lookup_id
+    graph_to_code(flattened, pipeline_name="main")
 
 
 def test_edge_join_pipeline_run_honours_configured_roles_for_reversed_connects() -> None:
