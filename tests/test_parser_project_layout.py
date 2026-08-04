@@ -173,3 +173,74 @@ pipeline.submodel(
 
     with pytest.raises(ParseError, match="escapes the project directory"):
         parse_pipeline_file(pipeline_file)
+
+
+def test_pipeline_rejects_conflicting_definition_ids_for_one_file(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".git").mkdir()
+    _write(tmp_path / "shared.py", "")
+    pipeline_file = tmp_path / "main.py"
+    _write(
+        pipeline_file,
+        """\
+import haute
+
+pipeline = haute.Pipeline("main")
+pipeline.submodel(
+    "shared.py",
+    definition_id="definition_one",
+    instance_id="submodel__one",
+    alias="one",
+)
+pipeline.submodel(
+    "shared.py",
+    definition_id="definition_two",
+    instance_id="submodel__two",
+    alias="two",
+)
+""",
+    )
+
+    with pytest.raises(ParseError, match="conflicting definition ids"):
+        parse_pipeline_file(pipeline_file)
+
+
+def test_pipeline_rejects_one_definition_id_for_multiple_files(tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    submodel_source = """\
+import haute
+
+submodel = haute.Submodel(
+    "shared",
+    definition_id="shared",
+    input_ports=[],
+    output_ports=[],
+)
+"""
+    _write(tmp_path / "first.py", submodel_source)
+    _write(tmp_path / "second.py", submodel_source)
+    pipeline_file = tmp_path / "main.py"
+    _write(
+        pipeline_file,
+        """\
+import haute
+
+pipeline = haute.Pipeline("main")
+pipeline.submodel(
+    "first.py",
+    definition_id="shared",
+    instance_id="submodel__first",
+    alias="first",
+)
+pipeline.submodel(
+    "second.py",
+    definition_id="shared",
+    instance_id="submodel__second",
+    alias="second",
+)
+""",
+    )
+
+    with pytest.raises(ParseError, match="definition id resolves to multiple files"):
+        parse_pipeline_file(pipeline_file)
