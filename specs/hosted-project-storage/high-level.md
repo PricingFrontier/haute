@@ -146,6 +146,9 @@ the lock; the slow part — the upload — runs outside it.
   it is lease expiry, plus one shortcut — a claim held by this app's
   own name is always taken over immediately, because the platform runs
   one container per app, so that claim can only be a predecessor's.
+  (The shortcut requires a real platform app name: processes without
+  one share a fallback scope and must wait out each other's lease like
+  strangers.)
   Clean shutdown releases the claim best-effort; unclean death (every
   redeploy, restart, and stop) is the normal case and is what the
   lease expiry exists for. The Files API has no compare-and-swap, so
