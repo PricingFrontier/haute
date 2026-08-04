@@ -562,7 +562,8 @@ class TestBuildNodeFn:
 
     def test_transform_passthrough_without_code(self):
         node = _transform_node("t", code="")
-        _, fn, is_source = _build_node_fn(node)
+        _, fn, is_source = _build_node_fn(node, source_names=["df"])
+        assert is_source is False
         lf = pl.DataFrame({"x": [5]}).lazy()
         df = fn(lf).collect()
         assert df["x"].to_list() == [5]
@@ -1789,16 +1790,11 @@ class TestExecUserCodeErrors:
             _exec_user_code("df = df.totally_fake_method()", ["df"], (lf,))
 
     def test_empty_code_returns_input_unchanged(self):
-        """Empty string code should pass through the input DataFrame."""
+        """Empty code with exactly one configured input remains a passthrough."""
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        # Empty code hits the chain branch since it doesn't start with "."
-        # and doesn't contain "df =", so wraps as df = (\n\n)
-        # Actually, empty code won't start with "." and won't contain "df =",
-        # so it wraps as df = (\n    \n). That's a syntax error.
-        # The hook is that _build_node_fn with empty code returns passthrough.
-        # Let's verify the passthrough path instead:
         node = _transform_node("t", code="")
-        _, fn, _ = _build_node_fn(node)
+        _, fn, is_source = _build_node_fn(node, source_names=["df"])
+        assert is_source is False
         result = fn(lf).collect()
         assert result["x"].to_list() == [1, 2, 3]
 
