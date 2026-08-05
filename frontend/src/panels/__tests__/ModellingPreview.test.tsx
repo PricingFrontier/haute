@@ -61,11 +61,7 @@ describe("ModellingPreview", () => {
 
   it("shows Features tab when feature_importance exists", () => {
     render(<ModellingPreview data={makeData()} nodeId="n1" />)
-    // "Features" appears as both a tab button and a model info label in SummaryTab
-    const matches = screen.getAllByText("Features")
-    expect(matches.length).toBeGreaterThanOrEqual(1)
-    // At least one should be a button (the tab)
-    expect(matches.some(el => el.tagName === "BUTTON")).toBe(true)
+    expect(screen.getByRole("tab", { name: "Features" })).toBeInTheDocument()
   })
 
   it("does not show Loss tab when no loss_history", () => {
@@ -108,7 +104,9 @@ describe("ModellingPreview", () => {
   })
 
   it("shows metrics summary in collapsed state", () => {
-    const result = makeTrainResult({ metrics: { gini: 0.4567, rmse: 0.1234 } })
+    const result = makeTrainResult({
+      final_test_metrics: { gini: 0.4567, rmse: 0.1234 },
+    })
     const data = makeData({ result })
     const { container } = render(<ModellingPreview data={data} nodeId="n1" />)
     expect(container.innerHTML).not.toBe("")
@@ -122,7 +120,7 @@ describe("ModellingPreview", () => {
       ],
     })
     render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
-    const featuresTab = screen.getAllByText("Features").find(el => el.tagName === "BUTTON")!
+    const featuresTab = screen.getByRole("tab", { name: "Features" })
     fireEvent.click(featuresTab)
     expect(screen.getByText("age")).toBeInTheDocument()
   })
@@ -150,7 +148,7 @@ describe("ModellingPreview", () => {
       ],
     })
     render(<ModellingPreview data={makeData({ result })} nodeId="n1" />)
-    const featuresTab = screen.getAllByText("Features").find(el => el.tagName === "BUTTON")!
+    const featuresTab = screen.getByRole("tab", { name: "Features" })
     fireEvent.click(featuresTab)
     expect(screen.getByText("feat_a")).toBeInTheDocument()
     expect(screen.getByText("feat_b")).toBeInTheDocument()

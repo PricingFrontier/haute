@@ -1,0 +1,3 @@
+quote_id,driver_age,region,private_note
+q1,25,north,EVAL_ROW_CANARY
+q2,42,south,ordinary

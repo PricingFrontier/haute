@@ -63,6 +63,6 @@ def priced(quote_with_region: pl.LazyFrame) -> pl.LazyFrame:
     return quote_with_region
 
 
-pipeline.connect("quotes", "quote_with_region")
-pipeline.connect("regions", "quote_with_region")
+pipeline.connect("quotes", "quote_with_region", target_port="base")
+pipeline.connect("regions", "quote_with_region", target_port="join")
 pipeline.connect("quote_with_region", "priced")

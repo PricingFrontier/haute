@@ -1,6 +1,8 @@
 {
   "status": "ok",
   "submodel_name": "pricing",
+  "definition_id": "pricing-definition",
+  "submodel_file": "modules/pricing.py",
   "graph": {
     "nodes": [
       {
@@ -11,6 +13,8 @@
       }
     ],
     "edges": [],
-    "pipeline_name": "pricing"
+    "pipeline_name": "pricing",
+    "preserved_blocks": [],
+    "source_revision": null
   }
 }

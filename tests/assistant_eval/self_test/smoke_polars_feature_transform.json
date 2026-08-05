@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "smoke_polars_feature_transform",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "semantic",
+  "request": "After quotes, add a Polars transform named risk_features. Its code must assign `df = df.with_columns((pl.col(\"driver_age\") >= 25).alias(\"experienced_driver\"))`. Connect quotes to risk_features.",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": [
+      "polars"
+    ],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [
+      {
+        "source": "quotes",
+        "target": "risk_features",
+        "target_handle": null
+      }
+    ],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 6,
+    "max_tool_calls": 12,
+    "max_failed_tool_calls": 1,
+    "max_duplicate_static_reads": 1
+  }
+}

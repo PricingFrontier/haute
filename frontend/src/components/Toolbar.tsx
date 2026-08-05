@@ -46,6 +46,7 @@ interface ToolbarProps {
   wsStatus: WsStatus
   timings?: NodeTiming[]
   memory?: NodeMemory[]
+  editingDisabled?: boolean
 }
 
 export default function Toolbar({
@@ -58,6 +59,7 @@ export default function Toolbar({
   onSave,
   onSaveCommit,
   wsStatus, timings, memory,
+  editingDisabled = false,
 }: ToolbarProps) {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
   const setRowLimit = useSettingsStore((s) => s.setRowLimit)
@@ -260,7 +262,7 @@ export default function Toolbar({
       <button
         data-testid="toolbar-undo"
         onClick={onUndo}
-        disabled={!canUndo}
+        disabled={editingDisabled || !canUndo}
         aria-label="Undo"
         className="p-1.5 rounded-md transition-colors disabled:opacity-20 ml-3 hover-chrome"
         title="Undo (Ctrl+Z)"
@@ -270,7 +272,7 @@ export default function Toolbar({
       <button
         data-testid="toolbar-redo"
         onClick={onRedo}
-        disabled={!canRedo}
+        disabled={editingDisabled || !canRedo}
         aria-label="Redo"
         className="p-1.5 rounded-md transition-colors disabled:opacity-20 hover-chrome"
         title="Redo (Ctrl+Shift+Z)"
@@ -297,6 +299,7 @@ export default function Toolbar({
         <button
           data-testid="toolbar-utility"
           onClick={onOpenUtility}
+          disabled={editingDisabled}
           className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 hover-chrome"
           title="Utility scripts — reusable functions"
         >
@@ -306,6 +309,7 @@ export default function Toolbar({
         <button
           data-testid="toolbar-imports"
           onClick={onOpenImports}
+          disabled={editingDisabled}
           className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 hover-chrome"
           title="Pipeline imports — utility and library imports"
         >
@@ -315,6 +319,7 @@ export default function Toolbar({
         <button
           data-testid="toolbar-assistant"
           onClick={() => setAssistantOpen(!assistantOpen)}
+          disabled={editingDisabled}
           aria-label="Assistant"
           aria-pressed={assistantOpen}
           className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 hover-chrome"
@@ -355,7 +360,7 @@ export default function Toolbar({
         <button
           data-testid="toolbar-layout"
           onClick={onAutoLayout}
-          disabled={nodeCount === 0 || isAutoLayouting}
+          disabled={editingDisabled || nodeCount === 0 || isAutoLayouting}
           aria-busy={isAutoLayouting}
           className="w-[104px] px-2.5 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome inline-flex items-center justify-center gap-1.5"
           title={isAutoLayouting ? "Auto-arranging nodes" : "Auto-arrange nodes"}

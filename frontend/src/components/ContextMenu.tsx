@@ -7,13 +7,15 @@ interface ContextMenuProps {
   nodeId: string
   nodeLabel: string
   isSubmodel?: boolean
+  /** A created instance copy: deletable directly, unlike its definition owner. */
+  isSubmodelCopy?: boolean
   isSingleton?: boolean
   onClose: () => void
   onDelete: (id: string) => void
   onDuplicate: (id: string) => void
   onRename: (id: string) => void
   onCreateInstance?: (id: string) => void
-  onDissolveSubmodel?: (name: string) => void
+  onDissolveSubmodel?: (instanceId: string) => void
 }
 
 export default function ContextMenu({
@@ -27,6 +29,7 @@ export default function ContextMenu({
   onCreateInstance,
   onDissolveSubmodel,
   isSubmodel,
+  isSubmodelCopy,
   isSingleton,
   nodeId,
 }: ContextMenuProps) {
@@ -38,19 +41,20 @@ export default function ContextMenu({
     const list: { label: string; icon: typeof Type; action: () => void; danger?: boolean }[] = [
       { label: "Rename", icon: Type, action: () => onRename(nodeId) },
     ]
-    if (!isSingleton) {
+    if (!isSingleton && !isSubmodel) {
       list.push({ label: "Duplicate", icon: Copy, action: () => onDuplicate(nodeId) })
     }
-    if (onCreateInstance && !isSubmodel) {
+    if (isSubmodel && onCreateInstance) {
       list.push({ label: "Create Instance", icon: Link2, action: () => onCreateInstance(nodeId) })
     }
     if (isSubmodel && onDissolveSubmodel) {
-      const smName = nodeId.startsWith("submodel__") ? nodeId.slice("submodel__".length) : nodeId
-      list.push({ label: "Dissolve Submodel", icon: Ungroup, action: () => onDissolveSubmodel(smName), danger: true })
+      list.push({ label: "Dissolve Submodel", icon: Ungroup, action: () => onDissolveSubmodel(nodeId), danger: true })
     }
-    list.push({ label: "Delete", icon: Trash2, action: () => onDelete(nodeId), danger: true })
+    if (!isSubmodel || isSubmodelCopy) {
+      list.push({ label: "Delete", icon: Trash2, action: () => onDelete(nodeId), danger: true })
+    }
     return list
-  }, [nodeId, isSubmodel, isSingleton, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel])
+  }, [nodeId, isSubmodel, isSubmodelCopy, isSingleton, onRename, onDuplicate, onDelete, onCreateInstance, onDissolveSubmodel])
 
   // Close on outside click
   useEffect(() => {

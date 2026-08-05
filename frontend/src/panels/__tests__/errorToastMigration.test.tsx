@@ -79,9 +79,6 @@ const DEBUG_ONLY_ALLOWLIST: readonly string[] = [
   // MLflow check is an optional capability probe on app startup; the
   // failure is already surfaced via the `mlflow.status === "error"` badge.
   "stores/useSettingsStore.ts",
-  // GPU toggle fallback: invalid draft JSON recovers automatically from
-  // the last-known-good params; the user experience is unchanged.
-  "panels/modelling/FeatureAndAlgorithmConfig.tsx",
   // Job polling retry path: a retry-warning toast is already emitted
   // after N consecutive failures; per-retry console is debug-only.
   "hooks/useJobPolling.ts",

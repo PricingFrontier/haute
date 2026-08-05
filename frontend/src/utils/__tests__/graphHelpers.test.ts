@@ -56,7 +56,7 @@ describe("computeNextNodeId", () => {
 
   it("ignores nodes with no numeric suffix", () => {
     const nodes = [
-      { id: "submodel__my_model" },
+      { id: "submodel_instance_main" },
       { id: "transform_2" },
     ] as Node[]
     expect(computeNextNodeId(nodes)).toBe(3)
@@ -64,7 +64,7 @@ describe("computeNextNodeId", () => {
 
   it("returns 0 when no node has a numeric suffix", () => {
     const nodes = [
-      { id: "submodel__a" },
+      { id: "submodel_instance_a" },
       { id: "port_in__x" },
     ] as Node[]
     expect(computeNextNodeId(nodes)).toBe(0)
@@ -236,7 +236,7 @@ describe("filterIncomingEdges", () => {
     ])
   })
 
-  it("checks configured submodel ports and Submodel Port direction", () => {
+  it("checks configured submodel ports and composite boundary row handles", () => {
     const nodes = [
       graphNode("source", NODE_TYPES.POLARS),
       graphNode("target", NODE_TYPES.POLARS),
@@ -244,8 +244,17 @@ describe("filterIncomingEdges", () => {
         inputPorts: ["features"],
         outputPorts: ["priced"],
       }),
-      graphNode("input-port", NODE_TYPES.SUBMODEL_PORT, {}, { portDirection: "input" }),
-      graphNode("output-port", NODE_TYPES.SUBMODEL_PORT, {}, { portDirection: "output" }),
+      graphNode("empty-submodel", NODE_TYPES.SUBMODEL, {
+        outputPorts: [],
+      }),
+      graphNode("input-port", NODE_TYPES.SUBMODEL_PORT, {}, {
+        portDirection: "input",
+        ports: [{ id: "incoming-frame", label: "features" }],
+      }),
+      graphNode("output-port", NODE_TYPES.SUBMODEL_PORT, {}, {
+        portDirection: "output",
+        ports: [{ id: "out__priced", label: "priced" }],
+      }),
     ]
     const result = filterIncomingEdges(nodes, [
       graphEdge("submodel-in", "source", "submodel", null, "in__features"),
@@ -253,15 +262,11 @@ describe("filterIncomingEdges", () => {
       graphEdge("submodel-visible-default-in", "source", "submodel"),
       graphEdge("stale-submodel-in", "source", "submodel", null, "in__gone"),
       graphEdge("stale-submodel-out", "submodel", "target", "out__gone"),
-      graphEdge("input-port-source", "input-port", "target"),
-      graphEdge("output-port-target", "source", "output-port"),
-      graphEdge(
-        "stale-output-port-handle",
-        "source",
-        "output-port",
-        null,
-        "__default_target",
-      ),
+      graphEdge("empty-submodel-out", "empty-submodel", "target"),
+      graphEdge("input-port-source", "input-port", "target", "incoming-frame"),
+      graphEdge("output-port-target", "source", "output-port", null, "out__priced"),
+      graphEdge("stale-input-port-handle", "input-port", "target", "gone"),
+      graphEdge("stale-output-port-handle", "source", "output-port", null, "gone"),
       graphEdge("wrong-input-port-direction", "source", "input-port"),
       graphEdge("wrong-output-port-direction", "output-port", "target"),
     ])
@@ -276,6 +281,8 @@ describe("filterIncomingEdges", () => {
     expect(result.rejectedEdges.map(({ edge }) => edge.id)).toEqual([
       "stale-submodel-in",
       "stale-submodel-out",
+      "empty-submodel-out",
+      "stale-input-port-handle",
       "stale-output-port-handle",
       "wrong-input-port-direction",
       "wrong-output-port-direction",

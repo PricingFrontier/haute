@@ -154,9 +154,6 @@ import {
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseTraceResponse,
-  parseTrainEstimateResponse,
-  parseTrainResponse,
-  parseTrainStatusResponse,
   parseUtilityDeleteResponse,
   parseUtilityListResponse,
   parseUtilityReadResponse,
@@ -647,6 +644,7 @@ export function savePipeline(
     source_file: string
     sources?: string[]
     active_source?: string
+    preserved_blocks: string[]
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
@@ -793,6 +791,8 @@ export function createSubmodel(
     source_file: string
     pipeline_name: string
     pipeline_description?: string
+    base_revision: string
+    preserved_blocks: string[]
   },
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelCreateResponse> {
@@ -800,23 +800,26 @@ export function createSubmodel(
 }
 
 export function loadSubmodel(
-  name: string,
+  definitionId: string,
+  parentSourceFile: string,
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelGraphResponse> {
   return request<unknown>(
-    `/api/submodel/${encodeURIComponent(name)}`,
+    `/api/submodel/${encodeURIComponent(definitionId)}?source_file=${encodeURIComponent(parentSourceFile)}`,
     options,
   ).then(parseSubmodelGraphResponse)
 }
 
 export function dissolveSubmodel(
   payload: {
-    submodel_name: string
+    instance_id: string
     graph: GraphPayload
     preamble: string
     source_file: string
     pipeline_name: string
     pipeline_description?: string
+    base_revision: string
+    preserved_blocks: string[]
   },
   options?: { signal?: AbortSignal },
 ): Promise<DissolveSubmodelResponse> {
@@ -940,7 +943,7 @@ export function getTrainStatus<T extends TrainStatusResponse = TrainStatusRespon
   options?: { signal?: AbortSignal },
 ): Promise<T> {
   return request<unknown>(`/api/modelling/train/status/${encodeURIComponent(jobId)}`, options)
-    .then((data) => parseTrainStatusResponse(data) as T)
+    .then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data) as T)
 }
 
 export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>(
@@ -951,7 +954,7 @@ export function cancelTrain<T extends TrainStatusResponse = TrainStatusResponse>
     `/api/modelling/train/cancel/${encodeURIComponent(jobId)}`,
     undefined,
     options,
-  ).then((data) => parseTrainStatusResponse(data) as T)
+  ).then(async (data) => (await import("../types/trainGuards")).parseTrainStatusResponse(data) as T)
 }
 
 export interface TrainModelArgs {
@@ -974,7 +977,7 @@ export function trainModel(args: TrainModelArgs): Promise<TrainResponse> {
       ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
     },
     { signal, timeout },
-  ).then(parseTrainResponse)
+  ).then(async (data) => (await import("../types/trainGuards")).parseTrainResponse(data))
 }
 
 export function estimateTrainingRam(
@@ -982,7 +985,7 @@ export function estimateTrainingRam(
   options?: { signal?: AbortSignal },
 ): Promise<TrainEstimate> {
   return post<unknown>("/api/modelling/estimate", { ...payload, source: payload.source ?? "live" }, { timeout: 30_000, ...options })
-    .then(parseTrainEstimateResponse)
+    .then(async (data) => (await import("../types/trainGuards")).parseTrainEstimateResponse(data))
 }
 
 export function logToMlflow(
@@ -1200,7 +1203,18 @@ export function deleteJsonCache(
 }
 
 /**
- * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+ * Request budget for complete *Infer Tables* schema discovery.
+ *
+ * The shared client timeout is 30 seconds, but a multi-GB structured input can
+ * legitimately take minutes to scan. We keep inference complete by default
+ * and give it the same budget as cache construction. A hidden head sample is
+ * unsafe: a wholly new field appearing after the sample is ignored by build,
+ * not rejected as a type widening, so it would disappear without warning.
+ */
+export const JSON_CACHE_INFER_TIMEOUT_MS = 1_800_000
+
+/**
+ * Sniff a v2 schema mapping from a structured input file.
  * Drives the ApiInputEditor's *Infer Tables* button.
  *
  * Returns a v2-shaped ``tables`` array; the caller stitches it into the
@@ -1208,12 +1222,12 @@ export function deleteJsonCache(
  */
 export function inferJsonCacheSchema(
   payload: { path: string; sample_size?: number },
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<{ tables: Array<Record<string, unknown>> }> {
   return post<unknown>(
     "/api/json-cache/infer",
     payload,
-    options,
+    { timeout: JSON_CACHE_INFER_TIMEOUT_MS, ...options },
   ).then(parseJsonCacheSchemaInferenceResponse)
 }
 

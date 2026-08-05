@@ -4,6 +4,7 @@ import type { Node, Edge } from "@xyflow/react"
 import useKeyboardShortcuts from "../useKeyboardShortcuts"
 import useUIStore from "../../stores/useUIStore"
 import useToastStore from "../../stores/useToastStore"
+import { makeNode } from "../../test-utils/factories"
 
 function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0]> = {}) {
   return {
@@ -22,6 +23,7 @@ function makeParams(overrides: Partial<Parameters<typeof useKeyboardShortcuts>[0
     clearTrace: vi.fn(),
     closePanel: vi.fn(),
     isInsideSubmodel: false,
+    readOnly: false,
     ...overrides,
   }
 }
@@ -73,6 +75,88 @@ describe("useKeyboardShortcuts", () => {
   it("Ctrl+Y calls redo", () => {
     fireKey("y", { ctrlKey: true })
     expect(params.redo).toHaveBeenCalledOnce()
+  })
+
+  it("uses a committed shared deletion without raw graph mutation but cleans selection", () => {
+    cleanup()
+    params = makeParams({
+      graphRef: { current: { nodes: [{ ...makeNode("n1"), selected: true }], edges: [] } },
+      commitSharedNodeDeletion: vi.fn(() => "committed" as const),
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledWith(null)
+    expect(params.setPreviewData).toHaveBeenCalledWith(null)
+  })
+
+  it("keyboard Delete removes selected copies but never a submodel owner", () => {
+    cleanup()
+    const owner = makeNode("submodel_owner", "submodel", {
+      selected: true,
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    const copy = makeNode("submodel_copy", "submodel", {
+      selected: true,
+      data: {
+        label: "Scoring instance",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: "submodel_owner",
+        },
+      },
+    })
+    const ordinary = { ...makeNode("plain", "polars"), selected: true }
+    params = makeParams({
+      graphRef: { current: { nodes: [owner, copy, ordinary], edges: [] } },
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    const [nextNodes] = vi.mocked(params.setNodesAndEdges).mock.calls[0]
+    expect((nextNodes as Node[]).map((node) => node.id)).toEqual(["submodel_owner"])
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
+  it("keyboard Delete of only a submodel owner changes nothing but explains why", () => {
+    cleanup()
+    const owner = makeNode("submodel_owner", "submodel", {
+      selected: true,
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    params = makeParams({
+      graphRef: { current: { nodes: [owner], edges: [] } },
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
+  it("leaves cleanup untouched when shared deletion is blocked", () => {
+    cleanup()
+    params = makeParams({
+      graphRef: { current: { nodes: [{ ...makeNode("n1"), selected: true }], edges: [] } },
+      commitSharedNodeDeletion: vi.fn(() => "blocked" as const),
+    })
+    renderHook(() => useKeyboardShortcuts(params))
+    fireKey("Delete")
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
   })
 
   it("ignores Ctrl+Z while target is INPUT", () => {
@@ -459,6 +543,36 @@ describe("useKeyboardShortcuts", () => {
       type: "info",
       text: expect.stringContaining("cannot be nested"),
     })
+  })
+
+  it("blocks mutation shortcuts in a read-only submodel instance", () => {
+    cleanup()
+    const readOnlyParams = makeParams({ readOnly: true, isInsideSubmodel: true })
+    readOnlyParams.graphRef.current.nodes = [
+      { id: "n1", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+      { id: "n2", position: { x: 0, y: 0 }, data: {}, selected: true } as Node,
+    ]
+    readOnlyParams.graphRef.current.edges = [
+      { id: "e1", source: "n1", target: "n2", selected: true } as Edge,
+    ]
+    readOnlyParams.clipboard.current = {
+      nodes: [readOnlyParams.graphRef.current.nodes[0]],
+      edges: [],
+    }
+    renderHook(() => useKeyboardShortcuts(readOnlyParams))
+
+    fireKey("z", { ctrlKey: true })
+    fireKey("y", { ctrlKey: true })
+    fireKey("v", { ctrlKey: true })
+    fireKey("g", { ctrlKey: true })
+    fireKey("Delete")
+
+    expect(readOnlyParams.undo).not.toHaveBeenCalled()
+    expect(readOnlyParams.redo).not.toHaveBeenCalled()
+    expect(readOnlyParams.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(readOnlyParams.setNodes).not.toHaveBeenCalled()
+    expect(readOnlyParams.setEdges).not.toHaveBeenCalled()
+    expect(useUIStore.getState().submodelDialog).toBeNull()
   })
 
   it("Cmd+G (Mac) with 2+ selected opens submodel dialog", () => {

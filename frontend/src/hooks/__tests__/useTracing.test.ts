@@ -79,6 +79,8 @@ function makeParams(overrides: Partial<Parameters<typeof useTracing>[0]> = {}) {
     selectedNode: makeNode("n2"),
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null },
+    activeSubmodelIdentity: null,
+    submodels: {},
     submodelsRef: { current: {} },
     preambleRef: { current: "" },
     nodeStatuses: {} as Record<string, "ok" | "error" | "running">,
@@ -406,6 +408,77 @@ describe("useTracing", () => {
     )
     expect(statusMap.n1).toBe("ok")
     expect(statusMap.n2).toBe("error")
+  })
+
+  it("maps flat external trace steps onto composite boundary cards", async () => {
+    const inputBoundary = makeNode("boundary-input", NODE_TYPES.SUBMODEL_PORT, {
+      data: {
+        label: "INPUT",
+        nodeType: NODE_TYPES.SUBMODEL_PORT,
+        instanceId: "instance_primary",
+        definitionId: "definition_pricing",
+        portDirection: "input",
+        ports: [],
+        externalNodeIds: ["external-source-a", "external-source-b"],
+      },
+    })
+    const child = makeNode("child")
+    const outputBoundary = makeNode("boundary-output", NODE_TYPES.SUBMODEL_PORT, {
+      data: {
+        label: "OUTPUT",
+        nodeType: NODE_TYPES.SUBMODEL_PORT,
+        instanceId: "instance_primary",
+        definitionId: "definition_pricing",
+        portDirection: "output",
+        ports: [],
+        externalNodeIds: ["external-target"],
+      },
+    })
+    const submodels = {
+      definition_pricing: {
+        definitionId: "definition_pricing",
+        file: "modules/pricing.py",
+        graph: { nodes: [child], edges: [] },
+        inputPorts: [],
+        outputPorts: [],
+      },
+    }
+    const params = makeParams({
+      activeSubmodelIdentity: { instanceId: "instance_primary", definitionId: "definition_pricing" },
+      nodes: [inputBoundary, child, outputBoundary],
+      submodels,
+      submodelsRef: { current: submodels },
+      edges: [
+        makeEdge(inputBoundary.id, child.id),
+        makeEdge(child.id, outputBoundary.id),
+      ],
+      selectedNode: child,
+    })
+    mockTraceCell.mockResolvedValue({
+      status: "ok",
+      trace: makeTrace(["external-source-b", "submodel_runtime/instance_primary/child", "external-target"]),
+    })
+
+    const { result } = renderHook(() => useTracing(params))
+    await act(async () => {
+      result.current.handleCellClick(0, "price")
+    })
+    await waitFor(() => expect(result.current.traceResult).not.toBeNull())
+    expect(mockTraceCell).toHaveBeenCalledWith(expect.objectContaining({
+      target_node_id: "submodel_runtime/instance_primary/child",
+    }))
+
+    const projectedData = Object.fromEntries(
+      result.current.nodesWithStatus.map((node) => [node.id, node.data]),
+    )
+    expect(projectedData["boundary-input"]).toMatchObject({
+      _traceActive: true,
+      _traceDimmed: false,
+    })
+    expect(projectedData["boundary-output"]).toMatchObject({
+      _traceActive: true,
+      _traceDimmed: false,
+    })
   })
 
   it("nodesWithStatus dims nodes not in trace via _traceDimmed data flag only", async () => {

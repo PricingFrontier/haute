@@ -421,6 +421,12 @@ other = os.environ.get(key)
 _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     # Credentials and external integration endpoints.
     (
+        "src/haute/assistant/_config.py",
+        "<module>._databricks_host_from_environment",
+        "DATABRICKS_HOST",
+        "os.getenv",
+    ),
+    (
         "src/haute/_databricks_io.py",
         "<module>._connection_settings",
         "DATABRICKS_HOST",

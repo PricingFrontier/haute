@@ -176,8 +176,10 @@ writing `rating/main.py`.
 `haute_toml()` assembles `[project]`/`[deploy]`/`[test_quotes]`/`[safety]`/`[safety.approval]`
 (`min_approvers` hardcoded to 2 in the template — solo users lower it by hand)/`[ci]`/
 `[ci.staging]`/`[server]` sections, splicing in `_target_section()`'s
-`[deploy.<target>]` block. `[server].host` is part of the shared TOML schema consumed by
-both CLI host loading and `DeployConfig.from_toml`, even though it is not a deploy setting.
+`[deploy.<target>]` block. `[server].host` and the optional closed `[assistant]` plus
+`[assistant.egress]` tables are part of the shared TOML schema consumed by
+`DeployConfig.from_toml`, even though neither is a deploy setting. The assistant key sets are
+owned by `haute.assistant._config` so deployment parsing and assistant readiness cannot drift.
 `env_example()` and the three CI-YAML generators (`github_ci_yml`/`github_deploy_yml`/
 `github_deploy_prod_yml`, `gitlab_ci_yml`, `azure_devops_yml`) all pull the same `secrets`
 list out of `TARGETS` through provider-specific formatters (`_github_secrets_env`,

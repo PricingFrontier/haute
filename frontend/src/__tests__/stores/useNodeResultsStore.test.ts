@@ -14,9 +14,9 @@ import useNodeResultsStore, {
 import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { OptimiserSolveResult } from "../../api/types.ts"
-import type { TrainResult } from "../../stores/useNodeResultsStore.ts"
 import type { ExploreCacheReport } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
+import { makeTrainResult } from "../../test-utils/factories.ts"
 
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
@@ -65,18 +65,6 @@ function makeSolveResult(
     baseline_constraints: { premium: 45 },
     lambdas: { premium: 0.1 },
     converged: true,
-    ...overrides,
-  }
-}
-
-function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
-  return {
-    status: "completed",
-    metrics: { rmse: 0.05 },
-    feature_importance: [{ feature: "x", importance: 0.9 }],
-    model_path: "/tmp/model.pkl",
-    train_rows: 1000,
-    validation_rows: 200,
     ...overrides,
   }
 }
@@ -334,12 +322,12 @@ describe("useNodeResultsStore", () => {
         train_loss: { rmse: 0.1 },
         elapsed_seconds: 5,
       })
-      const result = makeTrainResult({ metrics: { rmse: 0.02 } })
+      const result = makeTrainResult({ final_test_metrics: { rmse: 0.02 } })
       s.completeTrainJob("t1", result)
 
       const final = useNodeResultsStore.getState()
       expect(Object.keys(final.trainJobs)).toHaveLength(0)
-      expect(final.trainResults["t1"].result.metrics.rmse).toBe(0.02)
+      expect(final.trainResults["t1"].result.final_test_metrics.rmse).toBe(0.02)
     })
   })
 
@@ -892,14 +880,14 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS + 1; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
 
       const { trainJobs, trainResults } = useNodeResultsStore.getState()
       expect(trainJobs["active-train"]).toBeDefined()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeUndefined()
-      expect(trainResults[`t${MAX_CACHED_TRAIN_RESULTS}`]?.result.metrics.rmse).toBe(MAX_CACHED_TRAIN_RESULTS)
+      expect(trainResults[`t${MAX_CACHED_TRAIN_RESULTS}`]?.result.final_test_metrics.rmse).toBe(MAX_CACHED_TRAIN_RESULTS)
     })
 
     it("evicts cached modelling previews when failed train results push out old entries", () => {
@@ -907,7 +895,7 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
       expect(s.getModellingPreview("t0")).not.toBeNull()
       s.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
@@ -924,18 +912,18 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
       expect(s.getModellingPreview("t0")).not.toBeNull()
       s.touchModellingPreview("t0")
       s.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
-      s.completeTrainJob("t-new", makeTrainResult({ metrics: { rmse: 999 } }))
+      s.completeTrainJob("t-new", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
 
       const { trainResults } = useNodeResultsStore.getState()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeDefined()
       expect(trainResults.t1).toBeUndefined()
-      expect(trainResults["t-new"]?.result.metrics.rmse).toBe(999)
+      expect(trainResults["t-new"]?.result.final_test_metrics.rmse).toBe(999)
     })
 
     it("keeps the pinned modelling preview result when evicting by recency", () => {
@@ -943,21 +931,21 @@ describe("useNodeResultsStore", () => {
 
       for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
         s.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-        s.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+        s.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
       }
       s.setPinnedPreviewNodeId("t0")
       s.startTrainJob("t-new-1", "job-new-1", "Train new 1", "hash-new-1", "live", 0)
-      s.completeTrainJob("t-new-1", makeTrainResult({ metrics: { rmse: 998 } }))
+      s.completeTrainJob("t-new-1", makeTrainResult({ final_test_metrics: { rmse: 998 } }))
       s.startTrainJob("t-new-2", "job-new-2", "Train new 2", "hash-new-2", "live", 0)
-      s.completeTrainJob("t-new-2", makeTrainResult({ metrics: { rmse: 999 } }))
+      s.completeTrainJob("t-new-2", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
 
       const { trainResults } = useNodeResultsStore.getState()
       expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
       expect(trainResults.t0).toBeDefined()
       expect(trainResults.t1).toBeUndefined()
       expect(trainResults.t2).toBeUndefined()
-      expect(trainResults["t-new-1"]?.result.metrics.rmse).toBe(998)
-      expect(trainResults["t-new-2"]?.result.metrics.rmse).toBe(999)
+      expect(trainResults["t-new-1"]?.result.final_test_metrics.rmse).toBe(998)
+      expect(trainResults["t-new-2"]?.result.final_test_metrics.rmse).toBe(999)
     })
 
     it("clearNode removes preview eviction bookkeeping for the cleared node", () => {
@@ -2166,7 +2154,7 @@ describe("useNodeResultsStore", () => {
 
       const a = useNodeResultsStore.getState().getModellingPreview("n1")
       // Overwrite with a new result
-      s.completeTrainJob("n1", makeTrainResult({ status: "completed", metrics: { rmse: 0.01 } }))
+      s.completeTrainJob("n1", makeTrainResult({ status: "completed", final_test_metrics: { rmse: 0.01 } }))
       const b = useNodeResultsStore.getState().getModellingPreview("n1")
       expect(a).not.toBe(b)
     })

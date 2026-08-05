@@ -1337,3 +1337,135 @@ class TestDateColumnsRejectJsonNumbers:
         body = resp.json()
         assert body["type"] == "ApiInputSchemaError"
         assert "start" in body["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Status resolves working/ then committed/ — the same order as a real run
+#
+# The badge answers "will a run read from cache?". `load_v2_api_source` resolves
+# working -> committed -> direct, but status used to consult working/ ONLY. When
+# working/ was missing or stale-fingerprinted while committed/ (the durable
+# layer that survives a restart) was still valid, status reported `cached=False`
+# and the editor invited the user to rebuild a cache that already existed and
+# was serving every run.
+# ---------------------------------------------------------------------------
+
+
+class TestStatusFallsBackToCommitted:
+    def _prepare_both_layers(self, data: Path, cfg: dict[str, Any]) -> None:
+        build_per_port_cache(str(data), cfg, _json_cache_dir(str(data), "working"))
+        _mark_working_consulted(str(data))
+        assert mirror_cache_to_committed(str(data), cfg) is True
+
+    def test_status_reports_cached_from_committed_when_working_is_gone(
+        self, isolated_cwd: Path
+    ) -> None:
+        """A fresh clone / cleaned workspace / deploy box has committed/ only."""
+        import shutil
+
+        from haute.routes.json_cache import _v2_status_response
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}, {"id": 2}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        self._prepare_both_layers(data, cfg)
+
+        shutil.rmtree(_json_cache_dir(str(data), "working"))
+
+        status = _v2_status_response(str(data), cfg, "data.json")
+        assert status.cached is True
+        assert status.row_count == 2
+        assert status.size_bytes > 0
+        # And the claim is truthful: a run really does read from that layer.
+        frames = load_v2_api_source(str(data), cfg)
+        assert frames["root"].collect()["id"].to_list() == [1, 2]
+
+    def test_status_stays_false_when_neither_layer_is_valid(self, isolated_cwd: Path) -> None:
+        """The fallback must not turn 'no cache' into a false positive."""
+        import shutil
+
+        from haute.routes.json_cache import _v2_status_response
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        self._prepare_both_layers(data, cfg)
+
+        shutil.rmtree(_json_cache_dir(str(data), "working"))
+        shutil.rmtree(_json_cache_dir(str(data), "committed"))
+
+        assert _v2_status_response(str(data), cfg, "data.json").cached is False
+
+    def test_working_still_wins_when_both_layers_are_valid(self, isolated_cwd: Path) -> None:
+        """Precedence is unchanged: working/ is what the next run reads, so a
+        rebuilt working/ must be reported even while committed/ holds an older
+        generation with a different row count."""
+        from haute.routes.json_cache import _v2_status_response
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        self._prepare_both_layers(data, cfg)
+
+        # Re-cache working/ over a wider data file; committed/ keeps 1 row.
+        _write_json(data, [{"id": 1}, {"id": 2}, {"id": 3}])
+        build_per_port_cache(str(data), cfg, _json_cache_dir(str(data), "working"))
+        assert (
+            read_per_port_cache_meta(_json_cache_dir(str(data), "committed"))["tables"][0][
+                "row_count"
+            ]
+            == 1
+        )
+
+        assert _v2_status_response(str(data), cfg, "data.json").row_count == 3
+
+    def test_status_uses_committed_when_working_fingerprint_is_stale(
+        self, isolated_cwd: Path
+    ) -> None:
+        """The reported non-missing fallback case: working exists but is stale."""
+        from haute.routes.json_cache import _v2_status_response
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}, {"id": 2}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+        self._prepare_both_layers(data, cfg)
+
+        working_meta_path = _json_cache_dir(str(data), "working") / "meta.json"
+        working_meta = orjson.loads(working_meta_path.read_bytes())
+        working_meta["schema_fingerprint"] = "stale"
+        working_meta_path.write_bytes(orjson.dumps(working_meta))
+
+        status = _v2_status_response(str(data), cfg, "data.json")
+        assert status.cached is True
+        assert status.row_count == 2
+
+    def test_status_route_reports_cached_from_committed_after_restart(
+        self, client: TestClient, isolated_cwd: Path
+    ) -> None:
+        """Through the real route, in the shape a restarted server sees: the
+        session marker is empty and only committed/ remains."""
+        import shutil
+
+        data = isolated_cwd / "data.json"
+        _write_json(data, [{"id": 1}, {"id": 2}])
+        cfg = _root_cfg(_col("id", "$[:].id"))
+
+        build = client.post(
+            "/api/json-cache/build",
+            json={"path": "data.json", "volatile_schema": cfg},
+        )
+        assert build.status_code == 200, build.text
+        assert mirror_cache_to_committed(str(data.resolve()), cfg) is True
+
+        _clear_session()
+        shutil.rmtree(_json_cache_dir(str(data.resolve()), "working"))
+
+        status = client.post(
+            "/api/json-cache/status",
+            json={"path": "data.json", "volatile_schema": cfg},
+        )
+        assert status.status_code == 200, status.text
+        body = status.json()
+        assert body["cached"] is True
+        assert body["row_count"] == 2
+        assert body["size_bytes"] > 0

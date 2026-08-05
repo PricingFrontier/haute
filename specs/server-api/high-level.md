@@ -165,6 +165,13 @@ here. A timeout that carries a still-running background task takes precedence ov
 supersession generation, so it remains a 504 and retains both the key and execution context
 until the worker exits.
 
+Live pipeline graph responses carry `source_revision`, a deterministic digest
+of the parsed document plus the parent and referenced child source/sidecar
+states. Explicit Save returns the newly committed revision. Submodel create and
+dissolve use the current revision as an optimistic precondition, return it
+unchanged, and perform no persistence, so a stale transform cannot be applied
+over a newer document.
+
 **File browsing and schema inspection.** `GET /api/files` lists a directory for the file
 picker; when its `extensions` query is omitted, the effective readable extensions come from
 the installed I/O registry. Directory items omit file size in the backend model and therefore
@@ -237,7 +244,8 @@ become diagnostic-unavailable rather than a fabricated success.
   waiter never starts running — the alternative (semaphore-only limiting) does not, by
   itself, prevent stale results winning a race with fresh ones.
 - **Transactional core, post-commit cleanup.** Generated code, config JSON sidecars, the
-  position sidecar, and requested submodel deletions form the rollback-covered
+  parent position sidecar, managed child position/ownership sidecars, and
+  requested submodel source-plus-sidecar deletions form the rollback-covered
   transaction: previous bytes are snapshotted (or a file is recorded as new) before mutation,
   and a failure restores/deletes every touched path best-effort before re-raising. Stale-config
   deletion and git-ledger capture occur only after that transaction succeeds and are not
@@ -245,6 +253,15 @@ become diagnostic-unavailable rather than a fabricated success.
   already durable; an unexpected non-`GitError` still propagates. API-input cache mirroring is
   independently idempotent/best-effort: failures are logged and partial cache state is left
   for a later save to repair, outside `_TouchedFile` rollback.
+- **Generated child ownership is durable but never inferred.** A GUI-created
+  submodel sidecar records its canonical `managed_parent`. Save preserves that
+  marker and child positions only when the existing sidecar already names the
+  same parent, or when explicit Save derives a brand-new definition from the
+  difference between the persisted and submitted registries and its source and
+  sidecar both pass no-clobber. The graph schema contains no request-controlled
+  ownership field, and parsing or saving a hand-authored child never creates
+  the marker. Creation requires the derived module output to be absent, with a
+  case-insensitive preflight returning `409` before any write.
 - **Self-write tracking instead of debounce-only.** The file watcher's 300ms debounce alone
   cannot distinguish a server-originated write from a user's IDE edit that happens to land in
   the same window. Every write the server makes is registered by absolute path just before
@@ -258,6 +275,38 @@ become diagnostic-unavailable rather than a fabricated success.
   Windows-reserved device names, casefold-collision-checked) because codegen output paths
   come from a different trust boundary (generated strings, not direct user path input) and
   need a narrower allowlist than general file browsing.
+
+## Approved change contract — assistant plan authority
+
+The server exposes the assistant application service inside the running
+process; it adds no headless or serverless mutation API. GUI saves and
+assistant applies share the same process-wide save lock, transactional
+`SavePipelineService`, self-write marking, graph-update broadcast and Git
+ledger capture.
+
+`SavePipelineService.validate_graph(...)` is the public, no-write validation
+entry point used by both `save(...)` and assistant dry-run. It performs the
+same singleton, data-I/O, Edge Join role/key/topology, sanitized-name,
+load-error, API-input and path validation that can be decided without staging
+files. Edge Join validation uses the canonical backend join validators, not a
+save- or assistant-specific approximation. Save invokes it before any write,
+so the validation paths cannot drift.
+
+Assistant message requests carry only the session id and user message. Graph
+authoring has no browser confirmation object or plan-ready stream event:
+application does not execute the graph or materialise a configured output.
+The provider invokes a server-owned exact plan hash after dry-run. Plan records
+are bounded process state; restart invalidates them safely and the assistant
+must dry-run again.
+
+The bounded semantic diff carries complete category counts, an explicit
+truncation flag, and a complete semantic-diff digest. Exact post-save
+verification compares that digest, so the wire-size bound cannot hide an
+unrelated committed change.
+
+Every assistant saved-state response identifies the project revision it
+describes. Stale, changed or already-applied plans fail before
+`SavePipelineService.save_graph_transactionally(...)` is invoked.
 
 ## Interactions
 
@@ -341,6 +390,11 @@ turn that loudness into a well-typed HTTP response rather than a raw traceback.
   the new graph no longer references) is deliberately *not* part of the transaction — it only
   runs after every write has succeeded, because those deletions are non-recoverable; a
   cleanup that never got the chance to run is simply retried on the next successful save.
+- **Write serialization is process-local, not optimistic concurrency.** The
+  shared `asyncio.Lock` prevents interleaving only inside one server process.
+  Routes that accept `base_revision` must compare it under that lock before
+  mutation; a mismatch returns `409`. Multiple Uvicorn worker processes remain
+  outside the lock contract.
 - **The event bus isolates handler failures**: a raising subscriber is logged
   (`event_bus_handler_failed`, with the handler's qualname) and the remaining subscribers
   still receive the event — the file watcher's own operation is never blocked by a

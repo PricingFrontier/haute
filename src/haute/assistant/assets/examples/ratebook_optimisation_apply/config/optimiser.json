@@ -1,0 +1,15 @@
+{
+  "mode": "ratebook",
+  "objective": "expected_income",
+  "constraints": {"volume": {"min": 0.9}},
+  "quote_id": "quote_id",
+  "scenario_index": "scenario_index",
+  "scenario_value": "scenario_value",
+  "max_iter": 20,
+  "tolerance": 0.0001,
+  "max_cd_iterations": 3,
+  "cd_tolerance": 0.001,
+  "factor_columns": [["region"]],
+  "data_input": "scored",
+  "banding_source": "factors"
+}

@@ -124,6 +124,7 @@ export interface GraphStore {
     nodes: Node[] | ((nds: Node[]) => Node[]),
     edges: PipelineEdge[] | ((eds: PipelineEdge[]) => PipelineEdge[]),
     submodels: Record<string, unknown>,
+    preamble?: string,
   ) => void
   setPreamble: (value: string) => void
 
@@ -582,23 +583,25 @@ const useGraphStore = create<GraphStore>()((set, get) => {
       })
     },
 
-    setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels) => {
+    setNodesAndEdgesAndSubmodels: (nodesUpdater, edgesUpdater, submodels, preamble) => {
       set((state) => {
         const undoStack = pushSnapshotInternal()
         const nodes = applyUpdater(state.nodes, nodesUpdater)
         const edges = applyUpdater(state.edges, edgesUpdater)
+        const nextPreamble = preamble === undefined ? state.preamble : preamble
         const nextPersistedFingerprint = computePersistedFingerprint(
           nodes,
           edges,
-          state.preamble,
+          nextPreamble,
           submodels,
         )
-        const nextFingerprint = computeStructuralFingerprint(nodes, edges, state.preamble)
+        const nextFingerprint = computeStructuralFingerprint(nodes, edges, nextPreamble)
         return {
           undoStack,
           redoStack: [],
           nodes,
           edges,
+          preamble: nextPreamble,
           submodels,
           ...computePanelContextPatch(state, nodes, edges),
           persistedFingerprint: nextPersistedFingerprint,

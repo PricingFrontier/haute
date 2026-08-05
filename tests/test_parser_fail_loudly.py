@@ -34,6 +34,10 @@ from unittest.mock import patch
 import polars as pl
 import pytest
 
+from haute._code_extraction import (
+    INCOMPLETE_TRANSFORM_MESSAGE as _INCOMPLETE_MSG,
+)
+from haute._code_extraction import extract_user_code
 from haute._codegen_builders import _gen_transform
 from haute._config_builder import _resolve_node_config
 from haute._graph_utils import build_instance_mapping
@@ -406,15 +410,26 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     },
                 },
                 {
-                    "id": "child_a",
-                    "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                    "id": "submodel__sm1",
+                    "type": "submodel",
+                    "data": {
+                        "label": "sm1",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                    },
                 },
             ],
             "edges": [edge_dict],
             "submodels": {
                 "sm1": {
+                    "definitionId": "sm1",
                     "file": "modules/sm1.py",
-                    "childNodeIds": ["child_a"],
+                    "inputPorts": [
+                        {"portId": "child_a", "label": "ChildA", "targets": [{"nodeId": "child_a"}]}
+                    ],
+                    "outputPorts": [
+                        {"portId": "result", "label": "Result", "source": {"nodeId": "child_a"}}
+                    ],
                     "graph": {
                         "nodes": [
                             {
@@ -449,15 +464,26 @@ class TestItem20SubmodelCrossBoundaryHandleValidation:
                     "data": {"label": "Out", "nodeType": "output", "config": {}},
                 },
                 {
-                    "id": "child_a",
-                    "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                    "id": "submodel__sm1",
+                    "type": "submodel",
+                    "data": {
+                        "label": "sm1",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "sm1", "alias": "sm1"},
+                    },
                 },
             ],
             "edges": [edge_dict],
             "submodels": {
                 "sm1": {
+                    "definitionId": "sm1",
                     "file": "modules/sm1.py",
-                    "childNodeIds": ["child_a"],
+                    "inputPorts": [
+                        {"portId": "child_a", "label": "ChildA", "targets": [{"nodeId": "child_a"}]}
+                    ],
+                    "outputPorts": [
+                        {"portId": "result", "label": "Result", "source": {"nodeId": "child_a"}}
+                    ],
                     "graph": {
                         "nodes": [
                             {
@@ -792,18 +818,74 @@ class TestItem22EmptyPolarsCodeExplicit:
         assert "return upstream" in code
         assert "def Pass(upstream: pl.LazyFrame)" in code
 
-    def test_zero_sources_raises_config_error(self) -> None:
-        """A polars transform with NO upstream sources AND no user code is
-        incoherent — must fail loudly rather than emit ``return df`` where
-        ``df`` is unbound."""
+    def test_zero_sources_emits_a_placeholder_that_fails_at_run_time(self) -> None:
+        """A polars transform with NO upstream sources AND no user code cannot
+        RUN, but must still SAVE — a half-built graph is a normal editor state.
+        The failure moves from save time to run time; what must never happen is
+        emitting ``return df`` where ``df`` is unbound."""
         node = _n(
             {
                 "id": "t",
                 "data": {"label": "Orphan", "nodeType": "polars", "config": {}},
             }
         )
-        with pytest.raises(ConfigError):
-            _gen_transform(node, [])
+        code = _gen_transform(node, [])
+        assert "raise NotImplementedError" in code
+        assert "return df" not in code
+
+    def test_incomplete_placeholder_round_trips_as_no_user_code(self) -> None:
+        """The placeholder is scaffold, not authored code: reopening the saved
+        pipeline must show the node still empty rather than silently adopting
+        the generated ``raise`` as the user's own code."""
+        node = _n(
+            {
+                "id": "t",
+                "data": {"label": "Merge", "nodeType": "polars", "config": {}},
+            }
+        )
+        code = _gen_transform(node, ["left", "right"])
+        body = "\n".join(code.splitlines()[2:])  # drop decorator + def line
+        assert extract_user_code(body, kind="polars", param_names=("left", "right")) == ""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # As codegen emits it (repr → single quotes, exploded by the
+            # magic trailing comma).
+            f"    raise NotImplementedError(\n        {_INCOMPLETE_MSG!r},\n    )\n",
+            # As it lands on disk once a formatter has been near the file —
+            # the generated .py is a real source file the user and their
+            # tooling edit, so double quotes are the common on-disk form.
+            f'    raise NotImplementedError(\n        "{_INCOMPLETE_MSG}",\n    )\n',
+            # Collapsed onto one line, trailing comma dropped.
+            f'    raise NotImplementedError("{_INCOMPLETE_MSG}")\n',
+            f"    raise NotImplementedError('{_INCOMPLETE_MSG}')\n",
+        ],
+        ids=["as-emitted", "double-quoted", "one-line", "single-quoted-one-line"],
+    )
+    def test_placeholder_is_recognised_however_it_is_formatted(self, body: str) -> None:
+        """Recognition must be structural, not textual. Matching the emitted
+        SOURCE TEXT silently stops working the moment anything reformats the
+        file, and the placeholder then comes back as the user's own code —
+        writing a ``raise`` into a node they deliberately left empty."""
+        assert extract_user_code('    """d"""\n' + body, kind="polars", param_names=("left",)) == ""
+
+    def test_a_users_own_raise_is_not_mistaken_for_the_placeholder(self) -> None:
+        """Only the generated message is scaffold — a hand-written
+        ``raise NotImplementedError`` is the user's code and must survive."""
+        own = '    """d"""\n    raise NotImplementedError("my own todo")\n'
+        assert (
+            extract_user_code(own, kind="polars", param_names=("left",))
+            == 'raise NotImplementedError("my own todo")'
+        )
+
+    def test_code_written_after_the_placeholder_is_kept(self) -> None:
+        """Hand-edited file: the placeholder is dropped but anything the user
+        added after it survives, including references to the input parameters
+        (the placeholder binds no ``df`` alias, so ``df = <param>`` here is the
+        user's line, not scaffold to strip)."""
+        body = f'    """d"""\n    raise NotImplementedError("{_INCOMPLETE_MSG}")\n    df = left\n'
+        assert extract_user_code(body, kind="polars", param_names=("left",)) == "df = left"
 
     def test_multi_source_empty_code_is_explicit(self) -> None:
         """With multiple upstreams and no code, the behaviour must be

@@ -38,6 +38,9 @@ dependencies = [
     "libcst>=1.8.6,<2",
     "watchfiles>=1.1.1,<2",
     "catboost>=1.2.10,<2",
+    # Tuning owns a reproducibility-sensitive seeded TPE contract. Keep the
+    # supported Optuna sampler implementation within one pinned 4.x minor.
+    "optuna>=4.9.0,<4.10",
     # Direct dependency: the restricted joblib loader relies on private
     # numpy_pickle APIs introduced in joblib 1.5.
     "joblib>=1.5,<2",
@@ -96,7 +99,10 @@ dev = [
 haute = "haute.cli:cli"
 
 [tool.hatch.build]
-artifacts = ["src/haute/static/**"]
+artifacts = [
+    "src/haute/static/**",
+    "src/haute/assistant/assets/**",
+]
 
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"

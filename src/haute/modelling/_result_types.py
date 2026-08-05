@@ -26,8 +26,15 @@ class ModelDiagnostics:
     lorenz_curve: list[dict[str, float]] = field(default_factory=list)
     lorenz_curve_perfect: list[dict[str, float]] = field(default_factory=list)
     pdp_data: list[dict[str, Any]] = field(default_factory=list)
+    final_test_metrics: dict[str, float] = field(default_factory=dict)
+    selection_metrics: dict[str, Any] = field(default_factory=dict)
+    evaluation: dict[str, Any] | None = None
+    tuning: dict[str, Any] | None = None
+    diagnostics_set: str = "development"
+    # Retained as an internal constructor compatibility field for callers that
+    # have not yet moved to the canonical terminology. New output never labels
+    # these values as a holdout.
     holdout_metrics: dict[str, float] = field(default_factory=dict)
-    diagnostics_set: str = "validation"
     # GLM-specific
     glm_coefficients: list[dict[str, Any]] = field(default_factory=list)
     glm_relativities: list[dict[str, Any]] = field(default_factory=list)
@@ -48,12 +55,17 @@ class ModelCardMetadata:
 
     algorithm: str = ""
     task: str = ""
+    development_rows: int = 0
+    final_test_rows: int = 0
+    features: list[str] = field(default_factory=list)
+    evaluation_config: dict[str, Any] = field(default_factory=dict)
+    best_iteration: int | None = None
+    # Internal compatibility fields only. Model-card and MLflow output use the
+    # canonical development/final-test/evaluation labels above.
     train_rows: int = 0
     validation_rows: int = 0
     holdout_rows: int = 0
-    features: list[str] = field(default_factory=list)
     split_config: dict[str, Any] = field(default_factory=dict)
-    best_iteration: int | None = None
     # Feature contract inputs for ``build_signature``.  Absent values keep
     # MLflow logging working when a training path has not populated them.
     feature_types: dict[str, str] = field(default_factory=dict)

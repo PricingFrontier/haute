@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from haute.modelling._split import DEFAULT_SPLIT_DICT
 from haute.modelling._train_config import (
     GLM_CONFIG_KEYS,
     TrainingConfigError,
@@ -18,6 +17,15 @@ from haute.modelling._train_config import (
     build_training_job_kwargs,
     default_metrics,
 )
+
+# Minimal canonical evaluation object — every public modelling config must
+# supply exactly one versioned evaluation contract.
+MINIMAL_EVALUATION = {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {"method": "single", "size": 0.2},
+}
 
 
 class TestBuildTrainParams:
@@ -106,7 +114,8 @@ class TestBuildTrainParams:
 class TestBuildTrainingJobKwargs:
     def test_minimal_config_defaults(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "RMSE"}, data="d.parquet"
+            {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
+            data="d.parquet",
         )
         assert kwargs["name"] == "model"
         assert kwargs["data"] == "d.parquet"
@@ -114,7 +123,8 @@ class TestBuildTrainingJobKwargs:
         assert kwargs["algorithm"] == "catboost"
         assert kwargs["task"] == "regression"
         assert kwargs["params"] == {}
-        assert kwargs["split"] == DEFAULT_SPLIT_DICT
+        assert kwargs["evaluation"] == MINIMAL_EVALUATION
+        assert kwargs["tuning"] is None
         assert kwargs["metrics"] == ["gini", "rmse"]
         assert kwargs["output_dir"] == "outputs"
         assert kwargs["loss_function"] == "RMSE"
@@ -136,11 +146,19 @@ class TestBuildTrainingJobKwargs:
 
     def test_default_name_override(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "RMSE"}, data="d", default_name="node_7"
+            {"target": "y", "loss_function": "RMSE", "evaluation": MINIMAL_EVALUATION},
+            data="d",
+            default_name="node_7",
         )
         assert kwargs["name"] == "node_7"
         named = build_training_job_kwargs(
-            {"target": "y", "name": "freq", "loss_function": "RMSE"}, data="d"
+            {
+                "target": "y",
+                "name": "freq",
+                "loss_function": "RMSE",
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d",
         )
         assert named["name"] == "freq"
 
@@ -159,7 +177,7 @@ class TestBuildTrainingJobKwargs:
             "algorithm": "catboost",
             "task": "regression",
             "params": {"iterations": 5},
-            "split": {"strategy": "random", "validation_size": 0.2, "seed": 42},
+            "evaluation": MINIMAL_EVALUATION,
             "metrics": ["rmse"],
             "mlflow_experiment": "/Shared/x",
             "model_name": "freq_prod",
@@ -190,6 +208,7 @@ class TestBuildTrainingJobKwargs:
             "mlflow_experiment": "",
             "model_name": "",
             "loss_function": "RMSE",
+            "evaluation": MINIMAL_EVALUATION,
         }
         kwargs = build_training_job_kwargs(config, data="d")
         assert kwargs["weight"] is None
@@ -205,6 +224,7 @@ class TestBuildTrainingJobKwargs:
             "family": "poisson",
             "link": "log",
             "terms": {"age": {"type": "linear"}},
+            "evaluation": MINIMAL_EVALUATION,
         }
         kwargs = build_training_job_kwargs(config, data="d")
         assert kwargs["params"]["family"] == "poisson"
@@ -248,10 +268,85 @@ class TestExplicitObjectiveRequired:
 
     def test_glm_does_not_require_loss_function(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "algorithm": "glm", "family": "gamma", "all_factors": True},
+            {
+                "target": "y",
+                "algorithm": "glm",
+                "family": "gamma",
+                "all_factors": True,
+                "evaluation": MINIMAL_EVALUATION,
+            },
             data="d",
         )
         assert kwargs["loss_function"] is None
+
+
+class TestEvaluationConfig:
+    def test_canonical_config_is_threaded_into_training_job_kwargs(self):
+        config = {
+            "target": "y",
+            "loss_function": "RMSE",
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "group",
+                "group_column": "policy_id",
+                "seed": 17,
+                "test": {"size": 0.2},
+                "validation": {"method": "cross_validation", "fold_count": 4},
+            },
+        }
+
+        kwargs = build_training_job_kwargs(config, data="d.parquet")
+
+        assert kwargs["evaluation"] == config["evaluation"]
+
+    def test_missing_evaluation_fails_with_actionable_guidance(self):
+        with pytest.raises(TrainingConfigError, match="Split pane"):
+            build_training_job_kwargs({"target": "y", "loss_function": "RMSE"}, data="d.parquet")
+
+    @pytest.mark.parametrize(
+        "evaluation",
+        [
+            {**MINIMAL_EVALUATION, "schema_version": 2},
+            {**MINIMAL_EVALUATION, "strategy": "stratified"},
+            {**MINIMAL_EVALUATION, "seed": 1.5},
+            {**MINIMAL_EVALUATION, "validation": {"method": "single"}},
+            {
+                **MINIMAL_EVALUATION,
+                "validation": {"method": "cross_validation", "fold_count": 11},
+            },
+            {**MINIMAL_EVALUATION, "strategy": "group"},
+            {**MINIMAL_EVALUATION, "test": {"size": 1.0}},
+            {
+                "schema_version": 1,
+                "strategy": "temporal",
+                "date_column": "",
+                "validation": {"method": "none"},
+            },
+        ],
+    )
+    def test_invalid_config_fails_during_canonical_build(self, evaluation):
+        with pytest.raises(TrainingConfigError, match="Invalid evaluation config"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "evaluation": evaluation,
+                },
+                data="d.parquet",
+            )
+
+    @pytest.mark.parametrize("legacy_key", ["split", "cross_validation"])
+    def test_legacy_public_fields_are_rejected(self, legacy_key):
+        with pytest.raises(TrainingConfigError, match="legacy"):
+            build_training_job_kwargs(
+                {
+                    "target": "y",
+                    "loss_function": "RMSE",
+                    "evaluation": MINIMAL_EVALUATION,
+                    legacy_key: {"strategy": "random"},
+                },
+                data="d.parquet",
+            )
 
 
 class TestDefaultMetricsDerivation:
@@ -269,7 +364,7 @@ class TestDefaultMetricsDerivation:
         ],
     )
     def test_catboost_regression_metrics_follow_loss(self, loss, expected):
-        config = {"target": "y", "loss_function": loss}
+        config = {"target": "y", "loss_function": loss, "evaluation": MINIMAL_EVALUATION}
         if loss == "Tweedie":
             config["variance_power"] = 1.5
         kwargs = build_training_job_kwargs(config, data="d")
@@ -278,7 +373,13 @@ class TestDefaultMetricsDerivation:
     @pytest.mark.parametrize("loss", ["Logloss", "CrossEntropy"])
     def test_catboost_classification_metrics(self, loss):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "task": "classification", "loss_function": loss}, data="d"
+            {
+                "target": "y",
+                "task": "classification",
+                "loss_function": loss,
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d",
         )
         assert kwargs["metrics"] == ["auc", "logloss"]
 
@@ -303,6 +404,7 @@ class TestDefaultMetricsDerivation:
                 "all_factors": True,
                 "var_power": 1.5,
                 "theta": 1.5,
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
@@ -310,7 +412,13 @@ class TestDefaultMetricsDerivation:
 
     def test_explicit_metrics_always_win(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "Poisson", "metrics": ["rmse"]}, data="d"
+            {
+                "target": "y",
+                "loss_function": "Poisson",
+                "metrics": ["rmse"],
+                "evaluation": MINIMAL_EVALUATION,
+            },
+            data="d",
         )
         assert kwargs["metrics"] == ["rmse"]
 
@@ -359,13 +467,21 @@ class TestFailoverGates:
 
     def test_catboost_tweedie_with_variance_power_passes(self):
         kwargs = build_training_job_kwargs(
-            {"target": "y", "loss_function": "Tweedie", "variance_power": 1.5},
+            {
+                "target": "y",
+                "loss_function": "Tweedie",
+                "variance_power": 1.5,
+                "evaluation": MINIMAL_EVALUATION,
+            },
             data="d",
         )
         assert kwargs["variance_power"] == 1.5
 
     def test_catboost_non_tweedie_does_not_require_variance_power(self):
-        build_training_job_kwargs({"target": "y", "loss_function": "Poisson"}, data="d")
+        build_training_job_kwargs(
+            {"target": "y", "loss_function": "Poisson", "evaluation": MINIMAL_EVALUATION},
+            data="d",
+        )
 
     def test_glm_tweedie_without_var_power_fails_loud(self):
         with pytest.raises(TrainingConfigError, match="variance power"):
@@ -387,6 +503,7 @@ class TestFailoverGates:
                 "family": "tweedie",
                 "all_factors": True,
                 "var_power": 1.6,
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
@@ -415,6 +532,7 @@ class TestFailoverGates:
                 "family": "negbinomial",
                 "all_factors": True,
                 "theta": 2.5,
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
@@ -429,6 +547,7 @@ class TestFailoverGates:
                 "algorithm": "glm",
                 "family": "quasipoisson",
                 "all_factors": True,
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
@@ -445,6 +564,7 @@ class TestFailoverGates:
                 "family": "negbinomial",
                 "terms": {"age": {"type": "linear"}},
                 "theta": 2.5,
+                "evaluation": MINIMAL_EVALUATION,
             },
             "data.parquet",
         )
@@ -476,6 +596,7 @@ class TestFailoverGates:
                 "algorithm": "glm",
                 "family": "poisson",
                 "all_factors": True,
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
@@ -488,6 +609,7 @@ class TestFailoverGates:
                 "algorithm": "glm",
                 "family": "poisson",
                 "terms": {"age": {"type": "linear"}},
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
@@ -517,6 +639,7 @@ class TestFailoverGates:
                 "all_factors": True,
                 "regularization": "elastic_net",
                 "l1_ratio": 0.0,
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )
@@ -530,6 +653,7 @@ class TestFailoverGates:
                 "family": "poisson",
                 "all_factors": True,
                 "regularization": "ridge",
+                "evaluation": MINIMAL_EVALUATION,
             },
             data="d",
         )

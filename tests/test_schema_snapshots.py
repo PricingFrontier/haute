@@ -72,11 +72,12 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
     [
         (
             SavePipelineResponse,
-            ["file", "pipeline_name"],
+            ["file", "pipeline_name", "source_revision"],
             {
                 "status": {"type": "string", "default": "saved"},
                 "file": {"type": "string"},
                 "pipeline_name": {"type": "string"},
+                "source_revision": {"type": "string"},
                 "warnings": {"type": "array", "items": "string"},
             },
         ),
@@ -126,10 +127,11 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
             {
                 "status": {"type": "string"},
                 "job_id": {"anyOf": ["string", "null"], "default": None},
-                "metrics": {"type": "object", "additionalProperties": "number"},
-                "holdout_metrics": {"type": "object", "additionalProperties": "number"},
-                "holdout_rows": {"type": "integer", "default": 0},
-                "diagnostics_set": {"type": "string", "default": "validation"},
+                "diagnostic_metrics": {"type": "object", "additionalProperties": "number"},
+                "final_test_metrics": {"type": "object", "additionalProperties": "number"},
+                "development_rows": {"type": "integer", "default": 0},
+                "final_test_rows": {"type": "integer", "default": 0},
+                "diagnostics_set": {"type": "string", "default": "development"},
                 "glm_coefficients": {"type": "array", "items": "object"},
                 "glm_relativities": {"type": "array", "items": "object"},
                 "glm_fit_statistics": {"type": "object", "additionalProperties": "number"},
@@ -137,6 +139,8 @@ def _schema_summary(model: type[Any]) -> dict[str, Any]:
                 "diagnostics_errors": {"type": "array", "items": "object"},
                 "warning": {"anyOf": ["string", "null"], "default": None},
                 "total_source_rows": {"anyOf": ["integer", "null"], "default": None},
+                "evaluation": {"anyOf": ["ref:EvaluationReportPayload", "null"], "default": None},
+                "tuning": {"anyOf": ["ref:TuningReportPayload", "null"], "default": None},
             },
         ),
         (

@@ -23,17 +23,22 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 from fastapi import HTTPException
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._file_ops import Writer, atomic_write_bytes
 from haute._logging import get_logger
-from haute._submodel_paths import resolve_submodel_reference
-from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
+from haute._submodel_paths import (
+    MalformedSubmodelPathError,
+    SubmodelPathOutsideProjectError,
+    resolve_submodel_reference,
+)
+from haute.graph_utils import GraphEdge, GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 from haute.routes._helpers import (
     invalidate_pipeline_index,
+    load_sidecar,
     mark_self_write,
     save_sidecar,
     validate_safe_path,
@@ -63,6 +68,21 @@ class _TouchedFile(NamedTuple):
 
     target: Path
     previous_bytes: bytes | None
+
+
+class _ManagedChildSidecar(NamedTuple):
+    """A child sidecar whose ownership was proven before the transaction."""
+
+    source_path: Path
+    graph: PipelineGraph
+
+
+class _DefinitionFile(NamedTuple):
+    """Canonical module-path ownership recorded by one definition."""
+
+    recorded_path: str
+    resolved_path: Path
+    definition_id: str
 
 
 def _mark_self_write_cb(_path: Path) -> None:
@@ -101,8 +121,6 @@ class SavePipelineService:
     def save(
         self,
         body: SavePipelineRequest,
-        *,
-        delete_module_files: Sequence[str] = (),
     ) -> SavePipelineResponse:
         """Validate, generate code, write configs, and persist sidecar.
 
@@ -115,15 +133,25 @@ class SavePipelineService:
         """
         graph = body.graph
 
-        self._validate_singletons(graph)
-        self._validate_data_io_configs(graph)
-        self._validate_unique_sanitized_names(graph)
-        self._validate_no_load_errors(graph)
+        warnings = self.validate_graph(graph, source_file=body.source_file)
         py_path = self._resolve_source_file(body.source_file)
-        self._validate_source_file_matches_pipeline_root(py_path)
+        derived_new_files, derived_delete_files = self._derive_definition_file_lifecycle(
+            parent_path=py_path,
+            graph=graph,
+        )
+        absent_module_paths = self._require_module_files_absent(derived_new_files)
+        claimed_module_paths = self._resolve_managed_module_claims(
+            derived_new_files,
+            absent_module_paths=absent_module_paths,
+        )
+        managed_child_sidecars = self._prepare_managed_child_sidecars(
+            parent_path=py_path,
+            graph=graph,
+            claimed_module_paths=claimed_module_paths,
+        )
         delete_targets = [
             self._resolve_existing_module_delete_file(rel_path)
-            for rel_path in delete_module_files
+            for rel_path in derived_delete_files
             if rel_path
         ]
 
@@ -138,14 +166,19 @@ class SavePipelineService:
         self._prev_config_files = self._compute_disk_prev_config_files(py_path)
 
         touched: list[_TouchedFile] = []
-        warnings: list[str] = []
         try:
             self._write_code(body, graph, py_path, touched)
-            self._validate_api_inputs_have_schemas(graph, warnings)
             self._write_config_files(graph, touched)
             self._mirror_api_input_caches(graph)
             warnings.extend(
                 self._write_sidecar(py_path, graph, body.sources, body.active_source, touched)
+            )
+            warnings.extend(
+                self._write_managed_submodel_sidecars(
+                    parent_path=py_path,
+                    managed_children=managed_child_sidecars,
+                    touched=touched,
+                )
             )
             # Skip delete targets that casefold-match a file this save just
             # wrote, mirroring the stale-diff guard in
@@ -162,6 +195,19 @@ class SavePipelineService:
                 if str(target.resolve()).casefold() in written_folded:
                     continue
                 self._stage_delete(target, touched)
+                target_sidecar = target.with_suffix(".haute.json")
+                if str(target_sidecar.resolve()).casefold() not in written_folded:
+                    self._stage_delete(target_sidecar, touched)
+
+            from haute.routes import _helpers
+
+            committed_graph = _helpers.parse_pipeline_to_graph(
+                py_path,
+                project_root=self._root,
+            )
+            source_revision = committed_graph.source_revision
+            if not source_revision:
+                raise RuntimeError("Committed pipeline did not produce a source revision.")
         except BaseException:
             self._rollback(touched)
             raise
@@ -188,6 +234,7 @@ class SavePipelineService:
         return SavePipelineResponse(
             file=str(py_path.relative_to(self._root)),
             pipeline_name=body.name,
+            source_revision=source_revision,
             warnings=warnings,
             git_sha=git_sha,
         )
@@ -249,16 +296,16 @@ class SavePipelineService:
         description: str,
         preamble: str | None,
         source_file: str,
-        delete_module_files: Sequence[str] = (),
     ) -> SavePipelineResponse:
         """Save an already-mutated graph through the normal save transaction.
 
-        Submodel create/dissolve first transform the in-memory graph, then
-        need exactly the same write contract as ``/pipeline/save``: path
-        allowlist, rollback, config filtering, sidecar staging, and
-        post-commit index invalidation.  This wrapper keeps that contract
-        anchored in one service instead of duplicating file writes in the
-        route.
+        Server-owned mutations that intentionally persist a graph need the
+        same write contract as ``/pipeline/save``: path allowlisting,
+        rollback, config filtering, sidecar staging, and post-commit index
+        invalidation. This wrapper keeps that contract in one service.
+
+        Submodel create/dissolve routes deliberately do not call this method:
+        they return transform-only graph edits that remain dirty until Save.
         """
         return self.save(
             SavePipelineRequest(
@@ -271,12 +318,216 @@ class SavePipelineService:
                 active_source=graph.active_source,
                 preserved_blocks=graph.preserved_blocks,
             ),
-            delete_module_files=delete_module_files,
         )
 
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
+
+    def validate_graph(self, graph: PipelineGraph, *, source_file: str) -> list[str]:
+        """Run the canonical graph/save validation without writing.
+
+        This is the shared dry-run seam. ``save`` calls it before staging any
+        file, so application-service planning and the eventual commit cannot
+        drift onto separate structural validators.
+        """
+
+        self._validate_singletons(graph)
+        self._validate_edge_join_configs(graph)
+        self._validate_strict_node_configs(graph)
+        self._validate_unique_sanitized_names(graph)
+        self._validate_no_load_errors(graph)
+        py_path = self._resolve_source_file(source_file)
+        self._validate_source_file_matches_pipeline_root(py_path)
+        warnings: list[str] = []
+        self._validate_api_inputs_have_schemas(graph, warnings)
+        self._validate_transforms_are_runnable(graph, warnings)
+        return warnings
+
+    def validate_new_module_files(self, rel_paths: Sequence[str]) -> None:
+        """Run the child source/sidecar no-clobber check without writing."""
+        self._require_module_files_absent(rel_paths)
+
+    def _derive_definition_file_lifecycle(
+        self,
+        *,
+        parent_path: Path,
+        graph: PipelineGraph,
+    ) -> tuple[list[str], list[str]]:
+        """Derive new claims and safe removals at the explicit Save boundary."""
+        if parent_path.is_file():
+            from haute.routes import _helpers
+
+            try:
+                persisted = _helpers.parse_pipeline_to_graph(
+                    parent_path,
+                    project_root=self._root,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "submodel_lifecycle_baseline_unavailable",
+                    path=str(parent_path),
+                    error=str(exc),
+                )
+                if graph.submodels:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Cannot safely save submodel changes because the current "
+                            "pipeline cannot be parsed. Reload or repair it first."
+                        ),
+                    ) from None
+                return [], []
+        else:
+            persisted = PipelineGraph()
+
+        previous = self._definition_file_map(persisted, parent_path=parent_path)
+        submitted = self._definition_file_map(graph, parent_path=parent_path)
+        for key in previous.keys() & submitted.keys():
+            previous_definition = previous[key]
+            submitted_definition = submitted[key]
+            if previous_definition.definition_id != submitted_definition.definition_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Submodel module path ownership changed for "
+                        f"{submitted_definition.recorded_path!r} "
+                        f"(persisted {previous_definition.recorded_path!r}): "
+                        f"definitionId {previous_definition.definition_id!r} cannot be "
+                        f"replaced by {submitted_definition.definition_id!r}. "
+                        "Reload the pipeline before saving."
+                    ),
+                )
+        added = [submitted[key].recorded_path for key in sorted(submitted.keys() - previous.keys())]
+
+        removed: list[str] = []
+        for key in sorted(previous.keys() - submitted.keys()):
+            definition_file = previous[key]
+            if self._can_delete_managed_child(
+                child_path=definition_file.resolved_path,
+                parent_path=parent_path,
+            ):
+                removed.append(definition_file.recorded_path)
+        return added, removed
+
+    def _definition_file_map(
+        self,
+        graph: PipelineGraph,
+        *,
+        parent_path: Path,
+    ) -> dict[str, _DefinitionFile]:
+        """Resolve canonical definition files to cross-platform-safe keys."""
+        resolved: dict[str, _DefinitionFile] = {}
+        for definition in (graph.submodels or {}).values():
+            recorded_path = definition.file
+            try:
+                child_path, _config_base = resolve_submodel_reference(
+                    recorded_path,
+                    pipeline_dir=parent_path.parent,
+                    project_root=self._root,
+                )
+            except MalformedSubmodelPathError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            except SubmodelPathOutsideProjectError:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot access paths outside the project root",
+                ) from None
+            key = str(child_path.resolve()).casefold()
+            existing = resolved.get(key)
+            if existing is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Submodel definitions {existing.definition_id!r} and "
+                        f"{definition.definition_id!r} resolve to the same module file "
+                        f"({existing.recorded_path!r}, {recorded_path!r}). "
+                        "Give each definition its own module path."
+                    ),
+                )
+            resolved[key] = _DefinitionFile(
+                recorded_path=recorded_path,
+                resolved_path=child_path,
+                definition_id=definition.definition_id,
+            )
+        return resolved
+
+    def _can_delete_managed_child(
+        self,
+        *,
+        child_path: Path,
+        parent_path: Path,
+    ) -> bool:
+        """Return true only after ownership and every reference are proven."""
+        parent_relative = parent_path.relative_to(self._root).as_posix()
+        if load_sidecar(child_path).get("managed_parent") != parent_relative:
+            return False
+
+        from haute.discovery import discover_pipelines
+        from haute.routes import _helpers
+
+        try:
+            candidates = discover_pipelines(self._root)
+        except Exception:
+            logger.warning("submodel_reference_audit_failed", exc_info=True)
+            return False
+
+        parent_key = str(parent_path.resolve()).casefold()
+        child_key = str(child_path.resolve()).casefold()
+        for candidate in candidates:
+            candidate = candidate.resolve()
+            if str(candidate).casefold() == parent_key:
+                continue
+            try:
+                sibling = _helpers.parse_pipeline_to_graph(
+                    candidate,
+                    project_root=self._root,
+                )
+                sibling_paths = self._definition_file_map(
+                    sibling,
+                    parent_path=candidate,
+                )
+            except Exception:
+                logger.warning(
+                    "submodel_reference_audit_incomplete",
+                    file=str(candidate),
+                    exc_info=True,
+                )
+                return False
+            if child_key in sibling_paths:
+                return False
+        return True
+
+    @staticmethod
+    def _validate_edge_join_configs(graph: PipelineGraph) -> None:
+        """Reject graph-aware Edge Join config before codegen or writes.
+
+        The canonical join validators need both the node config and its
+        connected sources/role handles. Flattening supplies that same view for
+        root and submodel joins, including cross-boundary inputs.
+        """
+
+        from haute._edge_join import (
+            build_edge_join_kwargs,
+            resolve_edge_join_role_indices,
+        )
+        from haute.graph_utils import flatten_graph
+
+        flattened = flatten_graph(graph)
+        incoming_by_target: dict[str, list[GraphEdge]] = defaultdict(list)
+        for edge in flattened.edges:
+            incoming_by_target[edge.target].append(edge)
+
+        for node in flattened.nodes:
+            if node.data.nodeType != NodeType.EDGE_JOIN:
+                continue
+            incoming = incoming_by_target[node.id]
+            resolve_edge_join_role_indices(
+                node.data.config,
+                [edge.source for edge in incoming],
+                [edge.targetHandle for edge in incoming],
+            )
+            build_edge_join_kwargs(node.data.config)
 
     @staticmethod
     def _validate_singletons(graph: PipelineGraph) -> None:
@@ -290,14 +541,19 @@ class SavePipelineService:
                 )
 
     @staticmethod
-    def _validate_data_io_configs(graph: PipelineGraph) -> None:
-        """Reject invalid provider branches before generating or writing files."""
+    def _validate_strict_node_configs(graph: PipelineGraph) -> None:
+        """Reject invalid discriminated configs before generating or writing."""
         from haute._config_validation import validate_node_config
 
         graphs = [graph, *SavePipelineService._iter_embedded_submodel_graphs(graph)]
+        strict_types = {
+            NodeType.DATA_INPUT,
+            NodeType.DATA_OUTPUT,
+            NodeType.BANDING,
+        }
         for scoped_graph in graphs:
             for node in scoped_graph.nodes:
-                if node.data.nodeType not in {NodeType.DATA_INPUT, NodeType.DATA_OUTPUT}:
+                if node.data.nodeType not in strict_types:
                     continue
                 try:
                     validate_node_config(node.data.nodeType, node.data.config)
@@ -331,11 +587,9 @@ class SavePipelineService:
           collide too. The same rule applies to each submodel graph so
           collisions cannot escape this guard and surface as an unhandled
           codegen ``ParseError``.
-        * cross-module — a sanitised name used in more than one module.
-          Structural ``SUBMODEL`` / ``SUBMODEL_PORT`` nodes are excluded
-          from this pass: a submodel placeholder legally shares its label
-          with one of its own children (the placeholder's runtime id is
-          ``submodel__<name>``-prefixed and it never emits a ``def``).
+        * cross-module: a sanitised name used in more than one module.
+          Structural `SUBMODEL` / `SUBMODEL_PORT` nodes are excluded
+          because they never emit Python function definitions.
         """
         scoped_graphs: list[tuple[str, PipelineGraph]] = [("the pipeline", graph)]
         scoped_graphs.extend(
@@ -364,28 +618,18 @@ class SavePipelineService:
                     ),
                 )
 
-        # Pass 2 — collisions across modules.  Submodels execute in one
+        # Pass 2: collisions across modules. Submodels execute in one
         # flattened namespace with the root graph, so a sanitised name may
-        # only be used in a single module.  Nodes are assigned to modules
-        # the same way codegen assigns them to files
-        # (``graph_to_code_multi``): a node listed in some submodel's
-        # ``childNodeIds`` belongs to that submodel even when a payload
-        # also duplicates it in the parent ``nodes`` list, so such
-        # duplicates must not be double-counted as a root-module use.
+        # only be used in a single module. Canonical definitions own their
+        # child graphs; root nodes never duplicate definition-owned children.
         structural_types = (NodeType.SUBMODEL, NodeType.SUBMODEL_PORT)
         sanitized_to_scoped: dict[str, dict[str, list[str]]] = defaultdict(dict)
         for scope, scoped_graph in scoped_graphs:
-            child_ids: set[str] = set()
-            for sm_meta in (scoped_graph.submodels or {}).values():
-                child_ids.update(sm_meta.get("childNodeIds", []))
             for node in scoped_graph.nodes:
                 if node.data.nodeType in structural_types:
                     continue
-                if node.id in child_ids:
-                    continue
                 sanitized = _sanitize_func_name(node.data.label)
                 sanitized_to_scoped[sanitized].setdefault(scope, []).append(node.data.label)
-
         cross_module = {
             name: scopes for name, scopes in sanitized_to_scoped.items() if len(scopes) > 1
         }
@@ -409,26 +653,9 @@ class SavePipelineService:
     def _iter_named_embedded_submodel_graphs(
         graph: PipelineGraph,
     ) -> Iterator[tuple[str, PipelineGraph]]:
-        """Yield ``(submodel_name, embedded_graph)`` pairs, recursively.
-
-        Nested submodels are unsupported (the parser warns and drops
-        them), but recurse defensively so a crafted payload cannot smuggle
-        a colliding node past the guard inside a nested graph.
-        """
-        for sm_name, sm_meta in (graph.submodels or {}).items():
-            sm_graph_dict: Any = sm_meta.get("graph", {})
-            nested = PipelineGraph.model_validate(
-                {
-                    "nodes": sm_graph_dict.get("nodes", []),
-                    "edges": sm_graph_dict.get("edges", []),
-                    "submodels": sm_graph_dict.get("submodels"),
-                }
-            )
-            yield sm_name, nested
-            for deep_name, deep_graph in SavePipelineService._iter_named_embedded_submodel_graphs(
-                nested
-            ):
-                yield f"{sm_name}/{deep_name}", deep_graph
+        """Yield canonical ``(definition_id, definition_graph)`` pairs."""
+        for definition_id, definition in (graph.submodels or {}).items():
+            yield definition_id, definition.graph
 
     @staticmethod
     def _validate_no_load_errors(graph: PipelineGraph) -> None:
@@ -657,6 +884,128 @@ class SavePipelineService:
             return target
         return self._resolve_module_delete_file(normalised)
 
+    def _require_module_files_absent(self, rel_paths: Sequence[str]) -> set[str]:
+        """Reject source/sidecar collisions and return canonical target keys."""
+        targets = [self._resolve_module_delete_file(rel_path) for rel_path in rel_paths]
+        seen: set[str] = set()
+        for target in targets:
+            # Fully resolved, casefolded keys — the same normalisation
+            # `_prepare_managed_child_sidecars` applies to metadata paths.
+            folded_target = str(target.resolve()).casefold()
+            if folded_target in seen:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The requested submodel module path is duplicated.",
+                )
+            seen.add(folded_target)
+            parent = target.parent
+            if not parent.exists():
+                continue
+            if not parent.is_dir():
+                raise HTTPException(
+                    status_code=409,
+                    detail="The submodel modules path is already occupied by a file.",
+                )
+            candidates = {candidate.name.casefold(): candidate for candidate in parent.iterdir()}
+            protected_names = (
+                ("module", target.name),
+                ("sidecar", target.with_suffix(".haute.json").name),
+            )
+            for kind, protected_name in protected_names:
+                collision = candidates.get(protected_name.casefold())
+                if collision is None:
+                    continue
+                relative = collision.relative_to(self._root).as_posix()
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Submodel {kind} {relative!r} already exists. "
+                        "Choose a different submodel name."
+                    ),
+                )
+        return seen
+
+    def _resolve_managed_module_claims(
+        self,
+        rel_paths: Sequence[str],
+        *,
+        absent_module_paths: set[str],
+    ) -> set[str]:
+        """Validate that ownership claims are exactly no-clobber targets."""
+        claimed: set[str] = set()
+        for rel_path in rel_paths:
+            target = self._resolve_module_delete_file(rel_path)
+            key = str(target.resolve()).casefold()
+            if key in claimed:
+                raise ValueError("A managed submodel module claim was duplicated.")
+            if key not in absent_module_paths:
+                raise ValueError("Managed submodel module claims must also be no-clobber targets.")
+            claimed.add(key)
+        return claimed
+
+    def _prepare_managed_child_sidecars(
+        self,
+        *,
+        parent_path: Path,
+        graph: PipelineGraph,
+        claimed_module_paths: set[str],
+    ) -> list[_ManagedChildSidecar]:
+        """Resolve child ownership from disk or an explicit-Save new-file claim."""
+        parent_relative = parent_path.relative_to(self._root).as_posix()
+        remaining_claims = set(claimed_module_paths)
+        prepared: list[_ManagedChildSidecar] = []
+        seen: set[str] = set()
+
+        for name, definition in (graph.submodels or {}).items():
+            recorded_path = definition.file
+            try:
+                child_path, _config_base = resolve_submodel_reference(
+                    recorded_path,
+                    pipeline_dir=parent_path.parent,
+                    project_root=self._root,
+                )
+            except MalformedSubmodelPathError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from None
+            except SubmodelPathOutsideProjectError:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Cannot access paths outside the project root",
+                ) from None
+            key = str(child_path.resolve()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            is_claimed = key in claimed_module_paths
+            existing_owner = load_sidecar(child_path).get("managed_parent")
+            is_existing_owner = existing_owner == parent_relative
+
+            if not (is_claimed or is_existing_owner):
+                continue
+
+            remaining_claims.discard(key)
+            prepared.append(
+                _ManagedChildSidecar(
+                    source_path=child_path,
+                    graph=definition.graph,
+                )
+            )
+
+        if remaining_claims:
+            # Client-reachable: a parent pipeline nested below the pipeline
+            # root records "modules/<name>.py" relative to its own directory,
+            # which never matches the allowlist target under the root's
+            # modules/ directory. Fail cleanly before any write.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Submodel module claim does not match the pipeline's recorded "
+                    "module path. The parent pipeline must live directly in the "
+                    "active pipeline directory."
+                ),
+            )
+        return prepared
+
     # ------------------------------------------------------------------
     # Writes — route every disk write through Writer for self-write safety
     # ------------------------------------------------------------------
@@ -806,6 +1155,42 @@ class SavePipelineService:
                 "Open the node and click Infer Tables to populate the schema."
             )
 
+    def _validate_transforms_are_runnable(self, graph: PipelineGraph, warnings: list[str]) -> None:
+        """Emit a non-blocking warning per transform that has no code yet.
+
+        A transform with no code needs exactly one upstream to mean anything:
+        with none there is nothing to return, and with several there is no
+        defined way to combine them. Both are ordinary states for a graph the
+        user is still building, so — as with an API Input that has no tables
+        yet — they do not block the save. Codegen emits a placeholder body that
+        raises if the pipeline is actually run, and this warning points at the
+        node so the user is not surprised by that later.
+        """
+        scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
+        for scoped_graph in scoped_graphs:
+            upstream_counts: dict[str, int] = {}
+            for edge in scoped_graph.edges:
+                upstream_counts[edge.target] = upstream_counts.get(edge.target, 0) + 1
+
+            for node in scoped_graph.nodes:
+                if node.data.nodeType != NodeType.POLARS:
+                    continue
+                if str(node.data.config.get("code") or "").strip():
+                    continue
+                count = upstream_counts.get(node.id, 0)
+                if count == 1:
+                    continue
+                label = node.data.label or node.id
+                detail = (
+                    "has no inputs connected"
+                    if count == 0
+                    else f"combines {count} inputs but has no code to combine them"
+                )
+                warnings.append(
+                    f"Transform node {label!r} {detail}. It will save, but running "
+                    "the pipeline will fail until you add code to the node."
+                )
+
     # ------------------------------------------------------------------
     # Dual-cache: mirror working/ → committed/ per API Input node
     # ------------------------------------------------------------------
@@ -896,15 +1281,8 @@ class SavePipelineService:
 
     @staticmethod
     def _iter_embedded_submodel_graphs(graph: PipelineGraph) -> Iterator[PipelineGraph]:
-        for sm_meta in (graph.submodels or {}).values():
-            sm_graph_dict: Any = sm_meta.get("graph", {})
-            yield PipelineGraph.model_validate(
-                {
-                    "nodes": sm_graph_dict.get("nodes", []),
-                    "edges": sm_graph_dict.get("edges", []),
-                    "submodels": sm_graph_dict.get("submodels"),
-                }
-            )
+        for definition in (graph.submodels or {}).values():
+            yield definition.graph
 
     @staticmethod
     def _collect_node_configs_recursive(graph: PipelineGraph) -> dict[str, str]:
@@ -1154,6 +1532,8 @@ class SavePipelineService:
         sources: list[str],
         active_source: str,
         touched: list[_TouchedFile] | None = None,
+        *,
+        managed_parent: str | None = None,
     ) -> list[str]:
         """Persist node positions and source state to ``.haute.json``.
 
@@ -1172,7 +1552,30 @@ class SavePipelineService:
             if sidecar_path.exists():
                 previous_bytes = sidecar_path.read_bytes()
             touched.append(_TouchedFile(target=sidecar_path, previous_bytes=previous_bytes))
-        return save_sidecar(py_path, graph)
+        return save_sidecar(py_path, graph, managed_parent=managed_parent)
+
+    def _write_managed_submodel_sidecars(
+        self,
+        *,
+        parent_path: Path,
+        managed_children: Sequence[_ManagedChildSidecar],
+        touched: list[_TouchedFile],
+    ) -> list[str]:
+        """Persist positions for children whose ownership passed preflight."""
+        parent_relative = parent_path.relative_to(self._root).as_posix()
+        warnings: list[str] = []
+        for child in managed_children:
+            warnings.extend(
+                self._write_sidecar(
+                    child.source_path,
+                    child.graph,
+                    child.graph.sources,
+                    child.graph.active_source,
+                    touched,
+                    managed_parent=parent_relative,
+                )
+            )
+        return warnings
 
     # ------------------------------------------------------------------
     # Rollback — invoked by ``save`` when any step fails

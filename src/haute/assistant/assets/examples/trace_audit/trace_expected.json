@@ -1,0 +1,1 @@
+{"target":"derived","row_index":0,"column":"derived_value","required_node_ids":["source","derived"],"expected_value":4}

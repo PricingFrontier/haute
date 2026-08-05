@@ -28,8 +28,17 @@ from pathlib import Path
 
 from haute import _parser_submodels
 from haute._flatten import flatten_graph
-from haute._parser_submodels import merge_submodels
-from haute._types import GraphEdge, GraphNode, NodeData, PipelineGraph
+from haute._parser_submodels import SubmodelRegistration, merge_submodels
+from haute._submodel_instances import qualified_runtime_node_id
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    PipelineGraph,
+    SubmodelEndpoint,
+    SubmodelInputPort,
+    SubmodelOutputPort,
+)
 from haute.parser import parse_pipeline_file
 from tests.conftest import write_data_input_config
 
@@ -49,6 +58,40 @@ def _edge(src: str, tgt: str) -> GraphEdge:
     return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
 
 
+def _reusable_definition(
+    graph: PipelineGraph,
+    *,
+    definition_id: str,
+    input_node_id: str,
+    output_node_id: str,
+) -> PipelineGraph:
+    graph._parser_definition_id = definition_id
+    graph._parser_input_ports = [
+        SubmodelInputPort(
+            port_id="input",
+            label="Input",
+            targets=[SubmodelEndpoint(node_id=input_node_id)],
+        )
+    ]
+    graph._parser_output_ports = [
+        SubmodelOutputPort(
+            port_id="output",
+            label="Output",
+            source=SubmodelEndpoint(node_id=output_node_id),
+        )
+    ]
+    return graph
+
+
+def _registration(definition_id: str) -> SubmodelRegistration:
+    return SubmodelRegistration(
+        path=f"modules/{definition_id}.py",
+        definition_id=definition_id,
+        instance_id=f"instance_{definition_id}",
+        alias=definition_id,
+    )
+
+
 def _simple_parent() -> PipelineGraph:
     """Parent: data_src → output (with submodel in the middle)."""
     return PipelineGraph(
@@ -63,28 +106,43 @@ def _simple_parent() -> PipelineGraph:
 
 def _two_node_child() -> PipelineGraph:
     """Submodel with two internal nodes connected in sequence."""
-    return PipelineGraph(
-        nodes=[_node("child_a"), _node("child_b")],
-        edges=[_edge("child_a", "child_b")],
-        pipeline_name="scoring",
+    return _reusable_definition(
+        PipelineGraph(
+            nodes=[_node("child_a"), _node("child_b")],
+            edges=[_edge("child_a", "child_b")],
+            pipeline_name="scoring",
+        ),
+        definition_id="scoring",
+        input_node_id="child_a",
+        output_node_id="child_b",
     )
 
 
 def _single_node_child() -> PipelineGraph:
     """Submodel with exactly one internal node."""
-    return PipelineGraph(
-        nodes=[_node("lone")],
-        edges=[],
-        pipeline_name="solo",
+    return _reusable_definition(
+        PipelineGraph(
+            nodes=[_node("lone")],
+            edges=[],
+            pipeline_name="solo",
+        ),
+        definition_id="solo",
+        input_node_id="lone",
+        output_node_id="lone",
     )
 
 
 def _chained_child() -> PipelineGraph:
     """Submodel with three internal nodes in sequence (a → b → c)."""
-    return PipelineGraph(
-        nodes=[_node("x"), _node("y"), _node("z")],
-        edges=[_edge("x", "y"), _edge("y", "z")],
-        pipeline_name="chain",
+    return _reusable_definition(
+        PipelineGraph(
+            nodes=[_node("x"), _node("y"), _node("z")],
+            edges=[_edge("x", "y"), _edge("y", "z")],
+            pipeline_name="chain",
+        ),
+        definition_id="chain",
+        input_node_id="x",
+        output_node_id="z",
     )
 
 
@@ -149,8 +207,8 @@ class TestStructuralEquivalence:
         parent = _simple_parent()
         child = _two_node_child()
         parent_edges = [
-            ("data_src", "child_a", None, None),
-            ("child_b", "output", None, None),
+            ("data_src", "scoring", None, "input"),
+            ("scoring", "output", "output", None),
         ]
 
         via_parser_flatten = merge_submodels(
@@ -158,6 +216,7 @@ class TestStructuralEquivalence:
             {"scoring": child},
             {"scoring": "modules/scoring.py"},
             parent_edges=parent_edges,
+            registrations=[_registration("scoring")],
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -165,6 +224,7 @@ class TestStructuralEquivalence:
             {"scoring": child},
             {"scoring": "modules/scoring.py"},
             parent_edges=parent_edges,
+            registrations=[_registration("scoring")],
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -176,8 +236,8 @@ class TestStructuralEquivalence:
         parent = _simple_parent()
         child = _single_node_child()
         parent_edges = [
-            ("data_src", "lone", None, None),
-            ("lone", "output", None, None),
+            ("data_src", "solo", None, "input"),
+            ("solo", "output", "output", None),
         ]
 
         via_parser_flatten = merge_submodels(
@@ -185,6 +245,7 @@ class TestStructuralEquivalence:
             {"solo": child},
             {"solo": "modules/solo.py"},
             parent_edges=parent_edges,
+            registrations=[_registration("solo")],
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -192,6 +253,7 @@ class TestStructuralEquivalence:
             {"solo": child},
             {"solo": "modules/solo.py"},
             parent_edges=parent_edges,
+            registrations=[_registration("solo")],
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -203,8 +265,8 @@ class TestStructuralEquivalence:
         parent = _simple_parent()
         child = _chained_child()
         parent_edges = [
-            ("data_src", "x", None, None),
-            ("z", "output", None, None),
+            ("data_src", "chain", None, "input"),
+            ("chain", "output", "output", None),
         ]
 
         via_parser_flatten = merge_submodels(
@@ -212,6 +274,7 @@ class TestStructuralEquivalence:
             {"chain": child},
             {"chain": "modules/chain.py"},
             parent_edges=parent_edges,
+            registrations=[_registration("chain")],
             flatten=True,
         )
         hierarchical = merge_submodels(
@@ -219,6 +282,7 @@ class TestStructuralEquivalence:
             {"chain": child},
             {"chain": "modules/chain.py"},
             parent_edges=parent_edges,
+            registrations=[_registration("chain")],
             flatten=False,
         )
         via_flatten_graph = flatten_graph(hierarchical)
@@ -254,11 +318,28 @@ class TestParsePipelineFlattenRegression:
             import polars as pl
             import haute
 
-            submodel = haute.Submodel("scoring")
+            submodel = haute.Submodel(
+                "scoring",
+                definition_id="scoring",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "Transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "Finalise", "handleId": None},
+                    }
+                ],
+            )
 
             @submodel.polars
-            def Transform(Source: pl.LazyFrame) -> pl.LazyFrame:
-                return Source.select("x")
+            def Transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source.select("x")
 
             @submodel.polars
             def Finalise(Transform: pl.LazyFrame) -> pl.LazyFrame:
@@ -281,10 +362,15 @@ class TestParsePipelineFlattenRegression:
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
-            pipeline.submodel("modules/scoring.py")
+            pipeline.submodel(
+                "modules/scoring.py",
+                definition_id="scoring",
+                instance_id="submodel__scoring",
+                alias="scoring",
+            )
 
-            pipeline.connect("Source", "Transform")
-            pipeline.connect("Finalise", "Source")
+            pipeline.connect("Source", "scoring", target_port="source")
+            pipeline.connect("scoring", "Source", source_port="result")
             """,
         )
 
@@ -294,8 +380,8 @@ class TestParsePipelineFlattenRegression:
         # Placeholder is gone in flattened mode
         assert "submodel__scoring" not in node_ids
         # Child nodes are inlined
-        assert "Transform" in node_ids
-        assert "Finalise" in node_ids
+        assert qualified_runtime_node_id("submodel__scoring", "Transform") in node_ids
+        assert qualified_runtime_node_id("submodel__scoring", "Finalise") in node_ids
         # Source node survives
         assert "Source" in node_ids
         # No leftover submodels metadata in flat graph
@@ -314,11 +400,22 @@ class TestParsePipelineFlattenRegression:
             import polars as pl
             import haute
 
-            submodel = haute.Submodel("scoring")
+            submodel = haute.Submodel(
+                "scoring",
+                definition_id="scoring",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "Transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[],
+            )
 
             @submodel.polars
-            def Transform(Source: pl.LazyFrame) -> pl.LazyFrame:
-                return Source.select("x")
+            def Transform(source: pl.LazyFrame) -> pl.LazyFrame:
+                return source.select("x")
             """,
         )
         source_config = write_data_input_config(tmp_path, "Source", "data/in.parquet")
@@ -335,9 +432,14 @@ class TestParsePipelineFlattenRegression:
             def Source() -> pl.LazyFrame:
                 return pl.scan_parquet("data/in.parquet")
 
-            pipeline.submodel("modules/scoring.py")
+            pipeline.submodel(
+                "modules/scoring.py",
+                definition_id="scoring",
+                instance_id="submodel__scoring",
+                alias="scoring",
+            )
 
-            pipeline.connect("Source", "Transform")
+            pipeline.connect("Source", "scoring", target_port="source")
             """,
         )
 

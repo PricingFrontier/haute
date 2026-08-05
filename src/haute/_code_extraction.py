@@ -417,16 +417,94 @@ class MatcherResult(NamedTuple):
 BoilerplateMatcher = Callable[[list[str], tuple[str, ...]], MatcherResult]
 
 
+# Body emitted for a transform the user has not written yet — one with no code
+# and either no upstream at all, or several (where "pass the input through" has
+# no defined meaning). Saving such a node still has to produce SOME valid body;
+# this one fails loudly if the pipeline is ever run.
+#
+# The message is deliberately CONSTANT — naming no node or source — so the
+# placeholder is recognisable on the way back in. Interpolating the label would
+# leave nothing fixed to match on, and matching loosely (say, any leading
+# ``raise NotImplementedError``) would silently swallow a user's own first line
+# when the pipeline was reloaded. The failing node is already identified by the
+# function name in the traceback.
+INCOMPLETE_TRANSFORM_MESSAGE = (
+    "This transform has no code yet. Add code that defines what it returns."
+)
+INCOMPLETE_TRANSFORM_BODY = (
+    f"    raise NotImplementedError(\n        {INCOMPLETE_TRANSFORM_MESSAGE!r},\n    )\n"
+)
+
+
+def _is_incomplete_transform_placeholder(source: str) -> bool:
+    """Return whether *source* is exactly the generated placeholder statement.
+
+    Compares the PARSED STATEMENT, not its source text. Emitted source is not
+    what lands on disk — the saved file is normalised (quote style at minimum),
+    so a textual comparison silently stops matching and the placeholder comes
+    back as the user's own code, writing a ``raise`` into a node they left
+    empty. Structural comparison is immune to quote style, line wrapping and
+    trailing commas.
+
+    The message must match exactly, so a hand-written ``raise
+    NotImplementedError("my own todo")`` is still the user's code.
+    """
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return False
+    if len(module.body) != 1:
+        return False
+    statement = module.body[0]
+    if not isinstance(statement, ast.Raise) or statement.cause is not None:
+        return False
+    call = statement.exc
+    if not isinstance(call, ast.Call) or call.keywords:
+        return False
+    if not isinstance(call.func, ast.Name) or call.func.id != "NotImplementedError":
+        return False
+    if len(call.args) != 1:
+        return False
+    argument = call.args[0]
+    return isinstance(argument, ast.Constant) and argument.value == INCOMPLETE_TRANSFORM_MESSAGE
+
+
 def _match_polars(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
-    """Polars/transform nodes: keep everything — matcher is a no-op.
+    """Polars/transform nodes: keep everything — matcher is a near no-op.
+
+    The one exception is the generated "not written yet" placeholder
+    (:data:`INCOMPLETE_TRANSFORM_BODY`): that is scaffold, not user code, so it
+    is skipped and the node round-trips back into the editor still empty.
+    Recognition is structural (see
+    :func:`_is_incomplete_transform_placeholder`), so a body that merely begins
+    with some other ``raise NotImplementedError`` stays user code.
 
     Post-processing (strip ``df = <param>`` alias, unwrap chain, convert
     ``return <expr>``) is applied by ``_finalise_polars``.
     """
+    if cleaned:
+        end_idx = _statement_end_index(cleaned, 0)
+        statement = _dedent("\n".join(cleaned[:end_idx])).strip()
+        if _is_incomplete_transform_placeholder(statement):
+            # ``generated_scaffold`` so anything the user added AFTER the
+            # placeholder (by hand-editing the file) keeps its references to the
+            # input parameters. Unlike the single-upstream body, the placeholder
+            # binds no ``df`` alias, so a following ``df = <param>`` is the
+            # user's own line and must not be stripped as scaffold.
+            return MatcherResult(start_idx=end_idx, return_vars=("df",), generated_scaffold=True)
     return MatcherResult(start_idx=0, return_vars=("df",))
 
 
-_SOURCE_LOAD_PREFIXES: tuple[str, ...] = ("df=resolve_data_input_from_config(",)
+_SOURCE_LOAD_PREFIXES: tuple[str, ...] = (
+    "df=resolve_data_input_from_config(",
+    "returnresolve_data_input_from_config(",
+)
+
+_SOURCE_SETUP_STATEMENTS = frozenset({"project_root=get_project_root(_HAUTE_CONFIG_BASE)"})
+
+
+def _is_source_setup_statement(line: str) -> bool:
+    return line.strip().replace(" ", "") in _SOURCE_SETUP_STATEMENTS
 
 
 def _is_source_load_statement_start(line: str) -> bool:
@@ -455,6 +533,9 @@ def _source_load_boilerplate_end_index(cleaned: list[str]) -> int:
             idx += 1
             continue
         if stripped.startswith(("from ", "import ")):
+            idx += 1
+            continue
+        if _is_source_setup_statement(stripped):
             idx += 1
             continue
         if _is_source_load_statement_start(stripped):
@@ -921,6 +1002,9 @@ def _extract_source_user_code(body_source: str) -> str:
     The generated boilerplate assigns
     ``resolve_data_input_from_config(...)`` to ``df``. Everything after that
     assignment — minus the trailing ``return df`` — is user code.
+
+    A canonical handwritten function that directly returns the same resolver
+    call is entirely loading scaffold and has no extracted user code.
 
     User code follows the generated boilerplate directly.
     """

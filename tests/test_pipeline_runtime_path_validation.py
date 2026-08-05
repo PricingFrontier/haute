@@ -14,7 +14,7 @@ from haute._path_resolution import (
     RuntimePathError,
     RuntimePathOutsideProjectError,
 )
-from haute._types import GraphNode, NodeData, NodeType, PipelineGraph
+from haute._types import GraphNode, NodeData, NodeType, PipelineGraph, SubmodelDefinition
 from haute.routes import modelling as modelling_routes
 from haute.routes import optimiser as optimiser_routes
 from haute.routes._runtime_path_errors import runtime_path_http_exception
@@ -201,14 +201,24 @@ def test_prepare_runtime_graph_validates_paths_inside_submodels() -> None:
     )
     graph = PipelineGraph(
         source_file="main.py",
+        nodes=[
+            GraphNode(
+                id="nested-instance",
+                data=NodeData(
+                    label="nested",
+                    nodeType=NodeType.SUBMODEL,
+                    config={"definitionId": "nested", "alias": "nested"},
+                ),
+            )
+        ],
         submodels={
-            "nested": {
-                "file": "modules/nested.py",
-                "graph": {
-                    "nodes": [child.model_dump(mode="json")],
-                    "edges": [],
-                },
-            }
+            "nested": SubmodelDefinition(
+                definition_id="nested",
+                file="modules/nested.py",
+                graph=PipelineGraph(nodes=[child], edges=[]),
+                input_ports=[],
+                output_ports=[],
+            )
         },
     )
 
@@ -314,10 +324,13 @@ def test_case_only_collision_between_parent_and_submodel_rejected(
     graph = PipelineGraph(nodes=[_config_node("parent", "Shared")], edges=[])
     child = _config_node("child", "shared")
     graph.submodels = {
-        "pricing": {
-            "file": "modules/pricing.py",
-            "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-        }
+        "pricing": SubmodelDefinition(
+            definition_id="pricing",
+            file="modules/pricing.py",
+            graph=PipelineGraph(nodes=[child], edges=[]),
+            input_ports=[],
+            output_ports=[],
+        )
     }
 
     with pytest.raises(HTTPException) as exc_info:
@@ -464,10 +477,13 @@ def test_reserved_device_label_in_submodel_graph_rejected(tmp_path: Path) -> Non
     graph = PipelineGraph(nodes=[_config_node("parent", "Safe")], edges=[])
     child = _config_node("child", "NUL")
     graph.submodels = {
-        "pricing": {
-            "file": "modules/pricing.py",
-            "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-        }
+        "pricing": SubmodelDefinition(
+            definition_id="pricing",
+            file="modules/pricing.py",
+            graph=PipelineGraph(nodes=[child], edges=[]),
+            input_ports=[],
+            output_ports=[],
+        )
     }
 
     with pytest.raises(HTTPException) as exc_info:
@@ -617,33 +633,73 @@ def _submodel_save_request(graph: PipelineGraph) -> SavePipelineRequest:
     )
 
 
+def _module_graph(definition_id: str, module_file: str) -> PipelineGraph:
+    return PipelineGraph.model_validate(
+        {
+            "nodes": [_config_node("a", "Src")],
+            "edges": [],
+            "submodels": {
+                definition_id: {
+                    "definitionId": definition_id,
+                    "file": module_file,
+                    "inputPorts": [],
+                    "outputPorts": [],
+                    "graph": {
+                        "nodes": [],
+                        "edges": [],
+                        "source_file": module_file,
+                    },
+                }
+            },
+        }
+    )
+
+
 def _run_submodel_save(
     tmp_path: Path,
-    delete_module_files: list[str],
+    *,
+    persisted_graph: PipelineGraph,
+    submitted_graph: PipelineGraph,
 ) -> None:
-    """Drive a full ``save()`` whose codegen emits ``modules/Foo.py``."""
+    """Drive a full save from a controlled persisted graph baseline."""
     from unittest.mock import patch
 
     svc = SavePipelineService(tmp_path)
-    graph = PipelineGraph(nodes=[_config_node("a", "Src")], edges=[])
-    graph.submodels = {"Foo": {"file": "modules/Foo.py", "graph": {"nodes": [], "edges": []}}}
+    parent = tmp_path / "main.py"
+    submitted_graph = submitted_graph.model_copy(update={"source_revision": "revision-after-save"})
+    module_file = next(iter(submitted_graph.submodels.values())).file
     files = {
-        "main.py": 'import haute\npipeline = haute.Pipeline("main")\n',
-        "modules/Foo.py": "# new module\n",
+        "main.py": '# newly generated parent\nimport haute\npipeline = haute.Pipeline("main")\n',
+        module_file: "# new module\n",
     }
-    with patch("haute.codegen.graph_to_code_multi", return_value=files):
-        svc.save(_submodel_save_request(graph), delete_module_files=delete_module_files)
+    from haute.routes import _helpers
+
+    original_parse = _helpers.parse_pipeline_to_graph
+
+    def parse_parent(path: Path, **kwargs):
+        if path.resolve() != parent.resolve():
+            return original_parse(path, **kwargs)
+        if "# newly generated parent" in path.read_text(encoding="utf-8"):
+            return submitted_graph
+        return persisted_graph
+
+    with (
+        patch("haute.codegen.graph_to_code_multi", return_value=files),
+        patch(
+            "haute.routes._helpers.parse_pipeline_to_graph",
+            side_effect=parse_parent,
+        ),
+        patch("haute.discovery.discover_pipelines", return_value=[parent]),
+    ):
+        svc.save(_submodel_save_request(submitted_graph))
 
 
-def test_case_only_module_rename_survives_explicit_delete(tmp_path: Path) -> None:
+def test_case_only_module_rename_preserves_newly_written_module(tmp_path: Path) -> None:
     """A case-only submodel rename must not delete the freshly written module.
 
-    Renaming submodel ``foo`` → ``Foo`` makes the client request deletion of
-    ``modules/foo.py`` in the same save that writes ``modules/Foo.py`` — the
-    SAME on-disk file on the case-insensitive filesystems macOS and Windows
-    default to. Unguarded, the staged delete unlinks the module the save
-    just wrote (the explicit-delete twin of the stale-diff bug fixed in
-    PR #43).
+    The persisted and submitted case variants resolve to one canonical path.
+    On the case-insensitive filesystems macOS and Windows default to, they are
+    the same on-disk file and the newly written module must remain intact.
     """
     (tmp_path / "main.py").write_text(
         'import haute\npipeline = haute.Pipeline("main")\n', encoding="utf-8"
@@ -653,7 +709,11 @@ def test_case_only_module_rename_survives_explicit_delete(tmp_path: Path) -> Non
     old = modules_dir / "foo.py"
     old.write_text("# old module\n", encoding="utf-8")
 
-    _run_submodel_save(tmp_path, delete_module_files=["modules/foo.py"])
+    _run_submodel_save(
+        tmp_path,
+        persisted_graph=_module_graph("shared-definition", "modules/foo.py"),
+        submitted_graph=_module_graph("shared-definition", "modules/Foo.py"),
+    )
 
     new = modules_dir / "Foo.py"
     assert new.is_file()
@@ -664,8 +724,8 @@ def test_case_only_module_rename_survives_explicit_delete(tmp_path: Path) -> Non
         assert old.read_text(encoding="utf-8") == "# old module\n"
 
 
-def test_genuine_module_delete_still_removes_the_file(tmp_path: Path) -> None:
-    """The casefold skip must not stop real module deletions."""
+def test_derived_module_removal_deletes_owned_file(tmp_path: Path) -> None:
+    """A removed persisted definition deletes its uniquely owned module."""
     (tmp_path / "main.py").write_text(
         'import haute\npipeline = haute.Pipeline("main")\n', encoding="utf-8"
     )
@@ -673,10 +733,19 @@ def test_genuine_module_delete_still_removes_the_file(tmp_path: Path) -> None:
     modules_dir.mkdir()
     gone = modules_dir / "gone.py"
     gone.write_text("# retired module\n", encoding="utf-8")
+    gone.with_suffix(".haute.json").write_text(
+        '{"managed_parent":"main.py"}\n',
+        encoding="utf-8",
+    )
 
-    _run_submodel_save(tmp_path, delete_module_files=["modules/gone.py"])
+    _run_submodel_save(
+        tmp_path,
+        persisted_graph=_module_graph("gone-definition", "modules/gone.py"),
+        submitted_graph=_module_graph("foo-definition", "modules/Foo.py"),
+    )
 
     assert not gone.exists()
+    assert not gone.with_suffix(".haute.json").exists()
     assert (modules_dir / "Foo.py").is_file()
 
 

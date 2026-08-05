@@ -494,7 +494,7 @@ class TestHistoricalPipelineReads:
         monkeypatch.setattr(
             route_helpers,
             "parse_pipeline_to_graph",
-            lambda _path: PipelineGraph(),
+            lambda _path, **_kwargs: PipelineGraph(source_file="rating.py"),
         )
 
         real_rmtree = route_helpers.shutil.rmtree

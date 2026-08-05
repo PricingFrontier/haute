@@ -36,6 +36,12 @@
  *     site. `applyApiInputConfigChange` composes the two.
  */
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  type SubmodelDefinition,
+  type SubmodelPortData,
+} from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
 import { sanitizeName } from "./sanitizeName"
 
@@ -137,63 +143,137 @@ export function apiInputFrameLabels(config: ConfigLike): string[] {
 
 type SubmodelsLike = Record<string, unknown> | undefined
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
 export type SubmodelGraphLike = {
   nodes: SimpleNode[]
   edges: SimpleEdge[]
-  submodels: Record<string, unknown>
 }
 
-/** Read the graph nested in canonical submodel metadata. */
+type CanonicalSubmodelBoundary = {
+  definition: SubmodelDefinition
+  graph: SubmodelGraphLike
+}
+
+/** Read a graph only from a complete canonical submodel definition. */
 export function submodelGraphFromMetadata(value: unknown): SubmodelGraphLike | undefined {
-  const metadata = isRecord(value) ? value : undefined
-  const graph = metadata && isRecord(metadata.graph) ? metadata.graph : undefined
-  if (!graph || !Array.isArray(graph.nodes)) return undefined
+  if (!isSubmodelDefinition(value)) return undefined
   return {
-    nodes: graph.nodes as SimpleNode[],
-    edges: Array.isArray(graph.edges) ? graph.edges as SimpleEdge[] : [],
-    submodels: isRecord(graph.submodels) ? graph.submodels : {},
+    nodes: value.graph.nodes as unknown as SimpleNode[],
+    edges: value.graph.edges as SimpleEdge[],
   }
 }
 
-/** Resolve one synthetic submodel boundary handle to its actual child node. */
+function canonicalSubmodelBoundary(
+  boundaryNode: SimpleNode,
+  submodels: SubmodelsLike,
+): CanonicalSubmodelBoundary {
+  const config = boundaryNode.data.config
+  if (!isSubmodelInstanceConfig(config)) {
+    throw new Error(
+      "Cannot resolve submodel instance " + boundaryNode.id
+      + ": canonical occurrence config is malformed",
+    )
+  }
+  const definition = submodels?.[config.definitionId]
+  if (!isSubmodelDefinition(definition, config.definitionId)) {
+    throw new Error(
+      "Cannot resolve submodel instance " + boundaryNode.id
+      + ": definition " + config.definitionId + " is missing or malformed",
+    )
+  }
+  return {
+    definition,
+    graph: {
+      nodes: definition.graph.nodes as unknown as SimpleNode[],
+      edges: definition.graph.edges as SimpleEdge[],
+    },
+  }
+}
+
+/**
+ * Resolve a synthetic submodel boundary handle to every declared child
+ * endpoint. Canonical input ports may fan out.
+ */
+export function resolveSubmodelBoundaryNodes(
+  boundaryNode: SimpleNode,
+  handle: string | null | undefined,
+  direction: "in" | "out",
+  submodels: SubmodelsLike,
+): SimpleNode[] {
+  if (boundaryNode.data.nodeType !== NODE_TYPES.SUBMODEL) return []
+
+  const prefix = direction + "__"
+  const canonical = canonicalSubmodelBoundary(boundaryNode, submodels)
+  if (!handle?.startsWith(prefix) || handle.length === prefix.length) {
+    throw new Error(
+      "Cannot resolve " + direction + "put handle " + String(handle)
+      + " for submodel instance " + boundaryNode.id
+      + ": expected " + prefix + "<portId>",
+    )
+  }
+  const portId = handle.slice(prefix.length)
+  if (direction === "in") {
+    const port = canonical.definition.inputPorts.find(
+      (candidate) => candidate.portId === portId,
+    )
+    if (!port) {
+      throw new Error(
+        "Cannot resolve input handle " + handle + " for submodel instance "
+        + boundaryNode.id + ": public port " + portId + " is missing",
+      )
+    }
+    return port.targets.map((endpoint) => {
+      const child = canonical.graph.nodes.find((node) => node.id === endpoint.nodeId)
+      if (!child) {
+        throw new Error(
+          "Cannot resolve input handle " + handle + " for submodel instance "
+          + boundaryNode.id + ": child " + endpoint.nodeId + " is missing",
+        )
+      }
+      return child
+    })
+  }
+
+  const port = canonical.definition.outputPorts.find(
+    (candidate) => candidate.portId === portId,
+  )
+  if (!port) {
+    throw new Error(
+      "Cannot resolve output handle " + handle + " for submodel instance "
+      + boundaryNode.id + ": public port " + portId + " is missing",
+    )
+  }
+  const child = canonical.graph.nodes.find(
+    (node) => node.id === port.source.nodeId,
+  )
+  if (!child) {
+    throw new Error(
+      "Cannot resolve output handle " + handle + " for submodel instance "
+      + boundaryNode.id + ": child " + port.source.nodeId + " is missing",
+    )
+  }
+  return [child]
+}
+/** Resolve a boundary handle only when it has exactly one child endpoint. */
 export function resolveSubmodelBoundaryNode(
   boundaryNode: SimpleNode,
   handle: string | null | undefined,
   direction: "in" | "out",
   submodels: SubmodelsLike,
 ): SimpleNode | undefined {
-  const prefix = `${direction}__`
-  if (!boundaryNode.id.startsWith("submodel__") || !handle?.startsWith(prefix)) {
-    return undefined
-  }
-
-  const submodelName = boundaryNode.id.slice("submodel__".length)
-  const graph = submodelGraphFromMetadata(submodels?.[submodelName])
-  if (!graph) {
+  const children = resolveSubmodelBoundaryNodes(
+    boundaryNode,
+    handle,
+    direction,
+    submodels,
+  )
+  if (children.length > 1) {
     throw new Error(
-      `Cannot resolve ${direction}put handle ${handle} for submodel ${submodelName}: graph nodes are missing`,
+      "Cannot resolve " + direction + "put handle " + String(handle)
+      + " for submodel instance " + boundaryNode.id
+      + ": public port fans out to " + children.length + " children",
     )
   }
-  const childId = handle.slice(prefix.length)
-  const child = graph.nodes.find((node) => node.id === childId)
-  if (!child) {
-    throw new Error(
-      `Cannot resolve ${direction}put handle ${handle} for submodel ${submodelName}: child ${childId} is missing`,
-    )
-  }
-  return child
-}
-
-function submodelChildNode(
-  edge: SimpleEdge,
-  sourceNode: SimpleNode,
-  submodels: SubmodelsLike,
-): SimpleNode | undefined {
-  return resolveSubmodelBoundaryNode(sourceNode, edge.sourceHandle, "out", submodels)
+  return children[0]
 }
 
 /**
@@ -202,8 +282,8 @@ function submodelChildNode(
  * API-input frame handles are already canonical names and are returned
  * verbatim, including a stale non-null handle so the UI can identify the
  * unresolved edge. Ordinary sources use the shared backend-compatible
- * sanitizer. A flattened submodel output resolves its `out__` child before
- * sanitizing, matching code generation's boundary resolution.
+ * sanitizer. A submodel output is named from its stable alias plus public port
+ * id.
  */
 export const UNRESOLVED_INPUT_NAME = "<unresolved>"
 
@@ -218,15 +298,64 @@ export function edgeInputName(
     }
     return edge.sourceHandle
   }
-  const resolvedChild = submodelChildNode(edge, sourceNode, submodels)
-  return sanitizeName(resolvedChild?.data.label ?? sourceNode.data.label)
+  if (sourceNode.data.nodeType === NODE_TYPES.SUBMODEL_PORT) {
+    const boundary = sourceNode.data as Partial<SubmodelPortData>
+    if (boundary.portDirection !== "input" || !Array.isArray(boundary.ports)) {
+      throw new Error(
+        "Cannot derive input name for edge " + edge.id + ": source "
+        + sourceNode.id + " is not a valid submodel Input",
+      )
+    }
+    const port = boundary.ports.find(
+      (candidate) => candidate.id === edge.sourceHandle,
+    )
+    if (!port || typeof port.label !== "string" || typeof port.id !== "string") {
+      throw new Error(
+        "Cannot derive input name for edge " + edge.id + ": submodel Input row "
+        + String(edge.sourceHandle) + " is missing",
+      )
+    }
+    if (
+      typeof boundary.instanceId !== "string"
+      || boundary.instanceId.length === 0
+      || boundary.instanceId.trim() !== boundary.instanceId
+      || typeof boundary.definitionId !== "string"
+      || boundary.definitionId.length === 0
+      || boundary.definitionId.trim() !== boundary.definitionId
+    ) {
+      throw new Error(
+        "Cannot derive input name for edge " + edge.id
+        + ": canonical submodel Input identity is malformed",
+      )
+    }
+    return sanitizeName(port.id)
+  }
+  if (sourceNode.data.nodeType === NODE_TYPES.SUBMODEL) {
+    if (!isSubmodelInstanceConfig(sourceNode.data.config)) {
+      throw new Error(
+        "Cannot derive input name for edge " + edge.id
+        + ": submodel instance " + sourceNode.id + " has malformed identity config",
+      )
+    }
+    resolveSubmodelBoundaryNodes(sourceNode, edge.sourceHandle, "out", submodels)
+    const prefix = "out__"
+    if (!edge.sourceHandle?.startsWith(prefix) || edge.sourceHandle.length === prefix.length) {
+      throw new Error(
+        "Cannot derive input name for edge " + edge.id
+        + ": canonical submodel output handle is malformed",
+      )
+    }
+    const portId = edge.sourceHandle.slice(prefix.length)
+    return sanitizeName(sourceNode.data.config.alias + "__" + portId)
+  }
+  return sanitizeName(sourceNode.data.label)
 }
-
 /**
  * Derive every incoming input name for one executable target. `boundaryNodeId`
  * identifies the visible target when the executable target is a child behind
- * an `in__<child>` submodel handle. The same helper is used by drag-time and
- * rename preflight so boundary and ordinary edges cannot drift apart.
+ * a public submodel input handle. Definitions resolve the public port to an
+ * internal endpoint. The same helper is used by drag-time and rename preflight
+ * so boundary and ordinary edges cannot drift apart.
  */
 export function incomingEdgeInputNames({
   targetNodeId,
@@ -245,16 +374,28 @@ export function incomingEdgeInputNames({
   const boundaryNode = nodesById.get(boundaryNodeId)
   const names: string[] = []
   for (const edge of edges) {
+    let canonicalPortId: string | undefined
     if (edge.target !== targetNodeId) {
       if (
         edge.target !== boundaryNodeId
         || boundaryNode?.data.nodeType !== NODE_TYPES.SUBMODEL
-        || resolveSubmodelBoundaryNode(boundaryNode, edge.targetHandle, "in", submodels)?.id !== targetNodeId
       ) continue
+      const targets = resolveSubmodelBoundaryNodes(
+        boundaryNode,
+        edge.targetHandle,
+        "in",
+        submodels,
+      )
+      if (!targets.some((target) => target.id === targetNodeId)) continue
+      canonicalPortId = edge.targetHandle?.slice("in__".length)
+    }
+    if (canonicalPortId) {
+      names.push(sanitizeName(canonicalPortId))
+      continue
     }
     const sourceNode = nodesById.get(edge.source)
     if (!sourceNode) {
-      throw new Error(`Cannot derive input name: source node ${edge.source} is missing`)
+      throw new Error("Cannot derive input name: source node " + edge.source + " is missing")
     }
     names.push(edgeInputName(edge, sourceNode, submodels))
   }

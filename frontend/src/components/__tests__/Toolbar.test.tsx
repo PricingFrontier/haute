@@ -87,6 +87,24 @@ describe("Toolbar", () => {
     expect(props.onAutoLayout).not.toHaveBeenCalled()
   })
 
+  it("disables graph mutation controls in a read-only instance", () => {
+    const props = makeProps({ editingDisabled: true, canUndo: true, canRedo: true })
+    render(<Toolbar {...props} />)
+
+    expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-layout")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-utility")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-imports")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
+    fireEvent.click(screen.getByTestId("toolbar-layout"))
+    fireEvent.click(screen.getByTestId("toolbar-utility"))
+    fireEvent.click(screen.getByTestId("toolbar-imports"))
+    expect(props.onAutoLayout).not.toHaveBeenCalled()
+    expect(props.onOpenUtility).not.toHaveBeenCalled()
+    expect(props.onOpenImports).not.toHaveBeenCalled()
+  })
+
   it("Centre button is disabled when nodeCount is 0", () => {
     render(<Toolbar {...makeProps({ nodeCount: 0 })} />)
     const centreBtn = screen.getByText("Centre")

@@ -9,7 +9,6 @@ afterEach(cleanup)
 
 function makeProps(overrides: Partial<TrainingActionsAndResultsProps> = {}): TrainingActionsAndResultsProps {
   return {
-    target: "loss_amount",
     training: false,
     trainProgress: null,
     trainResult: null,
@@ -29,10 +28,24 @@ describe("TrainingActionsAndResults", () => {
     expect(screen.getByText("Train Model")).toBeInTheDocument()
   })
 
-  it("train button is disabled when no target", () => {
-    render(<TrainingActionsAndResults {...makeProps({ target: "" })} />)
-    const btn = screen.getByText("Train Model").closest("button")!
-    expect(btn).toBeDisabled()
+  it("keeps idle Train enabled and renders supplied validation directly beneath it", () => {
+    render(
+      <TrainingActionsAndResults
+        {...makeProps({
+          validationMessages: [
+            "Select a target column.",
+            "Choose a training loss.",
+          ],
+        })}
+      />,
+    )
+    const button = screen.getByRole("button", { name: "Train Model" })
+    const banner = screen.getByRole("alert")
+
+    expect(button).toBeEnabled()
+    expect(button.nextElementSibling).toBe(banner)
+    expect(banner).toHaveTextContent("Select a target column.")
+    expect(banner).toHaveTextContent("Choose a training loss.")
   })
 
   it("clicking Train Model calls onTrain", () => {

@@ -59,6 +59,109 @@ describe("useNodeHandlers", () => {
     expect(edgesUpdater(edges)).toEqual([])
   })
 
+  it("uses a committed shared deletion without a raw graph setter while cleaning selection", () => {
+    const n1 = makeNode("n1")
+    const params = makeParams()
+    params.graphRef.current = { nodes: [n1], edges: [] }
+    const commitSharedNodeDeletion = vi.fn(() => "committed" as const)
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledOnce()
+    expect(params.setPreviewData).toHaveBeenCalledOnce()
+  })
+
+  it("leaves graph and cleanup untouched when shared deletion is blocked", () => {
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const commitSharedNodeDeletion = vi.fn(() => "blocked" as const)
+    const { result } = renderHook(() => useNodeHandlers({
+      ...params,
+      commitSharedNodeDeletion,
+    }))
+    act(() => result.current.handleDeleteNode("n1"))
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(params.setPreviewData).not.toHaveBeenCalled()
+  })
+
+  it("refuses raw deletion of a submodel definition owner", () => {
+    const params = makeParams()
+    const owner = makeNode("submodel_10", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    params.graphRef.current = { nodes: [owner], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode(owner.id)
+    })
+
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
+  it("refuses raw deletion of a submodel occurrence with malformed identity", () => {
+    const params = makeParams()
+    const malformed = makeNode("submodel_10", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: {},
+      },
+    })
+    params.graphRef.current = { nodes: [malformed], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode(malformed.id)
+    })
+
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Dissolve Submodel/)
+  })
+
+  it("deletes a submodel instance copy and its edges directly", () => {
+    const params = makeParams()
+    const copy = makeNode("submodel_11", "submodel", {
+      data: {
+        label: "Scoring instance",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: "submodel_10",
+        },
+      },
+    })
+    const upstream = makeNode("upstream", "polars")
+    params.graphRef.current = {
+      nodes: [upstream, copy],
+      edges: [
+        { id: "bind", source: "upstream", target: copy.id, targetHandle: "in__policy" } as Edge,
+      ],
+    }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDeleteNode(copy.id)
+    })
+
+    expect(params.setNodesAndEdges).toHaveBeenCalledOnce()
+    const [nodesUpdater, edgesUpdater] = params.setNodesAndEdges.mock.calls[0]
+    expect((nodesUpdater as (n: Node[]) => Node[])(params.graphRef.current.nodes)
+      .map((node) => node.id)).toEqual(["upstream"])
+    expect((edgesUpdater as (e: Edge[]) => Edge[])(params.graphRef.current.edges)).toEqual([])
+    expect(useToastStore.getState().toasts).toEqual([])
+  })
+
   it("handleDeleteNode clears selected node if it was selected", () => {
     const params = makeParams()
     const n1 = makeNode("n1")
@@ -100,6 +203,26 @@ describe("useNodeHandlers", () => {
     const newNode = params.setSelectedNode.mock.calls[0][0] as Node
     expect(newNode.position).toEqual({ x: 140, y: 240 })
     expect(newNode.data.label).toContain("copy")
+  })
+
+  it("refuses generic duplication of a submodel occurrence", () => {
+    const params = makeParams()
+    const submodel = makeNode("instance_a", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    params.graphRef.current = { nodes: [submodel], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleDuplicateNode(submodel.id)
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/Create Instance/)
   })
 
   it("handleDuplicateNode does nothing for singleton node types", () => {
@@ -152,6 +275,210 @@ describe("useNodeHandlers", () => {
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info" })
   })
+  it("creates a SUBMODEL occurrence without copying its shared definition", () => {
+    const params = makeParams()
+    const source = makeNode("submodel_10", "submodel", {
+      position: { x: 100, y: 200 },
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring",
+          file: "modules/scoring.py",
+          childNodeIds: ["internal_input", "internal_output"],
+          graph: { nodes: [{ id: "internal_input" }], edges: [] },
+        },
+      },
+    })
+    const existing = makeNode("submodel_11", "submodel", {
+      data: {
+        label: "Scoring 2",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+        },
+      },
+    })
+    params.graphRef.current = { nodes: [source, existing], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance(source.id)
+    })
+
+    expect(params.setNodes).toHaveBeenCalledOnce()
+    expect(params.setNodesAndEdges).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).toHaveBeenCalledOnce()
+    const created = params.setSelectedNode.mock.calls[0][0] as Node
+    expect([source.id, existing.id]).not.toContain(created.id)
+    expect(created.type).toBe("submodel")
+    expect(created.data.nodeType).toBe("submodel")
+    expect(created.data.config).toEqual({
+      definitionId: "definition_scoring",
+      alias: "scoring_3",
+      instanceOf: source.id,
+    })
+    expect(created.position).toEqual({ x: 160, y: 280 })
+    expect(created.data.config).not.toHaveProperty("graph")
+    expect(created.data.config).not.toHaveProperty("file")
+    expect(created.data.config).not.toHaveProperty("childNodeIds")
+  })
+
+  it("continues copy numbering past nine instead of nesting suffixes", () => {
+    const params = makeParams()
+    const owner = makeNode("instance_owner", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    const copies = Array.from({ length: 9 }, (_, index) =>
+      makeNode(`instance_copy_${index + 2}`, "submodel", {
+        data: {
+          label: `Scoring ${index + 2}`,
+          nodeType: "submodel",
+          config: {
+            definitionId: "definition_scoring",
+            alias: `scoring_${index + 2}`,
+            instanceOf: "instance_owner",
+          },
+        },
+      }))
+    params.graphRef.current = { nodes: [owner, ...copies], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance("instance_copy_10")
+    })
+
+    const created = params.setNodes.mock.calls[0][0](params.graphRef.current.nodes)
+      .find((node: Node) => node.selected && !params.graphRef.current.nodes.includes(node))
+    expect((created?.data.config as { alias?: string }).alias).toBe("scoring_11")
+  })
+
+  it("allocates occurrence ids and aliases across the combined identity namespace", () => {
+    const params = makeParams()
+    const source = makeNode("instance_source", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: { definitionId: "definition_scoring", alias: "scoring" },
+      },
+    })
+    const aliasOccupier = makeNode("instance_existing", "submodel", {
+      data: {
+        label: "Existing",
+        nodeType: "submodel",
+        config: { definitionId: "definition_other", alias: "submodel_11" },
+      },
+    })
+    const nodeIdOccupier = makeNode("scoring_2")
+    params.graphRef.current = {
+      nodes: [source, aliasOccupier, nodeIdOccupier],
+      edges: [],
+    }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance(source.id)
+    })
+
+    const created = params.setSelectedNode.mock.calls[0][0] as Node
+    expect(created.id).toBe("submodel_12")
+    expect(created.data.config).toEqual({
+      definitionId: "definition_scoring",
+      alias: "scoring_3",
+      instanceOf: source.id,
+    })
+  })
+
+  it("rejects a partial reusable-submodel identity", () => {
+    const params = makeParams()
+    const source = makeNode("instance_source", "submodel", {
+      data: {
+        label: "Broken scoring",
+        nodeType: "submodel",
+        config: { alias: "scoring" },
+      },
+    })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance(source.id)
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/identity/)
+  })
+
+  it("rejects an occurrence whose editable definition owner is missing", () => {
+    const params = makeParams()
+    const source = makeNode("instance_copy", "submodel", {
+      data: {
+        label: "Scoring copy",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: "missing_owner",
+        },
+      },
+    })
+    params.graphRef.current = { nodes: [source], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance(source.id)
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(
+      /editable definition owner is invalid/,
+    )
+  })
+
+  it("normalises a suffixed source alias before choosing the next occurrence alias", () => {
+    const params = makeParams()
+    const base = makeNode("submodel_10", "submodel", {
+      data: {
+        label: "Scoring",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring",
+        },
+      },
+    })
+    const source = makeNode("submodel_11", "submodel", {
+      data: {
+        label: "Scoring 2",
+        nodeType: "submodel",
+        config: {
+          definitionId: "definition_scoring",
+          alias: "scoring_2",
+          instanceOf: base.id,
+        },
+      },
+    })
+    params.graphRef.current = { nodes: [base, source], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance(source.id)
+    })
+
+    const created = params.setSelectedNode.mock.calls[0][0] as Node
+    expect(created.data.config).toEqual({
+      definitionId: "definition_scoring",
+      alias: "scoring_3",
+      instanceOf: base.id,
+    })
+  })
+
 
   it("handleAutoLayout applies layout and toasts", async () => {
     vi.useFakeTimers()

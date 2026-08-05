@@ -1,0 +1,18 @@
+{
+  "name": "synthetic_severity",
+  "target": "target",
+  "feature_columns": ["exposure", "risk_score"],
+  "algorithm": "catboost",
+  "task": "regression",
+  "loss_function": "RMSE",
+  "params": {"iterations": 4, "depth": 2, "verbose": false},
+  "evaluation": {
+    "schema_version": 1,
+    "strategy": "random",
+    "seed": 42,
+    "validation": {"method": "single", "size": 0.2}
+  },
+  "metrics": ["rmse"],
+  "row_limit": 40,
+  "output_dir": ".haute_cache/assistant_model_lifecycle"
+}

@@ -74,6 +74,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null },
+    activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
@@ -83,6 +84,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -212,7 +215,7 @@ describe("usePipelineAPI — gap tests", () => {
       let saveCallCount = 0
       mockSave.mockImplementation(() => {
         saveCallCount++
-        return Promise.resolve({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing" })
+        return Promise.resolve({ file: `pricing_${saveCallCount}.py`, pipeline_name: "pricing", source_revision: "revision-test" })
       })
 
       const params = makeParams()
@@ -241,7 +244,7 @@ describe("usePipelineAPI — gap tests", () => {
       let callIdx = 0
       mockSave.mockImplementation(() => {
         callIdx++
-        if (callIdx === 1) return Promise.resolve({ file: "ok.py", pipeline_name: "p" })
+        if (callIdx === 1) return Promise.resolve({ file: "ok.py", pipeline_name: "p", source_revision: "revision-test" })
         return Promise.reject(new Error("conflict"))
       })
 

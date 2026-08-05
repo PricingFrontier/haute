@@ -3,8 +3,9 @@ import type { Node, Edge } from "@xyflow/react"
 import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import { nodeData } from "../types/node"
+import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
 import { isSingletonType } from "../utils/nodeTypes"
+import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
 interface KeyboardShortcutsParams {
   handleSave: () => void
@@ -26,13 +27,19 @@ interface KeyboardShortcutsParams {
   clearTrace: () => void
   closePanel: () => void
   isInsideSubmodel: boolean
+  readOnly: boolean
+  commitSharedNodeDeletion?: (
+    nodeIds: ReadonlySet<string>,
+    selectedEdgeIds?: ReadonlySet<string>,
+  ) => SharedNodeDeletionResult
 }
 
 export default function useKeyboardShortcuts({
   handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
   graphRef, clipboard, nodeIdCounter,
   setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-  isInsideSubmodel,
+  isInsideSubmodel, readOnly,
+  commitSharedNodeDeletion,
 }: KeyboardShortcutsParams) {
   const addToast = useToastStore((s) => s.addToast)
   const { setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen } = useUIStore()
@@ -53,17 +60,20 @@ export default function useKeyboardShortcuts({
       // Ctrl+Z → undo, Ctrl+Shift+Z → redo
       if (mod && e.key === "z" && !e.shiftKey && !isTyping) {
         e.preventDefault()
+        if (readOnly) return
         undo()
         return
       }
       if (mod && e.key === "z" && e.shiftKey && !isTyping) {
         e.preventDefault()
+        if (readOnly) return
         redo()
         return
       }
       // Ctrl+Y → redo (Windows convention)
       if (mod && e.key === "y" && !isTyping) {
         e.preventDefault()
+        if (readOnly) return
         redo()
         return
       }
@@ -84,6 +94,10 @@ export default function useKeyboardShortcuts({
 
       // Ctrl+V → paste copied nodes
       if (mod && e.key === "v" && !isTyping) {
+        if (readOnly) {
+          e.preventDefault()
+          return
+        }
         const { nodes: copiedNodes, edges: copiedEdges } = clipboard.current
         if (copiedNodes.length === 0) return
         e.preventDefault()
@@ -166,6 +180,10 @@ export default function useKeyboardShortcuts({
       // Ctrl+G → group selected nodes into a submodel
       if (mod && e.key === "g" && !isTyping) {
         e.preventDefault()
+        if (readOnly) {
+          addToast("info", "This submodel instance is read-only")
+          return
+        }
         if (isInsideSubmodel) {
           addToast("info", "Submodels cannot be nested inside other submodels")
           return
@@ -182,18 +200,37 @@ export default function useKeyboardShortcuts({
 
       // Delete / Backspace → remove selected nodes and/or edges (unless typing)
       if ((e.key === "Delete" || e.key === "Backspace") && !isTyping) {
+        if (readOnly) {
+          e.preventDefault()
+          return
+        }
         const { nodes: currentNodes, edges: currentEdges } = graphRef.current
         const selectedNodeIds = new Set(currentNodes.filter((n) => n.selected).map((n) => n.id))
         const selectedEdgeIds = new Set(currentEdges.filter((ed) => ed.selected).map((ed) => ed.id))
         if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
+        // Owner occurrences anchor their shared definition: dissolve them,
+        // never raw-delete. Copies and ordinary nodes in the selection still
+        // delete, matching the context-menu and panel guards.
+        const protectedOwnerIds = currentNodes
+          .filter((n) => selectedNodeIds.has(n.id) && isProtectedSubmodelNodeData(nodeData(n)))
+          .map((n) => n.id)
+        if (protectedOwnerIds.length > 0) {
+          addToast("error", 'Use "Dissolve Submodel" to remove a submodel owner; instance copies delete directly')
+          for (const ownerId of protectedOwnerIds) selectedNodeIds.delete(ownerId)
+          if (selectedNodeIds.size === 0 && selectedEdgeIds.size === 0) return
+        }
         if (selectedNodeIds.size > 0) {
+          const sharedDeletion = commitSharedNodeDeletion?.(selectedNodeIds, selectedEdgeIds)
+          if (sharedDeletion === "blocked") return
           // Nodes + their edges removed in ONE undo step. setNodes-then-setEdges
           // would push two snapshots, so one delete would take two undos to
           // reverse (the undo-atomicity bug class).
-          setNodesAndEdges(
-            currentNodes.filter((n) => !selectedNodeIds.has(n.id)),
-            currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
-          )
+          if (sharedDeletion !== "committed") {
+            setNodesAndEdges(
+              currentNodes.filter((n) => !selectedNodeIds.has(n.id)),
+              currentEdges.filter((ed) => !selectedNodeIds.has(ed.source) && !selectedNodeIds.has(ed.target)),
+            )
+          }
           setSelectedNode(null)
           setLastSelectedId?.(null)
           setPreviewData(null)
@@ -214,6 +251,6 @@ export default function useKeyboardShortcuts({
     handleSave, setNodes, setEdges, setNodesAndEdges, undo, redo, fitView,
     graphRef, clipboard, nodeIdCounter,
     setSelectedNode, setLastSelectedId, setPreviewData, clearTrace, closePanel,
-    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel,
+    addToast, setShortcutsOpen, setSubmodelDialog, setNodeSearchOpen, isInsideSubmodel, readOnly, commitSharedNodeDeletion,
   ])
 }

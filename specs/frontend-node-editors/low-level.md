@@ -4,7 +4,8 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/panels/NodePanel.tsx` | Selects configuration/columns/instance views, routes the selected node to an editor, and derives the per-edge `InputSource` list via `edgeInputName` (memoised on a per-edge signature covering edge id, source id/label, `sourceHandle`, the derived input name, and the `frameUnresolved` resolution state). |
+| `frontend/src/panels/NodePanel.tsx` | Selects configuration/columns/instance views, routes the selected node to an editor, hosts the supported modelling node's five-pane strip and active-training indicator, and derives the per-edge `InputSource` list via `edgeInputName` (memoised on a per-edge signature covering edge id, source id/label, `sourceHandle`, the derived input name, and the `frameUnresolved` resolution state). |
+| `frontend/src/panels/PreviewPanelTabs.tsx` | Generic ARIA tab strip owned by [frontend-preview-explore](../frontend-preview-explore/low-level.md) and used by the node panel for the five modelling panes and active-training indicator. |
 | `frontend/src/panels/NodePalette.tsx` | Renders draggable node templates. |
 | `frontend/src/panels/LazyNodeEditors.tsx` | Central dynamic-import registry and loading boundaries for editor bodies. |
 | `frontend/src/panels/PanelShell.tsx`, `frontend/src/panels/PanelHeader.tsx` | Right-panel shell/header used by node, imports and utility authoring views. A shell with no stored width chooses 50% of the available space when it mounts and keeps that established width across unrelated rerenders and viewport changes; an explicit drag updates the shared stored width. |
@@ -24,6 +25,8 @@
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx` | Explore-code and overview-card configuration. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
 | `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
+| `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned active-job state and per-node pane memory consumed by node-panel modelling chrome. |
+| `frontend/src/utils/trainingObjective.ts` | Click-time training issue aggregation owned and consumed by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md). |
 | `frontend/src/panels/editors/banding/index.ts`, `frontend/src/panels/editors/banding/bandingUtils.ts` | Banding public barrel and rule/level utility functions. |
 | `frontend/src/panels/editors/banding/BreakpointGrid.tsx`, `frontend/src/panels/editors/banding/BandingRulesGrid.tsx`, `frontend/src/panels/editors/banding/CategoricalValuePicker.tsx` | Numeric breakpoints, editable rules and categorical selection. |
 | `frontend/src/panels/editors/banding/BandingHistogram.tsx`, `frontend/src/panels/editors/banding/GenerateBandsDialog.tsx` | Histogram context and generated-band dialog. |
@@ -234,6 +237,11 @@ mode only from persisted `params.mode`.
 - An ordinary source-label rename derives the old and new `edgeInputName` for every outgoing
   edge and uses the same duplicate preflight and atomic mapping migration as an API-frame rename.
   Sanitisation-only no-ops do not rewrite mappings.
+- `edgeInputName` resolves an editor-only edge sourced by a drilled submodel's composite Input by
+  matching the edge's opaque `sourceHandle` to the existing `SubmodelBoundaryPort.id`, then
+  sanitising that port's `label`. A missing handle, non-Input boundary, or unknown row is an
+  invariant violation and throws rather than falling back to the composite node's literal
+  `INPUT` label.
 - `edgeInputName` treats only API-input sources' handles as frame names; a submodel
   `out__`-prefixed source handle resolves to the referenced child node's sanitised label (via
   the graph context's `submodels`) — the same name the flattened code binds — and every other
@@ -357,3 +365,30 @@ exception policy; reconsidering one requires a small named route set, rule
 scope, browser, exception owner, and expiry rather than silently accepting
 scanner noise. Canonical Rating/Output/API Input interaction tests continue to
 cover new/edit/save/reload shapes; there are no migration-specific fixtures.
+
+## Modelling config panes
+
+The behaviour and non-goals are defined by
+[the modelling/optimiser UI contract](../frontend-modelling-optimiser-ui/high-level.md#modelling-config-panes).
+
+`frontend/src/panels/NodePanel.tsx` renders a five-pane modelling strip (Target, Features, Params,
+Split, Train) with the shared preview tab control and per-node UI-store selection memory. It is
+shown only when the modelling node has a supported
+`catboost` or `glm` algorithm; an unset algorithm leaves the gateway as the only editor content.
+A non-empty unsupported value also suppresses the strip and is handed to the modelling editor's
+explicit diagnostic rather than treated as CatBoost.
+
+`NodePanel` reads the remembered pane and selects only the Boolean presence of
+`trainJobs[node.id]`. Its tab descriptors leave Target/Features/Params/Split as plain labels and
+add only the active indicator on Train. Configuration completeness is deliberately not derived or
+displayed by the node panel; `ModellingConfig` owns click-time validation beneath its Train
+button. There is no child-to-parent registration or effect, so node changes cannot flash a
+previous node's state and progress-only updates do not rerender the panel chrome. The active tab
+panel keeps the shared `id`/`aria-labelledby` relationship.
+
+`frontend/src/panels/__tests__/NodePanel.test.tsx` proves unset/supported/unsupported-algorithm
+strip gating, all five routes, same-node memory, independent memory for two nodes, plain setup-tab
+labels, active-indicator routing, and no stale active state after a node change. The generic
+indicator and keyboard
+contract is owned by
+[frontend-preview-explore](../frontend-preview-explore/low-level.md#modelling-config-panes).

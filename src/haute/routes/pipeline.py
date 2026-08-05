@@ -649,22 +649,21 @@ async def preview_node(body: PreviewNodeRequest) -> PreviewNodeResponse:
     Accepts an optional ``row_limit`` (default 100) that is pushed into
     the Polars lazy query plan so only that many rows are scanned.
     """
-    graph = flatten_graph(body.graph)
-    _ensure_source_file(graph)
-    if not graph.nodes:
-        raise HTTPException(status_code=400, detail="Empty graph")
-    _ensure_printable_lookup_id(body.node_id, "node_id")
-    if body.node_id not in graph.node_map:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Node '{body.node_id}' not found in results",
-        )
-    _validate_runtime_input_paths(graph)
-
     preview_token = ExecutionCancellationToken()
     preview_context: ExecutionContext | None = None
 
     try:
+        graph = flatten_graph(body.graph)
+        _ensure_source_file(graph)
+        if not graph.nodes:
+            raise HTTPException(status_code=400, detail="Empty graph")
+        _ensure_printable_lookup_id(body.node_id, "node_id")
+        if body.node_id not in graph.node_map:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Node '{body.node_id}' not found in results",
+            )
+        _validate_runtime_input_paths(graph)
 
         async def _run_preview() -> dict[str, Any]:
             nonlocal preview_context

@@ -10,6 +10,7 @@ import type { PipelineFlowNode } from "../types/node"
 import { EDGE_JOIN_BASE_HANDLE, EDGE_JOIN_JOIN_BOTTOM_HANDLE, EDGE_JOIN_JOIN_HANDLE } from "../utils/edgeJoinRoles"
 import { DEFAULT_TARGET_HANDLE } from "../utils/flowHandles"
 import { apiInputFrameLabels } from "../utils/apiInputPorts"
+import FramePortRows from "./FramePortRows"
 
 const statusColors: Record<string, string> = {
   ok: "var(--success)",
@@ -153,56 +154,6 @@ function _SourceHandles({
   )
 }
 
-/**
- * Full-detail apiInput frame rows.
- *
- * Each row owns both its visible raw frame label and its source Handle. The
- * row is the positioning context for the Handle, so its `top: 50%` is the
- * row's vertical midpoint and React Flow's right-side transform centres the
- * dot on the row's right edge. The negative right margin carries that edge
- * out through the body's padding to the node border.
- */
-function _ApiInputFrameRows({
-  frameLabels,
-  accent,
-  isConnectableEnd,
-  nodeLabel,
-}: {
-  frameLabels: string[]
-  accent: string
-  isConnectableEnd: boolean
-  nodeLabel: string
-}) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      {frameLabels.map((label, idx) => (
-        <div
-          key={label}
-          data-testid={`api-input-frame-row-${label}`}
-          className="relative flex min-w-0 items-center justify-end py-0.5 pr-3"
-          style={{ marginRight: "-12px" }}
-        >
-          <span
-            data-testid={`api-input-body-label-${label}`}
-            className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-pre text-right font-semibold text-[13px] leading-tight"
-            style={{ color: "var(--text-primary)", whiteSpace: "pre" }}
-            title={label}
-          >
-            {label}
-          </span>
-          <Handle
-            id={label}
-            type="source"
-            position={Position.Right}
-            isConnectableEnd={isConnectableEnd}
-            style={{ top: "50%", background: accent }}
-            data-testid={`output-connector[${idx}]:${nodeLabel}`}
-          />
-        </div>
-      ))}
-    </div>
-  )
-}
 
 function _TargetHandles({
   nodeType,
@@ -600,11 +551,15 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
                 {formatValueCompact(traceValue)}
               </div>
             )}
-            <_ApiInputFrameRows
-              frameLabels={frameLabels}
+            <FramePortRows
+              ports={frameLabels.map((label) => ({ id: label, label, parentEdges: [] }))}
+              direction="source"
               accent={accent}
+              testIdPrefix="api-input"
               isConnectableEnd={sourceHandlesCanEnd}
-              nodeLabel={nodeData.label}
+              handleTestId={(_port, index) =>
+                `output-connector[${index}]:${nodeData.label}`
+              }
             />
           </>
         ) : (

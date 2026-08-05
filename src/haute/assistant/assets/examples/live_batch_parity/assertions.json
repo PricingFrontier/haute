@@ -1,0 +1,1 @@
+{"target":"response","row_count":1,"required_columns":["quote_id","fixture_value"],"checks":["parse","execute"]}

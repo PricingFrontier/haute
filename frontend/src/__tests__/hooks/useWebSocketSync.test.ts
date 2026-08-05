@@ -72,7 +72,17 @@ vi.mock("../../stores/useGraphStore.ts", () => {
     edges: [] as import("@xyflow/react").Edge[],
     preamble: "",
     submodels: {} as Record<string, unknown>,
-    markSaved: vi.fn(),
+    loadGraphSnapshot: vi.fn((snapshot: {
+      nodes: Node[]
+      edges: import("@xyflow/react").Edge[]
+      preamble: string
+      submodels: Record<string, unknown>
+    }) => {
+      store.nodes = snapshot.nodes
+      store.edges = snapshot.edges
+      store.preamble = snapshot.preamble
+      store.submodels = snapshot.submodels
+    }),
   }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
@@ -135,6 +145,8 @@ function makeHookParams(sourceFile = "") {
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
     sourceFileRef: { current: sourceFile },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -155,7 +167,7 @@ describe("useWebSocketSync", () => {
     // Reset mock state
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
-    vi.mocked(useGraphStore.getState().markSaved).mockClear()
+    vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
     useGraphStore.getState().dirty = false
     useGraphStore.getState().nodes = []
     useGraphStore.getState().edges = []
@@ -294,6 +306,8 @@ describe("useWebSocketSync", () => {
             graph_fingerprint: "applied-fp",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -330,6 +344,8 @@ describe("useWebSocketSync", () => {
             graph_fingerprint: "main-fp",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -421,6 +437,8 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "transform_3", position: { x: 100, y: 200 }, data: { label: "test" } },
             { id: "transform_4", position: { x: 400, y: 200 }, data: { label: "target" } },
@@ -438,11 +456,9 @@ describe("useWebSocketSync", () => {
         }))
       })
 
-      // setNodesRaw called with the positioned nodes (no layout needed)
-      expect(params.setNodesRaw).toHaveBeenCalledWith(graphMsg.graph.nodes)
-      // setEdgesRaw called with edges that have type and animated set
-      expect(params.setEdgesRaw).toHaveBeenCalledWith(
-        expect.arrayContaining([
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith({
+        nodes: graphMsg.graph.nodes,
+        edges: expect.arrayContaining([
           expect.objectContaining({
             id: "e1",
             source: "transform_3",
@@ -451,9 +467,13 @@ describe("useWebSocketSync", () => {
             animated: false,
           }),
         ]),
-      )
-      // Preamble updated
-      expect(params.setPreamble).toHaveBeenCalledWith("import numpy as np")
+        preamble: "import numpy as np",
+        submodels: {},
+      })
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(params.setEdgesRaw).not.toHaveBeenCalled()
+      expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
+      expect(params.setPreamble).not.toHaveBeenCalled()
       expect(params.preambleRef.current).toBe("import numpy as np")
       // nodeIdCounter updated — computed from max numeric suffix (4) + 1
       expect(params.nodeIdCounter.current).toBe(5)
@@ -464,16 +484,10 @@ describe("useWebSocketSync", () => {
       )
       // Sync banner cleared
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(null)
-      // Ensures subsequent file-watcher updates mark the new graph as
-      // the saved state (item #99: dirty is derived from this snapshot).
-      expect(useGraphStore.getState().markSaved).toHaveBeenCalled()
     })
 
-    it("applies incoming submodels to the store and the subsequent-save mirror before marking saved", async () => {
+    it("applies incoming submodels to the store and request mirror atomically", async () => {
       const params = makeHookParams()
-      params.setSubmodelsRaw.mockImplementation((submodels) => {
-        useGraphStore.getState().submodels = submodels
-      })
       params.submodelsRef.current = {
         old: { nodes: [{ id: "stale" }], edges: [] },
       }
@@ -498,17 +512,19 @@ describe("useWebSocketSync", () => {
               edges: [],
               preamble: "",
               submodels: incomingSubmodels,
+              source_revision: "revision-test",
+              preserved_blocks: [],
             },
           }),
         }))
       })
 
-      expect(params.setSubmodelsRaw).toHaveBeenCalledWith(incomingSubmodels)
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ submodels: incomingSubmodels }),
+      )
       expect(useGraphStore.getState().submodels).toEqual(incomingSubmodels)
       expect(params.submodelsRef.current).toEqual(incomingSubmodels)
-      expect(params.setSubmodelsRaw.mock.invocationCallOrder[0]).toBeLessThan(
-        vi.mocked(useGraphStore.getState().markSaved).mock.invocationCallOrder[0],
-      )
+      expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
       expect(params.submodelsRef.current).not.toHaveProperty("old")
     })
 
@@ -531,14 +547,19 @@ describe("useWebSocketSync", () => {
               nodes: [],
               edges: [],
               submodels: null,
+              source_revision: "revision-test",
+              preserved_blocks: [],
             },
           }),
         }))
       })
 
-      expect(params.setSubmodelsRaw).toHaveBeenCalledWith({})
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ submodels: {} }),
+      )
+      expect(useGraphStore.getState().submodels).toEqual({})
       expect(params.submodelsRef.current).toEqual({})
-      expect(useGraphStore.getState().markSaved).toHaveBeenCalled()
+      expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
     })
 
     it("uses layout when nodes have non-finite positions", async () => {
@@ -554,6 +575,8 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: { label: "test" } },
           ],
@@ -583,6 +606,8 @@ describe("useWebSocketSync", () => {
         source_file: "modules/foreign_submodel.py",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
           edges: [],
         },
@@ -596,7 +621,7 @@ describe("useWebSocketSync", () => {
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
       expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
     it("rejects a graph_update when only the current graph has a source identity", async () => {
@@ -609,6 +634,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "unidentified", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -617,7 +644,7 @@ describe("useWebSocketSync", () => {
       })
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
     it("rejects a graph_update when only the message has a source identity", async () => {
@@ -631,6 +658,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "unmatched", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -639,7 +668,7 @@ describe("useWebSocketSync", () => {
       })
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
     it("does not match source_file paths by lowercasing case-twin names", async () => {
@@ -658,6 +687,8 @@ describe("useWebSocketSync", () => {
             source_file: "modules/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "wrong-case", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -667,7 +698,7 @@ describe("useWebSocketSync", () => {
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
       expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
     it("accepts graph_update for the current source_file even when one side is absolute", async () => {
@@ -686,6 +717,8 @@ describe("useWebSocketSync", () => {
             source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -693,9 +726,11 @@ describe("useWebSocketSync", () => {
         }))
       })
 
-      expect(params.setNodesRaw).toHaveBeenCalledWith([
-        expect.objectContaining({ id: "n1" }),
-      ])
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodes: [expect.objectContaining({ id: "n1" })],
+        }),
+      )
     })
 
     it("accepts graph_update when the current source_file is absolute and the message is relative", async () => {
@@ -710,6 +745,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -717,9 +754,11 @@ describe("useWebSocketSync", () => {
         }))
       })
 
-      expect(params.setNodesRaw).toHaveBeenCalledWith([
-        expect.objectContaining({ id: "n1" }),
-      ])
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodes: [expect.objectContaining({ id: "n1" })],
+        }),
+      )
     })
 
     it("rejects same-basename graph_update messages when the current source is ambiguous", async () => {
@@ -738,6 +777,8 @@ describe("useWebSocketSync", () => {
             source_file: "C:\\Users\\prici\\haute\\rating\\main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -747,7 +788,7 @@ describe("useWebSocketSync", () => {
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
       expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
 
     it("does not overwrite unsaved local edits with an external graph_update", async () => {
@@ -766,6 +807,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "disk", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -775,7 +818,7 @@ describe("useWebSocketSync", () => {
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
       expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
         expect.stringContaining("changed on disk"),
       )
@@ -814,6 +857,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "disk", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -831,7 +876,7 @@ describe("useWebSocketSync", () => {
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
       expect(params.setEdgesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
       expect(useUIStore.getState().setSyncBanner).toHaveBeenCalledWith(
         expect.stringContaining("changed on disk"),
       )
@@ -862,6 +907,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "current", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -878,6 +925,8 @@ describe("useWebSocketSync", () => {
             source_file: "modules/foreign.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "foreign", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },
@@ -890,11 +939,13 @@ describe("useWebSocketSync", () => {
         await currentMessage
       })
 
-      expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
-      expect(params.setNodesRaw).toHaveBeenCalledWith([
-        expect.objectContaining({ id: "current" }),
-      ])
-      expect(useGraphStore.getState().markSaved).toHaveBeenCalledTimes(1)
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledTimes(1)
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodes: [expect.objectContaining({ id: "current" })],
+        }),
+      )
+      expect(params.setNodesRaw).not.toHaveBeenCalled()
     })
 
     it("sets graphRefreshingRef around node replacement and clears after 150ms", async () => {
@@ -909,6 +960,8 @@ describe("useWebSocketSync", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "transform_1", position: { x: 100, y: 200 }, data: { label: "test" } },
           ],
@@ -974,6 +1027,8 @@ describe("useWebSocketSync", () => {
             source_file: "rating/main.py",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "stale", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
               edges: [],
             },
@@ -997,7 +1052,7 @@ describe("useWebSocketSync", () => {
       })
 
       expect(params.setNodesRaw).not.toHaveBeenCalled()
-      expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
       expect(useUIStore.getState().syncBanner).toBe("Newest parse failure")
       expect(useUIStore.getState().setSyncBanner).not.toHaveBeenCalledWith(null)
     })
@@ -1026,6 +1081,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [
                 established,
                 {
@@ -1041,7 +1098,8 @@ describe("useWebSocketSync", () => {
       })
 
       expect(getLayoutedElements).toHaveBeenCalled()
-      const applied = params.setNodesRaw.mock.calls[0][0] as Node[]
+      const applied = vi.mocked(useGraphStore.getState().loadGraphSnapshot)
+        .mock.calls[0][0].nodes as Node[]
       expect(applied.find(node => node.id === "origin")?.position).toEqual({ x: 0, y: 0 })
       expect(applied.find(node => node.id === "new")?.position).not.toEqual({ x: 0, y: 0 })
     })
@@ -1063,6 +1121,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [
                 {
                   id: "api",
@@ -1099,11 +1159,15 @@ describe("useWebSocketSync", () => {
         expect.any(Array),
         [expect.objectContaining({ id: "live", sourceHandle: "quotes" })],
       )
-      expect(params.setEdgesRaw).toHaveBeenCalledWith([
-        expect.objectContaining({ id: "live", sourceHandle: "quotes" }),
-        expect.objectContaining({ id: "stale-handle", sourceHandle: "gone" }),
-        expect.objectContaining({ id: "missing-node", target: "gone" }),
-      ])
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          edges: [
+            expect.objectContaining({ id: "live", sourceHandle: "quotes" }),
+            expect.objectContaining({ id: "stale-handle", sourceHandle: "gone" }),
+            expect.objectContaining({ id: "missing-node", target: "gone" }),
+          ],
+        }),
+      )
       expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
         "warning",
         expect.stringMatching(/retained.*stale-handle.*missing-node|retained.*missing-node.*stale-handle/i),
@@ -1125,6 +1189,8 @@ describe("useWebSocketSync", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "source",
                 position: { x: 10, y: 10 },
@@ -1136,8 +1202,10 @@ describe("useWebSocketSync", () => {
         }))
       })
 
-      expect(params.setEdgesRaw).toHaveBeenCalledWith(
-        unresolvedEdges.map(edge => expect.objectContaining({ id: edge.id })),
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          edges: unresolvedEdges.map(edge => expect.objectContaining({ id: edge.id })),
+        }),
       )
       const warningCall = vi.mocked(useToastStore.getState().addToast).mock.calls
         .find(([type, text]) => type === "warning" && text.includes("unresolved synced edges"))
@@ -1159,6 +1227,8 @@ describe("useWebSocketSync", () => {
             graph_fingerprint: "applied-before-error",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 100, y: 200 }, data: {} }],
               edges: [],
             },

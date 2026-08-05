@@ -48,16 +48,18 @@ import {
   parseSubmodelCreateResponse,
   parseSubmodelGraphResponse,
   parseSolveOptimiserResponse,
-  parseTrainEstimateResponse,
-  parseTrainFeatureSelection,
-  parseTrainResponse,
-  parseTrainStatusResponse,
   parseExecutionStrategyDiagnostic,
   parseUtilityDeleteResponse,
   parseUtilityListResponse,
   parseUtilityReadResponse,
   parseUtilityWriteResponse,
 } from "../guards"
+import {
+  parseTrainEstimateResponse,
+  parseTrainFeatureSelection,
+  parseTrainResponse,
+  parseTrainStatusResponse,
+} from "../trainGuards"
 
 function executionStrategyFixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -85,6 +87,95 @@ function featureSelectionFixture(overrides: Record<string, unknown> = {}) {
     retained_metadata: { state: "available", total_count: 1, items: [{ column: "policy_id", reason: "identifier" }] },
     excluded_columns: { state: "available", total_count: 1, items: [{ column: "claim", reason: "target" }] },
     ...overrides,
+  }
+}
+
+function tunedTrainResponseFixture() {
+  const response = loadUiContractFixture<Record<string, unknown>>("train_response")
+  const objectives = [0.5, 0.4, 0.45, 0.6, 0.55]
+  const trials = objectives.map((objective, index) => ({
+    schema_version: 1,
+    trial_index: index,
+    label: index === 0 ? "baseline" : "sampled",
+    sampled_params: index === 0 ? {} : { depth: index + 3 },
+    resolved_params: { depth: index + 3 },
+    fits: [{
+      schema_version: 1,
+      fit_index: 0,
+      train_rows: 80,
+      validation_rows: 20,
+      metrics: { rmse: objective },
+      best_iteration: 6,
+    }],
+    aggregate_metrics: { rmse: objective },
+    objective,
+    elapsed_seconds: index + 0.25,
+  }))
+  return {
+    ...response,
+    evaluation: {
+      schema_version: 1,
+      strategy: "random",
+      validation_method: "single",
+      validation_fit_count: 1,
+      fit_count: 6,
+      development_rows: 100,
+      final_test_rows: 10,
+      selection_fits: [{
+        schema_version: 1,
+        fit_index: 0,
+        train_rows: 80,
+        validation_rows: 20,
+        metrics: { rmse: 0.5 },
+        best_iteration: 6,
+      }],
+      selection_metrics: {
+        rmse: {
+          mean: 0.5,
+          stddev: 0,
+          min: 0.5,
+          max: 0.5,
+          fit_count: 1,
+          validation_rows: 20,
+        },
+      },
+      plan_sha256: "a".repeat(64),
+      results_sha256: "b".repeat(64),
+      plan_path: "outputs/evaluation-plan.json",
+      results_path: "outputs/evaluation-results.json",
+      report_path: "outputs/evaluation-report.json",
+      summary: {
+        development_rows: 100,
+        test_rows: 10,
+        validation_fit_count: 1,
+        development_group_count: null,
+        test_group_count: null,
+        development_date_count: null,
+        test_date_count: null,
+      },
+    },
+    tuning: {
+      schema_version: 1,
+      plan_sha256: "c".repeat(64),
+      trials_sha256: "d".repeat(64),
+      evaluation_plan_sha256: "a".repeat(64),
+      metric: "rmse",
+      direction: "minimize",
+      baseline_objective: 0.5,
+      winner_trial_index: 1,
+      winner_objective: 0.4,
+      improvement: 0.1,
+      best_sampled_params: { depth: 4 },
+      final_params: { depth: 4, iterations: 7 },
+      final_tree_count: 7,
+      trial_count: 5,
+      trial_fit_count: 5,
+      total_fit_count: 6,
+      trials,
+      plan_path: "outputs/tuning-plan.json",
+      trials_path: "outputs/tuning-trials.json",
+      report_path: "outputs/tuning-report.json",
+    },
   }
 }
 
@@ -242,6 +333,25 @@ describe("parseTrainFeatureSelection", () => {
     expect(parsed.excluded_columns.total_count).toBe(3)
   })
 
+  it("uses the canonical evaluation reason for strategy metadata", () => {
+    const parsed = parseTrainFeatureSelection(featureSelectionFixture({
+      retained_metadata: {
+        state: "available",
+        total_count: 1,
+        items: [{ column: "policy_date", reason: "evaluation" }],
+      },
+    }))
+    expect(parsed.retained_metadata.items[0]?.reason).toBe("evaluation")
+
+    expect(() => parseTrainFeatureSelection(featureSelectionFixture({
+      retained_metadata: {
+        state: "available",
+        total_count: 1,
+        items: [{ column: "policy_date", reason: "split" }],
+      },
+    }))).toThrow(/reason/i)
+  })
+
   it("rejects malformed schema, count, and exclusion reasons", () => {
     expect(() => parseTrainFeatureSelection(featureSelectionFixture({ schema_version: 2 }))).toThrow(/schema_version/i)
     expect(() => parseTrainFeatureSelection(featureSelectionFixture({ features: { state: "available", total_count: 3, items: ["age"] } }))).toThrow(/count/i)
@@ -267,6 +377,28 @@ describe("API response guards", () => {
 
     expect(parsed.warnings).toEqual(["renamed duplicate node"])
     expect(parsed.status).toBe("saved")
+    expect(parsed.source_revision).toBe("revision-save-1")
+  })
+
+  it("rejects savePipeline responses without a committed revision", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("save_pipeline")
+    expect(() => parseSavePipelineResponse({
+      ...fixture,
+      source_revision: undefined,
+    })).toThrow(/source_revision/i)
+  })
+
+  it("rejects blank committed revisions and submodel paths", () => {
+    const save = loadUiContractFixture<Record<string, unknown>>("save_pipeline")
+    const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
+    const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseSavePipelineResponse({ ...save, source_revision: "   " })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: "" })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, parent_file: " " })).toThrow(/parent_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: "" })).toThrow(/submodel_file/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: "\t" })).toThrow(/source_revision/i)
   })
 
   it("fills preview defaults for sparse error payloads", () => {
@@ -710,6 +842,69 @@ describe("API response guards", () => {
     expect(parsed.diagnostics_errors?.[0].diagnostic).toBe("shap")
   })
 
+  it("parses canonical evaluation reports and rejects retired result fields", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
+    const parsed = parseTrainResponse(fixture)
+
+    expect(parsed.evaluation?.strategy).toBe("random")
+    expect(() => parseTrainResponse({ ...fixture, metrics: { rmse: 1 } })).toThrow(/legacy/i)
+    expect(() => parseTrainResponse({ ...fixture, cross_validation: {} })).toThrow(/legacy/i)
+  })
+
+  it("parses canonical tuning reports with weighted validation evidence", () => {
+    const parsed = parseTrainResponse(tunedTrainResponseFixture())
+
+    expect(parsed.evaluation?.validation_method).toBe("single")
+    expect(parsed.tuning?.winner_trial_index).toBe(1)
+    expect(parsed.tuning?.total_fit_count).toBe(6)
+  })
+
+  it("rejects evaluation summaries that disagree with persisted selection fits", () => {
+    const fixture = tunedTrainResponseFixture()
+    fixture.evaluation.selection_metrics.rmse.mean = 0.6
+
+    expect(() => parseTrainResponse(fixture)).toThrow(/aggregate.*selection fits/i)
+  })
+
+  it("rejects tuning evidence with non-finite or inconsistent trial results", () => {
+    const nonFinite = tunedTrainResponseFixture()
+    nonFinite.tuning.trials[1]!.objective = Number.POSITIVE_INFINITY
+    expect(() => parseTrainResponse(nonFinite)).toThrow(/objective.*finite/i)
+
+    const inconsistentAggregate = tunedTrainResponseFixture()
+    inconsistentAggregate.tuning.trials[1]!.aggregate_metrics.rmse = 0.41
+    expect(() => parseTrainResponse(inconsistentAggregate)).toThrow(
+      /aggregate.*validation fits/i,
+    )
+
+    const wrongWinner = tunedTrainResponseFixture()
+    wrongWinner.tuning.winner_trial_index = 2
+    expect(() => parseTrainResponse(wrongWinner)).toThrow(
+      /baseline, winner, or improvement/i,
+    )
+
+    const wrongSampledProjection = tunedTrainResponseFixture()
+    wrongSampledProjection.tuning.best_sampled_params = { depth: 99 }
+    expect(() => parseTrainResponse(wrongSampledProjection)).toThrow(
+      /sampled parameters/i,
+    )
+
+    const wrongFinalProjection = tunedTrainResponseFixture()
+    wrongFinalProjection.tuning.final_params = { depth: 99, iterations: 7 }
+    expect(() => parseTrainResponse(wrongFinalProjection)).toThrow(
+      /final parameter projection/i,
+    )
+
+    const wrongDirection = tunedTrainResponseFixture()
+    wrongDirection.tuning.direction = "maximize"
+    wrongDirection.tuning.winner_trial_index = 3
+    wrongDirection.tuning.winner_objective = 0.6
+    wrongDirection.tuning.improvement = 0.1
+    wrongDirection.tuning.best_sampled_params = { depth: 6 }
+    wrongDirection.tuning.final_params = { depth: 6, iterations: 7 }
+    expect(() => parseTrainResponse(wrongDirection)).toThrow(/metric direction/i)
+  })
+
   it("preserves per-feature PDP diagnostic errors", () => {
     const fixture = loadUiContractFixture<Record<string, unknown>>("train_response")
 
@@ -770,7 +965,109 @@ describe("API response guards", () => {
     const parsed = parseTrainStatusResponse(loadUiContractFixture("train_status_response"))
 
     expect(parsed.result?.status).toBe("completed")
+    expect(Object.keys(parsed.result?.diagnostic_metrics ?? {}).length).toBeGreaterThan(0)
+    expect(parsed.result?.evaluation?.plan_sha256).toMatch(/^[0-9a-f]{64}$/)
     expect(parsed.train_loss.learn).toBe(0.1)
+  })
+
+  it("strictly validates bounded tuning progress", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>(
+      "train_status_response",
+    )
+    const progress = {
+      ...fixture,
+      phase: "trial_fit",
+      trial_index: 1,
+      trial_count: 5,
+      fold_index: 1,
+      fold_count: 2,
+      completed_fits: 0,
+      total_fits: 11,
+      best_objective: 0.4,
+    }
+    expect(parseTrainStatusResponse(progress).phase).toBe("trial_fit")
+
+    expect(() => parseTrainStatusResponse({
+      ...progress,
+      phase: "publication",
+      trial_index: 1,
+      fold_index: null,
+    })).toThrow(/must not contain trial\/fold indices/i)
+    expect(() => parseTrainStatusResponse({
+      ...progress,
+      trial_index: 6,
+    })).toThrow(/index exceeds its count/i)
+    expect(() => parseTrainStatusResponse({
+      ...progress,
+      best_objective: Number.POSITIVE_INFINITY,
+    })).toThrow(/best_objective.*finite/i)
+    expect(() => parseTrainStatusResponse({
+      ...progress,
+      trial_count: 4,
+    })).toThrow(/trial_count.*bounds/i)
+    expect(() => parseTrainStatusResponse({
+      ...progress,
+      fold_count: 11,
+    })).toThrow(/fold_count.*bounds/i)
+    expect(() => parseTrainStatusResponse({
+      ...progress,
+      total_fits: 12,
+    })).toThrow(/total_fits.*fit count/i)
+  })
+
+  it("retains the authoritative live loss-history snapshot and truncation flag", () => {
+    const parsed = parseTrainStatusResponse({
+      ...loadUiContractFixture<Record<string, unknown>>("train_status_response"),
+      train_loss_history: [
+        { iteration: 20, train_rmse: 0.9, eval_rmse: 1.1 },
+        { iteration: 30, train_rmse: 0.8, eval_rmse: 1.0 },
+      ],
+      train_loss_history_truncated: true,
+    })
+
+    expect(parsed.train_loss_history).toEqual([
+      { iteration: 20, train_rmse: 0.9, eval_rmse: 1.1 },
+      { iteration: 30, train_rmse: 0.8, eval_rmse: 1.0 },
+    ])
+    expect(parsed.train_loss_history_truncated).toBe(true)
+  })
+
+  it("leaves absent live loss history absent", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>(
+      "train_status_response",
+    )
+    delete fixture.train_loss_history
+    delete fixture.train_loss_history_truncated
+    const parsed = parseTrainStatusResponse(fixture)
+
+    expect(parsed.train_loss_history).toBeUndefined()
+    expect(parsed.train_loss_history_truncated).toBeUndefined()
+  })
+
+  it.each([
+    [{ iteration: "20", train_rmse: 0.9 }],
+    [{ iteration: 20, train_rmse: "0.9" }],
+    [null],
+  ])("rejects a malformed present live loss-history snapshot", (history) => {
+    expect(() =>
+      parseTrainStatusResponse({
+        ...loadUiContractFixture<Record<string, unknown>>(
+          "train_status_response",
+        ),
+        train_loss_history: history,
+      }),
+    ).toThrow(/train_loss_history/i)
+  })
+
+  it("rejects a non-Boolean live loss-history truncation flag", () => {
+    expect(() =>
+      parseTrainStatusResponse({
+        ...loadUiContractFixture<Record<string, unknown>>(
+          "train_status_response",
+        ),
+        train_loss_history_truncated: "yes",
+      }),
+    ).toThrow(/train_loss_history_truncated/i)
   })
 
   it("preserves structured terminal training error detail", () => {
@@ -1184,11 +1481,44 @@ describe("API response guards", () => {
     const loaded = parseSubmodelGraphResponse(loadUiContractFixture("submodel_graph_response"))
     const dissolved = parseDissolveSubmodelResponse(loadUiContractFixture("dissolve_submodel_response"))
 
-    expect(created.submodel_file).toBe("pricing.py")
+    expect(created.submodel_file).toBe("modules/pricing.py")
+    expect(created.source_revision).toBe("revision-create-1")
     expect(created.graph.edges[0].targetPort).toBe("base")
     expect(created.graph.edges[1].sourcePort).toBe("quotes")
     expect(loaded.submodel_name).toBe("pricing")
+    expect(loaded.definition_id).toBe("pricing-definition")
+    expect(loaded.submodel_file).toBe("modules/pricing.py")
+    expect(dissolved.source_revision).toBe("revision-dissolve-1")
+    expect(dissolved.instance_id).toBe("pricing-instance")
+    expect(dissolved.definition_id).toBe("pricing-definition")
     expect(dissolved.graph.nodes).toHaveLength(2)
+  })
+
+  it("rejects missing mandatory submodel identity and revision metadata", () => {
+    const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
+    const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: undefined })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, parent_file: undefined })).toThrow(/parent_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: undefined })).toThrow(/submodel_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, definition_id: undefined })).toThrow(/definition_id/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: undefined })).toThrow(/source_revision/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, instance_id: undefined })).toThrow(/instance_id/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, definition_id: undefined })).toThrow(/definition_id/i)
+  })
+
+  it("rejects removed dissolve file-lifecycle fields", () => {
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseDissolveSubmodelResponse({
+      ...dissolve,
+      submodel_file_deleted: false,
+    })).toThrow(/submodel_file_deleted.*no longer supported/i)
+    expect(() => parseDissolveSubmodelResponse({
+      ...dissolve,
+      retained_submodel_file: "modules/pricing.py",
+    })).toThrow(/retained_submodel_file.*no longer supported/i)
   })
 
   it("parses modelling preflight payloads", () => {
@@ -1202,6 +1532,76 @@ describe("API response guards", () => {
     expect(mlflow.detail).toBe("")
     expect(estimate.estimated_mb).toBe(12.5)
     expect(log.run_id).toBe("run-123")
+  })
+
+  it("parses a strict bounded evaluation preview and defaults an omitted preview to null", () => {
+    const estimate = parseTrainEstimateResponse({
+      total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
+      training_mb: 25, available_mb: 512, bytes_per_row: 256,
+      was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
+      gpu_vram_available_mb: null, gpu_warning: null,
+      evaluation_preview: {
+        schema_version: 1, strategy: "temporal", validation_method: "cross_validation",
+        development_rows: 800, final_test_rows: 200, validation_fit_count: 5,
+        min_selection_train_rows: 500, max_selection_train_rows: 640,
+        min_selection_validation_rows: 160, max_selection_validation_rows: 200,
+        development_date_range: { start: "2024-01-01", end: "2024-09-30" },
+        final_test_date_range: { start: "2024-10-01", end: "2024-12-31" },
+      },
+    })
+    const withoutPreview = { ...estimate }
+    delete (withoutPreview as Partial<typeof estimate>).evaluation_preview
+
+    expect(estimate.evaluation_preview).toMatchObject({ strategy: "temporal", validation_fit_count: 5 })
+    expect(parseTrainEstimateResponse(withoutPreview).evaluation_preview).toBeNull()
+    expect(parseTrainEstimateResponse({
+      ...withoutPreview,
+      evaluation_preview: {
+        schema_version: 1, strategy: "random", validation_method: "none",
+        development_rows: 1000, final_test_rows: 0, validation_fit_count: 0,
+      },
+    }).evaluation_preview).toMatchObject({ validation_method: "none", validation_fit_count: 0 })
+  })
+
+  it("rejects malformed bounded evaluation previews", () => {
+    const estimate = {
+      total_rows: 1000, safe_row_limit: null, estimated_mb: 12.5,
+      training_mb: 25, available_mb: 512, bytes_per_row: 256,
+      was_downsampled: false, warning: null, gpu_vram_estimated_mb: null,
+      gpu_vram_available_mb: null, gpu_warning: null,
+    }
+    expect(() => parseTrainEstimateResponse({
+      ...estimate,
+      evaluation_preview: {
+        schema_version: 1, strategy: "random", validation_method: "single",
+        development_rows: 800, final_test_rows: 200, validation_fit_count: 1,
+        unexpected: true,
+      },
+    })).toThrow(/evaluation_preview.*unexpected or missing fields/i)
+    expect(() => parseTrainEstimateResponse({
+      ...estimate,
+      evaluation_preview: {
+        schema_version: 1, strategy: "random", validation_method: "single",
+        development_rows: 800, final_test_rows: 200, validation_fit_count: 2,
+        min_selection_train_rows: 600, max_selection_train_rows: 600,
+        min_selection_validation_rows: 200, max_selection_validation_rows: 200,
+      },
+    })).toThrow(/inconsistent fit count/i)
+    expect(() => parseTrainEstimateResponse({
+      ...estimate,
+      evaluation_preview: {
+        schema_version: 1, strategy: "group", validation_method: "none",
+        development_rows: 800, final_test_rows: 200, validation_fit_count: 0,
+      },
+    })).toThrow(/requires group counts/i)
+    expect(() => parseTrainEstimateResponse({
+      ...estimate,
+      evaluation_preview: {
+        schema_version: 1, strategy: "temporal", validation_method: "none",
+        development_rows: 800, final_test_rows: 200, validation_fit_count: 0,
+        development_date_range: { start: "2024-01-01", end: "2024-09-30" },
+      },
+    })).toThrow(/inconsistent date ranges/i)
   })
 
   it("parses optimiser action payloads", () => {

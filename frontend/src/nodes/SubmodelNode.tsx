@@ -1,112 +1,152 @@
-import { memo } from "react"
-import { Handle, Position, type NodeProps } from "@xyflow/react"
+import { memo, useEffect } from "react"
+import { useUpdateNodeInternals, type NodeProps } from "@xyflow/react"
 import { Package } from "lucide-react"
 import { STRUCTURE_COLORS } from "../theme/colors"
 import { nodeTypeColors } from "../utils/nodeTypes"
-import type { SubmodelFlowNode } from "../types/node"
+import {
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  type SubmodelFlowNode,
+  type SubmodelInputPort,
+  type SubmodelOutputPort,
+} from "../types/node"
+import FramePortRows from "./FramePortRows"
+import useGraphStore from "../stores/useGraphStore"
 
 const accent = nodeTypeColors.submodel || STRUCTURE_COLORS.fallbackAccent
+const headerInset = {
+  marginTop: "-1.5px",
+  marginLeft: "-1.5px",
+  marginRight: "-1.5px",
+}
+const bodyStyle = {
+  background: "var(--bg-elevated)",
+  borderRadius: "0 0 10.5px 10.5px",
+  marginLeft: "-1.5px",
+  marginRight: "-1.5px",
+  marginBottom: "-1.5px",
+}
 
-function SubmodelNode({ data: nodeData, selected }: NodeProps<SubmodelFlowNode>) {
-  const config = nodeData.config || {}
-  const inputPorts = config.inputPorts || []
-  const outputPorts = config.outputPorts || []
-  const childCount = (config.childNodeIds || []).length
+function SubmodelNode({
+  id,
+  data: nodeData,
+  selected,
+}: NodeProps<SubmodelFlowNode>) {
+  const config = nodeData.config
+  const canonicalIdentityValid = isSubmodelInstanceConfig(config)
+  const definitionId = canonicalIdentityValid ? config.definitionId : ""
+  const definition = useGraphStore((state) => state.submodels[definitionId])
+  const canonicalDefinition = canonicalIdentityValid && isSubmodelDefinition(definition, definitionId)
+    ? definition
+    : undefined
+  const definitionInvalid = canonicalDefinition === undefined
+  const inputFrames = canonicalDefinition?.inputPorts.map(toInputFrame) ?? []
+  const outputFrames = canonicalDefinition?.outputPorts.map(toOutputFrame) ?? []
+  const childCount = canonicalDefinition?.graph.nodes.length ?? 0
+  const hasBody = inputFrames.length > 0 || outputFrames.length > 0 || definitionInvalid
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
   const traceMotionDisabled = !!nodeData._traceMotionDisabled
+  const updateNodeInternals = useUpdateNodeInternals()
+  const portSignature = JSON.stringify([
+    inputFrames.map((frame) => frame.id),
+    outputFrames.map((frame) => frame.id),
+  ])
+
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [id, portSignature, updateNodeInternals])
 
   return (
     <div
       aria-label={`Submodel node: ${nodeData.label}, ${childCount} child nodes${traceActive ? ", trace active" : ""}`}
       role="button"
-      className="relative rounded-xl w-[240px] cursor-pointer"
+      className="relative w-[240px] cursor-pointer rounded-xl"
       style={{
-        background: "var(--bg-elevated)",
-        border: traceActive
-          ? `1.5px solid ${accent}`
-          : selected
-            ? `1.5px solid ${accent}`
-            : `1.5px dashed var(--border-bright)`,
+        border:
+          traceActive || selected
+            ? `3px solid ${accent}`
+            : "3px dashed var(--border-bright)",
         boxShadow: traceActive
           ? `0 0 12px ${accent}40, var(--node-shadow)`
           : "var(--node-shadow)",
         opacity: traceDimmed || hoverDimmed ? 0.3 : 1,
-        transition: traceMotionDisabled ? "none" : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
+        transition: traceMotionDisabled
+          ? "none"
+          : "border-color 0.15s ease, opacity 0.2s ease, box-shadow 0.2s ease",
       }}
     >
       <div
-        className="absolute left-0 top-3 bottom-3 w-[3px] rounded-full"
-        style={{ backgroundColor: accent, opacity: selected ? 1 : 0.6, transition: traceMotionDisabled ? "none" : "opacity 0.2s ease" }}
-      />
-
-      {/* Hidden per-port input handles so React Flow can resolve existing edges */}
-      {inputPorts.map((port) => (
-        <Handle
-          key={`in__${port}`}
-          id={`in__${port}`}
-          type="target"
-          position={Position.Left}
-          style={{ top: "50%", opacity: 0, width: 0, height: 0, pointerEvents: "none" }}
-        />
-      ))}
-      {/* Visible input handle for new connections */}
-      <Handle type="target" position={Position.Left} />
-
-      <div className="pl-4 pr-3 py-2.5">
-        <div className="flex items-center gap-2 mb-1">
-          <Package size={12} style={{ color: accent }} className="shrink-0 opacity-80" />
-          <span
-            className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0"
-            style={{ color: accent, opacity: 0.8 }}
-          >
-            SUBMODEL
-          </span>
-          <span
-            className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded-full"
-            style={{ background: `${accent}18`, color: accent, border: `1px solid ${accent}30` }}
-          >
-            {childCount} nodes
-          </span>
-        </div>
-        <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
+        data-testid="submodel-header"
+        className="flex items-center gap-2 px-3 py-1.5"
+        style={{
+          background: `${accent}30`,
+          borderRadius: hasBody ? "10.5px 10.5px 0 0" : "10.5px",
+          ...headerInset,
+        }}
+      >
+        <Package size={16} style={{ color: accent }} className="shrink-0" />
+        <span
+          className="shrink-0 text-[10px] font-bold uppercase tracking-[0.1em]"
+          style={{ color: accent }}
+        >
+          SUBMODEL
+        </span>
+        <span
+          data-testid="submodel-name-badge"
+          title={nodeData.label}
+          className="ml-auto min-w-0 max-w-[110px] truncate rounded-full px-1.5 py-0.5 font-mono text-[9px]"
+          style={{
+            background: `${accent}18`,
+            border: `1px solid ${accent}30`,
+            color: accent,
+          }}
+        >
           {nodeData.label}
-        </div>
-        {config.file && (
-          <div className="text-[10px] truncate mt-0.5" style={{ color: "var(--text-muted)" }}>
-            {config.file}
-          </div>
-        )}
-
-        {outputPorts.length > 0 && (
-          <div className="flex flex-col gap-0.5 items-end mt-1.5">
-            {outputPorts.map((port) => (
-              <span key={port} className="text-[9px] font-mono" style={{ color: "var(--text-muted)" }}>
-                {port} →
-              </span>
-            ))}
-          </div>
-        )}
+        </span>
       </div>
 
-      {outputPorts.length > 0 ? (
-        outputPorts.map((port, i) => (
-          <Handle
-            key={`out__${port}`}
-            id={`out__${port}`}
-            type="source"
-            position={Position.Right}
-            style={{
-              top: `${((i + 1) / (outputPorts.length + 1)) * 100}%`,
-            }}
-          />
-        ))
-      ) : (
-        <Handle type="source" position={Position.Right} />
+      {hasBody && (
+        <div data-testid="submodel-body" className="px-3 py-2" style={bodyStyle}>
+          {definitionInvalid && (
+            <div
+              role="alert"
+              data-testid="submodel-definition-error"
+              className="text-[11px] font-semibold"
+              style={{ color: "var(--danger)" }}
+            >
+              Definition unavailable or invalid
+            </div>
+          )}
+          {inputFrames.length > 0 && (
+            <FramePortRows
+              ports={inputFrames}
+              direction="target"
+              accent={accent}
+              testIdPrefix="submodel-input"
+            />
+          )}
+          {outputFrames.length > 0 && (
+            <FramePortRows
+              ports={outputFrames}
+              direction="source"
+              accent={accent}
+              testIdPrefix="submodel-output"
+            />
+          )}
+        </div>
       )}
     </div>
   )
+}
+
+function toInputFrame(port: SubmodelInputPort) {
+  return { id: `in__${port.portId}`, label: port.label, parentEdges: [] }
+}
+
+function toOutputFrame(port: SubmodelOutputPort) {
+  return { id: `out__${port.portId}`, label: port.label, parentEdges: [] }
 }
 
 export default memo(SubmodelNode)

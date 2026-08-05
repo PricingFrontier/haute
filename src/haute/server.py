@@ -45,6 +45,7 @@ from haute._local_security import (
     websocket_rejection_reason,
 )
 from haute._logging import configure_logging, get_logger
+from haute.graph_utils import PipelineGraph
 from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import (
     _ensure_pipeline_index,
@@ -245,6 +246,12 @@ def _graph_payload_fingerprint(graph_payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _graph_wire_payload(graph: PipelineGraph) -> dict[str, Any]:
+    """Serialize a graph using the canonical frontend-facing field aliases."""
+
+    return graph.model_dump(mode="json", by_alias=True)
+
+
 def _client_graph_fingerprint(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -265,7 +272,7 @@ def _prepare_ws_resync(source_path: Path, client_graph_fingerprint: str | None) 
     source_file = _wire_source_file(pipeline_path)
     try:
         graph = parse_pipeline_to_graph(pipeline_path)
-        graph_payload = graph.model_dump()
+        graph_payload = _graph_wire_payload(graph)
         graph_fingerprint = _graph_payload_fingerprint(graph_payload)
         if client_graph_fingerprint == graph_fingerprint:
             return _WsResyncResult(source_file=source_file, unchanged=True)
@@ -793,7 +800,7 @@ async def _file_watcher() -> None:
                         logger.info("graph_unchanged", file=p.name)
                         continue
                     graph = parse_pipeline_to_graph(p)
-                    graph_payload = graph.model_dump()
+                    graph_payload = _graph_wire_payload(graph)
                     graph_fp = _graph_payload_fingerprint(graph_payload)
                     _last_broadcast_fp[fp_key] = fp
                     # Publish through the event bus instead of hand-building a

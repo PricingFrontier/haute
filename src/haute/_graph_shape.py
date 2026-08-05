@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
-from haute._types import GraphNode, NodeType, PipelineGraph
+from haute._submodel_instances import resolve_submodel_instances
+from haute._types import NodeType, PipelineGraph
 from haute.errors import ParseError
 
 
@@ -76,55 +77,50 @@ def validate_pipeline_graph_shape_contracts(
         graph_label=graph_label,
         node_ids_to_validate=validate_node_ids,
     )
-    for submodel_name, child_graph, incoming, outgoing in _iter_submodel_child_contexts(graph):
-        if validate_node_ids is not None and f"submodel__{submodel_name}" not in validate_node_ids:
-            continue
+    for definition_id, child_graph, incoming, outgoing in _iter_submodel_definition_contexts(
+        graph,
+        instance_ids=validate_node_ids,
+    ):
         validate_graph_shape_contracts(
             child_graph,
-            graph_label=f"{graph_label}:{submodel_name}",
+            graph_label=f"{graph_label}:definition:{definition_id}",
             extra_incoming_by_node=incoming,
             extra_outgoing_by_node=outgoing,
         )
 
 
-def _iter_submodel_child_contexts(
+def _iter_submodel_definition_contexts(
     graph: PipelineGraph,
+    *,
+    instance_ids: set[str] | None,
 ) -> list[tuple[str, PipelineGraph, dict[str, list[str]], dict[str, list[str]]]]:
-    submodels = graph.submodels or {}
+    """Return each referenced definition once with its declared boundary topology."""
     contexts: list[tuple[str, PipelineGraph, dict[str, list[str]], dict[str, list[str]]]] = []
-    for submodel_name, metadata in submodels.items():
-        if not isinstance(metadata, dict):
+    seen_definitions: set[str] = set()
+    for instance_id, instance in resolve_submodel_instances(graph).items():
+        if instance_ids is not None and instance_id not in instance_ids:
             continue
-        child_raw = metadata.get("graph")
-        if child_raw is None:
+        definition_id = instance.config.definition_id
+        if definition_id in seen_definitions:
             continue
-        child_graph = (
-            child_raw
-            if isinstance(child_raw, PipelineGraph)
-            else PipelineGraph.model_validate(child_raw)
-        )
-        child_nodes = set(_node_ids(child_graph.nodes))
+        seen_definitions.add(definition_id)
+
         incoming: dict[str, list[str]] = {}
         outgoing: dict[str, list[str]] = {}
-        submodel_node_id = f"submodel__{submodel_name}"
-        for edge in graph.edges:
-            if edge.target == submodel_node_id:
-                child_id = _boundary_child_id(edge.targetHandle, prefix="in__")
-                if child_id in child_nodes:
-                    incoming.setdefault(child_id, []).append(edge.source)
-            if edge.source == submodel_node_id:
-                child_id = _boundary_child_id(edge.sourceHandle, prefix="out__")
-                if child_id in child_nodes:
-                    outgoing.setdefault(child_id, []).append(edge.target)
-        contexts.append((submodel_name, child_graph, incoming, outgoing))
+        for input_port in instance.definition.input_ports:
+            public_source = f"public:{input_port.port_id}"
+            for target in input_port.targets:
+                incoming.setdefault(target.node_id, []).append(public_source)
+        for output_port in instance.definition.output_ports:
+            outgoing.setdefault(output_port.source.node_id, []).append(
+                f"public:{output_port.port_id}"
+            )
+        contexts.append(
+            (
+                definition_id,
+                instance.definition.graph,
+                incoming,
+                outgoing,
+            )
+        )
     return contexts
-
-
-def _node_ids(nodes: Sequence[GraphNode]) -> list[str]:
-    return [node.id for node in nodes]
-
-
-def _boundary_child_id(handle: str | None, *, prefix: str) -> str | None:
-    if not handle or not handle.startswith(prefix):
-        return None
-    return handle[len(prefix) :]

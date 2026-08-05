@@ -1363,3 +1363,53 @@ class TestSidecarPersistence:
         sidecar.write_text(json.dumps(config), encoding="utf-8")
         loaded = load_node_config(sidecar, base_dir=haute_scratch)
         assert loaded == config
+
+
+def test_generated_data_input_resolves_project_relative_dataset_from_nested_pipeline(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from haute.graph_utils import resolve_data_input_from_config
+
+    project_root = tmp_path / "project"
+    pipeline_root = project_root / "rating"
+    config_dir = pipeline_root / "config" / "data_input"
+    data_dir = project_root / "data"
+    config_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    pl.DataFrame({"quote_id": [1, 2]}).write_parquet(data_dir / "quotes.parquet")
+    (config_dir / "quotes.json").write_text(
+        json.dumps(
+            {
+                "inputType": "file",
+                "format": "parquet",
+                "mode": "scan",
+                "path": "data/quotes.parquet",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    frame = resolve_data_input_from_config(
+        "config/data_input/quotes.json",
+        base_dir=pipeline_root,
+        project_root=project_root,
+    )
+
+    assert frame.collect().to_dicts() == [{"quote_id": 1}, {"quote_id": 2}]
+
+
+def test_data_input_codegen_passes_discovered_project_root() -> None:
+    from haute._codegen_builders import _gen_data_input
+
+    code = _gen_data_input(
+        _data_input_node(
+            "quotes", {"inputType": "file", "format": "parquet", "path": "data/quotes.parquet"}
+        ),
+        [],
+    )
+
+    assert "get_project_root(_HAUTE_CONFIG_BASE)" in code
+    assert "base_dir=_HAUTE_CONFIG_BASE" in code
+    assert "project_root=project_root" in code

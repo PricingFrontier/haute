@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, model_validator
 from haute._file_ops import atomic_write_text
 from haute._io import read_user_text
 from haute._logging import get_logger
+from haute._submodel_paths import resolve_submodel_reference
 from haute.errors import ConfigError
 from haute.graph_utils import GraphNode, NodeType, PipelineGraph, _sanitize_func_name
 
@@ -64,6 +65,7 @@ class SidecarModel(BaseModel):
     positions: dict[str, dict[str, float]] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
+    managed_parent: str | None = None
 
     @model_validator(mode="after")
     def _active_source_must_be_in_sources(self) -> SidecarModel:
@@ -703,10 +705,10 @@ def _ensure_module_deps() -> dict[str, set[Path]]:
                     logger.warning("module_deps_parse_failed", file=f.name, error=str(exc))
                     continue
 
-                from haute._parser_submodels import extract_submodel_calls
+                from haute._parser_submodels import extract_submodel_registrations
 
-                for rel_path in extract_submodel_calls(tree):
-                    module_stem = Path(rel_path).stem
+                for registration in extract_submodel_registrations(tree):
+                    module_stem = Path(registration.path).stem
                     deps.setdefault(_module_dep_key(module_stem), set()).add(f)
 
             with _pipeline_index_lock:
@@ -760,36 +762,28 @@ def load_sidecar_positions(py_path: Path) -> dict[str, Any]:
 
 
 def _sidecar_position_key(node: GraphNode) -> str:
-    """Return the sidecar positions key that will match this node on re-parse.
+    """Return the node identity that the parser will restore on reload.
 
-    The load path (:func:`parse_pipeline_to_graph`) looks positions up by
-    ``node.id``, where ``node.id`` is whatever the parser reconstructs from
-    the regenerated ``.py``.  For ordinary nodes that id IS the sanitised
-    function name, so keying by ``sanitize(label)`` round-trips.
-
-    Submodel placeholder nodes are the exception: the parser rebuilds them
-    with ``id = "submodel__" + sanitize(name)`` (see
-    ``_submodel_graph.build_submodel_node``) while their ``data.label`` is the
-    bare submodel name.  Keying purely by ``sanitize(label)`` therefore wrote
-    ``"model_stuff"`` but the load read ``"submodel__model_stuff"`` — a guaranteed
-    miss, so every submodel node snapped back to (0, 0) on reload.
-
-    Mirroring the parser's id reconstruction here keeps the write key and the
-    read key identical for every node type.
+    Ordinary executable nodes are reconstructed from their sanitised label.
+    Submodel occurrences persist an explicit immutable ``instance_id``, so
+    their sidecar key is the occurrence node id itself.
     """
-    sanitized = _sanitize_func_name(node.data.label)
     if node.data.nodeType == NodeType.SUBMODEL:
-        return f"submodel__{sanitized}"
-    return sanitized
+        return node.id
+    return _sanitize_func_name(node.data.label)
 
 
-def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
+def save_sidecar(
+    py_path: Path,
+    graph: PipelineGraph,
+    *,
+    managed_parent: str | None = None,
+) -> list[str]:
     """Write node positions + source state to the sidecar .haute.json file.
 
-    Keys are the node ids the parser assigns on re-parse (the sanitised
-    function name for ordinary nodes, ``submodel__<name>`` for submodel
-    placeholders — see :func:`_sidecar_position_key`), so positions survive
-    label renames and round-trip for every node type.
+    Keys are the identities the parser restores on re-parse: the sanitised
+    function name for ordinary nodes and the explicit instance id for a
+    submodel occurrence.
 
     When two distinct labels collapse to the same key only one
     position can survive — which one is arbitrary.  We detect this here
@@ -835,6 +829,8 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
         model_kwargs["sources"] = graph.sources
     if graph.active_source and graph.active_source != "live":
         model_kwargs["active_source"] = graph.active_source
+    if managed_parent is not None:
+        model_kwargs["managed_parent"] = managed_parent
 
     sidecar_model = SidecarModel(**model_kwargs)
     # ``exclude_defaults`` drops any field whose value equals the
@@ -867,12 +863,31 @@ def save_sidecar(py_path: Path, graph: PipelineGraph) -> list[str]:
     return warnings
 
 
-def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
+def _project_relative_source_file(path: Path, project_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(project_root).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def parse_pipeline_to_graph(
+    py_path: Path,
+    *,
+    project_root: Path | None = None,
+) -> PipelineGraph:
     """Parse a .py file and merge with sidecar positions + source state."""
     from haute.parser import parse_pipeline_file
 
-    graph = parse_pipeline_file(py_path)
-    sidecar = load_sidecar(py_path)
+    resolved_path = py_path.resolve()
+    if project_root is None:
+        cwd = Path.cwd().resolve()
+        root = cwd if resolved_path.is_relative_to(cwd) else resolved_path.parent
+    else:
+        root = project_root.resolve()
+
+    graph = parse_pipeline_file(resolved_path)
+    sidecar = load_sidecar(resolved_path)
     positions = _normalise_sidecar_positions(sidecar.get("positions"))
 
     for node in graph.nodes:
@@ -893,6 +908,52 @@ def parse_pipeline_to_graph(py_path: Path) -> PipelineGraph:
         if active in graph.sources:
             graph.active_source = active
 
+    parent_source_file = _project_relative_source_file(resolved_path, root)
+    resolved_submodels: dict[str, Any] = {}
+    for name, definition in (graph.submodels or {}).items():
+        recorded_path = definition.file
+        if not recorded_path:
+            raise ValueError(f"Submodel {name!r} has no valid source file path.")
+        child_path, _config_base = resolve_submodel_reference(
+            recorded_path,
+            pipeline_dir=resolved_path.parent,
+            project_root=root,
+        )
+        child_graph = definition.graph
+        child_sidecar = load_sidecar(child_path)
+        child_positions = _normalise_sidecar_positions(child_sidecar.get("positions"))
+        child_nodes = [
+            node.model_copy(update={"position": child_positions[node.id]})
+            if node.id in child_positions
+            else node
+            for node in child_graph.nodes
+        ]
+        child_graph = child_graph.model_copy(
+            update={
+                "nodes": child_nodes,
+                "source_file": _project_relative_source_file(child_path, root),
+            }
+        )
+        resolved_submodels[name] = definition.model_copy(
+            update={
+                "graph": child_graph,
+            }
+        )
+
+    graph = graph.model_copy(
+        update={
+            "source_file": parent_source_file,
+            "submodels": resolved_submodels or None,
+        }
+    )
+    from haute._pipeline_revision import pipeline_document_revision
+
+    graph.source_revision = pipeline_document_revision(
+        graph,
+        pipeline_path=resolved_path,
+        project_root=root,
+    )
+
     return graph
 
 
@@ -911,8 +972,7 @@ def commit_pipeline_graph(sha: str) -> PipelineGraph:
         parse_failures = 0
         for f in candidates:
             try:
-                graph = parse_pipeline_to_graph(f)
-                graph.source_file = str(f.relative_to(root))
+                graph = parse_pipeline_to_graph(f, project_root=root)
                 if graph.nodes:
                     return graph
                 best = best if best is not None else graph

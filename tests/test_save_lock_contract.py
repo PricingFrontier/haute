@@ -124,6 +124,7 @@ async def test_save_lock_holds_during_svc_save(monkeypatch: pytest.MonkeyPatch) 
             status="saved",
             file="test.py",
             pipeline_name="test",
+            source_revision="revision-test",
             warnings=[],
         )
 

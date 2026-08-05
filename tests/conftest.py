@@ -443,9 +443,21 @@ def make_output_node(nid: str, fields: list[str] | None = None) -> GraphNode:
     )
 
 
-def make_edge(src: str, tgt: str) -> GraphEdge:
-    """Build a minimal edge."""
-    return GraphEdge(id=f"e_{src}_{tgt}", source=src, target=tgt)
+def make_edge(
+    src: str,
+    tgt: str,
+    *,
+    source_handle: str | None = None,
+    target_handle: str | None = None,
+) -> GraphEdge:
+    """Build an edge with optional explicit port identity."""
+    return GraphEdge(
+        id=f"e_{src}_{tgt}",
+        source=src,
+        target=tgt,
+        sourceHandle=source_handle,
+        targetHandle=target_handle,
+    )
 
 
 def make_node(d: dict) -> GraphNode:

@@ -1,0 +1,1 @@
+{"target":"response","row_count":2,"required_columns":["fixture_value"],"checks":["parse","execute"]}

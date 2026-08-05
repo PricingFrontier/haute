@@ -58,7 +58,7 @@ vi.mock("../api/client", async () => {
     bootstrapHauteSession: vi.fn(() => Promise.resolve()),
     checkHauteSession: vi.fn(() => Promise.resolve({ ok: true })),
     // Pipeline endpoints
-    loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "" })),
+    loadPipeline: vi.fn(() => Promise.resolve({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })),
     previewNode: vi.fn(() => Promise.resolve({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })),
     savePipeline: vi.fn(() => Promise.resolve({ file: "pipeline.py", pipeline_name: "main" })),
     traceCell: vi.fn(() => Promise.resolve({ status: "ok" })),
@@ -410,8 +410,8 @@ beforeEach(() => {
   MockWebSocket.instances = []
 
   // Reset all api mocks to their default resolution (empty graph, success).
-  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "" })
-  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main" })
+  vi.mocked(api.loadPipeline).mockReset().mockResolvedValue({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })
+  vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
   vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
@@ -446,7 +446,13 @@ afterEach(() => {
 
 describe("App integration — mounts and renders main chrome", () => {
   it("does not open websocket sync while the initial pipeline load is pending", async () => {
-    let resolveLoad!: (value: { nodes: []; edges: []; preamble: string }) => void
+    let resolveLoad!: (value: {
+      nodes: []
+      edges: []
+      preamble: string
+      preserved_blocks: string[]
+      source_revision: string
+    }) => void
     vi.mocked(api.loadPipeline).mockImplementationOnce(
       () => new Promise((resolve) => {
         resolveLoad = resolve
@@ -458,7 +464,7 @@ describe("App integration — mounts and renders main chrome", () => {
     expect(screen.getByText("Loading pipeline...")).toBeInTheDocument()
     expect(MockWebSocket.instances).toHaveLength(0)
 
-    resolveLoad({ nodes: [], edges: [], preamble: "" })
+    resolveLoad({ nodes: [], edges: [], preamble: "", preserved_blocks: [], source_revision: "revision-test" })
     await waitForAppReady()
 
     expect(MockWebSocket.instances).toHaveLength(1)
@@ -582,6 +588,8 @@ describe("App integration — load a pipeline with nodes", () => {
         { id: "e2", source: "polars_1", target: "output_2" },
       ],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     })
     render(<App />)
     await waitForAppReady()
@@ -605,6 +613,8 @@ describe("App integration — load a pipeline with nodes", () => {
       nodes: [makeNode("polars_0", "Node A")],
       edges: [],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     })
     render(<App />)
     await waitForAppReady()
@@ -637,6 +647,8 @@ describe("App integration — load a pipeline with nodes", () => {
       ],
       edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     })
     useSettingsStore.setState({ rowLimit: 2 })
     vi.mocked(api.previewNode).mockResolvedValueOnce({
@@ -764,6 +776,8 @@ describe("App integration — save pipeline", () => {
       nodes: [makeNode("polars_0", "Transform A")],
       edges: [],
       preamble: "import polars as pl",
+      preserved_blocks: [],
+      source_revision: "revision-test",
       pipeline_name: "pricing",
       source_file: "pricing.py",
     })
@@ -791,7 +805,7 @@ describe("App integration — save pipeline", () => {
   })
 
   it("shows a success toast when savePipeline resolves", async () => {
-    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo" })
+    vi.mocked(api.savePipeline).mockResolvedValueOnce({ file: "demo.py", pipeline_name: "demo", source_revision: "revision-test" })
     render(<App />)
     await waitForAppReady()
 
@@ -1018,6 +1032,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         },
       ],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     }
   }
 
@@ -1110,6 +1126,8 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         },
       ],
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     }
   }
 
@@ -1117,22 +1135,23 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     options: { collision?: boolean; internalCollision?: boolean } = {},
   ) {
     const base = makeApiInputGraph()
-    const boundary = makeNode("submodel__pricing", "Pricing", "submodel")
+    const boundary = makeNode("instance_pricing", "Pricing", "submodel")
+    boundary.data.config = { definitionId: "definition_pricing", alias: "pricing" }
     const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
     childRouter.data.config = {
-      input_scenario_map: { drivers: "batch", stable_input: "live" },
+      input_scenario_map: { router_input: "batch", stable_input: "live" },
       untouched: "child-router-config",
     }
     const childValueInstance = makeNode("child_value_instance", "Child Value Instance", "polars")
     childValueInstance.data.config = {
       instanceOf: "unrelated_original",
-      inputMapping: { original_input: "drivers", stable_value: "stable_input" },
+      inputMapping: { original_input: "value_input", stable_value: "stable_input" },
       untouched: "child-value-config",
     }
     const childKeyInstance = makeNode("child_key_instance", "Child Key Instance", "polars")
     childKeyInstance.data.config = {
       instanceOf: "child_router",
-      inputMapping: { drivers: "Mapped_Driver", stable_key: "Stable_Value" },
+      inputMapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
       untouched: "child-key-config",
     }
     const ordinary = makeNode(
@@ -1154,14 +1173,14 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
           source: "api_0",
           target: boundary.id,
           sourceHandle: "drivers",
-          targetHandle: "in__child_router",
+          targetHandle: "in__router_input",
         },
         {
           id: "e_api_value_instance",
           source: "api_0",
           target: boundary.id,
           sourceHandle: "drivers",
-          targetHandle: "in__child_value_instance",
+          targetHandle: "in__value_input",
         },
         ...(options.collision
           ? [
@@ -1170,13 +1189,15 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
                 source: ordinary.id,
                 target: boundary.id,
                 sourceHandle: null,
-                targetHandle: "in__child_router",
+                targetHandle: "in__router_input",
               },
             ]
           : []),
       ],
       submodels: {
-        pricing: {
+        definition_pricing: {
+          definitionId: "definition_pricing",
+          file: "modules/pricing.py",
           graph: {
             nodes: [
               childRouter,
@@ -1195,11 +1216,32 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
                   },
                 ]
               : [],
-            submodels: {},
           },
+          inputPorts: [
+            {
+              portId: "router_input",
+              label: "Router input",
+              targets: [{ nodeId: childRouter.id, handleId: null }],
+            },
+            {
+              portId: "value_input",
+              label: "Value input",
+              targets: [{ nodeId: childValueInstance.id, handleId: null }],
+            },
+            ...(options.collision
+              ? [{
+                  portId: "ordinary_router",
+                  label: "Ordinary router input",
+                  targets: [{ nodeId: childRouter.id, handleId: null }],
+                }]
+              : []),
+          ],
+          outputPorts: [],
         },
       },
       preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
     }
   }
 
@@ -1422,7 +1464,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     expect(graphCommitStateBytes()).toBe(stateBefore)
   })
 
-  it("migrates nested identities atomically and restores their observable payload on undo and redo", async () => {
+  it("updates parent bindings atomically without mutating shared definition identities", async () => {
     const graph = makeSubmodelRenameGraph()
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
@@ -1434,7 +1476,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
         nodes: Array<{ id: string; data: { config: Record<string, unknown> } }>
         edges: Array<{ id: string; sourceHandle?: string | null }>
         submodels: {
-          pricing: {
+          definition_pricing: {
             graph: { nodes: Array<{ id: string; data: { config: Record<string, unknown> } }> }
           }
         }
@@ -1450,19 +1492,19 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
       ).toEqual([expectedName, expectedName])
 
       const nestedConfig = (id: string) =>
-        graphState.submodels.pricing.graph.nodes.find((node) => node.id === id)?.data.config
+        graphState.submodels.definition_pricing.graph.nodes.find((node) => node.id === id)?.data.config
       expect(nestedConfig("child_router")).toEqual({
-        input_scenario_map: { [expectedName]: "batch", stable_input: "live" },
+        input_scenario_map: { router_input: "batch", stable_input: "live" },
         untouched: "child-router-config",
       })
       expect(nestedConfig("child_value_instance")).toEqual({
         instanceOf: "unrelated_original",
-        inputMapping: { original_input: expectedName, stable_value: "stable_input" },
+        inputMapping: { original_input: "value_input", stable_value: "stable_input" },
         untouched: "child-value-config",
       })
       expect(nestedConfig("child_key_instance")).toEqual({
         instanceOf: "child_router",
-        inputMapping: { [expectedName]: "Mapped_Driver", stable_key: "Stable_Value" },
+        inputMapping: { router_input: "Mapped_Driver", stable_key: "Stable_Value" },
         untouched: "child-key-config",
       })
     }
@@ -1501,7 +1543,7 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     assertIdentityPayload(vi.mocked(api.savePipeline).mock.calls[2][0].graph, "driver_risk")
   })
 
-  it("rejects a rename collision inside one submodel child with no root or nested mutation", async () => {
+  it("keeps another occurrence binding isolated from an upstream frame rename", async () => {
     const graph = makeSubmodelRenameGraph({ collision: true })
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
@@ -1509,25 +1551,21 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     await waitForAppReady()
 
     fireEvent.click(await screen.findByTestId("node-Quote Source"))
-    const stateBefore = graphCommitStateBytes()
-    const submodelsBefore = JSON.stringify(graph.submodels)
     const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
     fireEvent.change(label, { target: { value: "collision_name" } })
     fireEvent.blur(label)
 
-    const error = await screen.findByTestId("api-input-table-1-label-error")
-    expect(error).toHaveTextContent(/Child Router/)
-    expect(error).toHaveTextContent(/collision_name/)
-    expect(graphCommitStateBytes()).toBe(stateBefore)
-
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
-    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
-    expect(JSON.stringify(vi.mocked(api.savePipeline).mock.calls[0][0].graph.submodels)).toBe(
-      submodelsBefore,
-    )
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
+        expect.objectContaining({ id: "e_api_router", sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "collision_name" }),
+      ])
+    })
+    expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
+    expect(useGraphStore.getState().submodels).toEqual(graph.submodels)
   })
 
-  it("rejects a root-frame rename colliding with an internal child edge with zero mutation", async () => {
+  it("keeps internal child edge names isolated from an upstream frame rename", async () => {
     const graph = makeSubmodelRenameGraph({ internalCollision: true })
     vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
     vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
@@ -1535,19 +1573,18 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     await waitForAppReady()
 
     fireEvent.click(await screen.findByTestId("node-Quote Source"))
-    const stateBefore = graphCommitStateBytes()
     const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
     fireEvent.change(label, { target: { value: "collision_name" } })
     fireEvent.blur(label)
 
-    const error = await screen.findByTestId("api-input-table-1-label-error")
-    expect(error).toHaveTextContent(/Child Router/)
-    expect(error).toHaveTextContent(/collision_name/)
-    expect(graphCommitStateBytes()).toBe(stateBefore)
-
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }))
-    await waitFor(() => expect(vi.mocked(api.savePipeline)).toHaveBeenCalledOnce())
-    expect(vi.mocked(api.savePipeline).mock.calls[0][0].graph.submodels).toEqual(graph.submodels)
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges.filter((edge) => edge.source === "api_0")).toEqual([
+        expect.objectContaining({ id: "e_api_router", sourceHandle: "collision_name" }),
+        expect.objectContaining({ id: "e_api_value_instance", sourceHandle: "collision_name" }),
+      ])
+    })
+    expect(screen.queryByTestId("api-input-table-1-label-error")).not.toBeInTheDocument()
+    expect(useGraphStore.getState().submodels).toEqual(graph.submodels)
   })
 
   it("W1.4: blanking a port label in the editor never reaches the graph — no synthesized port, edge intact", async () => {
@@ -1596,6 +1633,178 @@ describe("App integration — apiInput emit-port edge reconciliation (Defect 1)"
     })
     // ...but the still-valid edge is untouched.
     expect(useGraphStore.getState().edges).toHaveLength(1)
+  })
+  it("migrates a frame rename through an arbitrary canonical occurrence and every fan-out target", async () => {
+    const base = makeApiInputGraph()
+    const occurrence = makeNode(
+      "instance_pricing_secondary",
+      "Pricing secondary",
+      "submodel",
+    )
+    occurrence.data.config = {
+      definitionId: "definition_pricing",
+      alias: "pricing_secondary",
+    }
+    const childRouter = makeNode("child_router", "Child Router", "liveSwitch")
+    childRouter.data.config = {
+      input_scenario_map: { drivers: "batch", stable_input: "live" },
+      untouched: "child-router-config",
+    }
+    const childInstance = makeNode(
+      "child_value_instance",
+      "Child Value Instance",
+      "polars",
+    )
+    childInstance.data.config = {
+      instanceOf: "unrelated_original",
+      inputMapping: { original_input: "drivers", stable_value: "stable_input" },
+      untouched: "child-value-config",
+    }
+    const graph = {
+      nodes: [base.nodes[0], occurrence],
+      edges: [
+        {
+          id: "e_api_policy_data",
+          source: "api_0",
+          target: occurrence.id,
+          sourceHandle: "drivers",
+          targetHandle: "in__policy_data",
+        },
+      ],
+      submodels: {
+        definition_pricing: {
+          definitionId: "definition_pricing",
+          file: "modules/pricing.py",
+          graph: {
+            nodes: [childRouter, childInstance],
+            edges: [],
+          },
+          inputPorts: [
+            {
+              portId: "policy_data",
+              label: "Policy data",
+              targets: [
+                { nodeId: childRouter.id, handleId: null },
+                { nodeId: childInstance.id, handleId: null },
+              ],
+            },
+          ],
+          outputPorts: [],
+        },
+      },
+      preamble: "",
+      preserved_blocks: [],
+      source_revision: "revision-test",
+    }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce(graph)
+    vi.mocked(api.previewNode).mockImplementation(() => new Promise<never>(() => {}))
+    render(<App />)
+    await waitForAppReady()
+
+    fireEvent.click(await screen.findByTestId("node-Quote Source"))
+    const label = (await findEditorTestId("api-input-table-1-label")) as HTMLInputElement
+    fireEvent.change(label, { target: { value: "driver_risk" } })
+    fireEvent.blur(label)
+
+    await waitFor(() => {
+      expect(useGraphStore.getState().edges).toEqual([
+        expect.objectContaining({
+          id: "e_api_policy_data",
+          sourceHandle: "driver_risk",
+        }),
+      ])
+    })
+    const definition = useGraphStore.getState().submodels.definition_pricing as {
+      graph: { nodes: Array<{ id: string; data: { config: Record<string, unknown> } }> }
+    }
+    const nestedConfig = (id: string) =>
+      definition.graph.nodes.find((node) => node.id === id)?.data.config
+    expect(nestedConfig("child_router")).toEqual({
+      input_scenario_map: { drivers: "batch", stable_input: "live" },
+      untouched: "child-router-config",
+    })
+    expect(nestedConfig("child_value_instance")).toEqual({
+      instanceOf: "unrelated_original",
+      inputMapping: { original_input: "drivers", stable_value: "stable_input" },
+      untouched: "child-value-config",
+    })
+  })
+
+})
+
+describe("App integration — read-only submodel instance", () => {
+  it("keeps the shared definition inspectable while disabling every exposed edit surface", async () => {
+    const owner = makeNode("instance_inputs_owner", "Inputs", "submodel")
+    owner.data.config = {
+      definitionId: "definition_inputs",
+      alias: "inputs",
+    }
+    const copy = makeNode("instance_inputs_copy", "Inputs instance", "submodel")
+    copy.data.config = {
+      definitionId: "definition_inputs",
+      alias: "inputs_2",
+      instanceOf: owner.id,
+    }
+    const child = makeNode("claims_input", "Claims input", "dataInput")
+    child.data.config = {
+      source_type: "file",
+      format: "parquet",
+      path: "data/claims.parquet",
+    }
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [owner, copy],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-owner-copy",
+      submodels: {
+        definition_inputs: {
+          definitionId: "definition_inputs",
+          file: "modules/inputs.py",
+          graph: { nodes: [child], edges: [] },
+          inputPorts: [],
+          outputPorts: [],
+        },
+      },
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    await waitFor(
+      () => {
+        expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual([owner.id, copy.id])
+      },
+      { timeout: 10000 },
+    )
+
+    const copyNode = await waitFor(
+      () => {
+        const element = document.querySelector<HTMLElement>(`[data-id="${copy.id}"]`)
+        expect(element).not.toBeNull()
+        return element as HTMLElement
+      },
+      { timeout: 10000 },
+    )
+    fireEvent.doubleClick(copyNode)
+    expect(await screen.findByText("Read-only instance", {}, { timeout: 10000 })).toBeInTheDocument()
+    expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-layout")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-utility")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-imports")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
+    expect(document.querySelector('nav[aria-label="Node palette"]')).toHaveAttribute("inert")
+
+    const childNode = await screen.findByTestId("node-Claims input", {}, { timeout: 10000 })
+    fireEvent.click(childNode)
+    expect(await screen.findByDisplayValue("Claims input")).toBeDisabled()
+    const nodeIdsBeforeDelete = useGraphStore.getState().nodes.map((node) => node.id)
+
+    fireEvent.keyDown(window, { key: "Delete" })
+    expect(useGraphStore.getState().nodes.map((node) => node.id)).toEqual(nodeIdsBeforeDelete)
+    fireEvent.contextMenu(childNode)
+    expect(screen.queryByTestId("context-menu")).not.toBeInTheDocument()
   })
 })
 

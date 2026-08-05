@@ -29,3 +29,15 @@ serving_scale_to_zero = true                       # scale to zero when idle
 # ─────────────────────────────────────────────────────────────────
 [test_quotes]
 dir = "tests/quotes"                      # directory containing .json files
+
+
+[assistant]
+provider = "databricks"
+model = "databricks-qwen35-122b-a10b"
+
+[assistant.egress]
+trust = "organization"
+max_sensitivity = "restricted"
+allow_project_knowledge = true
+allow_executable_source = true
+allow_row_samples = false

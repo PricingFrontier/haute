@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import useNodeResultsStore, {
   MAX_CACHED_SOLVE_RESULTS,
   MAX_CACHED_TRAIN_RESULTS,
-  type TrainResult,
 } from "../../stores/useNodeResultsStore"
 import type { OptimiserSolveResult } from "../../api/types"
+import { makeTrainResult } from "../../test-utils/factories"
 
 function resetStore() {
   useNodeResultsStore.setState({
@@ -31,18 +31,6 @@ function makeSolveResult(
     baseline_constraints: { premium: 45 },
     lambdas: { premium: 0.1 },
     converged: true,
-    ...overrides,
-  }
-}
-
-function makeTrainResult(overrides: Partial<TrainResult> = {}): TrainResult {
-  return {
-    status: "completed",
-    metrics: { rmse: 0.05 },
-    feature_importance: [{ feature: "x", importance: 0.9 }],
-    model_path: "/tmp/model.pkl",
-    train_rows: 1000,
-    validation_rows: 200,
     ...overrides,
   }
 }
@@ -89,7 +77,7 @@ describe("useNodeResultsStore render-pure preview getters", () => {
     const store = useNodeResultsStore.getState()
     for (let i = 0; i < MAX_CACHED_TRAIN_RESULTS; i += 1) {
       store.startTrainJob(`t${i}`, `job-${i}`, `Train ${i}`, `hash-${i}`, "live", 0)
-      store.completeTrainJob(`t${i}`, makeTrainResult({ metrics: { rmse: i } }))
+      store.completeTrainJob(`t${i}`, makeTrainResult({ final_test_metrics: { rmse: i } }))
     }
 
     function RenderReader() {
@@ -104,12 +92,12 @@ describe("useNodeResultsStore render-pure preview getters", () => {
     )
 
     store.startTrainJob("t-new", "job-new", "Train new", "hash-new", "live", 0)
-    store.completeTrainJob("t-new", makeTrainResult({ metrics: { rmse: 999 } }))
+    store.completeTrainJob("t-new", makeTrainResult({ final_test_metrics: { rmse: 999 } }))
 
     const { trainResults } = useNodeResultsStore.getState()
     expect(Object.keys(trainResults)).toHaveLength(MAX_CACHED_TRAIN_RESULTS)
     expect(trainResults.t0).toBeUndefined()
     expect(trainResults.t1).toBeDefined()
-    expect(trainResults["t-new"]?.result.metrics.rmse).toBe(999)
+    expect(trainResults["t-new"]?.result.final_test_metrics.rmse).toBe(999)
   })
 })

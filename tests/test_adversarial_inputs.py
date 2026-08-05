@@ -144,6 +144,7 @@ class TestEmptyStrings:
             "node_ids": ["src"],
             "graph": _minimal_graph_dict(),
             "source_file": "",
+            "base_revision": "revision-test",
         }
         resp = client.post("/api/submodel/create", json=body)
         assert resp.status_code == 400
@@ -942,9 +943,10 @@ class TestPathTraversalInPayloads:
         where the submodel_name is used to construct file paths.
         """
         body = {
-            "submodel_name": "..\\..\\etc\\passwd",
+            "instance_id": "..\\..\\etc\\passwd",
             "graph": _minimal_graph_dict(),
             "source_file": "pipeline.py",
+            "base_revision": "revision-test",
         }
         resp = client.post("/api/submodel/dissolve", json=body)
         # Should be 404 (submodel not in graph), not a successful file read

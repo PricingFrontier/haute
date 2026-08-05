@@ -1,0 +1,18 @@
+{
+  "version": "assistant-ratebook-v1",
+  "created_at": "2026-07-30T00:00:00Z",
+  "mode": "ratebook",
+  "lambdas": {"volume": 0.4},
+  "objective": "expected_income",
+  "constraints": {"volume": {"min": 0.9}},
+  "factor_tables": {
+    "region": [
+      {"__factor_group__": "North", "optimal_scenario_value": 1.1},
+      {"__factor_group__": "South", "optimal_scenario_value": 0.95},
+      {"__factor_group__": "East", "optimal_scenario_value": 1.0}
+    ]
+  },
+  "factor_dtypes": {
+    "region": [{"column": "region", "dtype": {"kind": "String"}}]
+  }
+}

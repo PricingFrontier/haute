@@ -33,10 +33,12 @@ def _assert_server_routes_present() -> None:
 
 def main() -> None:
     import haute
+    from haute.assistant._assets import validate_example_bundles
 
     assert haute.__file__, "haute package did not import from an installed distribution"
     _assert_static_assets_present()
     _assert_server_routes_present()
+    validate_example_bundles(execute_fast=True)
     print("package smoke ok")
 
 

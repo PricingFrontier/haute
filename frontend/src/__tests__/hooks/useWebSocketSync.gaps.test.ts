@@ -58,9 +58,29 @@ vi.mock("../../stores/useUIStore.ts", () => {
   return { default: useUIStore }
 })
 
-// Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
+// The hook reads dirty-state from useGraphStore and applies incoming graphs
+// through loadGraphSnapshot; the mock must provide both or every
+// graph_update rolls back before reaching the behavior under test.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { markSaved: vi.fn() }
+  const store = {
+    dirty: false,
+    nodes: [] as unknown[],
+    edges: [] as unknown[],
+    submodels: {} as Record<string, unknown>,
+    preamble: "",
+    markSaved: vi.fn(),
+    loadGraphSnapshot: vi.fn((snapshot: {
+      nodes: unknown[]
+      edges: unknown[]
+      preamble: string
+      submodels: Record<string, unknown>
+    }) => {
+      store.nodes = snapshot.nodes
+      store.edges = snapshot.edges
+      store.preamble = snapshot.preamble
+      store.submodels = snapshot.submodels
+    }),
+  }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -70,6 +90,7 @@ vi.mock("../../stores/useGraphStore.ts", () => {
 })
 
 import useWebSocketSync from "../../hooks/useWebSocketSync.ts"
+import useGraphStore from "../../stores/useGraphStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useUIStore from "../../stores/useUIStore.ts"
 import { getLayoutedElements } from "../../utils/layout.ts"
@@ -114,6 +135,8 @@ function makeHookParams() {
     setPreamble: vi.fn(),
     submodelsRef: { current: {} },
     preambleRef: { current: "" },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -134,6 +157,7 @@ describe("useWebSocketSync — gap tests", () => {
     vi.mocked(getLayoutedElements).mockImplementation(async (nodes: Node[]) => nodes)
     vi.mocked(useToastStore.getState().addToast).mockClear()
     vi.mocked(useUIStore.getState().setSyncBanner).mockClear()
+    vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockClear()
   })
 
   afterEach(() => {
@@ -164,6 +188,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: { label: "A" } }],
               edges: [],
             },
@@ -199,6 +225,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 10, y: 20 }, data: {} }],
               edges: [],
             },
@@ -242,7 +270,7 @@ describe("useWebSocketSync — gap tests", () => {
         expect.stringContaining("WebSocket sync error:"),
       )
       // Should NOT crash — nodes remain unchanged
-      expect(params.setNodesRaw).not.toHaveBeenCalled()
+      expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     })
   })
 
@@ -269,6 +297,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
               edges: [],
               // preamble key is intentionally absent
@@ -298,6 +328,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: {} }],
               edges: [],
               preamble: "",
@@ -306,8 +338,10 @@ describe("useWebSocketSync — gap tests", () => {
         }))
       })
 
-      expect(params.setPreamble).toHaveBeenCalledWith("")
       expect(params.preambleRef.current).toBe("")
+      expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenLastCalledWith(
+        expect.objectContaining({ preamble: "" }),
+      )
     })
   })
 
@@ -331,6 +365,8 @@ describe("useWebSocketSync — gap tests", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [{ id: "n1", position: { x: 1, y: 1 }, data: { label: "first" } }],
           edges: [],
         },
@@ -339,6 +375,8 @@ describe("useWebSocketSync — gap tests", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [
             { id: "n1", position: { x: 10, y: 10 }, data: { label: "second" } },
             { id: "n2", position: { x: 20, y: 20 }, data: { label: "new" } },
@@ -359,10 +397,11 @@ describe("useWebSocketSync — gap tests", () => {
         }))
       })
 
-      // setNodesRaw should have been called twice
-      expect(params.setNodesRaw).toHaveBeenCalledTimes(2)
+      // Each update applies through the graph store snapshot loader.
+      const loadSnapshot = vi.mocked(useGraphStore.getState().loadGraphSnapshot)
+      expect(loadSnapshot).toHaveBeenCalledTimes(2)
       // The last call should have the second message's nodes
-      const lastCallNodes = params.setNodesRaw.mock.calls[1][0]
+      const lastCallNodes = loadSnapshot.mock.calls[1][0].nodes as Node[]
       expect(lastCallNodes).toHaveLength(2)
       expect(lastCallNodes[0].data.label).toBe("second")
     })
@@ -381,6 +420,8 @@ describe("useWebSocketSync — gap tests", () => {
         type: "graph_update",
         graph: {
           submodels: {},
+          source_revision: "revision-test",
+          preserved_blocks: [],
           nodes: [{ id, position: { x: 1, y: 1 }, data: {} }],
           edges: [],
         },
@@ -428,6 +469,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "node_99",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -446,6 +489,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "node_2",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -457,20 +502,25 @@ describe("useWebSocketSync — gap tests", () => {
         })) as unknown as Promise<void>)
       })
 
-      expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
-      expect(params.setNodesRaw).toHaveBeenLastCalledWith([
-        expect.objectContaining({ id: "node_2" }),
-      ])
+      const loadSnapshot = vi.mocked(useGraphStore.getState().loadGraphSnapshot)
+      expect(loadSnapshot).toHaveBeenCalledTimes(1)
+      expect(loadSnapshot).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          nodes: [expect.objectContaining({ id: "node_2" })],
+        }),
+      )
 
       await act(async () => {
         resolveFirstLayout([{ id: "node_99", position: { x: 10, y: 10 }, data: { label: "old" } }])
         await firstMessage
       })
 
-      expect(params.setNodesRaw).toHaveBeenCalledTimes(1)
-      expect(params.setNodesRaw).toHaveBeenLastCalledWith([
-        expect.objectContaining({ id: "node_2" }),
-      ])
+      expect(loadSnapshot).toHaveBeenCalledTimes(1)
+      expect(loadSnapshot).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          nodes: [expect.objectContaining({ id: "node_2" })],
+        }),
+      )
       expect(params.nodeIdCounter.current).toBe(3)
       expect(useToastStore.getState().addToast).toHaveBeenCalledTimes(1)
       expect(useToastStore.getState().addToast).toHaveBeenCalledWith(
@@ -527,6 +577,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{
                 id: "after-unmount",
                 position: { x: Number.NaN, y: Number.NaN },
@@ -567,6 +619,8 @@ describe("useWebSocketSync — gap tests", () => {
             type: "graph_update",
             graph: {
               submodels: {},
+              source_revision: "revision-test",
+              preserved_blocks: [],
               nodes: [{ id: "n1", position: { x: 10, y: 10 }, data: {} }],
               edges: [],
             },

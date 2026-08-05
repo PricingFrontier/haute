@@ -29,9 +29,17 @@ const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 // Edge Join compatible-target feedback adds ~0.7 KiB of deliberate eager code:
 // the always-mounted canvas must validate and announce candidates synchronously
 // during a connection gesture. The merged initial bundle is 246.2 KiB; 247 KiB
-// retains sub-KiB headroom while still catching accidental eager editor/vendor
-// imports.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 247
+// retained sub-KiB headroom while still catching accidental eager editor/vendor
+// imports. Editable submodel boundaries add ~1.5 KiB of deliberate eager code:
+// the always-mounted canvas projects available and mapped inputs, reconciles
+// undo/redo state, and commits boundary connection/deletion gestures
+// synchronously. The merged initial bundle is 247.7 KiB; 249 KiB retains about
+// 1 KiB of headroom without weakening the lazy-editor/vendor checks below.
+// Reusable submodel instances add another ~3.3 KiB of deliberate eager core:
+// occurrence-aware navigation, runtime targeting, read-only copies, and shared
+// boundary edits must all be available on the mounted canvas. The merged initial
+// bundle is 251.3 KiB; 253 KiB retains about 1.7 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 253
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely
@@ -64,6 +72,7 @@ export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "ToggleButtonGroup",
   "EditorLabel",
   "banding",
+  "trainGuards",
 ]
 
 function fail(message) {

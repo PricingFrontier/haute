@@ -141,8 +141,8 @@ def validate_node_config(node_type: NodeType | str, config: dict[str, Any]) -> d
     """Strictly validate configs whose runtime contract is discriminated.
 
     Data Input/Output provider branches control which keys and capabilities
-    are legal, so an inactive key cannot be silently persisted and ignored.
-    Other node types use the warning-only key registry.
+    are legal. Banding's discriminant controls its rule schema. Invalid
+    configured branches must not be silently persisted and ignored.
     """
     nt = NodeType(node_type) if not isinstance(node_type, NodeType) else node_type
     if nt == NodeType.DATA_INPUT:
@@ -153,4 +153,8 @@ def validate_node_config(node_type: NodeType | str, config: dict[str, Any]) -> d
         from haute._polars_io_registry import validate_data_output_config
 
         return validate_data_output_config(config)
+    if nt == NodeType.BANDING:
+        from haute._rating import validate_banding_config
+
+        validate_banding_config(config)
     return dict(config)

@@ -22,9 +22,10 @@ from haute._graph_builders import _build_edges
 from haute._parser_regex import (
     _find_connect_calls,
     _find_function_blocks,
-    _recover_submodel_paths,
+    _recover_submodel_registrations,
     fallback_parse,
 )
+from haute._submodel_instances import qualified_runtime_node_id
 from haute.codegen import graph_to_code_multi
 from haute.errors import ParseError
 from haute.parser import parse_pipeline_file, parse_pipeline_source
@@ -379,7 +380,12 @@ class TestFallbackSubmodelRecovery:
             import polars as pl
             import haute
 
-            submodel = haute.Submodel("scoring")
+            submodel = haute.Submodel(
+                "scoring",
+                definition_id="scoring",
+                input_ports=[],
+                output_ports=[],
+            )
 
             @submodel.polars
             def Transform(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -401,7 +407,12 @@ class TestFallbackSubmodelRecovery:
             def transform(df):
                 return df.select("x")
 
-            pipeline.submodel("modules/scoring.py")
+            pipeline.submodel(
+                "modules/scoring.py",
+                definition_id="scoring",
+                instance_id="submodel__scoring",
+                alias="scoring",
+            )
 
             x = = 5
             """,
@@ -420,7 +431,12 @@ class TestFallbackSubmodelRecovery:
             import polars as pl
             import haute
 
-            submodel = haute.Submodel("scoring")
+            submodel = haute.Submodel(
+                "scoring",
+                definition_id="scoring",
+                input_ports=[],
+                output_ports=[],
+            )
 
             @submodel.polars
             def Transform(df: pl.LazyFrame) -> pl.LazyFrame:
@@ -440,14 +456,19 @@ class TestFallbackSubmodelRecovery:
             def transform(df):
                 return df.select("x")
 
-            pipeline.submodel("modules/scoring.py")
+            pipeline.submodel(
+                "modules/scoring.py",
+                definition_id="scoring",
+                instance_id="submodel__scoring",
+                alias="scoring",
+            )
 
             x = = 5
             """,
         )
         graph = parse_pipeline_file(tmp_path / "main.py", flatten=True)
         node_ids = {n.id for n in graph.nodes}
-        assert "Transform" in node_ids  # child dissolved into the flat graph
+        assert qualified_runtime_node_id("submodel__scoring", "Transform") in node_ids
 
     def test_unrecoverable_paths_are_reported_together(self) -> None:
         source = textwrap.dedent(
@@ -458,7 +479,7 @@ class TestFallbackSubmodelRecovery:
         )
 
         with pytest.raises(ParseError, match="submodel reference") as exc_info:
-            _recover_submodel_paths(source)
+            _recover_submodel_registrations(source)
 
         assert exc_info.value.context["unrecoverable_references"] == [
             {"line": 1, "source": "pipeline.submodel(SCORING_PATH)"},
@@ -469,7 +490,7 @@ class TestFallbackSubmodelRecovery:
         source = 'pipeline.submodel("scoring.py").submodel(\n'
 
         with pytest.raises(ParseError, match="submodel reference") as exc_info:
-            _recover_submodel_paths(source)
+            _recover_submodel_registrations(source)
 
         assert exc_info.value.context["unrecoverable_references"] == [
             {
@@ -486,7 +507,12 @@ class TestSubmodelResolutionRoot:
             import haute
 
             pipeline = haute.Pipeline("main")
-            pipeline.submodel("modules/scoring.py")
+            pipeline.submodel(
+                "modules/scoring.py",
+                definition_id="scoring",
+                instance_id="submodel__scoring",
+                alias="scoring",
+            )
             """
         )
 
@@ -531,7 +557,7 @@ class TestGraphStructureConservationGate:
             }
         ]
 
-    def test_implicit_parameter_edge_into_submodel_child_survives_both_views(
+    def test_canonical_boundary_edges_survive_hierarchical_and_flattened_views(
         self,
         tmp_path: Path,
     ) -> None:
@@ -542,7 +568,24 @@ class TestGraphStructureConservationGate:
             import polars as pl
             import haute
 
-            submodel = haute.Submodel("child")
+            submodel = haute.Submodel(
+                "child",
+                definition_id="child",
+                input_ports=[
+                    {
+                        "portId": "source",
+                        "label": "Source",
+                        "targets": [{"nodeId": "transform", "handleId": None}],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "result",
+                        "label": "Result",
+                        "source": {"nodeId": "transform", "handleId": None},
+                    }
+                ],
+            )
 
             @submodel.polars
             def transform(source: pl.LazyFrame) -> pl.LazyFrame:
@@ -566,7 +609,14 @@ class TestGraphStructureConservationGate:
             def sink(transform: pl.LazyFrame) -> pl.LazyFrame:
                 return transform
 
-            pipeline.submodel({child.name!r})
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="child",
+                instance_id="submodel__child",
+                alias="child",
+            )
+            pipeline.connect("source", "child", target_port="source")
+            pipeline.connect("child", "sink", source_port="result")
             """,
         )
 
@@ -574,21 +624,24 @@ class TestGraphStructureConservationGate:
         assert any(
             edge.source == "source"
             and edge.target == "submodel__child"
-            and edge.targetHandle == "in__transform"
+            and edge.targetHandle == "in__source"
             for edge in hierarchical.edges
         )
         assert any(
             edge.source == "submodel__child"
             and edge.target == "sink"
-            and edge.sourceHandle == "out__transform"
+            and edge.sourceHandle == "out__result"
             for edge in hierarchical.edges
         )
 
         flattened = parse_pipeline_file(parent, flatten=True)
+        runtime_transform = qualified_runtime_node_id("submodel__child", "transform")
         assert any(
-            edge.source == "source" and edge.target == "transform" for edge in flattened.edges
+            edge.source == "source" and edge.target == runtime_transform for edge in flattened.edges
         )
-        assert any(edge.source == "transform" and edge.target == "sink" for edge in flattened.edges)
+        assert any(
+            edge.source == runtime_transform and edge.target == "sink" for edge in flattened.edges
+        )
 
     def test_boundary_side_handles_survive_hierarchical_and_flattened_views(
         self,
@@ -601,7 +654,32 @@ class TestGraphStructureConservationGate:
             import polars as pl
             import haute
 
-            submodel = haute.Submodel("ported_child")
+            submodel = haute.Submodel(
+                "ported_child",
+                definition_id="ported_child",
+                input_ports=[
+                    {
+                        "portId": "base",
+                        "label": "Base",
+                        "targets": [
+                            {
+                                "nodeId": "child_in",
+                                "handleId": "child_input_handle",
+                            }
+                        ],
+                    }
+                ],
+                output_ports=[
+                    {
+                        "portId": "quotes",
+                        "label": "Quotes",
+                        "source": {
+                            "nodeId": "child_out",
+                            "handleId": "child_output_handle",
+                        },
+                    }
+                ],
+            )
 
             @submodel.polars
             def child_in(external: pl.LazyFrame) -> pl.LazyFrame:
@@ -629,9 +707,14 @@ class TestGraphStructureConservationGate:
             def sink(result: pl.LazyFrame) -> pl.LazyFrame:
                 return result
 
-            pipeline.connect("source", "child_in", target_port="base")
-            pipeline.connect("child_out", "sink", source_port="quotes")
-            pipeline.submodel({child.name!r})
+            pipeline.submodel(
+                {child.name!r},
+                definition_id="ported_child",
+                instance_id="submodel__ported_child",
+                alias="ported_child",
+            )
+            pipeline.connect("source", "ported_child", target_port="base")
+            pipeline.connect("ported_child", "sink", source_port="quotes")
             """,
         )
 
@@ -646,20 +729,24 @@ class TestGraphStructureConservationGate:
             for edge in hierarchical.edges
             if edge.source == "submodel__ported_child" and edge.target == "sink"
         )
-        assert inbound.targetPort == "base"
-        assert outbound.sourcePort == "quotes"
+        assert inbound.targetHandle == "in__base"
+        assert inbound.targetPort is None
+        assert outbound.sourceHandle == "out__quotes"
+        assert outbound.sourcePort is None
 
         flattened = parse_pipeline_file(parent, flatten=True)
+        runtime_in = qualified_runtime_node_id("submodel__ported_child", "child_in")
+        runtime_out = qualified_runtime_node_id("submodel__ported_child", "child_out")
         flat_inbound = next(
             edge
             for edge in flattened.edges
-            if edge.source == "source" and edge.target == "child_in"
+            if edge.source == "source" and edge.target == runtime_in
         )
         flat_outbound = next(
-            edge for edge in flattened.edges if edge.source == "child_out" and edge.target == "sink"
+            edge for edge in flattened.edges if edge.source == runtime_out and edge.target == "sink"
         )
-        assert flat_inbound.targetHandle == "base"
-        assert flat_outbound.sourceHandle == "quotes"
+        assert flat_inbound.targetHandle == "child_input_handle"
+        assert flat_outbound.sourceHandle == "child_output_handle"
 
         payload_roundtrip = type(hierarchical).model_validate(hierarchical.model_dump())
         generated = graph_to_code_multi(
@@ -678,13 +765,13 @@ class TestGraphStructureConservationGate:
             flatten=True,
         )
         reparsed_inbound = next(
-            edge for edge in reparsed.edges if edge.source == "source" and edge.target == "child_in"
+            edge for edge in reparsed.edges if edge.source == "source" and edge.target == runtime_in
         )
         reparsed_outbound = next(
-            edge for edge in reparsed.edges if edge.source == "child_out" and edge.target == "sink"
+            edge for edge in reparsed.edges if edge.source == runtime_out and edge.target == "sink"
         )
-        assert reparsed_inbound.targetHandle == "base"
-        assert reparsed_outbound.sourceHandle == "quotes"
+        assert reparsed_inbound.targetHandle == "child_input_handle"
+        assert reparsed_outbound.sourceHandle == "child_output_handle"
 
     def test_dangling_connect_reports_exact_edge_and_handles(self) -> None:
         source = textwrap.dedent(

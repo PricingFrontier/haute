@@ -1,0 +1,16 @@
+{
+  "path": "data/quote.json",
+  "contract": "opaque",
+  "tables": [
+    {
+      "path": "$[:]",
+      "label": "quote",
+      "emit": true,
+      "row_id_column": "quote_id",
+      "columns": [
+        {"name":"quote_id","path":"$[:].quote_id","type":"str","status":"Confirmed","selected":true,"levels":null},
+        {"name":"fixture_value","path":"$[:].fixture_value","type":"int","status":"Confirmed","selected":true,"levels":null}
+      ]
+    }
+  ]
+}

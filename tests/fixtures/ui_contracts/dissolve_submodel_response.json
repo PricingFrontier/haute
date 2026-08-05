@@ -1,5 +1,8 @@
 {
   "status": "ok",
+  "instance_id": "pricing-instance",
+  "definition_id": "pricing-definition",
+  "source_revision": "revision-dissolve-1",
   "graph": {
     "nodes": [
       {
@@ -15,6 +18,8 @@
         "data": { "label": "Right", "nodeType": "polars" }
       }
     ],
-    "edges": []
+    "edges": [],
+    "preserved_blocks": [],
+    "source_revision": "revision-dissolve-1"
   }
 }

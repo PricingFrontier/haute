@@ -13,9 +13,10 @@ Training-specific:
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -168,6 +169,7 @@ def log_experiment(
     metadata: ModelCardMetadata | None = None,
     model_path: str | None = None,
     model_name: str | None = None,
+    artifact_paths: Mapping[str, str | Path] | None = None,
     check_cancelled: Callable[[], None] | None = None,
 ) -> MLflowLogResult:
     """Log a training experiment to MLflow.
@@ -196,14 +198,29 @@ def log_experiment(
 
     # Enhanced params: add training metadata
     enhanced_params = dict(params)
-    if meta.train_rows:
-        enhanced_params["train_rows"] = meta.train_rows
-    if meta.validation_rows:
-        enhanced_params["validation_rows"] = meta.validation_rows
+    development_rows = meta.development_rows or meta.train_rows + meta.validation_rows
+    final_test_rows = meta.final_test_rows or meta.holdout_rows
+    if development_rows:
+        enhanced_params["development_rows"] = development_rows
+    if final_test_rows:
+        enhanced_params["final_test_rows"] = final_test_rows
     if meta.features:
         enhanced_params["n_features"] = len(meta.features)
     if meta.best_iteration is not None:
         enhanced_params["best_iteration"] = meta.best_iteration
+    if diag.tuning is not None:
+        tuning = diag.tuning
+        for field in (
+            "metric",
+            "direction",
+            "winner_trial_index",
+            "trial_count",
+            "total_fit_count",
+            "final_tree_count",
+        ):
+            if field not in tuning:
+                raise ValueError(f"tuning summary is missing {field}")
+            enhanced_params[f"tuning_{field}"] = tuning[field]
 
     with mlflow.start_run(run_name=run_name) as run:
         _check_cancelled()
@@ -362,11 +379,56 @@ def log_experiment(
                 "glm",
             )
 
-        # Log holdout metrics as separate MLflow metrics
-        if diag.holdout_metrics:
-            for k, v in diag.holdout_metrics.items():
+        # Log untouched final-test estimates under unambiguous metric names.
+        final_test_metrics = diag.final_test_metrics or diag.holdout_metrics
+        if final_test_metrics:
+            for k, v in final_test_metrics.items():
                 _check_cancelled()
-                mlflow.log_metric(f"holdout_{k}", v)
+                mlflow.log_metric(f"final_test_{k}", v)
+
+        for name, summary in diag.selection_metrics.items():
+            if not isinstance(summary, Mapping):
+                continue
+            for statistic in ("mean", "stddev", "min", "max"):
+                value = summary.get(statistic)
+                if isinstance(value, int | float):
+                    _check_cancelled()
+                    mlflow.log_metric(
+                        f"selection_{name}_{statistic}",
+                        float(value),
+                    )
+
+        if diag.tuning is not None:
+            tuning = diag.tuning
+            metric_name = str(tuning["metric"])
+            for label, field in (
+                ("baseline", "baseline_objective"),
+                ("winner", "winner_objective"),
+                ("improvement", "improvement"),
+            ):
+                value = tuning.get(field)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int | float)
+                    or not math.isfinite(float(value))
+                ):
+                    raise ValueError(f"tuning summary {field} must be finite")
+                _check_cancelled()
+                mlflow.log_metric(
+                    f"tuning_{label}_{metric_name}",
+                    float(value),
+                )
+
+        if artifact_paths:
+            for artifact_kind, raw_path in artifact_paths.items():
+                _check_cancelled()
+                path = Path(raw_path)
+                if not path.is_file():
+                    raise FileNotFoundError(
+                        f"MLflow {artifact_kind} artifact does not exist: {path}"
+                    )
+                artifact_dir = "tuning" if artifact_kind.startswith("tuning_") else "evaluation"
+                mlflow.log_artifact(str(path), artifact_dir)
 
         # Generate and log model card (best-effort — never fails the run)
         try:

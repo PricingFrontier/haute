@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"joined","source_column":"quote_id","output_path":"$[:].quote_id","enabled":true},{"source_port":"joined","source_column":"driver_age","output_path":"$[:].driver_age","enabled":true}],"outputFormat":"json"}

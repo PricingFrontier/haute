@@ -124,7 +124,7 @@ describe("makeConfig", () => {
     expect(config.target).toBe("loss_amount")
     expect(config.task).toBe("regression")
     expect(config.metrics).toEqual(["gini", "rmse"])
-    expect(config.split).toBeDefined()
+    expect(config.evaluation).toBeDefined()
     expect(config.params).toBeDefined()
   })
 
@@ -138,11 +138,11 @@ describe("makeConfig", () => {
 describe("makeTrainResult", () => {
   it("creates a result with sensible defaults", () => {
     const result = makeTrainResult()
-    expect(result.status).toBe("complete")
-    expect(result.train_rows).toBe(8000)
-    expect(result.validation_rows).toBe(2000)
+    expect(result.status).toBe("completed")
+    expect(result.development_rows).toBe(8000)
+    expect(result.final_test_rows).toBe(2000)
     expect(result.feature_importance).toHaveLength(3)
-    expect(result.metrics).toHaveProperty("gini")
+    expect(result.final_test_metrics).toHaveProperty("gini")
   })
 
   it("accepts overrides", () => {

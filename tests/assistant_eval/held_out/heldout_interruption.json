@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "heldout_interruption",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "interruption",
+  "request": "Prepare an age-banding plan. If the turn is interrupted after validation, recover by re-inspecting rather than claiming it applied.",
+  "required_node_types": [],
+  "required_node_configs": {},
+  "required_edges": [],
+  "max_unrelated_changes": 0,
+  "require_clarification": false,
+  "require_recovery": true
+}

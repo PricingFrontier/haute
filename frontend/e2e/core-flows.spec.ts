@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { expect, test, type Page } from "@playwright/test"
@@ -77,6 +77,8 @@ test.describe("core browser flows", () => {
     await expect(modelNode).toBeVisible()
     await modelNode.click()
 
+    const modellingPanes = page.getByRole("tablist", { name: "Modelling panes" })
+    await modellingPanes.getByRole("tab", { name: "Train", exact: true }).click()
     const trainButton = page.getByRole("button", { name: /Train Model/i })
     await expect(trainButton).toBeVisible()
     await trainButton.click()
@@ -85,7 +87,9 @@ test.describe("core browser flows", () => {
       page.getByText(/Model trained — results in preview panel below/i),
     ).toBeVisible({ timeout: 120_000 })
     await expect(page.getByText("Model Info")).toBeVisible()
-    await expect(page.getByText(/Train rows/i)).toBeVisible()
+    await expect(
+      page.getByRole("columnheader", { name: "Development rows", exact: true }),
+    ).toBeVisible()
     const modelResultTabs = page.getByRole("tablist", { name: "Model result panes" })
     await expect(modelResultTabs.getByRole("tab", { name: "Summary", exact: true })).toBeVisible()
 
@@ -306,12 +310,13 @@ test.describe("core browser flows", () => {
 
     const submodelNode = page.getByRole("button", { name: /browser_group/i })
     await expect(submodelNode).toBeVisible()
-    await expect
-      .poll(() => readFileSync(browserSubmodelPath, "utf8"))
-      .toContain('submodel = haute.Submodel("browser_group"')
+    expect(existsSync(browserSubmodelPath)).toBe(false)
 
     await page.getByRole("button", { name: "Save", exact: true }).click()
     await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
+    await expect
+      .poll(() => readFileSync(browserSubmodelPath, "utf8"))
+      .toContain('submodel = haute.Submodel("browser_group"')
 
     await page.reload()
     await expect(submodelNode).toBeVisible()

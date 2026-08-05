@@ -10,10 +10,18 @@
 
 ## Key types and data structures
 
-- **Banding factor** (`dict`): `{"banding": "continuous"|"categorical"|"breakpoints", "column": str, "outputColumn": str, "rules": [...] | {...}, "default": Any, "rightClosed"?: bool}`. `rules` is a list of row dicts in the canonical in-memory shape; `categorical`/`breakpoints` sidecars persist it as a `{key: value}` map instead.
+- **Banding factor** (`dict`): `{"banding": "continuous"|"categorical"|"breakpoints", "column": str, "outputColumn": str, "rules": [...] | {...}, "default": str|null, "rightClosed"?: bool}`. `rules` is a list of row dicts in the canonical in-memory shape; `categorical`/`breakpoints` sidecars persist it as a `{key: value}` map instead.
   - `continuous` rule row: `{"op1"?, "val1"?, "op2"?, "val2"?, "assignment": str}`.
   - `categorical` rule row: `{"value": str, "assignment": str}` (sidecar map: `{value: assignment}`).
   - `breakpoints` rule row: `{"boundary": str, "label": str}` — empty `boundary` marks the open-ended tail (sidecar map: `{boundary: label}`).
+  A configured factor is strict: its type must be one of those three values;
+  `column`, `outputColumn`, and `rules` must be non-empty; and at least one rule
+  must be usable for that type. Unknown pseudo-types such as `"age"`, mixed rule
+  vocabularies such as `{key, value}`, unsupported operators, blank
+  assignments, non-finite thresholds, and invalid breakpoint sets are rejected
+  by the shared config validator before save/codegen as well as by runtime.
+  A factor containing only the editor's default `continuous` discriminant and
+  otherwise-empty fields is the one documented draft no-op.
 - **Rating table** (`dict`): `{"factors": list[str] (1-3 cols), "factorDtypes"?: dict[str, dtype-descriptor], "outputColumn": str, "entries": list[dict], "defaultValue"?: str|number, "onMissing"?: "error"|"neutral"}`. `entries` is an ordered row array with one JSON scalar per factor plus numeric `"value"`. Invariant: `len(factors) <= _MAX_RATING_FACTORS` (3), enforced in `_rating_step_config._validate_factors`.
 - **Combined output** (`dict`): `{"outputColumn": str, "operation": "multiply"|"add"|"min"|"max", "baseValue": float}`.
 - **`RatingTableMissError(ValueError)`** — raised at frame materialisation, not at config-build time, by `_apply_rating_miss_guard`'s `map_batches` callback.
@@ -35,16 +43,18 @@
 
 **Banding** — `apply_banding_from_config(lf, config, base_dir=None)`:
 1. Resolve `config` (dict, or load a JSON sidecar via `_config_io.load_node_config`).
-2. `_normalise_banding_factors(config)` → `_banding_config.normalise_banding_factors` → expands sidecar rule maps to row-array shape via `expand_banding_config_from_sidecar`.
-3. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
-4. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`when(is_nan|is_infinite).then(null).otherwise(col)` — built as a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared continuous-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`.
+2. `validate_banding_config(config)` validates every configured factor and
+   returns the canonical expanded factor rows used by execution and codegen.
+3. `_normalise_banding_factors(config)` delegates to that validator.
+4. `_apply_banding_factors(lf, factors)` loops factors in order, calling `_apply_banding` per factor; each factor's output column is added via `lf.with_columns(...)`, so later factors can already see earlier factors' output columns.
+5. Inside `_apply_banding`: `breakpoints` rules are converted to `continuous` rules first (`_breakpoints_to_rules`); float input columns are NaN/Infinity-sanitised to null (`when(is_nan|is_infinite).then(null).otherwise(col)` — built as a *local* expression, never aliased back onto the source column, so it cannot corrupt other nodes' view of that column); then a `pl.when/then` chain is built rule-by-rule (`_banding_condition` consumes the shared continuous-rule parser and turns each usable `op1/val1[,op2/val2]` pair into a boolean expression, ANDed together) and finished with `.otherwise(default)`.
    Operators are resolved through the exported immutable
    `SUPPORTED_BANDING_OPERATORS` contract. An unknown operator raises before a
    `when` branch or output frame is published; trace enrichment imports the
    shared parser and therefore cannot interpret a broader rule set. A non-empty
    authored rule list that produces no usable categorical mapping or continuous
    branch raises `ValueError` rather than returning the input frame unchanged.
-5. `categorical` bypasses the when/then chain entirely and uses `col.cast(Utf8).replace_strict(remap, default=...)`.
+6. `categorical` bypasses the when/then chain entirely and uses `col.cast(Utf8).replace_strict(remap, default=...)`.
 
 **Rating** — `apply_rating_step_from_config(lf, config, base_dir=None)`:
 1. Resolve `config` (dict or sidecar path), same pattern as banding.

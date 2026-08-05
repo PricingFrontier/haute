@@ -795,10 +795,11 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "output_dir",
                 "params",
                 "regularization",
-                "split",
+                "evaluation",
                 "target",
                 "task",
                 "terms",
+                "tuning",
                 "var_power",
                 "variance_power",
                 "weight",
@@ -870,7 +871,7 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
         ),
         NodeType.CONSTANT: _classify_config_fields(node_config=("values",)),
         NodeType.SUBMODEL: _classify_config_fields(
-            node_config=("childNodeIds", "file", "inputPorts", "outputPorts"),
+            node_config=("alias", "definitionId"),
         ),
         NodeType.SUBMODEL_PORT: _classify_config_fields(include_universal=False),
     }

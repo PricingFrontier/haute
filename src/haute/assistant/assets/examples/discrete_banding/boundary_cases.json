@@ -1,0 +1,1 @@
+[{"case":"unmatched_category","expectation":"the explicit other category is emitted rather than a silent null"}]

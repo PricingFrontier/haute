@@ -89,7 +89,7 @@ class TestValidKeysRegistry:
             (NodeType.SCENARIO_EXPANDER, "quote_id"),
             (NodeType.OPTIMISER_APPLY, "artifact_path"),
             (NodeType.CONSTANT, "values"),
-            (NodeType.SUBMODEL, "file"),
+            (NodeType.SUBMODEL, "definitionId"),
         ],
     )
     def test_known_key_present(self, node_type, expected_key):
@@ -633,6 +633,9 @@ class TestConfigKeyTupleAlignment:
         td_keys = set(ModellingConfig.__annotations__)
         for key in MODELLING_CONFIG_KEYS:
             assert key in td_keys, f"MODELLING_CONFIG_KEYS has '{key}' but ModellingConfig does not"
+        assert "evaluation" in MODELLING_CONFIG_KEYS
+        assert "tuning" in MODELLING_CONFIG_KEYS
+        assert "split" not in MODELLING_CONFIG_KEYS
 
     def test_scenario_expander_keys_match_typed_dict(self):
         """Every key in SCENARIO_EXPANDER_CONFIG_KEYS should exist in ScenarioExpanderConfig."""

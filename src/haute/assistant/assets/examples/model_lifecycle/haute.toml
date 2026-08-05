@@ -1,0 +1,3 @@
+[project]
+name = "assistant-model-lifecycle"
+pipeline = "pipeline.py"

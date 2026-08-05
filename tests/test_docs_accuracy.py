@@ -123,10 +123,8 @@ _REQUIRED_COMPONENT_ROADMAP_HEADINGS = (
     "## Planned improvements",
 )
 _EXPECTED_ACTIVE_COMPONENT_ROADMAPS = (
-    "assistant",
     "background-jobs-api",
     "explore-eda",
-    "modelling",
     "optimiser",
 )
 _COMPONENT_PACKAGE_HEADING = re.compile(
@@ -1288,6 +1286,12 @@ def _backend_production_sources() -> list[Path]:
             continue
         relative_name = relative.as_posix()
         if relative_name in _BACKEND_COVERAGE_EXCLUDED_FILES:
+            continue
+        # Content-addressed assistant bundles are closed by their manifests
+        # and exercised from installed distributions. Their individual JSON,
+        # CSV, TOML, Markdown, and parsed Python members are therefore one
+        # manifested resource tree rather than hundreds of module-map rows.
+        if relative_name.startswith("assistant/assets/examples/"):
             continue
         if path.suffix == ".py" or relative_name in _BACKEND_BEHAVIOUR_ASSETS:
             sources.append(path)

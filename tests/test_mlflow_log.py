@@ -586,10 +586,9 @@ class TestLogExperiment:
                 metadata=ModelCardMetadata(
                     algorithm="catboost",
                     task="regression",
-                    train_rows=800,
-                    validation_rows=200,
+                    development_rows=1000,
                     features=["x1"],
-                    split_config={"strategy": "random"},
+                    evaluation_config={"strategy": "random"},
                 ),
             )
 
@@ -770,13 +769,12 @@ class TestLogExperiment:
                     lorenz_curve=[{"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}],
                     lorenz_curve_perfect=[{"cum_weight_frac": 0.0, "cum_actual_frac": 0.0}],
                     pdp_data=[{"feature": "x1", "grid": [{"value": 1, "avg_prediction": 0.5}]}],
-                    holdout_metrics={"rmse": 0.55, "gini": 0.65},
+                    final_test_metrics={"rmse": 0.55, "gini": 0.65},
                 ),
                 metadata=ModelCardMetadata(
                     algorithm="catboost",
                     task="regression",
-                    train_rows=800,
-                    validation_rows=200,
+                    development_rows=1000,
                     features=["x1", "x2"],
                     best_iteration=5,
                 ),
@@ -798,12 +796,10 @@ class TestLogExperiment:
                 assert expected in artifact_dirs, f"Missing artifact dir: {expected}"
             assert "cv" not in artifact_dirs
 
-            # Holdout metrics should be logged as individual metrics
-            holdout_calls = [c for c in m_metric.call_args_list if c.args[0].startswith("holdout_")]
-            assert len(holdout_calls) == 2
-            # CV metrics were removed along with the CV path.
-            cv_calls = [c for c in m_metric.call_args_list if c.args[0].startswith("cv_mean_")]
-            assert cv_calls == []
+            final_test_calls = [
+                call for call in m_metric.call_args_list if call.args[0].startswith("final_test_")
+            ]
+            assert len(final_test_calls) == 2
 
     def test_with_glm_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """GLM-specific diagnostics should be logged as artifacts and metrics."""
@@ -887,19 +883,74 @@ class TestLogExperiment:
                 metadata=ModelCardMetadata(
                     algorithm="catboost",
                     task="regression",
-                    train_rows=800,
-                    validation_rows=200,
+                    development_rows=1000,
                     features=["x1", "x2"],
                     best_iteration=42,
                 ),
             )
 
             logged_params = m_params.call_args[0][0]
-            assert "train_rows" in logged_params
-            assert "validation_rows" in logged_params
+            assert "development_rows" in logged_params
             assert "n_features" in logged_params
             assert "best_iteration" in logged_params
-            assert logged_params["train_rows"] == "800"
+            assert logged_params["development_rows"] == "1000"
+
+    def test_tuning_summary_is_logged_as_params_and_metrics(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("DATABRICKS_HOST", raising=False)
+        monkeypatch.delenv("DATABRICKS_TOKEN", raising=False)
+        mock_run = MagicMock()
+        mock_run.info.run_id = "tuning123"
+
+        with (
+            patch("mlflow.set_tracking_uri"),
+            patch("mlflow.set_experiment"),
+            patch("mlflow.start_run") as m_run,
+            patch("mlflow.log_params") as m_params,
+            patch("mlflow.log_metrics"),
+            patch("mlflow.log_metric") as m_metric,
+            patch("mlflow.log_artifact"),
+            patch("mlflow.register_model"),
+        ):
+            m_run.return_value.__enter__ = MagicMock(return_value=mock_run)
+            m_run.return_value.__exit__ = MagicMock(return_value=False)
+
+            from haute.modelling._mlflow_log import log_experiment
+
+            log_experiment(
+                experiment_name="/test/tuning",
+                run_name="tuned-run",
+                metrics={"gini": 0.45},
+                params={"algorithm": "catboost"},
+                diagnostics=ModelDiagnostics(
+                    tuning={
+                        "metric": "gini",
+                        "direction": "maximize",
+                        "baseline_objective": 0.40,
+                        "winner_trial_index": 3,
+                        "winner_objective": 0.45,
+                        "improvement": 0.05,
+                        "trial_count": 10,
+                        "total_fit_count": 51,
+                        "final_tree_count": 87,
+                    }
+                ),
+            )
+
+            logged_params = m_params.call_args.args[0]
+            assert logged_params["tuning_metric"] == "gini"
+            assert logged_params["tuning_direction"] == "maximize"
+            assert logged_params["tuning_winner_trial_index"] == "3"
+            assert logged_params["tuning_trial_count"] == "10"
+            assert logged_params["tuning_total_fit_count"] == "51"
+            assert logged_params["tuning_final_tree_count"] == "87"
+            assert {call.args[0]: call.args[1] for call in m_metric.call_args_list} == {
+                "tuning_baseline_gini": 0.40,
+                "tuning_winner_gini": 0.45,
+                "tuning_improvement_gini": 0.05,
+            }
 
     def test_many_params_batched(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """More than 100 params should be batched in groups of 100."""

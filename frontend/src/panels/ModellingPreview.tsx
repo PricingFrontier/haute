@@ -8,8 +8,10 @@ import { useEffect, useState } from "react"
 
 import type { TrainProgress, TrainResult } from "../stores/useNodeResultsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useGraphStore from "../stores/useGraphStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import { MODEL_COLORS } from "../theme/colors"
+import { nodeData } from "../types/node"
 import { NODE_TYPES } from "../utils/nodeTypes"
 import { AveTab } from "./modelling/AveTab"
 import { FeaturesTab } from "./modelling/FeaturesTab"
@@ -58,6 +60,7 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
   useEffect(() => setTab("summary"), [result])
 
   const trainProgress: TrainProgress | null = useNodeResultsStore((s) => s.trainJobs[nodeId]?.progress ?? null)
+  const modellingNode = useGraphStore((s) => s.nodes.find(node => node.id === nodeId))
   const mlflow = useSettingsStore((s) => s.mlflow)
   const mlflowBackend = mlflow.status === "connected" ? { installed: true, backend: mlflow.backend, host: mlflow.host } : null
 
@@ -76,11 +79,40 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
     }
   })
   const activeTab = availableTabs.includes(tab) ? tab : "summary"
-  const metricsSummary = Object.entries(result.metrics)
+  const collapsedMetrics = Object.keys(result.final_test_metrics).length > 0
+    ? result.final_test_metrics
+    : result.diagnostic_metrics
+  const metricsSummary = Object.entries(collapsedMetrics)
     .slice(0, 2)
     .map(([k, v]) => `${k}: ${typeof v === "number" && Number.isFinite(v) ? v.toFixed(4) : String(v)}`)
     .join(" | ")
   const tabs = availableTabs.map((key) => ({ key, label: TAB_LABELS[key] }))
+  const config = modellingNode ? nodeData(modellingNode).config ?? {} : {}
+
+  const useBestAsFixedParameters = (params: Record<string, unknown>) => {
+    if (!window.confirm(
+      "Use the winning parameters as fixed parameters and disable tuning?",
+    )) {
+      return
+    }
+
+    useGraphStore.getState().setNodes(nodes => nodes.map(node => {
+      if (node.id !== nodeId) return node
+      const data = nodeData(node)
+      const { tuning: _tuning, ...configWithoutTuning } = data.config ?? {}
+      void _tuning
+      return {
+        ...node,
+        data: {
+          ...data,
+          config: {
+            ...configWithoutTuning,
+            params: { ...params },
+          },
+        },
+      }
+    }))
+  }
 
   return (
     <PreviewPanelFrame
@@ -108,7 +140,14 @@ export function ModellingPreview({ data, nodeId }: ModellingPreviewProps) {
 
       <div className="flex-1 overflow-auto px-4 py-3">
         {activeTab === "summary" && (
-          <SummaryTab result={result} jobId={data.jobId} mlflowBackend={mlflowBackend} config={{}} />
+          <SummaryTab
+            result={result}
+            jobId={data.jobId}
+            mlflowBackend={mlflowBackend}
+            config={config}
+            onUseBestParameters={useBestAsFixedParameters}
+            elapsedSeconds={trainProgress?.elapsed_seconds}
+          />
         )}
         {activeTab === "coefficients" && <GLMCoefficientsTab result={result} />}
         {activeTab === "relativities" && <GLMRelativitiesTab result={result} />}

@@ -698,7 +698,13 @@ class TestSubmodelFileParsing:
 import polars as pl
 import haute
 
-submodel = haute.Submodel("pricing_sub", description="sub-pipeline")
+submodel = haute.Submodel(
+    "pricing_sub",
+    description="sub-pipeline",
+    definition_id="definition_pricing",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.polars
@@ -1135,7 +1141,12 @@ def src() -> pl.DataFrame:
     return pl.DataFrame()
 
 
-pipeline.submodel("sub_b.py")
+pipeline.submodel(
+    "sub_b.py",
+    definition_id="circular_b",
+    instance_id="submodel__circular_b",
+    alias="circular_b",
+)
 """
         sub_b_code = f"""\
 import polars as pl
@@ -1143,7 +1154,12 @@ import haute
 
 pipeline = haute.Pipeline("circular_b")
 
-pipeline.submodel("test_pipeline.py")
+pipeline.submodel(
+    "test_pipeline.py",
+    definition_id="circular_main",
+    instance_id="submodel__circular_main",
+    alias="circular_main",
+)
 
 @pipeline.data_input(config="{sub_src_config}")
 def b_node() -> pl.DataFrame:
@@ -1173,8 +1189,18 @@ def src() -> pl.DataFrame:
     return pl.DataFrame()
 
 
-pipeline.submodel("nonexistent.py")
-pipeline.submodel("modules/also_missing.py")
+pipeline.submodel(
+    "nonexistent.py",
+    definition_id="missing_one",
+    instance_id="submodel__missing_one",
+    alias="missing_one",
+)
+pipeline.submodel(
+    "modules/also_missing.py",
+    definition_id="missing_two",
+    instance_id="submodel__missing_two",
+    alias="missing_two",
+)
 """
         p = _write_pipeline(tmp_path, code)
         with pytest.raises(ParseError, match="submodel file") as exc_info:
@@ -1209,13 +1235,19 @@ def node_a() -> pl.DataFrame:
         assert graph.nodes[0].id == "node_a"
 
 
-class TestSubmodelNameCollision:
-    def test_same_submodel_name_raises_with_both_files(self, tmp_path):
+class TestSubmodelDisplayNameReuse:
+    def test_same_display_name_with_distinct_definition_ids_is_isolated(self, tmp_path):
         sub_a_code = """\
 import polars as pl
 import haute
 
-submodel = haute.Submodel("shared_name", description="first")
+submodel = haute.Submodel(
+    "shared_name",
+    description="first",
+    definition_id="definition_a",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.polars
@@ -1226,7 +1258,13 @@ def step_from_a() -> pl.DataFrame:
 import polars as pl
 import haute
 
-submodel = haute.Submodel("shared_name", description="second")
+submodel = haute.Submodel(
+    "shared_name",
+    description="second",
+    definition_id="definition_b",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.polars
@@ -1246,21 +1284,37 @@ def src() -> pl.DataFrame:
     return pl.DataFrame()
 
 
-pipeline.submodel("sub_a.py")
-pipeline.submodel("sub_b.py")
+pipeline.submodel(
+    "sub_a.py",
+    definition_id="definition_a",
+    instance_id="instance_a",
+    alias="a",
+)
+pipeline.submodel(
+    "sub_b.py",
+    definition_id="definition_b",
+    instance_id="instance_b",
+    alias="b",
+)
 """
         (tmp_path / "sub_a.py").write_text(sub_a_code)
         (tmp_path / "sub_b.py").write_text(sub_b_code)
         p = _write_pipeline(tmp_path, main_code)
-        with pytest.raises(ParseError, match="same submodel name") as exc_info:
-            parse_pipeline_file(p)
+        graph = parse_pipeline_file(p)
 
-        assert exc_info.value.context["submodel_name"] == "shared_name"
-        assert exc_info.value.context["files"] == ["sub_a.py", "sub_b.py"]
+        assert graph.submodels is not None
+        assert set(graph.submodels) == {"definition_a", "definition_b"}
+        assert graph.submodels["definition_a"].file == "sub_a.py"
+        assert graph.submodels["definition_b"].file == "sub_b.py"
+        occurrences = {
+            node.id: node.data.config for node in graph.nodes if node.data.nodeType == "submodel"
+        }
+        assert occurrences["instance_a"] == {"definitionId": "definition_a", "alias": "a"}
+        assert occurrences["instance_b"] == {"definitionId": "definition_b", "alias": "b"}
 
 
 class TestEmptySubmodelFile:
-    def test_empty_submodel_handled_gracefully(self, tmp_path):
+    def test_empty_submodel_fails_without_definition_contract(self, tmp_path):
         source_config = write_data_input_config(tmp_path, "src", "d.parquet")
         main_code = f"""\
 import polars as pl
@@ -1274,15 +1328,17 @@ def src() -> pl.DataFrame:
     return pl.DataFrame()
 
 
-pipeline.submodel("empty_sub.py")
+pipeline.submodel(
+    "empty_sub.py",
+    definition_id="empty_definition",
+    instance_id="empty_instance",
+    alias="empty",
+)
 """
         (tmp_path / "empty_sub.py").write_text("")
         p = _write_pipeline(tmp_path, main_code)
-        graph = parse_pipeline_file(p)
-
-        assert graph.pipeline_name == "empty_sub_parent"
-        assert len(graph.nodes) >= 1
-        assert graph.nodes[0].id == "src"
+        with pytest.raises(ParseError, match="must assign a haute.Submodel constructor"):
+            parse_pipeline_file(p)
 
 
 class TestSubmodelOnlyParentPipeline:
@@ -1292,7 +1348,12 @@ class TestSubmodelOnlyParentPipeline:
 import polars as pl
 import haute
 
-submodel = haute.Submodel("scoring")
+submodel = haute.Submodel(
+    "scoring",
+    definition_id="scoring",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.data_input(config="{child_source_config}")
@@ -1312,7 +1373,12 @@ import haute
 
 pipeline = haute.Pipeline("submodel_only")
 
-pipeline.submodel("modules/scoring.py")
+pipeline.submodel(
+    "modules/scoring.py",
+    definition_id="scoring",
+    instance_id="submodel__scoring",
+    alias="scoring",
+)
 """
         (tmp_path / "modules").mkdir()
         (tmp_path / "modules" / "scoring.py").write_text(child_code)
@@ -1324,7 +1390,7 @@ pipeline.submodel("modules/scoring.py")
         assert {n.id for n in graph.nodes} == {"submodel__scoring"}
         assert graph.submodels is not None
         assert "scoring" in graph.submodels
-        assert graph.submodels["scoring"]["file"] == "modules/scoring.py"
+        assert graph.submodels["scoring"].file == "modules/scoring.py"
 
 
 class TestSubmodelFileWithSyntaxError:
@@ -1333,7 +1399,12 @@ class TestSubmodelFileWithSyntaxError:
 import polars as pl
 import haute
 
-submodel = haute.Submodel("broken_sub")
+submodel = haute.Submodel(
+    "broken_sub",
+    definition_id="broken_sub",
+    input_ports=[],
+    output_ports=[],
+)
 
 
 @submodel.polars
@@ -1353,7 +1424,12 @@ def src() -> pl.DataFrame:
     return pl.DataFrame()
 
 
-pipeline.submodel("broken_sub.py")
+pipeline.submodel(
+    "broken_sub.py",
+    definition_id="broken_sub",
+    instance_id="submodel__broken_sub",
+    alias="broken_sub",
+)
 """
         (tmp_path / "broken_sub.py").write_text(broken_sub_code)
         p = _write_pipeline(tmp_path, main_code)

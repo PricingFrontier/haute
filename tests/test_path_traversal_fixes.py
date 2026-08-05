@@ -81,10 +81,8 @@ def _graph_with_submodel() -> dict:
                     "label": "pricing",
                     "nodeType": "submodel",
                     "config": {
-                        "file": "modules/pricing.py",
-                        "childNodeIds": ["base_rate"],
-                        "inputPorts": [],
-                        "outputPorts": [],
+                        "definitionId": "pricing",
+                        "alias": "pricing",
                     },
                 },
             },
@@ -92,8 +90,8 @@ def _graph_with_submodel() -> dict:
         "edges": [],
         "submodels": {
             "pricing": {
+                "definitionId": "pricing",
                 "file": "modules/pricing.py",
-                "childNodeIds": ["base_rate"],
                 "inputPorts": [],
                 "outputPorts": [],
                 "graph": {
@@ -183,20 +181,39 @@ class TestGetSubmodelPathTraversal:
 import polars as pl
 import haute
 
-submodel = haute.Submodel("pricing", description="Test submodel")
+submodel = haute.Submodel(
+    "pricing", description="Test submodel",
+    definition_id="pricing",
+    input_ports=[],
+    output_ports=[],
+)
 
 @submodel.polars
 def base_rate(df: pl.LazyFrame) -> pl.LazyFrame:
     return df
 """)
-        resp = client.get("/api/submodel/pricing")
+        (tmp_path / "pipeline.py").write_text("""\
+import haute
+pipeline = haute.Pipeline("main")
+pipeline.submodel(
+    "modules/pricing.py",
+    definition_id="pricing",
+    instance_id="submodel__pricing",
+    alias="pricing",
+)
+""")
+        resp = client.get("/api/submodel/pricing", params={"source_file": "pipeline.py"})
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
     def test_nonexistent_submodel_returns_404(self, client, tmp_path):
         """A name that doesn't exist should return 404, not 403."""
         (tmp_path / "modules").mkdir()
-        resp = client.get("/api/submodel/nonexistent")
+        (tmp_path / "pipeline.py").write_text("""\
+import haute
+pipeline = haute.Pipeline("main")
+""")
+        resp = client.get("/api/submodel/nonexistent", params={"source_file": "pipeline.py"})
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
@@ -233,20 +250,43 @@ class TestDissolveSubmodelPathTraversal:
         modules_dir = tmp_path / "modules"
         modules_dir.mkdir()
         sm_file = modules_dir / "pricing.py"
-        sm_file.write_text("# submodel code\n")
+        sm_file.write_text("""\
+import polars as pl
+import haute
+submodel = haute.Submodel(
+    "pricing",
+    definition_id="pricing",
+    input_ports=[],
+    output_ports=[],
+)
+@submodel.polars
+def base_rate() -> pl.LazyFrame:
+    return pl.DataFrame({"rate": [1.0]}).lazy()
+""")
 
         pipeline_file = tmp_path / "pipeline.py"
-        pipeline_file.write_text("# main pipeline\n")
+        pipeline_file.write_text("""\
+import haute
+pipeline = haute.Pipeline("main")
+pipeline.submodel(
+    "modules/pricing.py",
+    definition_id="pricing",
+    instance_id="submodel__pricing",
+    alias="pricing",
+)
+""")
+        revision = client.get("/api/pipeline").json()["source_revision"]
 
         flat_graph = PipelineGraph(pipeline_name="main")
 
         with patch("haute._flatten.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
                 body = {
-                    "submodel_name": "pricing",
+                    "instance_id": "submodel__pricing",
                     "graph": _graph_with_submodel(),
                     "source_file": "pipeline.py",
                     "pipeline_name": "main",
+                    "base_revision": revision,
                 }
                 resp = client.post("/api/submodel/dissolve", json=body)
 
@@ -256,10 +296,11 @@ class TestDissolveSubmodelPathTraversal:
     def test_traversal_source_file_blocked(self, client, tmp_path):
         """source_file = '../../etc/cron.d/evil' must be rejected with 403."""
         body = {
-            "submodel_name": "pricing",
+            "instance_id": "submodel__pricing",
             "graph": _graph_with_submodel(),
             "source_file": "../../etc/cron.d/evil",
             "pipeline_name": "main",
+            "base_revision": "revision-test",
         }
         resp = client.post("/api/submodel/dissolve", json=body)
         assert resp.status_code == 403
@@ -268,10 +309,11 @@ class TestDissolveSubmodelPathTraversal:
     def test_empty_source_file_returns_400(self, client, tmp_path):
         """An empty source_file should return 400 (existing validation)."""
         body = {
-            "submodel_name": "pricing",
+            "instance_id": "submodel__pricing",
             "graph": _graph_with_submodel(),
             "source_file": "",
             "pipeline_name": "main",
+            "base_revision": "revision-test",
         }
         resp = client.post("/api/submodel/dissolve", json=body)
         assert resp.status_code == 400
@@ -470,6 +512,7 @@ class TestCreateSubmodelPathTraversal:
             "source_file": source_file,
             "pipeline_name": "main",
             "preamble": "import polars as pl",
+            "base_revision": "revision-test",
         }
 
     def test_traversal_source_file_blocked(self, client, tmp_path):
@@ -511,7 +554,11 @@ class TestDissolveSmFileTraversal:
         victim.write_text("# important code\n")
 
         pipeline_file = tmp_path / "pipeline.py"
-        pipeline_file.write_text("# main pipeline\n")
+        pipeline_file.write_text("""\
+import haute
+pipeline = haute.Pipeline("main")
+""")
+        revision = client.get("/api/pipeline").json()["source_revision"]
 
         # Craft a graph where the submodel file path points outside
         evil_graph = _graph_with_submodel()
@@ -522,10 +569,11 @@ class TestDissolveSmFileTraversal:
         with patch("haute._flatten.flatten_graph", return_value=flat_graph):
             with patch("haute.codegen.graph_to_code", return_value="# code\n"):
                 body = {
-                    "submodel_name": "pricing",
+                    "instance_id": "submodel__pricing",
                     "graph": evil_graph,
                     "source_file": "pipeline.py",
                     "pipeline_name": "main",
+                    "base_revision": revision,
                 }
                 resp = client.post("/api/submodel/dissolve", json=body)
 
@@ -534,4 +582,4 @@ class TestDissolveSmFileTraversal:
 
         # But the file outside cwd must NOT have been deleted
         assert victim.exists(), "File outside project root was deleted!"
-        assert pipeline_file.read_text() == "# main pipeline\n"
+        assert "haute.Pipeline" in pipeline_file.read_text()

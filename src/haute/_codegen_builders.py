@@ -30,6 +30,7 @@ import math
 from collections.abc import Callable
 from typing import Any
 
+from haute._code_extraction import INCOMPLETE_TRANSFORM_BODY
 from haute._config_io import config_path_for_node
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
@@ -222,9 +223,8 @@ _MODEL_SCORE = '''\
 @pipeline.model_score({decorator_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import score_from_config
-    base = str(Path(__file__).parent)
+    base = str(_HAUTE_CONFIG_BASE)
     df = score_from_config({first_param}, config={config_path_repr}, base_dir=base)
     return df
 '''
@@ -236,10 +236,9 @@ def _retained_api_input_template(config_path: str) -> str:
 @pipeline.api_input()
 def {{func_name}}() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
     """{{description}}"""
-    from pathlib import Path
     from haute.graph_utils import resolve_api_input_from_config
     return resolve_api_input_from_config(
-        {_safe_path(config_path)}, base_dir=Path(__file__).resolve().parent
+        {_safe_path(config_path)}, base_dir=_HAUTE_CONFIG_BASE
     )
 '''
 
@@ -249,9 +248,8 @@ _BANDING_SINGLE = '''\
                output_column={output_column_repr}{rules_kw}{default_kw})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_banding_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
     return df
 '''
@@ -260,9 +258,8 @@ _BANDING_MULTI = '''\
 @pipeline.banding(factors={factors_repr})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_banding_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     df = apply_banding_from_config({first}, {config_path_repr}, base_dir=base)
     return df
 '''
@@ -271,9 +268,8 @@ _RATING_STEP = '''\
 @pipeline.rating_step(tables={tables_repr}{extra_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_rating_step_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)
     return df
 '''
@@ -282,9 +278,8 @@ _SCENARIO_EXPANDER = '''\
 @pipeline.scenario_expander({dec_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import expand_scenarios_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     return expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)
 '''
 
@@ -302,9 +297,8 @@ _OPTIMISER_APPLY = '''\
 @pipeline.optimiser_apply({dec_kwargs})
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import apply_optimiser_apply_from_config
-    base = Path(__file__).parent
+    base = _HAUTE_CONFIG_BASE
     return apply_optimiser_apply_from_config(
         {args}, config={config_path_repr}, base_dir=base,
         source_names={source_names_repr}, source_ids={source_ids_repr},
@@ -336,10 +330,9 @@ _RETAINED_EXTERNAL = '''\
 @pipeline.external_file()
 def {func_name}({params}) -> pl.LazyFrame:
     """{description}"""
-    from pathlib import Path
     from haute.graph_utils import load_external_object_from_config
     obj = load_external_object_from_config(
-        {config_path_repr}, base_dir=Path(__file__).resolve().parent
+        {config_path_repr}, base_dir=_HAUTE_CONFIG_BASE
     )
 {body}
 '''
@@ -510,9 +503,8 @@ def _gen_model_score(node: GraphNode, source_names: list[str]) -> str:
             f"@pipeline.model_score({decorator_kwargs})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
-            f"    from pathlib import Path\n"
             f"    from haute.graph_utils import score_from_config\n"
-            f"    base = str(Path(__file__).parent)\n"
+            f"    base = str(_HAUTE_CONFIG_BASE)\n"
             f"    df = score_from_config(\n"
             f"        {first_param}, config={_safe_path(cfg_path)},\n"
             f"        base_dir=base,\n"
@@ -621,9 +613,8 @@ def _gen_rating_step(node: GraphNode, source_names: list[str]) -> str:
             f"@pipeline.rating_step(tables={emit_tables!r}{extra_kwargs})\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
-            f"    from pathlib import Path\n"
             f"    from haute.graph_utils import apply_rating_step_from_config\n"
-            f"    base = Path(__file__).parent\n"
+            f"    base = _HAUTE_CONFIG_BASE\n"
             f"    df = apply_rating_step_from_config({first}, {config_path_repr}, base_dir=base)\n"
             f"{user_body}\n"
         )
@@ -679,9 +670,8 @@ def _gen_scenario_expander(node: GraphNode, source_names: list[str]) -> str:
         f"@pipeline.scenario_expander({dec_kwargs})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    from pathlib import Path\n"
         f"    from haute.graph_utils import expand_scenarios_from_config\n"
-        f"    base = Path(__file__).parent\n"
+        f"    base = _HAUTE_CONFIG_BASE\n"
         f"    df = expand_scenarios_from_config({first}, {config_path_repr}, base_dir=base)\n"
         f"{user_body}\n"
     )
@@ -824,10 +814,12 @@ def _gen_data_input(node: GraphNode, source_names: list[str]) -> str:
         f"@pipeline.data_input(config={_safe_path(cfg_path)})\n"
         f"def {func_name}() -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    from pathlib import Path\n"
+        f"    from haute._project import get_project_root\n"
         f"    from haute.graph_utils import resolve_data_input_from_config\n"
+        f"    project_root = get_project_root(_HAUTE_CONFIG_BASE)\n"
         f"    df = resolve_data_input_from_config(\n"
-        f"        {_safe_path(cfg_path)}, base_dir=Path(__file__).parent\n"
+        f"        {_safe_path(cfg_path)}, base_dir=_HAUTE_CONFIG_BASE, "
+        f"project_root=project_root\n"
         f"    )\n"
         f"{body}\n"
     )
@@ -864,12 +856,11 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
         f"@pipeline.output(config={_safe_path(cfg_path)})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    from pathlib import Path\n"
         f"    from haute.graph_utils import assemble_output_from_config\n"
         f"    return assemble_output_from_config(\n"
         f"{args}"
         f"        config={_safe_path(cfg_path)},\n"
-        f"        base_dir=Path(__file__).parent,\n"
+        f"        base_dir=_HAUTE_CONFIG_BASE,\n"
         f"        source_names={param_names!r},\n"
         f"    )\n"
     )
@@ -889,21 +880,19 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
         decorator = "@pipeline.polars"
 
     if not code:
-        if not source_names:
-            raise ConfigError(
-                "polars transform has no user code and no upstream sources; "
-                "either connect an input or provide code.",
-                node_id=node.id,
-                label=node.data.label,
-            )
-        if len(source_names) > 1:
-            raise ConfigError(
-                "polars transform has no user code but multiple upstream "
-                "sources; add code that explicitly combines the inputs or "
-                "reduce to a single upstream.",
-                node_id=node.id,
-                label=node.data.label,
-                sources=list(source_names),
+        if len(source_names) != 1:
+            # Not written yet: with no upstream there is nothing to return, and
+            # with several there is no defined way to combine them. Neither is a
+            # reason to block a SAVE — a half-built graph is a normal state to
+            # leave the editor in — so emit a body that is valid Python, keeps
+            # the node's inputs bound, and fails loudly if the pipeline is run.
+            # Save surfaces this as a warning (see `_validate_transforms_are_runnable`),
+            # and the placeholder round-trips back to "no code" in the editor.
+            return (
+                f"{decorator}\n"
+                f"def {func_name}({params}) -> pl.LazyFrame:\n"
+                f'    """{description}"""\n'
+                f"{INCOMPLETE_TRANSFORM_BODY}"
             )
         return (
             f"{decorator}\n"

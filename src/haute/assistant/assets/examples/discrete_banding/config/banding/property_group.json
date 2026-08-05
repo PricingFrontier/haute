@@ -1,0 +1,1 @@
+{"factors":[{"banding":"categorical","column":"property_type","outputColumn":"property_group","rules":[{"value":"detached","assignment":"house"},{"value":"terraced","assignment":"house"},{"value":"flat","assignment":"apartment"}],"default":"other"}]}
