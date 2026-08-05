@@ -95,6 +95,63 @@ def bare_remote(tmp_path: Path) -> Path:
     return remote
 
 
+def _replace_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Simulate the platform replacing the container mid-test.
+
+    The filesystem (and the volume fake) survives; every per-process
+    singleton — the session and the writer alike — starts over, exactly
+    as a fresh container's interpreter would. A new writer identity is
+    minted on first use.
+    """
+    monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
+    monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+
+
+def _bind_and_publish(project: Path, *, content: str = "# priced\n") -> str:
+    """Bind ``UC_URL``, save once, publish — generation 2, the common prelude."""
+    _project_storage.bind_remote(UC_URL, project)
+    (project / "rating.py").write_text(content, encoding="utf-8")
+    sha = _git.commit_save(["rating.py"], WORKING, cwd=project)
+    assert sha is not None
+    _project_storage.publish_bound_project(project)
+    return sha
+
+
+def _forked_project(
+    project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    advance_parent: bool = True,
+) -> Path:
+    """The fork scenario every upstream test starts from.
+
+    A parent bound to ``UC_URL`` and published, forked to ``FORK_URL``,
+    then a fresh "container" bound to the fork — the same construction
+    ``TestUcFork`` restores.
+    """
+    _bind_and_publish(project)
+    _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
+
+    if advance_parent:
+        # The parent moves on AFTER the fork — this is what the fork is
+        # later behind by. Done before the fork's container exists so the
+        # publish fence still belongs to the parent's writer.
+        (project / "rating.py").write_text("# parent moved on\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+        # A milestone as well as a save, so BOTH legs of the pair move.
+        _git.commit_milestone("parent milestone", project, cwd=project)
+        _project_storage.publish_bound_project(project)
+
+    # A different container binds to the fork.
+    _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
+    _replace_container(monkeypatch)
+
+    fork_root = tmp_path / "fork-container"
+    assert _project_storage.restore_if_bound(fork_root) == "restored"
+    return fork_root
+
+
 class _FakeFiles:
     """In-memory stand-in for the Databricks Files API."""
 
@@ -937,8 +994,7 @@ class TestUcContainerDeathSurvival:
         # The container is replaced: fresh filesystem, fresh process state,
         # same volume. A new writer identity is minted in the new container.
         restored_root = tmp_path / "new-container"
-        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
-        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+        _replace_container(monkeypatch)
         outcome = _project_storage.restore_if_bound(restored_root)
 
         assert outcome == "restored"
@@ -982,8 +1038,7 @@ class TestUcContainerDeathSurvival:
         monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
         _project_storage.bind_remote(UC_URL, project)
         # Same filesystem, new process: fresh writer id, no seen generation.
-        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
-        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+        _replace_container(monkeypatch)
 
         assert _project_storage.restore_if_bound(project) == "present"
         _project_storage.publish_bound_project(project)
@@ -1006,8 +1061,7 @@ class TestUcContainerDeathSurvival:
             .to_json()
             .encode("utf-8")
         )
-        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
-        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+        _replace_container(monkeypatch)
 
         assert _project_storage.restore_if_bound(project) == "present"
         with pytest.raises(StorageSupersededError, match="Another app container"):
@@ -1466,18 +1520,10 @@ class TestUcClaim:
 
 
 class TestUcFork:
-    def _bind_and_publish_two_generations(self, project: Path) -> str:
-        _project_storage.bind_remote(UC_URL, project)
-        (project / "rating.py").write_text("# priced\n", encoding="utf-8")
-        sha = _git.commit_save(["rating.py"], WORKING, cwd=project)
-        assert sha is not None
-        _project_storage.publish_bound_project(project)
-        return sha
-
     def test_fork_copies_the_latest_published_generation(
         self, project: Path, files_api: _FakeFiles
     ) -> None:
-        self._bind_and_publish_two_generations(project)
+        _bind_and_publish(project)
         lineage = _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
 
         assert lineage.parent_url == UC_URL
@@ -1502,7 +1548,7 @@ class TestUcFork:
 
     def test_fork_copies_published_state_only(self, project: Path, files_api: _FakeFiles) -> None:
         """The holder's unpublished work is theirs alone."""
-        self._bind_and_publish_two_generations(project)
+        _bind_and_publish(project)
         (project / "rating.py").write_text("# unpublished\n", encoding="utf-8")
         assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
         # No publish: the fork must carry generation 2, not the local commit.
@@ -1511,7 +1557,7 @@ class TestUcFork:
 
     def test_fork_refuses_a_populated_target(self, project: Path, files_api: _FakeFiles) -> None:
         """A fork never overwrites."""
-        self._bind_and_publish_two_generations(project)
+        _bind_and_publish(project)
         files_api.store[f"{_FORK_ROOT}/HEAD.json"] = (
             UCHead(generation=1, tip_sha="s", writer_id="w", bundle_name="000001-w.bundle")
             .to_json()
@@ -1539,13 +1585,12 @@ class TestUcFork:
     ) -> None:
         """Bind → publish → fork → restore the fork elsewhere: history and
         lineage both come through, and the fork publishes independently."""
-        sha = self._bind_and_publish_two_generations(project)
+        sha = _bind_and_publish(project)
         _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
 
         # A different container binds to the fork.
         _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
-        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
-        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
+        _replace_container(monkeypatch)
 
         restored_root = tmp_path / "fork-container"
         assert _project_storage.restore_if_bound(restored_root) == "restored"
@@ -1571,40 +1616,6 @@ class TestUpstreamSync:
     the fork — the same construction ``TestUcFork`` restores.
     """
 
-    def _parent_and_fork(
-        self,
-        project: Path,
-        files_api: _FakeFiles,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        advance_parent: bool = True,
-    ) -> Path:
-        _project_storage.bind_remote(UC_URL, project)
-        (project / "rating.py").write_text("# priced\n", encoding="utf-8")
-        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
-        _project_storage.publish_bound_project(project)
-        _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
-
-        if advance_parent:
-            # The parent moves on AFTER the fork — this is what the fork is
-            # later behind by. Done before the fork's container exists so the
-            # publish fence still belongs to the parent's writer.
-            (project / "rating.py").write_text("# parent moved on\n", encoding="utf-8")
-            assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
-            # A milestone as well as a save, so BOTH legs of the pair move.
-            _git.commit_milestone("parent milestone", project, cwd=project)
-            _project_storage.publish_bound_project(project)
-
-        # A different container binds to the fork.
-        _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
-        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
-        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
-
-        fork_root = tmp_path / "fork-container"
-        assert _project_storage.restore_if_bound(fork_root) == "restored"
-        return fork_root
-
     def test_fetching_the_parent_adds_tracking_refs_but_no_remote(
         self,
         project: Path,
@@ -1618,7 +1629,7 @@ class TestUpstreamSync:
         would give the divergence baseline (and the milestone fork-gate) two
         answers. Fetching straight from a bundle leaves ``git remote`` alone.
         """
-        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        fork_root = _forked_project(project, tmp_path, monkeypatch)
         _project_storage.check_upstream(fork_root)
 
         assert _run_git(fork_root, "remote").split() == ["origin"]
@@ -1633,7 +1644,7 @@ class TestUpstreamSync:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        fork_root = _forked_project(project, tmp_path, monkeypatch)
         status = _project_storage.check_upstream(fork_root)
 
         assert status.parent_url == UC_URL
@@ -1660,7 +1671,7 @@ class TestUpstreamSync:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Fast-forward only: both sides moved is a dead end, not a merge."""
-        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        fork_root = _forked_project(project, tmp_path, monkeypatch)
         (fork_root / "rating.py").write_text("# fork's own work\n", encoding="utf-8")
         own_sha = _git.commit_save(["rating.py"], WORKING, cwd=fork_root)
         assert own_sha is not None
@@ -1693,7 +1704,7 @@ class TestUpstreamSync:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        fork_root = _forked_project(project, tmp_path, monkeypatch)
         del files_api.store[f"{_UC_ROOT}/HEAD.json"]
         with pytest.raises(StorageConfigError, match="nothing published"):
             _project_storage.check_upstream(fork_root)
@@ -1706,7 +1717,7 @@ class TestUpstreamSync:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A fork is a complete project: an unreachable parent breaks nothing."""
-        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        fork_root = _forked_project(project, tmp_path, monkeypatch)
         before = _run_git(fork_root, "for-each-ref", "--format=%(refname) %(objectname)")
         head = _stored_head(files_api)
         del files_api.store[f"{_UC_ROOT}/bundles/{head.bundle_name}"]
@@ -1723,7 +1734,7 @@ class TestUpstreamSync:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        fork_root = _forked_project(project, tmp_path, monkeypatch)
         assert _stored_head(files_api, _FORK_ROOT).generation == 1
 
         _project_storage.pull_upstream(fork_root)
