@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import os
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -402,6 +402,7 @@ class PushQueue:
         self._failure: FailureClass | None = None
         self._message: str | None = None
         self._stopped = False
+        self._armed = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -409,6 +410,10 @@ class PushQueue:
         with self._condition:
             self._project_root = project_root
             self._stopped = False
+            # Anything counted while armed is now the worker's to publish.
+            self._armed = False
+            if self._pending:
+                self._condition.notify_all()
             if self._thread is not None and self._thread.is_alive():
                 return
             self._thread = threading.Thread(
@@ -427,9 +432,34 @@ class PushQueue:
 
     # -- producer side -----------------------------------------------------
 
+    def arm(self) -> None:
+        """Count enqueues from now on, before a project root exists.
+
+        A bind publishes over the network, and the user is invited to keep
+        working while it runs. A save landing in that window commits
+        locally but has no queue to join yet — without this the enqueue
+        would be dropped AND the pending counter would stay at zero, so
+        the UI would report ``synced`` over an unpublished commit. Armed,
+        the count survives until :meth:`start` hands it to the worker.
+        """
+        with self._condition:
+            self._armed = True
+
+    def disarm(self) -> None:
+        """Stop counting: no queue will start for the bind that armed us.
+
+        The count is dropped with it — those commits are unpublished, but
+        the session is not bound, so "unpublished" is not the state to
+        show; the storage surface says the project is unstored instead.
+        """
+        with self._condition:
+            self._armed = False
+            if self._project_root is None:
+                self._pending = 0
+
     def enqueue(self) -> None:
         """Record one more unpublished commit and wake the worker."""
-        if not self.active:
+        if not self.active and not self._armed:
             return
         with self._condition:
             self._pending += 1
@@ -591,6 +621,9 @@ class BindTask:
                     "finish before binding somewhere else."
                 )
             self._status = BindStatus(state="running", remote_url=url)
+        # The user is told they can keep working; saves made from here until
+        # the queue starts must still be counted as unpublished.
+        _session.queue.arm()
         thread = threading.Thread(
             target=self._run,
             args=(url, project_root, bound_by),
@@ -614,10 +647,14 @@ class BindTask:
             logger.warning("storage_bind_failed_async", failure=failure)
             self._fail(url, message)
             return
+        if outcome != "adopted":
+            # A lift starts no queue in this process — the restart does.
+            _session.queue.disarm()
         with self._lock:
             self._status = BindStatus(state="succeeded", outcome=outcome, remote_url=url)
 
     def _fail(self, url: str, message: str, claim: UCClaim | None = None) -> None:
+        _session.queue.disarm()
         with self._lock:
             self._status = BindStatus(state="failed", message=message, claim=claim, remote_url=url)
 
@@ -763,11 +800,20 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
         # A plain clone materialises only the remote's default branch, so the
         # managed lineage has to be recreated locally before the session can
         # show the user's saves or publish again.
-        _git.adopt_cloned_lineage(binding.branch, REMOTE_NAME, cwd=project_dir)
-        # `.haute/` is per-clone and untracked by design, so the working
-        # branch does not travel in the repository — the binding carries it
-        # so a restored container resumes on the same lineage.
-        write_working_branch(project_dir, binding.branch)
+        try:
+            _git.adopt_cloned_lineage(binding.branch, REMOTE_NAME, cwd=project_dir)
+        except _git.GitDomainError as exc:
+            # The recorded branch is not in the stored project — it was
+            # deleted, or the record predates a change of branch. The project
+            # itself restored fine, so serve it and let the user choose a
+            # working branch; failing the boot here would strand the app with
+            # no route back, since rebinding needs a running app.
+            logger.warning("restored_branch_missing", branch=binding.branch, error=str(exc))
+        else:
+            # `.haute/` is per-clone and untracked by design, so the working
+            # branch does not travel in the repository — the binding carries it
+            # so a restored container resumes on the same lineage.
+            write_working_branch(project_dir, binding.branch)
     _session.binding = binding
     _session.queue.start(project_dir)
     logger.info("project_restored", scope=_scope_name())
@@ -833,7 +879,12 @@ def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> Bi
     )
 
     if populated:
-        write_binding(binding)
+        # The stored project is NOT this session's project, so this session's
+        # working branch says nothing about it — recording it would have the
+        # restart look for a branch the clone has never heard of. Left unset,
+        # the restored session lands in the branch-selection modal, which is
+        # the honest state: a project arrived, choose where to work in it.
+        write_binding(replace(binding, branch=None))
         # Deliberately NOT activated in this process: the project on disk is
         # not yet the bound remote's project, so publishing from here would
         # push the wrong history. The restart's restore path activates it.

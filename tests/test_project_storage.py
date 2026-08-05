@@ -517,6 +517,43 @@ class TestPushQueue:
         queue.enqueue()
         assert queue.status() == _project_storage.SyncStatus(state="synced")
 
+    def test_a_save_during_a_bind_is_counted_not_dropped(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bind invites the user to keep working; those saves must count.
+
+        The bind publishes over the network and the queue only starts once
+        it finishes. A save in that window would otherwise be dropped AND
+        leave the counter at zero — the UI reporting "synced" over a commit
+        that never published, which is the one thing the counter exists to
+        prevent.
+        """
+        push = _RecordingPush()
+        monkeypatch.setattr(_git, "push_working_pair", push)
+        queue = PushQueue()
+
+        queue.arm()  # the bind starts
+        queue.enqueue()  # the user saves while it publishes
+        assert queue.status() == _project_storage.SyncStatus(state="pending", pending=1)
+
+        queue.start(project)  # the bind finishes and hands over
+        assert push.done.wait(timeout=5)
+        _wait_until(lambda: queue.status().state == "synced")
+        queue.stop()
+
+    def test_a_bind_that_never_starts_a_queue_leaves_no_phantom_backlog(
+        self, project: Path
+    ) -> None:
+        """A failed or lift bind starts no worker, so it must not leave a count."""
+        queue = PushQueue()
+        queue.arm()
+        queue.enqueue()
+        queue.disarm()
+
+        assert queue.status() == _project_storage.SyncStatus(state="synced")
+        queue.enqueue()  # and counting stops again
+        assert queue.status() == _project_storage.SyncStatus(state="synced")
+
     def test_successful_push_clears_pending(
         self, project: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -758,16 +795,54 @@ class TestContainerDeathSurvival:
         with pytest.raises(StorageConfigError, match="already bound"):
             _project_storage.bind_remote(f"file://{other}", project)
 
-    def test_binding_naming_a_branch_the_remote_lacks_fails_loudly(
+    def test_binding_naming_a_branch_the_remote_lacks_still_serves(
         self, project: Path, bare_remote: Path, files_api: _FakeFiles, tmp_path: Path
     ) -> None:
-        """Better a clear boot failure than a session on a phantom branch."""
+        """A phantom branch must not cost the user their app.
+
+        The recorded branch can be absent from the stored project — deleted
+        since, or recorded before a switch. Failing the boot here would
+        strand the container in a crash loop with no way back, because
+        rebinding needs a running app. The project restored fine, so serve
+        it with no working branch and let the startup modal ask.
+        """
         _project_storage.bind_remote(f"file://{bare_remote}", project)
         _project_storage.write_binding(
             StorageBinding(remote_url=f"file://{bare_remote}", branch="never-pushed")
         )
-        with pytest.raises(GitDomainError, match="never-pushed"):
-            _project_storage.restore_if_bound(tmp_path / "fresh-container")
+        restored = tmp_path / "fresh-container"
+
+        assert _project_storage.restore_if_bound(restored) == "restored"
+
+        from haute._git_state import read_working_branch
+
+        assert (restored / ".git").is_dir()
+        assert read_working_branch(restored) is None
+
+    def test_lifting_a_populated_location_records_no_branch(
+        self, project: Path, bare_remote: Path, files_api: _FakeFiles, tmp_path: Path
+    ) -> None:
+        """This session's branch says nothing about the project being lifted.
+
+        Recording it would send the restart looking for a branch the stored
+        project has never heard of — the crash-loop above, on the ordinary
+        fork and bind-a-colleague's-project paths.
+        """
+        other = tmp_path / "other"
+        other.mkdir()
+        _run_git(other, "init", "-b", "main")
+        _run_git(other, "config", "user.name", "Other")
+        _run_git(other, "config", "user.email", "other@example.com")
+        (other / "f.txt").write_text("x", encoding="utf-8")
+        _run_git(other, "add", "-A")
+        _run_git(other, "commit", "-m", "someone else's project")
+        _run_git(other, "push", f"file://{bare_remote}", "main")
+
+        assert _project_storage.bind_remote(f"file://{bare_remote}", project) == "restart-required"
+
+        recorded = _project_storage.read_binding()
+        assert recorded is not None
+        assert recorded.branch is None
 
     def test_binding_requires_a_state_volume(self, project: Path, bare_remote: Path) -> None:
         """Without somewhere durable to record it, a binding is a false promise."""
