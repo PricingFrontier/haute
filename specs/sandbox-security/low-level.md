@@ -215,6 +215,16 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
    optimiser artifacts) passes through `resolve_runtime_file_path(...,
    enforce_project_root=True)`. Separator normalization happens before `Path`
    construction and `resolve()` follows symlinks before containment is checked.
+   A path whose components include a DOS device name is rejected as
+   `MalformedRuntimePathError` on **every** platform, using the same
+   `is_windows_reserved_filename` predicate as the save-time guards. Windows
+   resolves such a component to the device rather than to a file in its
+   directory, so the path leaves its root and previously surfaced as a
+   misleading containment failure, while the identical configured path was an
+   ordinary file on Linux and macOS. Rejecting everywhere keeps one project
+   behaving the same on every machine instead of failing only after it moves.
+   The match is on the exact stem before the first dot, so `CONTRACT.json` and
+   `COM10.json` remain ordinary names.
 3. `_execute_lazy` and `_execute_eager_core` run under
    `runtime_project_root_scoped`. The decorator accepts the declared `graph`
    argument positionally or by keyword and rejects a missing/non-`PipelineGraph`
@@ -403,6 +413,12 @@ of `_FORMAT_METHOD_NAMES`. Receiver shapes:
   modelling, and optimiser route families, submodel flatten-before-validation,
   mixed separators, absolute/traversal/symlink escapes, and the explicitly
   selected direct-execution external-pipeline root exception.
+- `tests/test_property.py` — metamorphic runtime-path properties: adding `.`
+  components never changes the resolved file, parent traversal is always
+  rejected, and DOS device names are rejected identically on every platform
+  while names merely sharing a device prefix still resolve. The generated
+  component strategy excludes device names, so the equivalence property states
+  what it claims rather than colliding with that rejection.
 - `tests/test_path_traversal_advanced.py` — adversarial config/model path resolution:
   symlink escapes, Windows mixed separators, null bytes, overlong paths,
   `config_path_for_node`, function-name lookup, and project-path edge cases.
