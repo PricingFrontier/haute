@@ -73,6 +73,7 @@ import type {
   GitForkStorageResponse,
   GitStorageBind,
   GitStorageClaim,
+  GitUpstreamStatus,
   GitSetWorkingBranchResponse,
   GitStorageSync,
   GitWorkingBranchResponse,
@@ -2591,6 +2592,27 @@ export function parseGitForkStorageResponse(value: unknown): GitForkStorageRespo
       "field `parent_generation`",
     ),
     message: expectString("parseGitForkStorageResponse", obj.message, "field `message`"),
+  }
+}
+
+export function parseGitUpstreamStatusResponse(value: unknown): GitUpstreamStatus {
+  const obj = expectPlainObject("parseGitUpstreamStatusResponse", value)
+  return {
+    parent_url: expectString("parseGitUpstreamStatusResponse", obj.parent_url, "field `parent_url`"),
+    parent_generation: expectNumber(
+      "parseGitUpstreamStatusResponse",
+      obj.parent_generation,
+      "field `parent_generation`",
+    ),
+    working: parseGitRemoteLeg(obj.working, "working"),
+    ledger: parseGitRemoteLeg(obj.ledger, "ledger"),
+    can_fast_forward: expectBoolean(
+      "parseGitUpstreamStatusResponse",
+      obj.can_fast_forward,
+      "field `can_fast_forward`",
+    ),
+    checked_at: expectString("parseGitUpstreamStatusResponse", obj.checked_at, "field `checked_at`"),
+    message: expectString("parseGitUpstreamStatusResponse", obj.message, "field `message`"),
   }
 }
 

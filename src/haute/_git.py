@@ -2847,6 +2847,68 @@ def bundle_verify(bundle: Path, cwd: Path | None = None) -> None:
     _run_git("bundle", "verify", str(bundle), cwd=cwd)
 
 
+def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> None:
+    """Populate ``refs/remotes/<namespace>/*`` from *bundle*'s branches.
+
+    Deliberately configures NO git remote: fetching straight from a bundle
+    path fills the tracking namespace and leaves ``git remote`` untouched,
+    so ``_canonical_remote`` still picks ``origin`` as the one divergence
+    baseline. The tracking refs outlive the (temporary) bundle file, which
+    is all an upstream comparison needs. Time-bounded like a clone; stderr
+    is logged, never returned.
+    """
+    _validate_ref_name(namespace)
+    if not bundle.exists():
+        raise GitDomainError("The stored project bundle to compare against is missing.")
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "fetch",
+                str(bundle),
+                f"+refs/heads/*:refs/remotes/{namespace}/*",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd or Path.cwd(),
+            env=_remote_env(),
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning("git_bundle_fetch_timeout", seconds=_CLONE_TIMEOUT_SECONDS)
+        raise GitError(
+            f"Reading the stored project took longer than {int(_CLONE_TIMEOUT_SECONDS)} seconds."
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        logger.warning("git_bundle_fetch_failed", error=str(exc))
+        raise GitError("The stored project bundle could not be read.") from exc
+    if result.returncode != 0:
+        logger.warning("git_bundle_fetch_failed", stderr=result.stderr.strip())
+        raise GitError("The stored project bundle could not be read.")
+
+
+def pair_divergence(
+    namespace: str, project_root: Path, cwd: Path | None = None
+) -> tuple[GitRemoteLeg, GitRemoteLeg]:
+    """The working branch's and ledger's divergence vs ``<namespace>/<branch>``.
+
+    Reads locally-known tracking refs only — the caller decides how they
+    were freshened (a fetch from a remote, or from a bundle).
+    """
+    from haute._git_state import read_working_branch
+
+    _validate_ref_name(namespace)
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone.")
+    ledger = ledger_name(working)
+    return (
+        _leg_state(working, namespace, cwd=cwd),
+        _leg_state(ledger, namespace, cwd=cwd),
+    )
+
+
 def commit_exists(sha: str, cwd: Path | None = None) -> bool:
     """Whether *sha* names a commit object present in this repository.
 
@@ -3431,14 +3493,55 @@ def fast_forward_pair(
     checked-out branch (HEAD-on-ledger), so it advances with ``merge --ff-only``
     (which also updates the working tree); the working ref advances with a CAS
     ``update-ref``. Volatile caches are wiped first (S12); the caller pauses the
-    watcher for the tree replacement (M4)."""
-    from haute._git_state import read_working_branch
+    watcher for the tree replacement (M4).
 
+    This half is only "refresh the namespace": the configured-remote check
+    and the fetch. Every safety check and the transaction itself live in
+    :func:`fast_forward_pair_from_tracking`, which the upstream catch-up
+    path shares."""
     _assert_git_repo(cwd)
     _assert_no_git_op_in_progress(cwd)
     _validate_ref_name(remote)
     if remote not in _remote_names(cwd):
         raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    # Fetch + prune the configured namespace so the catch-up decision is on an
+    # authoritative snapshot. A missing remote leg is a distinct domain state,
+    # not a transport failure, and a deleted tracking ref cannot remain stale.
+    with _fetch_exec_lock:
+        refreshed = _fetch_refs(remote, cwd=cwd)
+    if not refreshed:
+        raise GitDomainError(
+            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
+        )
+    return fast_forward_pair_from_tracking(remote, project_root, cwd=cwd)
+
+
+@_serialized_mutation
+def fast_forward_pair_from_tracking(
+    namespace: str,
+    project_root: Path,
+    cwd: Path | None = None,
+    *,
+    source_label: str | None = None,
+) -> GitFastForwardResponse:
+    """Apply a fast-forward from ALREADY-REFRESHED ``refs/remotes/<namespace>/*``.
+
+    The safety half of :func:`fast_forward_pair`, shared verbatim with the
+    upstream catch-up path so a fork's catch-up cannot drift from a
+    remote's: HEAD-on-ledger, dirty-tree refusal, both legs present and
+    neither ahead/diverged, the volatile-cache wipe, and the rollback. The
+    caller owns how the namespace was freshened — a fetch from a configured
+    remote, or from a downloaded bundle. *source_label* names that source
+    in user-facing messages when it is not the namespace itself.
+    """
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_no_git_op_in_progress(cwd)
+    _validate_ref_name(namespace)
+    remote = namespace
+    label = source_label if source_label is not None else namespace
 
     working = read_working_branch(project_root)
     if working is None:
@@ -3459,31 +3562,31 @@ def fast_forward_pair(
     if ok_status and status.strip():
         raise GitDomainError("You have unsaved changes. Save or discard them before catching up.")
 
-    # Fetch + prune the configured namespace so the catch-up decision is on an
-    # authoritative snapshot. A missing remote leg is a distinct domain state,
-    # not a transport failure, and a deleted tracking ref cannot remain stale.
-    with _fetch_exec_lock:
-        refreshed = _fetch_refs(remote, cwd=cwd)
-    if not refreshed:
-        raise GitDomainError(
-            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
-        )
     for branch, kind in ((working, "working branch"), (ledger, "save ledger")):
         tracking = f"refs/remotes/{remote}/{branch}"
         if _rev_parse(tracking, cwd=cwd) is None:
             raise GitDomainError(
-                f"Can't catch up from '{remote}': {kind} '{branch}' is missing on the remote."
+                f"Can't catch up from '{label}': {kind} '{branch}' is missing on the remote."
             )
     w_leg = _leg_state(working, remote, cwd=cwd)
     l_leg = _leg_state(ledger, remote, cwd=cwd)
 
     if any(leg.status in ("ahead", "diverged") for leg in (w_leg, l_leg)):
+        # A fork's dead end reads differently from a remote's: nothing is
+        # "the remote's" to a user who forked, and naming both sides is the
+        # whole point. Default text stays byte-identical for the remote path.
+        if source_label is None:
+            raise GitDomainError(
+                "Can't catch up — you have local changes the remote doesn't have. Spin "
+                "off a copy to keep them, then reconcile."
+            )
         raise GitDomainError(
-            "Can't catch up — you have local changes the remote doesn't have. Spin "
-            "off a copy to keep them, then reconcile."
+            f"Can't catch up — both this project and {label} have changed since "
+            "the fork, so there is no clean fast-forward. Spin off a copy to keep "
+            "your work, then reconcile."
         )
     if w_leg.status != "behind" and l_leg.status != "behind":
-        raise GitDomainError(f"Already up to date with '{remote}'.")
+        raise GitDomainError(f"Already up to date with '{label}'.")
 
     # Volatile caches must not survive into the caught-up tree (S12).
     _wipe_volatile_artefacts(cwd or Path.cwd())

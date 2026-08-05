@@ -1582,6 +1582,179 @@ class TestUcFork:
         assert _stored_head(files_api).generation == 2  # parent untouched
 
 
+class TestUpstreamSync:
+    """A fork can see and catch up to its parent, but never merge it.
+
+    The shape every test here starts from: a parent bound to ``UC_URL`` and
+    published, forked to ``FORK_URL``, then a second "container" bound to
+    the fork — the same construction ``TestUcFork`` restores.
+    """
+
+    def _parent_and_fork(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        advance_parent: bool = True,
+    ) -> Path:
+        _project_storage.bind_remote(UC_URL, project)
+        (project / "rating.py").write_text("# priced\n", encoding="utf-8")
+        assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+        _project_storage.publish_bound_project(project)
+        _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
+
+        if advance_parent:
+            # The parent moves on AFTER the fork — this is what the fork is
+            # later behind by. Done before the fork's container exists so the
+            # publish fence still belongs to the parent's writer.
+            (project / "rating.py").write_text("# parent moved on\n", encoding="utf-8")
+            assert _git.commit_save(["rating.py"], WORKING, cwd=project) is not None
+            # A milestone as well as a save, so BOTH legs of the pair move.
+            _git.commit_milestone("parent milestone", project, cwd=project)
+            _project_storage.publish_bound_project(project)
+
+        # A different container binds to the fork.
+        _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
+        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
+        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+        monkeypatch.setattr(_project_storage, "_uc_claim", None)
+        monkeypatch.setattr(_project_storage, "_uc_claim_url", None)
+
+        fork_root = tmp_path / "fork-container"
+        assert _project_storage.restore_if_bound(fork_root) == "restored"
+        return fork_root
+
+    def test_fetching_the_parent_adds_tracking_refs_but_no_remote(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The parent must never become a configured remote.
+
+        ``_canonical_remote`` picks from configured remotes, so a second one
+        would give the divergence baseline (and the milestone fork-gate) two
+        answers. Fetching straight from a bundle leaves ``git remote`` alone.
+        """
+        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        _project_storage.check_upstream(fork_root)
+
+        assert _run_git(fork_root, "remote").split() == ["origin"]
+        tracking = _run_git(fork_root, "for-each-ref", "--format=%(refname)", "refs/remotes/")
+        assert f"refs/remotes/upstream/{WORKING}" in tracking.splitlines()
+        assert f"refs/remotes/upstream/{WORKING}-save" in tracking.splitlines()
+
+    def test_an_undiverged_fork_is_behind_and_can_catch_up(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        status = _project_storage.check_upstream(fork_root)
+
+        assert status.parent_url == UC_URL
+        assert status.parent_generation == 3
+        assert status.working.status == "behind"
+        assert status.ledger.status == "behind"
+        assert status.can_fast_forward is True
+
+        parent_tip = _run_git(project, "rev-parse", WORKING)
+        response = _project_storage.pull_upstream(fork_root)
+
+        assert set(response.fast_forwarded) == {WORKING, f"{WORKING}-save"}
+        assert _run_git(fork_root, "rev-parse", WORKING) == parent_tip
+        assert _run_git(fork_root, "rev-parse", f"{WORKING}-save") == _run_git(
+            project, "rev-parse", f"{WORKING}-save"
+        )
+        assert (fork_root / "rating.py").read_text(encoding="utf-8") == "# parent moved on\n"
+
+    def test_a_fork_with_its_own_work_is_refused_and_left_intact(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Fast-forward only: both sides moved is a dead end, not a merge."""
+        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        (fork_root / "rating.py").write_text("# fork's own work\n", encoding="utf-8")
+        own_sha = _git.commit_save(["rating.py"], WORKING, cwd=fork_root)
+        assert own_sha is not None
+
+        status = _project_storage.check_upstream(fork_root)
+        # A save moves the ledger only; that alone is enough to rule out a
+        # fast-forward, and the working leg is still merely behind.
+        assert status.ledger.status == "diverged"
+        assert status.can_fast_forward is False
+
+        both_moved = "both this project and the parent project have changed"
+        with pytest.raises(GitDomainError, match=both_moved):
+            _project_storage.pull_upstream(fork_root)
+
+        # The fork's own history survives the refusal untouched.
+        assert own_sha in _run_git(fork_root, "log", "--format=%H", f"{WORKING}-save").splitlines()
+        assert (fork_root / "rating.py").read_text(encoding="utf-8") == "# fork's own work\n"
+
+    def test_a_project_that_is_not_a_fork_is_refused(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        _project_storage.bind_remote(UC_URL, project)
+        with pytest.raises(StorageConfigError, match="was not forked"):
+            _project_storage.check_upstream(project)
+
+    def test_a_parent_with_nothing_published_is_refused(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        del files_api.store[f"{_UC_ROOT}/HEAD.json"]
+        with pytest.raises(StorageConfigError, match="nothing published"):
+            _project_storage.check_upstream(fork_root)
+
+    def test_an_undownloadable_parent_fails_the_check_only(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A fork is a complete project: an unreachable parent breaks nothing."""
+        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        before = _run_git(fork_root, "for-each-ref", "--format=%(refname) %(objectname)")
+        head = _stored_head(files_api)
+        del files_api.store[f"{_UC_ROOT}/bundles/{head.bundle_name}"]
+
+        with pytest.raises(StorageUnavailableError, match=UC_URL):
+            _project_storage.check_upstream(fork_root)
+
+        assert _run_git(fork_root, "for-each-ref", "--format=%(refname) %(objectname)") == before
+
+    def test_catching_up_publishes_to_the_forks_own_location(
+        self,
+        project: Path,
+        files_api: _FakeFiles,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fork_root = self._parent_and_fork(project, files_api, tmp_path, monkeypatch)
+        assert _stored_head(files_api, _FORK_ROOT).generation == 1
+
+        _project_storage.pull_upstream(fork_root)
+
+        _wait_until(lambda: _stored_head(files_api, _FORK_ROOT).generation == 2)
+        assert _stored_head(files_api).generation == 3  # the parent is untouched
+
+
 # ---------------------------------------------------------------------------
 # Small polling helpers (the queue is a background thread)
 # ---------------------------------------------------------------------------

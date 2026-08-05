@@ -94,6 +94,7 @@ from haute.schemas import (
     GitStorageSync,
     GitUndeleteRequest,
     GitUndeleteResponse,
+    GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
 )
@@ -682,6 +683,100 @@ def git_fork_storage(body: GitForkStorageRequest, request: Request) -> GitForkSt
             "Bind this session to the new location to work on the copy."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/upstream/{check,pull} — a fork's parent relationship
+# ---------------------------------------------------------------------------
+
+
+def _upstream_message(status: _project_storage.UpstreamStatus) -> str:
+    """Hand-authored prose for the upstream dialog.
+
+    The three states the dialog serves: nothing to do, a clean catch-up, and
+    the honest dead end where both sides moved (no merge exists yet — see the
+    approved change contract).
+    """
+    behind = max(status.working.behind or 0, status.ledger.behind or 0)
+    ahead = max(status.working.ahead or 0, status.ledger.ahead or 0)
+    if status.can_fast_forward:
+        changes = "change" if behind == 1 else "changes"
+        return (
+            f"The parent project has {behind} {changes} this copy doesn't have yet. "
+            "Catching up brings them in without touching your own work."
+        )
+    if status.working.status in ("ahead", "diverged") or status.ledger.status in (
+        "ahead",
+        "diverged",
+    ):
+        if ahead and behind:
+            return (
+                f"Both projects have moved since the fork — {ahead} change(s) here and "
+                f"{behind} in the parent. Catching up would need a merge, which this "
+                "version can't do for you."
+            )
+        return (
+            f"This copy is {ahead} change(s) ahead of its parent and the parent has "
+            "nothing new — there is nothing to catch up to."
+        )
+    if status.working.status in ("unknown", "untracked") or status.ledger.status in (
+        "unknown",
+        "untracked",
+    ):
+        return (
+            "This copy's relationship to its parent couldn't be measured — the parent's "
+            "stored project may not carry the same branches."
+        )
+    return "This copy is up to date with the project it was forked from."
+
+
+@router.post("/storage/upstream/check", response_model=GitUpstreamStatusResponse)
+def git_check_upstream() -> GitUpstreamStatusResponse:
+    """Measure this fork against the parent it was forked from.
+
+    On demand only — it downloads the parent's whole stored bundle, which
+    is why it is deliberately absent from the polled readiness response."""
+    try:
+        status = _project_storage.check_upstream(Path.cwd())
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_upstream_check_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    return GitUpstreamStatusResponse(
+        parent_url=status.parent_url,
+        parent_generation=status.parent_generation,
+        working=status.working,
+        ledger=status.ledger,
+        can_fast_forward=status.can_fast_forward,
+        checked_at=status.checked_at,
+        message=_upstream_message(status),
+    )
+
+
+@router.post("/storage/upstream/pull", response_model=GitFastForwardResponse)
+def git_pull_upstream() -> GitFastForwardResponse:
+    """Catch this fork up to its parent by fast-forward only.
+
+    One-directional by design (parent → fork). The watcher is paused for
+    the wholesale tree replacement, exactly as the remote catch-up does."""
+    try:
+        with pause_watcher():
+            return _project_storage.pull_upstream(Path.cwd())
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_upstream_pull_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 # ---------------------------------------------------------------------------

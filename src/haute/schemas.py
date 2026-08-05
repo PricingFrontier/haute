@@ -2394,6 +2394,22 @@ class GitFastForwardResponse(BaseModel):
     fast_forwarded: list[str] = Field(default_factory=list)
 
 
+class GitUpstreamStatusResponse(BaseModel):
+    # A fork's measured relationship to the parent it was forked from.
+    # `working`/`ledger` carry the same per-leg honesty as every other
+    # divergence surface; `can_fast_forward` is the single predicate the
+    # catch-up affordance keys on, and `message` is hand-authored prose safe to
+    # surface verbatim.
+    parent_url: str
+    # Which published generation of the parent the comparison was made against.
+    parent_generation: int
+    working: GitRemoteLeg
+    ledger: GitRemoteLeg
+    can_fast_forward: bool
+    checked_at: str
+    message: str
+
+
 class GitPushRejection(BaseModel):
     # A non-fast-forward push rejection, carrying the per-leg divergence so the UI
     # can show the honest fork instead of a dead-end string (P7 M7/M6). Delivered

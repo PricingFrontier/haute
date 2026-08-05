@@ -80,6 +80,30 @@ function StorageChip() {
   )
 }
 
+/** A quiet marker that this project is a copy of another, opening the
+ *  comparison dialog. Deliberately understated: knowing where a fork came from
+ *  matters occasionally, and catching up to the parent is never the primary
+ *  action of a session. */
+function ForkChip() {
+  const forkedFrom = useGitStore((s) => s.status?.storage_forked_from ?? null)
+  const openModal = useGitStore((s) => s.openModal)
+
+  if (!forkedFrom) return null
+
+  return (
+    <button
+      type="button"
+      data-testid="fork-indicator"
+      onClick={() => openModal("upstream")}
+      className="text-[11px] font-medium px-1.5 py-0.5 rounded-md hover-chrome"
+      style={{ color: "var(--text-muted)" }}
+      title={`Forked from ${forkedFrom} — click to compare with it.`}
+    >
+      Forked
+    </button>
+  )
+}
+
 /**
  * Persistent toolbar indicator (S28): the working branch + the current save
  * SHA. Both the name and the SHA open the Git sidebar panel, which hosts the
@@ -240,6 +264,7 @@ export default function BranchIndicator() {
         </button>
       )}
       <StorageChip />
+      <ForkChip />
     </div>
   )
 }

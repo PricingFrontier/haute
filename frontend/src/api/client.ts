@@ -39,6 +39,7 @@ import type {
   GitBranchAwayResponse,
   GitBindStorageResponse,
   GitForkStorageResponse,
+  GitUpstreamStatus,
   GitCommitContext,
   GitGraphResponse,
   GitMoveResponse,
@@ -111,6 +112,7 @@ import {
   parseGitRemotesResponse,
   parseGitBindStorageResponse,
   parseGitForkStorageResponse,
+  parseGitUpstreamStatusResponse,
   parseGitPushResponse,
   parseGitFastForwardResponse,
   parseGitGraphResponse,
@@ -1358,6 +1360,25 @@ export function forkGitStorage(
     { source_url: sourceUrl, target_url: targetUrl },
     options,
   ).then(parseGitForkStorageResponse)
+}
+
+/** Measure this fork against the parent it was forked from. On demand only:
+ *  the server downloads the parent's whole stored bundle to answer. */
+export function checkGitUpstream(
+  options?: { signal?: AbortSignal },
+): Promise<GitUpstreamStatus> {
+  return post<unknown>("/api/git/storage/upstream/check", {}, options).then(
+    parseGitUpstreamStatusResponse,
+  )
+}
+
+/** Catch this fork up to its parent's tips, fast-forward only. */
+export function pullGitUpstream(
+  options?: { signal?: AbortSignal },
+): Promise<GitFastForwardResponse> {
+  return post<unknown>("/api/git/storage/upstream/pull", {}, options).then(
+    parseGitFastForwardResponse,
+  )
 }
 
 /** Clear a finished bind result once the dialog has shown it. */

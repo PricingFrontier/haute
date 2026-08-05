@@ -13,16 +13,18 @@ import { create } from "zustand"
 import {
   acknowledgeGitBind,
   bindGitStorage,
+  checkGitUpstream,
   forkGitStorage,
   getWorkingBranch,
+  pullGitUpstream,
   retryGitStorageSync,
 } from "../api/client"
-import type { GitBindStorageResponse, GitForkStorageResponse, GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
+import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
 
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
 /** Which modal is open. */
-export type GitModalMode = "select" | "divergence" | "milestone" | "storage"
+export type GitModalMode = "select" | "divergence" | "milestone" | "storage" | "upstream"
 
 /** A version being inspected read-only in the side-by-side comparison view (S11).
  *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
@@ -121,6 +123,12 @@ interface GitState {
   forkStorage: (sourceUrl: string, targetUrl: string) => Promise<GitForkStorageResponse>
   /** Clear a finished bind result after the dialog has reported it. */
   acknowledgeBind: () => Promise<void>
+  /** Measure this fork against its parent. On demand only — the server
+   *  downloads the parent's whole stored bundle to answer. */
+  checkUpstream: () => Promise<GitUpstreamStatus>
+  /** Catch this fork up to its parent, then refresh readiness (the catch-up
+   *  publishes to the fork's own location, so the sync state moves). */
+  pullUpstream: () => Promise<GitFastForwardResponse>
   /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
   retrySync: () => Promise<GitWorkingBranchResponse | null>
 }
@@ -219,6 +227,12 @@ const useGitStore = create<GitState>()((set, get) => ({
     // No readiness refresh: forking writes only to the volume — this
     // session's own binding is untouched until the user binds the fork.
     return forkGitStorage(sourceUrl, targetUrl)
+  },
+  checkUpstream: async () => checkGitUpstream(),
+  pullUpstream: async () => {
+    const result = await pullGitUpstream()
+    await get().loadStatus()
+    return result
   },
   retrySync: async () => {
     const status = await retryGitStorageSync()

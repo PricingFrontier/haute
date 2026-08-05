@@ -1268,6 +1268,19 @@ export interface GitForkStorageResponse {
   message: string
 }
 
+/** A fork's measured relationship to the parent it was forked from.
+ *  `can_fast_forward` is the single predicate the catch-up affordance keys on;
+ *  `message` is hand-authored prose safe to render verbatim. */
+export interface GitUpstreamStatus {
+  parent_url: string
+  parent_generation: number
+  working: GitRemoteLeg
+  ledger: GitRemoteLeg
+  can_fast_forward: boolean
+  checked_at: string
+  message: string
+}
+
 export interface GitSetWorkingBranchResponse {
   working_branch: string
   state: WorkingBranchState

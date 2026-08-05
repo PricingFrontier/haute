@@ -47,7 +47,10 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from haute.schemas import GitFastForwardResponse, GitRemoteLeg
 
 from haute._logging import get_logger
 from haute.errors import HauteError
@@ -1164,6 +1167,110 @@ def fork_uc_location(
         ) from exc
     logger.info("uc_location_forked", parent_generation=head.generation)
     return lineage
+
+
+#: Tracking namespace the parent's refs are fetched into. Deliberately NOT a
+#: configured remote — see ``_git.fetch_bundle_refs``.
+UPSTREAM_NAMESPACE = "upstream"
+
+
+@dataclass(frozen=True)
+class UpstreamStatus:
+    """A fork's measured relationship to the parent it was forked from."""
+
+    parent_url: str
+    parent_generation: int
+    working: GitRemoteLeg
+    ledger: GitRemoteLeg
+    can_fast_forward: bool
+    checked_at: str
+
+
+def check_upstream(project_root: Path) -> UpstreamStatus:
+    """Measure how far this fork sits from its parent's published tips.
+
+    On-demand only: it downloads the parent's whole bundle, so it must
+    never join the polled readiness path. A fork is a complete project,
+    not a dependent one — every failure here is a failure of the CHECK,
+    and leaves the fork's own saves, publishes, and boot untouched.
+    """
+    import tempfile
+
+    from haute import _git
+
+    binding = active_binding()
+    if binding is None or not is_uc_url(binding.remote_url):
+        raise StorageConfigError(
+            "Only projects stored on a Unity Catalog volume have a parent to compare against."
+        )
+    lineage = read_uc_lineage(binding.remote_url)
+    if lineage is None:
+        raise StorageConfigError(
+            "This project was not forked from another one, so there is no parent to catch up to."
+        )
+    head = read_uc_head(lineage.parent_url)
+    if head is None:
+        raise StorageConfigError(
+            f"The parent project at {lineage.parent_url} has nothing published to compare against."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="haute-uc-upstream-") as tmp:
+        bundle = Path(tmp) / head.bundle_name
+        try:
+            response = _files_api().download(_uc_bundle_path(lineage.parent_url, head.bundle_name))
+            bundle.write_bytes(response.contents.read())
+        except Exception as exc:
+            logger.warning(
+                "uc_upstream_download_failed", generation=head.generation, error=str(exc)
+            )
+            raise StorageUnavailableError(
+                f"Generation {head.generation} of the parent project at "
+                f"{lineage.parent_url} could not be downloaded from the storage volume."
+            ) from exc
+        try:
+            _git.bundle_verify(bundle, cwd=project_root)
+        except _git.GitError as exc:
+            raise StorageUnavailableError(
+                f"The parent project at {lineage.parent_url} failed verification — "
+                "its stored copy cannot be compared against."
+            ) from exc
+        # The tracking refs outlive the temporary bundle, which is all the
+        # comparison (and a later catch-up) reads.
+        _git.fetch_bundle_refs(bundle, UPSTREAM_NAMESPACE, cwd=project_root)
+
+    working, ledger = _git.pair_divergence(UPSTREAM_NAMESPACE, project_root, cwd=project_root)
+    measurable = all(leg.status in ("synced", "behind") for leg in (working, ledger))
+    can_fast_forward = measurable and any(leg.status == "behind" for leg in (working, ledger))
+    return UpstreamStatus(
+        parent_url=lineage.parent_url,
+        parent_generation=head.generation,
+        working=working,
+        ledger=ledger,
+        can_fast_forward=can_fast_forward,
+        checked_at=_now_iso(),
+    )
+
+
+def pull_upstream(project_root: Path) -> GitFastForwardResponse:
+    """Catch this fork up to its parent's published tips, fast-forward only.
+
+    One-directional by design: a fork's work is never written back to the
+    parent, whose location another app holds the claim on. The check is
+    re-run first so the decision is made on a fresh snapshot, exactly as
+    :func:`_git.fast_forward_pair` re-fetches before deciding.
+    """
+    from haute import _git
+
+    check_upstream(project_root)
+    response = _git.fast_forward_pair_from_tracking(
+        UPSTREAM_NAMESPACE,
+        project_root,
+        cwd=project_root,
+        source_label="the parent project",
+    )
+    # The caught-up state belongs in the FORK's own location, not the parent's.
+    enqueue_push()
+    return response
 
 
 def publish_to_uc(url: str, project_root: Path) -> None:
