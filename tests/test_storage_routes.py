@@ -30,11 +30,8 @@ def _isolated_storage_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.delenv(_project_storage.PROJECT_DIR_ENV, raising=False)
     monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
 
-    # Reset module-level singletons so tests are order-independent.
-    monkeypatch.setattr(_project_storage, "_active_binding", None)
-    monkeypatch.setattr(_project_storage, "_active_lineage", None)
-    monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-    monkeypatch.setattr(_project_storage, "_bind_task", _project_storage.BindTask())
+    # Reset the session singleton so tests are order-independent.
+    monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
 
     yield
 
@@ -294,8 +291,8 @@ def test_readiness_reports_fork_provenance(
     from haute._project_storage import UCLineage
 
     monkeypatch.setattr(
-        _project_storage,
-        "_active_lineage",
+        _project_storage._session,
+        "lineage",
         UCLineage(
             parent_url="uc://workspace.default.projects/demo",
             parent_generation=3,
@@ -349,7 +346,7 @@ def test_failed_sync_message_is_hand_authored_and_path_free(
         failed_queue._blocked = True
         failed_queue._terminal = True
 
-    monkeypatch.setattr(_project_storage, "_queue", failed_queue)
+    monkeypatch.setattr(_project_storage._session, "queue", failed_queue)
 
     resp = client.get("/api/git/working-branch")
     assert resp.status_code == 200

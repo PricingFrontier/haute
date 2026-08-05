@@ -164,14 +164,16 @@ def _with_storage_state(status: GitWorkingBranchResponse) -> GitWorkingBranchRes
     )
 
 
-def _claim_model(claim: object, message: str | None) -> GitStorageClaim | None:
+def _claim_model(
+    claim: _project_storage.UCClaim | None, message: str | None
+) -> GitStorageClaim | None:
     """Render a lease holder for the client, or ``None`` when unheld."""
     if claim is None:
         return None
     return GitStorageClaim(
-        app_name=getattr(claim, "app_name", ""),
-        user=getattr(claim, "user", None),
-        refreshed_at=getattr(claim, "refreshed_at", None),
+        app_name=claim.app_name,
+        user=claim.user,
+        refreshed_at=claim.refreshed_at,
         message=message or "",
     )
 

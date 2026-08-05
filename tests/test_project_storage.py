@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from haute import _git, _project_storage
+from haute import _git, _project_storage, _uc_transport
 from haute._git import GitDomainError, GitPushRejectedError
 from haute._project_storage import (
     GIT_TOKEN_ENV,
@@ -63,18 +63,11 @@ def _isolated_storage_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(GIT_TOKEN_ENV, raising=False)
     monkeypatch.delenv("GIT_ASKPASS", raising=False)
     monkeypatch.delenv("DATABRICKS_APP_NAME", raising=False)
-    monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-    monkeypatch.setattr(_project_storage, "_active_binding", None)
-    monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
-    monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
-    monkeypatch.setattr(_project_storage, "_uc_claim", None)
-    monkeypatch.setattr(_project_storage, "_uc_claim_url", None)
-    monkeypatch.setattr(_project_storage, "_active_lineage", None)
-    monkeypatch.setattr(_project_storage, "_claim_heartbeat", _project_storage._ClaimHeartbeat())
-    monkeypatch.setattr(_project_storage, "_bind_task", _project_storage.BindTask())
+    monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
+    monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
     yield
     _project_storage.push_queue().stop()
-    _project_storage._claim_heartbeat.stop()
+    _uc_transport._writer.heartbeat.stop()
 
 
 @pytest.fixture()
@@ -169,9 +162,9 @@ class _FakeNotFoundError(Exception):
 def files_api(monkeypatch: pytest.MonkeyPatch) -> _FakeFiles:
     """Route binding reads/writes to an in-memory store."""
     fake = _FakeFiles()
-    monkeypatch.setattr(_project_storage, "_files_api", lambda: fake)
+    monkeypatch.setattr(_uc_transport, "_files_api", lambda: fake)
     monkeypatch.setattr(
-        _project_storage, "_is_not_found", lambda exc: isinstance(exc, _FakeNotFoundError)
+        _uc_transport, "_is_not_found", lambda exc: isinstance(exc, _FakeNotFoundError)
     )
     monkeypatch.setenv(STATE_VOLUME_ENV, "workspace.default.haute_state")
     return fake
@@ -248,7 +241,7 @@ class TestUcUrlValidation:
 
     def test_volume_path_resolution(self) -> None:
         assert (
-            _project_storage._uc_volume_path("uc://workspace.default.projects/pricing/demo")
+            _uc_transport._uc_volume_path("uc://workspace.default.projects/pricing/demo")
             == "/Volumes/workspace/default/projects/pricing/demo"
         )
 
@@ -643,7 +636,7 @@ class TestContainerDeathSurvival:
 
         # The container is replaced: a brand-new filesystem, same binding.
         restored_root = tmp_path / "new-container"
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+        monkeypatch.setattr(_project_storage._session, "queue", PushQueue())
         outcome = _project_storage.restore_if_bound(restored_root)
 
         assert outcome == "restored"
@@ -854,7 +847,7 @@ class TestPublishDispatch:
             _git, "push_working_pair", _RecordingPush(AssertionError("no git push for uc://"))
         )
         monkeypatch.setattr(
-            _project_storage, "_active_binding", StorageBinding(remote_url=UC_URL, branch=WORKING)
+            _project_storage._session, "binding", StorageBinding(remote_url=UC_URL, branch=WORKING)
         )
         _project_storage.publish_bound_project(project)
         assert published == [UC_URL]
@@ -944,10 +937,8 @@ class TestUcContainerDeathSurvival:
         # The container is replaced: fresh filesystem, fresh process state,
         # same volume. A new writer identity is minted in the new container.
         restored_root = tmp_path / "new-container"
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-        monkeypatch.setattr(_project_storage, "_active_binding", None)
-        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
-        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
+        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
         outcome = _project_storage.restore_if_bound(restored_root)
 
         assert outcome == "restored"
@@ -991,10 +982,8 @@ class TestUcContainerDeathSurvival:
         monkeypatch.setenv("DATABRICKS_APP_NAME", "test-app")
         _project_storage.bind_remote(UC_URL, project)
         # Same filesystem, new process: fresh writer id, no seen generation.
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-        monkeypatch.setattr(_project_storage, "_active_binding", None)
-        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
-        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
+        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
 
         assert _project_storage.restore_if_bound(project) == "present"
         _project_storage.publish_bound_project(project)
@@ -1017,10 +1006,8 @@ class TestUcContainerDeathSurvival:
             .to_json()
             .encode("utf-8")
         )
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-        monkeypatch.setattr(_project_storage, "_active_binding", None)
-        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
-        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
+        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
+        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
 
         assert _project_storage.restore_if_bound(project) == "present"
         with pytest.raises(StorageSupersededError, match="Another app container"):
@@ -1040,8 +1027,7 @@ class TestUcContainerDeathSurvival:
         files_api.store[f"{_UC_ROOT}/bundles/000002.bundle"] = b"torn partial upload"
 
         restored_root = tmp_path / "new-container"
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
         assert _project_storage.restore_if_bound(restored_root) == "restored"
         assert _run_git(restored_root, "rev-parse", "HEAD") == sha_gen1
 
@@ -1137,7 +1123,7 @@ class TestUcContainerDeathSurvival:
         _project_storage.bind_remote(UC_URL, project)
         head = _stored_head(files_api)
         assert head.bundle_name.startswith("000001-")
-        assert _project_storage._writer_id() in head.bundle_name
+        assert _uc_transport._writer_id() in head.bundle_name
         assert f"{_UC_ROOT}/bundles/{head.bundle_name}" in files_api.store
 
     def test_a_mid_flight_publish_by_another_writer_stops_before_the_pointer(
@@ -1184,8 +1170,7 @@ class TestUcContainerDeathSurvival:
         )
         files_api.store[f"{_UC_ROOT}/HEAD.json"] = torn.to_json().encode("utf-8")
 
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-        monkeypatch.setattr(_project_storage, "_active_binding", None)
+        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
         with pytest.raises(StorageUnavailableError, match="does not contain"):
             _project_storage.restore_if_bound(tmp_path / "fresh")
 
@@ -1425,7 +1410,7 @@ class TestUcClaim:
     ) -> None:
         """A stolen lease is never re-stolen by a background thread."""
         _project_storage.bind_remote(UC_URL, project)
-        beat = _project_storage._claim_heartbeat._beat
+        beat = _uc_transport._writer.heartbeat._beat
         assert beat() is True  # ours: refreshed, keep beating
 
         _plant_claim(files_api, "thief-app")
@@ -1457,7 +1442,7 @@ class TestUcClaim:
     ) -> None:
         _project_storage.bind_remote(UC_URL, project)
         del files_api.store[f"{_UC_ROOT}/CLAIM.json"]
-        assert _project_storage._claim_heartbeat._beat() is True
+        assert _uc_transport._writer.heartbeat._beat() is True
         assert _stored_claim(files_api) is not None
 
     def test_restarting_the_heartbeat_after_stop_beats_again(
@@ -1466,7 +1451,7 @@ class TestUcClaim:
         """A stop() racing a start() must not strand the new claim beatless
         (the lease would silently expire and another writer take over)."""
         _project_storage.bind_remote(UC_URL, project)
-        heartbeat = _project_storage._claim_heartbeat
+        heartbeat = _uc_transport._writer.heartbeat
         first_thread = heartbeat._thread
         heartbeat.stop()
         heartbeat.start()
@@ -1559,12 +1544,8 @@ class TestUcFork:
 
         # A different container binds to the fork.
         _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-        monkeypatch.setattr(_project_storage, "_active_binding", None)
-        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
-        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
-        monkeypatch.setattr(_project_storage, "_uc_claim", None)
-        monkeypatch.setattr(_project_storage, "_uc_claim_url", None)
+        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
+        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
 
         restored_root = tmp_path / "fork-container"
         assert _project_storage.restore_if_bound(restored_root) == "restored"
@@ -1617,12 +1598,8 @@ class TestUpstreamSync:
 
         # A different container binds to the fork.
         _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
-        monkeypatch.setattr(_project_storage, "_queue", PushQueue())
-        monkeypatch.setattr(_project_storage, "_active_binding", None)
-        monkeypatch.setattr(_project_storage, "_uc_writer_id", None)
-        monkeypatch.setattr(_project_storage, "_uc_last_seen_generation", None)
-        monkeypatch.setattr(_project_storage, "_uc_claim", None)
-        monkeypatch.setattr(_project_storage, "_uc_claim_url", None)
+        monkeypatch.setattr(_project_storage, "_session", _project_storage._SessionState())
+        monkeypatch.setattr(_uc_transport, "_writer", _uc_transport._WriterState())
 
         fork_root = tmp_path / "fork-container"
         assert _project_storage.restore_if_bound(fork_root) == "restored"
