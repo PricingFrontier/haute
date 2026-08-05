@@ -2,8 +2,9 @@
  * Zustand store for the working-branch model (P2/P3).
  *
  * Holds the latest working-branch readiness signal (from GET /api/git/working-branch),
- * which branch + last-save SHA the toolbar indicator displays, and the open/close
- * state of the git modals (working-branch chooser, divergence, milestone commit).
+ * the current branch and last-save identity used by comparison flows, and the
+ * open/close state of the git modals (working-branch chooser, divergence,
+ * milestone commit). The toolbar indicator consumes only the branch identity.
  *
  * The graph-shaped state and dirty tracking live in useGraphStore; chrome/panel
  * state lives in useUIStore. This store owns only the git working-branch concern.

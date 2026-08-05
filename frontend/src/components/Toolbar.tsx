@@ -43,8 +43,8 @@ interface ToolbarProps {
    *  submodel, not a read-only instance. The caller owns that policy. */
   canCreateSubmodel: boolean
   onCreateSubmodel: () => void
-  /** Create a linked instance of the single selected node (any node type —
-   *  the generic `instanceOf` path, not just submodels). */
+  /** Create a linked instance of the single selected non-singleton node (the
+   *  generic `instanceOf` path, not just submodels). */
   canCreateInstance: boolean
   onCreateInstance: () => void
   onCentre: () => void
@@ -83,6 +83,7 @@ export default function Toolbar({
   const removeSource = useSettingsStore((s) => s.removeSource)
   const assistantOpen = useUIStore((s) => s.assistantOpen)
   const setAssistantOpen = useUIStore((s) => s.setAssistantOpen)
+  const rowLimitWidthCh = Math.max(4, String(rowLimit).length)
   const [addingSource, setAddingSource] = useState(false)
   const [newSourceName, setNewSourceName] = useState("")
   const [sourceError, setSourceError] = useState<string | null>(null)
@@ -242,9 +243,9 @@ export default function Toolbar({
           value={rowLimit}
           onChange={(e) => setRowLimit(Math.max(0, parseInt(e.target.value) || 0))}
           className="toolbar-number-input px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
-          /* 4 digits wide: 4ch of text plus the 12px horizontal padding, 2px
-             border and 2px of caret room. */
-          style={{ width: 'calc(4ch + 16px)', background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
+          /* Four digits at minimum, growing to retain the complete configured
+             value because row limits have no upper bound. */
+          style={{ width: `calc(${rowLimitWidthCh}ch + 16px)`, background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
         />
       </div>
       {/* Streaming chunk size — next to row limit */}
@@ -265,9 +266,8 @@ export default function Toolbar({
             setStreamingChunkSize(parsed)
           }}
           className="toolbar-number-input px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
-          /* 7 digits wide: covers the 500,000 default and any value up to
-             9,999,999; the 10,000,000 ceiling itself renders one digit wide. */
-          style={{ width: 'calc(7ch + 16px)', background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
+          /* Eight digits cover the complete 10,000,000 backend maximum. */
+          style={{ width: 'calc(8ch + 16px)', background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
         />
       </div>
       {/* Undo / Redo.  Grouped so they take the shared 10px gap — as bare

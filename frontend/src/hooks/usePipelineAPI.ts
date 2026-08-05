@@ -65,7 +65,7 @@ export interface PipelineAPIReturn {
    * by id. */
   previewNodeFrame: (nodeId: string, portLabel: string) => void
   /** Save the pipeline. Resolves true on success, false on failure (never rejects);
-   *  callers chaining follow-on work (save & commit) await this. */
+   *  callers chaining follow-on work (such as Commit) await this. */
   handleSave: () => Promise<boolean>
 }
 
@@ -942,7 +942,7 @@ export default function usePipelineAPI({
   }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, addToast, ensureSnapshotsForNodes])
 
   // Returns true when the save succeeded, false on failure — callers that
-  // chain follow-on work (e.g. save & commit) await this so they only proceed
+  // chain follow-on work (for example Commit) await this so they only proceed
   // once the ledger actually holds the latest editor state. Never rejects.
   const handleSave = useCallback(async (): Promise<boolean> => {
     if (parentGraphRef.current) {

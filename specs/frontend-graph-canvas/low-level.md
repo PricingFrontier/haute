@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), owns the toolbar Submodel/Instance handlers (which hold the full policy — the `can*` props they pass down drive presentation only, so an unavailable click still toasts its reason), and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
+| `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), adapts the shared Submodel creation policy and owns the Instance toolbar handler (the `can*` props drive presentation only, so an unavailable click still toasts its reason), and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component on the full-detail body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail frame-row primitive used by API Input, the parent Submodel card, and drilled Input/Output boundary cards. It owns the common semibold 13px label typography, truncation/title behavior, and row-relative source/target handle placement. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, then renders labelled `in__<portId>`/`out__<portId>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. Cards have no default target. |
@@ -27,7 +27,8 @@
 | `frontend/src/hooks/useSubmodelBoundaryEditing.ts` | Adapts canonical pure boundary transforms to React Flow connection/deletion events, the history-aware atomic graph setter, `parentGraphRef`, error toasts, and undo/redo reconciliation while a drilled view is active. |
 | `frontend/src/hooks/useGraphCanvasState.ts` | React Flow adapter over `useGraphStore`: converts `NodeChange[]`/`EdgeChange[]` into raw graph updates, takes one snapshot at a drag's first structural position change, and avoids history churn for per-frame movement and selection-only changes. |
 | `frontend/src/hooks/usePanelGraphContext.ts` | Produces the typed, render-stable `PanelGraphContextSnapshot` (`allNodes`, `edges`, `nodeById`, `getNode`) only when the graph store's panel-context version changes, isolating editor consumers from React Flow UI-only updates. |
-| `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. |
+| `frontend/src/hooks/useKeyboardShortcuts.ts` | App-level canvas keyboard bindings for save, undo/redo, copy/paste, delete, search, Submodel creation, and panel dismissal; honours editable controls so keystrokes do not leak from a text field into graph mutation. Ctrl+G delegates to the same `requestSubmodelCreation` policy as the toolbar. |
+| `frontend/src/utils/submodelCreation.ts` | `requestSubmodelCreation` — the single policy and refusal-message owner shared by Ctrl+G and the toolbar Submodel action: editable context, main canvas, and at least two selected nodes. |
 | `frontend/src/utils/buildGraph.ts` | `buildGraph` (backend payload shape), `graphForRequestIdentity` (semantic graph projection consumed by Data Output), and `resolveGraphFromRefs` (parent-graph-takes-priority resolution used by preview/save/submodel calls). |
 | `frontend/src/utils/graphDiff.ts` | `diffPipelineNodes` — pure added/removed/changed/moved node diff between two graph versions, backing the comparison view. |
 | `frontend/src/utils/graphHelpers.ts` | `computeNextNodeId`, `normalizeEdges`, and `filterIncomingEdges`; validates endpoint/handle existence for layout while preserving the full normalised edge list for graph state and save. |
@@ -68,7 +69,11 @@ node. Hooks and utilities must use `node.data.nodeType === 'submodel'` plus the
 typed config; parsing `submodel__*` ids or display labels is forbidden.
 
 For ordinary pipeline nodes, Create Instance retains the established
-`config.instanceOf` behavior. For a canonical `SUBMODEL`, the action is a pure
+`config.instanceOf` behavior. Instancing an existing instance first validates
+that its pointer names an existing, same-type canonical owner with no
+`instanceOf` of its own; dangling, self-pointing, type-mismatched, and chained
+identity is rejected rather than traversed or repaired. For a canonical
+`SUBMODEL`, the action is a pure
 single-snapshot graph mutation that retains `definitionId`, allocates a fresh
 collision-free immutable node id and deterministic alias (copy numbering
 continues past nine: `scoring_10` clones to `scoring_11`, never
@@ -974,7 +979,8 @@ again through the editor and save paths.
     immutable id, normalized deterministic alias suffix (including past-nine
     numbering), empty bindings, and one undo snapshot; the singleton-type
     instance refusal for each of the three singleton types; instancing an
-    instance resolving to the original rather than chaining; duplicate and
+    instance resolving to a validated original rather than chaining, including
+    explicit refusal of malformed ordinary-instance identity; duplicate and
     auto-layout behavior.
   - `frontend/src/hooks/__tests__/useNodeHandlers.gaps.test.ts` — `handleRenameNode` (opens dialog with
     correct id/label, no-ops for a missing node, coerces a non-string

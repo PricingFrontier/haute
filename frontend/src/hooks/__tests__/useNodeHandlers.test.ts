@@ -312,6 +312,52 @@ describe("useNodeHandlers", () => {
     expect(newNode.data.config).toEqual({ instanceOf: "polars_1" })
   })
 
+  it.each([
+    "dangling",
+    "self-pointing",
+    "type-mismatched",
+    "chained",
+    "malformed",
+  ])("handleCreateInstance refuses %s ordinary-instance identity", (identity) => {
+    const params = makeParams()
+    const selected = makeNode("polars_2", "polars", {
+      data: {
+        label: "Selected instance",
+        nodeType: "polars",
+        config: {
+          instanceOf: identity === "self-pointing"
+            ? "polars_2"
+            : identity === "malformed" ? 42 : "polars_1",
+        },
+      },
+    })
+    const owner = makeNode(
+      "polars_1",
+      identity === "type-mismatched" ? "dataInput" : "polars",
+      identity === "chained"
+        ? { data: { label: "Chained owner", nodeType: "polars", config: { instanceOf: "polars_0" } } }
+        : {},
+    )
+    params.graphRef.current = {
+      nodes: ["dangling", "self-pointing", "malformed"].includes(identity)
+        ? [selected]
+        : [owner, selected],
+      edges: [],
+    }
+    const { result } = renderHook(() => useNodeHandlers(params))
+
+    act(() => {
+      result.current.handleCreateInstance("polars_2")
+    })
+
+    expect(params.setNodes).not.toHaveBeenCalled()
+    expect(params.setSelectedNode).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts.at(-1)).toMatchObject({
+      type: "error",
+      text: expect.stringMatching(/cannot create.*original/i),
+    })
+  })
+
   it("creates a SUBMODEL occurrence without copying its shared definition", () => {
     const params = makeParams()
     const source = makeNode("submodel_10", "submodel", {

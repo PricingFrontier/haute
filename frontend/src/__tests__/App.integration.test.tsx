@@ -866,7 +866,7 @@ describe("App integration — save pipeline", () => {
     })
   })
 
-  it("save & commit: Commit flushes a save, opens the milestone modal, then commits", async () => {
+  it("Commit flushes a save, opens the milestone modal, then commits", async () => {
     // Healthy clone (default mock state is "ready").
     render(<App />)
     await waitForAppReady()
@@ -1921,6 +1921,30 @@ describe("App integration — panel open/close", () => {
     // Neither refusal did anything to the graph.
     expect(useUIStore.getState().submodelDialog).toBeNull()
     expect(useGraphStore.getState().nodes).toHaveLength(2)
+  })
+
+  it("presents Instance as unavailable for a singleton node and explains an attempted click", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("api_1", "Quote Input", "apiInput")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-singleton-instance",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["api_1"])
+    const instanceButton = screen.getByTestId("toolbar-instance")
+    await waitFor(() => expect(instanceButton).toHaveAttribute("aria-disabled", "true"))
+
+    fireEvent.click(instanceButton)
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/only one node of this type/)
+    })
+    expect(useGraphStore.getState().nodes).toHaveLength(1)
   })
 
   it("Submodel opens the naming dialog for the selected nodes", async () => {

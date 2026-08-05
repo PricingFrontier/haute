@@ -204,9 +204,29 @@ export default function useNodeHandlers({
       // (NodePanel) does no chain-walking, so a chained `instanceOf` would
       // resolve the "original" to another pointer with no content of its own.
       // This mirrors the `ownerId` flattening the submodel branch does above.
-      const ownerId = typeof origData.config?.instanceOf === "string"
-        ? origData.config.instanceOf
-        : id
+      const instanceOf = origData.config?.instanceOf
+      let ownerId = id
+      if (instanceOf !== undefined) {
+        if (typeof instanceOf !== "string" || instanceOf.trim() === "") {
+          addToast("error", `Cannot create instance of "${origData.label}": its original node identity is invalid`)
+          return
+        }
+        const owner = n.find((node) => node.id === instanceOf)
+        if (!owner) {
+          addToast("error", `Cannot create instance of "${origData.label}": original node "${instanceOf}" does not exist`)
+          return
+        }
+        const ownerData = nodeData(owner)
+        if (ownerData.nodeType !== origNodeType) {
+          addToast("error", `Cannot create instance of "${origData.label}": original node "${instanceOf}" has a different node type`)
+          return
+        }
+        if (ownerData.config?.instanceOf !== undefined) {
+          addToast("error", `Cannot create instance of "${origData.label}": original node "${instanceOf}" is itself an instance`)
+          return
+        }
+        ownerId = instanceOf
+      }
       instanceConfig = { instanceOf: ownerId }
     }
 

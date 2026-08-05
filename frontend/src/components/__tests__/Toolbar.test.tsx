@@ -306,6 +306,14 @@ describe("Toolbar", () => {
     expect(getChunkInput()).toHaveAttribute("max", "10000000")
   })
 
+  it("sizes numeric fields for the complete configured value and valid maximum", () => {
+    useSettingsStore.setState({ rowLimit: 125_000, streamingChunkSize: 10_000_000 })
+    render(<Toolbar {...makeProps()} />)
+
+    expect(getRowLimitInput()).toHaveStyle({ width: "calc(6ch + 16px)" })
+    expect(getChunkInput()).toHaveStyle({ width: "calc(8ch + 16px)" })
+  })
+
   it("zoom in button calls onZoomIn", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)

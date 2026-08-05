@@ -223,6 +223,9 @@ well as occurrence-specific positions and bindings.
   instance of an ordinary node stamps `config.instanceOf` at the ORIGINAL id —
   instancing an existing instance yields a sibling pointing at the same
   original, never a chain, because instance resolution does not walk chains.
+  A selected instance whose pointer is dangling, type-mismatched, self-pointing,
+  or itself points to another instance is rejected explicitly; the client does
+  not walk or repair invalid chains.
   Creating an instance of a canonical `SUBMODEL` instead retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
@@ -351,8 +354,11 @@ well as occurrence-specific positions and bindings.
   triggers (editable
   context, main canvas, 2+ nodes) and both answer a refusal with the same
   toast. The toolbar pair also exposes Instance, which stamps `instanceOf` for
-  a single selected node of any type — the context menu offers Create Instance
-  only for submodel occurrences. The context menu's entry for an existing submodel node
+  a single selected non-singleton node — the context menu offers Create Instance
+  only for submodel occurrences. Singleton availability is derived from the
+  same canonical node-type metadata used by the shared handler; an attempted
+  unavailable action remains explainable without being presented as enabled.
+  The context menu's entry for an existing submodel node
   reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
   non-previewable node type — rather than the output-port summary table that
@@ -606,8 +612,8 @@ well as occurrence-specific positions and bindings.
   rather than letting a malformed response reach the graph as
   `undefined`-shaped nodes.
 - Saving never rejects to the UI — every failure path is caught and surfaced
-  as an error toast, and the action reports failure so Save & Commit can stop
-  safely.
+  as an error toast, and the action reports failure so Commit can stop safely
+  before opening its milestone dialog.
 - A preview request or its downstream cascade member that fails with an
   aborted/superseded error is treated as expected cancellation (no toast);
   any other failure shows a `warning` toast naming the failing node, and a
