@@ -1,5 +1,26 @@
 # Databricks Apps deployment spike — learnings
 
+> Update (5 August 2026): the claim/fence layer and the fork + upstream
+> catch-up were proven live, two-actor — the app holding the parent
+> location while this repo's own transport code ran from a laptop
+> ("machine B") against the same volume. Proven end to end: boot takeover
+> of a dead container's claim; a save publishing the next generation
+> under a writer-unique bundle name; machine B's bind attempt on the held
+> location refused with the holder and heartbeat age named; fork of the
+> parent's published generation (pointer then lineage); restore of the
+> fork on the second machine; upstream check reporting the ledger one
+> behind and `pull_upstream` fast-forwarding it to the parent's exact
+> tip; a publish from an unblessed fresh process REFUSED by the
+> supersession fence (correctly — only a restore or an exact-match
+> generation record blesses a clone); a foreign-writer takeover of a
+> stale claim; and `bind_remote`'s populated-remote "restart-required"
+> path recording a rebind. Operational finding: `apps stop` kills the
+> container without running Python `atexit`, so the released-on-shutdown
+> claim never happens on this platform — the claim always goes stale
+> (other machines see "in use" for up to the 150 s staleness window) and
+> the next boot of the same app takes it over immediately. That is the
+> designed recovery, but treat the atexit release as local-dev-only.
+
 > Update (4 August 2026): the `uc://` bundle transport was proven live on
 > this app. Bind to `uc://workspace.default.haute_state/projects/uc-live-demo`
 > → `adopted`, generation 1 bundle + HEAD.json on the volume; a pipeline
