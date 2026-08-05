@@ -97,7 +97,7 @@ Known gaps: no test exercises a real HTTPS remote or a real UC volume (the live 
 
 ## Approved change contract
 
-Delivered, including the `uc://` bundle transport (initially deferred; now implemented as described above), its claim/fork concurrency layer, and upstream visibility with fast-forward catch-up for forks.
+Delivered, including the `uc://` bundle transport (initially deferred; now implemented as described above), its claim/fork concurrency layer, and upstream visibility with fast-forward catch-up for forks. The follow-ups below, together with what the live proof surfaced and the planned new/open-loop work, are collected in [ROADMAP.md](ROADMAP.md).
 
 Deliberately out of scope, recorded here as follow-ups rather than regressions:
 
