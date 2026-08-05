@@ -28,9 +28,9 @@ from haute.server import app as haute_app
 # Header set observed from the real Databricks Apps proxy (see
 # databricks_app/LEARNINGS.md).
 _PROXY_HEADERS = {
-    "host": "haute-spike-2112915975510064.aws.databricksapps.com",
+    "host": "haute-demo-1234567890123456.aws.databricksapps.com",
     "x-forwarded-for": "10.1.2.3",
-    "x-forwarded-host": "haute-spike-2112915975510064.aws.databricksapps.com",
+    "x-forwarded-host": "haute-demo-1234567890123456.aws.databricksapps.com",
     "x-forwarded-proto": "https",
     "x-forwarded-email": "someone@example.com",
 }

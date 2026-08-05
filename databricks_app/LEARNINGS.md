@@ -47,10 +47,12 @@
 > shim-era notes below are preserved as the record of how the boundary
 > was discovered.
 
-Status: DEPLOYED AND RUNNING (29 July 2026) —
-https://haute-spike-2112915975510064.aws.databricksapps.com on workspace
-`dbc-6abae023-c819` (CLI profile `haute-spike`, app service principal
-`app-2xmuei haute-spike`, MEDIUM compute).
+Status: DEPLOYED AND RUNNING (29 July 2026) — served at
+`https://<app>-<workspace-id>.<region>.databricksapps.com`, on MEDIUM
+compute, under the app's own service principal. Commands below use
+`haute-spike` as the example app and CLI-profile name; the workspace
+host, workspace id and generated service-principal name are deployment
+details rather than findings and are deliberately not recorded here.
 
 ## The relative-interpreter trap (measured 5 August 2026)
 
