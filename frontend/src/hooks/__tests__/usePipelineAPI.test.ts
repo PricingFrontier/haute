@@ -504,6 +504,39 @@ describe("usePipelineAPI", () => {
     expect(params.sourceRevisionRef.current).toBe("revision-save")
   })
 
+  it("handleSave surfaces backend save warnings as their own toasts", async () => {
+    // Warnings ride along with a SUCCESSFUL save (an unfinished transform, an
+    // API Input with no tables). Without their own toast they are invisible and
+    // the user meets the problem later, on the next run.
+    mockLoad.mockResolvedValue({
+      nodes: [],
+      edges: [],
+      preserved_blocks: [],
+      source_revision: "revision-load",
+    })
+    mockSave.mockResolvedValue({
+      file: "pricing.py",
+      pipeline_name: "pricing",
+      source_revision: "revision-save",
+      warnings: ["Transform node 'claims' combines 2 inputs but has no code to combine them."],
+    })
+    const params = makeParams()
+    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
+    const { result } = renderHook(() => usePipelineAPI(params))
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    useGraphStore.getState().setNodesRaw(params.graphRef.current.nodes)
+    await act(async () => {
+      result.current.handleSave()
+    })
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts
+      expect(toasts.some((t) => t.type === "success")).toBe(true)
+      expect(
+        toasts.some((t) => t.type === "warning" && t.text.includes("claims")),
+      ).toBe(true)
+    })
+  })
+
   it("handleSave includes the current submodel mirror in the payload", async () => {
     mockLoad.mockResolvedValue({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-load" })
     mockSave.mockResolvedValue({ file: "pricing.py", pipeline_name: "pricing", source_revision: "revision-save" })

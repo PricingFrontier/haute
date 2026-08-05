@@ -23,6 +23,9 @@ from hypothesis import strategies as st
 
 from haute._json_shred import (
     ShredSkipStats,
+    _assemble_inference_schema,
+    _infer_records,
+    _InferenceState,
     infer_v2_schema_from_data,
     shred_to_buffers,
 )
@@ -195,3 +198,45 @@ def test_inference_is_record_order_invariant(records: list[dict[str, Any]], tmp_
     assert _normalise(infer_v2_schema_from_data(forward)) == _normalise(
         infer_v2_schema_from_data(reverse)
     )
+
+
+_nested_inference_object = st.dictionaries(
+    keys=st.sampled_from(["x", "y", "z"]),
+    values=st.one_of(_scalars, st.none()),
+    max_size=3,
+)
+_inference_value = st.one_of(
+    _scalars,
+    st.none(),
+    _nested_inference_object,
+    st.lists(st.one_of(_scalars, st.none()), max_size=5),
+    st.lists(_nested_inference_object, max_size=5),
+)
+
+
+@given(
+    records=st.lists(
+        st.dictionaries(
+            keys=st.sampled_from(["a", "b", "profile", "items"]),
+            values=_inference_value,
+            max_size=4,
+        ),
+        max_size=30,
+    ),
+    first_cut=st.integers(min_value=0, max_value=30),
+    second_cut=st.integers(min_value=0, max_value=30),
+)
+@settings(max_examples=100, deadline=None)
+def test_chunk_state_merge_is_exactly_equivalent_to_serial_inference(
+    records: list[dict[str, Any]], first_cut: int, second_cut: int
+) -> None:
+    """Any file partition must preserve the complete ordered schema payload."""
+    cuts = sorted((min(first_cut, len(records)), min(second_cut, len(records))))
+    chunks = (records[: cuts[0]], records[cuts[0] : cuts[1]], records[cuts[1] :])
+
+    expected = _assemble_inference_schema(_infer_records(records))
+    merged = _InferenceState()
+    for chunk in chunks:
+        merged.merge(_infer_records(chunk))
+
+    assert _assemble_inference_schema(merged) == expected

@@ -498,8 +498,10 @@ newer overlapping transform.
     newest applied (`saveRequestId > appliedSaveSeq.current`), then updates
     `useGitStore`'s last-save SHA and notifies its history-changed
     subscribers and replaces `sourceRevisionRef.current` with the committed
-    `source_revision`. Never throws; resolves `false` on any failure after
-    toasting the detail.
+    `source_revision`. The success toast is followed by one warning toast for
+    each backend save warning, including incomplete transforms found in either
+    the root graph or an embedded submodel definition. Never throws; resolves
+    `false` on any failure after toasting the detail.
 19. **WebSocket sync (`useWebSocketSync`).** Connects to the credential-free
     `/ws/sync` URL; the browser supplies its HttpOnly same-origin cookie during
     the handshake. On open, sends a `resync` message

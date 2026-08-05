@@ -1197,7 +1197,18 @@ export function deleteJsonCache(
 }
 
 /**
- * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+ * Request budget for complete *Infer Tables* schema discovery.
+ *
+ * The shared client timeout is 30 seconds, but a multi-GB structured input can
+ * legitimately take minutes to scan. We keep inference complete by default
+ * and give it the same budget as cache construction. A hidden head sample is
+ * unsafe: a wholly new field appearing after the sample is ignored by build,
+ * not rejected as a type widening, so it would disappear without warning.
+ */
+export const JSON_CACHE_INFER_TIMEOUT_MS = 1_800_000
+
+/**
+ * Sniff a v2 schema mapping from a structured input file.
  * Drives the ApiInputEditor's *Infer Tables* button.
  *
  * Returns a v2-shaped ``tables`` array; the caller stitches it into the
@@ -1205,12 +1216,12 @@ export function deleteJsonCache(
  */
 export function inferJsonCacheSchema(
   payload: { path: string; sample_size?: number },
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<{ tables: Array<Record<string, unknown>> }> {
   return post<unknown>(
     "/api/json-cache/infer",
     payload,
-    options,
+    { timeout: JSON_CACHE_INFER_TIMEOUT_MS, ...options },
   ).then(parseJsonCacheSchemaInferenceResponse)
 }
 

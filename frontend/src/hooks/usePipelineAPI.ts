@@ -1002,6 +1002,13 @@ export default function usePipelineAPI({
       // Let an open Git panel re-fetch its history (S38).
       useGitStore.getState().notifyHistoryChanged()
       addToast("success", `Saved → ${data.file}`)
+      // The save succeeded but the backend flagged something unfinished (a
+      // transform with no code, an API Input with no tables). These are
+      // deliberately non-blocking, so they'd be invisible without their own
+      // toast — and the user would only discover the problem on the next run.
+      for (const warning of data.warnings ?? []) {
+        addToast("warning", warning)
+      }
       return true
     } catch (err: unknown) {
       const detail = err instanceof ApiError && err.detail

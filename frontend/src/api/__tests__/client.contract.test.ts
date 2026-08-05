@@ -38,6 +38,7 @@ import {
   getModels,
   getRuns,
   inferJsonCacheSchema,
+  JSON_CACHE_INFER_TIMEOUT_MS,
   gitArchiveBranch,
   gitDeleteBranch,
   listUtilityFiles,
@@ -772,4 +773,33 @@ describe("shared client trust-boundary endpoints", () => {
       await expect(testCase.call()).rejects.toThrow()
     })
   }
+})
+
+describe("inferJsonCacheSchema completeness contract", () => {
+  const sentBody = () =>
+    JSON.parse((mockFetch.mock.calls[0]?.[1] as RequestInit).body as string)
+
+  it("keeps complete inference as the default and gives it a build-sized timeout", async () => {
+    // A hidden head sample can silently miss a field that first appears later:
+    // build ignores unknown fields, so it is not a completeness backstop.
+    mockFetch.mockReturnValue(jsonResponse({ tables: [] }))
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout")
+
+    await inferJsonCacheSchema({ path: "/data/quotes.jsonl" })
+
+    expect(sentBody()).toEqual({ path: "/data/quotes.jsonl" })
+    expect(JSON_CACHE_INFER_TIMEOUT_MS).toBe(1_800_000)
+    expect(timeoutSpy).toHaveBeenCalledWith(
+      expect.any(Function),
+      JSON_CACHE_INFER_TIMEOUT_MS,
+    )
+  })
+
+  it("passes an explicitly requested sample_size through unchanged", async () => {
+    mockFetch.mockReturnValue(jsonResponse({ tables: [] }))
+
+    await inferJsonCacheSchema({ path: "/data/quotes.jsonl", sample_size: 50 })
+
+    expect(sentBody().sample_size).toBe(50)
+  })
 })

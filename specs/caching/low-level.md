@@ -143,6 +143,14 @@ and tested by the [IO layer](../io-layer/low-level.md).
 - Live scans prevent artifact unlink; store-window pins protect store-to-first-consume.
 - Dataframe byte accounting matches retained entries and excludes scan-orphaned paths.
 - JSON build/status use the same v2 schema validation.
+- Structured-input **status resolves `working/` then `committed/`** — the same
+  order `load_v2_api_source` uses at run time, because the badge answers "will a
+  run read from cache?". Consulting only `working/` (the volatile layer)
+  reported `cached=False` whenever it was absent or stale-fingerprinted while
+  `committed/` — the durable layer that survives a restart — was valid and
+  still serving every run, inviting a rebuild of a cache already in use.
+  Precedence is unchanged: a valid `working/` still wins, since that is what the
+  next run reads. `cached=False` still requires BOTH layers to be invalid.
 - Dataframe cache artifacts are not part of persistent startup reaping.
 
 ## Error handling

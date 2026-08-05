@@ -515,7 +515,11 @@ EXPECTED_VIOLATIONS: dict[str, int] = {
     # the runtime sandbox census verifies that they remain under tmp_path.
     "tests/test_apiinput_multi_port_runtime.py": 1,
     "tests/test_json_cache_coverage_uplift.py": 8,
-    "tests/test_json_cache_integrity.py": 5,
+    # 5 pre-existing + 4 removing a cache layer and 1 rewriting a working-layer
+    # manifest to exercise status fallback. All are `_json_cache_dir(...)`
+    # results, which are `Path.cwd()`-rooted and therefore under the
+    # `isolated_cwd` tmp_path.
+    "tests/test_json_cache_integrity.py": 10,
     "tests/test_json_shred_mut_stragglers.py": 1,
     "tests/test_load_v2_api_source.py": 10,
     # 2 pre-existing + 2 cache-key-contract tests writing through

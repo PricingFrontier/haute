@@ -455,13 +455,22 @@ def _v2_status_response(
     )
 
     validate_v2_schema(v2_config)
-    cache_dir = _json_cache_dir(data_path, "working")
-    if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
-        return JsonCacheStatusResponse(cached=False, data_path=input_path)
-    meta = read_per_port_cache_meta(cache_dir)
-    if meta is None:
-        return JsonCacheStatusResponse(cached=False, data_path=input_path)
-    return _aggregate_v2_status_response(cache_dir, data_path, meta)
+    # Resolve working/ then committed/ — the SAME order ``load_v2_api_source``
+    # uses at run time, so this answers the question the badge actually asks:
+    # "will a run read from cache?" Consulting only working/ (the volatile
+    # layer) reported ``cached=False`` whenever it was missing or
+    # stale-fingerprinted while committed/ — the durable layer that survives a
+    # restart — was still valid and still serving every run. The user was then
+    # invited to rebuild a cache that already existed and was in use.
+    for layer in ("working", "committed"):
+        cache_dir = _json_cache_dir(data_path, layer)
+        if not is_per_port_cache_valid(cache_dir, v2_config, data_path=data_path):
+            continue
+        meta = read_per_port_cache_meta(cache_dir)
+        if meta is None:
+            continue
+        return _aggregate_v2_status_response(cache_dir, data_path, meta)
+    return JsonCacheStatusResponse(cached=False, data_path=input_path)
 
 
 @router.post("/status", response_model=JsonCacheStatusResponse)
