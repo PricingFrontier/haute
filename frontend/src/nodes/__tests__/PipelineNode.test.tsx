@@ -422,10 +422,13 @@ describe("PipelineNode", () => {
   })
 
   describe.each([
-    ["medium", 0.5],
-    ["compact", 0.2],
-  ] as const)("%s-detail apiInput body", (_lod, zoom) => {
-    it("keeps the instance-name body and container-mounted fallback handles without frame rows", () => {
+    ["far", 0.2],
+    ["mid", 0.5],
+    ["default", 1],
+  ] as const)("apiInput body at %s zoom", (_label, zoom) => {
+    it("keeps every frame row and its handle, so zooming out never hides ports", () => {
+      // Nodes used to collapse to an icon and a name below 0.55, which hid an
+      // api input's emitted frames exactly when a whole graph was in view.
       const nodeLabel = `Zoomed API Input ${zoom}`
       const frameLabels = ["policies", "drivers"]
       const { container } = renderNode(
@@ -439,10 +442,15 @@ describe("PipelineNode", () => {
         zoom,
       )
 
+      // The frame rows replace the instance name on an api input that emits
+      // frames, so the rows themselves are what must survive every zoom.
       const node = screen.getByTestId(`node-${nodeLabel}`)
-      expect(within(node).getByText(nodeLabel)).toBeInTheDocument()
-      expect(within(node).queryAllByTestId(/^api-input-frame-row-/)).toHaveLength(0)
-      expect(within(node).queryAllByTestId(/^api-input-body-label-/)).toHaveLength(0)
+      expect(within(node).queryAllByTestId(/^api-input-frame-row-/)).toHaveLength(
+        frameLabels.length,
+      )
+      for (const label of frameLabels) {
+        expect(within(node).getByText(label)).toBeInTheDocument()
+      }
       expect(sourceHandles(container).map((handle) => handle.getAttribute("data-handleid"))).toEqual(
         frameLabels,
       )
@@ -451,6 +459,14 @@ describe("PipelineNode", () => {
         `output-connector[1]:${nodeLabel}`,
       ])
     })
+  })
+
+  it("keeps an ordinary node's type badge and name at far zoom", () => {
+    renderNode({ label: "Far Zoom Polars", nodeType: NODE_TYPES.POLARS }, false, undefined, 0.2)
+
+    const node = screen.getByTestId("node-Far Zoom Polars")
+    expect(within(node).getByText("Far Zoom Polars")).toBeInTheDocument()
+    expect(within(node).getByText(nodeTypeLabels[NODE_TYPES.POLARS])).toBeInTheDocument()
   })
 
   it("renders an output node", () => {

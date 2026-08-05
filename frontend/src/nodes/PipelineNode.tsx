@@ -32,14 +32,6 @@ function LiveSwitchBadge({ accent }: { accent: string }) {
   )
 }
 
-/** Zoom-level selector — only re-renders when crossing a threshold, not on every pixel. */
-const zoomSelector = (s: { transform: [number, number, number] }) => {
-  const z = s.transform[2]
-  if (z > 0.55) return "full"
-  if (z > 0.3) return "medium"
-  return "compact"
-}
-
 type EdgeJoinJoinHandlePosition = Position.Top | Position.Bottom | "both"
 
 const EDGE_JOIN_MARKER_HANDLE_OFFSET_X = 4
@@ -240,7 +232,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // refires only when labels actually change, not on a fresh config object
   // whose topology is unchanged (e.g. a column edit inside a table).
   const frameLabelsSig = JSON.stringify(frameLabels)
-  const zoomLevel = useStore(zoomSelector)
   const edgeJoinJoinHandlePosition = useStore((s) =>
     _edgeJoinJoinHandlePosition(s, id, nodeType),
   )
@@ -250,7 +241,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   }, [
     id,
     frameLabelsSig,
-    zoomLevel,
     edgeJoinJoinHandlePosition,
     updateNodeInternals,
   ])
@@ -272,11 +262,9 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       nodeLabel={nodeData.label}
     />
   ) : null
-  // At full detail, visible frame rows own the API-input source Handles. At
-  // medium/compact detail, `_SourceHandles` renders the same labelled handles
-  // on the node container; with no visible frame it renders nothing.
-  const showApiInputFrameRows =
-    isDeployInput && zoomLevel === "full" && frameLabels.length > 0
+  // Visible frame rows own the API-input source Handles. `_SourceHandles`
+  // covers every other node, and an API input with no emitted frame.
+  const showApiInputFrameRows = isDeployInput && frameLabels.length > 0
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
@@ -362,38 +350,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     )
   }
 
-  // Compact mode: tinted background with icon + label — readable at far zoom
-  if (zoomLevel === "compact") {
-    return (
-      <div
-        data-testid={`node-${nodeData.label}`}
-        aria-label={ariaLabel}
-        role="button"
-        className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
-        style={{
-          background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
-          border: selected
-            ? `3px solid ${accent}`
-            : `3px solid color-mix(in srgb, ${accent} 25%, var(--bg-canvas))`,
-          boxShadow: [diffShadow, "var(--node-shadow)"].filter(Boolean).join(", "),
-          ...diffOutline,
-          opacity: dimmed ? 0.25 : 1,
-          transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
-        }}
-      >
-        {targetHandles}
-        <div className="flex items-center gap-2 pl-3 pr-2.5 py-2">
-          <Icon size={14} style={{ color: accent }} className="shrink-0" />
-          <div className="font-bold text-[12px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-            {nodeData.label}
-          </div>
-        </div>
-        {sourceHandles}
-      </div>
-    )
-  }
-
-  // Shared styling for medium + full modes. Every layer is OPAQUE so none of the
+  // Every layer is OPAQUE so none of the
   // canvas bleeds through (S38): the tinted border and banner are composited as
   // solid colours via color-mix (over the canvas for the border, over the card
   // surface for the banner) rather than drawn as semi-transparent overlays.
@@ -424,7 +381,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // (This opaque-face approach supersedes the earlier inner-edge radius — 9 / 13
   // for a 3px border — that aimed to stop corner "whiskers"; the median radius
   // plus the −1.5px inset solves the same whisker artefact more uniformly.)
-  const bannerBg = `color-mix(in srgb, ${accent} 19%, var(--bg-elevated))`
   const headerRadius = isPill ? "14.5px 14.5px 0 0" : "10.5px 10.5px 0 0"
   const headerInset = { marginTop: "-1.5px", marginLeft: "-1.5px", marginRight: "-1.5px" }
   const bodyStyle = {
@@ -435,39 +391,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     marginBottom: "-1.5px",
   }
 
-  // Medium mode: header bar + label, no extra badges
-  if (zoomLevel === "medium") {
-    return (
-      <div
-        data-testid={`node-${nodeData.label}`}
-        aria-label={ariaLabel}
-        role="button"
-        className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
-        style={containerStyle}
-      >
-        {targetHandles}
-        {/* Header bar */}
-        <div
-          className="flex items-center gap-2 px-3 py-1.5"
-          style={{ background: bannerBg, borderRadius: headerRadius, ...headerInset }}
-        >
-          <Icon size={14} style={{ color: accent }} className="shrink-0" />
-          <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
-            {typeLabel}
-          </span>
-        </div>
-        {/* Body */}
-        <div className="px-3 py-1.5" style={bodyStyle}>
-          <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-            {nodeData.label}
-          </div>
-        </div>
-        {sourceHandles}
-      </div>
-    )
-  }
-
-  // Full mode: header bar with badges + body with label and trace
+  // Header bar with badges, body with label, trace, and any frame rows.
   return (
     <div
       data-testid={`node-${nodeData.label}`}
