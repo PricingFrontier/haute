@@ -254,6 +254,58 @@ def process_memory_caps_supported() -> bool:
 _DEAD_TRACKER_ERRORS = (BrokenPipeError, ConnectionResetError)
 
 
+#: Set once ``ensure_spawnable_interpreter`` has had its say.
+_interpreter_checked = False
+
+
+def ensure_spawnable_interpreter() -> str | None:
+    """Pin multiprocessing's interpreter to an absolute, runnable path.
+
+    Databricks Apps launches the app with a RELATIVE ``sys.executable``
+    (measured: ``.venv/bin/python``). multiprocessing spawns every helper
+    — the resource tracker, and each worker — by exec'ing that path, so
+    the moment anything changes the working directory those spawns
+    exec-fail with status 255. The first symptom is a broken pipe when
+    the resource tracker is registered, which reads as an unrelated
+    internal error; the real cause is a path that stopped resolving.
+
+    Resolving it once removes the dependency on the working directory
+    entirely. Called before the hosted boot changes directory (where a
+    relative path still resolves), and again as a safety net at first
+    worker use, where ``/proc/self/exe`` names the running interpreter
+    directly for a cwd that has already moved.
+
+    Returns the path now in force, or ``None`` when nothing was changed.
+    """
+    global _interpreter_checked
+
+    from multiprocessing import spawn
+
+    _interpreter_checked = True
+    current = spawn.get_executable()
+    if isinstance(current, bytes):
+        current = os.fsdecode(current)
+    if current and os.path.isabs(current) and os.access(current, os.X_OK):
+        return None  # Already absolute and runnable — the ordinary case.
+
+    candidate = os.path.abspath(current) if current else ""
+    if not (candidate and os.access(candidate, os.X_OK)):
+        # A relative path cannot be resolved once the working directory has
+        # moved. The kernel still knows which binary is running.
+        try:
+            candidate = os.readlink("/proc/self/exe")
+        except OSError:  # pragma: no cover - non-Linux hosts
+            logger.warning("worker_interpreter_unresolved", executable=current)
+            return None
+    if not os.access(candidate, os.X_OK):  # pragma: no cover - defensive
+        logger.warning("worker_interpreter_unresolved", executable=current)
+        return None
+
+    spawn.set_executable(candidate)
+    logger.info("worker_interpreter_resolved", was=current, now=candidate)
+    return candidate
+
+
 def _resource_tracker_diagnostics() -> dict[str, Any]:
     """Facts about the host that explain a dead resource tracker.
 
@@ -345,6 +397,10 @@ def create_worker_queue(ctx: Any, maxsize: int) -> Any:
     :class:`IsolatedWorkerHostError` so the user is told the host cannot
     start workers rather than being handed an unexplained internal error.
     """
+    if not _interpreter_checked:
+        # Cheap, once per process, and it removes by far the likeliest
+        # cause of the failure handled below.
+        ensure_spawnable_interpreter()
     try:
         return ctx.Queue(maxsize=maxsize)
     except _DEAD_TRACKER_ERRORS as exc:

@@ -65,6 +65,14 @@ def ensure_project() -> Path:
     would hide durable work behind an empty canvas.
     """
     from haute import _project_storage
+    from haute._worker_isolation import ensure_spawnable_interpreter
+
+    # BEFORE the chdir below: this platform launches the app with a relative
+    # sys.executable (".venv/bin/python"), and multiprocessing exec's that
+    # path to start the resource tracker and every worker. Once the working
+    # directory moves it no longer resolves, and background work — model
+    # training above all — fails with a broken pipe that names nothing.
+    ensure_spawnable_interpreter()
 
     project_dir = _project_storage.resolve_project_dir()
 

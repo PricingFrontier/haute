@@ -31,6 +31,41 @@ https://haute-spike-2112915975510064.aws.databricksapps.com on workspace
 `dbc-6abae023-c819` (CLI profile `haute-spike`, app service principal
 `app-2xmuei haute-spike`, MEDIUM compute).
 
+## The relative-interpreter trap (measured 5 August 2026)
+
+**The platform launches the app with a RELATIVE `sys.executable`:
+`.venv/bin/python`, resolved against the deployed cwd
+`/app/python/source_code`.** Nothing in-process notices — until something
+changes the working directory, which `bootstrap.ensure_project()` does when
+it `chdir`s into the project directory.
+
+From then on every `multiprocessing` spawn exec-fails, because spawn starts
+helpers by exec'ing that path. The first casualty is the `resource_tracker`
+helper (spawned on the first semaphore, i.e. the first `Queue`), so the
+symptom is a `BrokenPipeError` from `resource_tracker.register` — which
+names neither the interpreter nor the directory. Model training was the
+visible failure; in fact NO isolated worker had ever run in the hosted app.
+
+Diagnosis came from logging the host state at the failure:
+
+```
+executable=.venv/bin/python  executable_usable=False
+tracker_pid=201 tracker_exit_status=65280   (= exit 255, exec failure)
+tracker_pid=202 tracker_exit_status=65280   (the retry, same)
+rlimit_nproc=(-1,-1) rlimit_as=(-1,-1) proc_threads=29
+```
+
+The limits are unbounded and memory is fine — it is purely the path.
+
+Fix: `haute._worker_isolation.ensure_spawnable_interpreter()`, called from
+`bootstrap.ensure_project()` BEFORE the `chdir` (where a relative path still
+resolves) and again as a safety net at first worker use (where it falls back
+to `/proc/self/exe`, since the kernel still knows which binary is running).
+
+Rule of thumb for this platform: **resolve anything cwd-relative before
+changing directory**, and treat a relative `sys.executable` as normal rather
+than a deployment error.
+
 ## Real-deploy findings (beyond the local simulation)
 
 - End-to-end timings: `apps create` (compute provisioning) ~3 min;

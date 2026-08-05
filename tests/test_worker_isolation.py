@@ -21,6 +21,7 @@ from haute._worker_isolation import (
     IsolatedWorkerTimeoutError,
     _terminate_process,
     create_worker_queue,
+    ensure_spawnable_interpreter,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
@@ -730,3 +731,63 @@ class TestDeadResourceTrackerRecovery:
         info = _resource_tracker_diagnostics()
         assert "executable" in info
         assert isinstance(info.get("executable_usable"), bool)
+
+
+class TestSpawnableInterpreter:
+    """The measured root cause: a relative sys.executable plus a chdir.
+
+    Databricks Apps launches the app as ".venv/bin/python". multiprocessing
+    exec's that path for the resource tracker and every worker, so once the
+    hosted boot chdirs into the project directory, every spawn exec-fails
+    (status 255) and the first queue write dies on a broken pipe.
+    """
+
+    def test_an_absolute_runnable_interpreter_is_left_alone(self) -> None:
+        from multiprocessing import spawn
+
+        before = spawn.get_executable()
+        assert ensure_spawnable_interpreter() is None
+        assert spawn.get_executable() == before
+
+    def test_a_relative_interpreter_is_resolved_against_the_launch_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launch = tmp_path / "app"
+        (launch / ".venv" / "bin").mkdir(parents=True)
+        interpreter = launch / ".venv" / "bin" / "python"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        interpreter.chmod(0o755)
+
+        from multiprocessing import spawn
+
+        original = spawn.get_executable()
+        monkeypatch.chdir(launch)
+        try:
+            spawn.set_executable(".venv/bin/python")
+            resolved = ensure_spawnable_interpreter()
+            assert resolved == str(interpreter)
+            # Absolute now, so it survives the chdir that used to break it.
+            monkeypatch.chdir(tmp_path)
+            assert os.access(resolved, os.X_OK)
+        finally:
+            spawn.set_executable(original)
+
+    def test_a_relative_interpreter_after_the_chdir_falls_back_to_the_kernel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The safety net: cwd has already moved, so abspath cannot help."""
+        if not Path("/proc/self/exe").exists():
+            pytest.skip("/proc/self/exe is Linux-only")
+
+        from multiprocessing import spawn
+
+        original = spawn.get_executable()
+        monkeypatch.chdir(tmp_path)
+        try:
+            spawn.set_executable("nowhere/bin/python")
+            resolved = ensure_spawnable_interpreter()
+            assert resolved is not None
+            assert os.path.isabs(resolved)
+            assert os.access(resolved, os.X_OK)
+        finally:
+            spawn.set_executable(original)
