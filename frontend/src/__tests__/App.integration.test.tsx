@@ -866,12 +866,11 @@ describe("App integration — save pipeline", () => {
     })
   })
 
-  it("save & commit: Commit flushes a save, opens the milestone modal, then commits", async () => {
+  it("Commit flushes a save, opens the milestone modal, then commits", async () => {
     // Healthy clone (default mock state is "ready").
     render(<App />)
     await waitForAppReady()
 
-    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
 
     // The milestone modal appears; nothing has been committed yet.
@@ -923,7 +922,6 @@ describe("App integration — save pipeline", () => {
     await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
 
     // Commit with no working branch → re-opens the chooser (queued action).
-    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
     expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
@@ -1846,6 +1844,153 @@ describe("App integration — panel open/close", () => {
       expect(useUIStore.getState().importsOpen).toBe(true)
       // The UIStore setter resets the other panels' flags.
       expect(useUIStore.getState().utilityOpen).toBe(false)
+    })
+  })
+
+  // The toolbar's Submodel/Instance buttons derive their enabled state from the
+  // live selection, so these drive the real store rather than Toolbar props.
+  async function selectNodes(ids: string[]): Promise<void> {
+    useGraphStore.setState((s) => ({
+      nodes: s.nodes.map((n) => ({ ...n, selected: ids.includes(n.id) })),
+    }))
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.filter((n) => n.selected)).toHaveLength(ids.length)
+    })
+  }
+
+  it("Submodel and Instance are inert until the selection can support them", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-selection",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // Nothing selected — neither action applies. They carry `aria-disabled`
+    // rather than `disabled` so the title explaining the requirement survives.
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
+
+    // One node: instancing applies, grouping still needs a second node.
+    await selectNodes(["polars_1"])
+    await waitFor(() =>
+      expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false"),
+    )
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
+
+    // Two nodes: grouping applies, instancing no longer has a single target.
+    await selectNodes(["polars_1", "polars_2"])
+    await waitFor(() =>
+      expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "false"),
+    )
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
+  })
+
+  it("an unavailable selection action explains itself instead of no-opping", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-refusal",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // Nothing selected: Submodel says what it needs, exactly as Ctrl+G does.
+    // The `title` cannot do this job — it needs a hover dwell that keyboard
+    // and touch users never perform.
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/at least 2 nodes/)
+    })
+
+    // Two selected: Instance has no single target, and says so.
+    await selectNodes(["polars_1", "polars_2"])
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/exactly one node/)
+    })
+    // Neither refusal did anything to the graph.
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    expect(useGraphStore.getState().nodes).toHaveLength(2)
+  })
+
+  it("presents Instance as unavailable for a singleton node and explains an attempted click", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("api_1", "Quote Input", "apiInput")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-singleton-instance",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["api_1"])
+    const instanceButton = screen.getByTestId("toolbar-instance")
+    await waitFor(() => expect(instanceButton).toHaveAttribute("aria-disabled", "true"))
+
+    fireEvent.click(instanceButton)
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/only one node of this type/)
+    })
+    expect(useGraphStore.getState().nodes).toHaveLength(1)
+  })
+
+  it("Submodel opens the naming dialog for the selected nodes", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-group",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["polars_1", "polars_2"])
+    await waitFor(() => expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "false"))
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+
+    await waitFor(() => {
+      expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["polars_1", "polars_2"] })
+    })
+  })
+
+  it("Instance creates a linked copy of a plain node, not just submodels", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-instance",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["polars_1"])
+    await waitFor(() => expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false"))
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+
+    await waitFor(() => {
+      const instance = useGraphStore
+        .getState()
+        .nodes.find((n) => (n.data as { config?: { instanceOf?: string } }).config?.instanceOf === "polars_1")
+      expect(instance).toBeDefined()
     })
   })
 

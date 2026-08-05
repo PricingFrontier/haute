@@ -5,6 +5,7 @@ import useUIStore from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { isProtectedSubmodelNodeData, nodeData } from "../types/node"
 import { isSingletonType } from "../utils/nodeTypes"
+import { requestSubmodelCreation } from "../utils/submodelCreation"
 import type { SharedNodeDeletionResult } from "./useSubmodelBoundaryEditing"
 
 interface KeyboardShortcutsParams {
@@ -180,21 +181,13 @@ export default function useKeyboardShortcuts({
       // Ctrl+G → group selected nodes into a submodel
       if (mod && e.key === "g" && !isTyping) {
         e.preventDefault()
-        if (readOnly) {
-          addToast("info", "This submodel instance is read-only")
-          return
-        }
-        if (isInsideSubmodel) {
-          addToast("info", "Submodels cannot be nested inside other submodels")
-          return
-        }
-        const { nodes: currentNodes } = graphRef.current
-        const selectedIds = currentNodes.filter((n) => n.selected).map((n) => n.id)
-        if (selectedIds.length >= 2) {
-          setSubmodelDialog({ nodeIds: selectedIds })
-        } else {
-          addToast("info", "Select at least 2 nodes to create a submodel (Ctrl+G)")
-        }
+        requestSubmodelCreation({
+          nodes: graphRef.current.nodes,
+          readOnly,
+          isInsideSubmodel,
+          setSubmodelDialog,
+          addToast,
+        })
         return
       }
 

@@ -59,7 +59,7 @@ import useToastStore from "./stores/useToastStore"
 import useNodeResultsStore from "./stores/useNodeResultsStore"
 import { HAUTE_SESSION_EXPIRED_EVENT } from "./api/client"
 
-import { NODE_TYPES } from "./utils/nodeTypes"
+import { NODE_TYPES, isSingletonType } from "./utils/nodeTypes"
 import { previewForActiveNode } from "./utils/activePreview"
 import { swapEdgeJoinInputs, type EdgeJoinSwapInputsFailureReason } from "./utils/edgeJoinGraph"
 import { validatePipelineConnection, type ConnectionValidationResult } from "./utils/connectionValidation"
@@ -73,6 +73,7 @@ import { shouldUseLiteGraphEffects } from "./utils/graphPerformance"
 import type { DrilledOccurrenceIdentity } from "./utils/submodelRuntimeTarget"
 import { isSubmodelInstanceConfig, nodeData } from "./types/node"
 import { withNativeDeletePolicy } from "./utils/submodelDeletionPolicy"
+import { requestSubmodelCreation } from "./utils/submodelCreation"
 import { PanelLeftOpen } from "lucide-react"
 
 // ---------------------------------------------------------------------------
@@ -401,8 +402,8 @@ function FlowEditor() {
     })
   }, [handleSave])
 
-  // Save & commit (S7): same gate, but the queued action flushes a save then
-  // opens the milestone modal.
+  // Commit (S7): same gate, but the queued action flushes a save before
+  // opening the milestone modal.
   const requestCommit = useCallback(async () => {
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
     if (st === null) {
@@ -851,6 +852,48 @@ function FlowEditor() {
     commitSharedNodeDeletion,
   })
 
+  // Toolbar selection actions. These mirror the rules the Ctrl+G shortcut and
+  // the node context menu already enforce, so the buttons are a second entry
+  // point rather than a second policy: grouping needs 2+ nodes and a context
+  // that can hold a submodel (they cannot nest), instancing needs exactly one
+  // non-singleton node — the generic `instanceOf` path, not just submodels.
+  const selectedNodes = useMemo(
+    () => nodes.filter((n) => n.selected),
+    [nodes],
+  )
+  const selectedNodeIds = useMemo(() => selectedNodes.map((n) => n.id), [selectedNodes])
+  const canCreateSubmodel = !activeSubmodelReadOnly
+    && viewStack.length <= 1
+    && selectedNodeIds.length >= 2
+  const canCreateInstance = !activeSubmodelReadOnly
+    && selectedNodes.length === 1
+    && !isSingletonType(nodeData(selectedNodes[0]).nodeType)
+  // The `can*` flags above drive presentation only. The request paths below
+  // enforce policy AND say why they refused, exactly as Ctrl+G does — a
+  // toolbar button that swallows the click in silence is the one case where the
+  // user most needs the explanation, and the `title` carrying it needs a hover
+  // dwell the keyboard and touch never perform.
+  const handleToolbarCreateSubmodel = useCallback(() => {
+    requestSubmodelCreation({
+      nodes,
+      readOnly: activeSubmodelReadOnly,
+      isInsideSubmodel: viewStack.length > 1,
+      setSubmodelDialog,
+      addToast,
+    })
+  }, [nodes, activeSubmodelReadOnly, viewStack.length, setSubmodelDialog, addToast])
+  const handleToolbarCreateInstance = useCallback(() => {
+    if (activeSubmodelReadOnly) {
+      addToast("info", "This submodel instance is read-only")
+      return
+    }
+    if (selectedNodeIds.length !== 1) {
+      addToast("info", "Select exactly one node to create an instance of it")
+      return
+    }
+    handleCreateInstance(selectedNodeIds[0])
+  }, [activeSubmodelReadOnly, selectedNodeIds, handleCreateInstance, addToast])
+
   const shouldSkipAutomaticPreview = useCallback(
     (node: Node) => {
       if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
@@ -1070,6 +1113,10 @@ function FlowEditor() {
         onZoomOut={() => zoomOut()}
         onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        canCreateSubmodel={canCreateSubmodel}
+        onCreateSubmodel={handleToolbarCreateSubmodel}
+        canCreateInstance={canCreateInstance}
+        onCreateInstance={handleToolbarCreateInstance}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}

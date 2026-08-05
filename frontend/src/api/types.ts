@@ -252,7 +252,7 @@ export interface SavePipelineResponse {
   pipeline_name: string
   warnings?: string[]
   /** SHA of the ledger commit this save produced, or null when no working
-   *  branch is configured. Feeds the toolbar branch/SHA indicator. */
+   *  branch is configured. Updates the saved comparison anchor. */
   git_sha?: string | null
   source_revision: string
 }

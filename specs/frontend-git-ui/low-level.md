@@ -8,13 +8,13 @@
 | `frontend/src/panels/gitPanelCache.ts` | Module-level session caches (`branchHistory`, `milestoneSaves`, whole-forest `graphCache`) with LRU eviction, feeding the Git panel's stale-while-revalidate hydration and unchanged-payload short-circuit. |
 | `frontend/src/panels/gitgraph/layout.ts` | Pure layout: `computeGitGraphLayout` turns a `GitGraphResponse` + the panel's row list into a `RailModel` (lanes, dots, curves, magnifiers, spawn stubs); `computeRailRuns` consolidates per-row cells into whole-length vertical line segments. No DOM, no fetch. |
 | `frontend/src/panels/gitgraph/GraphCell.tsx` | Rendering: `GraphRailCell` (per-row SVG cell), `GraphRailOverlay` (the measured whole-box overlay of consolidated runs), `GraphRailHeader` (top departing-branch chip strip), `Magnifier`. Pure presentation over `frontend/src/panels/gitgraph/layout.ts` types. |
-| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, and the refresh-triggering nonces (`historyNonce`, `commitNonce`, `selectLatestSaveNonce`, `selectSaveNonce`, `branchesExpandNonce`). |
+| `frontend/src/stores/useGitStore.ts` | Zustand store: working-branch readiness + retry error, shared branch-list state/action, modal routing (`GitModalMode`), peek/comparison/move targets, and the refresh-triggering nonces (`historyNonce`, `commitNonce`, `branchesExpandNonce`). |
 | `frontend/src/stores/gitBranchLoader.ts` | Lazily loaded branch-list request coordinator. It owns the in-flight/queued-refresh promises and publishes results into `useGitStore`, keeping branch-only client and de-duplication code out of the initial editor bundle. |
-| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus ready branch name + last-save SHA buttons that open the panel and set its initial view/selection. |
+| `frontend/src/components/BranchIndicator.tsx` | Toolbar entry point: explicit repository/readiness/error labels with Retry, plus a ready branch-name button that opens the panel on the current branch. |
 | `frontend/src/components/BranchManager.tsx` | Branch list/create/switch/archive/delete/restore, embedded in the Git panel; owns its own confirm dialogs and row context menu. |
 | `frontend/src/components/GitNavigationConfirm.tsx` | Shared clean/dirty navigation confirmation used by branch-manager and graph-lane switches plus Create & Move; dirty mode offers Cancel, Discard, and Save first. |
 | `frontend/src/components/CommitBreadcrumb.tsx` | `CommitBreadcrumb` (version-relative label for a comparison canvas) and `ComparisonDelta` (historic↔current commit-count chip). |
-| `frontend/src/components/MilestoneCommitModal.tsx` | Save & commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
+| `frontend/src/components/MilestoneCommitModal.tsx` | Commit modal: required message (500-character maximum with visible validation) + version label form, and the 409 fork-warning override flow. |
 | `frontend/src/components/MoveConfirmModal.tsx` | Pre-move save/discard/confirm prompt: reads `useGitStore.moveTarget` for the target label and `useGraphStore.dirty` to decide single-confirm vs. save-or-discard, and locks buttons plus Escape/backdrop close (`busy`) once clicked while the caller performs the actual move. |
 | `frontend/src/components/WorkingBranchModal.tsx` | Startup / save-gate branch-selection modal, with an inline git-identity sub-form. |
 | `frontend/src/components/RemotePushControl.tsx` | Remote dropdown, ahead/behind + ledger-divergence display, explicit push (including empty-remote default-bootstrap tooltip/toast and the pending-save integrity confirm), catch-up, the non-fast-forward `PushRejectedModal`, `AheadBehind`/`LedgerStatus`/`RejectedLeg` sub-components. |
@@ -60,10 +60,6 @@ list. Notable invariants:
 - `historyNonce` and `commitNonce` both trigger `GitPanel.refresh()` but only `commitNonce`
   additionally selects the newly-committed milestone, and only when the panel is not
   peeking (`peekingRef.current` false at the time the refresh resolves).
-- `selectSaveTarget` is a side channel read by `GitPanel` via
-  `useGitStore.getState().selectSaveTarget` inside an effect rather than a subscribed
-  value, because the sha must be captured at the moment `selectSaveNonce` bumps, not
-  re-read on every render.
 - `closeModal` always clears `pendingAction` — a dismissed modal must never leave a queued
   action to fire on a later, unrelated confirmation.
 
@@ -131,16 +127,12 @@ the rail's measurement effect.
 nonce:
 - `historyNonce` → `refresh()`, no selection change.
 - `commitNonce` → `refresh()`, then select `res.milestones[0].sha` if not peeking.
-- `selectLatestSaveNonce` → `refresh()`, then select the newest pending save, or (no
-  pending) expand the newest milestone and select its newest save. Guarded by
-  `processedSelectNonce` so a nonce already handled (e.g. the same click that just opened
-  the panel) doesn't re-fire.
-- `selectSaveNonce` → `refresh()`, then search pending saves, then milestones directly,
-  then each milestone's expanded saves (loading them via `loadMilestoneSaves` as needed)
-  until `selectSaveTarget` is found. Also guarded by a processed-nonce ref. `refresh` itself
-  has stable callback identity and snapshots the current peek target from a ref when invoked;
-  peek changes have their own refresh effect, so changing branches cannot re-fire a
-  previously handled nonce effect and fan one action out into redundant requests.
+`refresh` itself has stable callback identity and snapshots the current peek target from a
+ref when invoked; peek changes have their own refresh effect, so changing branches cannot
+re-fire a previously handled nonce effect and fan one action out into redundant requests.
+
+No nonce selects a specific commit: selection inside the history is driven by clicking the
+history itself.
 
 **Milestone expansion** (`toggleExpand`). A cache hit (`readMilestoneSaves`) expands
 synchronously with no fetch or loading placeholder, because a milestone's folded saves are
@@ -356,7 +348,7 @@ Tests live alongside the source: `frontend/src/panels/__tests__/`,
 Library component/unit tests (no e2e for this surface).
 
 - **`frontend/src/panels/__tests__/GitPanel.test.tsx`** — the primary behavioural suite: rendering, milestone
-  expand/collapse, pending-save display, all four selection nonces, right-click menus
+  expand/collapse, pending-save display, both refresh nonces, right-click menus
   (fork/view/move) in every row context (milestone / pending save / expanded save),
   peeking's effect on menu contents, the fork-creation dialog, the graph rail's dots/
   stubs/chips/magnifier, lane and dot context menus, in-app branch switching from the
@@ -411,8 +403,9 @@ Library component/unit tests (no e2e for this surface).
   which mutations reload the page and which don't, keyed on `switched`/`is_current`, plus
   the dirty-canvas guard on current-branch archive and delete before those reload paths.
 - **`frontend/src/components/__tests__/BranchIndicator.test.tsx`** — checking and retryable-error
-  states, no-repository/unset/detached/invalid/divergent/ready rendering, both ready-state
-  click targets' panel/store side effects, and the comparison-aware SHA-click behaviour.
+  states, no-repository/unset/detached/invalid/divergent/ready rendering, the branch-name
+  click's panel/store side effects, and that the ready state stays branch-only — carrying no
+  save SHA, including while a comparison is open.
 - **`frontend/src/components/__tests__/CommitBreadcrumb.test.tsx`** — root/milestone collapse-to-anchor
   rendering, the non-milestone nearest-milestone→commit breadcrumb, and
   `ComparisonDelta`'s singular/plural count text.
