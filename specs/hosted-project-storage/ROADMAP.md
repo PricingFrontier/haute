@@ -10,13 +10,17 @@ strictly ordered; the first group is nearest-term.
 
 ## Surfaced by live proof
 
-- **Identity on a restored container.** Every restore lands a fresh clone
-  with no git identity, so autosaves keep writing files but version
-  capture fails quietly ("empty ident") and nothing publishes until an
-  identity is set — and during the walkthrough the UI never prompted,
-  leaving the user's change on the container only. Either prompt promptly
-  off `identity_set: false` when the first save's capture fails, or carry
-  the identity in the binding record so a restore can restore it too.
+- **Identity on a restored container — DELIVERED on this branch.** Every
+  restore lands a fresh clone with no git identity, so autosaves kept
+  writing files while version capture failed quietly ("empty ident") and
+  nothing published — and the UI never prompted. Now the save path checks
+  identity before committing (same source of truth as `identity_set`),
+  the save response carries a structural `identity_required` flag plus a
+  hand-authored warning, and the frontend opens an identity prompt that
+  retries the save once a name and email are recorded (dismissable per
+  browser session; the warning keeps appearing). A possible refinement
+  remains: carry the identity in the binding record so a restore can
+  restore it too, skipping the prompt entirely.
 - **Graceful-shutdown claim release.** `apps stop` kills the container
   without running Python `atexit`, so the shutdown release never happens
   hosted and every stop leaves a stale claim (foreign machines see "in
@@ -26,6 +30,22 @@ strictly ordered; the first group is nearest-term.
   and if that also fails, the release is documented as local-dev-only for
   good. Correctness is already covered by staleness expiry and own-app
   takeover; this only narrows the false-"in use" window.
+
+## Running cost
+
+- **Idle self-stop, with tab-close as a hint.** The app bills while its
+  compute runs, and today only a manual `apps stop` ends that. Because
+  every real interaction passes through the backend (the SSO proxy fronts
+  all tabs), the app can track last-activity and, after an idle window,
+  stop itself via the Apps API — first flushing the publish queue and
+  releasing the claim, which makes this the one shutdown path that CAN be
+  graceful (self-initiated, so the platform's kill behaviour never
+  applies). Browser tab-close (`pagehide` + `sendBeacon`) should only
+  shorten the idle window, never kill directly: close events also fire on
+  refresh and navigation, several tabs may be open, and a cold start
+  costs minutes. Needs the app's service principal to hold permission to
+  stop its own app, and the `uc://` binding for durability — which is
+  the point.
 
 ## The desktop new/open loop
 

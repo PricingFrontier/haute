@@ -11,6 +11,7 @@ import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
 import useGitStore from "../stores/useGitStore"
+import { isIdentityPromptDismissed } from "../stores/identityPrompt"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
@@ -1008,6 +1009,13 @@ export default function usePipelineAPI({
       // toast — and the user would only discover the problem on the next run.
       for (const warning of data.warnings ?? []) {
         addToast("warning", warning)
+      }
+      // A restored container has no git commit identity, so the save landed on
+      // disk but was never version-captured. Prompt once per session — the
+      // warning above keeps saying so after the user waves it away.
+      if (data.identity_required && !isIdentityPromptDismissed()) {
+        const git = useGitStore.getState()
+        if (git.modal !== "identity") git.openModal("identity")
       }
       return true
     } catch (err: unknown) {

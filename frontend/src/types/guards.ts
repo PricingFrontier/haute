@@ -1034,6 +1034,7 @@ export function parseSavePipelineResponse(value: unknown): SavePipelineResponse 
     pipeline_name: expectString("parseSavePipelineResponse", obj.pipeline_name, "field `pipeline_name`"),
     warnings: optionalStringArray("parseSavePipelineResponse", obj, "warnings"),
     git_sha: optionalNullableString("parseSavePipelineResponse", obj, "git_sha"),
+    identity_required: optionalBoolean("parseSavePipelineResponse", obj, "identity_required"),
   }
 }
 

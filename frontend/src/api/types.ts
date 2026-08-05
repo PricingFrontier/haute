@@ -255,6 +255,9 @@ export interface SavePipelineResponse {
    *  branch is configured. Updates the saved comparison anchor. */
   git_sha?: string | null
   source_revision: string
+  /** True when version capture was skipped only because git has no commit
+   *  identity. The app prompts for a name/email and retries the save. */
+  identity_required?: boolean
 }
 
 export interface PreviewNodeResponse extends NodeResult {
