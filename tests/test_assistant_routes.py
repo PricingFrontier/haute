@@ -145,6 +145,31 @@ class TestSessionCreate:
         assert response.status_code == 404
 
 
+class TestSessionList:
+    """GET /sessions backs the panel's chat list, which opens before any send."""
+
+    def test_lists_this_pipeline_s_conversations(self, client: TestClient, store: SessionStore):
+        session = store.create("main.py")
+        store.append(session, {"messages": [{"role": "user", "content": "aggregate claims"}]})
+
+        response = client.get("/api/assistant/sessions")
+
+        assert response.status_code == 200, response.text
+        sessions = response.json()["sessions"]
+        assert [item["session_id"] for item in sessions] == [session.id]
+        assert sessions[0]["title"] == "aggregate claims"
+        assert sessions[0]["message_count"] == 1
+
+    def test_empty_project_lists_nothing(self, client: TestClient, store: SessionStore):
+        response = client.get("/api/assistant/sessions")
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+
+    def test_unknown_pipeline_name_is_404(self, client: TestClient, store: SessionStore):
+        response = client.get("/api/assistant/sessions", params={"pipeline": "nope"})
+        assert response.status_code == 404
+
+
 def _persistent_store(monkeypatch: pytest.MonkeyPatch, project_root: Path) -> SessionStore:
     """Swap in a store persisting to the project's `.haute/` sessions dir."""
 

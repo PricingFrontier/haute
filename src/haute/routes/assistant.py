@@ -28,8 +28,10 @@ from haute.routes._helpers import (
 from haute.schemas import (
     AssistantCancelledEvent,
     AssistantMessageRequest,
+    AssistantSessionListResponse,
     AssistantSessionRequest,
     AssistantSessionResponse,
+    AssistantSessionSummary,
     AssistantStatusResponse,
     AssistantTranscriptEntry,
 )
@@ -196,6 +198,43 @@ def _transcript_entries(session: AssistantSession) -> list[AssistantTranscriptEn
                         )
                     )
     return entries
+
+
+@router.get("/sessions", response_model=AssistantSessionListResponse)
+async def list_assistant_sessions(pipeline: str | None = None) -> AssistantSessionListResponse:
+    """List this pipeline's saved conversations, most recently used first.
+
+    The panel opens on this list, so it resolves the pipeline the same way
+    session creation does: a conversation belongs to the source file it was
+    bound to, and another pipeline's chats are never offered here.
+    """
+
+    try:
+        path, _graph = await asyncio.to_thread(_resolve_pipeline, pipeline)
+    except HTTPException:
+        raise
+    except HauteError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:
+        detail = _http_error_detail(exc, "session_pipeline_resolution")
+        raise HTTPException(status_code=500, detail=detail) from None
+
+    summaries = await asyncio.to_thread(
+        session_store.list_sessions,
+        _relative_source_file(path),
+    )
+    return AssistantSessionListResponse(
+        sessions=[
+            AssistantSessionSummary(
+                session_id=summary.session_id,
+                title=summary.title,
+                created_at=summary.created_at,
+                last_used=summary.last_used,
+                message_count=summary.message_count,
+            )
+            for summary in summaries
+        ]
+    )
 
 
 @router.post("/session", response_model=AssistantSessionResponse)

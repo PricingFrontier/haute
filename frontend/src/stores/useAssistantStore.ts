@@ -6,8 +6,10 @@ import { ApiError } from "../api/client"
 import {
   createAssistantSession,
   getAssistantStatus,
+  listAssistantSessions,
   streamAssistantMessage,
   type AssistantHistoryEntry,
+  type AssistantSessionSummary,
   type AssistantStatus,
   type AssistantStreamEvent,
 } from "../api/assistant"
@@ -42,7 +44,14 @@ export interface AssistantStoreState {
   turnStatus: "idle" | "streaming"
   status: AssistantStatus | "unknown" | "error"
   notice: string | null
+  /** Which screen the panel shows: the conversation list, or one chat. */
+  view: "list" | "chat"
+  sessions: AssistantSessionSummary[]
+  sessionsStatus: "unknown" | "loading" | "ready" | "error"
   refreshStatus: () => Promise<void>
+  loadSessions: (sourceFile: string | null) => Promise<void>
+  openSession: (sessionId: string, sourceFile: string) => Promise<void>
+  showSessionList: (sourceFile: string | null) => void
   sendMessage: (text: string, options: SendMessageOptions) => Promise<void>
   stopTurn: () => void
   newChat: () => void
@@ -70,38 +79,12 @@ export function assistantSendDisabledReason(
   return null
 }
 
-/**
- * Remembered session ids, keyed per pipeline source, so a reload or server
- * restart resumes the conversation the backend persisted in `.haute/`.
- * localStorage can be unavailable (disabled storage); resume is best-effort
- * convenience, so those failures degrade to a fresh session, never a crash.
+/*
+ * There is deliberately no client-remembered "last session" here. The backend
+ * list is the single record of which conversations exist, and a localStorage id
+ * that silently resumed on the next send is exactly what made the panel open
+ * blank and then produce an earlier transcript mid-conversation.
  */
-const SESSION_KEY_PREFIX = "haute.assistant.session:"
-
-function rememberedSession(sourceFile: string): string | null {
-  try {
-    return localStorage.getItem(SESSION_KEY_PREFIX + sourceFile)
-  } catch {
-    return null
-  }
-}
-
-function rememberSession(sourceFile: string, sessionId: string): void {
-  try {
-    localStorage.setItem(SESSION_KEY_PREFIX + sourceFile, sessionId)
-  } catch {
-    // Resume is best-effort; the conversation still works without it.
-  }
-}
-
-function forgetSession(sourceFile: string | null): void {
-  if (sourceFile === null) return
-  try {
-    localStorage.removeItem(SESSION_KEY_PREFIX + sourceFile)
-  } catch {
-    // Nothing to forget if storage is unavailable.
-  }
-}
 
 /** Map a resumed session's backend history to settled transcript entries. */
 function hydrateEntries(history: AssistantHistoryEntry[]): TranscriptEntry[] {
@@ -274,6 +257,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   turnStatus: "idle",
   status: "unknown",
   notice: null,
+  view: "list",
+  sessions: [],
+  sessionsStatus: "unknown",
 
   refreshStatus: async () => {
     try {
@@ -282,6 +268,45 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     } catch {
       set({ status: "error" })
     }
+  },
+
+  loadSessions: async (sourceFile) => {
+    if (sourceFile === null) {
+      set({ sessions: [], sessionsStatus: "ready" })
+      return
+    }
+    set({ sessionsStatus: "loading" })
+    try {
+      const sessions = await listAssistantSessions(null)
+      set({ sessions, sessionsStatus: "ready" })
+    } catch {
+      set({ sessionsStatus: "error" })
+    }
+  },
+
+  openSession: async (sessionId, sourceFile) => {
+    if (get().turnStatus !== "idle") return
+    // Resolve the transcript on open, not on send. Resuming lazily inside
+    // `sendMessage` is what made the panel look empty until a message was
+    // sent, and then made an earlier conversation appear above it.
+    set({ view: "chat", entries: [], notice: null })
+    try {
+      const result = await createAssistantSession(null, sessionId)
+      set({
+        sessionId: result.sessionId,
+        pipelineSource: sourceFile,
+        entries: hydrateEntries(result.history),
+      })
+    } catch (error) {
+      rejectSessionCreation(set, error)
+      set({ view: "list" })
+    }
+  },
+
+  showSessionList: (sourceFile) => {
+    if (get().turnStatus !== "idle") return
+    set({ view: "list", notice: null })
+    void get().loadSessions(sourceFile)
   },
 
   sendMessage: async (text, options) => {
@@ -312,20 +337,12 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     let sessionId = get().sessionId
     try {
       if (sessionId === null) {
-        const result = await createAssistantSession(
-          null,
-          rememberedSession(options.currentSourceFile),
-          controller.signal,
-        )
+        // Always a fresh session. The panel resolves an existing conversation
+        // through `openSession`, so resuming a remembered id here would drop
+        // someone else's transcript into a chat the user opened as new.
+        const result = await createAssistantSession(null, null, controller.signal)
         sessionId = result.sessionId
-        rememberSession(options.currentSourceFile, sessionId)
-        set((state) => ({
-          sessionId,
-          pipelineSource: options.currentSourceFile,
-          // A non-empty history means the backend resumed the remembered
-          // session: rehydrate the persisted transcript before this turn.
-          entries: result.history.length > 0 ? hydrateEntries(result.history) : state.entries,
-        }))
+        set({ sessionId, pipelineSource: options.currentSourceFile })
       }
     } catch (error) {
       rejectSessionCreation(set, error)
@@ -414,6 +431,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       if (activeController === controller) {
         activeController = null
         set({ turnStatus: "idle" })
+        // The turn gave this conversation its first message, and therefore its
+        // title and its place in the list. Refresh so going back shows it.
+        void get().loadSessions(options.currentSourceFile)
       }
     }
   },
@@ -425,8 +445,10 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
 
   newChat: () => {
     if (get().turnStatus !== "idle") return
-    forgetSession(get().pipelineSource)
-    set({ sessionId: null, pipelineSource: null, entries: [], notice: null })
+    // No session is created here. `create` persists immediately, so an
+    // abandoned new chat would sit in the list as an empty untitled row; the
+    // backend session is minted by the first send instead.
+    set({ sessionId: null, pipelineSource: null, entries: [], notice: null, view: "chat" })
   },
 }))
 

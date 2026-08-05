@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react"
-import { Bot, Plus } from "lucide-react"
+import { ArrowLeft, Bot, Plus } from "lucide-react"
 
 import PanelShell from "../PanelShell"
 import TranscriptEntryView from "./TranscriptEntryView"
 import Composer from "./Composer"
+import SessionList from "./SessionList"
 import useAssistantStore from "../../stores/useAssistantStore"
 import useUIStore from "../../stores/useUIStore"
 
@@ -20,11 +21,20 @@ export default function AssistantPanel({ isInsideSubmodel, currentSourceFile }: 
   const notice = useAssistantStore((state) => state.notice)
   const refreshStatus = useAssistantStore((state) => state.refreshStatus)
   const newChat = useAssistantStore((state) => state.newChat)
+  const view = useAssistantStore((state) => state.view)
+  const loadSessions = useAssistantStore((state) => state.loadSessions)
+  const showSessionList = useAssistantStore((state) => state.showSessionList)
   const transcriptRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     void refreshStatus()
   }, [refreshStatus])
+
+  // The panel opens on the chat list, so its contents are fetched on open
+  // rather than waiting for a message to be sent.
+  useEffect(() => {
+    void loadSessions(currentSourceFile)
+  }, [loadSessions, currentSourceFile])
 
   useEffect(() => {
     const transcript = transcriptRef.current
@@ -40,7 +50,28 @@ export default function AssistantPanel({ isInsideSubmodel, currentSourceFile }: 
       testId="assistant-panel"
       title="Pricing Assistant"
       onClose={() => setAssistantOpen(false)}
-      icon={<Bot size={14} style={{ color: "var(--accent)" }} />}
+      icon={
+        view === "chat" ? (
+          <button
+            type="button"
+            data-testid="assistant-back-to-list"
+            onClick={() => showSessionList(currentSourceFile)}
+            disabled={turnStatus === "streaming"}
+            aria-label="Back to chats"
+            title={
+              turnStatus === "streaming"
+                ? "Stop the current turn before leaving this chat"
+                : "Back to chats"
+            }
+            className="rounded p-0.5 transition-colors hover:bg-[var(--bg-hover)] disabled:opacity-30"
+            style={{ color: "var(--text-muted)" }}
+          >
+            <ArrowLeft size={14} aria-hidden="true" />
+          </button>
+        ) : (
+          <Bot size={14} style={{ color: "var(--accent)" }} />
+        )
+      }
       actions={
         <button
           type="button"
@@ -88,25 +119,35 @@ export default function AssistantPanel({ isInsideSubmodel, currentSourceFile }: 
         </div>
       )}
 
-      <div
-        ref={transcriptRef}
-        data-testid="assistant-transcript"
-        className="flex-1 min-h-0 overflow-y-auto space-y-2 p-3"
-        style={{ background: "var(--bg-panel)" }}
-      >
-        {entries.length === 0 && !statusError && (
-          <div
-            data-testid="assistant-empty"
-            className="flex h-full items-center justify-center px-5 text-center text-[11px]"
-            style={{ color: "var(--text-muted)" }}
-          >
-            Describe a pipeline change and Assistant will help author it here.
-          </div>
-        )}
-        {entries.map((entry, index) => (
-          <TranscriptEntryView key={`${entry.kind}-${index}`} entry={entry} />
-        ))}
-      </div>
+      {view === "list" ? (
+        <div
+          data-testid="assistant-sessions"
+          className="flex-1 min-h-0 overflow-y-auto"
+          style={{ background: "var(--bg-panel)" }}
+        >
+          <SessionList currentSourceFile={currentSourceFile} />
+        </div>
+      ) : (
+        <div
+          ref={transcriptRef}
+          data-testid="assistant-transcript"
+          className="flex-1 min-h-0 overflow-y-auto space-y-2 p-3"
+          style={{ background: "var(--bg-panel)" }}
+        >
+          {entries.length === 0 && !statusError && (
+            <div
+              data-testid="assistant-empty"
+              className="flex h-full items-center justify-center px-5 text-center text-[11px]"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Describe a pipeline change and Assistant will help author it here.
+            </div>
+          )}
+          {entries.map((entry, index) => (
+            <TranscriptEntryView key={`${entry.kind}-${index}`} entry={entry} />
+          ))}
+        </div>
+      )}
 
       {notice && (
         <div
@@ -123,10 +164,12 @@ export default function AssistantPanel({ isInsideSubmodel, currentSourceFile }: 
         </div>
       )}
 
-      <Composer
-        isInsideSubmodel={isInsideSubmodel}
-        currentSourceFile={currentSourceFile}
-      />
+      {view === "chat" && (
+        <Composer
+          isInsideSubmodel={isInsideSubmodel}
+          currentSourceFile={currentSourceFile}
+        />
+      )}
     </PanelShell>
   )
 }

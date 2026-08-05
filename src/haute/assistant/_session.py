@@ -342,6 +342,29 @@ _PERSISTED_TOOL_EVIDENCE_KEYS = frozenset(
 )
 
 
+_MAX_SESSION_TITLE_CHARS = 80
+
+
+def _session_title(text: str) -> str:
+    """Render one conversation title from its opening user message."""
+
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= _MAX_SESSION_TITLE_CHARS:
+        return collapsed
+    return collapsed[: _MAX_SESSION_TITLE_CHARS - 1].rstrip() + "…"
+
+
+@dataclass(frozen=True, slots=True)
+class AssistantSessionSummary:
+    """One conversation as the chat list shows it, without its transcript."""
+
+    session_id: str
+    title: str
+    created_at: float
+    last_used: float
+    message_count: int
+
+
 def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
     """Redact provider-working tool payloads for durable restart history."""
 
@@ -473,6 +496,16 @@ class AssistantSession:
         """Return the number of messages currently retained in history."""
 
         return sum(turn.message_count for turn in self.history)
+
+    @property
+    def title(self) -> str:
+        """Return this conversation's list title: its first user message."""
+
+        for turn in self.history:
+            for message in turn.messages:
+                if message.role == "user" and isinstance(message.content, str):
+                    return _session_title(message.content)
+        return ""
 
     def as_dict(self) -> dict[str, JSONValue]:
         """Return the serializable session state, excluding the live lock."""
@@ -718,6 +751,96 @@ class SessionStore:
         self._prune_persisted(session_id)
         return session
 
+    def _persisted_summary(self, path: Path) -> tuple[str, AssistantSessionSummary] | None:
+        """Summarise one persisted session file without reviving it.
+
+        Reading the file directly rather than through `_revive` is deliberate:
+        listing must not pull every stored conversation into memory, where it
+        would evict live sessions through the LRU bound it shares.
+        """
+
+        session_id = path.stem
+        if _SESSION_ID_PATTERN.fullmatch(session_id) is None or path.is_symlink():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            logger.warning("assistant_session_list_unreadable", session_id=session_id)
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        source_file = payload.get("source_file")
+        history = payload.get("history")
+        if not isinstance(source_file, str) or not isinstance(history, list):
+            return None
+
+        title = ""
+        message_count = 0
+        for turn in history:
+            messages = turn.get("messages") if isinstance(turn, Mapping) else None
+            if not isinstance(messages, list):
+                continue
+            message_count += len(messages)
+            if title:
+                continue
+            for message in messages:
+                if not isinstance(message, Mapping):
+                    continue
+                content = message.get("content")
+                if message.get("role") == "user" and isinstance(content, str) and content.strip():
+                    title = _session_title(content)
+                    break
+
+        created_at = payload.get("created_at")
+        last_used = payload.get("last_used")
+        return source_file, AssistantSessionSummary(
+            session_id=session_id,
+            title=title,
+            created_at=float(created_at) if isinstance(created_at, (int, float)) else 0.0,
+            last_used=float(last_used) if isinstance(last_used, (int, float)) else 0.0,
+            message_count=message_count,
+        )
+
+    def list_sessions(
+        self, source_file: str | os.PathLike[str]
+    ) -> tuple[AssistantSessionSummary, ...]:
+        """Return this pipeline's conversations, most recently used first.
+
+        A session with no messages is omitted: `create` persists immediately,
+        so an abandoned "new chat" would otherwise sit in the list as an
+        untitled empty row. Live sessions take precedence over their persisted
+        copy, which can lag by one turn.
+        """
+
+        source = self._source_file_text(source_file)
+        summaries: dict[str, AssistantSessionSummary] = {}
+        if self._storage_dir is not None:
+            try:
+                paths = sorted(self._storage_dir().glob("*.json"))
+            except OSError:
+                logger.warning("assistant_session_list_failed", exc_info=True)
+                paths = []
+            for path in paths:
+                summary = self._persisted_summary(path)
+                if summary is not None and summary[0] == source:
+                    summaries[summary[1].session_id] = summary[1]
+        for session in self._sessions.values():
+            if session.source_file != source:
+                continue
+            summaries[session.id] = AssistantSessionSummary(
+                session_id=session.id,
+                title=session.title,
+                created_at=session.created_at,
+                last_used=session.last_used,
+                message_count=session.stored_message_count,
+            )
+        return tuple(
+            sorted(
+                (item for item in summaries.values() if item.message_count > 0),
+                key=lambda item: (-item.last_used, item.session_id),
+            )
+        )
+
     def lookup(self, session_id: str) -> AssistantSession | None:
         """Return a live session and mark it recently used, or return ``None``.
 
@@ -835,6 +958,7 @@ class SessionStore:
 __all__ = [
     "AssistantMessage",
     "AssistantSession",
+    "AssistantSessionSummary",
     "AssistantToolCall",
     "AssistantToolResult",
     "AssistantTurn",

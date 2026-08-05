@@ -215,6 +215,39 @@ export function createAssistantSession(
   ).then(parseAssistantSession)
 }
 
+export interface AssistantSessionSummary {
+  sessionId: string
+  title: string
+  createdAt: number
+  lastUsed: number
+  messageCount: number
+}
+
+function parseAssistantSessionSummary(value: unknown, path: string): AssistantSessionSummary {
+  const entry = requireRecord(value, path)
+  return {
+    sessionId: requireString(entry.session_id, `${path}.session_id`),
+    title: requireString(entry.title, `${path}.title`),
+    createdAt: requireNumber(entry.created_at, `${path}.created_at`),
+    lastUsed: requireNumber(entry.last_used, `${path}.last_used`),
+    messageCount: requireNumber(entry.message_count, `${path}.message_count`),
+  }
+}
+
+export function listAssistantSessions(
+  pipeline: string | null = null,
+  signal?: AbortSignal,
+): Promise<AssistantSessionSummary[]> {
+  const query = pipeline === null ? "" : `?pipeline=${encodeURIComponent(pipeline)}`
+  return request<unknown>(`/api/assistant/sessions${query}`, { signal }).then((value) => {
+    const payload = requireRecord(value, "sessions")
+    if (!Array.isArray(payload.sessions)) invalidAssistantPayload("sessions.sessions", "an array")
+    return payload.sessions.map((entry, index) =>
+      parseAssistantSessionSummary(entry, `sessions.sessions[${index}]`),
+    )
+  })
+}
+
 export interface StreamAssistantMessageOptions {
   signal: AbortSignal
   onEvent: (event: AssistantStreamEvent) => void

@@ -9,7 +9,9 @@
  * turnStatus ("idle" | "streaming"), status (AssistantStatus | "unknown" |
  * "error"), notice (string | null — inline send-failure messaging).
  * Actions: refreshStatus(), sendMessage(text, { isInsideSubmodel,
- * currentSourceFile }), stopTurn(), newChat().
+ * currentSourceFile }), stopTurn(), newChat(), loadSessions(sourceFile),
+ * openSession(sessionId, sourceFile), showSessionList(sourceFile), plus the
+ * list-screen state view/sessions/sessionsStatus.
  *
  * The api module is mocked (the SSE parser has its own suite); graph and
  * toast stores are the real ones, reset per test for shuffle safety.
@@ -24,12 +26,14 @@ import useToastStore from "../useToastStore"
 vi.mock("../../api/assistant", () => ({
   getAssistantStatus: vi.fn(),
   createAssistantSession: vi.fn(),
+  listAssistantSessions: vi.fn(),
   streamAssistantMessage: vi.fn(),
 }))
 
 import {
   createAssistantSession,
   getAssistantStatus,
+  listAssistantSessions,
   streamAssistantMessage,
   type AssistantStreamEvent,
 } from "../../api/assistant"
@@ -57,12 +61,17 @@ function resetStores() {
     turnStatus: "idle",
     status: READY_STATUS,
     notice: null,
+    view: "list",
+    sessions: [],
+    sessionsStatus: "unknown",
   })
   useGraphStore.setState({ dirty: false })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  localStorage.clear()
   vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", history: [] })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
+  // Every completed turn refreshes the list; without a default the shared
+  // mock resolves undefined and every unrelated test records a list error.
+  vi.mocked(listAssistantSessions).mockResolvedValue([])
 }
 
 function scriptStream(events: AssistantStreamEvent[]) {
@@ -283,28 +292,30 @@ describe("send gates", () => {
   })
 })
 
-describe("session persistence across reloads and restarts", () => {
-  it("offers the remembered session id and hydrates returned history", async () => {
-    localStorage.setItem("haute.assistant.session:main.py", "old-session")
+describe("chat list navigation", () => {
+  it("opens on the list and never resumes a conversation on send", async () => {
+    // The panel used to look empty until a message was sent, then produced an
+    // earlier transcript above it, because resume happened inside sendMessage.
+    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", history: [] })
+    scriptStream([completed()])
+
+    expect(useAssistantStore.getState().view).toBe("list")
+    useAssistantStore.getState().newChat()
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+
+    expect(createAssistantSession).toHaveBeenCalledWith(null, null, expect.any(AbortSignal))
+    const { entries, sessionId, view } = useAssistantStore.getState()
+    expect(sessionId).toBe("fresh-9")
+    expect(view).toBe("chat")
+    expect(entries[0]).toEqual({ kind: "user", text: "hi" })
+  })
+
+  it("hydrates a chosen conversation when it is opened, not when it is used", async () => {
     vi.mocked(createAssistantSession).mockResolvedValue({
       sessionId: "old-session",
       history: [
         { kind: "user", text: "add nb_batch", name: "", summary: "", is_error: false },
         { kind: "assistant", text: "Adding it now.", name: "", summary: "", is_error: false },
-        {
-          kind: "tool",
-          text: "",
-          name: "apply_graph_plan",
-          summary: '{"applied": 1}',
-          is_error: false,
-        },
-        {
-          kind: "tool",
-          text: "",
-          name: "graph_updated",
-          summary: "Canvas updated",
-          is_error: false,
-        },
         {
           kind: "tool",
           text: "",
@@ -314,58 +325,64 @@ describe("session persistence across reloads and restarts", () => {
         },
       ],
     })
-    scriptStream([completed()])
 
-    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    await useAssistantStore.getState().openSession("old-session", "main.py")
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session", expect.any(AbortSignal))
-    const { entries, sessionId } = useAssistantStore.getState()
+    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session")
+    const { entries, sessionId, view } = useAssistantStore.getState()
     expect(sessionId).toBe("old-session")
+    expect(view).toBe("chat")
     expect(entries[0]).toEqual({ kind: "user", text: "add nb_batch" })
     expect(entries[1]).toEqual({ kind: "assistant", text: "Adding it now.", streaming: false })
     expect(entries[2]).toMatchObject({
-      kind: "activity",
-      name: "apply_graph_plan",
-      state: "ok",
-      summary: '{"applied": 1}',
-    })
-    expect(entries[3]).toMatchObject({
-      kind: "activity",
-      name: "graph_updated",
-      state: "ok",
-      summary: "Canvas updated",
-    })
-    expect(entries[4]).toMatchObject({
       kind: "activity",
       name: "get_node_schema",
       state: "error",
       summary: "No node x",
     })
-    // The new turn's user entry appends after the rehydrated transcript.
-    expect(entries[5]).toEqual({ kind: "user", text: "hi" })
   })
 
-  it("remembers a freshly issued session id per pipeline", async () => {
-    vi.mocked(createAssistantSession).mockResolvedValue({
-      sessionId: "fresh-9",
-      history: [],
-    })
-    scriptStream([completed()])
+  it("loads the pipeline's conversations for the list", async () => {
+    vi.mocked(listAssistantSessions).mockResolvedValue([
+      { sessionId: "a", title: "First", createdAt: 1, lastUsed: 2, messageCount: 4 },
+    ])
 
-    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    await useAssistantStore.getState().loadSessions("main.py")
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, null, expect.any(AbortSignal))
-    expect(localStorage.getItem("haute.assistant.session:main.py")).toBe("fresh-9")
+    const { sessions, sessionsStatus } = useAssistantStore.getState()
+    expect(sessionsStatus).toBe("ready")
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].title).toBe("First")
   })
 
-  it("newChat forgets the remembered session id", async () => {
-    localStorage.setItem("haute.assistant.session:main.py", "old-session")
-    useAssistantStore.setState({ sessionId: "old-session", pipelineSource: "main.py" })
+  it("reports a list failure without discarding the current chat", async () => {
+    useAssistantStore.setState({ view: "chat", sessionId: "live" })
+    vi.mocked(listAssistantSessions).mockRejectedValue(new ApiError("HTTP 500", 500, "boom"))
 
+    await useAssistantStore.getState().loadSessions("main.py")
+
+    expect(useAssistantStore.getState().sessionsStatus).toBe("error")
+    expect(useAssistantStore.getState().sessionId).toBe("live")
+  })
+
+  it("returns to the list and refreshes it", async () => {
+    vi.mocked(listAssistantSessions).mockResolvedValue([])
+    useAssistantStore.setState({ view: "chat" })
+
+    useAssistantStore.getState().showSessionList("main.py")
+
+    expect(useAssistantStore.getState().view).toBe("list")
+    expect(listAssistantSessions).toHaveBeenCalled()
+  })
+
+  it("refuses to leave a chat or start a new one mid-turn", () => {
+    useAssistantStore.setState({ view: "chat", turnStatus: "streaming", sessionId: "live" })
+
+    useAssistantStore.getState().showSessionList("main.py")
     useAssistantStore.getState().newChat()
 
-    expect(localStorage.getItem("haute.assistant.session:main.py")).toBeNull()
-    expect(useAssistantStore.getState().sessionId).toBeNull()
+    expect(useAssistantStore.getState().view).toBe("chat")
+    expect(useAssistantStore.getState().sessionId).toBe("live")
   })
 })
 

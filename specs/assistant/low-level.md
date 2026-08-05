@@ -26,10 +26,10 @@
 | `src/haute/assistant/_render.py` | Shared compact graph renderer for live pipelines and packaged examples. It emits bounded node/config summaries, edges and handles, preamble presence/digest, and singleton presence without executable source or row values. Edge handles are rendered under the exact field names the graph-edit operations accept, so the shape the model reads back is the shape it must write; see Edge cases. |
 | `src/haute/assistant/_application.py` | `PipelineApplicationService`, the stateful inspect → dry-run → apply → verify service. It composes the public parser, the save service's no-write validation and transactional save, shared save lock, plan store and graph-update publisher; transport and model tools are adapters only. Schema validation resolves through `execute_lazy_graph(..., schema_only=True)`, and owns both the seed rule and the pre-existing-failure rule described under Plan/apply/verify. |
 | `src/haute/assistant/_tools.py` | Thin adapters over the capability registry and `PipelineApplicationService`. Read tools retain their bounded renderers, including bounded recursive dataset discovery. Config redaction is policy-driven: credentials and row values are never eligible, while executable keys follow the project's own `allow_executable_source` decision rather than being redacted unconditionally. Value profiling is the one data-reading adapter and is gated on the egress policy's row-sample permission; see Control flow. A routed Parquet showcase binds an omitted listing root to the safe folder explicitly named by the user and enables recursion. Each source-bound executor seeds its evidence ledger from schema/content evidence in the exact provider history window, then adds evidence returned during the current turn. The only provider-visible mutation tools are `dry_run_graph_edits` and `apply_graph_plan`: the model must pass the exact returned plan hash and cannot resend operations at apply time. Tool code does not own revision, save, or verification policy. |
-| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
+| `src/haute/assistant/_session.py` | Session store: `AssistantSession` records (id, bound pipeline `source_file`, provider-neutral user/assistant/tool/internal-controller history including required tool-result `is_error`, per-session `asyncio.Lock`, timestamps), create/lookup/resume, `list_sessions` for the chat list, the provider-request history window, and bounded retention. Controller messages are provider-visible but transcript-hidden. Durable tool arguments/results become `{"redacted": true}` plus approved revisions/evidence and value-free validation diagnostics; deterministic payload digests are forbidden because finite-domain values are enumerable. Persistence, revival, corruption handling, pruning, and non-fatal write degradation retain their existing contracts. |
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe route, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when either the plan-correction or the malformed-call dry-run budget is exhausted, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
-| `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
+| `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (this pipeline's saved conversations for the panel's chat list, resolving the pipeline exactly as session creation does), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies graph-update fingerprint/wire-path helpers used by mutation publishing. |
 | `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
@@ -391,6 +391,19 @@ Databricks serving endpoint from `DATABRICKS_HOST`, then probe the SDK import
 for the configured provider and check its credential env var. Pure inspection, no
 provider network call. Config errors name `[assistant].<field>` but never echo
 the field value.
+
+**Session list** (`GET /api/assistant/sessions`): resolve the pipeline exactly as session
+creation does, then return `SessionStore.list_sessions(source_file)` — one summary per
+conversation bound to that source file, carrying id, title, created/last-used timestamps,
+and message count, most recently used first. The title is the opening user message,
+whitespace-collapsed and bounded to 80 characters. Summaries are read directly from the
+persisted files rather than through `_revive`: listing must not pull every stored
+conversation into memory, where it would evict live sessions through the LRU bound it
+shares. A live session takes precedence over its persisted copy, which can lag by one
+turn; an unreadable or malformed file is a logged warning treated as absent, matching the
+store's existing degradation posture. A conversation with no messages is omitted, because
+`create` persists immediately and an abandoned "new chat" would otherwise occupy the list
+as an untitled empty row.
 
 **Session create** (`POST /api/assistant/session`): resolve the pipeline (explicit name via
 `lookup_pipeline_by_name`, else the same first-pipeline default `GET /api/pipeline` uses);
@@ -989,16 +1002,21 @@ fixture for route tests). The implemented coverage is:
   controller continuation, successful apply terminates with deterministic text and no later
   provider/tool round, explicit `NEEDS_INPUT:`/`BLOCKED:` outcomes terminate normally, and a
   second unqualified end fails rather than completes.
-- **`tests/test_assistant_routes.py`** — status/session/message endpoints: SSE framing,
+- **`tests/test_assistant_routes.py`** — status/sessions/session/message endpoints: SSE framing,
   400/404/409 mapping, sanitized unexpected-error paths, readiness reasons on status,
   transcript rehydration, adapter construction, atomic concurrent-send reservation, and
-  lock release on pre-stream failure, disconnect, and mid-stream send failure.
+  lock release on pre-stream failure, disconnect, and mid-stream send failure. The list
+  endpoint pins this pipeline's conversations with their titles and counts, an empty
+  project, and the unknown-pipeline 404.
 - **`tests/test_assistant_session_persistence.py`** — atomic write-through persistence,
   restart revival, invisible LRU eviction, corrupt/invalid-file logged misses, session-id
   path hardening, oldest-first persisted-file pruning, abandoned temp-file cleanup,
   tool-error round-trip, internal-controller revival/transcript hiding, absence of
   deterministic payload digests, safe validation path/reason retention, and non-fatal
-  persist failures.
+  persist failures. Listing coverage pins recency ordering and per-pipeline scoping,
+  omission of empty conversations, titles bounded and whitespace-collapsed, survival of a
+  restart without reviving any session into memory, and an unreadable file skipped with a
+  warning.
 - **`tests/test_assistant_integration.py`** — fake-provider end-to-end on a tmp project:
   instruction → ops → real transactional save (files on disk assert codegen/sidecars) →
   `graph.update` published with the post-save fingerprint (asserted via a test subscriber)
