@@ -71,6 +71,7 @@ def _isolated_storage_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(_project_storage, "_uc_claim_url", None)
     monkeypatch.setattr(_project_storage, "_active_lineage", None)
     monkeypatch.setattr(_project_storage, "_claim_heartbeat", _project_storage._ClaimHeartbeat())
+    monkeypatch.setattr(_project_storage, "_bind_task", _project_storage.BindTask())
     yield
     _project_storage.push_queue().stop()
     _project_storage._claim_heartbeat.stop()
@@ -1208,6 +1209,91 @@ class TestUcContainerDeathSurvival:
         )
         with pytest.raises(StorageUnavailableError, match="Generation 9"):
             _project_storage.restore_if_bound(tmp_path / "fresh")
+
+
+class TestBindTask:
+    """Bind runs in the background so a publish never blocks the session."""
+
+    def test_precheck_catches_what_belongs_beside_the_field(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        with pytest.raises(StorageConfigError, match="https://"):
+            _project_storage.precheck_bind("ssh://host/r.git")
+        # A valid URL passes and comes back normalised.
+        assert _project_storage.precheck_bind(f" {UC_URL} ") == UC_URL
+
+    def test_precheck_refuses_without_a_state_volume(self, project: Path) -> None:
+        with pytest.raises(StorageConfigError, match=STATE_VOLUME_ENV):
+            _project_storage.precheck_bind(UC_URL)
+
+    def test_a_completed_bind_reports_its_outcome(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        task = _project_storage.bind_task()
+        assert task.status().state == "idle"
+        task.start(UC_URL, project)
+        _wait_until(lambda: task.status().state == "succeeded")
+        assert task.status().outcome == "adopted"
+        assert task.status().remote_url == UC_URL
+
+    def test_a_failed_bind_keeps_the_holder_for_the_dialog(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        _plant_claim(files_api, "other-app", user="colleague@example.com")
+        task = _project_storage.bind_task()
+        task.start(UC_URL, project)
+        _wait_until(lambda: task.status().state == "failed")
+        status = task.status()
+        assert status.claim is not None
+        assert status.claim.app_name == "other-app"
+        assert "fork" in (status.message or "")
+        # The URL is kept so the reopened dialog can prefill it.
+        assert status.remote_url == UC_URL
+
+    def test_a_result_persists_until_acknowledged(
+        self, project: Path, files_api: _FakeFiles
+    ) -> None:
+        """A UI polling every few seconds must not miss the outcome."""
+        task = _project_storage.bind_task()
+        task.start(UC_URL, project)
+        _wait_until(lambda: task.status().state == "succeeded")
+        assert task.status().state == "succeeded"  # still there on a later read
+        task.acknowledge()
+        assert task.status().state == "idle"
+
+    def test_only_one_bind_runs_at_a_time(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        release = threading.Event()
+
+        def slow(url, project_root, bound_by=None):
+            release.wait(timeout=5)
+            return "adopted"
+
+        monkeypatch.setattr(_project_storage, "bind_remote", slow)
+        task = _project_storage.bind_task()
+        task.start(UC_URL, project)
+        _wait_until(lambda: task.status().state == "running")
+        with pytest.raises(StorageConfigError, match="already being saved"):
+            task.start(FORK_URL, project)
+        release.set()
+
+    def test_an_unexpected_failure_is_sanitised(
+        self, project: Path, files_api: _FakeFiles, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Raw errors must never reach the dialog verbatim."""
+        secret_ish = f"fatal: could not read Password for 'https://token@host': {project}"
+
+        def explode(url, project_root, bound_by=None):
+            raise _git.GitError(secret_ish)
+
+        monkeypatch.setattr(_project_storage, "bind_remote", explode)
+        task = _project_storage.bind_task()
+        task.start(UC_URL, project)
+        _wait_until(lambda: task.status().state == "failed")
+        message = task.status().message or ""
+        assert "token@host" not in message
+        assert str(project) not in message
 
 
 # ---------------------------------------------------------------------------

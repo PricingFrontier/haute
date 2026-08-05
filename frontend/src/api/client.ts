@@ -1360,6 +1360,13 @@ export function forkGitStorage(
   ).then(parseGitForkStorageResponse)
 }
 
+/** Clear a finished bind result once the dialog has shown it. */
+export function acknowledgeGitBind(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/storage/bind/ack", {}, options).then(parseGitWorkingBranchResponse)
+}
+
 /** Retry a failed sync to the bound remote and return refreshed readiness. */
 export function retryGitStorageSync(
   options?: { signal?: AbortSignal },

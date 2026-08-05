@@ -71,6 +71,7 @@ import type {
   GitSetIdentityResponse,
   GitBindStorageResponse,
   GitForkStorageResponse,
+  GitStorageBind,
   GitStorageClaim,
   GitSetWorkingBranchResponse,
   GitStorageSync,
@@ -2528,6 +2529,35 @@ export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchR
       "storage_forked_from",
     ),
     sync: parseGitStorageSync("parseGitWorkingBranchResponse", obj, "sync"),
+    storage_bind: parseGitStorageBind("parseGitWorkingBranchResponse", obj, "storage_bind"),
+  }
+}
+
+const BIND_STATES = ["idle", "running", "succeeded", "failed"] as const
+
+const BIND_OUTCOMES = ["adopted", "restart-required"] as const
+
+/** Older backends omit the async-bind surface — read it as absent (null)
+ *  rather than throw, so a stale server still renders the rest. */
+function parseGitStorageBind(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+): GitStorageBind | null {
+  const value = obj[key]
+  if (value === undefined || value === null) return null
+  const bindObj = expectPlainObject(parser, value, `field \`${key}\``)
+  return {
+    state: expectStringLiteral(parser, bindObj.state, `field \`${key}.state\``, BIND_STATES),
+    outcome: expectNullableStringLiteral(
+      parser,
+      bindObj.outcome === undefined ? null : bindObj.outcome,
+      `field \`${key}.outcome\``,
+      BIND_OUTCOMES,
+    ),
+    message: optionalNullableString(parser, bindObj, "message"),
+    claim: gitStorageClaimFromDetail(bindObj.claim),
+    remote_url: optionalNullableString(parser, bindObj, "remote_url"),
   }
 }
 
@@ -2568,8 +2598,7 @@ export function parseGitBindStorageResponse(value: unknown): GitBindStorageRespo
   const obj = expectPlainObject("parseGitBindStorageResponse", value)
   return {
     outcome: expectStringLiteral("parseGitBindStorageResponse", obj.outcome, "field `outcome`", [
-      "adopted",
-      "restart-required",
+      "pending",
     ] as const),
     remote_url: expectString("parseGitBindStorageResponse", obj.remote_url, "field `remote_url`"),
     message: expectString("parseGitBindStorageResponse", obj.message, "field `message`"),

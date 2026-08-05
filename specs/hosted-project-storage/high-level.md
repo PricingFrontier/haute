@@ -49,6 +49,12 @@ The session lifecycle, from the user's chair:
    instance actively holds is refused with the holder named, and the
    user is offered the two honest ways forward — bind somewhere else,
    or fork the held location into a new one (provenance recorded).
+   Binding does not hold the session hostage: the URL is checked
+   immediately (a typo is rejected while the user is still looking at
+   the field), then the network work — claim, inspect, publish, record
+   — runs in the background while the app stays usable. Success
+   surfaces as a passing confirmation; failure reopens the dialog with
+   the reason and the URL still filled in.
 3. **Save / milestone commit**: after the existing git machinery commits
    locally, the commit is pushed to `origin` asynchronously. Saves never
    wait on the network; the UI carries a small sync state — synced /
@@ -169,6 +175,13 @@ the lock; the slow part — the upload — runs outside it.
 - **Async push** honours the ruling that close requires no action: if
   close needed a flush, close would become a failure point. The pending
   counter makes the exposure visible instead.
+- **Async bind, for the same reason.** A bind publishes the whole
+  project, so its duration is the project's size and the volume's
+  latency — neither of which the user should sit through behind a modal.
+  Only the checks that are instant and local stay synchronous, because
+  those are the ones whose answer belongs beside the input field. The
+  slow remainder reports through the same readiness surface the sync
+  chip already uses.
 - **Binding must outlive the container**, so it cannot live only in the
   repo or on local disk. It is a small state record on a UC volume
   (Files API — fine for JSON, unlike git), with the credential itself

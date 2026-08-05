@@ -34,6 +34,7 @@ def _isolated_storage_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(_project_storage, "_active_binding", None)
     monkeypatch.setattr(_project_storage, "_active_lineage", None)
     monkeypatch.setattr(_project_storage, "_queue", PushQueue())
+    monkeypatch.setattr(_project_storage, "_bind_task", _project_storage.BindTask())
 
     yield
 
@@ -102,14 +103,59 @@ def test_bind_with_no_state_volume_names_the_env_var(client: TestClient) -> None
 
 
 # ---------------------------------------------------------------------------
-# 3b. POST /api/git/storage/bind — 409 with the structured holder record
+# 3b. POST /api/git/storage/bind — async: accepted now, outcome later
 # ---------------------------------------------------------------------------
 
 
-def test_bind_on_a_claimed_location_returns_the_holder(
+def _wait_for_bind(client: TestClient, state: str, timeout: float = 5.0) -> dict:
+    """Poll readiness until the background bind reaches *state*."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        bind = client.get("/api/git/working-branch").json()["storage_bind"]
+        if bind["state"] == state:
+            return bind
+        time.sleep(0.02)
+    raise AssertionError(f"bind never reached {state!r}")
+
+
+def test_bind_returns_immediately_without_waiting_for_the_publish(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The session must stay usable while a whole project is published."""
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def slow_bind(url: str, project_root: Path, bound_by: object = None) -> str:
+        started.set()
+        release.wait(timeout=5)
+        return "adopted"
+
+    monkeypatch.setattr(_project_storage, "bind_remote", slow_bind)
+    monkeypatch.setenv(_project_storage.STATE_VOLUME_ENV, "workspace.default.haute_state")
+
+    resp = client.post(
+        "/api/git/storage/bind",
+        json={"remote_url": "uc://workspace.default.projects/demo"},
+    )
+    # Returned while the publish is still blocked, not after it.
+    assert resp.status_code == 200
+    assert resp.json()["outcome"] == "pending"
+    assert started.wait(timeout=5)
+
+    assert _wait_for_bind(client, "running")["remote_url"].startswith("uc://")
+    release.set()
+    done = _wait_for_bind(client, "succeeded")
+    assert done["outcome"] == "adopted"
+
+
+def test_a_claimed_location_reports_the_holder_on_the_readiness_surface(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The refusal is a structured 409 the UI can steer from, not a string."""
+    """A failed bind names the holder so the dialog can offer to fork."""
     from haute._project_storage import StorageClaimedError, UCClaim
 
     claim = UCClaim(
@@ -129,16 +175,60 @@ def test_bind_on_a_claimed_location_returns_the_holder(
         )
 
     monkeypatch.setattr(_project_storage, "bind_remote", claimed)
+    monkeypatch.setenv(_project_storage.STATE_VOLUME_ENV, "workspace.default.haute_state")
+
     resp = client.post(
         "/api/git/storage/bind",
         json={"remote_url": "uc://workspace.default.projects/demo"},
     )
-    assert resp.status_code == 409
-    detail = resp.json()["detail"]
-    assert detail["app_name"] == "other-app"
-    assert detail["user"] == "colleague@example.com"
-    assert detail["refreshed_at"] == "2026-08-04T17:00:00+00:00"
-    assert "fork" in detail["message"]
+    assert resp.status_code == 200
+
+    failed = _wait_for_bind(client, "failed")
+    assert failed["claim"]["app_name"] == "other-app"
+    assert failed["claim"]["user"] == "colleague@example.com"
+    assert "fork" in failed["message"]
+
+    # Acknowledging clears it, so the dialog isn't reopened forever.
+    acked = client.post("/api/git/storage/bind/ack")
+    assert acked.status_code == 200
+    assert acked.json()["storage_bind"]["state"] == "idle"
+
+
+def test_a_second_bind_while_one_runs_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    release = threading.Event()
+
+    def slow_bind(url: str, project_root: Path, bound_by: object = None) -> str:
+        release.wait(timeout=5)
+        return "adopted"
+
+    monkeypatch.setattr(_project_storage, "bind_remote", slow_bind)
+    monkeypatch.setenv(_project_storage.STATE_VOLUME_ENV, "workspace.default.haute_state")
+
+    first = client.post(
+        "/api/git/storage/bind",
+        json={"remote_url": "uc://workspace.default.projects/one"},
+    )
+    assert first.status_code == 200
+    _wait_for_bind(client, "running")
+
+    second = client.post(
+        "/api/git/storage/bind",
+        json={"remote_url": "uc://workspace.default.projects/two"},
+    )
+    assert second.status_code == 400
+    assert "already being saved" in second.json()["detail"]
+    release.set()
+
+
+def test_a_malformed_url_is_still_rejected_synchronously(client: TestClient) -> None:
+    """A typo's answer belongs beside the input field, not in a poll."""
+    resp = client.post("/api/git/storage/bind", json={"remote_url": "ssh://x/y"})
+    assert resp.status_code == 400
+    assert "https://" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

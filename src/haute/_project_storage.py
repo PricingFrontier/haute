@@ -98,6 +98,7 @@ SyncState = Literal["synced", "pending", "failed"]
 FailureClass = Literal["transport", "rejected", "config"]
 RestoreOutcome = Literal["restored", "unbound", "present"]
 BindOutcome = Literal["adopted", "restart-required"]
+BindState = Literal["idle", "running", "succeeded", "failed"]
 
 
 class StorageError(HauteError):
@@ -1547,8 +1548,96 @@ _active_binding: StorageBinding | None = None
 _active_lineage: UCLineage | None = None
 
 
+@dataclass(frozen=True)
+class BindStatus:
+    """Progress of a background bind, as the UI sees it."""
+
+    state: BindState = "idle"
+    outcome: BindOutcome | None = None
+    message: str | None = None
+    claim: UCClaim | None = None
+    remote_url: str | None = None
+
+
+class BindTask:
+    """Runs one bind in the background so a save-blocking modal isn't needed.
+
+    A bind publishes the whole project, so its duration is the project's
+    size plus the volume's latency. The route keeps only the instant,
+    local checks (a typo belongs beside the input field) and hands the
+    rest here. The result stays readable after completion — a UI polling
+    every few seconds must not miss it — until the user acknowledges it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._status = BindStatus()
+        self._thread: threading.Thread | None = None
+
+    def status(self) -> BindStatus:
+        with self._lock:
+            return self._status
+
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._status.state == "running"
+
+    def acknowledge(self) -> None:
+        """Clear a finished result once the UI has shown it."""
+        with self._lock:
+            if self._status.state in ("succeeded", "failed"):
+                self._status = BindStatus()
+
+    def start(self, url: str, project_root: Path, bound_by: str | None = None) -> None:
+        """Begin a bind. Raises if one is already in flight."""
+        with self._lock:
+            if self._status.state == "running":
+                raise StorageConfigError(
+                    "This project is already being saved to storage. Wait for that to "
+                    "finish before binding somewhere else."
+                )
+            self._status = BindStatus(state="running", remote_url=url)
+        thread = threading.Thread(
+            target=self._run,
+            args=(url, project_root, bound_by),
+            name="haute-storage-bind",
+            daemon=True,
+        )
+        self._thread = thread
+        thread.start()
+
+    def _run(self, url: str, project_root: Path, bound_by: str | None) -> None:
+        try:
+            outcome = bind_remote(url, project_root, bound_by=bound_by)
+        except StorageClaimedError as exc:
+            self._fail(url, str(exc), claim=exc.claim)
+            return
+        except StorageError as exc:
+            self._fail(url, str(exc))
+            return
+        except Exception as exc:
+            failure, message, _ = _classify_push_failure(exc)
+            logger.warning("storage_bind_failed_async", failure=failure)
+            self._fail(url, message)
+            return
+        with self._lock:
+            self._status = BindStatus(state="succeeded", outcome=outcome, remote_url=url)
+
+    def _fail(self, url: str, message: str, claim: UCClaim | None = None) -> None:
+        with self._lock:
+            self._status = BindStatus(state="failed", message=message, claim=claim, remote_url=url)
+
+
+_bind_task = BindTask()
+
+
 def push_queue() -> PushQueue:
     return _queue
+
+
+def bind_task() -> BindTask:
+    return _bind_task
 
 
 def active_binding() -> StorageBinding | None:
@@ -1680,6 +1769,31 @@ def restore_if_bound(project_dir: Path) -> RestoreOutcome:
     _queue.start(project_dir)
     logger.info("project_restored", scope=_scope_name())
     return "restored"
+
+
+def precheck_bind(url: str) -> str:
+    """Run the instant, local half of bind and return the normalised URL.
+
+    These are exactly the checks whose answer belongs beside the input
+    field — a malformed URL, an already-bound project, a deployment with
+    nowhere to record a binding. Everything beyond this point is network
+    work and runs in the background (:class:`BindTask`).
+    """
+    remote_url = validate_remote_url(url)
+    if _active_binding is not None:
+        # Repointing origin under a live publisher would send this project's
+        # history to a remote the session was never verified against.
+        raise StorageConfigError(
+            "This project is already bound to durable storage. Restart the app to "
+            "bind it somewhere else."
+        )
+    if not state_volume_configured():
+        raise StorageConfigError(
+            f"This deployment has no state volume configured, so a binding cannot be "
+            f"remembered across restarts. Set {STATE_VOLUME_ENV} to a Unity Catalog "
+            "volume (catalog.schema.volume) the app can write."
+        )
+    return remote_url
 
 
 def bind_remote(url: str, project_root: Path, bound_by: str | None = None) -> BindOutcome:

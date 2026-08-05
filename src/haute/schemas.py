@@ -1910,6 +1910,37 @@ GitWorkingBranchState = Literal[
 GitStorageState = Literal["unsupported", "unbound", "bound"]
 GitSyncState = Literal["synced", "pending", "failed"]
 GitSyncFailure = Literal["transport", "rejected", "config"]
+GitBindState = Literal["idle", "running", "succeeded", "failed"]
+
+
+class GitStorageClaim(BaseModel):
+    """Who holds a uc:// location's lease.
+
+    Steering, not stonewalling: the UI names the holder and offers the
+    two ways forward (bind elsewhere, or fork the location).
+    """
+
+    app_name: str
+    user: str | None = None
+    refreshed_at: str | None = None
+    message: str
+
+
+class GitStorageBind(BaseModel):
+    """Progress of a bind running in the background.
+
+    A bind publishes the whole project, so the dialog closes as soon as
+    the instant checks pass and the outcome arrives here instead.
+    """
+
+    state: GitBindState = "idle"
+    outcome: Literal["adopted", "restart-required"] | None = None
+    # Hand-authored failure prose; never raw library text.
+    message: str | None = None
+    # Set when the failure was a held uc:// location, so the dialog can
+    # name the holder and offer to fork.
+    claim: GitStorageClaim | None = None
+    remote_url: str | None = None
 
 
 class GitStorageSync(BaseModel):
@@ -1939,6 +1970,9 @@ class GitWorkingBranchResponse(BaseModel):
     # signposting, read once at bind/restore and cached off the Files API.
     storage_forked_from: str | None = None
     sync: GitStorageSync | None = None
+    # Progress of a bind running in the background, so the dialog can close
+    # immediately and still report what happened.
+    storage_bind: GitStorageBind | None = None
     # Drives whether the startup modal fires (S27) and which variant (S14).
     state: GitWorkingBranchState = "unset"
     # Human-readable reasons when state is "invalid" (check_invariants output
@@ -1966,25 +2000,13 @@ class GitBindStorageRequest(BaseModel):
 
 
 class GitBindStorageResponse(BaseModel):
-    # "adopted": the empty remote now holds this project and publishing is
-    # live. "restart-required": the remote already holds a project, so the
-    # binding is recorded and the next boot lifts it (swapping a running
-    # server's project directory underneath it is not safe to do live).
-    outcome: Literal["adopted", "restart-required"]
+    # Always "pending": the instant checks passed and the network work —
+    # claim, inspect, publish, record — now runs in the background. The
+    # real outcome ("adopted" or "restart-required") arrives on the
+    # readiness response's `storage_bind`, so the dialog never has to hold
+    # the session open across a whole-project publish.
+    outcome: Literal["pending"] = "pending"
     remote_url: str
-    message: str
-
-
-class GitStorageClaim(BaseModel):
-    """Who holds a uc:// location's lease — the 409 body at bind time.
-
-    Steering, not stonewalling: the UI names the holder and offers the
-    two ways forward (bind elsewhere, or fork the location).
-    """
-
-    app_name: str
-    user: str | None = None
-    refreshed_at: str | None = None
     message: str
 
 

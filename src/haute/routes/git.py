@@ -89,6 +89,7 @@ from haute.schemas import (
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
+    GitStorageBind,
     GitStorageClaim,
     GitStorageSync,
     GitUndeleteRequest,
@@ -139,6 +140,7 @@ def _with_storage_state(status: GitWorkingBranchResponse) -> GitWorkingBranchRes
     binding = _project_storage.active_binding()
     lineage = _project_storage.active_lineage()
     sync = _project_storage.push_queue().status()
+    bind = _project_storage.bind_task().status()
     return status.model_copy(
         update={
             "storage": _project_storage.storage_state(),
@@ -150,7 +152,26 @@ def _with_storage_state(status: GitWorkingBranchResponse) -> GitWorkingBranchRes
                 failure=sync.failure,
                 message=sync.message,
             ),
+            "storage_bind": GitStorageBind(
+                state=bind.state,
+                outcome=bind.outcome,
+                message=bind.message,
+                claim=_claim_model(bind.claim, bind.message),
+                remote_url=bind.remote_url,
+            ),
         }
+    )
+
+
+def _claim_model(claim: object, message: str | None) -> GitStorageClaim | None:
+    """Render a lease holder for the client, or ``None`` when unheld."""
+    if claim is None:
+        return None
+    return GitStorageClaim(
+        app_name=getattr(claim, "app_name", ""),
+        user=getattr(claim, "user", None),
+        refreshed_at=getattr(claim, "refreshed_at", None),
+        message=message or "",
     )
 
 
@@ -571,59 +592,57 @@ def git_push(body: GitPushRequest) -> GitPushResponse:
 
 @router.post("/storage/bind", response_model=GitBindStorageResponse)
 def git_bind_storage(body: GitBindStorageRequest, request: Request) -> GitBindStorageResponse:
-    """Make this hosted project's history durable by binding it to a remote.
+    """Start making this hosted project's history durable.
 
-    An empty remote adopts the project immediately and publishing goes
-    live. A populated remote records the binding and asks for a restart,
-    which lifts that project cleanly at boot rather than swapping the
-    running server's working directory underneath it."""
+    Only the instant, local checks run here — a malformed URL, an
+    already-bound project, a deployment with nowhere to record a binding
+    — because those are the answers that belong beside the input field.
+    The network work (claim the location, inspect it, publish the whole
+    project, record the binding) then runs in the background, so a bind
+    never holds the session open for the length of a publish. Progress
+    and the real outcome arrive on the readiness response's
+    ``storage_bind``."""
     try:
-        outcome = _project_storage.bind_remote(
-            body.remote_url,
+        remote_url = _project_storage.precheck_bind(body.remote_url)
+        _project_storage.bind_task().start(
+            remote_url,
             Path.cwd(),
             # Platform-authenticated visitor, when hosted behind an SSO proxy.
             bound_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
-        )
-    except _project_storage.StorageClaimedError as e:
-        # Another app instance holds the location's lease. 409 with the
-        # structured holder so the UI can name them and offer the ways
-        # forward (bind elsewhere, or fork).
-        logger.warning("storage_bind_claimed", holder=e.claim.app_name)
-        raise HTTPException(
-            status_code=409,
-            detail=GitStorageClaim(
-                app_name=e.claim.app_name,
-                user=e.claim.user,
-                refreshed_at=e.claim.refreshed_at,
-                message=str(e),
-            ).model_dump(),
         )
     except _project_storage.StorageConfigError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except _project_storage.StorageUnavailableError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    except GitPushRejectedError as e:
-        logger.warning("storage_bind_rejected", message=e.rejection.message)
-        raise HTTPException(status_code=409, detail=e.rejection.model_dump())
-    except GitError as e:
-        _handle_git_error(e)
     except Exception as e:
         logger.error("storage_bind_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
-    message = (
-        "This project is now stored on the remote — saves publish automatically."
-        if outcome == "adopted"
-        else (
-            "Binding saved. That repository already holds a project, so restart "
-            "the app to load it — this session's project is not published."
-        )
-    )
     return GitBindStorageResponse(
-        outcome=outcome,
-        remote_url=_project_storage.validate_remote_url(body.remote_url),
-        message=message,
+        remote_url=remote_url,
+        message="Saving this project to storage — you can keep working.",
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/bind/ack — clear a finished bind result
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/bind/ack", response_model=GitWorkingBranchResponse)
+def git_acknowledge_bind() -> GitWorkingBranchResponse:
+    """Clear a finished bind result once the UI has shown it.
+
+    The result persists after the bind completes so a slow poll cannot
+    miss it; this is how the UI says it no longer needs it."""
+    _project_storage.bind_task().acknowledge()
+    try:
+        return _with_storage_state(working_branch_status(Path.cwd()))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_bind_ack_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 
 # ---------------------------------------------------------------------------

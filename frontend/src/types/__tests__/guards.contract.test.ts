@@ -1541,26 +1541,62 @@ describe("API response guards", () => {
     ).toThrow(/expected field `storage` to be one of/i)
   })
 
-  it("parses an adopted bind-storage response", () => {
+  it("parses the accepted bind-storage response", () => {
     const parsed = parseGitBindStorageResponse({
-      outcome: "adopted",
+      outcome: "pending",
       remote_url: "https://github.com/org/repo.git",
-      message: "Bound to https://github.com/org/repo.git",
+      message: "Saving this project to storage — you can keep working.",
     })
     expect(parsed).toEqual({
-      outcome: "adopted",
+      outcome: "pending",
       remote_url: "https://github.com/org/repo.git",
-      message: "Bound to https://github.com/org/repo.git",
+      message: "Saving this project to storage — you can keep working.",
     })
   })
 
-  it("parses a restart-required bind-storage response", () => {
-    const parsed = parseGitBindStorageResponse({
-      outcome: "restart-required",
-      remote_url: "https://github.com/org/repo.git",
-      message: "Saved. Restart the app to load this project.",
+  it("rejects the old synchronous bind outcomes", () => {
+    // Binding is asynchronous: the route only ever accepts the request, and
+    // the real outcome arrives on the readiness response's storage_bind.
+    for (const outcome of ["adopted", "restart-required"]) {
+      expect(() =>
+        parseGitBindStorageResponse({
+          outcome,
+          remote_url: "https://github.com/org/repo.git",
+          message: "x",
+        }),
+      ).toThrow(/expected field `outcome` to be one of/i)
+    }
+  })
+
+  it("parses background bind progress, defaulting to absent", () => {
+    const running = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage_bind: {
+        state: "running",
+        outcome: null,
+        message: null,
+        claim: null,
+        remote_url: "uc://workspace.default.projects/demo",
+      },
     })
-    expect(parsed.outcome).toBe("restart-required")
+    expect(running.storage_bind?.state).toBe("running")
+    expect(running.storage_bind?.remote_url).toBe("uc://workspace.default.projects/demo")
+
+    const failed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage_bind: {
+        state: "failed",
+        message: "in use by app 'other-app'",
+        claim: { app_name: "other-app", user: null, refreshed_at: null, message: "in use" },
+      },
+    })
+    expect(failed.storage_bind?.claim?.app_name).toBe("other-app")
+
+    // An older backend omitting the field reads as absent, not an error.
+    const absent = parseGitWorkingBranchResponse({ state: "ready", current_branch: "dev" })
+    expect(absent.storage_bind).toBeNull()
   })
 
   it("parses fork provenance on the readiness surface, defaulting to null", () => {

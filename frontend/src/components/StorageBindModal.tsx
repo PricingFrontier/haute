@@ -1,10 +1,7 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
-import { ApiError } from "../api/client"
-import type { GitStorageClaim } from "../api/types"
 import useGitStore from "../stores/useGitStore"
 import useToastStore from "../stores/useToastStore"
-import { gitStorageClaimFromDetail } from "../types/guards"
 import { gitErrorMessage } from "../utils/gitError"
 import ModalShell from "./ModalShell"
 
@@ -15,75 +12,94 @@ interface StorageBindModalProps {
 /**
  * Durable-storage bind dialog: the "unbound" affordance opens this to attach
  * an HTTPS remote or a uc:// volume location so saves survive a container
- * replacement. A successful bind either takes effect immediately ("adopted")
- * or requires an app restart to load the bound project ("restart-required") —
- * the two are shown distinctly, since a restart-required bind must not be
- * presented as already durable.
+ * replacement.
  *
- * A uc:// location someone else actively holds comes back as a structured 409
- * naming the holder; the dialog then steers rather than stonewalls — pick a
- * different location, or fork the held one into a new location and bind that.
+ * Binding is asynchronous. Only the instant checks (a malformed URL, an
+ * already-bound project) answer here; a bind publishes the whole project, so
+ * the dialog closes as soon as the request is accepted and the session stays
+ * usable. The outcome arrives on the polled readiness state, which reopens
+ * this dialog on failure — so what the dialog shows is DERIVED from that
+ * state rather than copied into local state, and the server-side result is
+ * cleared only once the user has acted on it.
+ *
+ * A uc:// location someone else actively holds fails with the holder named;
+ * the dialog then steers rather than stonewalls — pick a different location,
+ * or fork the held one into a new location and bind that.
  */
 export default function StorageBindModal({ onClose }: StorageBindModalProps) {
   const bindStorage = useGitStore((s) => s.bindStorage)
   const forkStorage = useGitStore((s) => s.forkStorage)
+  const acknowledgeBind = useGitStore((s) => s.acknowledgeBind)
+  const bind = useGitStore((s) => s.status?.storage_bind ?? null)
   const addToast = useToastStore((s) => s.addToast)
 
-  const [remoteUrl, setRemoteUrl] = useState("")
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [restartMessage, setRestartMessage] = useState<string | null>(null)
-  // The refusal from binding a location another app holds, plus the URL that
-  // was refused (the fork source) and the user's chosen fork target.
-  const [claim, setClaim] = useState<GitStorageClaim | null>(null)
-  const [claimedUrl, setClaimedUrl] = useState<string | null>(null)
+  const failed = bind?.state === "failed" ? bind : null
+  const heldBy = failed?.claim ?? null
+  const needsRestart = bind?.state === "succeeded" && bind.outcome === "restart-required"
+
+  // Reopened after a failure, the URL is already known — seed the field from
+  // it rather than writing to state from an effect.
+  const [remoteUrl, setRemoteUrl] = useState(() => failed?.remote_url ?? "")
   const [forkUrl, setForkUrl] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+  // Set when the user chooses to bind elsewhere instead of forking, so the
+  // held-location panel gives way to the ordinary form.
+  const [dismissedHold, setDismissedHold] = useState(false)
+
+  const showHold = heldBy !== null && !dismissedHold
+  const error = localError ?? (failed && !heldBy ? failed.message : null)
+
+  // Adopting is the only outcome with nothing to ask the user: report it and
+  // get out of the way. The other outcomes are rendered, not acted on.
+  useEffect(() => {
+    if (bind?.state === "succeeded" && bind.outcome === "adopted") {
+      addToast("success", "This project is now saved to storage — saves publish automatically.")
+      void acknowledgeBind()
+      onClose()
+    }
+  }, [bind, acknowledgeBind, addToast, onClose])
+
+  const dismiss = () => {
+    // Clear the server-side result so a stale outcome cannot reopen this
+    // dialog after the user has dealt with it.
+    if (bind && bind.state !== "idle" && bind.state !== "running") void acknowledgeBind()
+    onClose()
+  }
 
   const canSubmit = remoteUrl.trim() !== "" && !busy
   const canFork = forkUrl.trim() !== "" && !busy
 
-  const bind = async (url: string) => {
-    const result = await bindStorage(url)
-    if (result.outcome === "restart-required") {
-      setClaim(null)
-      setRestartMessage(result.message)
-    } else {
-      addToast("success", result.message)
-      onClose()
-    }
-  }
-
   const submit = async () => {
     if (!canSubmit) return
     setBusy(true)
-    setError(null)
+    setLocalError(null)
     try {
-      await bind(remoteUrl.trim())
+      if (failed) await acknowledgeBind()
+      await bindStorage(remoteUrl.trim())
+      // Accepted, not finished: let the user carry on. The dialog reopens by
+      // itself if the background bind fails.
+      addToast("info", "Saving this project to storage — you can keep working.")
+      onClose()
     } catch (err: unknown) {
-      const claimed =
-        err instanceof ApiError && err.status === 409 ? gitStorageClaimFromDetail(err.rawDetail) : null
-      if (claimed) {
-        setClaim(claimed)
-        setClaimedUrl(remoteUrl.trim())
-      } else {
-        setError(gitErrorMessage(err, "Could not bind storage"))
-      }
+      setLocalError(gitErrorMessage(err, "Could not bind storage"))
     } finally {
       setBusy(false)
     }
   }
 
   const forkAndBind = async () => {
-    if (!canFork || claimedUrl === null) return
+    if (!canFork || !failed?.remote_url) return
     setBusy(true)
-    setError(null)
+    setLocalError(null)
     try {
-      const forked = await forkStorage(claimedUrl, forkUrl.trim())
-      // Binding the fork lifts the copied project at the next boot, so this
-      // lands in the restart-required state with the fork's own message.
-      await bind(forked.target_url)
+      const forked = await forkStorage(failed.remote_url, forkUrl.trim())
+      await acknowledgeBind()
+      await bindStorage(forked.target_url)
+      addToast("info", "Forked, and saving the copy to storage — you can keep working.")
+      onClose()
     } catch (err: unknown) {
-      setError(gitErrorMessage(err, "Could not fork the storage location"))
+      setLocalError(gitErrorMessage(err, "Could not fork the storage location"))
     } finally {
       setBusy(false)
     }
@@ -92,7 +108,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
   return (
     <ModalShell
       ariaLabel="Save project to a repository"
-      onClose={onClose}
+      onClose={dismiss}
       width="w-[440px]"
       testId="storage-bind-modal"
     >
@@ -106,19 +122,20 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
         </p>
       </div>
 
-      {restartMessage ? (
+      {needsRestart ? (
         <div className="p-4 flex flex-col gap-3">
           <p
             className="text-[12px] px-2.5 py-1.5 rounded-md"
             style={{ background: "var(--bg-input)", color: "var(--text-primary)" }}
             data-testid="storage-bind-restart-message"
           >
-            {restartMessage}
+            Binding saved. That location already holds a project, so restart the app to load
+            it — this session&apos;s project is not published.
           </p>
           <div className="flex justify-end">
             <button
               type="button"
-              onClick={onClose}
+              onClick={dismiss}
               className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
               style={{ color: "var(--text-secondary)" }}
             >
@@ -126,7 +143,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
             </button>
           </div>
         </div>
-      ) : claim ? (
+      ) : showHold ? (
         <form
           className="p-4 flex flex-col gap-3"
           onSubmit={(e) => {
@@ -139,16 +156,16 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
             style={{ background: "var(--bg-input)", color: "var(--text-primary)" }}
             data-testid="storage-bind-claimed-message"
           >
-            {claim.message}
+            {heldBy.message}
           </p>
 
-          {error && (
+          {localError && (
             <p
               className="text-[12px] px-2.5 py-1.5 rounded-md"
               style={{ background: "var(--bg-input)", color: "var(--danger)" }}
               data-testid="storage-bind-error"
             >
-              {error}
+              {localError}
             </p>
           )}
 
@@ -182,8 +199,8 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
               type="button"
               data-testid="storage-bind-back"
               onClick={() => {
-                setClaim(null)
-                setError(null)
+                setDismissedHold(true)
+                setLocalError(null)
               }}
               className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
               style={{ color: "var(--text-secondary)" }}
@@ -247,7 +264,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
           <div className="flex justify-end gap-2 pt-1">
             <button
               type="button"
-              onClick={onClose}
+              onClick={dismiss}
               className="px-3 py-1.5 text-[12px] font-medium rounded-md transition-colors"
               style={{ color: "var(--text-secondary)" }}
             >
@@ -260,7 +277,7 @@ export default function StorageBindModal({ onClose }: StorageBindModalProps) {
               className="px-4 py-1.5 text-[12px] font-semibold rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--structure-action-hover)] disabled:hover:bg-[var(--structure-action)]"
               style={{ background: "var(--structure-action)", color: "var(--text-on-accent)" }}
             >
-              {busy ? "Binding…" : "Bind repository"}
+              {busy ? "Starting…" : "Bind repository"}
             </button>
           </div>
         </form>

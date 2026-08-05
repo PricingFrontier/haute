@@ -1230,15 +1230,29 @@ export interface GitWorkingBranchResponse {
   /** Parent uc:// URL when the bound location is a fork (provenance). */
   storage_forked_from?: string | null
   sync?: GitStorageSync | null
+  /** Progress of a bind running in the background. */
+  storage_bind?: GitStorageBind | null
 }
 
+/** A bind is accepted immediately; the outcome arrives on `storage_bind`. */
 export interface GitBindStorageResponse {
-  outcome: "adopted" | "restart-required"
+  outcome: "pending"
   remote_url: string
   message: string
 }
 
-/** Who holds a uc:// location's lease — the structured 409 body at bind time. */
+export type BindState = "idle" | "running" | "succeeded" | "failed"
+
+export interface GitStorageBind {
+  state: BindState
+  outcome: "adopted" | "restart-required" | null
+  message: string | null
+  /** Set when the bind failed because another app holds the location. */
+  claim: GitStorageClaim | null
+  remote_url: string | null
+}
+
+/** Who holds a uc:// location's lease. */
 export interface GitStorageClaim {
   app_name: string
   user: string | null

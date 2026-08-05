@@ -10,7 +10,13 @@
  */
 import { create } from "zustand"
 
-import { bindGitStorage, forkGitStorage, getWorkingBranch, retryGitStorageSync } from "../api/client"
+import {
+  acknowledgeGitBind,
+  bindGitStorage,
+  forkGitStorage,
+  getWorkingBranch,
+  retryGitStorageSync,
+} from "../api/client"
 import type { GitBindStorageResponse, GitForkStorageResponse, GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
 
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
@@ -113,6 +119,8 @@ interface GitState {
   bindStorage: (remoteUrl: string) => Promise<GitBindStorageResponse>
   /** Fork a held uc:// location's published state into an empty location. */
   forkStorage: (sourceUrl: string, targetUrl: string) => Promise<GitForkStorageResponse>
+  /** Clear a finished bind result after the dialog has reported it. */
+  acknowledgeBind: () => Promise<void>
   /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
   retrySync: () => Promise<GitWorkingBranchResponse | null>
 }
@@ -143,6 +151,13 @@ const useGitStore = create<GitState>()((set, get) => ({
     statusInFlight = getWorkingBranch()
       .then((status) => {
         set({ status, loading: false, statusError: null })
+        // Binding runs in the background, so its dialog is closed by the time
+        // a failure lands. Bring it back — the user asked for durable storage
+        // and must find out they haven't got it. Never steals focus from
+        // another open modal.
+        if (status?.storage_bind?.state === "failed" && get().modal === null) {
+          set({ modal: "storage" })
+        }
         return status
       })
       .catch(async (error: unknown) => {
@@ -195,6 +210,10 @@ const useGitStore = create<GitState>()((set, get) => ({
     const result = await bindGitStorage(remoteUrl)
     await get().loadStatus()
     return result
+  },
+  acknowledgeBind: async () => {
+    const status = await acknowledgeGitBind()
+    set({ status })
   },
   forkStorage: async (sourceUrl, targetUrl) => {
     // No readiness refresh: forking writes only to the volume — this
