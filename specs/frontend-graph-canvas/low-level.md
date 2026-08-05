@@ -378,13 +378,16 @@ newer overlapping transform.
     above the rows. Zero eligible frames keeps the instance name, adds a
     muted "No emitted frames" line, and renders no source handle.
     `_SourceHandles` covers every other node — a single right-edge handle —
-    and an api input with zero eligible frames, which gets none. Positional
+    and renders nothing at all for an api input, whose frame rows are the sole
+    origin of its labelled handles. It holds no labelled path of its own: the
+    evenly-spaced set it once carried existed only for the zoom levels that hid
+    the frame rows, so removing those removed its only caller. Positional
     `output-connector[<idx>]:<node label>` test
     ids follow the visual top-to-bottom order, and the name
     span keeps its `api-input-body-label-<label>` test id. Edge-join nodes
     short-circuit to an entirely separate marker/pill render before the
-    LOD branches run; their status and warning dots sit inside the visible
-    marker ellipse rather than outside its right edge.
+    ordinary card renders at all; their status and warning dots sit inside the
+    visible marker ellipse rather than outside its right edge.
 12. **Node delete (`useNodeHandlers.handleDeleteNode`).** Calls
     `setNodesAndEdges` once (node filter + edge filter closed over the same
     call, one undo entry), nulls `selectedNode`/`previewData` if they
@@ -937,9 +940,11 @@ again through the editor and save paths.
     raw labels (the sole-frame labelled handle explicitly pinned);
     no source handle for zero eligible frames (no eligible tables or an
     all-invalid label set); blank/duplicate/non-identifier labels render no
-    handle; and the frame rows, their handles, and an ordinary node's type
-    badge and name all survive far zoom, since nodes no longer switch
-    rendering by zoom level.
+    handle; and the same ordered id set at 1.0, 0.5 and 0.2 zoom, which the
+    frame rows now supply at every one of them.
+    `frontend/src/nodes/__tests__/PipelineNode.test.tsx` covers the rendering
+    those handles hang off — the frame rows themselves, and an ordinary node's
+    type badge and name — surviving far zoom.
 - **App / integration — `frontend/src/__tests__/`:**
   - `frontend/src/__tests__/App.integration.test.tsx` — mount and initial load sequencing (no
     WebSocket sync while the initial load is pending); empty-pipeline

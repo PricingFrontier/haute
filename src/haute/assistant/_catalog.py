@@ -1107,8 +1107,10 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         "get_column_profiles": (
             "Summarise the values in one node frame before writing code against it: per "
             "column, the distinct levels of a small-cardinality categorical with their "
-            "counts, or the min/max of a numeric or date column, plus null and distinct "
-            "counts. Call this instead of assuming how a column encodes its categories - "
+            "counts, or the min/max of a numeric or date column, alongside a null count "
+            "and, where the dtype can be counted, a distinct count. Temporal and decimal "
+            "bounds are reported in their written form ('2024-01-01', '12.50'). "
+            "Call this instead of assuming how a column encodes its categories - "
             "a 'fault' or 'status' column may hold Y/N, true/false, or a description, and "
             "the schema alone cannot tell you which. Pass 'input' to profile one of the "
             "node's inputs by the name its code binds. Returns no rows: a value appears "

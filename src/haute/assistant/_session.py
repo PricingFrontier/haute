@@ -355,8 +355,13 @@ def _session_title(text: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class AssistantSessionSummary:
-    """One conversation as the chat list shows it, without its transcript."""
+class SessionSummary:
+    """One conversation as the chat list shows it, without its transcript.
+
+    The store's own record. `schemas.AssistantSessionSummary` is the wire model
+    the route converts this into; the two are deliberately named apart so a
+    reader can tell which side of the transport boundary a value is on.
+    """
 
     session_id: str
     title: str
@@ -751,7 +756,7 @@ class SessionStore:
         self._prune_persisted(session_id)
         return session
 
-    def _persisted_summary(self, path: Path) -> tuple[str, AssistantSessionSummary] | None:
+    def _persisted_summary(self, path: Path) -> tuple[str, SessionSummary] | None:
         """Summarise one persisted session file without reviving it.
 
         Reading the file directly rather than through `_revive` is deliberate:
@@ -793,7 +798,7 @@ class SessionStore:
 
         created_at = payload.get("created_at")
         last_used = payload.get("last_used")
-        return source_file, AssistantSessionSummary(
+        return source_file, SessionSummary(
             session_id=session_id,
             title=title,
             created_at=float(created_at) if isinstance(created_at, (int, float)) else 0.0,
@@ -801,9 +806,7 @@ class SessionStore:
             message_count=message_count,
         )
 
-    def list_sessions(
-        self, source_file: str | os.PathLike[str]
-    ) -> tuple[AssistantSessionSummary, ...]:
+    def list_sessions(self, source_file: str | os.PathLike[str]) -> tuple[SessionSummary, ...]:
         """Return this pipeline's conversations, most recently used first.
 
         A session with no messages is omitted: `create` persists immediately,
@@ -813,7 +816,7 @@ class SessionStore:
         """
 
         source = self._source_file_text(source_file)
-        summaries: dict[str, AssistantSessionSummary] = {}
+        summaries: dict[str, SessionSummary] = {}
         if self._storage_dir is not None:
             try:
                 paths = sorted(self._storage_dir().glob("*.json"))
@@ -827,7 +830,7 @@ class SessionStore:
         for session in self._sessions.values():
             if session.source_file != source:
                 continue
-            summaries[session.id] = AssistantSessionSummary(
+            summaries[session.id] = SessionSummary(
                 session_id=session.id,
                 title=session.title,
                 created_at=session.created_at,
@@ -958,7 +961,6 @@ class SessionStore:
 __all__ = [
     "AssistantMessage",
     "AssistantSession",
-    "AssistantSessionSummary",
     "AssistantToolCall",
     "AssistantToolResult",
     "AssistantTurn",
@@ -968,4 +970,5 @@ __all__ = [
     "PROVIDER_WINDOW_MESSAGES",
     "STORED_HISTORY_MESSAGES",
     "SessionStore",
+    "SessionSummary",
 ]

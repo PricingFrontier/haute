@@ -22,6 +22,11 @@ import polars as pl
 from fastapi import HTTPException
 
 from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
+from haute._column_summary import (
+    CATEGORICAL_COUNT_FIELD,
+    is_unhashable_dtype,
+    json_safe_scalar,
+)
 from haute._credential_security import is_credential_name
 from haute._event_bus import GraphUpdatePayload, default_bus
 from haute._graph_utils import edge_input_name
@@ -398,6 +403,8 @@ _ROW_VALUE_CONFIG_KEYS = frozenset({"records"})
 # Only these dtypes can carry a value list. A categorical encoding is exactly
 # what authoring needs ("is `fault` Y/N or true/false?"), while an identifier,
 # name, or address is high-cardinality by nature and never fits the level cap.
+# Polars instantiates every schema dtype, so `isinstance` matches each of these
+# including their parameterised forms (`Enum(categories=[...])`).
 _PROFILABLE_LEVEL_DTYPES = (pl.String, pl.Categorical, pl.Enum, pl.Boolean)
 
 
@@ -503,15 +510,30 @@ def get_node_config(source_file: str, node: str) -> dict[str, object]:
 
 
 def _profile_value(value: object) -> object:
-    """Render one level value, bounding its length. Never a partial row."""
+    """Render one profile value: JSON-encodable, and bounded in length.
 
-    if isinstance(value, str) and len(value) > _MAX_PROFILE_VALUE_CHARS:
-        return value[:_MAX_PROFILE_VALUE_CHARS] + "…"
-    return value
+    Every summary is encoded twice before the model reads it — once to bound
+    the result, once by the provider adapter — and both encoders take only
+    JSON scalars. `json_safe_scalar` is where a `date`, `Decimal`, or infinity
+    becomes one; the length bound then applies to whatever text results, so a
+    rendered value can no more dominate the payload than a stored string can.
+    Never a partial row.
+    """
+
+    rendered = json_safe_scalar(value)
+    if isinstance(rendered, str) and len(rendered) > _MAX_PROFILE_VALUE_CHARS:
+        return rendered[:_MAX_PROFILE_VALUE_CHARS] + "…"
+    return rendered
 
 
 def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[str, object]:
-    """Summarise one column: levels when categorical and small, else bounds."""
+    """Summarise one column: levels when categorical and small, else bounds.
+
+    Every branch is chosen by dtype before the aggregation runs. A column whose
+    values Polars cannot hash raises rather than returning nothing, and one
+    raise would otherwise abort the whole frame's profile — losing every
+    column the analyst did ask about to one they did not.
+    """
 
     column = frame.get_column(name)
     profile: dict[str, object] = {
@@ -519,16 +541,23 @@ def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[
         "dtype": str(dtype),
         "null_count": int(column.null_count()),
     }
+    if is_unhashable_dtype(dtype):
+        profile["values_withheld"] = "unsupported_dtype"
+        return profile
+
     distinct = int(column.n_unique())
     profile["distinct_count"] = distinct
 
-    if isinstance(dtype, _PROFILABLE_LEVEL_DTYPES) or dtype in _PROFILABLE_LEVEL_DTYPES:
+    if isinstance(dtype, _PROFILABLE_LEVEL_DTYPES):
         if distinct <= _MAX_PROFILE_LEVELS:
-            counts = column.value_counts(sort=True)
+            # Name the count field explicitly: Polars refuses `value_counts` on
+            # a column already called `count`, which is an ordinary name in an
+            # aggregated frame and used to abort the entire profile.
+            counts = column.value_counts(sort=True, name=CATEGORICAL_COUNT_FIELD)
             profile["values"] = [
                 {
                     "value": _profile_value(row[name]),
-                    "count": int(row["count"]),
+                    "count": int(row[CATEGORICAL_COUNT_FIELD]),
                 }
                 for row in counts.head(_MAX_PROFILE_LEVELS).to_dicts()
             ]
@@ -540,9 +569,8 @@ def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[
         return profile
 
     if dtype.is_numeric() or dtype.is_temporal():
-        minimum, maximum = column.min(), column.max()
-        profile["min"] = _profile_value(minimum)
-        profile["max"] = _profile_value(maximum)
+        profile["min"] = _profile_value(column.min())
+        profile["max"] = _profile_value(column.max())
     else:
         profile["values_withheld"] = "unsupported_dtype"
     return profile
@@ -560,7 +588,9 @@ def _profile_frame(frame: pl.LazyFrame) -> dict[str, object]:
     }
 
 
-def get_column_profiles(source_file: str, node: str, input: str | None = None) -> dict[str, object]:
+def get_column_profiles(
+    source_file: str, node: str, input_name: str | None = None
+) -> dict[str, object]:
     """Summarise the values in one node frame, without returning rows.
 
     This is the only tool that reads data, and it never emits a row: a value
@@ -590,7 +620,7 @@ def get_column_profiles(source_file: str, node: str, input: str | None = None) -
         return _error("profile_unavailable", _error_message(exc, operation="get_column_profiles"))
 
     try:
-        if input is None:
+        if input_name is None:
             lazy_outputs = _resolve_frame_outputs(flat, graph, target=node, preserve={node})
             output = lazy_outputs[node]
             if isinstance(output, dict):
@@ -602,11 +632,11 @@ def get_column_profiles(source_file: str, node: str, input: str | None = None) -
                 )
             frame = cast(pl.LazyFrame, output)
         else:
-            match = next((item for item in inputs if item.name == input), None)
+            match = next((item for item in inputs if item.name == input_name), None)
             if match is None:
                 return _error(
                     "unknown_input",
-                    f"Node {node!r} has no input named {input!r}.",
+                    f"Node {node!r} has no input named {input_name!r}.",
                     inputs=[item.name for item in inputs],
                 )
             lazy_outputs = _resolve_frame_outputs(
@@ -617,14 +647,14 @@ def get_column_profiles(source_file: str, node: str, input: str | None = None) -
                 if match.source_port is None or match.source_port not in source_output:
                     return _error(
                         "profile_unavailable",
-                        f"Input {input!r} does not resolve to one emitted frame.",
+                        f"Input {input_name!r} does not resolve to one emitted frame.",
                     )
                 frame = source_output[match.source_port]
             else:
                 frame = cast(pl.LazyFrame, source_output)
         return {
             "node": node,
-            "input": input,
+            "input": input_name,
             **_profile_frame(frame),
             "max_levels": _MAX_PROFILE_LEVELS,
             "project_revision": project_revision,

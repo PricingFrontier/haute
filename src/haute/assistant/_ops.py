@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 import json
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -1138,6 +1138,72 @@ class _PolarsResultVisitor(ast.NodeVisitor):
         pass
 
 
+_BARE_INPUT_NAME = "df"
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _binds_name(scope: ast.AST, name: str) -> bool:
+    """Report whether a nested scope binds *name* as its own local.
+
+    A parameter or a comprehension target shadows the module binding outright.
+    So does any assignment in a function body, which Python makes local for the
+    whole function. The body scan deliberately does not itself stop at further
+    nested scopes: over-counting there can only *widen* what counts as a local
+    shadow, which withholds a warning rather than raising a false one.
+    """
+
+    if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return any(
+            _is_name(node, name, ast.Store)
+            for generator in scope.generators
+            for node in ast.walk(generator.target)
+        )
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return False
+    arguments = scope.args
+    declared = (
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+        *(arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None),
+    )
+    if any(argument.arg == name for argument in declared):
+        return True
+    # A lambda's body is one expression, not a statement list, and can still
+    # bind through a walrus (`lambda x: (df := x)`).
+    body: list[ast.AST] = list(scope.body) if isinstance(scope.body, list) else [scope.body]
+    return any(_is_name(node, name, ast.Store) for item in body for node in ast.walk(item))
+
+
+def _is_name(node: ast.AST, name: str, context: type[ast.expr_context]) -> bool:
+    return isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, context)
+
+
+def _names_in_owning_scope(node: ast.AST, name: str) -> Iterator[ast.AST]:
+    """Yield nodes reachable without entering a scope that shadows *name*.
+
+    A nested `def`, `lambda`, or comprehension that binds the name introduces
+    its own variable: `def widen(df)` names its parameter, not the node's
+    injected input, so reading it there says nothing about wiring order. A
+    nested scope that does *not* bind the name still reads the module's, so
+    the walk descends into that one.
+    """
+
+    if isinstance(node, _NESTED_SCOPES) and _binds_name(node, name):
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _names_in_owning_scope(child, name)
+
+
 def _reads_df_before_binding_it(tree: ast.Module) -> bool:
     """Report whether the code reads `df` before assigning it.
 
@@ -1146,20 +1212,18 @@ def _reads_df_before_binding_it(tree: ast.Module) -> bool:
     node that is the idiom. On a multi-input node it is a silent dependency on
     wiring order: adding or reordering an edge changes which frame the code
     operates on, with no error and no visible diff in the code itself.
+
+    Only reads that resolve to that injected binding count, so the walk skips
+    any nested scope holding a `df` of its own. A statement's loads are
+    considered before its stores because an assignment evaluates its value
+    first: `df = df.head()` reads the injected frame, `df = left` does not.
     """
 
     for statement in tree.body:
-        loads = [
-            node
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Name) and node.id == "df" and isinstance(node.ctx, ast.Load)
-        ]
-        if loads:
+        names = list(_names_in_owning_scope(statement, _BARE_INPUT_NAME))
+        if any(_is_name(node, _BARE_INPUT_NAME, ast.Load) for node in names):
             return True
-        if any(
-            isinstance(node, ast.Name) and node.id == "df" and isinstance(node.ctx, ast.Store)
-            for node in ast.walk(statement)
-        ):
+        if any(_is_name(node, _BARE_INPUT_NAME, ast.Store) for node in names):
             return False
     return False
 

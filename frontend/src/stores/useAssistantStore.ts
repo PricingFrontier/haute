@@ -65,6 +65,16 @@ type SetAssistantState = (
 
 let activeController: AbortController | null = null
 
+/*
+ * Monotonic tickets for the two navigation fetches. Both are re-issued faster
+ * than they resolve — a second row click, a pipeline change, a turn finishing —
+ * and neither response identifies which request it answers, so only the latest
+ * ticket is allowed to write. Module scope, like `activeController`: the panel
+ * can unmount and remount while a request is in flight.
+ */
+let openGeneration = 0
+let listGeneration = 0
+
 export function assistantSendDisabledReason(
   status: AssistantStatus | "unknown" | "error",
   isInsideSubmodel: boolean,
@@ -271,15 +281,22 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
   },
 
   loadSessions: async (sourceFile) => {
+    // `sourceFile` is the gate, not the query: the request deliberately sends
+    // `pipeline: null` so the server resolves the pipeline exactly as session
+    // creation does. With none resolved there is nothing to list.
     if (sourceFile === null) {
+      listGeneration += 1
       set({ sessions: [], sessionsStatus: "ready" })
       return
     }
+    const generation = (listGeneration += 1)
     set({ sessionsStatus: "loading" })
     try {
       const sessions = await listAssistantSessions(null)
+      if (generation !== listGeneration) return
       set({ sessions, sessionsStatus: "ready" })
     } catch {
+      if (generation !== listGeneration) return
       set({ sessionsStatus: "error" })
     }
   },
@@ -289,15 +306,25 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // Resolve the transcript on open, not on send. Resuming lazily inside
     // `sendMessage` is what made the panel look empty until a message was
     // sent, and then made an earlier conversation appear above it.
-    set({ view: "chat", entries: [], notice: null })
+    //
+    // The chat screen mounts the composer immediately, so the conversation
+    // being left has to stop being addressable now rather than when its
+    // replacement arrives — otherwise a message sent during the fetch lands in
+    // the chat the user just navigated away from.
+    const generation = (openGeneration += 1)
+    set({ view: "chat", entries: [], notice: null, sessionId: null, pipelineSource: null })
     try {
       const result = await createAssistantSession(null, sessionId)
+      // A second choice while this one was in flight owns the screen; letting
+      // a slower earlier response land would show a chat nobody picked.
+      if (generation !== openGeneration) return
       set({
         sessionId: result.sessionId,
         pipelineSource: sourceFile,
         entries: hydrateEntries(result.history),
       })
     } catch (error) {
+      if (generation !== openGeneration) return
       rejectSessionCreation(set, error)
       set({ view: "list" })
     }
@@ -305,6 +332,9 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
 
   showSessionList: (sourceFile) => {
     if (get().turnStatus !== "idle") return
+    // Any navigation supersedes an open still in flight, which would otherwise
+    // land afterwards and re-attach the conversation just left.
+    openGeneration += 1
     set({ view: "list", notice: null })
     void get().loadSessions(sourceFile)
   },
@@ -447,7 +477,10 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     if (get().turnStatus !== "idle") return
     // No session is created here. `create` persists immediately, so an
     // abandoned new chat would sit in the list as an empty untitled row; the
-    // backend session is minted by the first send instead.
+    // backend session is minted by the first send instead. Superseding any
+    // open still in flight is what keeps this chat empty: its response would
+    // otherwise arrive and fill the new chat with an old transcript.
+    openGeneration += 1
     set({ sessionId: null, pipelineSource: null, entries: [], notice: null, view: "chat" })
   },
 }))

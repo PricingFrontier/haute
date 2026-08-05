@@ -30,6 +30,7 @@
 | `src/haute/assistant/_providers.py` | The `AssistantProvider` protocol and its three public adapters: `AnthropicProvider` (`anthropic` SDK, Messages streaming API), `OpenAIProvider` (`openai` SDK, Chat Completions), and `DatabricksProvider`. Databricks subclasses the OpenAI-compatible implementation but retains the `databricks` provider identity for client construction, logs, and typed failures. SDKs are core dependencies but imported lazily inside the adapters (importing Haute never triggers provider-side behaviour; a broken install surfaces as a readiness reason); each adapter normalises its SDK's stream into the internal `ProviderEvent`s (see Control flow § Provider adapters for the exact call and event mappings) and maps SDK failures to `AssistantProviderError`. |
 | `src/haute/assistant/_loop.py` | Provider-neutral agent loop as an async generator of typed stream events: resolves only an unbroken `NEEDS_INPUT:` clarification chain into its originating recipe route, assembles prompt/history/tool inputs, forwards text deltas, invokes the injected tool executor, feeds structured results into later provider rounds, shields only an in-flight transactional apply from cancellation, enforces tool/time limits, terminates when either the plan-correction or the malformed-call dry-run budget is exhausted, applies the bounded incomplete-mutation continuation gate, commits turn history, and closes every provider stream. It does not implement graph edits itself. |
 | `src/haute/routes/assistant.py` | The FastAPI router: `GET /api/assistant/status`, `GET /api/assistant/sessions` (this pipeline's saved conversations for the panel's chat list, resolving the pipeline exactly as session creation does), `POST /api/assistant/session`, `POST /api/assistant/message` (an SSE `StreamingResponse` wrapping `_loop`'s generator). Route-level exception translation follows the product conventions (typed `HauteError`s surfaced, everything else sanitized). Swept by the existing `tests/test_routes_hygiene.py` contracts like every `routes/` module. |
+| `src/haute/_column_summary.py` | Shared with [explore-eda](../explore-eda/low-level.md): the Polars dtype facts every column-summarising surface needs — `is_unhashable_dtype` for the columns that cannot be counted, the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Polars-only, so the assistant reaches it without importing the routes layer. |
 | `src/haute/schemas.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); the assistant slice of the server-api-owned shared HTTP/SSE contracts: status, session request/response and transcript entries, message request, usage, and the text-delta, tool-started, tool-finished, graph-updated, completed, failed, and cancelled event union mirrored by `frontend/src/api/assistant.ts`. |
 | `src/haute/server.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); includes the assistant router with the other feature routers ahead of the API/WebSocket 404 catch-alls and supplies graph-update fingerprint/wire-path helpers used by mutation publishing. |
 | `src/haute/routes/_save_pipeline.py` | Cross-component dependency owned by [server-api](../server-api/low-level.md); transactional save service used by assistant mutations; its `save_graph_transactionally` wrapper explicitly forwards the parsed graph's preserved blocks into `SavePipelineRequest` and owns rollback, self-write marking, and ledger-capture warnings. |
@@ -302,15 +303,34 @@ it profiles that named input, resolved through the same code-visible input names
 `schema_only`, because collecting is materialisation and the engine's admission policy
 must apply exactly as it would to any other read of those rows — collects one bounded
 prefix (`_MAX_PROFILE_ROWS`, reported as `rows_scanned`/`scan_bounded`), and summarises
-each column: `null_count` and `distinct_count` always; for string, categorical, enum and
-boolean columns with at most `_MAX_PROFILE_LEVELS` distinct values, those values with
-their counts; for numeric and temporal columns, `min` and `max`; otherwise
-`values_withheld`. The cardinality bound is the privacy boundary, not a display
+each column: `null_count` always; `distinct_count` whenever the dtype can be counted; for
+string, categorical, enum and boolean columns with at most `_MAX_PROFILE_LEVELS` distinct
+values, those values with their counts; for numeric and temporal columns, `min` and `max`;
+otherwise `values_withheld`. The cardinality bound is the privacy boundary, not a display
 convenience: a name, address, date of birth, or registration is high-cardinality by
 nature and therefore cannot be emitted, while a `Y`/`N`-style encoding is exactly what it
 does emit. Individual level strings are truncated to `_MAX_PROFILE_VALUE_CHARS`. The
 operation's egress class is its own value, `restricted-value-profile`, so a policy review
-can see the one data-reading capability plainly. The system prompt requires the model to
+can see the one data-reading capability plainly.
+
+Every branch is selected by dtype *before* its aggregation runs, through the shared
+predicates in `haute/_column_summary.py` that Explore's frame statistics also use — the
+one place these Polars facts are recorded, so a second summariser cannot rediscover them
+as production failures. A column whose values Polars cannot hash raises rather than
+returning nothing, and one raise inside a per-column loop aborts the entire frame's
+profile: such a column reports `values_withheld` and no `distinct_count`, losing only
+itself. `value_counts` is given an explicit count-field name because Polars refuses it on
+a column already called `count`, which is an ordinary name in an aggregated frame.
+
+Every emitted value passes through `json_safe_scalar`. The result is JSON-encoded twice
+before the model reads it — once to bound it against `_MAX_TOOL_CONTEXT_BYTES`, once by
+the provider adapter — and both encoders take only JSON scalars under `allow_nan=False`.
+Polars returns native `date`, `datetime`, `time`, `timedelta` and `Decimal` objects for
+exactly the temporal and money columns this tool exists to describe, and a non-finite
+float is a real value a numeric column can hold; each becomes its written form (ISO-8601,
+exact digits, `inf`) while numbers and strings keep their JSON type, so a numeric bound
+stays a number. Left raw, the failure surfaced nowhere near the column that caused it: as
+an opaque `tool_failed` for the whole call. The system prompt requires the model to
 profile a frame before comparing a column to a literal, and to answer `NEEDS_INPUT:`
 rather than guess an encoding when values are unavailable or withheld — a guessed
 comparison produces code that runs, validates at schema tier, and silently matches
@@ -733,7 +753,12 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   visible change to the code. Assistant-authored code that reads `df` before assigning
   it, on a node with two or more inputs, is therefore an op error naming that node's
   actual input names. Binding first (`df = proposer_claims`) and then reusing `df` is
-  explicit and accepted. This is an authoring-time rule for assistant edits only, like
+  explicit and accepted. Only reads that resolve to the injected binding count, so the
+  check skips any nested scope holding a `df` of its own — a `def helper(df)` parameter,
+  a `lambda df:`, a comprehension target — because those name that scope's variable and
+  say nothing about wiring order. A statement's loads are judged before its stores, since
+  an assignment evaluates its value first: `df = df.head()` reads the injected frame,
+  `df = left` does not. This is an authoring-time rule for assistant edits only, like
   the unknown-config-key strictness above; existing human-authored code is untouched.
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
@@ -808,7 +833,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   spelling remains the persisted wire detail of the graph edge model and the frontend
   payload, and is never shown to the model: echoing it invited edit operations written
   in the shape the model had just read, which the closed operation schema then rejected
-  as an unknown field.
+  as an unknown field. Every in-repo reader of that rendering follows the same names —
+  including `_self_test._read_graph`, whose scoring compares Edge Join `base`/`join`
+  roles. A reader left on the persisted spelling gets `None` for every edge without
+  raising, silently scoring every handle-qualified required edge as missing.
 - **Egress flags are honoured, not merely recorded.** `allow_executable_source` and
   `allow_row_samples` each gate a real capability: node `code`/`preamble`/`query`/`script`
   values in `get_node_config`, and `get_column_profiles` respectively. A parsed,
@@ -884,7 +912,10 @@ fixture for route tests). The implemented coverage is:
   ref shadowing an existing id); all-or-nothing on mid-batch validation failure;
   shallow-merge/null-removes semantics; unknown-config-key rejection; submodel-target and
   submodel-type rejection; ambiguous edge match; deterministic positions evaluated
-  post-batch (property: same batch, same graph → same positions).
+  post-batch (property: same batch, same graph → same positions); and the multi-input
+  bare-`df` rule, parameterised over a bare read, a named input, a bind-then-reuse, and
+  the nested scopes (`def`, `lambda`, comprehension) whose own `df` must not be mistaken
+  for the injected one.
   ASSIST-A05 adds canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions,
   stale/altered-plan rejection before save,
@@ -902,7 +933,11 @@ fixture for route tests). The implemented coverage is:
   column diagnosis, and the collect-poisoning invariant
   (`LazyFrame.collect` must not run). Value-profile coverage pins small-cardinality levels
   with counts, high-cardinality withholding, numeric bounds rather than values, an unknown
-  input naming the available ones, and the `allow_row_samples` gate; executable-config
+  input naming the available ones, and the `allow_row_samples` gate. A dtype-matrix
+  fixture — dates, datetimes, decimals, a non-finite float, and a column named `count` —
+  is profiled *through the source-bound executor*, because the bounding encoder is what
+  rejects a value the direct call happily returns; alongside it, the rendered form of each
+  bound, and an unsummarisable column withholding only itself. Executable-config
   coverage pins `code` visible or redacted strictly by `allow_executable_source`.
   Contract tests assert that the saved `active_source`
   is passed to the engine; crafted/mocked execution results cover submodel-boundary
@@ -954,7 +989,10 @@ fixture for route tests). The implemented coverage is:
   terminal outcome with bounded failed tool attempts and duplicate static reads, graph
   connectivity, and exact edge-join base/join port assertions. A null expected target handle
   matches an edge by source/target endpoints for ordinary single-input nodes; non-null handles
-  remain exact port assertions. For multi-round text, scoring uses the last explicit
+  remain exact port assertions. `_read_graph` is pinned directly against the compact
+  renderer's own output, because reading a handle under a name the renderer does not emit
+  yields `None` without raising and turns every port assertion into a silent pass-through
+  failure. For multi-round text, scoring uses the last explicit
   `NEEDS_INPUT:` or `BLOCKED:` marker, so earlier preparatory prose cannot hide the final
   qualified outcome. Coverage also pins the redacted report shape and a
   scripted-provider integration through the real loop, tools, dry-run, apply, parser, and

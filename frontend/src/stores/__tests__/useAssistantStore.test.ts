@@ -384,6 +384,85 @@ describe("chat list navigation", () => {
     expect(useAssistantStore.getState().view).toBe("chat")
     expect(useAssistantStore.getState().sessionId).toBe("live")
   })
+
+  it("never leaves the previous conversation addressable while another opens", async () => {
+    // The composer mounts as soon as the chat screen does. Holding the old id
+    // across the await would post the next message into the conversation the
+    // user just navigated away from, while the panel shows the new one.
+    let resolveSecond: (value: { sessionId: string; history: [] }) => void = () => {}
+    vi.mocked(createAssistantSession)
+      .mockResolvedValueOnce({ sessionId: "first", history: [] })
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveSecond = resolve }),
+      )
+
+    await useAssistantStore.getState().openSession("first", "main.py")
+    expect(useAssistantStore.getState().sessionId).toBe("first")
+
+    const opening = useAssistantStore.getState().openSession("second", "main.py")
+    expect(useAssistantStore.getState().sessionId).toBeNull()
+
+    resolveSecond({ sessionId: "second", history: [] })
+    await opening
+    expect(useAssistantStore.getState().sessionId).toBe("second")
+  })
+
+  it("ignores a superseded open, so the chat shown is the one last chosen", async () => {
+    let resolveSlow: (value: { sessionId: string; history: never[] }) => void = () => {}
+    vi.mocked(createAssistantSession)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
+      .mockResolvedValueOnce({
+        sessionId: "quick",
+        history: [{ kind: "user", text: "quick chat", name: "", summary: "", is_error: false }],
+      })
+
+    const slow = useAssistantStore.getState().openSession("slow", "main.py")
+    await useAssistantStore.getState().openSession("quick", "main.py")
+
+    resolveSlow({ sessionId: "slow", history: [] })
+    await slow
+
+    const { sessionId, entries } = useAssistantStore.getState()
+    expect(sessionId).toBe("quick")
+    expect(entries[0]).toEqual({ kind: "user", text: "quick chat" })
+  })
+
+  it.each([
+    ["New chat", () => useAssistantStore.getState().newChat()],
+    ["going back to the list", () => useAssistantStore.getState().showSessionList("main.py")],
+  ])("discards an in-flight open once %s supersedes it", async (_label, navigate) => {
+    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    vi.mocked(createAssistantSession).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveOpen = resolve }),
+    )
+
+    const opening = useAssistantStore.getState().openSession("chosen", "main.py")
+    navigate()
+    resolveOpen({ sessionId: "chosen", history: [] })
+    await opening
+
+    // Landing here would silently re-attach a conversation the user left.
+    expect(useAssistantStore.getState().sessionId).toBeNull()
+  })
+
+  it("ignores a superseded list load", async () => {
+    let resolveSlow: (value: never[]) => void = () => {}
+    vi.mocked(listAssistantSessions)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
+      .mockResolvedValueOnce([
+        { sessionId: "b", title: "Newer", createdAt: 1, lastUsed: 9, messageCount: 2 },
+      ])
+
+    const slow = useAssistantStore.getState().loadSessions("main.py")
+    await useAssistantStore.getState().loadSessions("main.py")
+
+    resolveSlow([])
+    await slow
+
+    const { sessions, sessionsStatus } = useAssistantStore.getState()
+    expect(sessionsStatus).toBe("ready")
+    expect(sessions.map((session) => session.sessionId)).toEqual(["b"])
+  })
 })
 
 describe("send failures", () => {

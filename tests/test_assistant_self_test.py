@@ -8,8 +8,10 @@ from types import MappingProxyType
 
 import pytest
 
+from haute._types import GraphEdge, PipelineGraph
 from haute.assistant._config import AssistantConfig, EgressPolicy
 from haute.assistant._providers import ProviderUsage, ToolCallRequest, TurnStop
+from haute.assistant._render import render_pipeline_graph
 from haute.assistant._self_test import (
     SelfTestCase,
     SelfTestExpectations,
@@ -180,6 +182,58 @@ class TestSelfTestCaseLoading:
 
         with pytest.raises(ValueError, match="Unknown self-test case: missing"):
             select_self_test_cases(cases, ("missing",))
+
+
+class TestSelfTestGraphReading:
+    def test_edge_handles_are_read_under_the_names_the_renderer_emits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_read_graph` consumes `get_pipeline`, whose renderer names handles
+        the way the graph-edit operations accept them. Reading a stale key
+        yields `None` for every edge without raising, which silently scores
+        every handle-qualified required edge — every Edge Join role — as
+        missing no matter what the assistant built.
+        """
+
+        from haute.assistant import _self_test
+
+        monkeypatch.setattr(
+            _self_test,
+            "get_pipeline",
+            lambda _source: {
+                "nodes": [
+                    {"id": "nb_batch", "type": "dataInput"},
+                    {"id": "competitor_insight", "type": "dataInput"},
+                    {"id": "quote_with_competitor", "type": "edgeJoin"},
+                ],
+                **render_pipeline_graph(
+                    PipelineGraph(
+                        nodes=[],
+                        edges=[
+                            GraphEdge(
+                                id="e1",
+                                source="nb_batch",
+                                target="quote_with_competitor",
+                                targetHandle="base",
+                            ),
+                            GraphEdge(
+                                id="e2",
+                                source="competitor_insight",
+                                target="quote_with_competitor",
+                                targetHandle="join",
+                            ),
+                        ],
+                    )
+                ),
+            },
+        )
+
+        graph = _self_test._read_graph("main.py")
+
+        assert set(graph.edges) == {
+            ("nb_batch", "quote_with_competitor", "base"),
+            ("competitor_insight", "quote_with_competitor", "join"),
+        }
 
 
 class TestSelfTestScoring:

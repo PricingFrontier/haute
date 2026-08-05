@@ -153,7 +153,34 @@ def _frame_schema(frame: Any) -> list[dict[str, str]]:
     return [{"name": name, "dtype": str(dtype)} for name, dtype in frame.collect_schema().items()]
 
 
-def _resolve_target_evidence(graph: PipelineGraph, target: str) -> Mapping[str, object]:
+@dataclass(frozen=True, slots=True)
+class _PreparedGraph:
+    """One graph's flatten-and-preamble preparation, reused across targets.
+
+    Preparation is per graph, not per target: a plan validates every terminal
+    of the changed nodes' downstream cone, and both the baseline and planned
+    graphs may be prepared. Doing it inside the per-target call re-flattened
+    the whole graph once per terminal for no change in result.
+    """
+
+    graph: PipelineGraph
+    flattened: PipelineGraph
+    preamble_ns: dict[str, Any] | None
+
+    @classmethod
+    def build(cls, graph: PipelineGraph) -> _PreparedGraph:
+        preamble_ns = _compile_preamble(
+            graph.preamble or "",
+            pipeline_dir=_pipeline_dir(graph),
+        )
+        return cls(
+            graph=graph,
+            flattened=flatten_graph(graph),
+            preamble_ns=preamble_ns or None,
+        )
+
+
+def _resolve_target_evidence(prepared: _PreparedGraph, target: str) -> Mapping[str, object]:
     """Resolve one terminal's schema through the production lazy engine.
 
     `schema_only=True` states the invariant this path already holds: it reads
@@ -162,17 +189,13 @@ def _resolve_target_evidence(graph: PipelineGraph, target: str) -> Mapping[str, 
     during materialisation — does not apply to it.
     """
 
-    flattened = flatten_graph(graph)
-    preamble_ns = _compile_preamble(
-        graph.preamble or "",
-        pipeline_dir=_pipeline_dir(graph),
-    )
+    graph = prepared.graph
     lazy_outputs, *_ = execute_lazy_graph(
-        flattened,
+        prepared.flattened,
         _build_node_fn,
         target_node_id=target,
         preserve_node_ids={target},
-        preamble_ns=preamble_ns or None,
+        preamble_ns=prepared.preamble_ns,
         source=graph.active_source,
         enforce_contracts=True,
         schema_only=True,
@@ -242,17 +265,22 @@ def _schema_evidence(
     if not targets:
         return (), ()
     baseline_nodes = {node.id for node in baseline.nodes} if baseline is not None else set()
+    prepared = _PreparedGraph.build(graph)
+    prepared_baseline: _PreparedGraph | None = None
     evidence: list[Mapping[str, object]] = []
     warnings: list[str] = []
     for target in targets:
         try:
-            evidence.append(_resolve_target_evidence(graph, target))
+            evidence.append(_resolve_target_evidence(prepared, target))
             continue
         except Exception as exc:
             failure = exc
         if baseline is not None and target not in changed and target in baseline_nodes:
             try:
-                _resolve_target_evidence(baseline, target)
+                if prepared_baseline is None:
+                    # Prepared lazily: most plans never reach this path at all.
+                    prepared_baseline = _PreparedGraph.build(baseline)
+                _resolve_target_evidence(prepared_baseline, target)
             except Exception:
                 # Deterministic and value-free by construction: this string is
                 # hashed into the plan authority, and `apply` must reproduce it

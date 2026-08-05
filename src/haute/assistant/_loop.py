@@ -849,17 +849,20 @@ async def run_turn(
                         else:
                             payload, interrupt = await _execute_shielded(execute_tool, event)
                         is_error = "error" in payload
+                        # A call only reaches accounting if it actually ran, and
+                        # `refused_by_budget` already withholds every call made
+                        # once either budget is spent. Whichever budget this
+                        # failure belongs to therefore still has room.
                         if event.name in _DRY_RUN_TOOLS and is_error and not refused_by_budget:
                             code = _stable_error_code(payload)
                             if code in _MALFORMED_CALL_ERROR_CODES:
-                                if malformed_dry_run_calls < _MAX_MALFORMED_DRY_RUN_CALLS:
-                                    malformed_dry_run_calls += 1
-                                    latest_dry_run_error_code = code
-                                    latest_dry_run_blocker = (
-                                        "the dry-run call was rejected by its input schema "
-                                        "and the corrected call was rejected again"
-                                    )
-                            elif failed_dry_runs < _MAX_FAILED_DRY_RUNS:
+                                malformed_dry_run_calls += 1
+                                latest_dry_run_error_code = code
+                                latest_dry_run_blocker = (
+                                    "the dry-run call was rejected by its input schema "
+                                    "and the corrected call was rejected again"
+                                )
+                            else:
                                 failed_dry_runs += 1
                                 if code is not None:
                                     latest_dry_run_error_code = code

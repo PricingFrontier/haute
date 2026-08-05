@@ -799,6 +799,11 @@ class TestSemanticPlans:
             # Naming the input, or binding it before reusing `df`, is explicit.
             ("df = left.group_by('quote_id').agg(pl.len())", False),
             ("df = left\ndf = df.group_by('quote_id').agg(pl.len())", False),
+            # `df` bound by a nested scope is that scope's own name and never
+            # resolves to the injected first input, so it is not a bare read.
+            ("def widen(df):\n    return df\ndf = widen(left)", False),
+            ("widen = lambda df: df\ndf = widen(left)", False),
+            ("df = [df.head() for df in (left, right)][0]", False),
         ],
     )
     def test_multi_input_polars_code_must_name_the_input_it_starts_from(

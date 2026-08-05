@@ -499,7 +499,11 @@ def _read_graph(source_file: str) -> SelfTestGraph:
             raise TypeError("pipeline graph tool returned a malformed edge")
         source = edge.get("source")
         target = edge.get("target")
-        target_handle = edge.get("targetHandle")
+        # The renderer names handles the way the graph-edit operations accept
+        # them, so the read shape is snake_case. A stale camelCase key returns
+        # None for every edge without raising, which scores every Edge Join
+        # role as missing however correctly the assistant wired it.
+        target_handle = edge.get("target_handle")
         if (
             not isinstance(source, str)
             or not isinstance(target, str)

@@ -24,6 +24,8 @@ Authored test-first per CLAUDE.md TDD.
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import polars as pl
@@ -252,6 +254,50 @@ def profile_project(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     return project_root
 
 
+@pytest.fixture()
+def dtype_matrix_project(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A claims frame carrying every dtype family a profile must render.
+
+    Dates, money, and a column literally named `count` are the ordinary shape
+    of the data this tool exists to describe, not exotic edge cases.
+    """
+
+    pl.DataFrame(
+        {
+            "accident_date": [date(2024, 1, 1 + index) for index in range(6)],
+            "settled_at": [datetime(2024, 1, 1 + index) for index in range(6)],
+            "paid": pl.Series(
+                [Decimal(f"{index}.50") for index in range(6)], dtype=pl.Decimal(10, 2)
+            ),
+            "excess": [float(index) for index in range(6)],
+            "exposure": [1.0, float("inf"), 2.0, 3.0, 4.0, 5.0],
+            "count": ["one", "two", "two", "one", "one", "one"],
+        }
+    ).write_parquet(project_root / "data" / "claims.parquet")
+    (project_root / "main.py").write_text(PROFILE_SOURCE, encoding="utf-8")
+
+    import haute.assistant._tools as tools_module
+    from haute.assistant._config import EgressPolicy
+
+    monkeypatch.setattr(
+        tools_module,
+        "resolve_egress_policy",
+        lambda _root: EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=True,
+            allow_executable_source=True,
+            allow_row_samples=True,
+        ),
+    )
+    return project_root
+
+
+def _profiles_by_name(result: dict[str, object]) -> dict[str, dict[str, object]]:
+    assert "error" not in result, result
+    return {column["name"]: column for column in result["columns"]}  # type: ignore[index,union-attr]
+
+
 class TestColumnProfiles:
     def test_small_cardinality_categories_are_reported_with_counts(self, profile_project: Path):
         """The encoding is the fact a schema cannot carry. Guessing `"Y"` here
@@ -301,6 +347,87 @@ class TestColumnProfiles:
 
         assert result["error"]["code"] == "unknown_input"
         assert result["error"]["inputs"] == ["claims"]
+
+    async def test_every_dtype_a_frame_can_carry_survives_the_executor(
+        self, dtype_matrix_project: Path
+    ):
+        """The result is JSON-encoded twice before the model sees it — once to
+        bound it, once by the provider adapter — and neither encoder accepts a
+        `date`, `Decimal`, or `NaN`. A profile that cannot be encoded is not a
+        degraded profile: the whole call fails as an opaque internal error, on
+        exactly the date-and-money frames the tool exists to describe."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "get_column_profiles", {"node": "totals", "input": "claims"}
+        )
+
+        assert "error" not in result, result
+        json.dumps(result, allow_nan=False)
+
+    def test_temporal_and_decimal_bounds_render_as_their_written_form(
+        self, dtype_matrix_project: Path
+    ):
+        from haute.assistant._tools import get_column_profiles
+
+        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+
+        assert (by_name["accident_date"]["min"], by_name["accident_date"]["max"]) == (
+            "2024-01-01",
+            "2024-01-06",
+        )
+        assert by_name["settled_at"]["min"] == "2024-01-01 00:00:00"
+        assert (by_name["paid"]["min"], by_name["paid"]["max"]) == ("0.50", "5.50")
+
+    def test_numeric_bounds_keep_their_json_type(self, dtype_matrix_project: Path):
+        """A bound the model compares against must stay a number."""
+
+        from haute.assistant._tools import get_column_profiles
+
+        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+
+        assert (by_name["excess"]["min"], by_name["excess"]["max"]) == (0.0, 5.0)
+
+    def test_a_non_finite_bound_is_rendered_rather_than_emitted_raw(
+        self, dtype_matrix_project: Path
+    ):
+        """`Infinity` is a real Polars value and is not JSON: the bounding
+        encoder runs under `allow_nan=False` and rejects it."""
+
+        from haute.assistant._tools import get_column_profiles
+
+        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+
+        assert by_name["exposure"]["max"] == "inf"
+        assert by_name["exposure"]["min"] == 1.0
+
+    def test_a_column_named_count_is_profiled_like_any_other(self, dtype_matrix_project: Path):
+        """Polars refuses `value_counts` on a column already named `count`,
+        and one refusal used to abort every other column in the frame."""
+
+        from haute.assistant._tools import get_column_profiles
+
+        by_name = _profiles_by_name(get_column_profiles("main.py", "totals", "claims"))
+
+        assert [entry["value"] for entry in by_name["count"]["values"]] == ["one", "two"]
+
+    def test_an_unsummarisable_column_withholds_only_itself(self):
+        """`n_unique` raises on an Object column. Losing the whole frame's
+        profile to one column the model never asked about is not a boundary,
+        it is a defect — the column withholds its own values instead."""
+
+        from haute.assistant._tools import _profile_frame
+
+        frame = pl.DataFrame(
+            {"fault": ["Y", "N", "Y"], "opaque": pl.Series("opaque", [object()] * 3)}
+        ).lazy()
+
+        by_name = {column["name"]: column for column in _profile_frame(frame)["columns"]}
+
+        assert by_name["opaque"]["values_withheld"] == "unsupported_dtype"
+        assert "distinct_count" not in by_name["opaque"]
+        assert [entry["value"] for entry in by_name["fault"]["values"]] == ["Y", "N"]
 
     def test_policy_denies_profiles_when_row_samples_are_not_allowed(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
