@@ -789,7 +789,7 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
                 No milestones yet.
               </p>
               <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
-                Use Save &amp; commit in the toolbar to record one.
+                Use Commit in the toolbar to record one.
               </p>
             </div>
           ) : (

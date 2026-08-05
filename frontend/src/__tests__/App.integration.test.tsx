@@ -871,7 +871,6 @@ describe("App integration — save pipeline", () => {
     render(<App />)
     await waitForAppReady()
 
-    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
 
     // The milestone modal appears; nothing has been committed yet.
@@ -923,7 +922,6 @@ describe("App integration — save pipeline", () => {
     await waitFor(() => expect(screen.queryByTestId("working-branch-modal")).toBeNull())
 
     // Commit with no working branch → re-opens the chooser (queued action).
-    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     await waitFor(() => expect(screen.getByTestId("working-branch-modal")).toBeInTheDocument())
     expect(vi.mocked(api.commitMilestone)).not.toHaveBeenCalled()
@@ -1873,19 +1871,24 @@ describe("App integration — panel open/close", () => {
     render(<App />)
     await waitForAppReady()
 
-    // Nothing selected — neither action applies.
-    expect(screen.getByTestId("toolbar-submodel")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-instance")).toBeDisabled()
+    // Nothing selected — neither action applies. They carry `aria-disabled`
+    // rather than `disabled` so the title explaining the requirement survives.
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
 
     // One node: instancing applies, grouping still needs a second node.
     await selectNodes(["polars_1"])
-    await waitFor(() => expect(screen.getByTestId("toolbar-instance")).toBeEnabled())
-    expect(screen.getByTestId("toolbar-submodel")).toBeDisabled()
+    await waitFor(() =>
+      expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false"),
+    )
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
 
     // Two nodes: grouping applies, instancing no longer has a single target.
     await selectNodes(["polars_1", "polars_2"])
-    await waitFor(() => expect(screen.getByTestId("toolbar-submodel")).toBeEnabled())
-    expect(screen.getByTestId("toolbar-instance")).toBeDisabled()
+    await waitFor(() =>
+      expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "false"),
+    )
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
   })
 
   it("Submodel opens the naming dialog for the selected nodes", async () => {
@@ -1902,7 +1905,7 @@ describe("App integration — panel open/close", () => {
     await waitForAppReady()
 
     await selectNodes(["polars_1", "polars_2"])
-    await waitFor(() => expect(screen.getByTestId("toolbar-submodel")).toBeEnabled())
+    await waitFor(() => expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "false"))
     fireEvent.click(screen.getByTestId("toolbar-submodel"))
 
     await waitFor(() => {
@@ -1924,7 +1927,7 @@ describe("App integration — panel open/close", () => {
     await waitForAppReady()
 
     await selectNodes(["polars_1"])
-    await waitFor(() => expect(screen.getByTestId("toolbar-instance")).toBeEnabled())
+    await waitFor(() => expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false"))
     fireEvent.click(screen.getByTestId("toolbar-instance"))
 
     await waitFor(() => {

@@ -90,7 +90,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
     >
       <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-          Save &amp; commit
+          Commit
         </h2>
         <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
           Record a milestone on{" "}

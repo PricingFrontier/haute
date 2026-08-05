@@ -86,7 +86,9 @@ export default function BranchIndicator() {
         data-testid="toolbar-branch-indicator"
         data-branch-state={status.state}
         onClick={() => openModal(stateMeta.modal)}
-        className="flex items-center gap-1 px-2 py-1 text-[12px] font-medium rounded-md hover-chrome"
+        /* Same button shell as the ready state; the danger colour overrides
+           the shared foreground so an unresolved Git state still stands out. */
+        className="toolbar-btn flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-md"
         style={{ color: "var(--danger)" }}
         title={`${stateMeta.label} — click to resolve in the Git panel`}
       >
@@ -96,19 +98,17 @@ export default function BranchIndicator() {
     )
   }
 
+  // The indicator carries the toolbar's shared button styling: it sat in an
+  // inset --bg-input well (darker than the chrome, so it read as a field
+  // rather than a control) and underlined on hover, while every other action
+  // in the bar is a raised button that brightens instead.
   return (
-    <div
-      data-testid="toolbar-branch-indicator"
-      data-branch-state="ready"
-      className="flex items-center px-2 py-1 rounded-md"
-      style={{ background: "var(--bg-input)" }}
-    >
+    <div data-testid="toolbar-branch-indicator" data-branch-state="ready" className="flex items-center">
       <button
         type="button"
         data-testid="branch-indicator-name"
         onClick={openOnCurrent}
-        className="flex items-center gap-1 text-[12px] font-medium font-mono max-w-[180px] truncate hover:underline"
-        style={{ color: "var(--text-primary)" }}
+        className="toolbar-btn flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium font-mono rounded-md max-w-[180px] truncate"
         title={`Working branch: ${status.working_branch} — click to manage branches`}
       >
         <GitBranch size={13} aria-hidden="true" />

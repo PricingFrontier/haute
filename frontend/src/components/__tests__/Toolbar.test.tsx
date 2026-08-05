@@ -58,10 +58,11 @@ describe("Toolbar", () => {
     expect(props.onSave).toHaveBeenCalledOnce()
   })
 
-  it("clicking Save & commit (in the save dropdown) calls onSaveCommit", () => {
+  it("clicking Commit calls onSaveCommit", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
-    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
+    // Commit is a plain sibling of Save now — no split-button menu to open.
+    expect(screen.queryByTestId("toolbar-save-menu")).toBeNull()
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     expect(props.onSaveCommit).toHaveBeenCalledOnce()
   })
@@ -117,8 +118,8 @@ describe("Toolbar", () => {
 
     const submodel = screen.getByTestId("toolbar-submodel")
     const instance = screen.getByTestId("toolbar-instance")
-    expect(submodel).toBeDisabled()
-    expect(instance).toBeDisabled()
+    expect(submodel).toHaveAttribute("aria-disabled", "true")
+    expect(instance).toHaveAttribute("aria-disabled", "true")
 
     fireEvent.click(submodel)
     fireEvent.click(instance)
@@ -126,11 +127,20 @@ describe("Toolbar", () => {
     expect(props.onCreateInstance).not.toHaveBeenCalled()
   })
 
+  it("keeps unavailable selection actions reachable so they can explain themselves", () => {
+    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: false })} />)
+    const submodel = screen.getByTestId("toolbar-submodel")
+    // Not the `disabled` attribute: that would drop the button from the tab
+    // order and suppress the title that states the requirement.
+    expect(submodel).not.toBeDisabled()
+    expect(submodel).toHaveAttribute("title", expect.stringContaining("select 2 or more"))
+  })
+
   it("enables the two selection actions independently", () => {
     render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: true })} />)
     // One node selected: instancing works, grouping needs a second node.
-    expect(screen.getByTestId("toolbar-submodel")).toBeDisabled()
-    expect(screen.getByTestId("toolbar-instance")).toBeEnabled()
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false")
   })
 
   it("places the selection actions to the left of Utility", () => {
