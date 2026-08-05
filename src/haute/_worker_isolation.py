@@ -13,6 +13,10 @@ from dataclasses import dataclass, field
 from multiprocessing.process import BaseProcess
 from typing import Any, Literal, TypeVar, cast
 
+from haute._logging import get_logger
+
+logger = get_logger(component="worker_isolation")
+
 T = TypeVar("T")
 
 WorkerTerminalReason = Literal[
@@ -98,6 +102,18 @@ class IsolatedWorkerError(RuntimeError):
 
 class IsolatedWorkerStartError(IsolatedWorkerError):
     """Raised when the parent cannot start the worker process."""
+
+
+class IsolatedWorkerHostError(IsolatedWorkerError):
+    """The host's process machinery is unusable, so no worker can start.
+
+    Distinct from a worker that ran and failed: nothing ran at all, and
+    the cause is the environment rather than the job. Specifically,
+    CPython's ``multiprocessing`` resource tracker — a helper process that
+    must be alive before any queue or lock can be created — has died and
+    could not be replaced. Named so the failure reads as the host problem
+    it is instead of an unexplained internal error.
+    """
 
 
 class IsolatedWorkerRemoteError(IsolatedWorkerError):
@@ -217,6 +233,143 @@ def process_memory_caps_supported() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Host process machinery
+# ---------------------------------------------------------------------------
+#
+# Before any worker can start, CPython creates a multiprocessing queue, which
+# creates a semaphore, which must be registered with the `resource_tracker` —
+# a helper process spawned on first use whose job is to clean up leaked
+# semaphores. Writing to its pipe raises BrokenPipeError once that helper is
+# dead. `ensure_running()` re-spawns a tracker it has already probed and found
+# dead, but it does NOT probe one it has just spawned, so a tracker that dies
+# immediately on spawn surfaces as a broken pipe on the very next write.
+#
+# Measured on Databricks Apps (5 August 2026): three occurrences, each on the
+# first queue of a training job, while ordinary in-process execution kept
+# working. The diagnostics below exist to answer WHY the tracker died there —
+# the recovery is bounded and loud precisely so a silent retry cannot hide it.
+
+#: Errors that mean the tracker's pipe is gone rather than the job being bad.
+_DEAD_TRACKER_ERRORS = (BrokenPipeError, ConnectionResetError)
+
+
+def _resource_tracker_diagnostics() -> dict[str, Any]:
+    """Facts about the host that explain a dead resource tracker.
+
+    Every probe is individually guarded: this runs on a failure path and
+    must never replace the original error with one of its own.
+    """
+    info: dict[str, Any] = {}
+    try:
+        from multiprocessing import resource_tracker
+
+        tracker = resource_tracker._resource_tracker
+        pid = getattr(tracker, "_pid", None)
+        info["tracker_pid"] = pid
+        info["tracker_fd"] = getattr(tracker, "_fd", None)
+        if pid is not None:
+            try:
+                # Reaps the tracker if it has exited, which is what
+                # ensure_running would do anyway, and reports how it died.
+                reaped, status = os.waitpid(pid, os.WNOHANG)
+                info["tracker_reaped"] = reaped
+                info["tracker_exit_status"] = status
+            except OSError as exc:
+                info["tracker_waitpid_error"] = str(exc)
+    except Exception as exc:  # pragma: no cover - private-API shape guard
+        info["tracker_probe_error"] = str(exc)
+
+    # A tracker is spawned as `sys.executable -c ...`; an interpreter that has
+    # gone missing (a replaced virtualenv, say) would exec-fail instantly.
+    info["executable"] = sys.executable
+    try:
+        info["executable_usable"] = bool(sys.executable) and os.access(sys.executable, os.X_OK)
+    except OSError:  # pragma: no cover - defensive
+        info["executable_usable"] = False
+
+    try:
+        import resource as _resource
+
+        for name in ("RLIMIT_NPROC", "RLIMIT_NOFILE", "RLIMIT_AS"):
+            limit = getattr(_resource, name, None)
+            if limit is not None:
+                info[name.lower()] = _resource.getrlimit(limit)
+    except Exception:  # pragma: no cover - POSIX-only, best effort
+        pass
+
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith(("Threads:", "VmRSS:", "VmSize:")):
+                    key, _, value = line.partition(":")
+                    info[f"proc_{key.strip().lower()}"] = value.strip()
+    except OSError:  # pragma: no cover - Linux-only, best effort
+        pass
+    return info
+
+
+def _reset_resource_tracker() -> None:
+    """Forget a dead tracker so the next use spawns a replacement.
+
+    ``ensure_running`` only re-spawns when its own probe fails; clearing
+    the handle makes the next call take the spawn path unconditionally.
+    """
+    from multiprocessing import resource_tracker
+
+    # Private CPython state by necessity: the stdlib exposes no supported way
+    # to say "this tracker is gone, start another". Every attribute is read
+    # defensively so a future layout change degrades to no recovery rather
+    # than to a new crash on the failure path.
+    tracker: Any = resource_tracker._resource_tracker
+    lock = getattr(tracker, "_lock", None)
+    if lock is None:  # pragma: no cover - shape guard for a future CPython
+        return
+    with lock:
+        fd = getattr(tracker, "_fd", None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        tracker._fd = None
+        tracker._pid = None
+
+
+def create_worker_queue(ctx: Any, maxsize: int) -> Any:
+    """Create a worker queue, surviving one dead host resource tracker.
+
+    The retry is deliberately bounded at one attempt and logs both times:
+    a dead tracker is a host fault worth seeing, not something to paper
+    over. If the replacement tracker also fails, the failure is raised as
+    :class:`IsolatedWorkerHostError` so the user is told the host cannot
+    start workers rather than being handed an unexplained internal error.
+    """
+    try:
+        return ctx.Queue(maxsize=maxsize)
+    except _DEAD_TRACKER_ERRORS as exc:
+        logger.warning(
+            "worker_resource_tracker_dead",
+            error=str(exc),
+            error_type=type(exc).__name__,
+            **_resource_tracker_diagnostics(),
+        )
+        _reset_resource_tracker()
+        try:
+            return ctx.Queue(maxsize=maxsize)
+        except _DEAD_TRACKER_ERRORS as retry_exc:
+            logger.error(
+                "worker_resource_tracker_unrecoverable",
+                error=str(retry_exc),
+                error_type=type(retry_exc).__name__,
+                **_resource_tracker_diagnostics(),
+            )
+            raise IsolatedWorkerHostError(
+                "This server cannot start background work at the moment — the process "
+                "tracker it relies on has stopped. Restart the app and try again."
+            ) from retry_exc
+
+
 def run_isolated_worker(
     function: Callable[..., T],
     *args: Any,
@@ -241,7 +394,7 @@ def run_isolated_worker(
         )
 
     ctx = mp.get_context("spawn")
-    result_queue: mp.Queue[tuple[str, Any]] = ctx.Queue(maxsize=1)
+    result_queue: mp.Queue[tuple[str, Any]] = create_worker_queue(ctx, 1)
     process = ctx.Process(
         target=_isolated_worker_entrypoint,
         name=worker_config.process_name,

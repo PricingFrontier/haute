@@ -12,6 +12,7 @@ import pytest
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
+    IsolatedWorkerHostError,
     IsolatedWorkerMemoryLimitUnsupportedError,
     IsolatedWorkerRemoteError,
     IsolatedWorkerStartError,
@@ -19,6 +20,7 @@ from haute._worker_isolation import (
     IsolatedWorkerTerminationError,
     IsolatedWorkerTimeoutError,
     _terminate_process,
+    create_worker_queue,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
@@ -653,3 +655,78 @@ def test_protocol_supervisor_cleanup_failure_preserves_committed_success(tmp_pat
     assert job["published_path"] == "models/fitted.joblib"
     assert job["cleanup_error_class"] == "OSError"
     assert "cleanup failed" in job["cleanup_error"]
+
+
+# ---------------------------------------------------------------------------
+# Host process machinery — a dead multiprocessing resource tracker
+# ---------------------------------------------------------------------------
+#
+# Measured on Databricks Apps: creating the very first worker queue raised
+# BrokenPipeError from `resource_tracker.register`, because the tracker helper
+# process was dead. Nothing about the job was wrong — no worker had started.
+
+
+class _QueueContext:
+    """Stands in for a multiprocessing context with a scripted Queue()."""
+
+    def __init__(self, *outcomes: BaseException | None) -> None:
+        self._outcomes = list(outcomes)
+        self.calls = 0
+
+    def Queue(self, maxsize: int = 0) -> object:  # noqa: N802 - mirrors mp API
+        self.calls += 1
+        outcome = self._outcomes.pop(0) if self._outcomes else None
+        if outcome is not None:
+            raise outcome
+        return f"queue(maxsize={maxsize})"
+
+
+class TestDeadResourceTrackerRecovery:
+    def test_a_healthy_host_creates_the_queue_directly(self) -> None:
+        ctx = _QueueContext()
+        assert create_worker_queue(ctx, 1) == "queue(maxsize=1)"
+        assert ctx.calls == 1
+
+    def test_one_dead_tracker_is_survived(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The tracker is respawned and the job proceeds, not fails."""
+        resets: list[int] = []
+        monkeypatch.setattr(
+            "haute._worker_isolation._reset_resource_tracker",
+            lambda: resets.append(1),
+        )
+        ctx = _QueueContext(BrokenPipeError(32, "Broken pipe"), None)
+        assert create_worker_queue(ctx, 4) == "queue(maxsize=4)"
+        assert ctx.calls == 2
+        assert resets == [1]  # the dead handle was dropped before retrying
+
+    def test_a_tracker_that_stays_dead_names_the_host_problem(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Never an unexplained internal error: say the host cannot start work."""
+        monkeypatch.setattr("haute._worker_isolation._reset_resource_tracker", lambda: None)
+        ctx = _QueueContext(BrokenPipeError(32, "Broken pipe"), BrokenPipeError(32, "Broken pipe"))
+        with pytest.raises(IsolatedWorkerHostError) as excinfo:
+            create_worker_queue(ctx, 1)
+        assert ctx.calls == 2  # bounded at one retry, never a spin
+        message = str(excinfo.value)
+        assert "Restart the app" in message
+        assert "Broken pipe" not in message  # hand-authored, not raw errno text
+        # Typed as a worker failure, so the supervisor reports THIS message
+        # rather than its generic "unexpected supervisor failure".
+        assert excinfo.value.terminal_reason == "error"
+
+    def test_an_unrelated_error_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only a dead pipe means 'the host', so only that is recovered."""
+        monkeypatch.setattr("haute._worker_isolation._reset_resource_tracker", lambda: None)
+        ctx = _QueueContext(ValueError("bad maxsize"))
+        with pytest.raises(ValueError):
+            create_worker_queue(ctx, 1)
+        assert ctx.calls == 1
+
+    def test_diagnostics_describe_the_host_without_raising(self) -> None:
+        """The diagnostic runs on a failure path; it must never add its own."""
+        from haute._worker_isolation import _resource_tracker_diagnostics
+
+        info = _resource_tracker_diagnostics()
+        assert "executable" in info
+        assert isinstance(info.get("executable_usable"), bool)
