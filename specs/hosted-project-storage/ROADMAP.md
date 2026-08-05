@@ -27,6 +27,22 @@ strictly ordered; the first group is nearest-term.
   good. Correctness is already covered by staleness expiry and own-app
   takeover; this only narrows the false-"in use" window.
 
+## Running cost
+
+- **Idle self-stop, with tab-close as a hint.** The app bills while its
+  compute runs, and today only a manual `apps stop` ends that. Because
+  every real interaction passes through the backend (the SSO proxy fronts
+  all tabs), the app can track last-activity and, after an idle window,
+  stop itself via the Apps API — first flushing the publish queue and
+  releasing the claim, which makes this the one shutdown path that CAN be
+  graceful (self-initiated, so the platform's kill behaviour never
+  applies). Browser tab-close (`pagehide` + `sendBeacon`) should only
+  shorten the idle window, never kill directly: close events also fire on
+  refresh and navigation, several tabs may be open, and a cold start
+  costs minutes. Needs the app's service principal to hold permission to
+  stop its own app, and the `uc://` binding for durability — which is
+  the point.
+
 ## The desktop new/open loop
 
 One app session is currently committed to one project in one storage
