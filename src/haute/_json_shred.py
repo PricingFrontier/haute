@@ -1715,6 +1715,7 @@ def _write_tables_in_parallel(
         chunks=len(tasks),
         workers=workers,
     )
+    started = time.perf_counter()
 
     # "spawn" explicitly: it is the only start method available on Windows and
     # the only one safe alongside the server's threads elsewhere, so every
@@ -1751,7 +1752,16 @@ def _write_tables_in_parallel(
             for result in results:
                 part = result.part_paths.get(spec.label)
                 if part is None:
-                    continue
+                    # Every successful chunk writes one part per emitting table
+                    # (worker and parent parse the same config). A missing part
+                    # means the two disagree about the table set — publishing a
+                    # parquet with silently absent rows would be worse than any
+                    # failure, so stop here.
+                    raise RuntimeError(
+                        f"parallel json shred chunk {result.index} wrote no part "
+                        f"for table {spec.label!r} — worker and parent table "
+                        "specs diverged",
+                    )
                 # OSFile, not memory_map: a mapped part stays locked on Windows
                 # and could not be unlinked below. Reading it owns the buffers,
                 # and only one part is resident at a time by design.
@@ -1765,15 +1775,27 @@ def _write_tables_in_parallel(
                 del part_table
                 Path(part).unlink(missing_ok=True)
             if writer is None:
-                # No chunk produced a part for this table (only reachable if
-                # every range was empty) — still write the empty artifact the
-                # manifest and readers expect.
-                empty = schema_frame.to_arrow().replace_schema_metadata(metadata)
-                pq.write_table(empty, parquet_path, compression="zstd")
+                # Only reachable with zero chunk results, and the caller only
+                # dispatches here with at least two ranges.
+                raise RuntimeError(
+                    f"parallel json shred assembled no parts for table "
+                    f"{spec.label!r} — the pool returned no chunk results",
+                )
         finally:
             if writer is not None:
                 writer.close()
         summaries.append(_table_summary(spec.label, parquet_path, row_count, schema_frame))
+
+    logger.info(
+        "json_shred_parallel_complete",
+        data_path=str(data_path),
+        chunks=len(tasks),
+        workers=workers,
+        duration_seconds=round(  # pragma: no mutate - diagnostic timing only
+            time.perf_counter() - started,
+            3,  # pragma: no mutate
+        ),
+    )
     return summaries, skip_stats
 
 

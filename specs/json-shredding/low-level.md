@@ -213,7 +213,14 @@ the skip/conservation accounting.
   never returned through the pool's result channel.
 - The parent streams each table's parts into one `pq.ParquetWriter` **in chunk
   order** (so row order matches the serial shred exactly), unlinking each part
-  as it is consumed to keep parent memory bounded by a single part.
+  as it is consumed to keep parent memory bounded by a single part. Disk is the
+  trade: workers finish writing every part before assembly starts consuming
+  them, so the staging directory transiently holds roughly the whole dataset as
+  uncompressed IPC parts alongside the growing zstd parquets. The swap into
+  place still publishes only the compressed artifacts, and any failure removes
+  the staging directory with the parts in it. A chunk that produced no part for
+  an emitting table (worker/parent spec divergence — never legitimate) fails
+  the build rather than publishing a parquet with silently missing rows.
 - `_raise_chunk_error` rebuilds the worker's failure in the parent rather than
   pickling arbitrary exception objects. The envelope carries an
   `ApiInputSchemaError`'s raw `message` plus complete `context`, an
@@ -528,8 +535,12 @@ Shred / inference / cache lifecycle (`_json_shred.py`, `_json_flatten.py`):
   record split, order preserved) and serial-equivalence of parallel inference
   and build: identical inferred schema ordering, late-field discovery and type
   widening, identical frames and row order, identical skip accounting and
-  manifest, identical typed failures, staging cleaned up on failure, and the
-  build driven from a worker thread as the route drives it.
+  manifest (including per-table row skips crossing chunk boundaries and a
+  source without a trailing newline), identical typed failures, staging cleaned
+  up on failure, and the build driven from a worker thread as the route drives
+  it. Dispatch is witnessed in both directions for inference and build alike:
+  an eligible source must actually take the parallel path, and a single-range
+  or explicitly sampled source must stay serial.
 - `tests/test_json_shred_w1_conservation.py` — fail-loud/accounting regressions:
   reserved-key rejection, `$value`/sibling-column rejection, empty-array type
   non-poisoning.

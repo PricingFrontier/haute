@@ -25,10 +25,12 @@ from haute import _json_shred
 from haute._api_input_schema import ApiInputSchemaError
 from haute._json_shred import (
     ShredSkipStats,
+    _assemble_inference_schema,
     _assert_root_conservation,
     _ChunkFailure,
     _ChunkResult,
     _EmittingTableSpec,
+    _InferenceState,
     _iter_range_records,
     _jsonl_byte_ranges,
     _merge_chunk_skip_stats,
@@ -298,6 +300,47 @@ def test_single_range_inference_stays_serial(
     assert infer_v2_schema_from_data(src)["tables"]
 
 
+def _scalar_table_type(payload: dict[str, Any], label: str) -> str:
+    table = next(t for t in payload["tables"] if t["label"] == label)
+    (column,) = table["columns"]
+    return column["type"]
+
+
+def test_merge_widens_scalar_array_types_across_chunk_states() -> None:
+    """Deterministic pin of the merge's scalar-widening branch: an int array in
+    one chunk and a float array in another must widen to float exactly as one
+    serial walk would, and empty-array evidence (type-unknown ``None``) must
+    neither poison a later concrete type nor be forgotten by a merge."""
+    first = _InferenceState()
+    first.walk({"tags": [1]})
+    second = _InferenceState()
+    second.walk({"tags": [2.5]})
+    merged = _InferenceState()
+    merged.merge(first)
+    merged.merge(second)
+
+    serial = _InferenceState()
+    serial.walk({"tags": [1]})
+    serial.walk({"tags": [2.5]})
+    merged_payload = _assemble_inference_schema(merged)
+    assert merged_payload == _assemble_inference_schema(serial)
+    assert _scalar_table_type(merged_payload, "tags") == "float"
+
+    empty_only = _InferenceState()
+    empty_only.walk({"tags": []})
+    concrete = _InferenceState()
+    concrete.walk({"tags": [7]})
+    empty_then_concrete = _InferenceState()
+    empty_then_concrete.merge(empty_only)
+    empty_then_concrete.merge(concrete)
+    assert _scalar_table_type(_assemble_inference_schema(empty_then_concrete), "tags") == "int"
+
+    concrete_then_empty = _InferenceState()
+    concrete_then_empty.merge(concrete)
+    concrete_then_empty.merge(empty_only)
+    assert _scalar_table_type(_assemble_inference_schema(concrete_then_empty), "tags") == "int"
+
+
 def test_parallel_inference_preserves_late_schema_error_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -351,18 +394,24 @@ def test_parallel_inference_preserves_late_json_error_evidence(
     assert str(parallel_exc.value) == str(serial_exc.value)
 
 
+@pytest.mark.parametrize("change", ["append", "truncate"])
 def test_parallel_inference_rejects_a_source_changed_during_the_scan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
-    """Ranges from different source generations must never be merged."""
+    """Ranges from different source generations must never be merged. Growth
+    and truncation are separate cases: the identity comparison must reject any
+    difference, not merely a source that got bigger."""
     src = _write_jsonl(tmp_path / "changing.jsonl", _records(100))
     _force_parallel(monkeypatch, chunk_bytes=100)
 
     def mutate_source(
         data_path: Path, _ranges: list[tuple[int, int]]
     ) -> _json_shred._InferenceState:
-        with data_path.open("ab") as output:
-            output.write(b'{"late": true}\n')
+        if change == "append":
+            with data_path.open("ab") as output:
+                output.write(b'{"late": true}\n')
+        else:
+            data_path.write_bytes(data_path.read_bytes()[:-32])
         return _json_shred._InferenceState()
 
     monkeypatch.setattr(_json_shred, "_infer_jsonl_in_parallel", mutate_source)
@@ -408,12 +457,27 @@ def test_parallel_build_matches_serial_build_exactly(
 ) -> None:
     """Same rows, same ORDER, same manifest. Row order matters: parts are
     concatenated in chunk order, and a pool that returned out of order would
-    scramble it while keeping every count identical."""
+    scramble it while keeping every count identical. Two claims arrays carry a
+    shape-mismatched element so per-TABLE row skips (not just record skips)
+    must survive the cross-chunk merge; both intruders sit in different chunks
+    at the 200-byte chunk size."""
     records = _records(300)
+    records[13]["claims"] = [{"amt": 130}, "stray", {"amt": 131}]
+    records[257]["claims"] = [{"amt": 2570}, None]
     serial_src = _write_jsonl(tmp_path / "serial.jsonl", records)
     serial_summary, serial_frames = _build(serial_src, tmp_path / "serial_cache")
+    assert serial_summary["skipped"]["rows_by_table"] == {"claims": 2}, (
+        "fixture regressed: the equivalence contract must cover row-skip accounting"
+    )
 
     _force_parallel(monkeypatch)
+
+    def reject_serial_shred(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("large JSONL build unexpectedly used the serial shred")
+
+    # Serial and parallel emit identical artifacts BY DESIGN, so only this
+    # witness distinguishes a dispatch regression from a working parallel path.
+    monkeypatch.setattr(_json_shred, "_shred_data_file", reject_serial_shred)
     parallel_src = _write_jsonl(tmp_path / "parallel.jsonl", records)
     parallel_summary, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
 
@@ -473,6 +537,57 @@ def test_parallel_build_handles_blank_lines(
     assert parallel_summary["skipped"] == serial_summary["skipped"]
     for label, serial_frame in serial_frames.items():
         assert parallel_frames[label].equals(serial_frame)
+
+
+def test_parallel_build_handles_a_missing_trailing_newline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final record of an unterminated file ends at EOF, not at a newline.
+    Pure serial/parallel equality cannot catch BOTH paths dropping it, so the
+    root row count is asserted absolutely as well."""
+    records = _records(120)
+    body = "\n".join(json.dumps(r) for r in records)  # deliberately no final \n
+    serial_src = tmp_path / "serial.jsonl"
+    serial_src.write_text(body, encoding="utf-8")
+    serial_summary, serial_frames = _build(serial_src, tmp_path / "serial_cache")
+
+    _force_parallel(monkeypatch)
+    parallel_src = tmp_path / "parallel.jsonl"
+    parallel_src.write_text(body, encoding="utf-8")
+    parallel_summary, parallel_frames = _build(parallel_src, tmp_path / "parallel_cache")
+
+    assert parallel_summary["skipped"] == serial_summary["skipped"]
+    for label, serial_frame in serial_frames.items():
+        assert parallel_frames[label].equals(serial_frame), f"{label} differs"
+    root_rows = {t["label"]: t["row_count"] for t in parallel_summary["tables"]}
+    assert root_rows["quote_info"] == 120
+
+
+def test_single_range_build_stays_serial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One byte range means no split is possible; starting a process pool for
+    it would pay spawn startup for nothing. Mirror of the inference witness."""
+    src = _write_jsonl(tmp_path / "single-range.jsonl", _records(3))
+    schema = infer_v2_schema_from_data(src)
+    for table in schema["tables"]:
+        table["emit"] = True
+
+    monkeypatch.setattr(_json_shred, "_should_shred_in_parallel", lambda _path: True)
+    monkeypatch.setattr(
+        _json_shred,
+        "_jsonl_byte_ranges",
+        lambda path, _chunk_bytes: [(0, path.stat().st_size)],
+    )
+
+    def reject_parallel_dispatch(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("one byte range unexpectedly started a process pool")
+
+    monkeypatch.setattr(_json_shred, "_write_tables_in_parallel", reject_parallel_dispatch)
+
+    summary = build_per_port_cache(src, schema, tmp_path / "cache")
+
+    row_counts = {t["label"]: t["row_count"] for t in summary["tables"]}
+    root_label = next(t["label"] for t in schema["tables"] if t["path"] == "$[:]")
+    assert row_counts[root_label] == 3
 
 
 def test_parallel_worker_type_mismatch_raises_with_the_column_named(
