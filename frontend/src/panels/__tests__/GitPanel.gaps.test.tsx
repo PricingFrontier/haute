@@ -62,7 +62,7 @@ describe("GitPanel — uncovered fork/view/peek paths", () => {
     // The panel's session caches are module-level (they survive remounts by
     // design) — reset them so tests stay independent.
     clearGitPanelCaches()
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })

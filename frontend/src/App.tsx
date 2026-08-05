@@ -851,6 +851,28 @@ function FlowEditor() {
     commitSharedNodeDeletion,
   })
 
+  // Toolbar selection actions. These mirror the rules the Ctrl+G shortcut and
+  // the node context menu already enforce, so the buttons are a second entry
+  // point rather than a second policy: grouping needs 2+ nodes and a context
+  // that can hold a submodel (they cannot nest), instancing needs exactly one
+  // node of any type — the generic `instanceOf` path, not just submodels.
+  const selectedNodeIds = useMemo(
+    () => nodes.filter((n) => n.selected).map((n) => n.id),
+    [nodes],
+  )
+  const canCreateSubmodel = !activeSubmodelReadOnly
+    && viewStack.length <= 1
+    && selectedNodeIds.length >= 2
+  const canCreateInstance = !activeSubmodelReadOnly && selectedNodeIds.length === 1
+  const handleToolbarCreateSubmodel = useCallback(() => {
+    if (!canCreateSubmodel) return
+    setSubmodelDialog({ nodeIds: selectedNodeIds })
+  }, [canCreateSubmodel, selectedNodeIds, setSubmodelDialog])
+  const handleToolbarCreateInstance = useCallback(() => {
+    if (!canCreateInstance) return
+    handleCreateInstance(selectedNodeIds[0])
+  }, [canCreateInstance, selectedNodeIds, handleCreateInstance])
+
   const shouldSkipAutomaticPreview = useCallback(
     (node: Node) => {
       if (nodeData(node).nodeType !== NODE_TYPES.OPTIMISER) return false
@@ -1070,6 +1092,10 @@ function FlowEditor() {
         onZoomOut={() => zoomOut()}
         onOpenUtility={() => { setUtilityOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
         onOpenImports={() => { setImportsOpen(true); setSelectedNode(null); setLastSelectedId(null); lastSelectedNodeRef.current = null; setPreviewDataRef.current(null); setContextMenu(null) }}
+        canCreateSubmodel={canCreateSubmodel}
+        onCreateSubmodel={handleToolbarCreateSubmodel}
+        canCreateInstance={canCreateInstance}
+        onCreateInstance={handleToolbarCreateInstance}
         onCentre={() => fitView({ padding: 0.15 })}
         onAutoLayout={handleAutoLayout}
         isAutoLayouting={isAutoLayouting}

@@ -1849,6 +1849,92 @@ describe("App integration — panel open/close", () => {
     })
   })
 
+  // The toolbar's Submodel/Instance buttons derive their enabled state from the
+  // live selection, so these drive the real store rather than Toolbar props.
+  async function selectNodes(ids: string[]): Promise<void> {
+    useGraphStore.setState((s) => ({
+      nodes: s.nodes.map((n) => ({ ...n, selected: ids.includes(n.id) })),
+    }))
+    await waitFor(() => {
+      expect(useGraphStore.getState().nodes.filter((n) => n.selected)).toHaveLength(ids.length)
+    })
+  }
+
+  it("Submodel and Instance are inert until the selection can support them", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-selection",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // Nothing selected — neither action applies.
+    expect(screen.getByTestId("toolbar-submodel")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-instance")).toBeDisabled()
+
+    // One node: instancing applies, grouping still needs a second node.
+    await selectNodes(["polars_1"])
+    await waitFor(() => expect(screen.getByTestId("toolbar-instance")).toBeEnabled())
+    expect(screen.getByTestId("toolbar-submodel")).toBeDisabled()
+
+    // Two nodes: grouping applies, instancing no longer has a single target.
+    await selectNodes(["polars_1", "polars_2"])
+    await waitFor(() => expect(screen.getByTestId("toolbar-submodel")).toBeEnabled())
+    expect(screen.getByTestId("toolbar-instance")).toBeDisabled()
+  })
+
+  it("Submodel opens the naming dialog for the selected nodes", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-group",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["polars_1", "polars_2"])
+    await waitFor(() => expect(screen.getByTestId("toolbar-submodel")).toBeEnabled())
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+
+    await waitFor(() => {
+      expect(useUIStore.getState().submodelDialog).toEqual({ nodeIds: ["polars_1", "polars_2"] })
+    })
+  })
+
+  it("Instance creates a linked copy of a plain node, not just submodels", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-instance",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    await selectNodes(["polars_1"])
+    await waitFor(() => expect(screen.getByTestId("toolbar-instance")).toBeEnabled())
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+
+    await waitFor(() => {
+      const instance = useGraphStore
+        .getState()
+        .nodes.find((n) => (n.data as { config?: { instanceOf?: string } }).config?.instanceOf === "polars_1")
+      expect(instance).toBeDefined()
+    })
+  })
+
   it("the branch indicator opens the Version Control pane (mutually exclusive with Utility/Imports)", async () => {
     render(<App />)
     await waitForAppReady()

@@ -125,12 +125,10 @@ describe("useGitStore", () => {
     useGitStore.getState().requestExpandBranches()
     useGitStore.getState().notifyHistoryChanged()
     useGitStore.getState().notifyMilestoneCommitted()
-    useGitStore.getState().requestSelectLatestSave()
     const after = useGitStore.getState()
     expect(after.branchesExpandNonce).toBe(before.branchesExpandNonce + 1)
     expect(after.historyNonce).toBe(before.historyNonce + 1)
     expect(after.commitNonce).toBe(before.commitNonce + 1)
-    expect(after.selectLatestSaveNonce).toBe(before.selectLatestSaveNonce + 1)
   })
 
   it("requestSelectSave records the target sha and bumps its nonce", () => {

@@ -601,6 +601,19 @@ html, body, #root {
   box-shadow: 0 0 0 2px var(--focus-ring-shadow, var(--accent-soft));
 }
 
+/* Toolbar numeric fields are sized to their exact digit capacity, so the
+   native spin buttons would eat into the visible text.  Drop them; the
+   fields are typed into rather than stepped. */
+.toolbar-number-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.toolbar-number-input::-webkit-outer-spin-button,
+.toolbar-number-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 /* Rating editor grid cells: neutral spreadsheet-style focus, without the
    app accent ring used by form controls. */
 .rating-editor-number-cell:focus-visible {

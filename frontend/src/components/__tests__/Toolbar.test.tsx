@@ -15,6 +15,10 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
     onOpenImports: vi.fn(),
+    canCreateSubmodel: true,
+    onCreateSubmodel: vi.fn(),
+    canCreateInstance: true,
+    onCreateInstance: vi.fn(),
     onCentre: vi.fn(),
     onAutoLayout: vi.fn(),
     isAutoLayouting: false,
@@ -64,14 +68,17 @@ describe("Toolbar", () => {
 
   it("Layout button is disabled when nodeCount is 0", () => {
     render(<Toolbar {...makeProps({ nodeCount: 0 })} />)
-    const layoutBtn = screen.getByText("Layout")
+    // The label lives in a span inside the button (it's overlaid by the busy
+    // spinner), so target the button itself rather than the text node.
+    const layoutBtn = screen.getByTestId("toolbar-layout")
+    expect(layoutBtn).toHaveTextContent("Layout")
     expect(layoutBtn).toBeDisabled()
   })
 
   it("clicking Layout calls onAutoLayout", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
-    fireEvent.click(screen.getByText("Layout"))
+    fireEvent.click(screen.getByTestId("toolbar-layout"))
     expect(props.onAutoLayout).toHaveBeenCalledOnce()
   })
 
@@ -82,9 +89,61 @@ describe("Toolbar", () => {
 
     expect(layoutBtn).toBeDisabled()
     expect(layoutBtn).toHaveAttribute("aria-busy", "true")
+    // The visible label is width-stable across states; only the accessible
+    // name and the spinner change while running.
+    expect(layoutBtn).toHaveTextContent("Layout")
 
     fireEvent.click(layoutBtn)
     expect(props.onAutoLayout).not.toHaveBeenCalled()
+  })
+
+  it("clicking Submodel groups the selection", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+  })
+
+  it("clicking Instance creates an instance of the selection", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+    expect(props.onCreateInstance).toHaveBeenCalledOnce()
+  })
+
+  it("greys out the selection actions when the selection cannot support them", () => {
+    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    render(<Toolbar {...props} />)
+
+    const submodel = screen.getByTestId("toolbar-submodel")
+    const instance = screen.getByTestId("toolbar-instance")
+    expect(submodel).toBeDisabled()
+    expect(instance).toBeDisabled()
+
+    fireEvent.click(submodel)
+    fireEvent.click(instance)
+    expect(props.onCreateSubmodel).not.toHaveBeenCalled()
+    expect(props.onCreateInstance).not.toHaveBeenCalled()
+  })
+
+  it("enables the two selection actions independently", () => {
+    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: true })} />)
+    // One node selected: instancing works, grouping needs a second node.
+    expect(screen.getByTestId("toolbar-submodel")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-instance")).toBeEnabled()
+  })
+
+  it("places the selection actions to the left of Utility", () => {
+    render(<Toolbar {...makeProps()} />)
+    const order = [
+      screen.getByTestId("toolbar-submodel"),
+      screen.getByTestId("toolbar-instance"),
+      screen.getByTestId("toolbar-utility"),
+    ]
+    for (let i = 0; i < order.length - 1; i += 1) {
+      // Node.DOCUMENT_POSITION_FOLLOWING === 4
+      expect(order[i].compareDocumentPosition(order[i + 1]) & 4).toBeTruthy()
+    }
   })
 
   it("disables graph mutation controls in a read-only instance", () => {

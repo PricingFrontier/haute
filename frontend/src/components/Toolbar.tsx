@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useCallback } from "react"
-import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, GitMerge, Loader2 } from "lucide-react"
+import { Undo2, Redo2, ZoomIn, ZoomOut, Timer, HardDrive, ChevronDown, Plus, Trash2, FileCode2, Package, Bot, GitMerge, Loader2, Group, Link2 } from "lucide-react"
 import type { WsStatus } from "../hooks/useWebSocketSync"
 import type { NodeTiming, NodeMemory } from "../api/types"
 import BreakdownDropdown, { type BreakdownItem } from "./BreakdownDropdown"
@@ -38,6 +38,15 @@ interface ToolbarProps {
   onZoomOut: () => void
   onOpenUtility: () => void
   onOpenImports: () => void
+  /** Group the current selection into a submodel. Enabled only when the
+   *  selection can actually be grouped — 2+ nodes, not already inside a
+   *  submodel, not a read-only instance. The caller owns that policy. */
+  canCreateSubmodel: boolean
+  onCreateSubmodel: () => void
+  /** Create a linked instance of the single selected node (any node type —
+   *  the generic `instanceOf` path, not just submodels). */
+  canCreateInstance: boolean
+  onCreateInstance: () => void
   onCentre: () => void
   onAutoLayout: () => void
   isAutoLayouting: boolean
@@ -54,6 +63,8 @@ export default function Toolbar({
   canUndo, canRedo, onUndo, onRedo,
   onZoomIn, onZoomOut,
   onOpenUtility, onOpenImports,
+  canCreateSubmodel, onCreateSubmodel,
+  canCreateInstance, onCreateInstance,
   onCentre, onAutoLayout,
   isAutoLayouting,
   onSave,
@@ -233,8 +244,10 @@ export default function Toolbar({
           step={100}
           value={rowLimit}
           onChange={(e) => setRowLimit(Math.max(0, parseInt(e.target.value) || 0))}
-          className="w-16 px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
-          style={{ background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
+          className="toolbar-number-input px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
+          /* 4 digits wide: 4ch of text plus the 12px horizontal padding, 2px
+             border and 2px of caret room. */
+          style={{ width: 'calc(4ch + 16px)', background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
         />
       </div>
       {/* Streaming chunk size — next to row limit */}
@@ -254,8 +267,10 @@ export default function Toolbar({
             if (!Number.isFinite(parsed)) return
             setStreamingChunkSize(parsed)
           }}
-          className="w-28 px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
-          style={{ background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
+          className="toolbar-number-input px-1.5 py-0.5 text-[12px] font-mono rounded text-center focus:outline-none"
+          /* 7 digits wide: covers the 500,000 default and any value up to
+             9,999,999; the 10,000,000 ceiling itself renders one digit wide. */
+          style={{ width: 'calc(7ch + 16px)', background: 'var(--chrome-hover)', border: '1px solid var(--chrome-border)', color: 'var(--text-primary)' }}
         />
       </div>
       {/* Undo / Redo */}
@@ -296,6 +311,28 @@ export default function Toolbar({
         valueWidth="w-14"
       />
       <div className="ml-auto flex items-center gap-1.5">
+        {/* Selection actions — inert unless the current selection supports
+            them, so the toolbar shows at a glance what the selection affords. */}
+        <button
+          data-testid="toolbar-submodel"
+          onClick={onCreateSubmodel}
+          disabled={!canCreateSubmodel}
+          className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 disabled:opacity-30 hover-chrome"
+          title="Group the selected nodes into a submodel — select 2 or more (Ctrl+G)"
+        >
+          <Group size={13} aria-hidden="true" />
+          Submodel
+        </button>
+        <button
+          data-testid="toolbar-instance"
+          onClick={onCreateInstance}
+          disabled={!canCreateInstance}
+          className="px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1 disabled:opacity-30 hover-chrome"
+          title="Create a linked instance of the selected node — select exactly one"
+        >
+          <Link2 size={13} aria-hidden="true" />
+          Instance
+        </button>
         <button
           data-testid="toolbar-utility"
           onClick={onOpenUtility}
@@ -328,46 +365,66 @@ export default function Toolbar({
           <Bot size={13} />
           Assistant
         </button>
-        {/* Zoom */}
-        <button
-          data-testid="toolbar-zoom-out"
-          onClick={onZoomOut}
-          aria-label="Zoom out"
-          className="p-1.5 rounded-md hover-chrome"
-          title="Zoom out"
-        >
-          <ZoomOut size={14} aria-hidden="true" />
-        </button>
-        <button
-          data-testid="toolbar-zoom-in"
-          onClick={onZoomIn}
-          aria-label="Zoom in"
-          className="p-1.5 rounded-md hover-chrome"
-          title="Zoom in"
-        >
-          <ZoomIn size={14} aria-hidden="true" />
-        </button>
-        <div className="w-px h-4 mx-0.5" style={{ background: 'var(--chrome-border)' }} />
-        <button
-          data-testid="toolbar-centre"
-          onClick={onCentre}
-          disabled={nodeCount === 0}
-          className="px-2.5 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome"
-          title="Fit all nodes in view"
-        >
-          Centre
-        </button>
-        <button
-          data-testid="toolbar-layout"
-          onClick={onAutoLayout}
-          disabled={editingDisabled || nodeCount === 0 || isAutoLayouting}
-          aria-busy={isAutoLayouting}
-          className="w-[104px] px-2.5 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome inline-flex items-center justify-center gap-1.5"
-          title={isAutoLayouting ? "Auto-arranging nodes" : "Auto-arrange nodes"}
-        >
-          {isAutoLayouting && <Loader2 size={13} aria-hidden="true" className="animate-spin" />}
-          {isAutoLayouting ? "Laying out" : "Layout"}
-        </button>
+        {/* View controls — zoom, centre, layout.  These sit in their own tight
+            cluster: they act on the canvas rather than opening panels, so they
+            read as one unit and don't need the 6px the labelled buttons use to
+            separate themselves from each other. */}
+        <div className="flex items-center gap-0.5">
+          <button
+            data-testid="toolbar-zoom-out"
+            onClick={onZoomOut}
+            aria-label="Zoom out"
+            className="p-1.5 rounded-md hover-chrome"
+            title="Zoom out"
+          >
+            <ZoomOut size={14} aria-hidden="true" />
+          </button>
+          <button
+            data-testid="toolbar-zoom-in"
+            onClick={onZoomIn}
+            aria-label="Zoom in"
+            className="p-1.5 rounded-md hover-chrome"
+            title="Zoom in"
+          >
+            <ZoomIn size={14} aria-hidden="true" />
+          </button>
+          <div className="w-px h-4 mx-1" style={{ background: 'var(--chrome-border)' }} />
+          <button
+            data-testid="toolbar-centre"
+            onClick={onCentre}
+            disabled={nodeCount === 0}
+            className="px-2 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome"
+            title="Fit all nodes in view"
+          >
+            Centre
+          </button>
+          <button
+            data-testid="toolbar-layout"
+            onClick={onAutoLayout}
+            disabled={editingDisabled || nodeCount === 0 || isAutoLayouting}
+            aria-busy={isAutoLayouting}
+            /* The visible label stays "Layout" in both states — swapping it to
+               "Laying out" is what previously forced a fixed 104px width.  The
+               running state is carried by the spinner, ``aria-busy``, the title
+               and an ``aria-label`` that keeps the accessible name honest
+               without costing any width. */
+            aria-label={isAutoLayouting ? "Laying out" : "Layout"}
+            className="relative px-2 py-1 text-[12px] font-medium rounded-md disabled:opacity-30 hover-chrome inline-flex items-center justify-center whitespace-nowrap"
+            title={isAutoLayouting ? "Auto-arranging nodes" : "Auto-arrange nodes"}
+          >
+            {/* The spinner is overlaid on the hidden label rather than laid out
+                beside it, so the button is exactly as wide as "Layout" and the
+                toolbar never reflows when auto-layout starts. */}
+            <span className={isAutoLayouting ? "invisible" : undefined}>Layout</span>
+            {isAutoLayouting && (
+              <Loader2
+                size={13}
+                aria-hidden="true"
+                className="animate-spin absolute inset-0 m-auto"
+              />
+            )}
+          </button>
+        </div>
         <BranchIndicator />
         {/* Save split-button: primary save + a caret for Save & commit */}
         <div ref={saveRef} className="relative inline-flex">

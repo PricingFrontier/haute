@@ -82,7 +82,7 @@ describe("GitPanel stale refresh (generation guard)", () => {
     vi.clearAllMocks()
     clearGitPanelCaches()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectLatestSaveNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestoneSaves.mockResolvedValue({ saves: [] })
     mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })

@@ -60,20 +60,13 @@ interface GitState {
    *  it just recorded (S38). Kept separate from historyNonce precisely so the
    *  two can differ in selection behaviour. */
   commitNonce: number
-  /** Bumped when the toolbar commit-SHA indicator is clicked: open the panel on
-   *  the current branch and SELECT the latest save (the ledger-tip commit the
-   *  indicator shows), expanding its milestone if it's folded (S38). */
-  selectLatestSaveNonce: number
-  /** Bumped to ask the panel to select a SPECIFIC commit — used when the toolbar
-   *  indicator is clicked while comparing, to select the compared version rather
-   *  than the latest save (S11). The target sha rides in `selectSaveTarget`. */
+  /** Bumped to ask the panel to select a SPECIFIC commit. The target sha rides
+   *  in `selectSaveTarget`. */
   selectSaveNonce: number
   /** The sha `selectSaveNonce` asks the panel to locate and select, or null. */
   selectSaveTarget: string | null
   /** The version under read-only inspection in the side-by-side comparison view,
-   *  or null when not comparing (S11). Drives the dual-canvas overlay + the
-   *  context-aware toolbar indicator (which selects the COMPARED version, not the
-   *  latest save, while a comparison is open). */
+   *  or null when not comparing (S11). Drives the dual-canvas overlay. */
   comparison: GitComparison | null
   /** A version the user has asked to MOVE to (a real detached checkout), pending
    *  the pre-move save/discard/confirm prompt (P6 §3.4). null when no move is
@@ -94,8 +87,6 @@ interface GitState {
   notifyHistoryChanged: () => void
   /** Signal that a milestone was COMMITTED (refresh + select the new milestone). */
   notifyMilestoneCommitted: () => void
-  /** Ask the panel to select the latest save (toolbar commit-SHA click). */
-  requestSelectLatestSave: () => void
   /** Ask the panel to locate and select a specific commit (S11). */
   requestSelectSave: (sha: string) => void
   /** Open the read-only comparison view on a commit (S11). */
@@ -125,7 +116,6 @@ const useGitStore = create<GitState>()((set, get) => ({
   branchesExpandNonce: 0,
   historyNonce: 0,
   commitNonce: 0,
-  selectLatestSaveNonce: 0,
   selectSaveNonce: 0,
   selectSaveTarget: null,
   comparison: null,
@@ -173,8 +163,6 @@ const useGitStore = create<GitState>()((set, get) => ({
   requestExpandBranches: () => set((s) => ({ branchesExpandNonce: s.branchesExpandNonce + 1 })),
   notifyHistoryChanged: () => set((s) => ({ historyNonce: s.historyNonce + 1 })),
   notifyMilestoneCommitted: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
-  requestSelectLatestSave: () =>
-    set((s) => ({ selectLatestSaveNonce: s.selectLatestSaveNonce + 1 })),
   requestSelectSave: (sha) =>
     set((s) => ({ selectSaveTarget: sha, selectSaveNonce: s.selectSaveNonce + 1 })),
   openComparison: (comparison) => set({ comparison }),
