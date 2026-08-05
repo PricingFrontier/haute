@@ -18,9 +18,15 @@ strictly ordered; the first group is nearest-term.
   the save response carries a structural `identity_required` flag plus a
   hand-authored warning, and the frontend opens an identity prompt that
   retries the save once a name and email are recorded (dismissable per
-  browser session; the warning keeps appearing). A possible refinement
-  remains: carry the identity in the binding record so a restore can
-  restore it too, skipping the prompt entirely.
+  browser session; the warning keeps appearing). Next step: skip the
+  prompt entirely by attaching identity to the workspace user — the SSO
+  proxy forwards the authenticated user on every request and the binding
+  already records it as `bound_by`, so a restore can stamp the clone's
+  identity automatically (email as the address; the display name either
+  derived from the email or resolved via a SCIM lookup, which needs a
+  directory-read scope the app's service principal does not hold today).
+  The prompt then remains only as the fallback for the unknowable case.
+  This is the front half of "per-commit authorship" below.
 - **Graceful-shutdown claim release.** `apps stop` kills the container
   without running Python `atexit`, so the shutdown release never happens
   hosted and every stop leaves a stale claim (foreign machines see "in
@@ -89,8 +95,12 @@ From the approved change contract, unchanged in scope:
 From the approved change contract, unchanged in scope:
 
 - **Per-commit authorship from the forwarded user identity.** Commits are
-  authored by the app identity today; `bound_by` and request logs carry
-  the real user.
+  authored by whatever repo-level identity is set today; `bound_by` and
+  request logs already carry the real user on every request, so the
+  forwarding mechanism is proven — the remaining work is passing it
+  per-commit (author env on the commit call) rather than per-clone, which
+  is what sharing one app between two people requires. The restore-time
+  auto-stamp above is this item's single-user front half.
 - **A per-browser-session claim on the app itself.** Two tabs of one app
   are one writer to storage, so the volume claim cannot arbitrate them;
   that gate lives at the app boundary.
