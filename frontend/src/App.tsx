@@ -84,6 +84,7 @@ const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
 const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
 const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
 const UpstreamSyncModal = lazy(() => import("./components/UpstreamSyncModal"))
+const IdentityPromptModal = lazy(() => import("./components/IdentityPromptModal"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
@@ -1292,6 +1293,14 @@ function FlowEditor() {
       {gitModal === "upstream" && (
         <Suspense fallback={null}>
           <UpstreamSyncModal onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {gitModal === "identity" && (
+        <Suspense fallback={null}>
+          {/* Re-save once an identity exists, so the changes that were saved
+              but not version-captured are committed and published now. */}
+          <IdentityPromptModal onSaved={() => void handleSave()} onClose={closeGitModal} />
         </Suspense>
       )}
 

@@ -222,6 +222,11 @@ class SavePipelineResponse(BaseModel):
     # working branch configured; None otherwise. Consumed by the toolbar
     # branch/SHA indicator — the save toast stays git-silent.
     git_sha: str | None = None
+    # True when version capture was skipped purely because git has no commit
+    # identity (common on a restored hosted container). The UI prompts for a
+    # name/email and retries the save; every other capture failure stays a
+    # plain warning with this flag False.
+    identity_required: bool = False
 
 
 # ---------------------------------------------------------------------------

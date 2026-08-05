@@ -10,13 +10,17 @@ strictly ordered; the first group is nearest-term.
 
 ## Surfaced by live proof
 
-- **Identity on a restored container.** Every restore lands a fresh clone
-  with no git identity, so autosaves keep writing files but version
-  capture fails quietly ("empty ident") and nothing publishes until an
-  identity is set — and during the walkthrough the UI never prompted,
-  leaving the user's change on the container only. Either prompt promptly
-  off `identity_set: false` when the first save's capture fails, or carry
-  the identity in the binding record so a restore can restore it too.
+- **Identity on a restored container — DELIVERED on this branch.** Every
+  restore lands a fresh clone with no git identity, so autosaves kept
+  writing files while version capture failed quietly ("empty ident") and
+  nothing published — and the UI never prompted. Now the save path checks
+  identity before committing (same source of truth as `identity_set`),
+  the save response carries a structural `identity_required` flag plus a
+  hand-authored warning, and the frontend opens an identity prompt that
+  retries the save once a name and email are recorded (dismissable per
+  browser session; the warning keeps appearing). A possible refinement
+  remains: carry the identity in the binding record so a restore can
+  restore it too, skipping the prompt entirely.
 - **Graceful-shutdown claim release.** `apps stop` kills the container
   without running Python `atexit`, so the shutdown release never happens
   hosted and every stop leaves a stale claim (foreign machines see "in

@@ -252,6 +252,9 @@ export interface SavePipelineResponse {
   /** SHA of the ledger commit this save produced, or null when no working
    *  branch is configured. Feeds the toolbar branch/SHA indicator. */
   git_sha?: string | null
+  /** True when version capture was skipped only because git has no commit
+   *  identity. The app prompts for a name/email and retries the save. */
+  identity_required?: boolean
 }
 
 export interface PreviewNodeResponse extends NodeResult {

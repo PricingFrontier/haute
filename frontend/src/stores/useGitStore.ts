@@ -24,7 +24,13 @@ import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResp
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
 /** Which modal is open. */
-export type GitModalMode = "select" | "divergence" | "milestone" | "storage" | "upstream"
+export type GitModalMode =
+  | "select"
+  | "divergence"
+  | "milestone"
+  | "storage"
+  | "upstream"
+  | "identity"
 
 /** A version being inspected read-only in the side-by-side comparison view (S11).
  *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
