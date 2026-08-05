@@ -168,10 +168,21 @@ the lock; the slow part — the upload — runs outside it.
   forward: fork the location. A fork copies the parent's latest
   *published* generation to a fresh location as its generation 1 and
   records the provenance (`LINEAGE.json`: parent URL, generation, tip)
-  so the fork is signposted, not silent. Synchronising a fork back up
-  its lineage is deliberately deferred — it is the auto-merge this
-  spec rules out for v1 — but the recorded lineage is what makes that
-  feature possible later.
+  so the fork is signposted, not silent.
+- **A fork can see and catch up to its parent, but not merge it.** The
+  recorded lineage makes the parent fetchable: its published bundle is
+  a git repository, and the fork was cut from it, so the two share real
+  ancestry and git can measure the distance between them. A fork
+  therefore reports how far ahead and behind its parent it is, and can
+  fast-forward onto the parent when it has no work of its own. What it
+  will NOT do is merge divergent history — that is the existing
+  never-merge-locally rule (`fast_forward_pair`), and honouring it here
+  keeps one rule across both transports instead of two. When both sides
+  have moved, the fork says so plainly and stops. Merging them is a
+  later, separately specified feature: doing it well means merging at
+  the level of pipeline NODES, because a text conflict inside a
+  generated pipeline file is not something this product's users can
+  resolve.
 - **Async push** honours the ruling that close requires no action: if
   close needed a flush, close would become a failure point. The pending
   counter makes the exposure visible instead.
@@ -239,3 +250,9 @@ and the action, never raw library text.
 - Claim lost mid-session (lease expired while the process was stalled
   and another writer took over): the next publish stops terminally with
   the new holder named; local commits remain intact.
+- Checking a parent that has been deleted, emptied, or is unreadable:
+  the check fails naming the parent location; the fork is untouched and
+  keeps working — a fork is a complete project, not a dependent one.
+- Catching up when the fork has its own work: refused, stating that both
+  sides have changed and by how much. This is the honest edge of the
+  feature, not a fault, and it says so rather than implying breakage.
