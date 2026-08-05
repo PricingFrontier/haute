@@ -124,6 +124,14 @@ _REVIEWED_SECRET_ENV_REFERENCES: set[tuple[str, str]] = {
     ("deploy/_mlflow.py", "DATABRICKS_RATING_TOKEN"),
     ("assistant/_config.py", "ANTHROPIC_API_KEY"),
     ("assistant/_config.py", "OPENAI_API_KEY"),
+    # Same provider→env-var-NAME table as the two above; the value is read only
+    # to construct the provider client.
+    ("assistant/_config.py", "DATABRICKS_TOKEN"),
+    # Redaction denylist: the assistant reads these values precisely to scrub
+    # them out of message content before it leaves the process.
+    ("assistant/_session.py", "ANTHROPIC_API_KEY"),
+    ("assistant/_session.py", "OPENAI_API_KEY"),
+    ("assistant/_session.py", "DATABRICKS_TOKEN"),
     # Hosted durable storage: the value reaches git ONLY through a generated
     # GIT_ASKPASS helper that reads it from the environment at call time — it is
     # never written into the helper file, a git config, a URL, or a log line
