@@ -39,15 +39,14 @@ async function renameNodeAndSave(page: Page, newLabel: string): Promise<void> {
   await expect(page.getByRole("alert").filter({ hasText: /Saved/ })).toBeVisible()
 }
 
-// Toolbar Save & commit → milestone modal → commit. Needs at least one save
-// to fold (the engine refuses an empty fold), which the flow's own pre-modal
-// save provides as long as the canvas holds an unsaved or just-saved edit.
+// Toolbar Commit → milestone modal → commit. Needs at least one save to fold
+// (the engine refuses an empty fold), which the flow's own pre-modal save
+// provides as long as the canvas holds an unsaved or just-saved edit.
 async function commitMilestone(
   page: Page,
   message: string,
   versionLabel?: string,
 ): Promise<void> {
-  await page.getByTestId("toolbar-save-menu").click()
   await page.getByTestId("toolbar-save-commit").click()
 
   const modal = page.getByTestId("milestone-commit-modal")

@@ -89,11 +89,13 @@ describe("BranchIndicator", () => {
     }
   })
 
-  it("shows branch name and short SHA when ready", () => {
+  it("shows the branch name when ready, without the save SHA", () => {
     useGitStore.setState({ status: status({}) })
     render(<BranchIndicator />)
     expect(screen.getByTestId("branch-indicator-name")).toHaveTextContent("dev")
-    expect(screen.getByTestId("branch-indicator-sha")).toHaveTextContent("abc1234")
+    expect(screen.queryByTestId("branch-indicator-sha")).toBeNull()
+    // The commit code belongs to the history panel, not the toolbar.
+    expect(screen.getByTestId("toolbar-branch-indicator")).not.toHaveTextContent("abc1234")
   })
 
   it("clicking the branch name opens the Git panel (hosts the manager, S28)", () => {
@@ -103,32 +105,17 @@ describe("BranchIndicator", () => {
     expect(useUIStore.getState().gitOpen).toBe(true)
   })
 
-  it("clicking the SHA opens the history panel and asks it to select the latest save", () => {
-    useGitStore.setState({ status: status({}) })
-    const before = useGitStore.getState().selectLatestSaveNonce
-    render(<BranchIndicator />)
-    fireEvent.click(screen.getByTestId("branch-indicator-sha"))
-    expect(useUIStore.getState().gitOpen).toBe(true)
-    expect(useGitStore.getState().peekBranch).toBeNull()
-    expect(useGitStore.getState().selectLatestSaveNonce).toBe(before + 1)
-  })
-
-  it("while comparing, the SHA shows the inspected version and selecting targets it (S11)", () => {
+  it("stays branch-only while comparing — the version is named by the comparison breadcrumb (S11)", () => {
     useGitStore.setState({
       status: status({}),
       comparison: { sha: "feedbeef0000aaaa", label: "v9" },
     })
-    const before = useGitStore.getState().selectSaveNonce
     render(<BranchIndicator />)
 
-    const sha = screen.getByTestId("branch-indicator-sha")
-    expect(sha).toHaveTextContent("feedbee") // compared sha, not the last save
-    expect(sha).toHaveAttribute("data-comparing", "true")
-
-    fireEvent.click(sha)
-    expect(useUIStore.getState().gitOpen).toBe(true)
-    expect(useGitStore.getState().selectSaveTarget).toBe("feedbeef0000aaaa")
-    expect(useGitStore.getState().selectSaveNonce).toBe(before + 1)
+    expect(screen.queryByTestId("branch-indicator-sha")).toBeNull()
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveTextContent("dev")
+    expect(indicator).not.toHaveTextContent("feedbee")
   })
 
   it("shows a 'set branch' prompt when unset and opens the select modal", () => {

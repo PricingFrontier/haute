@@ -19,15 +19,15 @@ of branch operations.
 ## Scope
 
 In scope:
-- The toolbar working-branch indicator (`BranchIndicator`) — branch name + last-save SHA,
-  and the entry point into the panel.
+- The toolbar working-branch indicator (`BranchIndicator`) — the branch name, and the entry
+  point into the panel.
 - The Git side panel (`GitPanel`): out-of-version (pending) save list, milestone list with
   expandable folded saves, the graph rail (lanes, spawn stubs, magnifiers), right-click
   context menus for forking/viewing/moving/switching, and the fork-naming dialog.
 - The branch manager (`BranchManager`), embedded in the panel: list/create/switch/archive/
   delete/restore of working branches, with their confirmation dialogs.
 - The five git modals: `WorkingBranchModal` (branch selection at startup / save-gate),
-  `MilestoneCommitModal` (save & commit a milestone, including the fork-warning override),
+  `MilestoneCommitModal` (commit a milestone, including the fork-warning override),
   `DivergenceModal` (recover when the recorded working branch and HEAD disagree),
   `MoveConfirmModal` (the pre-move save/discard/confirm prompt — see Behaviour), and the
   push surface `RemotePushControl` (remote selection, ahead/behind, explicit publication
@@ -67,10 +67,9 @@ checking state. A transport/server failure produces a visible "Git unavailable" 
 the backend detail and a Retry action; it is not confused with a project that has no
 repository. Successful responses render distinct labels and remediation for no repository,
 unset working branch, invalid state, attached divergence, and detached HEAD (including its
-short SHA). A ready state shows the working branch name plus the last-save short SHA.
-Clicking the ready name opens the panel on the current branch; clicking the SHA opens the
-panel and selects the latest save in the history — unless a comparison is open, in which
-case it points at and selects the compared version instead.
+short SHA). A ready state shows the working branch name alone; clicking it opens the panel
+on the current branch. The indicator carries no save SHA — the commit code belongs to the
+history panel, which shows it in context.
 
 **Panel — save history.** The panel shows, top to bottom: the remote push control, the
 branch manager, an optional "peeking another branch" banner, out-of-version (pending)

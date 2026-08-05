@@ -105,13 +105,15 @@ function ForkChip() {
 }
 
 /**
- * Persistent toolbar indicator (S28): the working branch + the current save
- * SHA. Both the name and the SHA open the Git sidebar panel, which hosts the
- * branch manager and the version history (S19).
+ * Persistent toolbar indicator (S28): the working branch name, which opens the
+ * Git sidebar panel hosting the branch manager and the version history (S19).
  *
- * When no working branch is configured (or status is divergent/invalid) it
- * renders a muted "Set branch" prompt that opens the selection modal — the
- * standing, non-interrupting counterpart to the startup modal.
+ * The indicator shows the branch and nothing else. It used to carry the current
+ * save's short SHA beside it, but that click only *highlighted* the newest save
+ * in the history — no scroll, and the branch manager it shared the panel with is
+ * expanded by default — so it was indistinguishable from clicking the branch
+ * name in every case except a newest-save folded inside a collapsed milestone.
+ * The commit code belongs to the history panel, which shows it in context.
  */
 export default function BranchIndicator() {
   const status = useGitStore((s) => s.status)
@@ -121,11 +123,6 @@ export default function BranchIndicator() {
   const openModal = useGitStore((s) => s.openModal)
   const setPeekBranch = useGitStore((s) => s.setPeekBranch)
   const requestExpandBranches = useGitStore((s) => s.requestExpandBranches)
-  const requestSelectLatestSave = useGitStore((s) => s.requestSelectLatestSave)
-  const requestSelectSave = useGitStore((s) => s.requestSelectSave)
-  // While comparing, the indicator points at the inspected version (not the
-  // latest save) and selecting it picks that version in the history (S11).
-  const comparison = useGitStore((s) => s.comparison)
   const setGitOpen = useUIStore((s) => s.setGitOpen)
 
   // Open the Git panel, expand the branch manager, and return its history view
@@ -135,19 +132,6 @@ export default function BranchIndicator() {
     setPeekBranch(null)
     setGitOpen(true)
     requestExpandBranches()
-  }
-
-  // The commit-SHA indicator points at the latest save (the ledger tip): open the
-  // panel on the current branch and select that save in the history (S38). While
-  // comparing it points at the inspected version instead and selects that (S11).
-  const openOnLatestSave = () => {
-    setPeekBranch(null)
-    setGitOpen(true)
-    if (comparison) {
-      requestSelectSave(comparison.sha)
-    } else {
-      requestSelectLatestSave()
-    }
   }
 
   if (statusError) {
@@ -214,7 +198,9 @@ export default function BranchIndicator() {
         data-testid="toolbar-branch-indicator"
         data-branch-state={status.state}
         onClick={() => openModal(stateMeta.modal)}
-        className="flex items-center gap-1 px-2 py-1 text-[12px] font-medium rounded-md hover-chrome"
+        /* Same button shell as the ready state; the danger colour overrides
+           the shared foreground so an unresolved Git state still stands out. */
+        className="toolbar-btn flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium rounded-md"
         style={{ color: "var(--danger)" }}
         title={`${stateMeta.label} — click to resolve in the Git panel`}
       >
@@ -224,45 +210,22 @@ export default function BranchIndicator() {
     )
   }
 
-  // While comparing, the indicator shows the inspected version's sha (S11).
-  const displaySha = comparison?.sha ?? status.last_save_sha
-  const shortSha = displaySha ? displaySha.slice(0, 7) : null
-
+  // The indicator carries the toolbar's shared button styling: it sat in an
+  // inset --bg-input well (darker than the chrome, so it read as a field
+  // rather than a control) and underlined on hover, while every other action
+  // in the bar is a raised button that brightens instead.
   return (
-    <div
-      data-testid="toolbar-branch-indicator"
-      data-branch-state="ready"
-      className="flex items-center gap-1.5 px-2 py-1 rounded-md"
-      style={{ background: "var(--bg-input)" }}
-    >
+    <div data-testid="toolbar-branch-indicator" data-branch-state="ready" className="flex items-center">
       <button
         type="button"
         data-testid="branch-indicator-name"
         onClick={openOnCurrent}
-        className="flex items-center gap-1 text-[12px] font-medium font-mono max-w-[180px] truncate hover:underline"
-        style={{ color: "var(--text-primary)" }}
+        className="toolbar-btn flex items-center gap-1 px-2.5 py-1 text-[12px] font-medium font-mono rounded-md max-w-[180px] truncate"
         title={`Working branch: ${status.working_branch} — click to manage branches`}
       >
         <GitBranch size={13} aria-hidden="true" />
         <span className="truncate">{status.working_branch}</span>
       </button>
-      {shortSha && (
-        <button
-          type="button"
-          data-testid="branch-indicator-sha"
-          data-comparing={comparison ? true : undefined}
-          onClick={openOnLatestSave}
-          className="text-[11px] font-mono hover:underline"
-          style={{ color: comparison ? "var(--accent)" : "var(--text-muted)" }}
-          title={
-            comparison
-              ? `Viewing ${comparison.label} (${displaySha}) — click to select it in the history`
-              : `Last save ${status.last_save_sha} — click to select it in the history`
-          }
-        >
-          {shortSha}
-        </button>
-      )}
       <StorageChip />
       <ForkChip />
     </div>
