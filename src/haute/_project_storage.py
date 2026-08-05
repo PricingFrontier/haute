@@ -207,15 +207,11 @@ class UCHead:
     generation: int
     tip_sha: str
     writer_id: str
-    written_at: str | None = None
     #: The bundle file this pointer describes. Writer-unique names make
-    #: bundle bytes immutable by construction (racing writers can never
-    #: overwrite each other's upload); ``None`` means a pointer written by
-    #: an earlier build, read as the legacy ``NNNNNN.bundle``.
-    bundle_name: str | None = None
-
-    def bundle_filename(self) -> str:
-        return self.bundle_name or f"{self.generation:06d}.bundle"
+    #: bundle bytes immutable by construction: racing writers can never
+    #: overwrite each other's upload, only contend on this pointer.
+    bundle_name: str
+    written_at: str | None = None
 
     def to_json(self) -> str:
         return json.dumps(
@@ -261,14 +257,19 @@ class UCHead:
                 "The stored storage pointer has no writer identity — the location "
                 "may be corrupted. Rebind the project, or restore the volume's contents."
             )
-        written_at = payload.get("written_at")
         bundle_name = payload.get("bundle_name")
+        if not isinstance(bundle_name, str) or not bundle_name.strip():
+            raise StorageConfigError(
+                "The stored storage pointer does not name its bundle — the location "
+                "may be corrupted. Rebind the project, or restore the volume's contents."
+            )
+        written_at = payload.get("written_at")
         return cls(
             generation=generation,
             tip_sha=tip_sha.strip(),
             writer_id=writer_id.strip(),
+            bundle_name=bundle_name.strip(),
             written_at=written_at if isinstance(written_at, str) and written_at else None,
-            bundle_name=bundle_name if isinstance(bundle_name, str) and bundle_name else None,
         )
 
 
@@ -1106,9 +1107,9 @@ def fork_uc_location(
 
     target_bundle = _uc_bundle_filename(1)
     with tempfile.TemporaryDirectory(prefix="haute-uc-fork-") as tmp:
-        bundle = Path(tmp) / head.bundle_filename()
+        bundle = Path(tmp) / head.bundle_name
         try:
-            response = _files_api().download(_uc_bundle_path(source, head.bundle_filename()))
+            response = _files_api().download(_uc_bundle_path(source, head.bundle_name))
             bundle.write_bytes(response.contents.read())
         except Exception as exc:
             logger.warning("uc_fork_download_failed", generation=head.generation, error=str(exc))
@@ -1283,8 +1284,8 @@ def _prune_uc_bundles(url: str, newest: int) -> None:
     for entry in entries:
         name = getattr(entry, "name", None) or ""
         stem, _, suffix = name.partition(".")
-        # Both filename shapes prune by their leading generation number:
-        # writer-suffixed `000008-<writer>.bundle` and legacy `000008.bundle`.
+        # `000008-<writer>.bundle` — prune by the leading generation number,
+        # whichever writer produced it.
         generation_text = stem.split("-", 1)[0]
         if suffix != "bundle" or not generation_text.isdigit() or int(generation_text) > cutoff:
             continue
@@ -1309,9 +1310,9 @@ def _restore_from_uc(url: str, project_dir: Path) -> None:
             "contents, before starting."
         )
     with tempfile.TemporaryDirectory(prefix="haute-uc-restore-") as tmp:
-        bundle = Path(tmp) / head.bundle_filename()
+        bundle = Path(tmp) / head.bundle_name
         try:
-            response = _files_api().download(_uc_bundle_path(url, head.bundle_filename()))
+            response = _files_api().download(_uc_bundle_path(url, head.bundle_name))
             bundle.write_bytes(response.contents.read())
         except Exception as exc:
             logger.warning("uc_bundle_download_failed", generation=head.generation, error=str(exc))

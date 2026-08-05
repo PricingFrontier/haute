@@ -293,3 +293,6 @@ graphify-out/
 
 *.parquet
 !tests/fixtures/**/*.parquet
+
+# databricks CLI sync state (per-machine, not source)
+databricks_app/.databricks/

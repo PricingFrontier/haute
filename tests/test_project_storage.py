@@ -784,13 +784,20 @@ class TestUcHeadRecord:
             generation=42,
             tip_sha="a" * 40,
             writer_id="haute-spike-abc123",
+            bundle_name="000042-haute-spike-abc123.bundle",
             written_at="2026-08-04T00:00:00+00:00",
         )
         assert UCHead.from_payload(json.loads(head.to_json())) == head
 
     def test_unknown_fields_are_tolerated(self) -> None:
         head = UCHead.from_payload(
-            {"generation": 1, "tip_sha": "s", "writer_id": "w", "future": {"x": 1}}
+            {
+                "generation": 1,
+                "tip_sha": "s",
+                "writer_id": "w",
+                "bundle_name": "000001-w.bundle",
+                "future": {"x": 1},
+            }
         )
         assert head.generation == 1
 
@@ -799,10 +806,13 @@ class TestUcHeadRecord:
         [
             [],
             {},
-            {"generation": 0, "tip_sha": "s", "writer_id": "w"},
-            {"generation": "1", "tip_sha": "s", "writer_id": "w"},
-            {"generation": 1, "tip_sha": " ", "writer_id": "w"},
-            {"generation": 1, "tip_sha": "s", "writer_id": ""},
+            {"generation": 0, "tip_sha": "s", "writer_id": "w", "bundle_name": "b"},
+            {"generation": "1", "tip_sha": "s", "writer_id": "w", "bundle_name": "b"},
+            {"generation": 1, "tip_sha": " ", "writer_id": "w", "bundle_name": "b"},
+            {"generation": 1, "tip_sha": "s", "writer_id": "", "bundle_name": "b"},
+            # A pointer with no bundle name is a corrupted record, not an
+            # older format: the layout has no released version behind it.
+            {"generation": 1, "tip_sha": "s", "writer_id": "w"},
         ],
     )
     def test_malformed_pointers_fail_loudly(self, payload: object) -> None:
@@ -892,7 +902,14 @@ class TestUcContainerDeathSurvival:
     ) -> None:
         """A location with published history is another project — never adopt it."""
         files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(generation=3, tip_sha="s", writer_id="another-app").to_json().encode("utf-8")
+            UCHead(
+                generation=3,
+                tip_sha="s",
+                writer_id="another-app",
+                bundle_name="000003-x.bundle",
+            )
+            .to_json()
+            .encode("utf-8")
         )
 
         outcome = _project_storage.bind_remote(UC_URL, project)
@@ -990,7 +1007,12 @@ class TestUcContainerDeathSurvival:
         _project_storage.bind_remote(UC_URL, project)
         # Another container published a generation this clone knows nothing of.
         files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(generation=2, tip_sha="e" * 40, writer_id="replacement-container")
+            UCHead(
+                generation=2,
+                tip_sha="e" * 40,
+                writer_id="replacement-container",
+                bundle_name="000002-replacement.bundle",
+            )
             .to_json()
             .encode("utf-8")
         )
@@ -1041,7 +1063,12 @@ class TestUcContainerDeathSurvival:
         _project_storage.bind_remote(UC_URL, project)
         # A replacement container published generation 2 behind our back.
         files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(generation=2, tip_sha="f" * 40, writer_id="replacement-container")
+            UCHead(
+                generation=2,
+                tip_sha="f" * 40,
+                writer_id="replacement-container",
+                bundle_name="000002-replacement.bundle",
+            )
             .to_json()
             .encode("utf-8")
         )
@@ -1108,7 +1135,6 @@ class TestUcContainerDeathSurvival:
         each generation's bundle carries its writer's name in the path."""
         _project_storage.bind_remote(UC_URL, project)
         head = _stored_head(files_api)
-        assert head.bundle_name is not None
         assert head.bundle_name.startswith("000001-")
         assert _project_storage._writer_id() in head.bundle_name
         assert f"{_UC_ROOT}/bundles/{head.bundle_name}" in files_api.store
@@ -1176,7 +1202,9 @@ class TestUcContainerDeathSurvival:
         """A pointer to a vanished generation is unreadable state, not 'unbound'."""
         _project_storage.write_binding(StorageBinding(remote_url=UC_URL, branch=WORKING))
         files_api.store[f"{_UC_ROOT}/HEAD.json"] = (
-            UCHead(generation=9, tip_sha="s", writer_id="w").to_json().encode("utf-8")
+            UCHead(generation=9, tip_sha="s", writer_id="w", bundle_name="000009-w.bundle")
+            .to_json()
+            .encode("utf-8")
         )
         with pytest.raises(StorageUnavailableError, match="Generation 9"):
             _project_storage.restore_if_bound(tmp_path / "fresh")
@@ -1388,8 +1416,8 @@ class TestUcFork:
         source_head = _stored_head(files_api)
         fork_head = _stored_head(files_api, _FORK_ROOT)
         assert (
-            files_api.store[f"{_FORK_ROOT}/bundles/{fork_head.bundle_filename()}"]
-            == files_api.store[f"{_UC_ROOT}/bundles/{source_head.bundle_filename()}"]
+            files_api.store[f"{_FORK_ROOT}/bundles/{fork_head.bundle_name}"]
+            == files_api.store[f"{_UC_ROOT}/bundles/{source_head.bundle_name}"]
         )
         # ... with its own pointer and provenance recorded.
         assert fork_head.generation == 1
@@ -1414,7 +1442,9 @@ class TestUcFork:
         """A fork never overwrites."""
         self._bind_and_publish_two_generations(project)
         files_api.store[f"{_FORK_ROOT}/HEAD.json"] = (
-            UCHead(generation=1, tip_sha="s", writer_id="w").to_json().encode("utf-8")
+            UCHead(generation=1, tip_sha="s", writer_id="w", bundle_name="000001-w.bundle")
+            .to_json()
+            .encode("utf-8")
         )
         with pytest.raises(StorageConfigError, match="already has a stored project"):
             _project_storage.fork_uc_location(UC_URL, FORK_URL, project)
