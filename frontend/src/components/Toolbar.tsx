@@ -319,10 +319,13 @@ export default function Toolbar({
             ``disabled`` attribute: a disabled button is removed from the tab
             order AND swallows pointer events, so its title never appears —
             precisely when the user most needs to know why it's unavailable.
-            The click guard below does the work ``disabled`` would have. */}
+            The click is NOT guarded here: the handler owns the policy and
+            answers an unavailable click with the same toast Ctrl+G gives, so
+            the reason reaches the keyboard and touch users a `title` cannot.
+            ``can*`` therefore drives presentation only. */}
         <button
           data-testid="toolbar-submodel"
-          onClick={() => { if (canCreateSubmodel) onCreateSubmodel() }}
+          onClick={onCreateSubmodel}
           aria-disabled={!canCreateSubmodel}
           className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1"
           title="Group the selected nodes into a submodel — select 2 or more (Ctrl+G)"
@@ -332,7 +335,7 @@ export default function Toolbar({
         </button>
         <button
           data-testid="toolbar-instance"
-          onClick={() => { if (canCreateInstance) onCreateInstance() }}
+          onClick={onCreateInstance}
           aria-disabled={!canCreateInstance}
           className="toolbar-btn px-2.5 py-1 text-[12px] font-medium rounded-md flex items-center gap-1"
           title="Create a linked instance of the selected node — select exactly one"

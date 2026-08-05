@@ -864,14 +864,37 @@ function FlowEditor() {
     && viewStack.length <= 1
     && selectedNodeIds.length >= 2
   const canCreateInstance = !activeSubmodelReadOnly && selectedNodeIds.length === 1
+  // The `can*` flags above drive presentation only. The handlers below own the
+  // policy AND say why they refused, exactly as the Ctrl+G branch does — a
+  // toolbar button that swallows the click in silence is the one case where the
+  // user most needs the explanation, and the `title` carrying it needs a hover
+  // dwell the keyboard and touch never perform.
   const handleToolbarCreateSubmodel = useCallback(() => {
-    if (!canCreateSubmodel) return
+    if (activeSubmodelReadOnly) {
+      addToast("info", "This submodel instance is read-only")
+      return
+    }
+    if (viewStack.length > 1) {
+      addToast("info", "Submodels cannot be nested inside other submodels")
+      return
+    }
+    if (selectedNodeIds.length < 2) {
+      addToast("info", "Select at least 2 nodes to create a submodel (Ctrl+G)")
+      return
+    }
     setSubmodelDialog({ nodeIds: selectedNodeIds })
-  }, [canCreateSubmodel, selectedNodeIds, setSubmodelDialog])
+  }, [activeSubmodelReadOnly, viewStack.length, selectedNodeIds, setSubmodelDialog, addToast])
   const handleToolbarCreateInstance = useCallback(() => {
-    if (!canCreateInstance) return
+    if (activeSubmodelReadOnly) {
+      addToast("info", "This submodel instance is read-only")
+      return
+    }
+    if (selectedNodeIds.length !== 1) {
+      addToast("info", "Select exactly one node to create an instance of it")
+      return
+    }
     handleCreateInstance(selectedNodeIds[0])
-  }, [canCreateInstance, selectedNodeIds, handleCreateInstance])
+  }, [activeSubmodelReadOnly, selectedNodeIds, handleCreateInstance, addToast])
 
   const shouldSkipAutomaticPreview = useCallback(
     (node: Node) => {

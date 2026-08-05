@@ -1891,6 +1891,38 @@ describe("App integration — panel open/close", () => {
     expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
   })
 
+  it("an unavailable selection action explains itself instead of no-opping", async () => {
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],
+      edges: [],
+      preamble: "",
+      preserved_blocks: [],
+      source_file: "main.py",
+      source_revision: "revision-refusal",
+      submodels: {},
+    })
+    render(<App />)
+    await waitForAppReady()
+
+    // Nothing selected: Submodel says what it needs, exactly as Ctrl+G does.
+    // The `title` cannot do this job — it needs a hover dwell that keyboard
+    // and touch users never perform.
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/at least 2 nodes/)
+    })
+
+    // Two selected: Instance has no single target, and says so.
+    await selectNodes(["polars_1", "polars_2"])
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/exactly one node/)
+    })
+    // Neither refusal did anything to the graph.
+    expect(useUIStore.getState().submodelDialog).toBeNull()
+    expect(useGraphStore.getState().nodes).toHaveLength(2)
+  })
+
   it("Submodel opens the naming dialog for the selected nodes", async () => {
     vi.mocked(api.loadPipeline).mockResolvedValueOnce({
       nodes: [makeNode("polars_1", "First"), makeNode("polars_2", "Second")],

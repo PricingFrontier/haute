@@ -209,16 +209,20 @@ well as occurrence-specific positions and bindings.
 - **`App.tsx`'s `FlowEditor`** is the orchestrator: it wires ReactFlow's
   event props to interaction hooks, decides which preview pane to show for
   the currently active node, owns local UI state (selected node, context
-  menu, dialogs), and gates Save/Save-&-Commit behind the current
+  menu, dialogs), and gates Save/Commit behind the current
   version-control working-branch state before delegating to the save API.
 - **Node CRUD.** Deleting an ordinary node removes it and every edge touching
   it as one atomic undo step. Duplicating offsets the copy's position and is a
   no-op for singleton node types (Quote Input, Quote Response, and Source
   Switch). Generic Duplicate is unavailable for reusable-submodel occurrences,
   and the handler directs callers to Create Instance. The palette, duplicate,
-  paste, and context-menu paths consume the same singleton metadata, matching
-  the backend save invariant. Creating an
-  instance of an ordinary node stamps `config.instanceOf` at the original id.
+  paste, instance, and context-menu paths consume the same singleton metadata,
+  matching the backend save invariant; the instance guard lives in the shared
+  handler rather than in each caller's enabled-state check, so a new entry
+  point cannot reach an unguarded path. Creating an
+  instance of an ordinary node stamps `config.instanceOf` at the ORIGINAL id —
+  instancing an existing instance yields a sibling pointing at the same
+  original, never a chain, because instance resolution does not walk chains.
   Creating an instance of a canonical `SUBMODEL` instead retains only its
   `definitionId`, allocates a fresh immutable node id and collision-free alias,
   copies presentation defaults, and starts with no boundary bindings as one undo
@@ -339,11 +343,16 @@ well as occurrence-specific positions and bindings.
   node/edge state for any ancestor level rather than re-fetching it, using the
   backend's recorded submodel file instead of reconstructing a path from a
   display label.
-- **Submodel creation is keyboard-triggered, not a context-menu item.**
-  Selecting two or more nodes and pressing Ctrl+G opens `SubmodelDialog`
-  for the name; there is no "Group as Submodel" right-click entry (a
-  context-menu item was considered but never built — Ctrl+G is the only
-  creation trigger). The context menu's entry for an existing submodel node
+- **Submodel creation is a toolbar action or a keyboard shortcut, not a
+  context-menu item.** Selecting two or more nodes and either pressing Ctrl+G
+  or clicking the toolbar's Submodel button opens `SubmodelDialog` for the
+  name; there is no "Group as Submodel" right-click entry. The toolbar button
+  is a second entry point, not a second policy: the same three rules gate both
+  triggers (editable
+  context, main canvas, 2+ nodes) and both answer a refusal with the same
+  toast. The toolbar pair also exposes Instance, which stamps `instanceOf` for
+  a single selected node of any type — the context menu offers Create Instance
+  only for submodel occurrences. The context menu's entry for an existing submodel node
   reads "Dissolve Submodel", not "Ungroup Submodel". Clicking a submodel node
   opens the standard node inspector but fetches no preview — submodel is a
   non-previewable node type — rather than the output-port summary table that

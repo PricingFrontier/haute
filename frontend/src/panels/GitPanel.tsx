@@ -66,8 +66,6 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
   // move the selection. A commit bumps a separate nonce and DOES select (S38).
   const historyNonce = useGitStore((s) => s.historyNonce)
   const commitNonce = useGitStore((s) => s.commitNonce)
-  // Bumped to select a SPECIFIC commit (S11).
-  const selectSaveNonce = useGitStore((s) => s.selectSaveNonce)
   // Open the read-only side-by-side comparison on a version (S11).
   const openComparison = useGitStore((s) => s.openComparison)
 
@@ -316,39 +314,6 @@ export default function GitPanel({ onClose, onSave }: GitPanelProps) {
       }
     })
   }, [commitNonce, refresh])
-
-  // Select a SPECIFIC commit: a pending save or a milestone is selected directly;
-  // a save folded inside a milestone is found by expanding milestones until it
-  // turns up. Each nonce bump is processed once (S11).
-  const processedSelectSaveNonce = useRef(0)
-  useEffect(() => {
-    if (selectSaveNonce === 0 || selectSaveNonce === processedSelectSaveNonce.current) return
-    processedSelectSaveNonce.current = selectSaveNonce
-    const target = useGitStore.getState().selectSaveTarget
-    if (!target) return
-    void refresh().then(async (res) => {
-      if (!res || peekingRef.current) return
-      if (
-        res.pending.some((s) => s.sha === target) ||
-        res.milestones.some((m) => m.sha === target)
-      ) {
-        setSelectedSha(target)
-        return
-      }
-      for (const m of res.milestones) {
-        try {
-          const saves = await loadMilestoneSaves(m.sha)
-          if (saves.some((s) => s.sha === target)) {
-            setExpanded((prev) => ({ ...prev, [m.sha]: saves }))
-            setSelectedSha(target)
-            return
-          }
-        } catch {
-          // Best-effort: skip a milestone whose saves won't load.
-        }
-      }
-    })
-  }, [selectSaveNonce, refresh, loadMilestoneSaves])
 
   const toggleExpand = useCallback(
     async (sha: string) => {

@@ -4,7 +4,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), and gates Save/Save-&-Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
+| `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), owns the toolbar Submodel/Instance handlers (which hold the full policy — the `can*` props they pass down drive presentation only, so an unavailable click still toasts its reason), and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
 | `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component on the full-detail body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail frame-row primitive used by API Input, the parent Submodel card, and drilled Input/Output boundary cards. It owns the common semibold 13px label typography, truncation/title behavior, and row-relative source/target handle placement. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, then renders labelled `in__<portId>`/`out__<portId>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. Cards have no default target. |
@@ -936,7 +936,7 @@ again through the editor and save paths.
     WebSocket sync while the initial load is pending); empty-pipeline
     rendering; loading a 3-node graph and selecting an Explore node to
     preview its post-code dataframe; drag-and-drop node creation from the
-    palette; Save and Save-&-Commit, including the working-branch/
+    palette; Save and Commit, including the working-branch/
     divergence modal gate; error-toast handling for failed load/save; the
     api-input emit-port edge reconciliation suite (Defect 1: emit-off
     prunes with a warning; W1.3: renaming a connected port rebinds its edge
@@ -972,7 +972,9 @@ again through the editor and save paths.
     malformed-identity deletion refusal with direct instance-copy deletion;
     reusable occurrence creation with retained definition id, collision-free
     immutable id, normalized deterministic alias suffix (including past-nine
-    numbering), empty bindings, and one undo snapshot; duplicate and
+    numbering), empty bindings, and one undo snapshot; the singleton-type
+    instance refusal for each of the three singleton types; instancing an
+    instance resolving to the original rather than chaining; duplicate and
     auto-layout behavior.
   - `frontend/src/hooks/__tests__/useNodeHandlers.gaps.test.ts` — `handleRenameNode` (opens dialog with
     correct id/label, no-ops for a missing node, coerces a non-string

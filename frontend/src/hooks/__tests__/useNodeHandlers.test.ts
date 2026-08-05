@@ -275,6 +275,43 @@ describe("useNodeHandlers", () => {
     const toasts = useToastStore.getState().toasts
     expect(toasts[toasts.length - 1]).toMatchObject({ type: "info" })
   })
+
+  // An instance is a second node like any other, so the singleton rule that
+  // handleDuplicateNode and the paste path enforce has to hold here too — the
+  // toolbar's Instance button reaches every node type, not just submodels.
+  it.each(["apiInput", "output", "liveSwitch"])(
+    "handleCreateInstance refuses singleton node type %s",
+    (nodeType) => {
+      const params = makeParams()
+      const singleton = makeNode("only1")
+      singleton.data = { ...singleton.data, nodeType }
+      params.graphRef.current = { nodes: [singleton], edges: [] }
+      const { result } = renderHook(() => useNodeHandlers(params))
+      act(() => {
+        result.current.handleCreateInstance("only1")
+      })
+      expect(params.setNodes).not.toHaveBeenCalled()
+      expect(useToastStore.getState().toasts.at(-1)?.text).toMatch(/only one node of this type/)
+    },
+  )
+
+  // Instancing an instance must produce a SIBLING, not a chain: resolveInstanceOriginal
+  // does no chain-walking, so a chained instanceOf would resolve the "original" to
+  // another pointer with no content of its own.
+  it("handleCreateInstance points a new instance at the original, not at the instance", () => {
+    const params = makeParams()
+    const original = makeNode("polars_1")
+    const existing = makeNode("polars_2")
+    existing.data = { ...existing.data, config: { instanceOf: "polars_1" } }
+    params.graphRef.current = { nodes: [original, existing], edges: [] }
+    const { result } = renderHook(() => useNodeHandlers(params))
+    act(() => {
+      result.current.handleCreateInstance("polars_2")
+    })
+    const newNode = params.setSelectedNode.mock.calls[0][0] as Node
+    expect(newNode.data.config).toEqual({ instanceOf: "polars_1" })
+  })
+
   it("creates a SUBMODEL occurrence without copying its shared definition", () => {
     const params = makeParams()
     const source = makeNode("submodel_10", "submodel", {

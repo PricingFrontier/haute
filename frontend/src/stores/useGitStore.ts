@@ -60,11 +60,6 @@ interface GitState {
    *  it just recorded (S38). Kept separate from historyNonce precisely so the
    *  two can differ in selection behaviour. */
   commitNonce: number
-  /** Bumped to ask the panel to select a SPECIFIC commit. The target sha rides
-   *  in `selectSaveTarget`. */
-  selectSaveNonce: number
-  /** The sha `selectSaveNonce` asks the panel to locate and select, or null. */
-  selectSaveTarget: string | null
   /** The version under read-only inspection in the side-by-side comparison view,
    *  or null when not comparing (S11). Drives the dual-canvas overlay. */
   comparison: GitComparison | null
@@ -87,8 +82,6 @@ interface GitState {
   notifyHistoryChanged: () => void
   /** Signal that a milestone was COMMITTED (refresh + select the new milestone). */
   notifyMilestoneCommitted: () => void
-  /** Ask the panel to locate and select a specific commit (S11). */
-  requestSelectSave: (sha: string) => void
   /** Open the read-only comparison view on a commit (S11). */
   openComparison: (comparison: GitComparison) => void
   /** Close the comparison view, returning to the live editor (S11). */
@@ -116,8 +109,6 @@ const useGitStore = create<GitState>()((set, get) => ({
   branchesExpandNonce: 0,
   historyNonce: 0,
   commitNonce: 0,
-  selectSaveNonce: 0,
-  selectSaveTarget: null,
   comparison: null,
   moveTarget: null,
 
@@ -163,8 +154,6 @@ const useGitStore = create<GitState>()((set, get) => ({
   requestExpandBranches: () => set((s) => ({ branchesExpandNonce: s.branchesExpandNonce + 1 })),
   notifyHistoryChanged: () => set((s) => ({ historyNonce: s.historyNonce + 1 })),
   notifyMilestoneCommitted: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
-  requestSelectSave: (sha) =>
-    set((s) => ({ selectSaveTarget: sha, selectSaveNonce: s.selectSaveNonce + 1 })),
   openComparison: (comparison) => set({ comparison }),
   closeComparison: () => set({ comparison: null }),
   requestMove: (target) => set({ moveTarget: target }),

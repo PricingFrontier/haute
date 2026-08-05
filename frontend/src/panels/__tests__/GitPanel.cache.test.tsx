@@ -128,7 +128,7 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     vi.clearAllMocks()
     clearGitPanelCaches()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockSetWorkingBranch.mockResolvedValue({})
     // Fresh, deep-equal object per call: proves the short-circuit works on

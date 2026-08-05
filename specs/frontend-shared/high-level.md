@@ -192,7 +192,8 @@ label that repositions to avoid clipping the viewport edge. `ContextMenu` is
 the right-click node menu with roving-tabindex arrow-key navigation.
 `Toolbar` is the app's top chrome: it displays the package-derived browser
 version alongside the source selector, row-limit/chunk-size inputs, undo/redo,
-timing/memory breakdowns, and save (with a "save & commit" split-button).
+timing/memory breakdowns, the Submodel/Instance selection actions, and Save
+and Commit as two sibling filled buttons.
 `NodeSearch` is the Ctrl+K command palette, windowed to
 render only visible rows for large graphs; the application loads its module
 only when the palette is opened, so this user-triggered surface is not part

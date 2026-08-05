@@ -60,7 +60,7 @@ Out of scope (owned by neighbouring components):
 **The branch-pair model.** Every working branch `<W>` the user creates is paired with a
 save ledger `<W>-save`. Ordinary "saves" are commits on the ledger — one commit per save,
 scoped to exactly the files that changed. HEAD lives on the ledger during normal use, so
-the user is always looking at their latest saved state. "Save & commit" (a milestone) first
+the user is always looking at their latest saved state. "Commit" (a milestone) first
 sweeps every modified file that is already tracked by Git into one final ledger save (new
 untracked files are never included implicitly), then folds every pending ledger commit into
 a single, always-real merge commit on the working branch, with the user's own message and an

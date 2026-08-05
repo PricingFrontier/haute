@@ -144,6 +144,20 @@ export default function useNodeHandlers({
     const origNodeType = origData.nodeType || NODE_TYPES.POLARS
     const isSubmodel = origNodeType === NODE_TYPES.SUBMODEL
 
+    // Singleton types allow exactly one node per pipeline, and an instance is a
+    // second node like any other. The guard lives here rather than in the
+    // callers' enabled-state predicates so every entry point inherits it — the
+    // paste path (useKeyboardShortcuts) and handleDuplicateNode enforce the same
+    // invariant, and downstream assembly relies on it (conflicting live_switch
+    // nodes raise during execution).
+    if (isSingletonType(origNodeType)) {
+      addToast(
+        "info",
+        `Cannot create instance of "${origData.label}": only one node of this type is allowed per pipeline`,
+      )
+      return
+    }
+
     let instanceConfig: Record<string, unknown>
     const occupiedIdentities = new Set(n.map((node) => node.id))
     for (const node of n) {
@@ -185,7 +199,15 @@ export default function useNodeHandlers({
         instanceOf: ownerId,
       }
     } else {
-      instanceConfig = { instanceOf: id }
+      // Point at the ORIGINAL, not at whatever was selected: instancing an
+      // instance must produce a sibling, not a chain. `resolveInstanceOriginal`
+      // (NodePanel) does no chain-walking, so a chained `instanceOf` would
+      // resolve the "original" to another pointer with no content of its own.
+      // This mirrors the `ownerId` flattening the submodel branch does above.
+      const ownerId = typeof origData.config?.instanceOf === "string"
+        ? origData.config.instanceOf
+        : id
+      instanceConfig = { instanceOf: ownerId }
     }
 
     let newId: string

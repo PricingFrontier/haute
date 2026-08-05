@@ -116,15 +116,21 @@ describe("Toolbar", () => {
     const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
     render(<Toolbar {...props} />)
 
-    const submodel = screen.getByTestId("toolbar-submodel")
-    const instance = screen.getByTestId("toolbar-instance")
-    expect(submodel).toHaveAttribute("aria-disabled", "true")
-    expect(instance).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
+  })
 
-    fireEvent.click(submodel)
-    fireEvent.click(instance)
-    expect(props.onCreateSubmodel).not.toHaveBeenCalled()
-    expect(props.onCreateInstance).not.toHaveBeenCalled()
+  it("still calls the handler when unavailable, so the refusal can explain itself", () => {
+    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    render(<Toolbar {...props} />)
+
+    // ``can*`` drives presentation only. The handler owns the policy and
+    // answers an unavailable click with a toast — swallowing the click here
+    // would make the toolbar the one entry point that refuses in silence.
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onCreateInstance).toHaveBeenCalledOnce()
   })
 
   it("keeps unavailable selection actions reachable so they can explain themselves", () => {

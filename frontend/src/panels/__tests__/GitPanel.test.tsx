@@ -124,7 +124,7 @@ describe("GitPanel", () => {
     // design) — reset them so tests stay independent.
     clearGitPanelCaches()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, selectSaveNonce: 0, selectSaveTarget: null, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     // Switches record undoable VC entries on the graph store's history stacks.
     useGraphStore.setState({ dirty: false, undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
@@ -280,23 +280,6 @@ describe("GitPanel", () => {
     await waitFor(() =>
       expect(screen.getAllByTestId("git-panel-milestone")[0]).toHaveAttribute("data-selected"),
     )
-  })
-
-  it("selects a specific commit when asked (S11)", async () => {
-    mockGetPendingSaves.mockResolvedValue({
-      saves: [
-        { sha: "newest", short_sha: "new123", message: "newest", timestamp: now(), files: [] },
-        { sha: "older", short_sha: "old123", message: "older", timestamp: now(), files: [] },
-      ],
-    })
-    render(<GitPanel {...defaultProps} />)
-    await waitFor(() => expect(screen.getAllByTestId("git-panel-pending-save").length).toBe(2))
-    // Ask for the OLDER save specifically (not the latest tip).
-    useGitStore.getState().requestSelectSave("older")
-    await waitFor(() =>
-      expect(screen.getAllByTestId("git-panel-pending-save")[1]).toHaveAttribute("data-selected"),
-    )
-    expect(screen.getAllByTestId("git-panel-pending-save")[0]).not.toHaveAttribute("data-selected")
   })
 
   it("a save auto-refresh does NOT select the new milestone", async () => {
