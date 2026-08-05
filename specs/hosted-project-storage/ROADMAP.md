@@ -19,14 +19,21 @@ strictly ordered; the first group is nearest-term.
   hand-authored warning, and the frontend opens an identity prompt that
   retries the save once a name and email are recorded (dismissable per
   browser session; the warning keeps appearing). Next step: skip the
-  prompt entirely by attaching identity to the workspace user — the SSO
-  proxy forwards the authenticated user on every request and the binding
-  already records it as `bound_by`, so a restore can stamp the clone's
-  identity automatically (email as the address; the display name either
-  derived from the email or resolved via a SCIM lookup, which needs a
-  directory-read scope the app's service principal does not hold today).
-  The prompt then remains only as the fallback for the unknowable case.
-  This is the front half of "per-commit authorship" below.
+  prompt where it can be skipped honestly, which differs by transport.
+  For `uc://` bindings the identity carries no attribution semantics
+  beyond display, and the SSO proxy forwards the authenticated user on
+  every request (already recorded as `bound_by`) — so a restore can
+  stamp the clone's identity automatically (display name derived from
+  the email, or resolved via a SCIM lookup, which needs a directory-read
+  scope the app's service principal does not hold today). For git
+  remotes the workspace email is the WRONG thing to stamp: forges match
+  commit attribution by email, org accounts typically want their noreply
+  address (e.g. `<id>+<user>@users.noreply.github.com`, not derivable
+  from a workspace identity), and repo settings may reject pushes that
+  expose a private email — so there the user supplies the identity once
+  and the binding record carries it across restores. The prompt remains
+  as the fallback either way. This is the front half of "per-commit
+  authorship" below.
 - **Graceful-shutdown claim release.** `apps stop` kills the container
   without running Python `atexit`, so the shutdown release never happens
   hosted and every stop leaves a stale claim (foreign machines see "in
