@@ -19,6 +19,7 @@ from haute._ram_estimate import (
     _count_source_rows_for_node,
     _csv_row_count,
     _dedupe_resolved_columns,
+    _detailed_ancestor_source_metadata,
     _detailed_source_metadata_for_node,
     _DetailedSourceMetadata,
     _edge_join_key_columns_on_path,
@@ -164,7 +165,9 @@ def test_materialisation_estimate_distinguishes_empty_from_unavailable() -> None
 def test_ram_estimate_column_index_rejects_recursive_resolution() -> None:
     source = _make_source_node()
     index = _EstimateGraphIndex.build(PipelineGraph(nodes=[source], edges=[]), "live")
-    index.resolving_targets.add(source.id)
+    # Resolution is memoized per (node, arrival port): two consumers of
+    # different tables of one multi-frame source resolve different columns.
+    index.resolving_targets.add((source.id, None))
 
     with pytest.raises(RuntimeError, match="cycle encountered"):
         index.resolve_columns(source.id)
@@ -253,6 +256,92 @@ def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(
 
     assert estimate.state is MaterialisationEstimateState.AVAILABLE
     assert estimate.estimated_peak_bytes == 0
+
+
+def _json_api_input_graph() -> PipelineGraph:
+    """A JSON API input emitting two tables, each feeding a different node."""
+
+    source = _make_source_node(node_id="quote_in", config={"path": "data/quotes.jsonl"})
+    consumer = _make_transform_node(node_id="claims")
+    other = _make_transform_node(node_id="drivers")
+    return PipelineGraph(
+        nodes=[source, consumer, other],
+        edges=[
+            GraphEdge(
+                id="e1",
+                source="quote_in",
+                target="claims",
+                sourceHandle="proposer_claims",
+            ),
+            GraphEdge(
+                id="e2",
+                source="quote_in",
+                target="drivers",
+                sourceHandle="additional_drivers",
+            ),
+        ],
+    )
+
+
+def test_json_api_input_boundary_is_sized_from_the_tables_that_feed_the_target() -> None:
+    """A v2 JSON cache has no whole-node summary, but each emitted table does.
+
+    Before this, the node contributed nothing and every boundary under an API
+    input was unestimatable — which refused every group-by beneath one.
+    """
+
+    graph = _json_api_input_graph()
+    per_port = {
+        "proposer_claims": _DetailedSourceMetadata(
+            row_count=519481,
+            column_count=8,
+            columns={f"c{index}": "int64" for index in range(8)},
+            column_width_keys={f"c{index}": f"c{index}" for index in range(8)},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=17417163,
+        ),
+        "additional_drivers": _DetailedSourceMetadata(
+            row_count=999999,
+            column_count=3,
+            columns={"d0": "int64"},
+            column_width_keys={"d0": "d0"},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=1,
+        ),
+    }
+
+    with patch(
+        "haute._ram_estimate._json_api_input_port_metadata",
+        side_effect=lambda _node, port: per_port.get(port),
+    ) as resolver:
+        metadata = _detailed_ancestor_source_metadata(graph, "claims")
+
+    # Only the port actually feeding `claims` is consulted or counted; the
+    # sibling branch's larger table must not inflate this boundary.
+    assert [call.args[1] for call in resolver.call_args_list] == ["proposer_claims"]
+    assert metadata.row_count == 519481
+    assert metadata.column_count == 8
+
+
+def test_json_api_input_target_columns_resolve_through_the_arrival_port() -> None:
+    graph = _json_api_input_graph()
+    metadata = _DetailedSourceMetadata(
+        row_count=10,
+        column_count=2,
+        columns={"quote_id": "string", "amount_paid": "double"},
+        column_width_keys={"quote_id": "quote_id", "amount_paid": "amount_paid"},
+        column_uncompressed_size_bytes={},
+        uncompressed_size_bytes=64,
+    )
+
+    with patch(
+        "haute._ram_estimate._json_api_input_port_metadata",
+        side_effect=lambda _node, port: metadata if port == "proposer_claims" else None,
+    ):
+        resolved = _resolve_target_columns(graph, "claims", "live")
+
+    assert resolved is not None
+    assert set(resolved.columns) == {"quote_id", "amount_paid"}
 
 
 def test_materialisation_estimate_reads_each_source_metadata_once(tmp_path) -> None:

@@ -788,6 +788,73 @@ class TestSemanticPlans:
 
         assert plan.diff.config_changes == ("transform:code",)
 
+    @pytest.mark.parametrize(
+        ("code", "rejected"),
+        [
+            # A bare `df` read is the first input by edge order. On two inputs
+            # that is a silent dependency on wiring, not a choice of frame.
+            ("df = df.group_by('quote_id').agg(pl.len())", True),
+            ("df = df.filter(pl.col('age') > 18)", True),
+            ("return df.with_columns(pl.lit(1).alias('one'))", True),
+            # Naming the input, or binding it before reusing `df`, is explicit.
+            ("df = left.group_by('quote_id').agg(pl.len())", False),
+            ("df = left\ndf = df.group_by('quote_id').agg(pl.len())", False),
+        ],
+    )
+    def test_multi_input_polars_code_must_name_the_input_it_starts_from(
+        self, tmp_path: Path, code: str, rejected: bool
+    ):
+        from haute.assistant._ops import (
+            OpValidationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph(
+            [_node("left"), _node("right"), _node("combined")],
+            [_edge("left", "combined"), _edge("right", "combined")],
+        )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+        operations = [{"op": "update_node", "node": "combined", "config": {"code": code}}]
+
+        if not rejected:
+            assert build_graph_edit_plan(snapshot, operations).diff.config_changes == (
+                "combined:code",
+            )
+            return
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(snapshot, operations)
+        assert "has 2 inputs" in str(excinfo.value)
+        assert "left, right" in str(excinfo.value)
+
+    def test_single_input_polars_code_may_still_use_the_bare_frame(self, tmp_path: Path):
+        """`df` is the idiom for a single-input node and stays unambiguous."""
+
+        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph(
+            [_node("left"), _node("combined")],
+            [_edge("left", "combined")],
+        )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+
+        plan = build_graph_edit_plan(
+            snapshot,
+            [
+                {
+                    "op": "update_node",
+                    "node": "combined",
+                    "config": {"code": "df = df.filter(pl.col('age') > 18)"},
+                }
+            ],
+        )
+
+        assert plan.diff.config_changes == ("combined:code",)
+
     def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
         from haute.assistant._ops import semantic_diff
 

@@ -130,6 +130,286 @@ class TestGetNodeSchemaEndToEnd:
         assert result["error"]["code"] == "unknown_node"
         assert "ghost" in result["error"]["message"]
 
+    def test_result_reports_each_input_by_its_code_visible_name(self, project_root: Path):
+        """Authoring code against a node needs the columns arriving on it, not
+        only the columns leaving it."""
+
+        from haute.assistant._tools import get_node_schema
+
+        result = get_node_schema("main.py", "enriched")
+        inputs = result["inputs"]
+        assert set(inputs) == {"quotes"}
+        assert {column["name"] for column in inputs["quotes"]} == {
+            "quote_id",
+            "vehicle_year",
+            "notes",
+        }
+
+    def test_source_node_without_inputs_omits_the_inputs_key(self, project_root: Path):
+        from haute.assistant._tools import get_node_schema
+
+        assert "inputs" not in get_node_schema("main.py", "quotes")
+
+
+# ---------------------------------------------------------------------------
+# Authoring states the tool must answer usefully rather than refuse
+# ---------------------------------------------------------------------------
+
+
+EMPTY_TRANSFORM_SOURCE = '''\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="empty transform fixture")
+
+
+@pipeline.polars
+def left() -> pl.LazyFrame:
+    return pl.scan_parquet("data/quotes.parquet")
+
+
+@pipeline.polars
+def right() -> pl.LazyFrame:
+    return pl.scan_parquet("data/quotes.parquet")
+
+
+@pipeline.polars
+def combined(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
+    """"""
+    df = left
+    df = left
+    return df
+'''
+
+
+GROUP_BY_SOURCE = """\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="group-by fixture")
+
+
+@pipeline.polars
+def quotes() -> pl.LazyFrame:
+    return pl.scan_parquet("data/quotes.parquet")
+
+
+@pipeline.polars
+def by_year(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes.group_by("vehicle_year").agg(pl.len().alias("quote_count"))
+"""
+
+
+PROFILE_SOURCE = '''\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="value profile fixture")
+
+
+@pipeline.polars
+def claims() -> pl.LazyFrame:
+    return pl.scan_parquet("data/claims.parquet")
+
+
+@pipeline.polars
+def totals(claims: pl.LazyFrame) -> pl.LazyFrame:
+    """"""
+    df = claims
+    return df
+'''
+
+
+@pytest.fixture()
+def profile_project(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A project whose categorical encoding cannot be guessed from its name."""
+
+    pl.DataFrame(
+        {
+            "quote_id": [f"q{index}" for index in range(60)],
+            "fault": ["at_fault", "not_at_fault", "pending"] * 20,
+            "amount_paid": [float(index) for index in range(60)],
+        }
+    ).write_parquet(project_root / "data" / "claims.parquet")
+    (project_root / "main.py").write_text(PROFILE_SOURCE, encoding="utf-8")
+
+    import haute.assistant._tools as tools_module
+    from haute.assistant._config import EgressPolicy
+
+    def allowing(root: Path) -> EgressPolicy:
+        return EgressPolicy(
+            trust="organization",
+            max_sensitivity="restricted",
+            allow_project_knowledge=True,
+            allow_executable_source=True,
+            allow_row_samples=True,
+        )
+
+    monkeypatch.setattr(tools_module, "resolve_egress_policy", allowing)
+    return project_root
+
+
+class TestColumnProfiles:
+    def test_small_cardinality_categories_are_reported_with_counts(self, profile_project: Path):
+        """The encoding is the fact a schema cannot carry. Guessing `"Y"` here
+        yields code that runs, validates, and counts nothing."""
+
+        from haute.assistant._tools import get_column_profiles
+
+        result = get_column_profiles("main.py", "totals", "claims")
+
+        assert "error" not in result, result
+        by_name = {column["name"]: column for column in result["columns"]}
+        assert [entry["value"] for entry in by_name["fault"]["values"]] == [
+            "at_fault",
+            "not_at_fault",
+            "pending",
+        ]
+        assert sum(entry["count"] for entry in by_name["fault"]["values"]) == 60
+        assert result["rows_scanned"] == 60
+        assert result["scan_bounded"] is False
+
+    def test_high_cardinality_columns_withhold_their_values(self, profile_project: Path):
+        """The cardinality bound is the privacy boundary: a name, address, or
+        registration cannot fit under it, so it can never be emitted."""
+
+        from haute.assistant._tools import get_column_profiles
+
+        result = get_column_profiles("main.py", "totals", "claims")
+        by_name = {column["name"]: column for column in result["columns"]}
+
+        assert by_name["quote_id"]["values_withheld"] == "high_cardinality"
+        assert "values" not in by_name["quote_id"]
+        assert by_name["quote_id"]["distinct_count"] == 60
+
+    def test_numeric_columns_report_bounds_rather_than_values(self, profile_project: Path):
+        from haute.assistant._tools import get_column_profiles
+
+        result = get_column_profiles("main.py", "totals", "claims")
+        amount = {column["name"]: column for column in result["columns"]}["amount_paid"]
+
+        assert (amount["min"], amount["max"]) == (0.0, 59.0)
+        assert "values" not in amount
+
+    def test_unknown_input_names_the_available_inputs(self, profile_project: Path):
+        from haute.assistant._tools import get_column_profiles
+
+        result = get_column_profiles("main.py", "totals", "ghost")
+
+        assert result["error"]["code"] == "unknown_input"
+        assert result["error"]["inputs"] == ["claims"]
+
+    def test_policy_denies_profiles_when_row_samples_are_not_allowed(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Reading project data is the one thing this tool does, so the policy
+        flag that names it is the gate."""
+
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: EgressPolicy(
+                trust="organization",
+                max_sensitivity="restricted",
+                allow_project_knowledge=True,
+                allow_executable_source=True,
+                allow_row_samples=False,
+            ),
+        )
+
+        result = tools_module.get_column_profiles("main.py", "enriched")
+
+        assert result["error"]["code"] == "egress_policy_denied"
+        assert result["error"]["required_policy"] == "allow_row_samples"
+
+
+class TestExecutableSourcePolicy:
+    @pytest.mark.parametrize("allowed", [True, False])
+    def test_node_code_follows_the_executable_source_policy(
+        self, project_root: Path, monkeypatch: pytest.MonkeyPatch, allowed: bool
+    ):
+        """The flag was parsed, reported, and then ignored, so a project that
+        granted access still could not read the code it was editing."""
+
+        import haute.assistant._tools as tools_module
+        from haute.assistant._config import EgressPolicy
+
+        monkeypatch.setattr(
+            tools_module,
+            "resolve_egress_policy",
+            lambda _root: EgressPolicy(
+                trust="organization",
+                max_sensitivity="restricted",
+                allow_project_knowledge=True,
+                allow_executable_source=allowed,
+                allow_row_samples=False,
+            ),
+        )
+
+        config = tools_module.get_node_config("main.py", "enriched")["config"]
+
+        if allowed:
+            assert "rename" in config["code"]
+        else:
+            assert config["code"] == "<redacted: executable_source>"
+
+
+class TestUnresolvableButInspectableNodes:
+    def test_empty_transform_reports_its_inputs_and_a_stable_reason(self, project_root: Path):
+        """An authored-but-empty transform is the state an analyst is in when
+        they ask the assistant to write that code. The node's own output is
+        genuinely unresolvable, but refusing outright left no way to discover
+        the columns needed to write it."""
+
+        (project_root / "main.py").write_text(EMPTY_TRANSFORM_SOURCE, encoding="utf-8")
+        from haute.assistant._tools import get_node_schema
+
+        result = get_node_schema("main.py", "combined")
+
+        assert "error" not in result, result
+        assert result["unresolved_reason"] == "node_has_no_code"
+        assert "columns" not in result and "ports" not in result
+        assert set(result["inputs"]) == {"left", "right"}
+        assert {column["name"] for column in result["inputs"]["left"]} == {
+            "quote_id",
+            "vehicle_year",
+            "notes",
+        }
+
+    def test_group_by_node_resolves_because_nothing_is_collected(self, project_root: Path):
+        """Schema resolution materialises nothing, so the engine's group-by
+        memory-admission gate does not apply to it. Before this, every
+        aggregation the assistant was asked to author was unresolvable."""
+
+        (project_root / "main.py").write_text(GROUP_BY_SOURCE, encoding="utf-8")
+        from haute.assistant._tools import get_node_schema
+
+        result = get_node_schema("main.py", "by_year")
+
+        assert "error" not in result, result
+        assert _columns(result) == {"vehicle_year": "Int64", "quote_count": "UInt32"}
+
+    def test_invalid_node_code_still_reports_the_engine_diagnosis(self, project_root: Path):
+        """A real query failure keeps its analyst-facing text: naming the
+        missing column is what lets the model correct its own authoring."""
+
+        (project_root / "main.py").write_text(
+            PIPELINE_SOURCE.replace('.drop("notes")', '.drop("no_such_column")'),
+            encoding="utf-8",
+        )
+        from haute.assistant._tools import get_node_schema
+
+        result = get_node_schema("main.py", "enriched")
+
+        assert result["error"]["code"] == "schema_unresolvable"
+        assert "no_such_column" in result["error"]["message"]
+
     def test_schema_resolution_never_collects(
         self, project_root: Path, monkeypatch: pytest.MonkeyPatch
     ):
@@ -243,8 +523,11 @@ class TestEngineInvocation:
         result = get_node_schema("main.py", "enriched")
         assert "columns" in result, result
         assert captured["target_node_id"] == "enriched"
-        assert captured["preserve_node_ids"] == {"enriched"}
+        # The target's parents are preserved alongside it so one engine call
+        # yields both the node's own schema and its per-input schemas.
+        assert captured["preserve_node_ids"] == {"enriched", "quotes"}
         assert captured["enforce_contracts"] is True
+        assert captured["schema_only"] is True
         parsed_active_source = tools_module.parse_pipeline_to_graph(Path("main.py")).active_source
         assert captured["source"] == parsed_active_source
         assert captured["preamble_ns"], "preamble namespace must be compiled and passed"
@@ -1067,6 +1350,58 @@ class TestToolExecutorDispatch:
         assert result["error"]["validation_path"] == path
         assert result["error"]["validation_reason"] == reason
 
+    async def test_unknown_field_names_the_rejected_field_and_the_allowlist(
+        self, project_root: Path
+    ):
+        """`get_pipeline` reports handles in the operation vocabulary, but a
+        model can still reach for the persisted camel-case spelling. Naming
+        both the rejected key and the closed allowlist is what makes that
+        correctable inside the turn's single retry."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")(
+            "dry_run_graph_edits",
+            {
+                "ops": [
+                    {"op": "delete_node", "node": "quotes"},
+                    {
+                        "op": "add_edge",
+                        "source": "quotes",
+                        "target": "enriched",
+                        "sourceHandle": "out",
+                    },
+                ]
+            },
+        )
+
+        error = result["error"]
+        assert error["code"] == "invalid_request"
+        assert error["validation_path"] == "dry_run_graph_edits.ops[1]"
+        assert error["validation_reason"] == "unknown_field"
+        assert error["unknown_fields"] == ["sourceHandle"]
+        assert error["allowed_fields"] == [
+            "op",
+            "source",
+            "source_handle",
+            "target",
+            "target_handle",
+        ]
+        assert "sourceHandle" in error["message"]
+        assert "source_handle" in error["message"]
+
+    def test_rendered_edges_use_the_graph_edit_operation_field_names(self, project_root: Path):
+        """The read shape and the write shape must name handles identically;
+        echoing the persisted camel-case spelling invited edit operations the
+        closed operation schema then rejected."""
+
+        from haute.assistant._tools import get_pipeline
+
+        edge = get_pipeline("main.py")["edges"][0]
+
+        assert "source_handle" in edge and "target_handle" in edge
+        assert "sourceHandle" not in edge and "targetHandle" not in edge
+
     async def test_recipe_arguments_reject_duplicate_unique_items(self, project_root: Path):
         from haute.assistant._tools import build_tool_executor
 
@@ -1088,6 +1423,35 @@ class TestToolExecutorDispatch:
         assert result["error"]["code"] == "invalid_request"
         assert result["error"]["validation_path"] == "plan_recipe.output_columns"
         assert result["error"]["validation_reason"] == "duplicate_items"
+
+    @pytest.mark.parametrize(
+        ("ops", "received"),
+        [
+            ('[{"op": "delete_node", "node": "quotes"}]', "string"),
+            ({"op": "delete_node", "node": "quotes"}, "object"),
+        ],
+    )
+    async def test_wrong_type_names_the_expected_and_received_json_types(
+        self, project_root: Path, ops: object, received: str
+    ):
+        """A gateway that encodes a container as a string, or a model that
+        sends one operation instead of a batch, both land here. "has the wrong
+        JSON type" gave no way to tell those apart or to correct either."""
+
+        from haute.assistant._tools import build_tool_executor
+
+        result = await build_tool_executor("main.py")("dry_run_graph_edits", {"ops": ops})
+
+        error = result["error"]
+        assert error["code"] == "invalid_request"
+        assert error["validation_path"] == "dry_run_graph_edits.ops"
+        assert error["validation_reason"] == "wrong_type"
+        assert error["expected_types"] == ["array"]
+        assert error["received_type"] == received
+        assert "must be JSON array" in error["message"]
+        # The string case additionally names the fix, because a stringified
+        # container is not something the model can see from the type alone.
+        assert ("not a JSON-encoded string" in error["message"]) is (received == "string")
 
     @pytest.mark.parametrize(
         ("name", "arguments"),

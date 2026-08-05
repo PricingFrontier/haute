@@ -85,6 +85,33 @@ class CommittedVerificationError(AssistantOperationError):
         self.result = dict(result)
 
 
+def _diff_seed_nodes(graph: PipelineGraph, diff: SemanticDiff) -> frozenset[str]:
+    """Return the surviving nodes this plan is directly answerable for.
+
+    Only the edge's target is seeded. Adding or removing an edge changes what
+    arrives at the target and therefore everything downstream of it; the
+    source's own output schema is unchanged and its other children are
+    untouched. Seeding the source dragged every unrelated branch of a shared
+    input into validation, so an edit was blocked — and blamed — by a node it
+    never touched.
+    """
+
+    present = {node.id for node in graph.nodes}
+    seeds = set(diff.nodes_added) | set(diff.nodes_updated)
+    seeds.update(new for _old, new in diff.nodes_renamed)
+    for _source, target, _source_handle, _target_handle in (
+        *diff.edges_added,
+        *diff.edges_removed,
+    ):
+        seeds.add(target)
+    seeds.intersection_update(present)
+    if diff.preamble_changed:
+        # A preamble replacement can change any node's behaviour, so the plan
+        # is answerable for the whole graph.
+        seeds = set(present)
+    return frozenset(seeds)
+
+
 def _schema_validation_targets(
     graph: PipelineGraph,
     diff: SemanticDiff,
@@ -92,16 +119,7 @@ def _schema_validation_targets(
     """Return affected terminal nodes whose lazy schemas prove executability."""
 
     present = {node.id for node in graph.nodes}
-    seeds = set(diff.nodes_added) | set(diff.nodes_updated)
-    seeds.update(new for _old, new in diff.nodes_renamed)
-    for source, target, _source_handle, _target_handle in (
-        *diff.edges_added,
-        *diff.edges_removed,
-    ):
-        seeds.update((source, target))
-    seeds.intersection_update(present)
-    if diff.preamble_changed:
-        seeds = set(present)
+    seeds = set(_diff_seed_nodes(graph, diff))
     if not seeds:
         return ()
 
@@ -135,68 +153,121 @@ def _frame_schema(frame: Any) -> list[dict[str, str]]:
     return [{"name": name, "dtype": str(dtype)} for name, dtype in frame.collect_schema().items()]
 
 
-def _schema_evidence(
-    graph: PipelineGraph,
-    targets: Sequence[str],
-) -> tuple[Mapping[str, object], ...]:
-    """Resolve target schemas through the production lazy engine without rows."""
+def _resolve_target_evidence(graph: PipelineGraph, target: str) -> Mapping[str, object]:
+    """Resolve one terminal's schema through the production lazy engine.
 
-    if not targets:
-        return ()
+    `schema_only=True` states the invariant this path already holds: it reads
+    `collect_schema()` and never collects a frame or invokes a sink, so the
+    engine's group-by materialisation-admission gate — which bounds peak memory
+    during materialisation — does not apply to it.
+    """
+
     flattened = flatten_graph(graph)
     preamble_ns = _compile_preamble(
         graph.preamble or "",
         pipeline_dir=_pipeline_dir(graph),
     )
+    lazy_outputs, *_ = execute_lazy_graph(
+        flattened,
+        _build_node_fn,
+        target_node_id=target,
+        preserve_node_ids={target},
+        preamble_ns=preamble_ns or None,
+        source=graph.active_source,
+        enforce_contracts=True,
+        schema_only=True,
+    )
+    output = lazy_outputs[target]
+    extra: dict[str, object]
+    if isinstance(output, dict):
+        ports = {port: _frame_schema(frame) for port, frame in sorted(output.items())}
+        schema_payload: dict[str, object] = {"ports": ports}
+        shape = "ports"
+        column_count = sum(len(columns) for columns in ports.values())
+        extra = {"port_count": len(ports)}
+    else:
+        columns = _frame_schema(output)
+        schema_payload = {"columns": columns}
+        shape = "frame"
+        column_count = len(columns)
+        extra = {}
+    schema_digest = sha256(
+        json.dumps(
+            schema_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "kind": "node_schema_resolved",
+        "node": target,
+        "shape": shape,
+        "column_count": column_count,
+        "schema_sha256": schema_digest,
+        **extra,
+    }
+
+
+def _schema_evidence(
+    graph: PipelineGraph,
+    targets: Sequence[str],
+    *,
+    baseline: PipelineGraph | None = None,
+    changed: frozenset[str] = frozenset(),
+) -> tuple[tuple[Mapping[str, object], ...], tuple[str, ...]]:
+    """Resolve target schemas without rows, separating pre-existing breakage.
+
+    Validation reaches beyond the nodes a plan touches: a changed node's whole
+    downstream cone is resolved, because that is what proves the edit
+    executable. Collateral in that cone which *already* failed on the saved
+    pipeline is not evidence against this plan — the analyst is being blocked
+    by a defect the edit did not cause and does not touch. Such a target is
+    excluded from the plan's schema evidence and reported as a
+    `pre_existing_schema_failure:<node>` validation warning, so the plan drops
+    to the tier its evidence actually supports rather than claiming a
+    verification it did not perform. That warning is part of the hashed plan
+    authority, so it carries the node identity only — never the engine's
+    message, which is not deterministic across runs.
+
+    `changed` is the plan's own seed set and is never excused. A node this plan
+    added or updated is the plan's responsibility, and an authored-but-empty
+    node fails on the saved pipeline by construction — excusing it would
+    silently accept exactly the broken code the analyst asked for.
+
+    `baseline=None` is the strict mode used for post-save verification, where
+    every target is one the plan already resolved: a failure there is a real
+    verification failure and can never be excused.
+    """
+
+    if not targets:
+        return (), ()
+    baseline_nodes = {node.id for node in baseline.nodes} if baseline is not None else set()
     evidence: list[Mapping[str, object]] = []
+    warnings: list[str] = []
     for target in targets:
         try:
-            lazy_outputs, *_ = execute_lazy_graph(
-                flattened,
-                _build_node_fn,
-                target_node_id=target,
-                preserve_node_ids={target},
-                preamble_ns=preamble_ns or None,
-                source=graph.active_source,
-                enforce_contracts=True,
-            )
-            output = lazy_outputs[target]
-            extra: dict[str, object]
-            if isinstance(output, dict):
-                ports = {port: _frame_schema(frame) for port, frame in sorted(output.items())}
-                schema_payload: dict[str, object] = {"ports": ports}
-                shape = "ports"
-                column_count = sum(len(columns) for columns in ports.values())
-                extra = {"port_count": len(ports)}
-            else:
-                columns = _frame_schema(output)
-                schema_payload = {"columns": columns}
-                shape = "frame"
-                column_count = len(columns)
-                extra = {}
-            schema_digest = sha256(
-                json.dumps(
-                    schema_payload,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-            evidence.append(
-                {
-                    "kind": "node_schema_resolved",
-                    "node": target,
-                    "shape": shape,
-                    "column_count": column_count,
-                    "schema_sha256": schema_digest,
-                    **extra,
-                }
-            )
+            evidence.append(_resolve_target_evidence(graph, target))
+            continue
         except Exception as exc:
-            raise AssistantOperationError(
-                "schema_unresolvable",
-                f"Schema validation failed for node {target!r}: {exc}",
-            ) from exc
-    return tuple(evidence)
+            failure = exc
+        if baseline is not None and target not in changed and target in baseline_nodes:
+            try:
+                _resolve_target_evidence(baseline, target)
+            except Exception:
+                # Deterministic and value-free by construction: this string is
+                # hashed into the plan authority, and `apply` must reproduce it
+                # exactly. An engine message carries estimated row counts and
+                # scan byte sizes, which would make the plan hash depend on
+                # data-file metadata the revision manifest does not pin.
+                # `get_node_schema` on the named node reports the actual
+                # failure, and the tool log records it server-side.
+                warnings.append(f"pre_existing_schema_failure:{target}")
+                continue
+        raise AssistantOperationError(
+            "schema_unresolvable",
+            f"Schema validation failed for node {target!r}: {failure}",
+        ) from failure
+    return tuple(evidence), tuple(warnings)
 
 
 class PipelineApplicationService:
@@ -314,12 +385,17 @@ class PipelineApplicationService:
             validation_warnings=warnings,
         )
         targets = _schema_validation_targets(result_graph, provisional.diff)
-        evidence = _schema_evidence(result_graph, targets)
+        evidence, schema_warnings = _schema_evidence(
+            result_graph,
+            targets,
+            baseline=graph,
+            changed=_diff_seed_nodes(result_graph, provisional.diff),
+        )
         plan = build_graph_edit_plan(
             snapshot,
             operations,
             postconditions,
-            validation_warnings=warnings,
+            validation_warnings=(*warnings, *schema_warnings),
             verification_tier="schema" if evidence else "structural",
             verification_evidence=evidence,
         )
@@ -357,12 +433,17 @@ class PipelineApplicationService:
             validation_warnings=warnings,
         )
         targets = _schema_validation_targets(after, provisional.diff)
-        schema_evidence = _schema_evidence(after, targets)
+        schema_evidence, schema_warnings = _schema_evidence(
+            after,
+            targets,
+            baseline=before,
+            changed=_diff_seed_nodes(after, provisional.diff),
+        )
         recomputed = build_graph_edit_plan(
             snapshot,
             raw_operations,
             postconditions=raw_postconditions,
-            validation_warnings=warnings,
+            validation_warnings=(*warnings, *schema_warnings),
             verification_tier="schema" if schema_evidence else "structural",
             verification_evidence=schema_evidence,
         )
@@ -408,7 +489,7 @@ class PipelineApplicationService:
             if item.get("kind") == "node_schema_resolved"
         )
         try:
-            schema_evidence = _schema_evidence(reparsed, schema_targets)
+            schema_evidence, _ = _schema_evidence(reparsed, schema_targets)
         except AssistantOperationError as exc:
             raise AssistantOperationError(
                 "verification_failed",

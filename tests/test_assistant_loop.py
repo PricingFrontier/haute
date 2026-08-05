@@ -397,6 +397,132 @@ class TestMutationCompletionController:
         )
         assert "value-bearing" not in text
 
+    async def test_budget_refusal_inside_one_round_keeps_the_recorded_blocker(
+        self, store, session_id
+    ):
+        """A model can emit several dry-run calls in one provider round. The
+        calls past the budget are refused without running, and their synthetic
+        placeholder result must not overwrite what actually blocked the turn."""
+
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest("dry-1", "dry_run_graph_edits", {"ops": []}),
+                    ToolCallRequest("dry-2", "dry_run_graph_edits", {"ops": []}),
+                    ToolCallRequest("dry-3", "dry_run_graph_edits", {"ops": []}),
+                    TurnStop("tool_use", _usage()),
+                ]
+            ]
+        )
+        executed = 0
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            nonlocal executed
+            executed += 1
+            return {"error": {"code": "invalid_request", "message": "detail"}}
+
+        events = await _run(
+            store,
+            session_id,
+            "build a pipeline",
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert executed == 2, "the third call must be refused without running"
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert "rejected by its input schema" in text
+        assert "(invalid_request)" in text
+        assert "dry_run_retry_limit" not in text
+
+    async def test_malformed_call_does_not_consume_the_plan_correction_budget(
+        self, store, session_id
+    ):
+        """`invalid_request` is refused by the closed input schema before any
+        plan is built, so it is not evidence that the plan is wrong. Charging
+        it to the single plan-correction budget spent the retry before the plan
+        had ever been judged."""
+
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": []}),
+                    TurnStop("tool_use", _usage()),
+                ]
+                for index in range(1, 4)
+            ]
+        )
+        codes = ["invalid_request", "schema_unresolvable", "schema_unresolvable"]
+        calls = 0
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            nonlocal calls
+            code = codes[calls]
+            calls += 1
+            return {"error": {"code": code, "message": "detail"}}
+
+        events = await _run(
+            store,
+            session_id,
+            "build a pipeline",
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert calls == 3
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert text == (
+            "BLOCKED: graph validation failed after one corrected retry "
+            "(schema_unresolvable); no graph changes were applied."
+        )
+
+    async def test_repeated_malformed_calls_block_with_their_own_wording(self, store, session_id):
+        """The separate budget is still bounded, and the blocker names what
+        actually happened: nothing validated the plan."""
+
+        provider = ScriptedProvider(
+            [
+                [
+                    ToolCallRequest(f"dry-{index}", "dry_run_graph_edits", {"ops": []}),
+                    TurnStop("tool_use", _usage()),
+                ]
+                for index in range(1, 3)
+            ]
+        )
+        calls = 0
+
+        async def execute_tool(name: str, arguments: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            return {
+                "error": {
+                    "code": "invalid_request",
+                    "message": "value-bearing detail must not be echoed",
+                    "validation_path": "dry_run_graph_edits.ops[1]",
+                    "validation_reason": "unknown_field",
+                }
+            }
+
+        events = await _run(
+            store,
+            session_id,
+            "build a pipeline",
+            provider=provider,
+            execute_tool=execute_tool,
+        )
+
+        assert _assert_single_terminal(events).type == "completed"
+        assert calls == 2
+        text = "".join(event.text for event in events if event.type == "text_delta")
+        assert text == (
+            "BLOCKED: the dry-run call was rejected by its input schema and the "
+            "corrected call was rejected again (invalid_request); no graph changes "
+            "were applied."
+        )
+        assert "value-bearing" not in text
+
     async def test_retries_unqualified_end_once_and_accepts_explicit_blocker(
         self, store, session_id
     ):

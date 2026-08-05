@@ -406,10 +406,21 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   their readable filename; every unsafe spelling is hashed into the disjoint
   `node=<sha256>.parquet` namespace before joining it to `checkpoint_dir`.
 - **RAM estimation returns `None` rather than guessing** when parquet metadata or the
-  canonical detailed target schema is unavailable (Databricks sources, JSON-shape
-  `apiInput` caches which are one parquet per emit-true table rather than a single
-  summarisable file) — callers must treat
-  `None` as "estimate unavailable," not "unlimited."
+  canonical detailed target schema is unavailable (for example Databricks sources) —
+  callers must treat `None` as "estimate unavailable," not "unlimited."
+- **A JSON `apiInput` is sized per emitted table, not per node.** Its v2 cache is one
+  parquet per emit-true table, so the node has no single `(row_count, column_count)`
+  summary — but each table does, and an edge's source handle names the exact table it
+  carries. Ancestor sizing therefore resolves one metadata record per source handle that
+  actually feeds the target, and target-column resolution carries the arrival handle so a
+  consumer resolves its own table's columns; the per-estimate memo keys are
+  `(node, handle)` accordingly. Sibling branches of the same input never inflate a
+  boundary they do not feed. Layer preference (`working` then `committed`) and cache
+  validity are delegated to the same reader the engine executes with, so a stale cache is
+  rejected here exactly as it is at execution rather than silently sizing a boundary from
+  the wrong data; an unreadable or unmatched cache still yields "estimate unavailable."
+  Without this, every group-by beneath an `apiInput` was refused for want of an estimate —
+  which is the ordinary shape of aggregating a shredded child table per quote.
 - **Version-1 strategy diagnostics are strictly bounded.** Boundary/reason collections
   retain at most 32 entries, provenance at most 128, and remediation/messages at most
   512 characters with deterministic truncation. Missing/malformed required fields,
@@ -428,7 +439,24 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   admitted). Missing/non-positive admission yields
   `execution_admission_unavailable`; unavailable estimate yields
   `materialisation_estimate_unavailable`; excess yields
-  `materialisation_exceeds_headroom`. There is no chunk/streaming fallback.
+  `materialisation_exceeds_headroom`. There is no chunk/streaming fallback. An
+  unavailable estimate appends the estimator's own reason (its `<node>:<reason>` detail,
+  such as `source_row_count_unavailable` or `target_schema_unavailable`) to the
+  rejection's remediation. The estimator already knows which node it could not measure
+  and why; discarding that left an analyst with "provide readable metadata" and no way
+  to tell an unreadable file from an unsummarisable source shape.
+- **Schema-only planning is orthogonal to the group-by matrix.**
+  `execute_lazy_graph(..., schema_only=True)` and
+  `plan_prepared_execution_strategy(..., schema_only=True)` declare that the caller
+  reads `collect_schema()` and never collects a frame or invokes a sink. The gate
+  above bounds peak memory *during materialisation*; a schema-only plan materialises
+  nothing, so the whole gate — profile eligibility, admission, and estimate — is not
+  evaluated, no materialisation boundary is inserted, and the ordinary derived
+  strategy stands. The declaration relaxes nothing else: contract resolution,
+  projection, and every other planning rule are unchanged, and the flag is honoured
+  only for this gate. It exists because a caller that only resolves schemas would
+  otherwise be refused for an operator it never runs — which made every
+  aggregation invisible to the assistant's schema and dry-run boundaries.
 - **Sampler/fault/cleanup machinery is stable.** Windows RSS bindings initialize once
   per sampler-factory identity under concurrency, reset explicitly, and reinitialize
   after a factory change. Eager diamonds share one producer-side cached `LazyFrame`.

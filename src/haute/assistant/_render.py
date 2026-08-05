@@ -31,13 +31,17 @@ def render_pipeline_graph(graph: PipelineGraph) -> dict[str, object]:
         }
         for node in graph.nodes
     ]
+    # Snake-case deliberately: these are the exact field names the graph-edit
+    # operations accept. The camel-case persisted spelling is an internal wire
+    # detail, and echoing it here invited edit operations written in the shape
+    # the model had just read, which the closed operation schema then rejected.
     edges = [
         {
             "id": edge.id,
             "source": edge.source,
             "target": edge.target,
-            "sourceHandle": edge.sourceHandle,
-            "targetHandle": edge.targetHandle,
+            "source_handle": edge.sourceHandle,
+            "target_handle": edge.targetHandle,
         }
         for edge in graph.edges
     ]

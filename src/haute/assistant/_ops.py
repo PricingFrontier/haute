@@ -1138,6 +1138,50 @@ class _PolarsResultVisitor(ast.NodeVisitor):
         pass
 
 
+def _reads_df_before_binding_it(tree: ast.Module) -> bool:
+    """Report whether the code reads `df` before assigning it.
+
+    Such a read resolves to the node's *first input by edge order*, which the
+    generated module makes explicit as `df = <first input>`. On a single-input
+    node that is the idiom. On a multi-input node it is a silent dependency on
+    wiring order: adding or reordering an edge changes which frame the code
+    operates on, with no error and no visible diff in the code itself.
+    """
+
+    for statement in tree.body:
+        loads = [
+            node
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name) and node.id == "df" and isinstance(node.ctx, ast.Load)
+        ]
+        if loads:
+            return True
+        if any(
+            isinstance(node, ast.Name) and node.id == "df" and isinstance(node.ctx, ast.Store)
+            for node in ast.walk(statement)
+        ):
+            return False
+    return False
+
+
+def _validate_polars_named_inputs(code: object, node_id: str, input_names: Sequence[str]) -> None:
+    """Require assistant-authored multi-input code to name the input it uses."""
+
+    if len(input_names) < 2 or not isinstance(code, str) or not code.strip():
+        return
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return  # _validate_polars_result_retained owns the syntax verdict
+    if not _reads_df_before_binding_it(tree):
+        return
+    _invalid(
+        f"Node {node_id!r} has {len(input_names)} inputs, so a bare 'df' means whichever "
+        f"input happens to be wired first and silently changes meaning if the wiring "
+        f"changes. Start from the input you mean by name: " + ", ".join(sorted(input_names))
+    )
+
+
 def _validate_polars_result_retained(code: object) -> None:
     if not isinstance(code, str):
         _invalid("Explicit Polars code must be a string")
@@ -1156,6 +1200,30 @@ def _validate_polars_result_retained(code: object) -> None:
             "a transformed frame; bare Polars expressions are immutable and their "
             "result would be discarded"
         )
+
+
+def _incoming_input_names(
+    result: PipelineGraph,
+    node_id: str,
+    nodes_by_id: Mapping[str, GraphNode],
+) -> tuple[str, ...]:
+    """Return the input names this node's own code binds, in edge order."""
+
+    from haute._graph_utils import edge_input_name
+
+    names: list[str] = []
+    for edge in result.edges:
+        if edge.target != node_id:
+            continue
+        source_node = nodes_by_id.get(edge.source)
+        if source_node is None:
+            continue
+        try:
+            names.append(edge_input_name(edge, source_node))
+        except ValueError:
+            # A malformed edge is the save validator's verdict, not this one's.
+            continue
+    return tuple(names)
 
 
 def _validate_assistant_authored_graph(
@@ -1177,6 +1245,11 @@ def _validate_assistant_authored_graph(
             and "code" in node.data.config
         ):
             _validate_polars_result_retained(node.data.config["code"])
+            _validate_polars_named_inputs(
+                node.data.config["code"],
+                node_id,
+                _incoming_input_names(result, node_id, nodes_by_id),
+            )
 
     incident_nodes = {node_id for edge in result.edges for node_id in (edge.source, edge.target)}
     disconnected = sorted(set(authored_added) - incident_nodes)

@@ -375,8 +375,9 @@ class _EstimateGraphIndex:
     pruned_edges: tuple[GraphEdge, ...]
     parents: Mapping[str, Sequence[str]]
     metadata_by_node: dict[str, _DetailedSourceMetadata | None]
-    columns_by_target: dict[str, _ResolvedTargetColumns | None]
-    resolving_targets: set[str]
+    columns_by_target: dict[tuple[str, str | None], _ResolvedTargetColumns | None]
+    resolving_targets: set[tuple[str, str | None]]
+    port_metadata: dict[tuple[str, str], _DetailedSourceMetadata | None]
 
     @classmethod
     def build(cls, graph: PipelineGraph, source: str) -> _EstimateGraphIndex:
@@ -393,6 +394,7 @@ class _EstimateGraphIndex:
             metadata_by_node={},
             columns_by_target={},
             resolving_targets=set(),
+            port_metadata={},
         )
 
     def source_metadata(self, node: GraphNode) -> _DetailedSourceMetadata | None:
@@ -400,18 +402,46 @@ class _EstimateGraphIndex:
             self.metadata_by_node[node.id] = _detailed_source_metadata_for_node(node)
         return self.metadata_by_node[node.id]
 
-    def resolve_columns(self, target_node_id: str) -> _ResolvedTargetColumns | None:
-        if target_node_id in self.columns_by_target:
-            return self.columns_by_target[target_node_id]
-        if target_node_id in self.resolving_targets:
+    def api_input_port_metadata(
+        self,
+        node: GraphNode,
+        port: str,
+    ) -> _DetailedSourceMetadata | None:
+        """Metadata for one emitted table of a JSON API-input cache."""
+
+        key = (node.id, port)
+        if key not in self.port_metadata:
+            self.port_metadata[key] = _json_api_input_port_metadata(node, port)
+        return self.port_metadata[key]
+
+    def parent_ports(self, child_id: str) -> tuple[tuple[str, str | None], ...]:
+        """Return each (parent id, source handle) feeding one node."""
+
+        return tuple(
+            (edge.source, edge.sourceHandle)
+            for edge in self.pruned_edges
+            if edge.target == child_id and edge.source in self.node_map
+        )
+
+    def resolve_columns(
+        self,
+        target_node_id: str,
+        port: str | None = None,
+    ) -> _ResolvedTargetColumns | None:
+        # The memo key carries the arrival port: two consumers of different
+        # tables of the same multi-frame source resolve different columns.
+        key = (target_node_id, port)
+        if key in self.columns_by_target:
+            return self.columns_by_target[key]
+        if key in self.resolving_targets:
             raise RuntimeError("cycle encountered while resolving RAM-estimate columns")
-        self.resolving_targets.add(target_node_id)
+        self.resolving_targets.add(key)
         try:
-            resolved = _resolve_target_columns_from_index(self, target_node_id)
-            self.columns_by_target[target_node_id] = resolved
+            resolved = _resolve_target_columns_from_index(self, target_node_id, port)
+            self.columns_by_target[key] = resolved
             return resolved
         finally:
-            self.resolving_targets.remove(target_node_id)
+            self.resolving_targets.remove(key)
 
 
 # Bytes per column for the analytical estimate.  Training features are
@@ -549,6 +579,65 @@ def _count_source_rows_for_node(node: GraphNode) -> int | None:
     return None
 
 
+def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
+    """Return cached parquet metadata for one emitted table of a JSON API input.
+
+    A v2 JSON API-input cache is one parquet per emit-true table, so the node
+    as a whole has no single (row_count, column_count) summary — but each table
+    does, and an edge names the exact table it carries. Resolving per port is
+    what lets a downstream boundary be estimated at all; without it every
+    group-by under an API input was refused for want of an estimate.
+
+    Layer preference and cache validity are delegated to the same reader the
+    engine uses, so a stale cache is rejected here exactly as it is at
+    execution rather than silently sizing a boundary from the wrong data.
+    """
+
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import (
+        _data_file_signature,
+        _read_matching_cache_meta,
+        _sanitise_label,
+    )
+
+    config = dict(node.data.config)
+    raw_path = config.get("path", "")
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    data_path = Path(raw_path)
+    try:
+        if not data_path.exists():
+            return None
+        signature = _data_file_signature(data_path)
+        for layer in ("working", "committed"):
+            cache_dir = _json_cache_dir(data_path, layer)
+            if (
+                _read_matching_cache_meta(
+                    cache_dir,
+                    config,
+                    data_path=data_path,
+                    data_file_signature=signature,
+                )
+                is None
+            ):
+                continue
+            parquet_path = cache_dir / f"{_sanitise_label(port)}.parquet"
+            if not parquet_path.exists():
+                continue
+            return _source_scoped_metadata(
+                _detailed_parquet_metadata(str(parquet_path)),
+                node.id,
+            )
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning(
+            "api_input_port_metadata_failed",
+            node_id=node.id,
+            port=port,
+            error=str(exc),
+        )
+    return None
+
+
 def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetadata | None:
     """Return detailed parquet source metadata for a source node, or None."""
     config = node.data.config
@@ -619,20 +708,46 @@ def _detailed_ancestor_source_metadata(
     max_cols: int = 0
     sources: list[_DetailedSourceMetadata] = []
 
+    reachable = set(ancestor_ids) | {target_node_id}
     for nid in sorted(ancestor_ids):
         node = index.node_map.get(nid)
         if node is None:
             continue
         if node.data.nodeType not in (NodeType.API_INPUT, NodeType.DATA_INPUT):
             continue
-        meta = index.source_metadata(node)
-        if meta is not None:
+        node_metadata = [index.source_metadata(node)]
+        if node_metadata[0] is None and node.data.nodeType == NodeType.API_INPUT:
+            # A multi-frame JSON API input has no whole-node summary. Size it
+            # from exactly the tables that feed this target, not from every
+            # table it could emit.
+            node_metadata = [
+                index.api_input_port_metadata(node, port)
+                for port in _feeding_ports(index, nid, reachable)
+            ]
+        for meta in node_metadata:
+            if meta is None:
+                continue
             sources.append(meta)
             if max_rows is None or meta.row_count > max_rows:
                 max_rows = meta.row_count
             max_cols = max(max_cols, meta.column_count)
 
     return _AncestorSourceMetadata(max_rows, max_cols, tuple(sources))
+
+
+def _feeding_ports(
+    index: _EstimateGraphIndex,
+    source_node_id: str,
+    reachable: set[str],
+) -> tuple[str, ...]:
+    """Return the distinct source handles this node contributes to `reachable`."""
+
+    ports = {
+        edge.sourceHandle
+        for edge in index.pruned_edges
+        if edge.source == source_node_id and edge.target in reachable and edge.sourceHandle
+    }
+    return tuple(sorted(ports))
 
 
 def estimate_source_rows(graph: PipelineGraph) -> int | None:
@@ -888,17 +1003,23 @@ def _resolve_edge_join_column_names(
 def _resolve_target_columns_from_index(
     index: _EstimateGraphIndex,
     target_node_id: str,
+    arrival_port: str | None = None,
 ) -> _ResolvedTargetColumns | None:
-    """Resolve target columns through one memoized per-estimate graph index."""
+    """Resolve target columns through one memoized per-estimate graph index.
+
+    `arrival_port` is the source handle the walk reached this node through. It
+    matters only at a multi-frame source, where it names which emitted table's
+    columns the consumer actually receives.
+    """
     from collections import deque
 
-    visited: set[str] = set()
-    queue = deque([target_node_id])
+    visited: set[tuple[str, str | None]] = set()
+    queue = deque([(target_node_id, arrival_port)])
     while queue:
-        nid = queue.popleft()
-        if nid in visited:
+        nid, port = queue.popleft()
+        if (nid, port) in visited:
             continue
-        visited.add(nid)
+        visited.add((nid, port))
         node = index.node_map.get(nid)
         if node is None:
             continue
@@ -915,19 +1036,22 @@ def _resolve_target_columns_from_index(
                 return edge_join_columns
 
         if selected_columns is not None:
-            parent_ids = index.parents.get(nid, ())
-            if len(parent_ids) == 1:
-                parent_columns = index.resolve_columns(parent_ids[0])
+            parent_ports = index.parent_ports(nid)
+            if len(parent_ports) == 1:
+                parent_id, parent_port = parent_ports[0]
+                parent_columns = index.resolve_columns(parent_id, parent_port)
                 if parent_columns is not None:
                     return _filter_resolved_columns(parent_columns, selected_columns)
             return _resolved_from_columns(selected_columns)
 
         if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_INPUT):
             meta = index.source_metadata(node)
+            if meta is None and node.data.nodeType == NodeType.API_INPUT and port is not None:
+                meta = index.api_input_port_metadata(node, port)
             if meta is not None:
                 return _resolved_from_source_metadata(meta)
 
-        queue.extend(sorted(index.parents.get(nid, ())))
+        queue.extend(sorted(index.parent_ports(nid)))
 
     return None
 

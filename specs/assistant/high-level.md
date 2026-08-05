@@ -193,11 +193,25 @@ that durable fact, in its original position after the mutation tool row.
   source-linked project facts and untrusted documentation evidence. Each item
   carries source digest, extraction version, sensitivity and evidence class;
   excluded content is counted but its path or value is not disclosed.
-- `get_node_schema` — the column names and dtypes at any node's *output*, resolved by the
+- `get_column_profiles` — what the values in a frame actually look like, for the one
+  question a schema cannot answer: how a categorical column encodes itself. A `fault`
+  column typed `String` may hold `Y`/`N`, `true`/`false`, or `at_fault`/`not_at_fault`,
+  and code written against the wrong guess runs, validates, and silently matches nothing.
+  It returns distinct levels with counts for small-cardinality columns, bounds for
+  numerics and dates, and never a row — a column with many distinct values has its values
+  withheld, which is what keeps names, addresses and registrations out by construction.
+  This is the only tool that reads project data, and it is gated on the project's
+  `allow_row_samples` policy.
+- `get_node_schema` — the column names and dtypes at any node's *output* **and on each of
+  its inputs**, resolved by the
   same execution engine that runs the pipeline: the lazy plan is built up to that node —
   with exactly the graph preparation a real run performs (submodels flattened, preamble in
   scope, the saved active source selected) — and its schema is read without collecting any
-  data. This is what lets the agent wire a mid-graph transform against the columns that
+  data. Inputs are keyed by the name the node's own code binds, because writing a
+  transform needs the columns arriving at it, not only the ones leaving it — and a node
+  the analyst has asked the assistant to *write* has no output schema to report. Such a
+  node answers with those inputs and a stable reason rather than refusing.
+  This is what lets the agent wire a mid-graph transform against the columns that
   actually exist *at that point* — post-join, post-derivation — not just the source file's
   columns. A node emitting several frames reports one schema per output port; the submodel
   placeholder itself is not addressable (the v1 submodel boundary, as for edits).
@@ -707,9 +721,13 @@ leaves it unqualified rather than silently skipping the gate.
   assistant never generates `.py` source itself.
 - **[io-layer](../io-layer/high-level.md)** — dataset listing and schema reads back
   `list_datasets` / `get_dataset_schema`.
-- **[execution-engine](../execution-engine/high-level.md)** — `get_node_schema` builds the
-  lazy plan through the engine's public facade (target-node execution, nothing collected);
-  the assistant adds no schema logic of its own.
+- **[execution-engine](../execution-engine/high-level.md)** — `get_node_schema` and
+  dry-run schema validation build the lazy plan through the engine's public facade
+  (target-node execution, nothing collected); the assistant adds no schema logic of its
+  own. Both declare `schema_only`, the engine flag stating that a caller resolves schemas
+  and never materialises, so the engine's group-by memory-admission gate — which bounds
+  peak memory during materialisation — does not refuse an aggregation neither of them
+  runs.
 - **[sandbox-security](../sandbox-security/high-level.md)** — assistant-authored node code
   (e.g. a `polars` body) is validated and sandboxed identically to human-authored code; the
   assistant adds no bypass.

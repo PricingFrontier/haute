@@ -173,6 +173,167 @@ class TestDryRun:
         assert len(service.plan_store) == 0
 
 
+SHARED_SOURCE_PIPELINE = """\
+import polars as pl
+
+import haute
+
+pipeline = haute.Pipeline("main", description="schema validation scope fixture")
+
+
+@pipeline.polars
+def shared() -> pl.LazyFrame:
+    return pl.LazyFrame({"x": [1, 2]})
+
+
+@pipeline.polars
+def broken(shared: pl.LazyFrame) -> pl.LazyFrame:
+    return shared.select("absent_column")
+"""
+
+
+@pytest.fixture()
+def shared_source_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A saved pipeline that already contains one unresolvable node."""
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "main.py").write_text(SHARED_SOURCE_PIPELINE, encoding="utf-8")
+    return tmp_path
+
+
+class TestSchemaValidationScope:
+    """Which nodes a plan is answerable for, and which it merely passes near.
+
+    Seeding an edge's *source* pulled every other branch of a shared input into
+    validation, so an unrelated pre-existing defect blocked and misattributed
+    every edit that touched that input.
+    """
+
+    def test_group_by_edit_validates_at_schema_tier(self, project_root: Path):
+        """Schema resolution collects nothing, so an authored aggregation is
+        verifiable rather than categorically unresolvable."""
+
+        service = _service(project_root)
+
+        plan = service.dry_run(
+            "main.py",
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "totals",
+                    "config": {
+                        "code": 'df = quotes.group_by("x").agg(pl.len().alias("n"))\n',
+                    },
+                    "ref": "t",
+                },
+                {"op": "add_edge", "source": "quotes", "target": "$t"},
+            ],
+        )
+
+        assert plan.verification_tier == "schema"
+        assert [item["node"] for item in plan.verification_evidence] == ["totals"]
+
+    def test_new_branch_off_a_shared_input_ignores_the_input_s_other_branches(
+        self, shared_source_project: Path
+    ):
+        service = _service(shared_source_project)
+
+        plan = service.dry_run(
+            "main.py",
+            [
+                {
+                    "op": "add_node",
+                    "node_type": "polars",
+                    "name": "doubled",
+                    "config": {"code": 'df = shared.with_columns(y=pl.col("x") * 2)\n'},
+                    "ref": "d",
+                },
+                {"op": "add_edge", "source": "shared", "target": "$d"},
+            ],
+        )
+
+        assert plan.verification_tier == "schema"
+        assert [item["node"] for item in plan.verification_evidence] == ["doubled"]
+        assert plan.validation_warnings == ()
+
+    def test_untouched_collateral_that_already_failed_becomes_a_warning(
+        self, shared_source_project: Path
+    ):
+        """Changing `shared` legitimately reaches its whole downstream cone,
+        which contains a node that was already broken. The plan did not cause
+        that, so it is reported and excluded from evidence rather than
+        rejecting the edit."""
+
+        service = _service(shared_source_project)
+
+        plan = service.dry_run(
+            "main.py",
+            [
+                {
+                    "op": "update_node",
+                    "node": "shared",
+                    "config": {"code": 'df = pl.LazyFrame({"x": [1, 2, 3]})\n'},
+                }
+            ],
+        )
+
+        assert plan.verification_tier == "structural"
+        assert plan.verification_evidence == ()
+        assert any(
+            warning.startswith("pre_existing_schema_failure:broken")
+            for warning in plan.validation_warnings
+        ), plan.validation_warnings
+
+    def test_a_node_this_plan_changed_is_never_excused(self, shared_source_project: Path):
+        """The plan owns every node it authors. An empty node fails on the
+        saved pipeline by construction, so excusing changed nodes would
+        silently accept exactly the broken code the analyst asked for."""
+
+        service = _service(shared_source_project)
+
+        with pytest.raises(AssistantOperationError) as excinfo:
+            service.dry_run(
+                "main.py",
+                [
+                    {
+                        "op": "update_node",
+                        "node": "broken",
+                        "config": {"code": 'df = shared.select("still_absent")\n'},
+                    }
+                ],
+            )
+
+        assert excinfo.value.code == "schema_unresolvable"
+        assert "still_absent" in str(excinfo.value)
+
+    async def test_pre_existing_warning_is_hash_stable_through_apply(
+        self, shared_source_project: Path
+    ):
+        """Validation warnings are hashed into the plan authority and `apply`
+        recomputes them, so the warning must be deterministic. Carrying the
+        engine's message would embed estimated row counts and scan byte sizes
+        and turn an ordinary apply into a spurious `invalid_plan`."""
+
+        service = _service(shared_source_project)
+        plan = service.dry_run(
+            "main.py",
+            [
+                {
+                    "op": "update_node",
+                    "node": "shared",
+                    "config": {"code": 'df = pl.LazyFrame({"x": [1, 2, 3]})\n'},
+                }
+            ],
+        )
+        assert plan.validation_warnings == ("pre_existing_schema_failure:broken",)
+
+        result = await service.apply("main.py", plan.plan_hash)
+
+        assert result.plan_hash == plan.plan_hash
+        assert result.verification_tier == "structural"
+
+
 class TestApply:
     async def test_low_risk_apply_is_exact_single_use_and_truthfully_verified(
         self, project_root: Path

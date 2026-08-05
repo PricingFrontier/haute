@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
 from pathlib import Path
@@ -19,8 +21,10 @@ from typing import Any, cast
 import polars as pl
 from fastapi import HTTPException
 
+from haute._code_extraction import INCOMPLETE_TRANSFORM_MESSAGE
 from haute._credential_security import is_credential_name
 from haute._event_bus import GraphUpdatePayload, default_bus
+from haute._graph_utils import edge_input_name
 from haute._logging import get_logger
 from haute._source_cache import SourceCacheError
 from haute._types import GraphNode, NodeType, PipelineGraph
@@ -91,6 +95,7 @@ _INTERNAL_PROJECT_TOOLS = frozenset(
         "get_pipeline",
         "get_node_schema",
         "get_node_config",
+        "get_column_profiles",
         "list_datasets",
         "get_dataset_schema",
         "dry_run_recipe_plan",
@@ -125,6 +130,21 @@ def _error_message(exc: Exception, *, operation: str) -> str:
         exc_info=True,
     )
     return _INTERNAL_ERROR_DETAIL
+
+
+def _execution_error_message(exc: Exception, *, operation: str) -> str:
+    """Surface engine query failures, which are analyst-facing by construction.
+
+    A Polars failure names the offending column, node code, or plan step and is
+    exactly what the model needs to correct its own authoring. It is the same
+    text the dry-run schema-validation path already returns, so classifying it
+    here keeps one behaviour across both schema boundaries rather than leaving
+    `get_node_schema` alone reporting an unattributable internal-error string.
+    """
+
+    if isinstance(exc, pl.exceptions.PolarsError):
+        return str(exc)
+    return _error_message(exc, operation=operation)
 
 
 def _node_id(raw: object) -> str | None:
@@ -174,8 +194,146 @@ def _validate_top_level_target(graph: PipelineGraph, node: str) -> dict[str, obj
     return _error("unknown_node", f"Unknown node {node!r}.")
 
 
+@dataclass(frozen=True, slots=True)
+class _NodeInput:
+    """One incoming edge described the way the node's own code sees it."""
+
+    name: str
+    source: str
+    source_port: str | None
+
+
+def _node_inputs(flat: PipelineGraph, node: str) -> tuple[_NodeInput, ...]:
+    """Return each incoming edge as (code-visible input name, source, port)."""
+
+    nodes_by_id = {candidate.id: candidate for candidate in flat.nodes}
+    inputs: list[_NodeInput] = []
+    for edge in flat.edges:
+        if edge.target != node:
+            continue
+        source_node = nodes_by_id.get(edge.source)
+        if source_node is None:
+            continue
+        inputs.append(
+            _NodeInput(
+                name=edge_input_name(edge, source_node),
+                source=edge.source,
+                source_port=edge.sourceHandle,
+            )
+        )
+    return tuple(inputs)
+
+
+def _resolve_frame_outputs(
+    flat: PipelineGraph,
+    graph: PipelineGraph,
+    *,
+    target: str,
+    preserve: set[str] | frozenset[str],
+) -> Mapping[str, object]:
+    """Prepare frames a caller intends to collect.
+
+    Deliberately not `schema_only`: collecting is materialisation, so the
+    engine's ordinary admission policy applies exactly as it would to any
+    other read of these rows.
+    """
+
+    return _resolve_schema_outputs(
+        flat,
+        graph,
+        target=target,
+        preserve=frozenset(preserve),
+        schema_only=False,
+    )
+
+
+def _resolve_schema_outputs(
+    flat: PipelineGraph,
+    graph: PipelineGraph,
+    *,
+    target: str,
+    preserve: frozenset[str],
+    schema_only: bool = True,
+) -> Mapping[str, object]:
+    """Run the production preparation for schema resolution only.
+
+    Exactly the `_explore_service._materialise_and_summarise` sequence — no
+    assistant-only recovery. `schema_only=True` states the invariant this
+    module already guarantees and tests by poisoning `collect`: nothing is
+    collected and no sink runs, so the engine's group-by materialisation gate,
+    which bounds peak memory during materialisation, does not apply.
+    """
+
+    preamble_ns = _compile_preamble(
+        graph.preamble or "",
+        pipeline_dir=_pipeline_dir(graph),
+    )
+    lazy_outputs, *_ = execute_lazy_graph(
+        flat,
+        _build_node_fn,
+        target_node_id=target,
+        preserve_node_ids=set(preserve),
+        preamble_ns=preamble_ns or None,
+        source=graph.active_source,
+        enforce_contracts=True,
+        schema_only=schema_only,
+    )
+    return lazy_outputs
+
+
+def _port_schema(output: object, port: str | None) -> list[dict[str, str]]:
+    """Render one frame, selecting `port` when the source emits several."""
+
+    if isinstance(output, dict):
+        if port is None:
+            raise KeyError(
+                "A multi-frame source needs the edge's source port to identify one frame"
+            )
+        if port not in output:
+            raise KeyError(f"Source port {port!r} is not emitted; available: {sorted(output)}")
+        return _schema_for_frame(output[port])
+    return _schema_for_frame(cast(pl.LazyFrame, output))
+
+
+def _input_schemas_from_outputs(
+    inputs: Sequence[_NodeInput],
+    lazy_outputs: Mapping[str, object],
+) -> dict[str, object]:
+    return {item.name: _port_schema(lazy_outputs[item.source], item.source_port) for item in inputs}
+
+
+def _input_schemas_independently(
+    flat: PipelineGraph,
+    graph: PipelineGraph,
+    inputs: Sequence[_NodeInput],
+) -> dict[str, object]:
+    """Resolve each input against its own source when the target cannot run.
+
+    One engine call per distinct source, on the failure path only. An input
+    whose own source is unresolvable reports that reason in place of columns
+    rather than disappearing from the result.
+    """
+
+    resolved: dict[str, object] = {}
+    for item in inputs:
+        try:
+            lazy_outputs = _resolve_schema_outputs(
+                flat,
+                graph,
+                target=item.source,
+                preserve=frozenset({item.source}),
+            )
+            resolved[item.name] = _port_schema(lazy_outputs[item.source], item.source_port)
+        except Exception as exc:  # noqa: BLE001 - one unresolvable input is reportable
+            resolved[item.name] = {
+                "unresolved_reason": _execution_error_message(exc, operation="get_node_schema"),
+                "source": item.source,
+            }
+    return resolved
+
+
 def get_node_schema(source_file: str, node: str) -> dict[str, object]:
-    """Resolve one top-level executable node's output schema."""
+    """Resolve one top-level executable node's output and input schemas."""
 
     try:
         graph = _parse_graph(source_file)
@@ -183,63 +341,95 @@ def get_node_schema(source_file: str, node: str) -> dict[str, object]:
         if validation_error is not None:
             return validation_error
         project_revision = _project_revision(source_file, graph)
-
         flat = flatten_graph(graph)
-        # Exactly the production preparation — no assistant-only recovery.  A
-        # helper the parser does not classify as preamble is equally invisible
-        # to explore/preview execution; diverging here would report schemas
-        # the real engine cannot produce.
-        preamble_ns = _compile_preamble(
-            graph.preamble or "",
-            pipeline_dir=_pipeline_dir(graph),
-        )
-        lazy_outputs, *_ = execute_lazy_graph(
-            flat,
-            _build_node_fn,
-            target_node_id=node,
-            preserve_node_ids={node},
-            preamble_ns=preamble_ns or None,
-            source=graph.active_source,
-            enforce_contracts=True,
-        )
-        output = lazy_outputs[node]
-        if isinstance(output, dict):
-            return {
-                "node": node,
-                "ports": {port: _schema_for_frame(frame) for port, frame in output.items()},
-                "project_revision": project_revision,
-            }
-        return {
-            "node": node,
-            "columns": _schema_for_frame(output),
-            "project_revision": project_revision,
-        }
+        inputs = _node_inputs(flat, node)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
         return _error(
             "schema_unresolvable",
             _error_message(exc, operation="get_node_schema"),
         )
 
+    try:
+        lazy_outputs = _resolve_schema_outputs(
+            flat,
+            graph,
+            target=node,
+            preserve=frozenset({node, *(item.source for item in inputs)}),
+        )
+        output = lazy_outputs[node]
+        result: dict[str, object] = {"node": node}
+        if isinstance(output, dict):
+            result["ports"] = {port: _schema_for_frame(frame) for port, frame in output.items()}
+        else:
+            result["columns"] = _schema_for_frame(cast(pl.LazyFrame, output))
+        if inputs:
+            result["inputs"] = _input_schemas_from_outputs(inputs, lazy_outputs)
+        result["project_revision"] = project_revision
+        return result
+    except NotImplementedError as exc:
+        if str(exc) != INCOMPLETE_TRANSFORM_MESSAGE:
+            return _error(
+                "schema_unresolvable",
+                _execution_error_message(exc, operation="get_node_schema"),
+            )
+        # An authored-but-empty transform is an ordinary editing state, not a
+        # defect: the analyst is asking the assistant to write that code. The
+        # node's own output is genuinely unresolvable, so say so by a stable
+        # reason and still answer the question the model actually needs —
+        # which columns arrive on each input.
+        return {
+            "node": node,
+            "unresolved_reason": "node_has_no_code",
+            "inputs": _input_schemas_independently(flat, graph, inputs),
+            "project_revision": project_revision,
+        }
+    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        return _error(
+            "schema_unresolvable",
+            _execution_error_message(exc, operation="get_node_schema"),
+        )
 
+
+_MAX_PROFILE_LEVELS = 50
+_MAX_PROFILE_ROWS = 1_000_000
+_MAX_PROFILE_VALUE_CHARS = 120
 _EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script"})
 _ROW_VALUE_CONFIG_KEYS = frozenset({"records"})
+# Only these dtypes can carry a value list. A categorical encoding is exactly
+# what authoring needs ("is `fault` Y/N or true/false?"), while an identifier,
+# name, or address is high-cardinality by nature and never fits the level cap.
+_PROFILABLE_LEVEL_DTYPES = (pl.String, pl.Categorical, pl.Enum, pl.Boolean)
 
 
-def _redact_config_value(value: object, *, key: str | None = None) -> object:
+def _redact_config_value(
+    value: object,
+    *,
+    key: str | None = None,
+    allow_executable_source: bool = False,
+) -> object:
+    """Redact by egress policy. Credentials and row values are never eligible."""
+
     if key is not None:
         if is_credential_name(key):
             return "<redacted: credential>"
-        if key.casefold() in _EXECUTABLE_CONFIG_KEYS:
+        if key.casefold() in _EXECUTABLE_CONFIG_KEYS and not allow_executable_source:
             return "<redacted: executable_source>"
         if key.casefold() in _ROW_VALUE_CONFIG_KEYS:
             return "<redacted: row_values>"
     if isinstance(value, Mapping):
         return {
-            str(child_key): _redact_config_value(child_value, key=str(child_key))
+            str(child_key): _redact_config_value(
+                child_value,
+                key=str(child_key),
+                allow_executable_source=allow_executable_source,
+            )
             for child_key, child_value in value.items()
         }
     if isinstance(value, list | tuple):
-        return [_redact_config_value(child) for child in value]
+        return [
+            _redact_config_value(child, allow_executable_source=allow_executable_source)
+            for child in value
+        ]
     return value
 
 
@@ -299,11 +489,151 @@ def get_node_config(source_file: str, node: str) -> dict[str, object]:
         return {
             "node": node,
             "sensitivity": "restricted",
-            "config": _redact_config_value(candidate.data.config),
+            # `allow_executable_source` is the policy's own decision. Redacting
+            # regardless made the setting inert and left the assistant editing
+            # code it was permitted to read but could not see.
+            "config": _redact_config_value(
+                candidate.data.config,
+                allow_executable_source=policy.allow_executable_source,
+            ),
             "project_revision": project_revision,
         }
     except Exception as exc:  # noqa: BLE001 - structured tool boundary
         return _error("node_config_unavailable", _error_message(exc, operation="get_node_config"))
+
+
+def _profile_value(value: object) -> object:
+    """Render one level value, bounding its length. Never a partial row."""
+
+    if isinstance(value, str) and len(value) > _MAX_PROFILE_VALUE_CHARS:
+        return value[:_MAX_PROFILE_VALUE_CHARS] + "…"
+    return value
+
+
+def _column_profile(frame: pl.DataFrame, name: str, dtype: pl.DataType) -> dict[str, object]:
+    """Summarise one column: levels when categorical and small, else bounds."""
+
+    column = frame.get_column(name)
+    profile: dict[str, object] = {
+        "name": name,
+        "dtype": str(dtype),
+        "null_count": int(column.null_count()),
+    }
+    distinct = int(column.n_unique())
+    profile["distinct_count"] = distinct
+
+    if isinstance(dtype, _PROFILABLE_LEVEL_DTYPES) or dtype in _PROFILABLE_LEVEL_DTYPES:
+        if distinct <= _MAX_PROFILE_LEVELS:
+            counts = column.value_counts(sort=True)
+            profile["values"] = [
+                {
+                    "value": _profile_value(row[name]),
+                    "count": int(row["count"]),
+                }
+                for row in counts.head(_MAX_PROFILE_LEVELS).to_dicts()
+            ]
+        else:
+            # Deliberate: a column with this many distinct values is an
+            # identifier or free text, not an encoding. Withholding it is the
+            # boundary that keeps names, addresses, and registrations out.
+            profile["values_withheld"] = "high_cardinality"
+        return profile
+
+    if dtype.is_numeric() or dtype.is_temporal():
+        minimum, maximum = column.min(), column.max()
+        profile["min"] = _profile_value(minimum)
+        profile["max"] = _profile_value(maximum)
+    else:
+        profile["values_withheld"] = "unsupported_dtype"
+    return profile
+
+
+def _profile_frame(frame: pl.LazyFrame) -> dict[str, object]:
+    """Collect one bounded prefix and summarise every column of it."""
+
+    collected = frame.head(_MAX_PROFILE_ROWS).collect()
+    schema = collected.collect_schema()
+    return {
+        "rows_scanned": collected.height,
+        "scan_bounded": collected.height >= _MAX_PROFILE_ROWS,
+        "columns": [_column_profile(collected, name, dtype) for name, dtype in schema.items()],
+    }
+
+
+def get_column_profiles(source_file: str, node: str, input: str | None = None) -> dict[str, object]:
+    """Summarise the values in one node frame, without returning rows.
+
+    This is the only tool that reads data, and it never emits a row: a value
+    only appears as a distinct level of a small-cardinality column, alongside
+    its count. Authoring correct code needs the encoding of a categorical
+    column, and inferring one from its name is guesswork the model has no way
+    to check.
+    """
+
+    try:
+        policy = resolve_egress_policy(Path.cwd().resolve())
+        if not policy.allow_row_samples:
+            return _error(
+                "egress_policy_denied",
+                "Column value profiles read project data. Set "
+                "[assistant.egress].allow_row_samples to enable them.",
+                required_policy="allow_row_samples",
+            )
+        graph = _parse_graph(source_file)
+        validation_error = _validate_top_level_target(graph, node)
+        if validation_error is not None:
+            return validation_error
+        project_revision = _project_revision(source_file, graph)
+        flat = flatten_graph(graph)
+        inputs = _node_inputs(flat, node)
+    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        return _error("profile_unavailable", _error_message(exc, operation="get_column_profiles"))
+
+    try:
+        if input is None:
+            lazy_outputs = _resolve_frame_outputs(flat, graph, target=node, preserve={node})
+            output = lazy_outputs[node]
+            if isinstance(output, dict):
+                return _error(
+                    "profile_target_ambiguous",
+                    f"Node {node!r} emits several frames; name one of its ports: "
+                    + ", ".join(sorted(output)),
+                    ports=sorted(output),
+                )
+            frame = cast(pl.LazyFrame, output)
+        else:
+            match = next((item for item in inputs if item.name == input), None)
+            if match is None:
+                return _error(
+                    "unknown_input",
+                    f"Node {node!r} has no input named {input!r}.",
+                    inputs=[item.name for item in inputs],
+                )
+            lazy_outputs = _resolve_frame_outputs(
+                flat, graph, target=match.source, preserve={match.source}
+            )
+            source_output = lazy_outputs[match.source]
+            if isinstance(source_output, dict):
+                if match.source_port is None or match.source_port not in source_output:
+                    return _error(
+                        "profile_unavailable",
+                        f"Input {input!r} does not resolve to one emitted frame.",
+                    )
+                frame = source_output[match.source_port]
+            else:
+                frame = cast(pl.LazyFrame, source_output)
+        return {
+            "node": node,
+            "input": input,
+            **_profile_frame(frame),
+            "max_levels": _MAX_PROFILE_LEVELS,
+            "project_revision": project_revision,
+        }
+    except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
+        return _error(
+            "profile_unavailable",
+            _execution_error_message(exc, operation="get_column_profiles"),
+        )
 
 
 def list_node_types() -> dict[str, object]:
@@ -696,7 +1026,10 @@ async def dry_run_graph_edits(
     except AssistantOperationError as exc:
         return _operation_error(exc)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not raise
-        return _error("invalid_plan", _error_message(exc, operation="dry_run_graph_edits"))
+        # `invalid_plan` is a specific authorization verdict raised by the
+        # domain layer. Reusing it for an unexpected exception told the model
+        # its plan was rejected when nothing had judged the plan at all.
+        return _error("operation_failed", _error_message(exc, operation="dry_run_graph_edits"))
 
 
 async def apply_graph_plan(
@@ -737,6 +1070,35 @@ _OPERATION_INPUT_SCHEMAS = {
 }
 
 
+def _log_tool_outcome(name: str, result: Mapping[str, object], *, elapsed_ms: float) -> None:
+    """Record one tool outcome so a failed turn is diagnosable after the fact.
+
+    Durable session files redact arguments and messages by design, which left
+    no server-side record of *why* a turn failed. This is the diagnostic
+    channel: stable identities and the analyst-facing error message at info
+    level, and the argument keys — names only, never values — at debug.
+    """
+
+    error = result.get("error")
+    if not isinstance(error, Mapping):
+        logger.debug(
+            "assistant_tool_succeeded",
+            operation=name,
+            elapsed_ms=round(elapsed_ms, 1),
+            result_keys=sorted(str(key) for key in result),
+        )
+        return
+    logger.info(
+        "assistant_tool_error",
+        operation=name,
+        elapsed_ms=round(elapsed_ms, 1),
+        error_code=error.get("code"),
+        error_message=error.get("message"),
+        validation_path=error.get("validation_path"),
+        validation_reason=error.get("validation_reason"),
+    )
+
+
 def _dispatch_error(name: str, message: str) -> dict[str, object]:
     return _error("unknown_tool", message, name=name, valid_names=list(_TOOL_NAMES))
 
@@ -774,11 +1136,21 @@ def _has_duplicate_items(value: list[object]) -> bool:
 class _ToolArgumentValidationError(ValueError):
     """A value did not satisfy one closed operation input schema."""
 
-    __slots__ = ("path", "reason")
+    __slots__ = ("fields", "path", "reason")
 
-    def __init__(self, path: str, reason: str, message: str) -> None:
+    def __init__(
+        self,
+        path: str,
+        reason: str,
+        message: str,
+        fields: Mapping[str, object] | None = None,
+    ) -> None:
         self.path = path
         self.reason = reason
+        # Model-facing correction detail only. `_session._persisted_message`
+        # copies exactly `code`, `validation_path`, and `validation_reason`,
+        # so these never reach durable history.
+        self.fields = dict(fields or {})
         super().__init__(message)
 
 
@@ -798,6 +1170,26 @@ def _json_type_matches(value: object, expected: str) -> bool:
     if expected == "null":
         return value is None
     raise RuntimeError(f"Unsupported operation-schema JSON type: {expected!r}")
+
+
+def _json_type_name(value: object) -> str:
+    """Name a value's JSON type for a validation message. Never its content."""
+
+    if value is None:
+        return "null"
+    if type(value) is bool:
+        return "boolean"
+    if isinstance(value, Mapping):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, str):
+        return "string"
+    if type(value) is int:
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    return type(value).__name__
 
 
 def _validate_tool_value(
@@ -889,10 +1281,23 @@ def _validate_tool_value(
     if expected_types and not any(
         _json_type_matches(value, expected) for expected in expected_types
     ):
+        # Naming both sides is what makes this correctable. A provider that
+        # encodes a container as a JSON string produces exactly this rejection,
+        # and "has the wrong JSON type" gave the model nothing to act on — it
+        # cannot see that it sent a string where an array was required.
+        received = _json_type_name(value)
+        article = "an" if received[:1] in "aeiou" else "a"
         raise _ToolArgumentValidationError(
             path,
             "wrong_type",
-            f"{path} has the wrong JSON type",
+            f"{path} must be JSON {' or '.join(expected_types)}, but "
+            f"{article} {received} was sent"
+            + (
+                ". Send the value itself, not a JSON-encoded string of it"
+                if received == "string" and {"array", "object"} & set(expected_types)
+                else ""
+            ),
+            fields={"expected_types": list(expected_types), "received_type": received},
         )
 
     if isinstance(value, Mapping) and "object" in expected_types:
@@ -912,10 +1317,16 @@ def _validate_tool_value(
         unknown = sorted(str(key) for key in value if key not in raw_properties)
         additional = schema.get("additionalProperties", True)
         if unknown and additional is False:
+            # Naming the rejected key and the closed allowlist is what makes
+            # this correctable in one retry. Both are already known to the
+            # model — it sent the key, and the allowlist is its own schema.
+            allowed = sorted(str(key) for key in raw_properties)
             raise _ToolArgumentValidationError(
                 path,
                 "unknown_field",
-                f"{path} contains a field that is not allowed",
+                f"{path} does not allow the field(s) {', '.join(unknown)}; "
+                f"this variant accepts only {', '.join(allowed)}",
+                fields={"unknown_fields": unknown, "allowed_fields": allowed},
             )
         for key, item in value.items():
             property_schema = raw_properties.get(key)
@@ -1144,6 +1555,12 @@ def build_tool_executor(
         return tuple(observed_project_sources[key] for key in sorted(observed_project_sources))
 
     async def execute_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
+        started = time.monotonic()
+        result = await _dispatch_tool(name, arguments)
+        _log_tool_outcome(name, result, elapsed_ms=(time.monotonic() - started) * 1000)
+        return result
+
+    async def _dispatch_tool(name: str, arguments: dict[str, Any]) -> Mapping[str, object]:
         if name not in _TOOL_NAMES:
             return _dispatch_error(
                 name,
@@ -1215,6 +1632,7 @@ def build_tool_executor(
                     str(exc),
                     validation_path=exc.path,
                     validation_reason=exc.reason,
+                    **exc.fields,
                 ),
             )
         if material_input_required and name in {
@@ -1345,6 +1763,13 @@ def build_tool_executor(
                 operation = partial(get_node_schema, source_file, arguments["node"])
             elif name == "get_node_config":
                 operation = partial(get_node_config, source_file, arguments["node"])
+            elif name == "get_column_profiles":
+                operation = partial(
+                    get_column_profiles,
+                    source_file,
+                    arguments["node"],
+                    arguments.get("input"),
+                )
             elif name == "list_node_types":
                 operation = list_node_types
             elif name == "get_capability_manifest":
