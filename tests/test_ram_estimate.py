@@ -16,8 +16,6 @@ from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
-    _count_source_rows_for_node,
-    _csv_row_count,
     _dedupe_resolved_columns,
     _detailed_ancestor_source_metadata,
     _detailed_source_metadata_for_node,
@@ -26,7 +24,6 @@ from haute._ram_estimate import (
     _estimate_base_bytes_per_row,
     _estimate_peak_bytes,
     _EstimateGraphIndex,
-    _jsonl_row_count,
     _parquet_metadata,
     _resolve_edge_join_column_names,
     _resolve_target_column_names,
@@ -37,7 +34,6 @@ from haute._ram_estimate import (
     estimate_gpu_vram_bytes,
     estimate_materialisation_boundary,
     estimate_safe_training_rows,
-    estimate_source_rows,
 )
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import build_test_input_snapshot
@@ -467,67 +463,6 @@ class TestRowCounts:
         rows, cols = _parquet_metadata(str(path))
         assert rows == 500
         assert cols == 2
-
-    def test_csv_row_count(self, tmp_path) -> None:
-        path = tmp_path / "test.csv"
-        df = pl.DataFrame({"x": range(123)})
-        df.write_csv(str(path))
-        assert _csv_row_count(str(path)) == 123
-
-
-# ---------------------------------------------------------------------------
-# estimate_source_rows
-# ---------------------------------------------------------------------------
-
-
-class TestEstimateSourceRows:
-    def test_parquet_data_input(self, tmp_path) -> None:
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"a": range(1000)}).write_parquet(str(path))
-
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) == 1000
-
-    def test_returns_none_for_databricks(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_databricks_input_config("cat.schema.tbl"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_returns_none_for_missing_file(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config("/nonexistent/file.parquet"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_max_across_multiple_sources(self, tmp_path) -> None:
-        p1 = tmp_path / "small.parquet"
-        pl.DataFrame({"a": range(100)}).write_parquet(str(p1))
-        p2 = tmp_path / "big.parquet"
-        pl.DataFrame({"a": range(5000)}).write_parquet(str(p2))
-
-        n1 = _make_source_node(
-            node_id="s1",
-            label="small",
-            node_type="dataInput",
-            config=_ready_file_input_config(p1),
-        )
-        n2 = _make_source_node(
-            node_id="s2",
-            label="big",
-            node_type="dataInput",
-            config=_ready_file_input_config(p2),
-        )
-        graph = PipelineGraph(nodes=[n1, n2], edges=[])
-        assert estimate_source_rows(graph) == 5000
 
 
 # ---------------------------------------------------------------------------
@@ -1620,51 +1555,6 @@ class TestEstimatePeakBytes:
 
 
 # ---------------------------------------------------------------------------
-# _csv_row_count edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestCsvRowCountEdgeCases:
-    def test_header_only(self, tmp_path) -> None:
-        path = tmp_path / "header_only.csv"
-        path.write_text("a,b,c\n")
-        assert _csv_row_count(str(path)) == 0
-
-    def test_empty_file(self, tmp_path) -> None:
-        path = tmp_path / "empty.csv"
-        path.write_bytes(b"")
-        assert _csv_row_count(str(path)) == 0
-
-    def test_single_data_row(self, tmp_path) -> None:
-        path = tmp_path / "one_row.csv"
-        path.write_text("a,b\n1,2\n")
-        assert _csv_row_count(str(path)) == 1
-
-
-# ---------------------------------------------------------------------------
-# _jsonl_row_count
-# ---------------------------------------------------------------------------
-
-
-class TestJsonlRowCount:
-    def test_multiple_lines(self, tmp_path) -> None:
-        path = tmp_path / "data.jsonl"
-        lines = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
-        path.write_bytes(b"".join(lines))
-        assert _jsonl_row_count(str(path)) == 3
-
-    def test_empty_file(self, tmp_path) -> None:
-        path = tmp_path / "empty.jsonl"
-        path.write_bytes(b"")
-        assert _jsonl_row_count(str(path)) == 0
-
-    def test_single_line(self, tmp_path) -> None:
-        path = tmp_path / "single.jsonl"
-        path.write_bytes(b'{"x":1}\n')
-        assert _jsonl_row_count(str(path)) == 1
-
-
-# ---------------------------------------------------------------------------
 # estimate_gpu_vram_bytes edge cases
 # ---------------------------------------------------------------------------
 
@@ -1721,76 +1611,6 @@ class TestParquetMetadataEdgeCases:
 
         with pytest.raises(Exception):
             _parquet_metadata(str(tmp_path / "does_not_exist.parquet"))
-
-
-# ---------------------------------------------------------------------------
-# estimate_source_rows edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestEstimateSourceRowsEdgeCases:
-    def test_returns_none_for_databricks(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_databricks_input_config("db.schema.tbl"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_returns_none_for_missing_file(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config("/no/such/file.parquet"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_max_across_multiple_sources(self, tmp_path) -> None:
-        p1 = tmp_path / "a.parquet"
-        pl.DataFrame({"x": range(200)}).write_parquet(str(p1))
-        p2 = tmp_path / "b.parquet"
-        pl.DataFrame({"x": range(3000)}).write_parquet(str(p2))
-
-        n1 = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_ready_file_input_config(p1),
-        )
-        n2 = _make_source_node(
-            node_id="s2",
-            node_type="dataInput",
-            config=_ready_file_input_config(p2),
-        )
-        graph = PipelineGraph(nodes=[n1, n2], edges=[])
-        assert estimate_source_rows(graph) == 3000
-
-    def test_json_jsonl_source(self, tmp_path) -> None:
-        path = tmp_path / "data.jsonl"
-        path.write_bytes(b'{"a":1}\n{"a":2}\n{"a":3}\n')
-
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": str(path)},
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) == 3
-
-    def test_csv_data_input(self, tmp_path) -> None:
-        path = tmp_path / "data.csv"
-        pl.DataFrame({"a": range(42)}).write_csv(str(path))
-
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) == 42
-
-    def test_ignores_non_source_nodes(self) -> None:
-        node = _make_transform_node(node_id="transform")
-        graph = PipelineGraph(nodes=[node], edges=[])
-
-        assert estimate_source_rows(graph) is None
 
 
 # ---------------------------------------------------------------------------
@@ -2145,117 +1965,6 @@ class TestAvailableVramParsing:
         """OSError returns None."""
         with patch("subprocess.run", side_effect=OSError):
             result = available_vram_bytes()
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
-# _count_source_rows_for_node — unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestCountSourceRowsForNode:
-    def test_api_input_json_uncached_returns_none(self) -> None:
-        """API_INPUT .json with no cache returns None (v2 has no aggregate row count)."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/nonexistent/data.json"},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result is None
-
-    @pytest.mark.parametrize("suffix", [".jsonl", ".ndjson", ".NDJSON"])
-    def test_api_input_ndjson_uncached_file_exists(self, tmp_path, suffix: str) -> None:
-        """API_INPUT NDJSON aliases with no cache use a physical line count."""
-        path = tmp_path / f"data{suffix}"
-        path.write_bytes(b'{"a":1}\n{"a":2}\n{"a":3}\n{"a":4}\n')
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": str(path)},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result == 4
-
-    def test_api_input_parquet_exists(self, tmp_path) -> None:
-        """API_INPUT with existing parquet file reads metadata."""
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": range(200), "y": range(200)}).write_parquet(str(path))
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": str(path)},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result == 200
-
-    def test_api_input_parquet_missing_returns_none(self) -> None:
-        """API_INPUT with missing parquet path returns None."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/nonexistent/data.parquet"},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result is None
-
-    def test_data_input_databricks_returns_none(self) -> None:
-        """Data Input with a Databricks configuration returns None."""
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_databricks_input_config("db.tbl"),
-        )
-        result = _count_source_rows_for_node(node)
-        assert result is None
-
-    def test_data_input_csv(self, tmp_path) -> None:
-        """Data Input with CSV file counts lines."""
-        path = tmp_path / "data.csv"
-        pl.DataFrame({"a": range(77)}).write_csv(str(path))
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-        result = _count_source_rows_for_node(node)
-        assert result == 77
-
-    def test_data_input_ndjson(self, tmp_path) -> None:
-        """Data Input with NDJSON counts physical record lines."""
-        path = tmp_path / "data.ndjson"
-        path.write_text('{"a":1}\n{"a":2}\n{"a":3}\n', encoding="utf-8")
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-
-        assert _count_source_rows_for_node(node) == 3
-
-    def test_data_input_without_snapshot_returns_none(self, tmp_path) -> None:
-        """RAM estimation never falls back to reading an unbuilt provider source."""
-        path = tmp_path / "notes.txt"
-        path.write_text("not,a,supported,table\n", encoding="utf-8")
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-
-        assert _count_source_rows_for_node(node) is None
-
-    def test_unexpected_exception_propagates(self) -> None:
-        """Programming failures are not misreported as unavailable metadata."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/some/file.parquet"},
-        )
-        with patch("haute._ram_estimate.Path") as mock_path:
-            mock_path.return_value.exists.side_effect = RuntimeError("boom")
-            # The path check `Path(path).exists()` will raise.
-            with pytest.raises(RuntimeError, match="boom"):
-                _count_source_rows_for_node(node)
-
-    def test_unknown_node_type_returns_none(self) -> None:
-        """A node type that's neither API_INPUT nor Data Input returns None."""
-        node = _make_source_node(
-            node_type="polars",
-            config={"path": "/some/file.parquet"},
-        )
-        result = _count_source_rows_for_node(node)
         assert result is None
 
 

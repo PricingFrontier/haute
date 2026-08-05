@@ -45,7 +45,6 @@ __all__ = [
     "available_ram_bytes",
     "available_vram_bytes",
     "estimate_gpu_vram_bytes",
-    "estimate_source_rows",
     "estimate_materialisation_boundary",
     "estimate_safe_training_rows",
     "RamEstimate",
@@ -547,38 +546,6 @@ def _data_input_parquet_artifact(config: Mapping[str, Any]) -> tuple[int | None,
     return generation.metadata.row_count, generation.data_path
 
 
-def _count_source_rows_for_node(node: GraphNode) -> int | None:
-    """Row count for a single source node (parquet metadata or line count)."""
-    config = node.data.config
-    node_type = node.data.nodeType
-
-    try:
-        if node_type == NodeType.API_INPUT:
-            path = config.get("path", "")
-            if isinstance(path, str) and is_json_api_input_path(path):
-                # v2 per-frame caches don't expose a single aggregate row
-                # count; RAM estimation falls back to newline-delimited JSON
-                # line count (.json files yield None, treated as "unknown").
-                if Path(path).suffix.casefold() in {".jsonl", ".ndjson"} and Path(path).exists():
-                    return _jsonl_row_count(path)
-                return None
-            if path and Path(path).exists():
-                rows, _ = _parquet_metadata(path)
-                return rows
-            return None
-
-        if node_type == NodeType.DATA_INPUT:
-            row_count, artifact_path = _data_input_parquet_artifact(config)
-            if row_count is None:
-                row_count, _ = _parquet_metadata(str(artifact_path))
-            return row_count
-    except (OSError, TypeError, ValueError) as exc:
-        logger.warning("source_row_count_failed", node_id=node.id, error=str(exc))
-        return None
-
-    return None
-
-
 def _json_api_input_port_metadata(node: GraphNode, port: str) -> _DetailedSourceMetadata | None:
     """Return cached parquet metadata for one emitted table of a JSON API input.
 
@@ -672,22 +639,6 @@ def _detailed_source_metadata_for_node(node: GraphNode) -> _DetailedSourceMetada
     return None
 
 
-def _csv_row_count(path: str) -> int:
-    count = 0
-    with open(path, "rb") as f:
-        for _ in f:
-            count += 1
-    return max(count - 1, 0)
-
-
-def _jsonl_row_count(path: str) -> int:
-    count = 0
-    with open(path, "rb") as f:
-        for _ in f:
-            count += 1
-    return count
-
-
 def _detailed_ancestor_source_metadata(
     graph: PipelineGraph,
     target_node_id: str,
@@ -748,22 +699,6 @@ def _feeding_ports(
         if edge.source == source_node_id and edge.target in reachable and edge.sourceHandle
     }
     return tuple(sorted(ports))
-
-
-def estimate_source_rows(graph: PipelineGraph) -> int | None:
-    """Estimate total rows entering the pipeline from all source nodes.
-
-    Returns the **maximum** row count across all source nodes.
-    Prefer :func:`_detailed_ancestor_source_metadata` when target and source
-    are known.
-    """
-    max_rows: int | None = None
-    for node in graph.nodes:
-        if node.data.nodeType in (NodeType.API_INPUT, NodeType.DATA_INPUT):
-            count = _count_source_rows_for_node(node)
-            if count is not None:
-                max_rows = max(max_rows or 0, count)
-    return max_rows
 
 
 # ---------------------------------------------------------------------------
