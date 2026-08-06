@@ -97,16 +97,21 @@ Out of scope (owned by neighbouring components):
   hidden numeric suffixes. Every `apiInput` edge emits an explicit
   `source_port` in its connect call — including a sole-frame source — so the
   file itself always names the frame each parameter binds.
-- **Submodel-aware.** A graph with no `graph.submodels` produces exactly one
-  file. A graph with submodels produces one file per submodel (default path
-  `modules/<name>.py`) plus a main file that imports them via
-  `pipeline.submodel(<path>)` and treats submodel boundaries as opaque nodes
-  with `out__<child_id>` / `in__<child_id>` handle conventions.
-  `graph_to_code` (single-file convenience wrapper) refuses to run on a
-  submodel graph rather than silently returning an arbitrary one of the
-  files. Each emitted submodel file carries that submodel's description,
-  preamble, and module-level preserved blocks, so hand-authored module support
-  code survives parse → save cycles.
+- **Submodel-aware.** A graph with no submodel occurrences produces exactly
+  one file. A hierarchical graph emits each referenced definition file once,
+  in first-occurrence order, plus a main file with one explicit
+  `pipeline.submodel(path, definition_id=..., instance_id=..., alias=...,
+  label=...)` registration per occurrence. Distinct definitions may not share
+  a file, unused registry definitions are rejected, and occurrence ids and
+  aliases are never inferred. Parent connections name declared public port
+  ids; `in__<portId>`/`out__<portId>` exist only in graph JSON and are not
+  emitted as authored port names. A source occurrence contributes the stable
+  downstream input name `<alias>__<portId>`.
+  `graph_to_code` refuses a hierarchical graph rather than returning an
+  arbitrary file. Each definition file carries its declared
+  `definition_id`, complete literal `input_ports`/`output_ports` contract,
+  description, preamble, and preserved blocks. Unused declared outputs
+  therefore survive parse/save/reload without inference from parent edges.
 - **Config-folder rewrite.** Node types with a declarative JSON sidecar
   (`haute._config_io.has_config_folder`) get their decorator's inline kwargs
   replaced with a single `config="config/<type>/<name>.json"` reference after
@@ -115,6 +120,16 @@ Out of scope (owned by neighbouring components):
   registered decorator, or a builder result without a function definition,
   is a `HauteError`; codegen never defaults to a generic decorator or silently
   skips the rewrite.
+  The generated `_HAUTE_CONFIG_BASE` import and assignment are module
+  infrastructure, emitted exactly once outside authored preamble ownership.
+  Its value always resolves to the parent pipeline directory: a pipeline file
+  uses its own directory, and a submodel file climbs one level per path
+  segment in its recorded registration path, so definitions registered at any
+  depth inside the project resolve config paths identically at parse time and
+  at generated-module runtime.
+  Reverse parsing likewise removes the generated per-node loader scaffold;
+  neither its imports nor its load call may enter editable node `code` or be
+  executed by the user-code sandbox.
 - **Canonical data I/O generation.** `dataInput` emits
   `@pipeline.data_input(config="config/data_input/<name>.json")`, loads the
   configured input through the shared helper (a derived direct Parquet scan
@@ -285,12 +300,11 @@ execution time on a mis-wired pipeline). Concretely:
   frontend rejects creating such a connection at drag time with the same
   rule, so this backend error is the authoritative backstop, not the first
   line of defence.
-- **Malformed submodel cross-boundary edge** (missing/wrong-prefixed handle,
-  or a handle referencing a child id that doesn't exist in that submodel) →
-  `ParseError` from `graph_to_code_multi` / `_resolve_submodel_endpoint`,
-  raised during submodel-file generation so the error names the exact
-  submodel and edge rather than surfacing later as a confusing error on an
-  unrelated child node.
+- **Unpersistable or malformed submodel boundary edge** (a missing or
+  wrong-prefixed `in__`/`out__` handle, an undeclared public port id, an
+  occurrence with malformed identity, or a definition port whose internal
+  endpoint is invalid) -> `ParseError` with exact definition, instance, port,
+  and edge context before any source is accepted.
 - **`graph_to_code` called on a graph that actually has submodels** →
   `ConfigError`, because silently returning "the first file" would hand back
   an arbitrary submodel file instead of the main pipeline.
@@ -306,7 +320,7 @@ execution time on a mis-wired pipeline). Concretely:
   `_UserCodeParseError` (a `ParseError`/`ValueError` subclass) from
   `haute._code_extraction._parse_user_code`, naming which extractor was
   running and the original `SyntaxError`'s location.
-- **Submodel placeholder node reaches a codegen builder directly** →
+- **Submodel occurrence node reaches a codegen builder directly** →
   `RuntimeError` from `_gen_submodel_placeholder_unreachable`; this
   indicates `graph_to_code_multi`'s root/child-node filtering has a bug,
-  since the placeholder should never be dispatched on.
+  since the occurrence should never be dispatched on.

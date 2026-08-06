@@ -206,4 +206,47 @@ describe("useGraphStore — undo atomicity", () => {
     expect(useGraphStore.getState().undoStack).toHaveLength(3)
     expect(useGraphStore.getState().nodes).toHaveLength(0)
   })
+
+  it("replaces nodes, edges, submodels, and preamble in one dirty undo step", () => {
+    const originalNodes = [makeNode("root")]
+    const originalEdges: Edge[] = []
+    const originalSubmodels = {}
+    act(() => {
+      useGraphStore.getState().loadGraphSnapshot({
+        nodes: originalNodes,
+        edges: originalEdges,
+        preamble: "PARENT = 1",
+        submodels: originalSubmodels,
+      })
+    })
+
+    const nextNodes = [makeNode("submodel_instance")]
+    const nextEdges = [makeEdge("upstream", "submodel_instance")]
+    const nextSubmodels = { pricing: { file: "modules/pricing.py" } }
+    act(() => {
+      useGraphStore.getState().setNodesAndEdgesAndSubmodels(
+        nextNodes,
+        nextEdges,
+        nextSubmodels,
+        "PARENT = 1\nCHILD_HELPER = 2",
+      )
+    })
+
+    const changed = useGraphStore.getState()
+    expect(changed.nodes).toEqual(nextNodes)
+    expect(changed.edges).toEqual(nextEdges)
+    expect(changed.submodels).toEqual(nextSubmodels)
+    expect(changed.preamble).toBe("PARENT = 1\nCHILD_HELPER = 2")
+    expect(changed.undoStack).toHaveLength(1)
+    expect(changed.dirty).toBe(true)
+
+    act(() => useGraphStore.getState().undo())
+
+    const restored = useGraphStore.getState()
+    expect(restored.nodes).toEqual(originalNodes)
+    expect(restored.edges).toEqual(originalEdges)
+    expect(restored.submodels).toEqual(originalSubmodels)
+    expect(restored.preamble).toBe("PARENT = 1")
+    expect(restored.dirty).toBe(false)
+  })
 })

@@ -225,6 +225,8 @@ tabular persistence; the removed `dataSource` and `dataSink` types have no compa
 | [json-shredding](json-shredding/high-level.md) | API-input schema, JSON shredding/flattening, JSONPath, output assembly, edge joins |
 | [sandbox-security](sandbox-security/high-level.md) | Sandboxed execution of user code, local security, environment guards |
 | [git-integration](git-integration/high-level.md) | Git operations backing pipeline versioning and the git API routes |
+| [hosted-databricks-app](hosted-databricks-app/high-level.md) | Running haute behind a platform SSO proxy as a Databricks App |
+| [hosted-project-storage](hosted-project-storage/high-level.md) | Durable project storage for hosted sessions: binding, publishing, restore |
 | [tracing](tracing/high-level.md) | Execution traces: correlation, enrichment, export, waterfall |
 | [rating](rating/high-level.md) | Rating steps and banding configuration |
 | [submodels](submodels/high-level.md) | Submodel graphs, paths, and submodel API routes |

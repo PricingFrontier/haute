@@ -131,8 +131,14 @@ export default function useGraphCanvasState(
       nodesUpdater: Node[] | ((nds: Node[]) => Node[]),
       edgesUpdater: Edge[] | ((eds: Edge[]) => Edge[]),
       submodels: Record<string, unknown>,
+      preamble?: string,
     ) => {
-      useGraphStore.getState().setNodesAndEdgesAndSubmodels(nodesUpdater, edgesUpdater, submodels)
+      useGraphStore.getState().setNodesAndEdgesAndSubmodels(
+        nodesUpdater,
+        edgesUpdater,
+        submodels,
+        preamble,
+      )
     },
     [],
   )

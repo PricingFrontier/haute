@@ -196,6 +196,41 @@ def _read_schema_blocking(path: str, target: Path) -> SchemaResponse:
     )
 
 
+def _read_schema_only_blocking(path: str, target: Path) -> dict[str, object]:
+    """Read columns without materialising preview rows.
+
+    This is the assistant-facing boundary. It deliberately does not reuse
+    :func:`_read_schema_blocking`, because the UI endpoint always collects a
+    five-row preview. Formats whose schema is inferred may still inspect file
+    metadata or source bytes, but no row values are retained or returned.
+    """
+    import polars as pl
+
+    from haute import graph_utils
+
+    if target.suffix.casefold() == ".xml":
+        from haute._json_shred import _iter_xml_records
+
+        lazy_frame = pl.DataFrame(list(_iter_xml_records(target)), strict=False).lazy()
+    else:
+        lazy_frame = graph_utils.read_source(str(target))
+
+    schema = lazy_frame.collect_schema()
+    row_count: int | None = None
+    if target.suffix.casefold() == ".parquet":
+        from haute._polars_utils import read_parquet_metadata
+
+        row_count = read_parquet_metadata(target)["row_count"]
+    columns = [{"name": name, "dtype": str(dtype)} for name, dtype in schema.items()]
+    return {
+        "path": path,
+        "columns": columns,
+        "row_count": row_count,
+        "row_count_estimated": False,
+        "column_count": len(columns),
+    }
+
+
 @router.get("/schema", response_model=SchemaResponse)
 async def get_schema(path: str) -> SchemaResponse:
     """Read a data file and return its schema + preview.

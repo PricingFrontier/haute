@@ -1,48 +1,112 @@
 {
   "status": "ok",
-  "submodel_file": "pricing.py",
+  "submodel_file": "modules/pricing.py",
   "parent_file": "main.py",
+  "source_revision": "revision-create-1",
   "graph": {
     "nodes": [
       {
-        "id": "submodel__pricing",
+        "id": "submodel_instance_pricing",
         "type": "submodel",
-        "position": { "x": 0, "y": 0 },
-        "data": { "label": "Pricing", "nodeType": "submodel" }
+        "position": {
+          "x": 0,
+          "y": 0
+        },
+        "data": {
+          "label": "Pricing",
+          "nodeType": "submodel",
+          "config": {
+            "definitionId": "pricing",
+            "alias": "pricing"
+          }
+        }
       },
       {
         "id": "source",
         "type": "polars",
-        "position": { "x": -200, "y": 0 },
-        "data": { "label": "Source", "nodeType": "polars" }
+        "position": {
+          "x": -200,
+          "y": 0
+        },
+        "data": {
+          "label": "Source",
+          "nodeType": "polars"
+        }
       },
       {
         "id": "sink",
         "type": "polars",
-        "position": { "x": 200, "y": 0 },
-        "data": { "label": "Sink", "nodeType": "polars" }
+        "position": {
+          "x": 200,
+          "y": 0
+        },
+        "data": {
+          "label": "Sink",
+          "nodeType": "polars"
+        }
       }
     ],
     "edges": [
       {
         "id": "e_source_pricing",
         "source": "source",
-        "target": "submodel__pricing",
-        "targetHandle": "in__child1",
+        "target": "submodel_instance_pricing",
+        "targetHandle": "in__base",
         "targetPort": "base"
       },
       {
         "id": "e_pricing_sink",
-        "source": "submodel__pricing",
+        "source": "submodel_instance_pricing",
         "target": "sink",
-        "sourceHandle": "out__child1",
+        "sourceHandle": "out__quotes",
         "sourcePort": "quotes"
       }
     ],
     "submodels": {
       "pricing": {
-        "path": "pricing.py"
+        "definitionId": "pricing",
+        "file": "modules/pricing.py",
+        "graph": {
+          "nodes": [
+            {
+              "id": "child1",
+              "type": "polars",
+              "position": {
+                "x": 0,
+                "y": 0
+              },
+              "data": {
+                "label": "Child",
+                "nodeType": "polars",
+                "config": {}
+              }
+            }
+          ],
+          "edges": []
+        },
+        "inputPorts": [
+          {
+            "portId": "base",
+            "label": "base",
+            "targets": [
+              {
+                "nodeId": "child1"
+              }
+            ]
+          }
+        ],
+        "outputPorts": [
+          {
+            "portId": "quotes",
+            "label": "quotes",
+            "source": {
+              "nodeId": "child1"
+            }
+          }
+        ]
       }
-    }
+    },
+    "preserved_blocks": [],
+    "source_revision": "revision-create-1"
   }
 }

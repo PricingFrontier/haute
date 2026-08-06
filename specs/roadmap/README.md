@@ -15,7 +15,6 @@ currently startable package.
 
 | Component | Improvement surface | Start with |
 |---|---|---|
-| [Assistant](assistant.md) | Library-owned capabilities, shared operations, mutation authority, provider egress, recipes, automatically derived project knowledge, performance evaluation | `ASSIST-A04` |
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E09` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |

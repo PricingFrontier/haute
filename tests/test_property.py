@@ -15,7 +15,8 @@ import pytest
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from haute._path_resolution import resolve_runtime_file_path
+from haute._config_io import is_windows_reserved_filename
+from haute._path_resolution import MalformedRuntimePathError, resolve_runtime_file_path
 from haute._rating import _apply_banding
 from haute.codegen import graph_to_code
 from haute.graph_utils import (
@@ -149,11 +150,15 @@ class TestTopoSortProperties:
 # Runtime path resolution metamorphic properties
 # ---------------------------------------------------------------------------
 
+# A DOS device name is deliberately NOT a harmless component: Windows resolves
+# it to the device rather than to a file, so `resolve_runtime_file_path` rejects
+# it on every platform. Excluding it here keeps this property about what it
+# claims to be about; the rejection has its own test below.
 path_part_strategy = st.text(
     alphabet=string.ascii_letters + string.digits + "_-",
     min_size=1,
     max_size=12,
-)
+).filter(lambda part: not is_windows_reserved_filename(part))
 
 
 class TestRuntimePathResolutionProperties:
@@ -185,6 +190,45 @@ class TestRuntimePathResolutionProperties:
 
         assert resolved == resolved_with_dot
         assert resolved.is_relative_to(root.resolve())
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["NUL", "nul", "CON.csv", "data/AUX.parquet", "com1", "LPT9.json"],
+    )
+    def test_reserved_device_names_are_rejected_on_every_platform(
+        self,
+        raw: str,
+        tmp_path: Path,
+    ) -> None:
+        """Windows resolves these to a device, not a file in the directory.
+
+        Left unchecked, the same configured path resolves to an ordinary file
+        on Linux and escapes its root on Windows, where it surfaced as a
+        misleading "outside the project root". The save-time guards already
+        reject these names on every platform for portability; runtime
+        resolution must agree, or a project only fails once it moves machine.
+        """
+
+        with pytest.raises(MalformedRuntimePathError, match="reserved device name"):
+            resolve_runtime_file_path(
+                raw,
+                project_root=tmp_path,
+                enforce_project_root=True,
+            )
+
+    def test_ordinary_names_sharing_a_device_prefix_still_resolve(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The stem must match exactly; `CONTRACT` and `COM10` are ordinary."""
+
+        for raw in ("CONTRACT.json", "COM10.json", "nullable", "auxiliary/data.csv"):
+            resolved = resolve_runtime_file_path(
+                raw,
+                project_root=tmp_path,
+                enforce_project_root=True,
+            )
+            assert resolved.is_relative_to(tmp_path.resolve())
 
     @given(parts=st.lists(path_part_strategy, min_size=1, max_size=4))
     @settings(

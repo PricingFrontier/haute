@@ -37,14 +37,24 @@ def _get_databricks_client() -> Any:
 
     host = os.getenv("DATABRICKS_HOST", "")
     token = os.getenv("DATABRICKS_TOKEN", "")
+    client_id = os.getenv("DATABRICKS_CLIENT_ID", "")
+    client_secret = os.getenv("DATABRICKS_CLIENT_SECRET", "")
 
-    if not host or not token:
-        raise HTTPException(
-            status_code=503,
-            detail="DATABRICKS_HOST and DATABRICKS_TOKEN must be set in .env",
-        )
+    if host and token:
+        return WorkspaceClient(host=host, token=token)
+    if host and client_id and client_secret:
+        # Service-principal OAuth M2M — the credential shape injected into a
+        # Databricks App container.
+        return WorkspaceClient(host=host, client_id=client_id, client_secret=client_secret)
 
-    return WorkspaceClient(host=host, token=token)
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "DATABRICKS_HOST plus either DATABRICKS_TOKEN or "
+            "DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET must be set "
+            "(.env locally; injected automatically in a Databricks App)"
+        ),
+    )
 
 
 @router.get("/warehouses", response_model=WarehouseListResponse)

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "id": "heldout_continuous_banding",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "semantic",
+  "request": "After quotes, add age_band: band driver_age into driver_age_band as young when <= 25 and experienced when > 25, with unknown as the default.",
+  "required_node_types": ["banding"],
+  "required_node_configs": {
+    "age_band": {
+      "factors": [
+        {
+          "banding": "continuous",
+          "column": "driver_age",
+          "outputColumn": "driver_age_band",
+          "rules": [
+            {"op1": "<=", "val1": 25, "assignment": "young"},
+            {"op1": ">", "val1": 25, "assignment": "experienced"}
+          ],
+          "default": "unknown"
+        }
+      ]
+    }
+  },
+  "required_edges": [["quotes", "age_band"]],
+  "max_unrelated_changes": 0,
+  "require_clarification": false,
+  "require_recovery": false
+}

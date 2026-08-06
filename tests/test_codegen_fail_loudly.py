@@ -528,12 +528,22 @@ def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
     """The gate covers every emitted file, including submodel modules."""
     graph = _g(
         {
-            "nodes": [],
+            "nodes": [
+                {
+                    "id": "sm-instance",
+                    "type": "submodel",
+                    "data": {
+                        "label": "sm",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "sm", "alias": "sm"},
+                    },
+                }
+            ],
             "edges": [],
             "submodels": {
                 "sm": {
+                    "definitionId": "sm",
                     "file": "modules/sm.py",
-                    "childNodeIds": ["src", "t"],
                     "graph": {
                         "nodes": [
                             {
@@ -555,6 +565,8 @@ def test_graph_to_code_multi_refuses_unparseable_submodel_file() -> None:
                         ],
                         "edges": [{"id": "e", "source": "src", "target": "t"}],
                     },
+                    "inputPorts": [],
+                    "outputPorts": [],
                 },
             },
         }
@@ -586,13 +598,22 @@ def test_error_on_name_collisions_raises_for_root_and_submodel_labels() -> None:
                         "nodeType": "polars",
                         "config": {"code": ""},
                     },
-                }
+                },
+                {
+                    "id": "pricing-instance",
+                    "type": "submodel",
+                    "data": {
+                        "label": "pricing",
+                        "nodeType": "submodel",
+                        "config": {"definitionId": "pricing", "alias": "pricing"},
+                    },
+                },
             ],
             "edges": [],
             "submodels": {
                 "pricing": {
+                    "definitionId": "pricing",
                     "file": "modules/pricing.py",
-                    "childNodeIds": ["child"],
                     "graph": {
                         "nodes": [
                             {
@@ -606,6 +627,8 @@ def test_error_on_name_collisions_raises_for_root_and_submodel_labels() -> None:
                         ],
                         "edges": [],
                     },
+                    "inputPorts": [],
+                    "outputPorts": [],
                 }
             },
         }

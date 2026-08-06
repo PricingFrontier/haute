@@ -29,12 +29,10 @@
    `submodels = graph.submodels or {}`.
 2. `validate_pipeline_graph_shape_contracts` — structural preflight (owned by
    `haute._graph_shape`), run before any source is generated.
-3. `_error_on_name_collisions` over every emitted logical node in the root
-   graph and every submodel — eager, so collisions are reported even when the
-   no-submodel fast path would otherwise short-circuit. Parent-list transport
-   copies whose id appears in a submodel's `childNodeIds` are counted only
-   through the authoritative embedded child graph.
-4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
+3. Resolve and validate canonical definitions and occurrences, reject
+   unreferenced definitions and shared-file collisions, then run
+   `_error_on_name_collisions` over root nodes plus each referenced
+   definition graph exactly once.4. **No-submodel path:** order edges (`_order_edge_join_incoming_edges` puts
    each edge-join's two incoming edges in base-then-join order), topo-sort
    nodes (`_topo_sort` via `haute._topo.topo_sort_ids`), build
    id→func-name maps and each node's per-edge input-name list
@@ -45,32 +43,18 @@
    `connect_pairs` directly from edges, call
    `_generate_pipeline_lines(kind="pipeline", ...)`, then
    `_assert_emitted_files_parse` on the single resulting file.
-5. **Submodel path:** for each submodel, rehydrate its stored
-   `GraphNode`/`GraphEdge` list (submodels may be stored as dicts or already-
-   validated models — `GraphNode.model_validate` is applied conditionally),
-   order edge-join edges, topo-sort, resolve cross-boundary `in__<child_id>`
-   edges targeting the submodel placeholder into that child's sources
-   (raising `ParseError` on a malformed or unknown handle), validate
-   `out__<child_id>` edges leaving the placeholder the same way, build that
-   submodel's `connect_pairs`, and emit its file via
-   `_generate_pipeline_lines(kind="submodel", obj_name="submodel", ...)`,
-   passing the child graph's description, preamble, and preserved blocks.
-   Then assemble the main file: root nodes are those not inside any
-   submodel's `childNodeIds` and not a `submodel__<name>` placeholder;
-   `_resolve_submodel_endpoint` maps a placeholder-boundary edge to the
-   actual child node id on either side; `root_connect_pairs` forwards
-   ordinary `sourceHandle`/`targetHandle` values on non-boundary edges and
-   restores the authored `sourcePort`/`targetPort` values hidden behind a
-   submodel boundary. Synthetic `out__<id>` / `in__<id>` handles are never
-   emitted as user-facing ports. Boundary detection gates on the endpoint
-   node being a placeholder, not on the string prefix, so a legitimately
-   named `apiInput` table called `"out__claims"` is not mistaken for a
-   boundary marker; submodel import lines
-   (`pipeline.submodel(<path>)`) are appended; the main file is emitted with
-   `dedup_connects=True` (root-level connect pairs can be reached both via a
-   direct edge and via boundary resolution, so duplicates are collapsed by
-   `(src, tgt, source_port, target_port)` identity). Finally
-   `_assert_emitted_files_parse` runs over the whole `files` dict.
+5. **Submodel path:** resolve every canonical occurrence and order definitions
+   by first occurrence. For each definition, topo-sort its internal graph,
+   derive child parameters from structured public input targets followed by
+   internal edges, validate every structured output source, and emit one
+   `haute.Submodel(..., definition_id=..., input_ports=...,
+   output_ports=...)` file. Then omit occurrence nodes from the root function
+   list, translate parent boundary handles only to declared public port ids,
+   derive downstream names as `<alias>__<portId>`, and emit one explicit
+   `pipeline.submodel(...)` registration per occurrence with its definition
+   id, instance id, alias, and label. Parent `connect` calls refer to aliases
+   plus public port ids; synthetic `in__`/`out__` handles never enter source.
+   Finally `_assert_emitted_files_parse` validates every emitted file.
 
 ### `_generate_pipeline_lines` (shared by both paths above)
 
@@ -118,11 +102,26 @@ fresh markers.
 
 ### Canonical data I/O and retained sidecar builders
 
+- `_generate_pipeline_lines` emits the reserved `_HautePath` import before
+  the standard imports and the `_HAUTE_CONFIG_BASE` assignment immediately
+  after the `Pipeline`/`Submodel` constructor. A pipeline file assigns
+  `_HautePath(__file__).resolve().parent`; a submodel file assigns
+  `_HautePath(__file__).resolve().parents[N]` where `N` is the number of path
+  separators in the recorded registration path — config paths always resolve
+  against the parent pipeline directory, so the emitted base climbs exactly as
+  many levels as the registration path descends (`modules/x.py` -> `parents[1]`,
+  `x.py` -> `parents[0]`, `a/b/x.py` -> `parents[2]`). Submodel codegen without
+  that depth is a `HauteError`. `_extract_preamble` excludes exactly those
+  reserved scaffold shapes (`.parent` and `.parents[N]`, matched structurally,
+  plus the `_HautePath` import) so codegen -> parse -> codegen emits one
+  config-base assignment and reaches a source-text fixpoint rather than
+  reclassifying generated infrastructure as authored preamble.
 - `_gen_data_input` emits the one retained tabular-input scaffold. It calls
   `resolve_data_input_from_config` using the generated sidecar path and file
   directory, assigns the returned lazy frame to `df`, appends optional user
   code, and returns `df`. The `data_input` extraction matcher removes only
-  that generated load scaffold on the reverse parse.
+  its canonical imports, config-base setup, and load call on the reverse
+  parse. Only the optional transform remains in node `code`.
 - `_gen_data_output` emits a config-sidecar decorator and an ordinary
   pass-through body. It never writes during import or ordinary pipeline
   execution; explicit publication belongs to the output-write runtime path.
@@ -202,10 +201,37 @@ text between the parens is non-whitespace).
 - **Two `inputs_by_parent` keys collapsing to the same emitted parent name
   with different column sets** — genuine ambiguity, raises `ParseError`
   rather than picking a "last writer."
-- **`polars` transform with no code and no upstream sources** — `ConfigError`
-  (`_gen_transform`); **no code with multiple upstream sources** — also
-  `ConfigError`, since an implicit multi-source passthrough has no
-  well-defined semantics; codegen requires explicit combining code instead.
+- **`polars` transform with no code and no upstream sources, or no code with
+  multiple upstream sources** — neither can RUN (nothing to return; no
+  well-defined implicit multi-source passthrough), but both are ordinary states
+  for a graph still being built, so neither blocks a SAVE. `_gen_transform`
+  emits `_code_extraction.INCOMPLETE_TRANSFORM_BODY`: a valid body that raises
+  `NotImplementedError` if executed. It never silently passes one input through
+  and drops the rest, and never emits `return df` where `df` is unbound. Save
+  reports it through `_validate_transforms_are_runnable` as a non-blocking
+  warning, alongside the empty-`tables[]` API Input warning.
+  The placeholder's message is a CONSTANT naming no node or source, so
+  `_match_polars` can recognise it and treat it as scaffold — the node
+  round-trips back into the editor still empty. An interpolated message would
+  leave nothing fixed to match on, and matching loosely (any leading
+  `raise NotImplementedError`) would swallow a user's own first line on reload.
+  The failing node is identified by the function name in the traceback.
+  Recognition is **structural**, not textual
+  (`_code_extraction._is_incomplete_transform_placeholder` compares the parsed
+  statement). The emitted source is not what stays on disk: the generated `.py`
+  is a real source file that editors, pre-commit hooks and `ruff format` touch,
+  so quote style, line wrapping and the magic trailing comma all vary.
+  A textual comparison silently stops matching after any such reformat, and the
+  placeholder then returns as the user's own code — writing a `raise` into a
+  node they deliberately left empty. Anything the user adds AFTER the
+  placeholder is preserved (`generated_scaffold=True`): the placeholder binds no
+  `df` alias, so a following `df = <param>` is authored code, not scaffold.
+  The live executor keeps the same invariant: exactly one upstream remains the
+  intentional passthrough, while zero or multiple upstreams install a callable
+  that raises the same `NotImplementedError` instead of routing through the
+  shared first-input passthrough. Save validation scans both the root graph and
+  every embedded submodel definition, so every generated placeholder is named
+  in a non-blocking warning.
 - **Empty/cleared code box producing a degenerate `df = (\n)`** — parses as
   `df = ()` (an empty tuple), recognized by `_is_empty_chain_assignment` as
   leftover scaffolding and collapsed to empty user code, not left as
@@ -269,13 +295,14 @@ text between the parens is non-whitespace).
 | Duplicate derived input names among one node's incoming edges | `ParseError` (target node + colliding input name) | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | An `apiInput` edge carrying no `source_port`/`sourceHandle` (only reachable via a hand-edited file — the editor cannot create one) | `ParseError` naming the edge and source node | `codegen.graph_to_code_multi` (per-edge input-name assembly) |
 | `edgeJoin` codegen source names/ids desynced | `ParseError` | `codegen._role_order_node_sources` |
-| Submodel cross-boundary edge with missing/malformed `in__`/`out__` handle, or referencing an unknown child id | `ParseError` | `codegen.graph_to_code_multi`, `codegen._resolve_submodel_endpoint` |
+| Canonical submodel occurrence, definition, public handle, port id, or internal port endpoint is malformed | `ParseError` | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
+| Parent edge endpoint is neither a root node nor a registered occurrence (e.g. a definition-owned child id used as a parent endpoint) | `ParseError` naming the edge, endpoint side, and node id | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
-| `polars` transform has no code and no/multiple sources | `ConfigError` | `_codegen_builders._gen_transform` |
+| `polars` transform has no code and no/multiple sources | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | `edgeJoin` codegen called with `!= 2` sources, or missing `baseInput`/`joinInput` | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
-| Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` placeholder | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
+| Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
 | Extraction engine given an unknown `kind` | `KeyError` | `_code_extraction.extract_user_code` |
 | User code text fails to parse during extraction | `_UserCodeParseError` (`ParseError` + `ValueError`, chains original `SyntaxError`) | `_code_extraction._parse_user_code` |
 | `_rewrite_outer_returns_as_assignment` hits a `return` fragment matching neither `return <expr>` nor bare `return` | `AssertionError` (`# pragma: no cover`, defensive) | `_code_extraction._rewrite_outer_returns_as_assignment` |
@@ -307,6 +334,14 @@ than one file per module:
   sanitised-node-label is the reachable case), and the round-trip fixpoint
   (`test_codegen_roundtrip_property.py`) regenerated under frame-named
   parameters.
+- **`test_save_incomplete_transform.py`** — a transform the user has not written
+  yet (no code, and either no upstream or several) must SAVE with a warning
+  rather than block the whole pipeline. Pins that the generated body fails
+  loudly if run instead of silently passing one input through, that it
+  round-trips back to an empty node rather than being adopted as user code, and
+  that the well-defined single-upstream passthrough is untouched. Executor-level
+  cases pin the same zero/multiple-input failure in the live canvas, and a
+  submodel case proves save warnings cover embedded definitions.
 - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
   `_gen_data_input`, `_gen_data_output`) plus `TestCodegenExecValidation`, which executes
@@ -319,7 +354,7 @@ than one file per module:
   multiline/bare decorator contract injection, `inputs_by_parent`
   preservation and stale-key dropping, unparseable-file refusal (both
   single-file and submodel-file), missing-decorator rejection, name-
-  collision reporting across root+submodel, and the submodel-placeholder
+  collision reporting across root+submodel, and the submodel-occurrence
   unreachability guard.
 - **`test_codegen_docstring_roundtrip.py`** — "Phase 5 Wave 9D #122
   pathological docstring round-trip tests": adversarial description strings

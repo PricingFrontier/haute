@@ -24,7 +24,7 @@ from typing import (
 )
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from haute._graph_utils import build_parents_of
 
@@ -260,11 +260,12 @@ class ModelScoreConfig(TypedDict, total=False):
 class BandingFactor(TypedDict, total=False):
     """A single factor in a banding node config."""
 
-    banding: str  # "continuous" | "discrete"
+    banding: Literal["continuous", "categorical", "breakpoints"]
     column: str
     outputColumn: str
-    rules: list[dict[str, Any]]
+    rules: list[dict[str, Any]] | dict[str, Any]
     default: str | None
+    rightClosed: bool
 
 
 class BandingConfig(TypedDict, total=False):
@@ -667,13 +668,11 @@ class ConstantConfig(TypedDict, total=False):
     values: list[dict[str, str]]
 
 
-class SubmodelConfig(TypedDict, total=False):
-    """Config for submodel placeholder nodes."""
+class SubmodelConfig(TypedDict):
+    """Canonical identity for one submodel occurrence node."""
 
-    file: str
-    childNodeIds: list[str]
-    inputPorts: list[str]
-    outputPorts: list[str]
+    definitionId: str
+    alias: str
 
 
 class NodeData(BaseModel):
@@ -702,10 +701,11 @@ class GraphEdge(BaseModel):
     target: str
     sourceHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
     targetHandle: str | None = None  # noqa: N815 — matches React Flow frontend convention
-    # A submodel placeholder consumes one handle per boundary side to encode
-    # ``in__<child>`` / ``out__<child>``. Preserve the authored connect port
-    # separately until flattening or codegen restores it. Ordinary edges omit
-    # these fields from serialized payloads.
+    # A submodel occurrence consumes one handle per boundary side to encode
+    # ``in__<public-port>`` / ``out__<public-port>``. Its definition resolves
+    # that public port to an internal endpoint. Preserve the authored connect
+    # port separately until flattening or codegen restores it. Ordinary edges
+    # omit these fields from serialized payloads.
     sourcePort: str | None = Field(  # noqa: N815 — serialized graph convention
         default=None,
         exclude_if=lambda value: value is None,
@@ -739,6 +739,130 @@ class GraphEdge(BaseModel):
         return v
 
 
+class SubmodelEndpoint(BaseModel):
+    """One stable public-port binding to an internal definition endpoint."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    node_id: str = Field(alias="nodeId")
+    handle_id: str | None = Field(default=None, alias="handleId")
+
+    @field_validator("node_id", "handle_id")
+    @classmethod
+    def _validate_identity(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value or value != value.strip():
+            raise ValueError("Submodel endpoint identities must be non-empty and unpadded.")
+        return value
+
+
+class SubmodelInputPort(BaseModel):
+    """A public input with one or more ordered internal targets."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    port_id: str = Field(alias="portId")
+    label: str
+    targets: list[SubmodelEndpoint] = Field(min_length=1)
+
+    @field_validator("port_id", "label")
+    @classmethod
+    def _validate_text(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("Submodel port ids and labels must be non-empty and unpadded.")
+        return value
+
+    @model_validator(mode="after")
+    def _reject_duplicate_targets(self) -> Self:
+        identities = [(target.node_id, target.handle_id) for target in self.targets]
+        if len(identities) != len(set(identities)):
+            raise ValueError(f"Submodel input port {self.port_id!r} has duplicate targets.")
+        return self
+
+
+class SubmodelOutputPort(BaseModel):
+    """A public output backed by exactly one internal source."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    port_id: str = Field(alias="portId")
+    label: str
+    source: SubmodelEndpoint
+
+    @field_validator("port_id", "label")
+    @classmethod
+    def _validate_text(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("Submodel port ids and labels must be non-empty and unpadded.")
+        return value
+
+
+class SubmodelInstanceConfig(BaseModel):
+    """Typed identity carried by one parent-graph SUBMODEL occurrence."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    definition_id: str = Field(alias="definitionId")
+    alias: str
+    instance_of: str | None = Field(
+        default=None,
+        alias="instanceOf",
+        exclude_if=lambda value: value is None,
+    )
+
+    @field_validator("definition_id", "alias", "instance_of")
+    @classmethod
+    def _validate_identity(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if not value or value != value.strip():
+            raise ValueError("Submodel definition ids and aliases must be non-empty and unpadded.")
+        return value
+
+
+class SubmodelDefinition(BaseModel):
+    """One shared, file-backed submodel definition and its public interface."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    definition_id: str = Field(alias="definitionId")
+    file: str
+    graph: PipelineGraph
+    input_ports: list[SubmodelInputPort] = Field(alias="inputPorts")
+    output_ports: list[SubmodelOutputPort] = Field(alias="outputPorts")
+
+    @field_validator("definition_id", "file")
+    @classmethod
+    def _validate_identity(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("Submodel definition ids and files must be non-empty and unpadded.")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_interface(self) -> Self:
+        if self.graph.submodels:
+            raise ValueError("Nested submodels are not supported in a definition graph.")
+
+        port_ids = [
+            *(port.port_id for port in self.input_ports),
+            *(port.port_id for port in self.output_ports),
+        ]
+        duplicates = sorted(port_id for port_id in set(port_ids) if port_ids.count(port_id) > 1)
+        if duplicates:
+            raise ValueError(f"Submodel definition has duplicate public port ids: {duplicates!r}.")
+
+        graph_node_ids = {node.id for node in self.graph.nodes}
+        endpoint_ids = [target.node_id for port in self.input_ports for target in port.targets]
+        endpoint_ids.extend(port.source.node_id for port in self.output_ports)
+        missing = sorted(set(endpoint_ids) - graph_node_ids)
+        if missing:
+            raise ValueError(
+                f"Submodel public port endpoint references missing child nodes: {missing!r}."
+            )
+        return self
+
+
 class PipelineGraph(BaseModel):
     """React Flow graph structure used throughout Haute.
 
@@ -755,11 +879,50 @@ class PipelineGraph(BaseModel):
     preamble: str | None = None
     preserved_blocks: list[str] = Field(default_factory=list)
     source_file: str | None = None
-    submodels: dict[str, Any] | None = None
+    source_revision: str | None = None
+    submodels: dict[str, SubmodelDefinition] | None = None
+
+    @field_validator("submodels", mode="before")
+    @classmethod
+    def _validate_submodel_definitions(
+        cls,
+        value: object,
+    ) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise ValueError("PipelineGraph.submodels must be a definition mapping.")
+
+        definitions: dict[str, SubmodelDefinition] = {}
+        for raw_key, raw_definition in value.items():
+            if not isinstance(raw_key, str) or not raw_key or raw_key != raw_key.strip():
+                raise ValueError("Submodel definition registry keys must be non-empty strings.")
+            try:
+                definition = (
+                    raw_definition
+                    if isinstance(raw_definition, SubmodelDefinition)
+                    else SubmodelDefinition.model_validate(raw_definition)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Submodel definition {raw_key!r} must match the canonical schema: {exc}"
+                ) from exc
+            if definition.definition_id != raw_key:
+                raise ValueError(
+                    "Submodel definition registry key does not match definitionId: "
+                    f"{raw_key!r} != {definition.definition_id!r}."
+                )
+            definitions[raw_key] = definition
+        return definitions
+
     warning: str | None = None
     sources: list[str] = Field(default_factory=lambda: ["live"])
     active_source: str = "live"
     _parser_parameter_names: dict[str, list[str]] = PrivateAttr(default_factory=dict)
+
+    _parser_definition_id: str | None = PrivateAttr(default=None)
+    _parser_input_ports: list[SubmodelInputPort] | None = PrivateAttr(default=None)
+    _parser_output_ports: list[SubmodelOutputPort] | None = PrivateAttr(default=None)
 
     # Names of ``@cached_property`` slots that must be invalidated when
     # ``model_copy`` produces a new instance with changed structure —
@@ -834,3 +997,7 @@ class PipelineGraph(BaseModel):
         from haute._cache import _graph_base_fingerprint
 
         return _graph_base_fingerprint(self)
+
+
+SubmodelDefinition.model_rebuild()
+PipelineGraph.model_rebuild()

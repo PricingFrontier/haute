@@ -1,7 +1,7 @@
 """Submodel parsing and merging for the pipeline parser.
 
 Handles:
-- Extracting ``pipeline.submodel("path")`` calls from AST
+- Extracting canonical ``pipeline.submodel(...)`` registrations from AST
 - Parsing individual submodel .py files
 - Merging submodel graphs into the parent pipeline graph
   (either flattened for execution or hierarchical for the GUI)
@@ -10,9 +10,9 @@ Handles:
 from __future__ import annotations
 
 import ast
-from os.path import normcase
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TypeVar
 
 from haute._ast_helpers import (
     _extract_connect_calls,
@@ -30,153 +30,261 @@ from haute._graph_builders import (
 )
 from haute._graph_utils import _edge_id
 from haute._parser_conservation import assert_parser_structure_conserved
-from haute._submodel_graph import (
-    build_submodel_placeholder,
-    classify_ports,
-    rewire_edges,
+from haute._submodel_instances import rewrite_submodel_alias_references
+from haute._types import (
+    GraphEdge,
+    GraphNode,
+    NodeData,
+    NodeType,
+    PipelineGraph,
+    SubmodelDefinition,
+    SubmodelInputPort,
+    SubmodelOutputPort,
 )
-from haute._types import GraphEdge, GraphNode, PipelineGraph
 from haute.errors import ParseError
 
 _Connect4 = tuple[str, str, str | None, str | None]
-
-
-def build_unique_submodel_maps(
-    parsed: list[tuple[str, PipelineGraph]],
-) -> tuple[dict[str, PipelineGraph], dict[str, str]]:
-    """Index parsed submodels by declared name, rejecting every collision.
-
-    ``parsed`` preserves authored reference order as ``(path, graph)`` pairs.
-    Resolved source files are grouped first so a repeated reference is not
-    misreported as several files declaring one name. Grouping names before
-    constructing the dictionaries then prevents the historical later-file-
-    wins overwrite and lets one diagnostic name every genuinely distinct
-    file involved in a declared-name collision.
-    """
-    by_source_file: dict[str, dict[str, Any]] = {}
-    for rel_path, graph in parsed:
-        source_file = graph.source_file or rel_path
-        source_key = normcase(str(Path(source_file).resolve()))
-        entry = by_source_file.setdefault(
-            source_key,
-            {
-                "source_file": source_file,
-                "references": [],
-            },
-        )
-        entry["references"].append(rel_path)
-
-    duplicate_files = [entry for entry in by_source_file.values() if len(entry["references"]) > 1]
-    if duplicate_files:
-        duplicate_context: dict[str, Any] = {"duplicate_files": duplicate_files}
-        if len(duplicate_files) == 1:
-            duplicate_file = duplicate_files[0]
-            duplicate_context.update(
-                source_file=duplicate_file["source_file"],
-                references=duplicate_file["references"],
-            )
-        raise ParseError(
-            "The same submodel file is referenced more than once.",
-            **duplicate_context,
-        )
-
-    by_name: dict[str, list[tuple[str, PipelineGraph]]] = {}
-    for rel_path, graph in parsed:
-        name = graph.pipeline_name or Path(rel_path).stem
-        by_name.setdefault(name, []).append((rel_path, graph))
-
-    collisions = {
-        name: [rel_path for rel_path, _graph in entries]
-        for name, entries in by_name.items()
-        if len(entries) > 1
-    }
-    if collisions:
-        context: dict[str, Any] = {"collisions": collisions}
-        if len(collisions) == 1:
-            submodel_name, files = next(iter(collisions.items()))
-            context.update(submodel_name=submodel_name, files=files)
-        raise ParseError(
-            "Multiple files declare the same submodel name.",
-            **context,
-        )
-
-    submodel_graphs: dict[str, PipelineGraph] = {}
-    submodel_files: dict[str, str] = {}
-    for name, entries in by_name.items():
-        rel_path, graph = entries[0]
-        submodel_graphs[name] = graph
-        submodel_files[name] = rel_path
-    return submodel_graphs, submodel_files
+_SubmodelPortT = TypeVar("_SubmodelPortT", SubmodelInputPort, SubmodelOutputPort)
 
 
 def _submodel_path_expr(link: ast.Call) -> ast.expr | None:
     """Return the path argument node of a ``submodel(...)`` link, if any.
 
     Accepts the positional form ``submodel("path")`` and the keyword form
-    ``submodel(path="path")``. Returns ``None`` when the call carries no
+    ``submodel(file="path")``. Returns ``None`` when the call carries no
     path argument at all (e.g. ``pipeline.submodel()``).
     """
     if link.args:
         return link.args[0]
     for kw in link.keywords:
-        if kw.arg == "path":
+        if kw.arg == "file":
             return kw.value
     return None
 
 
-def extract_submodel_calls(tree: ast.Module) -> list[str]:
-    """Find ``pipeline.submodel("path")`` calls and return the file paths.
+@dataclass(frozen=True)
+class SubmodelRegistration:
+    """One canonical occurrence registration in a parent source file."""
 
-    Mirrors :func:`haute._ast_helpers._extract_connect_calls`: the method
-    chain is walked from the outermost call down to its base receiver, so
-    chained ``pipeline.submodel("a").submodel("b")`` and keyword-form
-    ``pipeline.submodel(path="a")`` calls contribute their submodels instead
-    of being silently dropped. The terminal base must be a bare ``pipeline``
-    name, so ``module.pipeline.submodel(...)`` and ``other.submodel(...)``
-    stay rejected.
+    path: str
+    definition_id: str
+    instance_id: str
+    alias: str
+    instance_of: str | None = None
+    label: str | None = None
+    line: int | None = None
 
-    A resolved ``pipeline.submodel(...)`` whose path is a non-literal
-    expression raises :class:`ParseError`: the parser never executes the
-    file, so the reference cannot be resolved, and silently dropping it
-    would discard the entire submodel (and re-emit the file without it on
-    the next save).
-    """
-    paths: list[str] = []
+
+def _registration_keyword(link: ast.Call, name: str) -> str | None:
+    matches = [keyword for keyword in link.keywords if keyword.arg == name]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ParseError(
+            "pipeline.submodel() contains a duplicate keyword.",
+            field=name,
+            line=getattr(link, "lineno", None),
+        )
+    expression = matches[0].value
+    if not isinstance(expression, ast.Constant) or not isinstance(expression.value, str):
+        raise ParseError(
+            f"pipeline.submodel() {name} must be a string literal.",
+            field=name,
+            line=getattr(expression, "lineno", None),
+        )
+    if not expression.value or expression.value != expression.value.strip():
+        raise ParseError(
+            f"pipeline.submodel() {name} must be non-empty and unpadded.",
+            field=name,
+            line=getattr(expression, "lineno", None),
+        )
+    return expression.value
+
+
+def extract_submodel_registrations(tree: ast.Module) -> list[SubmodelRegistration]:
+    """Extract occurrence-aware registrations while preserving source order."""
+    registrations: list[SubmodelRegistration] = []
     for node in ast.iter_child_nodes(tree):
-        if not isinstance(node, ast.Expr):
-            continue
-        call = node.value
-        if not isinstance(call, ast.Call):
+        if not isinstance(node, ast.Expr) or not isinstance(node.value, ast.Call):
             continue
 
-        # Collect every .submodel link in the method chain, walking from the
-        # outermost call down to the base receiver.
         links: list[ast.Call] = []
-        cur: ast.expr = call
-        while isinstance(cur, ast.Call) and isinstance(cur.func, ast.Attribute):
-            if cur.func.attr == "submodel":
-                links.append(cur)
-            cur = cur.func.value
-        if not links:
-            continue
-        if not (isinstance(cur, ast.Name) and cur.id == "pipeline"):
+        current: ast.expr = node.value
+        while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+            if current.func.attr == "submodel":
+                links.append(current)
+            current = current.func.value
+        if not links or not (isinstance(current, ast.Name) and current.id == "pipeline"):
             continue
 
-        # links were collected outermost-first; reverse for source order.
         for link in reversed(links):
-            path_expr = _submodel_path_expr(link)
-            if path_expr is None:
-                continue
-            if isinstance(path_expr, ast.Constant) and isinstance(path_expr.value, str):
-                paths.append(path_expr.value)
-            else:
+            path_expression = _submodel_path_expr(link)
+            if path_expression is None:
+                raise ParseError(
+                    "pipeline.submodel() requires a file path.",
+                    line=getattr(link, "lineno", None),
+                )
+            if not (
+                isinstance(path_expression, ast.Constant) and isinstance(path_expression.value, str)
+            ):
                 raise ParseError(
                     "pipeline.submodel() path must be a string literal; the "
-                    f"non-literal expression {ast.unparse(path_expr)!r} cannot be "
+                    f"non-literal expression {ast.unparse(path_expression)!r} cannot be "
                     "resolved at parse time and its submodel would be dropped.",
-                    line=getattr(path_expr, "lineno", None),
+                    line=getattr(path_expression, "lineno", None),
                 )
-    return paths
+            path = path_expression.value
+            if not path or path != path.strip():
+                raise ParseError(
+                    "pipeline.submodel() path must be non-empty and unpadded.",
+                    line=getattr(path_expression, "lineno", None),
+                )
+            definition_id = _registration_keyword(link, "definition_id")
+            instance_id = _registration_keyword(link, "instance_id")
+            alias = _registration_keyword(link, "alias")
+            instance_of = _registration_keyword(link, "instance_of")
+            label = _registration_keyword(link, "label")
+            missing_fields = [
+                field
+                for field, value in {
+                    "definition_id": definition_id,
+                    "instance_id": instance_id,
+                    "alias": alias,
+                }.items()
+                if value is None
+            ]
+            if missing_fields:
+                raise ParseError(
+                    "pipeline.submodel() requires explicit stable identity fields: "
+                    "definition_id, instance_id, and alias.",
+                    path=path,
+                    missing_fields=missing_fields,
+                    line=getattr(link, "lineno", None),
+                )
+            assert definition_id is not None
+            assert instance_id is not None
+            assert alias is not None
+            registrations.append(
+                SubmodelRegistration(
+                    path=path,
+                    definition_id=definition_id,
+                    instance_id=instance_id,
+                    alias=alias,
+                    instance_of=instance_of,
+                    label=label,
+                    line=getattr(link, "lineno", None),
+                )
+            )
+
+    explicit_aliases: dict[str, int | None] = {}
+    explicit_instances: dict[str, int | None] = {}
+    for registration in registrations:
+        if registration.alias in explicit_aliases:
+            raise ParseError(
+                "Submodel instance alias is duplicated in the parent source.",
+                alias=registration.alias,
+                lines=[explicit_aliases[registration.alias], registration.line],
+            )
+        if registration.instance_id in explicit_instances:
+            raise ParseError(
+                "Submodel instance id is duplicated in the parent source.",
+                instance_id=registration.instance_id,
+                lines=[explicit_instances[registration.instance_id], registration.line],
+            )
+        explicit_aliases[registration.alias] = registration.line
+        explicit_instances[registration.instance_id] = registration.line
+    return registrations
+
+
+def _extract_definition_contract(
+    tree: ast.Module,
+) -> tuple[
+    str,
+    list[SubmodelInputPort],
+    list[SubmodelOutputPort],
+]:
+    """Return the required literal identity and public ports."""
+    constructor: ast.Call | None = None
+    for node in ast.iter_child_nodes(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if (
+            isinstance(target, ast.Name)
+            and target.id == "submodel"
+            and isinstance(node.value, ast.Call)
+        ):
+            constructor = node.value
+            break
+    if constructor is None:
+        raise ParseError("Submodel source must assign a haute.Submodel constructor.")
+
+    values: dict[str, object] = {}
+    for keyword in constructor.keywords:
+        if keyword.arg == "outputs":
+            raise ParseError(
+                "Submodel outputs is not supported; declare input_ports and output_ports.",
+                field="outputs",
+                line=getattr(keyword.value, "lineno", None),
+            )
+        if keyword.arg not in {"definition_id", "input_ports", "output_ports"}:
+            continue
+        if keyword.arg in values:
+            raise ParseError(
+                "Submodel constructor contains a duplicate keyword.",
+                field=keyword.arg,
+                line=getattr(keyword.value, "lineno", None),
+            )
+        try:
+            values[keyword.arg] = ast.literal_eval(keyword.value)
+        except (SyntaxError, ValueError) as exc:
+            raise ParseError(
+                f"Submodel {keyword.arg} must be a literal value.",
+                field=keyword.arg,
+                line=getattr(keyword.value, "lineno", None),
+            ) from exc
+
+    missing_fields = sorted({"definition_id", "input_ports", "output_ports"} - set(values))
+    if missing_fields:
+        raise ParseError(
+            "Submodel requires definition_id, input_ports, and output_ports.",
+            missing_fields=missing_fields,
+        )
+
+    raw_definition_id = values["definition_id"]
+    if (
+        not isinstance(raw_definition_id, str)
+        or not raw_definition_id
+        or raw_definition_id != raw_definition_id.strip()
+    ):
+        raise ParseError(
+            "Submodel definition_id must be a non-empty unpadded string.",
+            field="definition_id",
+        )
+
+    def parse_ports(
+        field: str,
+        model: type[_SubmodelPortT],
+    ) -> list[_SubmodelPortT]:
+        raw_ports = values[field]
+        if not isinstance(raw_ports, list):
+            raise ParseError(
+                f"Submodel {field} must be a literal list.",
+                field=field,
+            )
+        try:
+            return [model.model_validate(port) for port in raw_ports]
+        except ValueError as exc:
+            raise ParseError(
+                f"Submodel {field} contains an invalid public port.",
+                field=field,
+            ) from exc
+
+    return (
+        raw_definition_id,
+        parse_ports("input_ports", SubmodelInputPort),
+        parse_ports("output_ports", SubmodelOutputPort),
+    )
 
 
 def parse_submodel_source(
@@ -204,12 +312,12 @@ def parse_submodel_source(
     # Nested submodels are capped at one level. Returning the outer child
     # graph while dropping these authored references would corrupt the source
     # on its next save, so the producer contract is enforced as a typed error.
-    nested_paths = extract_submodel_calls(tree)
-    if nested_paths:
+    nested_registrations = extract_submodel_registrations(tree)
+    if nested_registrations:
         raise ParseError(
             "Nested submodels are not supported.",
             source_file=source_file,
-            nested_paths=nested_paths,
+            nested_paths=[registration.path for registration in nested_registrations],
         )
 
     func_bodies = _extract_function_bodies(source, tree=tree)
@@ -248,7 +356,205 @@ def parse_submodel_source(
         str(node["func_name"]): [str(name) for name in node.get("param_names", ())]
         for node in raw_nodes
     }
+
+    (
+        graph._parser_definition_id,
+        graph._parser_input_ports,
+        graph._parser_output_ports,
+    ) = _extract_definition_contract(tree)
     return graph
+
+
+def _merge_registered_submodels(
+    parent_graph: PipelineGraph,
+    submodel_graphs: dict[str, PipelineGraph],
+    submodel_files: dict[str, str],
+    parent_edges: list[_Connect4],
+    registrations: list[SubmodelRegistration],
+    *,
+    flatten: bool,
+) -> PipelineGraph:
+    """Build one shared definition entry and one placeholder per registration."""
+    definitions: dict[str, SubmodelDefinition] = {}
+    aliases: dict[str, tuple[str, SubmodelDefinition]] = {}
+    parent_nodes = list(parent_graph.nodes)
+    root_node_ids = {node.id for node in parent_graph.nodes}
+
+    for definition_id, child_graph in submodel_graphs.items():
+        if child_graph._parser_definition_id != definition_id:
+            raise ParseError(
+                "Parent and child submodel definition ids do not match.",
+                definition_id=definition_id,
+                child_definition_id=child_graph._parser_definition_id,
+                file=submodel_files.get(definition_id, ""),
+            )
+        if child_graph._parser_input_ports is None or child_graph._parser_output_ports is None:
+            raise ParseError(
+                "Reusable submodel definitions must declare input_ports and output_ports.",
+                definition_id=definition_id,
+                file=submodel_files.get(definition_id, ""),
+            )
+        definitions[definition_id] = SubmodelDefinition(
+            definitionId=definition_id,
+            file=submodel_files.get(definition_id, ""),
+            graph=child_graph,
+            inputPorts=child_graph._parser_input_ports,
+            outputPorts=child_graph._parser_output_ports,
+        )
+
+    for registration in registrations:
+        definition = definitions.get(registration.definition_id)
+        if definition is None:
+            raise ParseError(
+                "Submodel registration references an unresolved definition.",
+                path=registration.path,
+                definition_id=registration.definition_id,
+                known_definitions=sorted(definitions),
+            )
+        if registration.alias in root_node_ids:
+            raise ParseError(
+                "Submodel instance alias collides with a parent node id.",
+                alias=registration.alias,
+            )
+        if registration.instance_id in root_node_ids:
+            raise ParseError(
+                "Submodel instance id collides with a parent node id.",
+                instance_id=registration.instance_id,
+            )
+        if registration.alias in aliases:
+            raise ParseError(
+                "Submodel instance alias is duplicated in the parent source.",
+                alias=registration.alias,
+            )
+        aliases[registration.alias] = (registration.instance_id, definition)
+        parent_nodes.append(
+            GraphNode(
+                id=registration.instance_id,
+                type="submodel",
+                data=NodeData(
+                    label=registration.label or registration.alias,
+                    description=definition.graph.pipeline_description or "",
+                    nodeType=NodeType.SUBMODEL,
+                    config={
+                        "definitionId": registration.definition_id,
+                        "alias": registration.alias,
+                        **(
+                            {"instanceOf": registration.instance_of}
+                            if registration.instance_of is not None
+                            else {}
+                        ),
+                    },
+                ),
+            )
+        )
+
+    parent_nodes = rewrite_submodel_alias_references(
+        parent_nodes,
+        {alias: instance_id for alias, (instance_id, _definition) in aliases.items()},
+    )
+    merged_edges = list(parent_graph.edges)
+    existing = {
+        (
+            edge.source,
+            edge.target,
+            edge.sourceHandle,
+            edge.targetHandle,
+            edge.sourcePort,
+            edge.targetPort,
+        )
+        for edge in merged_edges
+    }
+    for source, target, source_port, target_port in parent_edges:
+        source_registration = aliases.get(source)
+        target_registration = aliases.get(target)
+        if source_registration is None and target_registration is None:
+            continue
+
+        actual_source = source
+        actual_target = target
+        source_handle = source_port
+        target_handle = target_port
+        hidden_source_port: str | None = None
+        hidden_target_port: str | None = None
+
+        if source_registration is not None:
+            instance_id, definition = source_registration
+            known_outputs = {port.port_id for port in definition.output_ports}
+            if source_port not in known_outputs:
+                raise ParseError(
+                    "Connection from a submodel instance must name a declared output port.",
+                    alias=source,
+                    instance_id=instance_id,
+                    port_id=source_port,
+                    known_ports=sorted(known_outputs),
+                )
+            actual_source = instance_id
+            source_handle = f"out__{source_port}"
+        elif source not in root_node_ids:
+            raise ParseError(
+                "Connection source is neither a parent node nor a submodel alias.",
+                source=source,
+            )
+
+        if target_registration is not None:
+            instance_id, definition = target_registration
+            known_inputs = {port.port_id for port in definition.input_ports}
+            if target_port not in known_inputs:
+                raise ParseError(
+                    "Connection to a submodel instance must name a declared input port.",
+                    alias=target,
+                    instance_id=instance_id,
+                    port_id=target_port,
+                    known_ports=sorted(known_inputs),
+                )
+            actual_target = instance_id
+            target_handle = f"in__{target_port}"
+        elif target not in root_node_ids:
+            raise ParseError(
+                "Connection target is neither a parent node nor a submodel alias.",
+                target=target,
+            )
+
+        identity = (
+            actual_source,
+            actual_target,
+            source_handle,
+            target_handle,
+            hidden_source_port,
+            hidden_target_port,
+        )
+        if identity in existing:
+            continue
+        existing.add(identity)
+        merged_edges.append(
+            GraphEdge(
+                id=_edge_id(
+                    actual_source,
+                    actual_target,
+                    source_handle,
+                    target_handle,
+                    hidden_source_port=hidden_source_port,
+                    hidden_target_port=hidden_target_port,
+                ),
+                source=actual_source,
+                target=actual_target,
+                sourceHandle=source_handle,
+                targetHandle=target_handle,
+                sourcePort=hidden_source_port,
+                targetPort=hidden_target_port,
+            )
+        )
+
+    hierarchical_payload = parent_graph.model_dump(mode="python", by_alias=True)
+    hierarchical_payload.update(
+        {
+            "nodes": parent_nodes,
+            "edges": merged_edges,
+            "submodels": definitions,
+        }
+    )
+    hierarchical = PipelineGraph.model_validate(hierarchical_payload)
+    return flatten_graph(hierarchical) if flatten else hierarchical
 
 
 def merge_submodels(
@@ -257,150 +563,15 @@ def merge_submodels(
     submodel_files: dict[str, str],
     parent_edges: list[_Connect4],
     *,
+    registrations: list[SubmodelRegistration],
     flatten: bool = False,
 ) -> PipelineGraph:
-    """Merge parsed submodels into the parent graph.
-
-    Always builds the hierarchical form first (a ``submodel__<name>``
-    placeholder node for each child graph, with the full child graph
-    stashed in ``PipelineGraph.submodels``).  When *flatten* is True,
-    delegates to :func:`haute._flatten.flatten_graph` to dissolve the
-    placeholders into their child nodes.  This keeps a single source of
-    truth for the flattening algorithm — it used to live in two files
-    and would silently drift.
-    """
-    if not submodel_graphs:
-        return parent_graph
-
-    parent_nodes: list[GraphNode] = list(parent_graph.nodes)
-    parent_edge_list: list[GraphEdge] = list(parent_graph.edges)
-
-    # Collect all child node IDs across all submodels
-    all_child_ids: set[str] = set()
-    for sm_graph in submodel_graphs.values():
-        all_child_ids.update(n.id for n in sm_graph.nodes)
-
-    resolved_parent_edges = list(parent_edges)
-
-    # A function parameter can name a node outside its own source file. Keep
-    # parser-private signature metadata just long enough to infer those edges
-    # after all root and child IDs are known.
-    all_graphs = [parent_graph, *submodel_graphs.values()]
-    known_node_ids = {node.id for candidate_graph in all_graphs for node in candidate_graph.nodes}
-    occupied_pairs = {
-        (source, target) for source, target, _source_port, _target_port in resolved_parent_edges
-    }
-    occupied_pairs.update(
-        (edge.source, edge.target)
-        for candidate_graph in all_graphs
-        for edge in candidate_graph.edges
+    """Merge canonical definition metadata and occurrence registrations."""
+    return _merge_registered_submodels(
+        parent_graph,
+        submodel_graphs,
+        submodel_files,
+        parent_edges,
+        registrations,
+        flatten=flatten,
     )
-    for candidate_graph in all_graphs:
-        for target_id, parameter_names in candidate_graph._parser_parameter_names.items():
-            for source_id in parameter_names:
-                pair = (source_id, target_id)
-                if (
-                    source_id in known_node_ids
-                    and source_id != target_id
-                    and pair not in occupied_pairs
-                ):
-                    occupied_pairs.add(pair)
-                    resolved_parent_edges.append((source_id, target_id, None, None))
-
-    resolved_parent_graph_edges = [
-        GraphEdge(
-            id=_edge_id(source, target, source_port, target_port),
-            source=source,
-            target=target,
-            sourceHandle=source_port,
-            targetHandle=target_port,
-        )
-        for source, target, source_port, target_port in resolved_parent_edges
-    ]
-
-    # _build_edges drops edges where one endpoint is a submodel child node
-    # (because it only knows about main-file nodes).  Reconstruct those
-    # cross-boundary edges from the raw parent_edges tuples.
-    #
-    # Each parent_edges entry may carry source/target ports. We preserve
-    # those handles while reconstructing cross-boundary edges; later
-    # rewiring replaces true submodel boundary handles with in__/out__
-    # markers.
-    existing_edges = {
-        (e.source, e.target, e.sourceHandle, e.targetHandle) for e in parent_edge_list
-    }
-    for src, tgt, source_port, target_port in resolved_parent_edges:
-        identity = (src, tgt, source_port, target_port)
-        if identity in existing_edges:
-            continue
-        if src in all_child_ids or tgt in all_child_ids:
-            parent_edge_list.append(
-                GraphEdge(
-                    id=_edge_id(src, tgt, source_port, target_port),
-                    source=src,
-                    target=tgt,
-                    sourceHandle=source_port,
-                    targetHandle=target_port,
-                )
-            )
-            existing_edges.add(identity)
-
-    # Hierarchical mode: create submodel placeholder nodes
-    submodels_meta: dict[str, dict] = {}
-
-    for sm_name, sm_graph in submodel_graphs.items():
-        child_node_ids = [n.id for n in sm_graph.nodes]
-        child_node_names = set(child_node_ids)
-
-        sm_file = submodel_files.get(sm_name, "")
-
-        # Determine input and output ports from cross-boundary edges
-        input_ports, output_ports = classify_ports(
-            resolved_parent_graph_edges,
-            child_node_names,
-        )
-
-        # Build the submodel placeholder node
-        sm_node = build_submodel_placeholder(
-            sm_name,
-            sm_file,
-            child_node_ids,
-            input_ports,
-            output_ports,
-            description=sm_graph.pipeline_description or "",
-        )
-        parent_nodes.append(sm_node)
-
-        # Rewire edges via shared helper
-        parent_edge_list = rewire_edges(
-            parent_edge_list,
-            sm_node.id,
-            child_node_names,
-        )
-
-        submodels_meta[sm_name] = {
-            "file": sm_file,
-            "childNodeIds": child_node_ids,
-            "inputPorts": input_ports,
-            "outputPorts": output_ports,
-            "graph": sm_graph.model_dump(),
-        }
-
-    # ``submodels_meta`` is always populated here: the early return above
-    # guarantees ``submodel_graphs`` is non-empty, and the loop sets one
-    # entry per submodel. No guard needed.
-    update: dict[str, Any] = {
-        "nodes": parent_nodes,
-        "edges": parent_edge_list,
-        "submodels": submodels_meta,
-    }
-    hierarchical = parent_graph.model_copy(update=update)
-
-    if flatten:
-        # Single source of truth for the flatten algorithm — the dedicated
-        # flattener in ``_flatten.py`` dissolves every submodel at once,
-        # rewiring the handle-decorated boundary edges back to direct
-        # child→parent / parent→child edges.
-        return flatten_graph(hierarchical)
-
-    return hierarchical

@@ -17,6 +17,9 @@ function status(overrides: Partial<GitWorkingBranchResponse>): GitWorkingBranchR
     identity_set: true,
     user_name: "U",
     user_email: "u@x.y",
+    storage: "unsupported",
+    storage_remote: null,
+    sync: null,
     ...overrides,
   }
 }
@@ -58,6 +61,14 @@ describe("BranchIndicator", () => {
     expect(loadStatus).toHaveBeenCalledOnce()
   })
 
+  it("shows a non-interactive label when no git executable exists", () => {
+    useGitStore.setState({ status: status({ state: "git-unavailable", working_branch: null }) })
+    render(<BranchIndicator />)
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveTextContent("Git unavailable")
+    expect(indicator).toHaveAttribute("data-branch-state", "git-unavailable")
+  })
+
   it("shows that Git has not been initialised when there is no repository", () => {
     useGitStore.setState({ status: status({ state: "no-repository", working_branch: null }) })
     render(<BranchIndicator />)
@@ -78,11 +89,13 @@ describe("BranchIndicator", () => {
     }
   })
 
-  it("shows branch name and short SHA when ready", () => {
+  it("shows the branch name when ready, without the save SHA", () => {
     useGitStore.setState({ status: status({}) })
     render(<BranchIndicator />)
     expect(screen.getByTestId("branch-indicator-name")).toHaveTextContent("dev")
-    expect(screen.getByTestId("branch-indicator-sha")).toHaveTextContent("abc1234")
+    expect(screen.queryByTestId("branch-indicator-sha")).toBeNull()
+    // The commit code belongs to the history panel, not the toolbar.
+    expect(screen.getByTestId("toolbar-branch-indicator")).not.toHaveTextContent("abc1234")
   })
 
   it("clicking the branch name opens the Git panel (hosts the manager, S28)", () => {
@@ -92,32 +105,17 @@ describe("BranchIndicator", () => {
     expect(useUIStore.getState().gitOpen).toBe(true)
   })
 
-  it("clicking the SHA opens the history panel and asks it to select the latest save", () => {
-    useGitStore.setState({ status: status({}) })
-    const before = useGitStore.getState().selectLatestSaveNonce
-    render(<BranchIndicator />)
-    fireEvent.click(screen.getByTestId("branch-indicator-sha"))
-    expect(useUIStore.getState().gitOpen).toBe(true)
-    expect(useGitStore.getState().peekBranch).toBeNull()
-    expect(useGitStore.getState().selectLatestSaveNonce).toBe(before + 1)
-  })
-
-  it("while comparing, the SHA shows the inspected version and selecting targets it (S11)", () => {
+  it("stays branch-only while comparing — the version is named by the comparison breadcrumb (S11)", () => {
     useGitStore.setState({
       status: status({}),
       comparison: { sha: "feedbeef0000aaaa", label: "v9" },
     })
-    const before = useGitStore.getState().selectSaveNonce
     render(<BranchIndicator />)
 
-    const sha = screen.getByTestId("branch-indicator-sha")
-    expect(sha).toHaveTextContent("feedbee") // compared sha, not the last save
-    expect(sha).toHaveAttribute("data-comparing", "true")
-
-    fireEvent.click(sha)
-    expect(useUIStore.getState().gitOpen).toBe(true)
-    expect(useGitStore.getState().selectSaveTarget).toBe("feedbeef0000aaaa")
-    expect(useGitStore.getState().selectSaveNonce).toBe(before + 1)
+    expect(screen.queryByTestId("branch-indicator-sha")).toBeNull()
+    const indicator = screen.getByTestId("toolbar-branch-indicator")
+    expect(indicator).toHaveTextContent("dev")
+    expect(indicator).not.toHaveTextContent("feedbee")
   })
 
   it("shows a 'set branch' prompt when unset and opens the select modal", () => {
@@ -134,5 +132,66 @@ describe("BranchIndicator", () => {
     render(<BranchIndicator />)
     fireEvent.click(screen.getByTestId("toolbar-branch-indicator"))
     expect(useGitStore.getState().modal).toBe("divergence")
+  })
+
+  describe("durable storage surface", () => {
+    it("renders nothing extra when storage is unsupported (every local session)", () => {
+      useGitStore.setState({ status: status({ storage: "unsupported" }) })
+      render(<BranchIndicator />)
+      expect(screen.queryByTestId("storage-indicator")).toBeNull()
+    })
+
+    it("shows a clickable 'Not stored' affordance when unbound", () => {
+      useGitStore.setState({ status: status({ storage: "unbound" }) })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("Not stored")
+      expect(chip).toHaveAttribute("data-storage-state", "unbound")
+      fireEvent.click(chip)
+      expect(useGitStore.getState().modal).toBe("storage")
+    })
+
+    it("shows a quiet Synced chip when bound and synced", () => {
+      useGitStore.setState({
+        status: status({
+          storage: "bound",
+          sync: { state: "synced", pending: 0, failure: null, message: null },
+        }),
+      })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("Synced")
+      expect(chip).toHaveAttribute("data-sync-state", "synced")
+    })
+
+    it("shows the unpublished count while pending", () => {
+      useGitStore.setState({
+        status: status({
+          storage: "bound",
+          sync: { state: "pending", pending: 3, failure: null, message: null },
+        }),
+      })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("3 unpublished")
+      expect(chip).toHaveAttribute("data-sync-state", "pending")
+    })
+
+    it("shows the failure message and a working retry action when failed", () => {
+      const retrySync = vi.fn()
+      useGitStore.setState({
+        status: status({
+          storage: "bound",
+          sync: { state: "failed", pending: 1, failure: "transport", message: "Could not reach the remote" },
+        }),
+        retrySync,
+      })
+      render(<BranchIndicator />)
+      const chip = screen.getByTestId("storage-indicator")
+      expect(chip).toHaveTextContent("Could not reach the remote")
+      expect(chip).toHaveAttribute("data-sync-state", "failed")
+      fireEvent.click(screen.getByTestId("storage-retry"))
+      expect(retrySync).toHaveBeenCalledOnce()
+    })
   })
 })

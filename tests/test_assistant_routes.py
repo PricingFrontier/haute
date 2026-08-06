@@ -23,6 +23,7 @@ Authored test-first per CLAUDE.md TDD.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -47,7 +48,11 @@ def project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def configured(project_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (project_root / "haute.toml").write_text(
-        '[assistant]\nprovider = "anthropic"\nmodel = "test-model"\n', encoding="utf-8"
+        '[assistant]\nprovider = "anthropic"\nmodel = "test-model"\n'
+        '[assistant.egress]\ntrust = "external"\nmax_sensitivity = "public"\n'
+        "allow_project_knowledge = false\nallow_executable_source = false\n"
+        "allow_row_samples = false\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     return project_root
@@ -74,8 +79,10 @@ def store(monkeypatch: pytest.MonkeyPatch) -> SessionStore:
 class _ScriptedProvider:
     def __init__(self, events: list[object]) -> None:
         self._events = list(events)
+        self.calls: list[dict[str, object]] = []
 
     async def stream_turn(self, *, system, messages, tools):
+        self.calls.append({"system": system, "messages": list(messages), "tools": list(tools)})
         for event in self._events:
             if isinstance(event, Exception):
                 raise event
@@ -139,6 +146,49 @@ class TestSessionCreate:
         assert response.status_code == 404
 
 
+class TestSessionList:
+    """GET /sessions backs the panel's chat list, which opens before any send."""
+
+    def test_lists_this_pipeline_s_conversations(self, client: TestClient, store: SessionStore):
+        session = store.create("main.py")
+        store.append(session, {"messages": [{"role": "user", "content": "aggregate claims"}]})
+
+        response = client.get("/api/assistant/sessions")
+
+        assert response.status_code == 200, response.text
+        sessions = response.json()["sessions"]
+        assert [item["session_id"] for item in sessions] == [session.id]
+        assert sessions[0]["title"] == "aggregate claims"
+        assert sessions[0]["message_count"] == 1
+
+    def test_empty_project_lists_nothing(self, client: TestClient, store: SessionStore):
+        response = client.get("/api/assistant/sessions")
+        assert response.status_code == 200
+        assert response.json()["sessions"] == []
+
+    def test_reads_the_store_on_its_event_loop_thread(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        original = store.list_sessions
+
+        def list_sessions(source_file: str):
+            asyncio.get_running_loop()
+            return original(source_file)
+
+        monkeypatch.setattr(store, "list_sessions", list_sessions)
+
+        response = client.get("/api/assistant/sessions")
+
+        assert response.status_code == 200, response.text
+
+    def test_unknown_pipeline_name_is_404(self, client: TestClient, store: SessionStore):
+        response = client.get("/api/assistant/sessions", params={"pipeline": "nope"})
+        assert response.status_code == 404
+
+
 def _persistent_store(monkeypatch: pytest.MonkeyPatch, project_root: Path) -> SessionStore:
     """Swap in a store persisting to the project's `.haute/` sessions dir."""
 
@@ -166,15 +216,25 @@ class TestSessionResume:
                         "role": "assistant",
                         "content": "Working on it",
                         "tool_calls": [
-                            {"id": "c1", "name": "apply_graph_edits", "arguments": {"ops": []}}
+                            {
+                                "id": "c1",
+                                "name": "apply_graph_plan",
+                                "arguments": {
+                                    "plan_hash": "a" * 64,
+                                },
+                            }
                         ],
                     },
                     {
                         "role": "tool",
                         "tool_call_id": "c1",
-                        "name": "apply_graph_edits",
+                        "name": "apply_graph_plan",
                         "content": {"applied": 1, "graph_fingerprint": "abc123"},
                         "is_error": False,
+                    },
+                    {
+                        "role": "controller",
+                        "content": "Continue the mutation workflow.",
                     },
                     {"role": "assistant", "content": "Done"},
                 ]
@@ -191,8 +251,9 @@ class TestSessionResume:
         assert body["history"][0]["text"] == "add a node"
         assert body["history"][1]["text"] == "Working on it"
         tool = body["history"][2]
-        assert tool["name"] == "apply_graph_edits"
-        assert "applied" in tool["summary"]
+        assert tool["name"] == "apply_graph_plan"
+        assert "redacted" in tool["summary"]
+        assert "graph_fingerprint" in tool["summary"]
         assert tool["is_error"] is False
         graph_updated = body["history"][3]
         assert graph_updated == {
@@ -411,12 +472,29 @@ class TestRouteEdges:
 
 class TestProviderFactory:
     def test_builds_each_configured_adapter(self):
-        from haute.assistant._config import AssistantConfig
-        from haute.assistant._providers import AnthropicProvider, OpenAIProvider
+        from haute.assistant._config import AssistantConfig, EgressPolicy
+        from haute.assistant._providers import (
+            AnthropicProvider,
+            DatabricksProvider,
+            OpenAIProvider,
+        )
         from haute.routes.assistant import _provider_factory
 
+        egress = EgressPolicy(
+            trust="organization",
+            max_sensitivity="internal",
+            allow_project_knowledge=False,
+            allow_executable_source=False,
+            allow_row_samples=False,
+        )
         anthropic_config = AssistantConfig(
-            provider="anthropic", model="m", base_url=None, api_key="k", max_output_tokens=8192
+            provider="anthropic",
+            model="m",
+            base_url=None,
+            api_key="k",
+            max_output_tokens=8192,
+            egress=egress,
+            endpoint_host="api.anthropic.com",
         )
         assert isinstance(_provider_factory(anthropic_config), AnthropicProvider)
         openai_config = AssistantConfig(
@@ -425,8 +503,20 @@ class TestProviderFactory:
             base_url="https://dbx",
             api_key="k",
             max_output_tokens=8192,
+            egress=egress,
+            endpoint_host="dbx",
         )
         assert isinstance(_provider_factory(openai_config), OpenAIProvider)
+        databricks_config = AssistantConfig(
+            provider="databricks",
+            model="m",
+            base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+            api_key="k",
+            max_output_tokens=8192,
+            egress=egress,
+            endpoint_host="workspace.cloud.databricks.com",
+        )
+        assert isinstance(_provider_factory(databricks_config), DatabricksProvider)
 
     def test_no_pipeline_in_project_is_404(
         self, client: TestClient, store: SessionStore, project_root: Path
@@ -445,6 +535,7 @@ class TestTurnReservation:
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
     ):
         import asyncio
+        import threading
         import time as time_module
 
         from fastapi import HTTPException
@@ -458,8 +549,10 @@ class TestTurnReservation:
         session_id = store.create("main.py").id
 
         real_parse = assistant_routes.parse_pipeline_to_graph
+        parse_started = threading.Event()
 
         def slow_parse(path):
+            parse_started.set()
             time_module.sleep(0.2)  # runs in to_thread — widens the await window
             return real_parse(path)
 
@@ -474,7 +567,7 @@ class TestTurnReservation:
 
         body = AssistantMessageRequest(session_id=session_id, message="hi")
         first_task = asyncio.create_task(assistant_routes.post_assistant_message(body))
-        await asyncio.sleep(0.05)  # first is inside the slow parse, lock held
+        assert await asyncio.to_thread(parse_started.wait, 2)
 
         with pytest.raises(HTTPException) as excinfo:
             await assistant_routes.post_assistant_message(body)
@@ -486,6 +579,127 @@ class TestTurnReservation:
         # After the stream finishes the lock is free again.
         session = store.lookup(session_id)
         assert session is not None and not session.lock.locked()
+
+    async def test_tool_executor_receives_exact_provider_history_window(
+        self, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes.assistant as assistant_routes
+        from haute.assistant._providers import ProviderUsage
+        from haute.schemas import AssistantMessageRequest
+
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session = store.create("main.py")
+        store.append(
+            session,
+            [
+                {"role": "user", "content": "inspect the data"},
+                {"role": "assistant", "content": "done"},
+            ],
+        )
+        expected_history = store.history_window(session)
+        captured: dict[str, object] = {}
+
+        def build_executor(source_file, *, session_id, prior_messages, authoring_request):
+            captured.update(
+                {
+                    "source_file": source_file,
+                    "session_id": session_id,
+                    "authoring_request": authoring_request,
+                    "prior_messages": prior_messages,
+                }
+            )
+
+            async def execute_tool(_name, _arguments):
+                return {}
+
+            return execute_tool
+
+        monkeypatch.setattr(assistant_routes, "build_tool_executor", build_executor)
+        monkeypatch.setattr(
+            assistant_routes,
+            "_provider_factory",
+            lambda _config: _ScriptedProvider(
+                [TextDelta("ok"), TurnStop("end", ProviderUsage(1, 1))]
+            ),
+        )
+
+        response = await assistant_routes.post_assistant_message(
+            AssistantMessageRequest(session_id=session.id, message="continue")
+        )
+        chunks = [chunk async for chunk in response.body_iterator]
+
+        assert any("completed" in chunk for chunk in chunks)
+        assert captured == {
+            "source_file": "main.py",
+            "session_id": session.id,
+            "authoring_request": "continue",
+            "prior_messages": expected_history,
+        }
+
+    async def test_needs_input_follow_up_routes_provider_and_executor_to_original_recipe(
+        self, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes.assistant as assistant_routes
+        from haute.assistant._providers import ProviderUsage
+        from haute.schemas import AssistantMessageRequest
+
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session = store.create("main.py")
+        original = (
+            "can you make a pipeline with the parquets in the data folder. "
+            "use as many nodee types as you can"
+        )
+        store.append(
+            session,
+            [
+                {"role": "user", "content": original},
+                {
+                    "role": "assistant",
+                    "content": "NEEDS_INPUT: choose the two Parquet files.",
+                },
+            ],
+        )
+        captured: dict[str, object] = {}
+
+        def build_executor(source_file, *, session_id, prior_messages, authoring_request):
+            captured["authoring_request"] = authoring_request
+
+            async def execute_tool(_name, _arguments):
+                raise AssertionError("clarification response must not execute a tool")
+
+            return execute_tool
+
+        provider = _ScriptedProvider(
+            [
+                TextDelta("NEEDS_INPUT: choose the second Parquet file."),
+                TurnStop("end", ProviderUsage(1, 1)),
+            ]
+        )
+        monkeypatch.setattr(assistant_routes, "build_tool_executor", build_executor)
+        monkeypatch.setattr(assistant_routes, "_provider_factory", lambda _config: provider)
+
+        response = await assistant_routes.post_assistant_message(
+            AssistantMessageRequest(
+                session_id=session.id,
+                message="data/competitor_insight.parquet",
+            )
+        )
+        chunks = [chunk async for chunk in response.body_iterator]
+
+        assert any("completed" in chunk for chunk in chunks)
+        effective = captured["authoring_request"]
+        assert isinstance(effective, str)
+        assert original in effective
+        assert "data/competitor_insight.parquet" in effective
+        assert len(provider.calls) == 1
+        assert "Required recipe: `parquet_showcase`" in provider.calls[0]["system"]
+        dataset_tool = next(
+            tool for tool in provider.calls[0]["tools"] if tool["name"] == "list_datasets"
+        )
+        assert dataset_tool["input_schema"]["properties"]["project_root"]["const"] == "data"
+        assert dataset_tool["input_schema"]["properties"]["recursive"]["const"] is True
 
     async def test_pre_stream_failure_after_reservation_releases_the_lock(
         self, configured: Path, monkeypatch: pytest.MonkeyPatch
@@ -519,6 +733,28 @@ class TestTurnReservation:
         session = store.lookup(session_id)
         assert session is not None
         assert not session.lock.locked(), "a pre-stream failure must not leak the reservation"
+
+    async def test_history_evidence_failure_releases_the_turn_reservation(
+        self, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import haute.routes.assistant as assistant_routes
+        from haute.schemas import AssistantMessageRequest
+
+        store = SessionStore()
+        monkeypatch.setattr(assistant_routes, "session_store", store)
+        session = store.create("main.py")
+
+        def reject_history(*args, **kwargs):
+            raise ValueError("invalid project evidence")
+
+        monkeypatch.setattr(assistant_routes, "build_tool_executor", reject_history)
+
+        with pytest.raises(ValueError, match="invalid project evidence"):
+            await assistant_routes.post_assistant_message(
+                AssistantMessageRequest(session_id=session.id, message="continue")
+            )
+
+        assert not session.lock.locked()
 
 
 class TestReservationNeverLeaks:

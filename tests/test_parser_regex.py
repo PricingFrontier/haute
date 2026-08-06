@@ -7,11 +7,20 @@ import pytest
 from haute._parser_regex import (
     _find_connect_calls,
     _find_function_blocks,
+    _parenthesized_wrapper_depth_before,
+    _parenthesized_wrapper_tail_closes,
     _parse_decorator_kwargs_regex,
     fallback_parse,
 )
 from haute.errors import ConfigError, ParseError
 from tests.conftest import write_data_input_config
+
+
+def test_terminal_comment_stops_parenthesis_scanners() -> None:
+    source = "# terminal comment"
+    assert _parenthesized_wrapper_depth_before(source, len(source)) == 0
+    assert not _parenthesized_wrapper_tail_closes(source, 0, 1)
+
 
 # ---------------------------------------------------------------------------
 # _find_function_blocks

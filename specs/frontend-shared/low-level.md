@@ -30,7 +30,7 @@
 | `frontend/src/components/Tooltip.tsx` | Zero-delay CSS-hover tooltip with edge-clamped horizontal position and top/bottom auto-flip. |
 | `frontend/src/components/ContextMenu.tsx` | Node right-click menu: rename/duplicate/create-instance/dissolve-submodel/delete, arrow-key roving focus. |
 | `frontend/src/components/KeyboardShortcuts.tsx` | `?`-triggered modal listing keyboard shortcuts, built on `ModalShell`. |
-| `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, utility/imports buttons, zoom, centre/layout, save split-button. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
+| `frontend/src/components/Toolbar.tsx` | App top chrome: package-derived browser version, source selector, row-limit/chunk-size inputs, undo/redo, timing/memory breakdowns, Submodel/Instance selection actions, utility/imports/assistant buttons, zoom, centre/layout, and Save + Commit. Actions share the `.toolbar-btn` surface; the selection actions carry `aria-disabled` rather than `disabled` so an unavailable action stays focusable and its handler can explain the refusal. Numeric fields suppress native spinners without clipping either the configured row-limit value or the chunk-size backend maximum. Composes `BreakdownDropdown` and `BranchIndicator` (git-ui). |
 | `frontend/src/components/BreakdownDropdown.tsx` | Sorted, accessible timing/memory breakdown disclosure used by the shared toolbar. |
 | `frontend/src/panels/ImportsPanel.tsx` | Active pipeline-imports right panel: `PanelShell` plus `CodeEditor`, explanatory always-included imports, and callback-only preamble mutation/close handling. `App.tsx` supplies the graph-store-backed preamble and selects it through `importsOpen`. |
 | `frontend/src/components/BackgroundJobPolling.tsx` | Zero-render mount point (`memo`) that only invokes `useBackgroundJobs()`. |
@@ -43,7 +43,7 @@
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
-| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, and canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components. |
+| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, and canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components. Also owns the `.toolbar-btn` action-button surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable) and the `.toolbar-number-input` spinner suppression. |
 | `frontend/src/utils/chartHelpers.ts` | Small pure chart leaf helpers: compact K/M/scientific axis labels and inclusive evenly spaced Y ticks (a degenerate range yields one tick). |
 | `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, quotes ordinary strings, escapes column names before substitution, and uses longest names first to avoid partial replacement. |
 | `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: the canonical `params.mode` value selects ratebook versus online; absent or invalid values yield the empty mode. |
@@ -148,6 +148,13 @@ provided attempts remain, in which case `backoffSleep` waits
 base·2ⁿ]`) before the next attempt, itself abortable by the external
 signal. A non-timeout `AbortError` from `backoffSleep`/`attemptFetch`
 propagates as-is.
+
+`inferJsonCacheSchema` is an endpoint-specific timeout exception: ordinary
+Infer Tables calls omit `sample_size` and use a 30-minute timeout, matching the
+cache-build budget, because schema discovery is complete by default and can
+legitimately exceed the shared 30-second interactive timeout on multi-GB
+inputs. Supplying `sample_size` remains an explicit caller choice; the client
+never inserts one silently.
 
 **Local session bootstrap (`main.tsx` + `api/client.ts`)**:
 `bootstrapHauteSession()` deduplicates concurrent calls, POSTs
@@ -343,7 +350,9 @@ same Vitest config.
   retry/backoff/abort semantics directly; the contract suite covers concrete
   endpoint families with shared fixtures from
   `frontend/src/testSupport/uiContractFixtures.ts` plus explicit request/response
-  matrices for the remaining trust-boundary endpoints. Generic transport,
+  matrices for the remaining trust-boundary endpoints. The structured-input
+  inference cases pin complete-default request shape, the 30-minute timeout,
+  and explicit sampling passthrough. Generic transport,
   raw-stream, and caller-generic JSON helpers are tested at their transport
   boundary rather than pretending to know a concrete response schema.
 - **Assistant split boundary** (`frontend/src/api/__tests__/assistant.test.ts`):

@@ -94,6 +94,15 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
     )
     ordinary_source = _node("ordinary", "ordinary source", NodeType.CONSTANT)
     nested_child = _node("child", "nested child source", NodeType.CONSTANT)
+    rating_instance = GraphNode(
+        id="rating-instance",
+        type="submodel",
+        data=NodeData(
+            label="rating",
+            nodeType=NodeType.SUBMODEL,
+            config={"definitionId": "rating", "alias": "rating"},
+        ),
+    )
     target = _node(
         "target",
         "combine inputs",
@@ -102,25 +111,33 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
     )
 
     graph = PipelineGraph(
-        nodes=[api_input, ordinary_source, nested_child, target],
+        nodes=[api_input, ordinary_source, rating_instance, target],
         edges=[
             _edge("api-edge", "api", "target", source_port="quotes"),
             _edge("ordinary-edge", "ordinary", "target"),
             _edge(
                 "child-edge",
-                "submodel__rating",
+                "rating-instance",
                 "target",
                 source_port="out__child",
             ),
         ],
         submodels={
             "rating": {
+                "definitionId": "rating",
                 "file": "modules/rating.py",
-                "childNodeIds": ["child"],
                 "graph": {
                     "nodes": [nested_child.model_dump(by_alias=True)],
                     "edges": [],
                 },
+                "inputPorts": [],
+                "outputPorts": [
+                    {
+                        "portId": "child",
+                        "label": "Nested child source",
+                        "source": {"nodeId": "child", "handleId": None},
+                    }
+                ],
             }
         },
     )
@@ -130,7 +147,7 @@ def test_generated_params_follow_edge_order_across_all_source_kinds() -> None:
     assert _function_args(code, "combine_inputs") == [
         "quotes",
         "ordinary_source",
-        "nested_child_source",
+        "rating__child",
     ]
 
 

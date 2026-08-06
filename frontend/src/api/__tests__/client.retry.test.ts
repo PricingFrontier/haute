@@ -167,7 +167,7 @@ describe("retry: idempotent GET on network error", () => {
   it("retries up to 2 times on TypeError and eventually succeeds", async () => {
     const stub = stubBackoffTimers()
     try {
-      const payload = { nodes: [{ id: "n1" }], edges: [] }
+      const payload = { nodes: [{ id: "n1" }], edges: [], preserved_blocks: [], source_revision: "revision-test" }
       mockFetch
         .mockRejectedValueOnce(new TypeError("Failed to fetch"))
         .mockRejectedValueOnce(new TypeError("Failed to fetch"))
@@ -185,7 +185,7 @@ describe("retry: idempotent GET on network error", () => {
   it("succeeds on the first attempt when fetch succeeds immediately", async () => {
     const stub = stubBackoffTimers()
     try {
-      mockFetch.mockReturnValueOnce(jsonResponse({ nodes: [], edges: [] }))
+      mockFetch.mockReturnValueOnce(jsonResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
       await loadPipeline()
       // No backoff sleeps should have been scheduled.
       expect(stub.capturedDelays).toHaveLength(0)
@@ -389,11 +389,11 @@ describe("retry: caller supplied policy", () => {
         .mockRejectedValueOnce(new TypeError("cold start"))
         .mockRejectedValueOnce(new TypeError("cold start"))
         .mockRejectedValueOnce(new TypeError("cold start"))
-        .mockReturnValueOnce(jsonResponse({ nodes: [], edges: [] }))
+        .mockReturnValueOnce(jsonResponse({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" }))
 
       const result = await loadPipeline({ retry: { maxRetries: 5, baseDelayMs: 25 } })
 
-      expect(result).toEqual({ nodes: [], edges: [] })
+      expect(result).toEqual({ nodes: [], edges: [], preserved_blocks: [], source_revision: "revision-test" })
       expect(mockFetch).toHaveBeenCalledTimes(6)
       expect(stub.capturedDelays).toHaveLength(5)
     } finally {
@@ -428,6 +428,7 @@ describe("retry: caller supplied policy", () => {
             graph: dummyGraph,
             preamble: "",
             source_file: "pipe.py",
+            preserved_blocks: [],
           },
           // @ts-expect-error retry policies are deliberately not exposed on
           // mutation helpers until a real idempotency-key contract exists.
@@ -616,6 +617,7 @@ describe("no retry: non-idempotent POST (default)", () => {
           graph: dummyGraph,
           preamble: "",
           source_file: "pipe.py",
+          preserved_blocks: [],
         }),
       ).rejects.toBeInstanceOf(TypeError)
 

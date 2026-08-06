@@ -6,6 +6,12 @@
 version = 1
 
 [[shared_file]]
+path = "databricks_app/bootstrap.py"
+primary = "hosted-databricks-app"
+consumers = ["hosted-project-storage"]
+reason = "The container boot path both prepares the app runtime and drives restore-or-seed for durable storage."
+
+[[shared_file]]
 path = "frontend/package.json"
 primary = "build-and-distribution"
 consumers = ["engineering-quality"]
@@ -22,6 +28,12 @@ path = "frontend/src/api/types.ts"
 primary = "frontend-shared"
 consumers = ["frontend-modelling-optimiser-ui", "optimiser"]
 reason = "Shared UI owns the canonical API contracts extended by modelling and optimiser responses."
+
+[[shared_file]]
+path = "frontend/src/components/BranchIndicator.tsx"
+primary = "frontend-git-ui"
+consumers = ["hosted-project-storage"]
+reason = "The branch indicator hosts the storage and fork chips beside the working-branch control."
 
 [[shared_file]]
 path = "frontend/src/components/ExecutionDiagnosticsSummary.tsx"
@@ -72,6 +84,12 @@ consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
 reason = "Preview/Explore owns the generic ARIA tab strip consumed by modelling result and node-panel panes."
 
 [[shared_file]]
+path = "frontend/src/stores/useGitStore.ts"
+primary = "frontend-git-ui"
+consumers = ["hosted-project-storage"]
+reason = "Git readiness state carries the storage binding and sync fields the storage surface renders."
+
+[[shared_file]]
 path = "frontend/src/stores/useNodeResultsStore.ts"
 primary = "frontend-shared"
 consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
@@ -82,6 +100,12 @@ path = "frontend/src/stores/useUIStore.ts"
 primary = "frontend-shared"
 consumers = ["frontend-assistant-ui", "frontend-modelling-optimiser-ui", "frontend-node-editors"]
 reason = "Global UI state is consumed by the assistant and by modelling pane selection hosted in node-editor chrome."
+
+[[shared_file]]
+path = "frontend/src/types/guards.ts"
+primary = "frontend-shared"
+consumers = ["hosted-project-storage"]
+reason = "Shared response guards parse the storage and sync fields added to git readiness."
 
 [[shared_file]]
 path = "frontend/src/types/node.ts"
@@ -138,10 +162,22 @@ consumers = ["explore-eda"]
 reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview-field exclusion that keeps dataframe and report caching independent."
 
 [[shared_file]]
+path = "src/haute/_column_summary.py"
+primary = "explore-eda"
+consumers = ["assistant"]
+reason = "Explore's frame statistics established which Polars dtypes can be counted and how a scalar renders; the assistant's value profiles consume the same facts rather than rediscovering them."
+
+[[shared_file]]
 path = "src/haute/_contracts.py"
 primary = "pipeline-config"
 consumers = ["execution-engine"]
 reason = "Pipeline configuration owns the column-contract model and lookup consumed at runtime."
+
+[[shared_file]]
+path = "src/haute/_git.py"
+primary = "git-integration"
+consumers = ["hosted-project-storage"]
+reason = "The git chokepoint also supplies the bundle and clone primitives durable storage publishes through."
 
 [[shared_file]]
 path = "src/haute/_gitignore_guard.py"
@@ -168,6 +204,12 @@ consumers = ["execution-engine", "io-layer"]
 reason = "Security owns runtime containment; execution and I/O consume the shared resolver."
 
 [[shared_file]]
+path = "src/haute/_pipeline_revision.py"
+primary = "submodels"
+consumers = ["server-api"]
+reason = "Submodels owns document revision semantics; server API consumes revision tokens for live graph responses and mutation preconditions."
+
+[[shared_file]]
 path = "src/haute/_polars_utils.py"
 primary = "io-layer"
 consumers = ["explore-eda"]
@@ -186,15 +228,33 @@ consumers = ["caching"]
 reason = "I/O owns source snapshot publication and leases; caching consumes the checked identity and immutable generation contract."
 
 [[shared_file]]
+path = "src/haute/_worker_isolation.py"
+primary = "execution-engine"
+consumers = ["hosted-databricks-app"]
+reason = "Worker spawning also owns the interpreter resolution the hosted boot must run before changing directory."
+
+[[shared_file]]
 path = "src/haute/routes/_save_pipeline.py"
 primary = "server-api"
-consumers = ["assistant"]
+consumers = ["assistant", "hosted-project-storage"]
 reason = "The core save route is invoked by assistant graph-authoring tools."
+
+[[shared_file]]
+path = "src/haute/routes/databricks.py"
+primary = "databricks-io"
+consumers = ["hosted-databricks-app"]
+reason = "Workspace-browsing routes resolve the service-principal credentials the hosted container injects."
+
+[[shared_file]]
+path = "src/haute/routes/git.py"
+primary = "git-integration"
+consumers = ["hosted-project-storage"]
+reason = "The git route module hosts the storage bind/fork/retry endpoints alongside branch and milestone routes."
 
 [[shared_file]]
 path = "src/haute/schemas.py"
 primary = "server-api"
-consumers = ["assistant", "explore-eda", "mlflow-model-registry", "modelling", "optimiser"]
+consumers = ["assistant", "explore-eda", "hosted-project-storage", "mlflow-model-registry", "modelling", "optimiser"]
 reason = "Shared HTTP contracts are defined centrally and consumed by feature routes."
 
 [[shared_file]]

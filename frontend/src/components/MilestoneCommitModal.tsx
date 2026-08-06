@@ -17,7 +17,7 @@ interface MilestoneCommitModalProps {
 const MAX_MESSAGE_LENGTH = 500
 
 /**
- * Save & commit (S7/S18): record a milestone on the working branch by merging
+ * Commit (S7/S18): record a milestone on the working branch by merging
  * the ledger's accumulated saves. The user supplies a required message (rides
  * the merge commit) and an optional version label (an annotated git tag — the
  * actuarial "_v2.0_FINAL" instinct, given a sound substrate).
@@ -31,7 +31,7 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
   const [message, setMessage] = useState("")
   const [versionLabel, setVersionLabel] = useState("")
   const [busy, setBusy] = useState(false)
-  // U4/D4: set when save&commit would fork the remote — drives the warn +
+  // U4/D4: set when committing would fork the remote — drives the warn +
   // "commit anyway (creates a fork)" confirm instead of a generic error.
   const [fork, setFork] = useState<GitMilestoneFork | null>(null)
 
@@ -83,14 +83,14 @@ export default function MilestoneCommitModal({ onConfirmed, onClose }: Milestone
 
   return (
     <ModalShell
-      ariaLabel="Save and commit a milestone"
+      ariaLabel="Commit a milestone"
       onClose={onClose}
       width="w-[460px]"
       testId="milestone-commit-modal"
     >
       <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-          Save &amp; commit
+          Commit
         </h2>
         <p className="text-[12px] mt-0.5" style={{ color: "var(--text-muted)" }}>
           Record a milestone on{" "}

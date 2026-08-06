@@ -11,6 +11,9 @@ import {
   parseFrontierResponse,
   parseFrontierSelectResponse,
   parseGitArchiveResponse,
+  gitStorageClaimFromDetail,
+  parseGitBindStorageResponse,
+  parseGitForkStorageResponse,
   parseGitDeleteBranchResponse,
   parseGitMoveResponse,
   parseGitPushResponse,
@@ -374,6 +377,28 @@ describe("API response guards", () => {
 
     expect(parsed.warnings).toEqual(["renamed duplicate node"])
     expect(parsed.status).toBe("saved")
+    expect(parsed.source_revision).toBe("revision-save-1")
+  })
+
+  it("rejects savePipeline responses without a committed revision", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("save_pipeline")
+    expect(() => parseSavePipelineResponse({
+      ...fixture,
+      source_revision: undefined,
+    })).toThrow(/source_revision/i)
+  })
+
+  it("rejects blank committed revisions and submodel paths", () => {
+    const save = loadUiContractFixture<Record<string, unknown>>("save_pipeline")
+    const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
+    const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseSavePipelineResponse({ ...save, source_revision: "   " })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: "" })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, parent_file: " " })).toThrow(/parent_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: "" })).toThrow(/submodel_file/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: "\t" })).toThrow(/source_revision/i)
   })
 
   it("fills preview defaults for sparse error payloads", () => {
@@ -1456,11 +1481,44 @@ describe("API response guards", () => {
     const loaded = parseSubmodelGraphResponse(loadUiContractFixture("submodel_graph_response"))
     const dissolved = parseDissolveSubmodelResponse(loadUiContractFixture("dissolve_submodel_response"))
 
-    expect(created.submodel_file).toBe("pricing.py")
+    expect(created.submodel_file).toBe("modules/pricing.py")
+    expect(created.source_revision).toBe("revision-create-1")
     expect(created.graph.edges[0].targetPort).toBe("base")
     expect(created.graph.edges[1].sourcePort).toBe("quotes")
     expect(loaded.submodel_name).toBe("pricing")
+    expect(loaded.definition_id).toBe("pricing-definition")
+    expect(loaded.submodel_file).toBe("modules/pricing.py")
+    expect(dissolved.source_revision).toBe("revision-dissolve-1")
+    expect(dissolved.instance_id).toBe("pricing-instance")
+    expect(dissolved.definition_id).toBe("pricing-definition")
     expect(dissolved.graph.nodes).toHaveLength(2)
+  })
+
+  it("rejects missing mandatory submodel identity and revision metadata", () => {
+    const create = loadUiContractFixture<Record<string, unknown>>("submodel_create_response")
+    const loaded = loadUiContractFixture<Record<string, unknown>>("submodel_graph_response")
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseSubmodelCreateResponse({ ...create, source_revision: undefined })).toThrow(/source_revision/i)
+    expect(() => parseSubmodelCreateResponse({ ...create, parent_file: undefined })).toThrow(/parent_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, submodel_file: undefined })).toThrow(/submodel_file/i)
+    expect(() => parseSubmodelGraphResponse({ ...loaded, definition_id: undefined })).toThrow(/definition_id/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, source_revision: undefined })).toThrow(/source_revision/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, instance_id: undefined })).toThrow(/instance_id/i)
+    expect(() => parseDissolveSubmodelResponse({ ...dissolve, definition_id: undefined })).toThrow(/definition_id/i)
+  })
+
+  it("rejects removed dissolve file-lifecycle fields", () => {
+    const dissolve = loadUiContractFixture<Record<string, unknown>>("dissolve_submodel_response")
+
+    expect(() => parseDissolveSubmodelResponse({
+      ...dissolve,
+      submodel_file_deleted: false,
+    })).toThrow(/submodel_file_deleted.*no longer supported/i)
+    expect(() => parseDissolveSubmodelResponse({
+      ...dissolve,
+      retained_submodel_file: "modules/pricing.py",
+    })).toThrow(/retained_submodel_file.*no longer supported/i)
   })
 
   it("parses modelling preflight payloads", () => {
@@ -1833,6 +1891,154 @@ describe("API response guards", () => {
         current_branch: "",
       }),
     ).toThrow(/expected field `state` to be one of/i)
+  })
+
+  it("defaults storage to unsupported and sync to null when an older backend omits them", () => {
+    const parsed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+    })
+    expect(parsed.storage).toBe("unsupported")
+    expect(parsed.storage_remote).toBeNull()
+    expect(parsed.sync).toBeNull()
+  })
+
+  it("parses a bound, synced storage surface", () => {
+    const parsed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage: "bound",
+      storage_remote: "https://github.com/org/repo.git",
+      sync: { state: "synced", pending: 0, failure: null, message: null },
+    })
+    expect(parsed.storage).toBe("bound")
+    expect(parsed.storage_remote).toBe("https://github.com/org/repo.git")
+    expect(parsed.sync).toEqual({ state: "synced", pending: 0, failure: null, message: null })
+  })
+
+  it("parses a failed sync with its failure kind and message", () => {
+    const parsed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage: "bound",
+      sync: { state: "failed", pending: 2, failure: "rejected", message: "Push was rejected" },
+    })
+    expect(parsed.sync).toEqual({
+      state: "failed",
+      pending: 2,
+      failure: "rejected",
+      message: "Push was rejected",
+    })
+  })
+
+  it("rejects an unknown storage state", () => {
+    expect(() =>
+      parseGitWorkingBranchResponse({
+        state: "ready",
+        current_branch: "dev",
+        storage: "bogus",
+      }),
+    ).toThrow(/expected field `storage` to be one of/i)
+  })
+
+  it("parses the accepted bind-storage response", () => {
+    const parsed = parseGitBindStorageResponse({
+      outcome: "pending",
+      remote_url: "https://github.com/org/repo.git",
+      message: "Saving this project to storage — you can keep working.",
+    })
+    expect(parsed).toEqual({
+      outcome: "pending",
+      remote_url: "https://github.com/org/repo.git",
+      message: "Saving this project to storage — you can keep working.",
+    })
+  })
+
+  it("rejects the old synchronous bind outcomes", () => {
+    // Binding is asynchronous: the route only ever accepts the request, and
+    // the real outcome arrives on the readiness response's storage_bind.
+    for (const outcome of ["adopted", "restart-required"]) {
+      expect(() =>
+        parseGitBindStorageResponse({
+          outcome,
+          remote_url: "https://github.com/org/repo.git",
+          message: "x",
+        }),
+      ).toThrow(/expected field `outcome` to be one of/i)
+    }
+  })
+
+  it("parses background bind progress, defaulting to absent", () => {
+    const running = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage_bind: {
+        state: "running",
+        outcome: null,
+        message: null,
+        claim: null,
+        remote_url: "uc://workspace.default.projects/demo",
+      },
+    })
+    expect(running.storage_bind?.state).toBe("running")
+    expect(running.storage_bind?.remote_url).toBe("uc://workspace.default.projects/demo")
+
+    const failed = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage_bind: {
+        state: "failed",
+        message: "in use by app 'other-app'",
+        claim: { app_name: "other-app", user: null, refreshed_at: null, message: "in use" },
+      },
+    })
+    expect(failed.storage_bind?.claim?.app_name).toBe("other-app")
+
+    // An older backend omitting the field reads as absent, not an error.
+    const absent = parseGitWorkingBranchResponse({ state: "ready", current_branch: "dev" })
+    expect(absent.storage_bind).toBeNull()
+  })
+
+  it("parses fork provenance on the readiness surface, defaulting to null", () => {
+    const withLineage = parseGitWorkingBranchResponse({
+      state: "ready",
+      current_branch: "dev",
+      storage: "bound",
+      storage_forked_from: "uc://workspace.default.projects/demo",
+    })
+    expect(withLineage.storage_forked_from).toBe("uc://workspace.default.projects/demo")
+    const without = parseGitWorkingBranchResponse({ state: "ready", current_branch: "dev" })
+    expect(without.storage_forked_from).toBeNull()
+  })
+
+  it("parses a fork-storage response", () => {
+    const parsed = parseGitForkStorageResponse({
+      outcome: "forked",
+      target_url: "uc://workspace.default.projects/demo-fork",
+      parent_url: "uc://workspace.default.projects/demo",
+      parent_generation: 7,
+      message: "Forked generation 7. Bind the new location to work on the copy.",
+    })
+    expect(parsed.parent_generation).toBe(7)
+    expect(parsed.target_url).toBe("uc://workspace.default.projects/demo-fork")
+  })
+
+  it("reads a claim-shaped 409 detail and rejects non-claim shapes", () => {
+    const claim = gitStorageClaimFromDetail({
+      app_name: "other-app",
+      user: "colleague@example.com",
+      refreshed_at: "2026-08-04T17:00:00+00:00",
+      message: "This storage location is in use by app 'other-app'.",
+    })
+    expect(claim).not.toBeNull()
+    expect(claim?.app_name).toBe("other-app")
+    expect(claim?.user).toBe("colleague@example.com")
+    // A plain-string detail (older backend, other error) is not a claim.
+    expect(gitStorageClaimFromDetail("location is busy")).toBeNull()
+    expect(gitStorageClaimFromDetail({ message: "no holder name" })).toBeNull()
+    // Missing optionals degrade to null rather than throwing.
+    const bare = gitStorageClaimFromDetail({ app_name: "a", message: "m" })
+    expect(bare).toEqual({ app_name: "a", user: null, refreshed_at: null, message: "m" })
   })
 
   // --- P7 remote catch-up surface: per-leg divergence, fast-forward, branch-away,

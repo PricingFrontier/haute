@@ -69,6 +69,12 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/AssistantSessionResponse"},
         },
     },
+    "/api/assistant/sessions": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/AssistantSessionListResponse"},
+        },
+    },
     "/api/assistant/status": {
         "GET": {
             "request_ref": None,
@@ -251,6 +257,42 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/PipelineGraph"},
+        },
+    },
+    "/api/git/storage/bind": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitBindStorageRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitBindStorageResponse"},
+        },
+    },
+    "/api/git/storage/bind/ack": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchResponse"},
+        },
+    },
+    "/api/git/storage/fork": {
+        "POST": {
+            "request_ref": "#/components/schemas/GitForkStorageRequest",
+            "success_schema": {"$ref": "#/components/schemas/GitForkStorageResponse"},
+        },
+    },
+    "/api/git/storage/retry": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitWorkingBranchResponse"},
+        },
+    },
+    "/api/git/storage/upstream/check": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitUpstreamStatusResponse"},
+        },
+    },
+    "/api/git/storage/upstream/pull": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/GitFastForwardResponse"},
         },
     },
     "/api/git/undelete": {
@@ -608,7 +650,7 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/DissolveSubmodelResponse"},
         },
     },
-    "/api/submodel/{name}": {
+    "/api/submodel/{definition_id}": {
         "GET": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/SubmodelGraphResponse"},

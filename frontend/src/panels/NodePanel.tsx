@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { X, Link2, AlertTriangle, RefreshCw } from "lucide-react"
+import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import { sanitizeName } from "../utils/sanitizeName"
@@ -29,7 +29,12 @@ import {
   LazyEditorBoundary,
 } from "./LazyNodeEditors"
 import type { InputSource, SimpleNode, SimpleEdge, OnUpdateConfig, OnUpdateConfigResult, OnReplaceConfig } from "./editors"
-import { effectiveNodeType, type HauteNodeData } from "../types/node"
+import {
+  effectiveNodeType,
+  isSubmodelDefinition,
+  isSubmodelInstanceConfig,
+  type HauteNodeData,
+} from "../types/node"
 import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import PanelShell from "./PanelShell"
@@ -52,6 +57,8 @@ type NodePanelProps = {
   previewRows?: Record<string, unknown>[]
   /** True while the selected node preview request is still in flight. */
   selectedPreviewLoading?: boolean
+  /** True while inspecting a created submodel instance's shared definition. */
+  readOnly?: boolean
 }
 
 type NodePanelTab = "config" | "polars" | "columns"
@@ -117,61 +124,12 @@ type InstanceOriginalResolution =
       original: SimpleNode
       originalNodeMap: Record<string, SimpleNode>
       originalEdges: SimpleEdge[]
-      submodelName?: string
+      definitionId?: string
     }
   | { status: "invalid"; rawInstanceOf: unknown }
   | { status: "missing"; originalId: string }
   | { status: "ambiguous"; originalId: string; locations: string[] }
-  | { status: "malformedSubmodel"; originalId: string; submodelName: string; reason: string }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function isSimpleNodeArray(value: unknown): value is SimpleNode[] {
-  return Array.isArray(value) && value.every((item) => (
-    isRecord(item) &&
-    typeof item.id === "string" &&
-    isRecord(item.data) &&
-    typeof item.data.label === "string"
-  ))
-}
-
-function isSimpleEdgeArray(value: unknown): value is SimpleEdge[] {
-  return Array.isArray(value) && value.every((item) => (
-    isRecord(item) &&
-    typeof item.id === "string" &&
-    typeof item.source === "string" &&
-    typeof item.target === "string"
-  ))
-}
-
-function submodelGraphFromMetadata(
-  submodelName: string,
-  metadata: unknown,
-):
-  | { status: "ok"; submodelName: string; nodes: SimpleNode[]; edges: SimpleEdge[] }
-  | { status: "malformed"; submodelName: string; reason: string } {
-  if (!isRecord(metadata)) {
-    return { status: "malformed", submodelName, reason: "metadata must be an object" }
-  }
-  if (!isRecord(metadata.graph)) {
-    return { status: "malformed", submodelName, reason: "metadata.graph must be an object" }
-  }
-  const graph = metadata.graph
-  if (!isSimpleNodeArray(graph.nodes)) {
-    return { status: "malformed", submodelName, reason: "graph.nodes must be an array of nodes" }
-  }
-  if (graph.edges !== undefined && !isSimpleEdgeArray(graph.edges)) {
-    return { status: "malformed", submodelName, reason: "graph.edges must be an array of edges" }
-  }
-  return {
-    status: "ok",
-    submodelName,
-    nodes: graph.nodes,
-    edges: graph.edges ?? [],
-  }
-}
+  | { status: "malformedSubmodel"; originalId: string; definitionId: string; reason: string }
 
 function resolveInstanceOriginal(
   originalId: unknown,
@@ -191,31 +149,36 @@ function resolveInstanceOriginal(
       original: visibleOriginal,
       originalNodeMap: visibleNodeMap,
       originalEdges: visibleEdges,
-      submodelName: undefined,
+      definitionId: undefined,
     })
   }
 
-  for (const [submodelName, metadata] of Object.entries(submodels ?? {})) {
-    const graph = submodelGraphFromMetadata(submodelName, metadata)
-    if (graph.status === "malformed") {
-      return { status: "malformedSubmodel", originalId, submodelName, reason: graph.reason }
+  for (const [definitionId, value] of Object.entries(submodels ?? {})) {
+    if (!isSubmodelDefinition(value, definitionId)) {
+      return {
+        status: "malformedSubmodel",
+        originalId,
+        definitionId,
+        reason: "definition does not satisfy the canonical identity and port contract",
+      }
     }
-    const matchingNodes = graph.nodes.filter((n) => n.id === originalId)
+    const nodes = value.graph.nodes as unknown as SimpleNode[]
+    const edges = value.graph.edges as SimpleEdge[]
+    const matchingNodes = nodes.filter((node) => node.id === originalId)
     if (matchingNodes.length === 0) continue
     if (matchingNodes.length > 1) {
       return {
         status: "ambiguous",
         originalId,
-        locations: matchingNodes.map((_, index) => `${graph.submodelName}#${index + 1}`),
+        locations: matchingNodes.map((_, index) => definitionId + "#" + (index + 1)),
       }
     }
-    const submodelNodeMap = Object.fromEntries(graph.nodes.map((n) => [n.id, n]))
     matches.push({
       status: "found",
       original: matchingNodes[0],
-      originalNodeMap: submodelNodeMap,
-      originalEdges: graph.edges,
-      submodelName: graph.submodelName,
+      originalNodeMap: Object.fromEntries(nodes.map((node) => [node.id, node])),
+      originalEdges: edges,
+      definitionId,
     })
   }
 
@@ -224,12 +187,11 @@ function resolveInstanceOriginal(
     return {
       status: "ambiguous",
       originalId,
-      locations: matches.map((match) => match.submodelName ?? "visible graph"),
+      locations: matches.map((match) => match.definitionId ?? "visible graph"),
     }
   }
   return { status: "missing", originalId }
 }
-
 function uniquePreservingOrder(values: string[]): string[] {
   const seen = new Set<string>()
   const unique: string[] = []
@@ -247,7 +209,7 @@ function resolveOriginalInputNames({
   originalNodeMap,
   visibleEdges,
   visibleNodeMap,
-  submodelName,
+  definitionId,
   submodels,
 }: {
   originalId: string
@@ -255,31 +217,69 @@ function resolveOriginalInputNames({
   originalNodeMap: Record<string, SimpleNode>
   visibleEdges: SimpleEdge[]
   visibleNodeMap: Record<string, SimpleNode>
-  submodelName?: string
+  definitionId?: string
   submodels?: Record<string, unknown>
 }): string[] {
   const internalInputs = originalEdges
-    .filter((e) => e.target === originalId)
-    .map((e) => {
-      const srcNode = originalNodeMap[e.source]
-      if (!srcNode) throw new Error(`Cannot derive instance input name: source node ${e.source} is missing`)
-      return edgeInputName(e, srcNode, submodels)
+    .filter((edge) => edge.target === originalId)
+    .map((edge) => {
+      const sourceNode = originalNodeMap[edge.source]
+      if (!sourceNode) {
+        throw new Error(
+          "Cannot derive instance input name: source node " + edge.source + " is missing",
+        )
+      }
+      return edgeInputName(edge, sourceNode, submodels)
     })
 
-  if (!submodelName) return uniquePreservingOrder(internalInputs)
+  if (!definitionId) return uniquePreservingOrder(internalInputs)
 
-  const submodelNodeId = `submodel__${submodelName}`
+  const definition = submodels?.[definitionId]
+  if (!isSubmodelDefinition(definition, definitionId)) {
+    throw new Error(
+      "Cannot derive instance inputs: definition " + definitionId + " is missing or malformed",
+    )
+  }
+  const publicInputPortIds = new Set(
+    definition.inputPorts
+      .filter((port) => port.targets.some((target) => target.nodeId === originalId))
+      .map((port) => port.portId),
+  )
+  if (publicInputPortIds.size === 0) return uniquePreservingOrder(internalInputs)
+
+  const occurrenceIds = new Set<string>()
+  for (const visibleNode of Object.values(visibleNodeMap)) {
+    if (visibleNode.data.nodeType !== NODE_TYPES.SUBMODEL) continue
+    if (!isSubmodelInstanceConfig(visibleNode.data.config)) {
+      throw new Error(
+        "Cannot derive instance inputs: submodel occurrence "
+        + visibleNode.id + " has malformed identity config",
+      )
+    }
+    if (visibleNode.data.config.definitionId === definitionId) {
+      occurrenceIds.add(visibleNode.id)
+    }
+  }
+
   const boundaryInputs = visibleEdges
-    .filter((e) => e.target === submodelNodeId && e.targetHandle === `in__${originalId}`)
-    .map((e) => {
-      const srcNode = visibleNodeMap[e.source]
-      if (!srcNode) throw new Error(`Cannot derive instance input name: source node ${e.source} is missing`)
-      return edgeInputName(e, srcNode, submodels)
+    .filter((edge) => {
+      if (!occurrenceIds.has(edge.target) || !edge.targetHandle?.startsWith("in__")) {
+        return false
+      }
+      return publicInputPortIds.has(edge.targetHandle.slice("in__".length))
+    })
+    .map((edge) => {
+      const sourceNode = visibleNodeMap[edge.source]
+      if (!sourceNode) {
+        throw new Error(
+          "Cannot derive instance input name: source node " + edge.source + " is missing",
+        )
+      }
+      return edgeInputName(edge, sourceNode, submodels)
     })
 
   return uniquePreservingOrder([...internalInputs, ...boundaryInputs])
 }
-
 function InstanceReferenceDiagnostic({
   resolution,
 }: {
@@ -288,7 +288,7 @@ function InstanceReferenceDiagnostic({
   const detail = resolution.status === "invalid"
     ? "Instance config must use a non-empty string instanceOf id."
     : resolution.status === "malformedSubmodel"
-      ? `Submodel "${resolution.submodelName}" has invalid metadata: ${resolution.reason}.`
+      ? `Submodel "${resolution.definitionId}" has invalid metadata: ${resolution.reason}.`
       : resolution.status === "ambiguous"
         ? `Found more than one original named "${resolution.originalId}" in: ${resolution.locations.join(", ")}.`
         : `No visible node or submodel original exists with id "${resolution.originalId}".`
@@ -342,7 +342,7 @@ function InstancePanel({
     original: orig,
     originalNodeMap,
     originalEdges,
-    submodelName,
+    definitionId,
   } = originalResolution
   const origId = orig.id
   return (
@@ -354,9 +354,9 @@ function InstancePanel({
           <div className="text-[13px] font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
             {orig.data.label}
           </div>
-          {submodelName && (
+          {definitionId && (
             <div className="text-[11px] truncate" style={{ color: 'var(--text-muted)' }}>
-              in {submodelName}
+              in {definitionId}
             </div>
           )}
         </div>
@@ -373,7 +373,7 @@ function InstancePanel({
           originalNodeMap,
           visibleEdges: edges,
           visibleNodeMap: nodeMap,
-          submodelName,
+          definitionId,
           submodels,
         })
         const instInputs = edges
@@ -691,6 +691,7 @@ export default function NodePanel({
   errorLine,
   previewRows,
   selectedPreviewLoading = false,
+  readOnly = false,
 }: NodePanelProps) {
   const { allNodes, edges, submodels } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
@@ -719,6 +720,9 @@ export default function NodePanel({
   useEffect(() => { setDismissedStaleWarningSig(null) }, [node?.id])
 
   const handleConfigUpdate = useCallback<OnUpdateConfig>((keyOrUpdates, value) => {
+    if (readOnly) {
+      return { ok: false, error: "This submodel instance is read-only." }
+    }
     const currentNode = nodeRef.current
     if (!currentNode || !onUpdateNode) {
       return { ok: false, error: "Node update handler is unavailable." }
@@ -740,13 +744,16 @@ export default function NodePanel({
         { preserveAvailableColumns: selectionOnlyUpdate },
       ),
     )
-  }, [onUpdateNode])
+  }, [onUpdateNode, readOnly])
 
   const handleConfigReplace = useCallback<OnReplaceConfig>((nextConfig) => {
+    if (readOnly) {
+      return { ok: false, error: "This submodel instance is read-only." }
+    }
     const currentNode = nodeRef.current
     if (!currentNode || !onUpdateNode) return { ok: false, error: "Node update handler is unavailable." }
     return onUpdateNode(currentNode.id, clearCachedResultShape({ ...currentNode.data, config: nextConfig }))
-  }, [onUpdateNode])
+  }, [onUpdateNode, readOnly])
 
   const configWithNodeId = useMemo(
     () => ({ ...config, _nodeId: node?.id ?? "" }),
@@ -1029,6 +1036,7 @@ export default function NodePanel({
             data-testid="node-panel-label-input"
             type="text"
             value={node.data.label}
+            disabled={readOnly}
             onCommit={(v) => {
               if (!onUpdateNode) return
               const result = onUpdateNode(node.id, { ...node.data, label: v })
@@ -1037,6 +1045,13 @@ export default function NodePanel({
             className="node-label-input flex-1 min-w-0 px-2 py-1 text-[13px] font-semibold border border-transparent rounded-md focus:outline-none bg-transparent"
             style={{ color: 'var(--text-primary)', borderColor: 'transparent' }}
           />
+          {readOnly && (
+            <span
+              data-testid="node-panel-readonly"
+              className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em]"
+              style={{ color: "var(--text-muted)" }}
+            ><Lock size={11} aria-hidden="true" />Read-only</span>
+          )}
           {showRefreshPreview && (
             <button
               onClick={onRefreshPreview}
@@ -1181,7 +1196,12 @@ export default function NodePanel({
         )
       })()}
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div
+        className="flex-1 min-h-0 overflow-y-auto"
+        data-testid="node-panel-editor"
+        inert={readOnly ? true : undefined}
+        aria-readonly={readOnly}
+      >
         <LazyEditorBoundary>
           {activeTab === "polars" && showPolarsTab ? (
             <PolarsCodePanel

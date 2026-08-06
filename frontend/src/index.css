@@ -53,6 +53,12 @@
   --success-soft: rgba(34,197,94,.10);
   --success-soft-mid: rgba(34,197,94,.12);
   --success-soft-strong: rgba(34,197,94,.15);
+  /* Filled green button (Commit).  Deeper than --success, which is tuned for
+     status dots and text on a dark surface: white on #22c55e is 2.28:1 and
+     unreadable, while this takes white at 5.02:1 and still reads clearly green
+     against the chrome. Hover brightens, matching the Save button's pattern. */
+  --success-fill: #15803d;
+  --success-fill-hover: #16a34a;
   --success-border: rgba(34,197,94,.20);
   --success-border-strong: rgba(34,197,94,.30);
   --warning: #fbbf24;
@@ -103,6 +109,24 @@
   /* Filled-button hover-pressed state: used by .add-row-btn.  Slightly
      brighter than --chrome-hover so the "pressed" feedback is visible. */
   --chrome-active: #1d2230;
+
+  /* Toolbar action buttons.  The resting surface sits one step above the
+     chrome so an action looks pressable BEFORE you hover it, then brightens
+     twice more for hover and press.  Shared with the Source selector, which
+     was already boxed while the actions beside it were bare text.
+     The fill/chrome step is deliberately small — 1.22:1, in line with GitHub
+     dark (1.24) and VS Code (1.36).  A dark toolbar button is identified by
+     fill + border + label together, not by the fill alone; pushing the fill
+     to a "proper" 3:1 would read as a row of light grey slabs. */
+  --btn-surface: var(--chrome-active);
+  --btn-surface-hover: #262c3d;
+  --btn-surface-pressed: #2b3145;
+  --btn-border: rgba(255,255,255,.10);
+  --btn-border-hover: rgba(255,255,255,.16);
+  /* Unavailable-control text.  ~3.2:1 on the chrome — clearly recessive but
+     still readable, unlike the ~1.5:1 that `opacity-30` on --text-secondary
+     produced (illegible, so a disabled control could not even be identified). */
+  --text-disabled: #5e6371;
 
   /* GLM significance & chart colors */
   --signif-high: #22c55e;
@@ -441,6 +465,46 @@ html, body, #root {
   color: var(--text-primary);
 }
 
+/* Toolbar action buttons — undo/redo, zoom, centre/layout, submodel/instance,
+   utility/imports/assistant.  These used to be bare labels on the chrome
+   (--text-secondary, ~5.5:1) that only grew a background on hover, so the bar
+   read as a row of words rather than a row of controls.
+   Three tiers deliberately remain distinct: Save stays a filled accent button
+   (primary), these are the recessive-but-visible default, and the numeric
+   fields keep their inset input styling. */
+.toolbar-btn {
+  background: var(--btn-surface);
+  border: 1px solid var(--btn-border);
+  color: var(--text-primary);
+  transition: background 150ms, border-color 150ms, color 150ms;
+}
+.toolbar-btn:hover:not(:disabled):not([aria-disabled="true"]),
+.toolbar-btn:focus-visible:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--btn-surface-hover);
+  border-color: var(--btn-border-hover);
+}
+.toolbar-btn:active:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--btn-surface-pressed);
+}
+/* Engaged toggle (Assistant): accent-tinted so "open" is legible at a glance
+   without relying on a hover the user isn't performing. */
+.toolbar-btn[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-ring);
+  color: var(--text-accent);
+}
+/* Unavailable.  Losing the raised surface is the signal — a flat control next
+   to raised ones reads as "not right now" without any colour knowledge. The
+   label stays readable so you can still tell what it is and why you might
+   want it; hover and press feedback are withheld, and the cursor says so. */
+.toolbar-btn:disabled,
+.toolbar-btn[aria-disabled="true"] {
+  background: transparent;
+  border-color: var(--border-subtle);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
 /* Chrome toggle (e.g. collapsed-palette reveal button): rests on
    var(--chrome) rather than transparent, but still hovers to
    var(--chrome-hover).  Does NOT alter foreground color, since the
@@ -599,6 +663,19 @@ html, body, #root {
   outline: none;
   border-color: var(--focus-ring-border, var(--accent-ring));
   box-shadow: 0 0 0 2px var(--focus-ring-shadow, var(--accent-soft));
+}
+
+/* Toolbar numeric fields are sized to their exact digit capacity, so the
+   native spin buttons would eat into the visible text.  Drop them; the
+   fields are typed into rather than stepped. */
+.toolbar-number-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.toolbar-number-input::-webkit-outer-spin-button,
+.toolbar-number-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 /* Rating editor grid cells: neutral spreadsheet-style focus, without the

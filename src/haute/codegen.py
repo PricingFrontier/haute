@@ -26,11 +26,11 @@ from haute._contracts import (
     Contract,
     get_column_contract,
 )
-from haute._edge_join import (
-    build_edge_join_boundary_target_roles,
-    resolve_edge_join_role_indices,
+from haute._edge_join import resolve_edge_join_role_indices
+from haute._graph_shape import (
+    validate_graph_shape_contracts,
+    validate_pipeline_graph_shape_contracts,
 )
-from haute._graph_shape import validate_pipeline_graph_shape_contracts
 from haute._graph_utils import (
     _sanitize_func_name,
     build_instance_mapping,
@@ -39,6 +39,7 @@ from haute._graph_utils import (
 )
 from haute._logging import get_logger
 from haute._registry import NODE_REGISTRY
+from haute._submodel_instances import canonical_downstream_identity, resolve_submodel_instances
 from haute._topo import topo_sort_ids
 from haute._types import (
     NODE_TYPE_TO_DECORATOR,
@@ -46,6 +47,9 @@ from haute._types import (
     GraphNode,
     NodeType,
     PipelineGraph,
+    SubmodelDefinition,
+    SubmodelInputPort,
+    SubmodelOutputPort,
 )
 from haute.errors import ConfigError, HauteError, ParseError
 
@@ -667,8 +671,12 @@ def _validate_duplicate_node_inputs(
 def _order_edge_join_incoming_edges(
     edges: list[GraphEdge],
     node_map: dict[str, GraphNode],
+    *,
+    source_id_for_edge: Callable[[GraphEdge], str] | None = None,
 ) -> list[GraphEdge]:
     """Order each edgeJoin node's incoming edges as base then join."""
+    # A resolver changes only the identity used for role validation; the
+    # returned edges retain their canonical placeholder endpoints and handles.
     incoming_by_target: dict[str, list[GraphEdge]] = {}
     for edge in edges:
         incoming_by_target.setdefault(edge.target, []).append(edge)
@@ -687,7 +695,10 @@ def _order_edge_join_incoming_edges(
             ordered.extend(group)
             emitted_edge_join_targets.add(edge.target)
             continue
-        source_ids = [incoming.source for incoming in group]
+        source_ids = [
+            source_id_for_edge(incoming) if source_id_for_edge is not None else incoming.source
+            for incoming in group
+        ]
         target_handles = [incoming.targetHandle for incoming in group]
         base_index, join_index = resolve_edge_join_role_indices(
             target_node.data.config,
@@ -732,6 +743,10 @@ def _generate_pipeline_lines(
     preserved_blocks: list[str] | None = None,
     submodel_imports: list[str] | None = None,
     node_to_code_fn: _NodeCodeFn = _node_to_code,
+    definition_id: str | None = None,
+    input_ports: list[SubmodelInputPort] | None = None,
+    output_ports: list[SubmodelOutputPort] | None = None,
+    config_base_depth: int | None = None,
     dedup_connects: bool = False,
     obj_name: str = "pipeline",
 ) -> list[str]:
@@ -749,10 +764,47 @@ def _generate_pipeline_lines(
     # escape the docstring into executable module-level code.  The parse
     # side recovers the exact name from the ``haute.Pipeline``/``Submodel``
     # constructor literal below, so re-saving is a fixpoint.
+    config_base_import_lines: list[str] = []
+    config_base_assignment: str | None = None
+    if any(has_config_folder(node.data.nodeType) for node in sorted_nodes):
+        if kind == "submodel":
+            if config_base_depth is None or config_base_depth < 0:
+                raise HauteError(
+                    "Submodel codegen requires the registration path depth to "
+                    "emit a correct config base."
+                )
+            # Config paths resolve against the parent pipeline directory, so
+            # the emitted base must climb exactly as many levels as the
+            # recorded registration path descends.
+            config_base_expr = f"_HautePath(__file__).resolve().parents[{config_base_depth}]"
+        else:
+            config_base_expr = "_HautePath(__file__).resolve().parent"
+        config_base_import_lines = [
+            "from pathlib import Path as _HautePath",
+            "",
+        ]
+        config_base_assignment = f"_HAUTE_CONFIG_BASE = {config_base_expr}"
     if kind == "submodel":
+        if definition_id is None or input_ports is None or output_ports is None:
+            raise HauteError(
+                "Submodel codegen requires definition_id, input_ports, and output_ports."
+            )
+        input_payload = [
+            port.model_dump(mode="python", by_alias=True, exclude_none=False)
+            for port in input_ports
+        ]
+        output_payload = [
+            port.model_dump(mode="python", by_alias=True, exclude_none=False)
+            for port in output_ports
+        ]
+        interface_kwargs = (
+            f", definition_id={_safe_str(definition_id)}, "
+            f"input_ports={input_payload!r}, output_ports={output_payload!r}"
+        )
         lines = [
             f'"""Submodel: {_sanitize_description(name)}"""',
             "",
+            *config_base_import_lines,
             "import polars as pl",
             "import haute",
         ]
@@ -761,14 +813,19 @@ def _generate_pipeline_lines(
             lines.append(preamble.rstrip())
         lines += [
             "",
-            f"{obj_name} = haute.Submodel({_safe_str(name)}, description={description!r})",
-            "",
-            "",
+            (
+                f"{obj_name} = haute.Submodel({_safe_str(name)}, "
+                f"description={description!r}{interface_kwargs})"
+            ),
         ]
+        if config_base_assignment is not None:
+            lines += ["", config_base_assignment]
+        lines += ["", ""]
     else:
         lines = [
             f'"""Pipeline: {_sanitize_description(name)}"""',
             "",
+            *config_base_import_lines,
             "import polars as pl",
             "import haute",
         ]
@@ -778,9 +835,10 @@ def _generate_pipeline_lines(
         lines += [
             "",
             f"{obj_name} = haute.Pipeline({_safe_str(name)}, description={description!r})",
-            "",
-            "",
         ]
+        if config_base_assignment is not None:
+            lines += ["", config_base_assignment]
+        lines += ["", ""]
 
     # Preserved blocks ------------------------------------------------------
     if preserved_blocks:
@@ -959,6 +1017,347 @@ def _submodel_node_to_code(
     return code
 
 
+def _registration_path_depth(recorded_path: str) -> int:
+    """Directory depth of a recorded registration path below the pipeline dir.
+
+    Counts real path segments — dot and empty segments (``./x.py``,
+    ``a//x.py``) must not inflate how far the emitted config base climbs.
+    """
+    segments = [
+        segment
+        for segment in recorded_path.replace("\\", "/").split("/")
+        if segment not in ("", ".")
+    ]
+    return max(len(segments) - 1, 0)
+
+
+def _canonical_port_id(
+    handle: str | None,
+    *,
+    prefix: str,
+    edge: GraphEdge,
+    endpoint: str,
+) -> str:
+    """Return a validated public port id from a canonical boundary handle."""
+    if not handle or not handle.startswith(prefix) or handle == prefix:
+        raise ParseError(
+            "Canonical submodel edge has a malformed public-port handle.",
+            edge_id=edge.id,
+            endpoint=endpoint,
+            handle=handle,
+            expected=f"{prefix}<portId>",
+        )
+    return handle.removeprefix(prefix)
+
+
+def _canonical_definition_source_metadata(
+    definition: SubmodelDefinition,
+    ordered_edges: list[GraphEdge],
+    node_map: dict[str, GraphNode],
+    id_to_func: dict[str, str],
+) -> tuple[
+    dict[str, list[str]],
+    dict[str, list[str]],
+    dict[str, list[str]],
+]:
+    """Build child-node inputs from public bindings followed by internal edges."""
+    node_sources: dict[str, list[str]] = {}
+    node_source_ids: dict[str, list[str]] = {}
+    node_source_func_names: dict[str, list[str]] = {}
+
+    for port in definition.input_ports:
+        parameter_name = _sanitize_func_name(port.port_id)
+        for target in port.targets:
+            node_sources.setdefault(target.node_id, []).append(parameter_name)
+            node_source_ids.setdefault(target.node_id, []).append(port.port_id)
+            node_source_func_names.setdefault(target.node_id, []).append(parameter_name)
+
+    for edge in ordered_edges:
+        source_node = node_map[edge.source]
+        node_sources.setdefault(edge.target, []).append(
+            _edge_input_name_for_codegen(edge, source_node)
+        )
+        node_source_ids.setdefault(edge.target, []).append(edge.source)
+        node_source_func_names.setdefault(edge.target, []).append(id_to_func[edge.source])
+
+    _validate_duplicate_node_inputs(node_sources, node_map)
+    return node_sources, node_source_ids, node_source_func_names
+
+
+def _graph_to_code_multi_instances(
+    graph: PipelineGraph,
+    *,
+    pipeline_name: str,
+    description: str,
+    preamble: str,
+    source_file: str,
+    preserved_blocks: list[str] | None,
+) -> dict[str, str]:
+    """Emit one canonical definition file and one registration per occurrence."""
+    definitions = graph.submodels or {}
+    instances = resolve_submodel_instances(graph)
+    referenced_definition_ids = {instance.config.definition_id for instance in instances.values()}
+    unused_definitions = sorted(set(definitions) - referenced_definition_ids)
+    if unused_definitions:
+        raise ParseError(
+            "Submodel definition registry contains unreferenced definitions; "
+            "saving would lose their parent-source registration.",
+            definition_ids=unused_definitions,
+        )
+
+    definition_order: list[str] = []
+    for node in graph.nodes:
+        instance = instances.get(node.id)
+        if instance is not None and instance.config.definition_id not in definition_order:
+            definition_order.append(instance.config.definition_id)
+
+    files_by_identity: dict[str, str] = {}
+    for definition_id in definition_order:
+        definition = definitions[definition_id]
+        if not definition.file:
+            raise ParseError(
+                "Reusable submodel definition has no source file.",
+                definition_id=definition_id,
+            )
+        normalised_file = definition.file.replace("\\", "/")
+        file_identity = normalised_file.casefold()
+        previous = files_by_identity.get(file_identity)
+        if previous is not None and previous != definition_id:
+            raise ParseError(
+                "Distinct submodel definitions cannot share one source file.",
+                file=normalised_file,
+                definition_ids=[previous, definition_id],
+            )
+        files_by_identity[file_identity] = definition_id
+
+    root_nodes = [node for node in graph.nodes if node.id not in instances]
+    root_node_ids = {node.id for node in root_nodes}
+    validate_graph_shape_contracts(graph, graph_label=pipeline_name)
+
+    collision_labels = [node.data.label for node in root_nodes]
+    for definition_id in definition_order:
+        collision_labels.extend(node.data.label for node in definitions[definition_id].graph.nodes)
+    _error_on_name_collisions(collision_labels)
+
+    files: dict[str, str] = {}
+    for definition_id in definition_order:
+        definition = definitions[definition_id]
+        child_graph = definition.graph
+        child_node_map = {node.id: node for node in child_graph.nodes}
+        child_edges = _order_edge_join_incoming_edges(
+            list(child_graph.edges),
+            child_node_map,
+        )
+        sorted_child_nodes = _topo_sort(child_graph.nodes, child_edges)
+        child_id_to_func = _build_id_to_func(sorted_child_nodes)
+        (
+            child_node_sources,
+            child_node_source_ids,
+            child_node_source_func_names,
+        ) = _canonical_definition_source_metadata(
+            definition,
+            child_edges,
+            child_node_map,
+            child_id_to_func,
+        )
+
+        incoming_context: dict[str, list[str]] = {}
+        for input_port in definition.input_ports:
+            for target in input_port.targets:
+                incoming_context.setdefault(target.node_id, []).append(
+                    f"public:{input_port.port_id}"
+                )
+        outgoing_context: dict[str, list[str]] = {}
+        for output_port in definition.output_ports:
+            outgoing_context.setdefault(output_port.source.node_id, []).append(
+                f"public:{output_port.port_id}"
+            )
+        validate_graph_shape_contracts(
+            child_graph,
+            graph_label=f"{pipeline_name}:{definition_id}",
+            extra_incoming_by_node=incoming_context,
+            extra_outgoing_by_node=outgoing_context,
+        )
+
+        child_connect_pairs = [
+            (
+                child_id_to_func[edge.source],
+                child_id_to_func[edge.target],
+                edge.sourceHandle or None,
+                edge.targetHandle or None,
+            )
+            for edge in child_edges
+        ]
+        child_lines = _generate_pipeline_lines(
+            kind="submodel",
+            name=child_graph.pipeline_name or definition_id,
+            description=child_graph.pipeline_description or "",
+            preamble=child_graph.preamble or "",
+            sorted_nodes=sorted_child_nodes,
+            id_to_func=child_id_to_func,
+            node_sources=child_node_sources,
+            connect_pairs=child_connect_pairs,
+            node_source_func_names=child_node_source_func_names,
+            node_source_ids=child_node_source_ids,
+            preserved_blocks=child_graph.preserved_blocks or None,
+            definition_id=definition_id,
+            input_ports=definition.input_ports,
+            output_ports=definition.output_ports,
+            config_base_depth=_registration_path_depth(definition.file),
+            node_to_code_fn=_submodel_node_to_code,
+            obj_name="submodel",
+        )
+        files[definition.file.replace("\\", "/")] = "\n".join(child_lines)
+
+    node_map = {node.id: node for node in graph.nodes}
+    for edge in graph.edges:
+        for endpoint, node_id in (("source", edge.source), ("target", edge.target)):
+            if node_id not in root_node_ids and node_id not in instances:
+                raise ParseError(
+                    "Pipeline edge references a node that is not part of the parent graph; "
+                    "definition-owned child ids are never parent endpoints.",
+                    edge_id=edge.id,
+                    endpoint=endpoint,
+                    node_id=node_id,
+                )
+
+    def parent_edge_source_identity(edge: GraphEdge) -> str:
+        source_instance = instances.get(edge.source)
+        if source_instance is None:
+            return edge.source
+        port_id = _canonical_port_id(
+            edge.sourceHandle,
+            prefix="out__",
+            edge=edge,
+            endpoint="source",
+        )
+        return canonical_downstream_identity(source_instance.config.alias, port_id)
+
+    ordered_parent_edges = _order_edge_join_incoming_edges(
+        list(graph.edges),
+        node_map,
+        source_id_for_edge=parent_edge_source_identity,
+    )
+    sorted_root_nodes = _topo_sort(
+        root_nodes,
+        [
+            edge
+            for edge in ordered_parent_edges
+            if edge.source in root_node_ids and edge.target in root_node_ids
+        ],
+    )
+    root_id_to_func = _build_id_to_func(sorted_root_nodes)
+    root_node_sources: dict[str, list[str]] = {}
+    root_node_source_ids: dict[str, list[str]] = {}
+    root_node_source_func_names: dict[str, list[str]] = {}
+
+    for edge in ordered_parent_edges:
+        if edge.target not in root_node_ids:
+            continue
+        source_instance = instances.get(edge.source)
+        if source_instance is None:
+            source_node = node_map[edge.source]
+            source_name = _edge_input_name_for_codegen(edge, source_node)
+            source_id = edge.source
+            source_func_name = root_id_to_func[edge.source]
+        else:
+            port_id = _canonical_port_id(
+                edge.sourceHandle,
+                prefix="out__",
+                edge=edge,
+                endpoint="source",
+            )
+            source_identity = canonical_downstream_identity(source_instance.config.alias, port_id)
+            source_name = source_identity
+            source_id = source_identity
+            source_func_name = source_identity
+        root_node_sources.setdefault(edge.target, []).append(source_name)
+        root_node_source_ids.setdefault(edge.target, []).append(source_id)
+        root_node_source_func_names.setdefault(edge.target, []).append(source_func_name)
+
+    _validate_duplicate_node_inputs(root_node_sources, node_map)
+
+    connect_pairs: list[_ConnectPair] = []
+    for edge in ordered_parent_edges:
+        source_instance = instances.get(edge.source)
+        target_instance = instances.get(edge.target)
+        source_func = (
+            source_instance.config.alias
+            if source_instance is not None
+            else root_id_to_func[edge.source]
+        )
+        target_func = (
+            target_instance.config.alias
+            if target_instance is not None
+            else root_id_to_func[edge.target]
+        )
+        source_port = (
+            _canonical_port_id(
+                edge.sourceHandle,
+                prefix="out__",
+                edge=edge,
+                endpoint="source",
+            )
+            if source_instance is not None
+            else edge.sourceHandle or None
+        )
+        target_port = (
+            _canonical_port_id(
+                edge.targetHandle,
+                prefix="in__",
+                edge=edge,
+                endpoint="target",
+            )
+            if target_instance is not None
+            else edge.targetHandle or None
+        )
+        connect_pairs.append((source_func, target_func, source_port, target_port))
+
+    submodel_imports = [
+        (
+            f"pipeline.submodel({_safe_path(instance.definition.file)}, "
+            f"definition_id={_safe_str(instance.config.definition_id)}, "
+            f"instance_id={_safe_str(instance.node.id)}, "
+            f"alias={_safe_str(instance.config.alias)}, "
+            + (
+                f"instance_of={_safe_str(instance.config.instance_of)}, "
+                if instance.config.instance_of is not None
+                else ""
+            )
+            + f"label={_safe_str(instance.node.data.label)})"
+        )
+        for node in graph.nodes
+        if (instance := instances.get(node.id)) is not None
+    ]
+    main_lines = _generate_pipeline_lines(
+        kind="pipeline",
+        name=pipeline_name,
+        description=description,
+        preamble=preamble,
+        sorted_nodes=sorted_root_nodes,
+        id_to_func=root_id_to_func,
+        node_sources=root_node_sources,
+        connect_pairs=connect_pairs,
+        node_source_func_names=root_node_source_func_names,
+        node_source_ids=root_node_source_ids,
+        preserved_blocks=(
+            preserved_blocks if preserved_blocks is not None else graph.preserved_blocks or None
+        ),
+        submodel_imports=submodel_imports,
+        node_to_code_fn=_node_to_code,
+        dedup_connects=True,
+    )
+    files[source_file or f"{pipeline_name}.py"] = "\n".join(main_lines)
+    logger.info(
+        "code_generated",
+        pipeline_name=pipeline_name,
+        node_count=len(sorted_root_nodes),
+        submodel_definition_count=len(definition_order),
+        submodel_instance_count=len(instances),
+    )
+    return _assert_emitted_files_parse(files)
+
+
 def graph_to_code_multi(
     graph: PipelineGraph,
     pipeline_name: str = "main",
@@ -967,460 +1366,64 @@ def graph_to_code_multi(
     source_file: str = "",
     preserved_blocks: list[str] | None = None,
 ) -> dict[str, str]:
-    """Generate code for a pipeline with submodels.
-
-    Returns a dict mapping relative file path -> generated Python code.
-    E.g. ``{"main.py": "...", "modules/model_scoring.py": "..."}``.
-
-    If the graph has no submodels, the result contains only the main file.
-    """
-    # Fall back to graph-level description when caller doesn't supply one
+    """Generate canonical Python source for a pipeline and its definitions."""
     if not description and graph.pipeline_description:
         description = graph.pipeline_description
     if not preamble and graph.preamble:
         preamble = graph.preamble
-    submodels = graph.submodels or {}
-    validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
 
-    # Detect colliding labels across the whole graph once, eagerly, so
-    # duplicate-function-name collisions are reported even when the
-    # file-generation path short-circuits.
-    # Hierarchical payloads may retain a transport copy of each child in
-    # ``graph.nodes`` as well as the authoritative copy in the embedded
-    # submodel graph. Codegen assigns every ``childNodeIds`` entry to the
-    # child module, so do not count that same logical node twice here.
-    represented_child_ids = {
-        child_id for sm_meta in submodels.values() for child_id in sm_meta.get("childNodeIds", [])
-    }
-    collision_labels: list[str] = [
-        node.data.label for node in graph.nodes if node.id not in represented_child_ids
-    ]
-    for sm_meta in submodels.values():
-        for raw in sm_meta.get("graph", {}).get("nodes", []):
-            if isinstance(raw, dict):
-                label = raw.get("data", {}).get("label", "")
-            else:
-                label = raw.data.label
-            collision_labels.append(label)
-    _error_on_name_collisions(collision_labels)
-
-    if not submodels:
-        # No submodels — single-file output
-        main_key = source_file or f"{pipeline_name}.py"
-        nodes = graph.nodes
-        node_map = {node.id: node for node in nodes}
-        edges = _order_edge_join_incoming_edges(graph.edges, node_map)
-        sorted_nodes = _topo_sort(nodes, edges)
-
-        id_to_func = _build_id_to_func(sorted_nodes)
-        node_sources, node_source_ids = _build_node_input_metadata(edges, node_map)
-        _validate_duplicate_node_inputs(node_sources, node_map)
-        node_source_func_names = {
-            target_id: [id_to_func[source_id] for source_id in source_ids]
-            for target_id, source_ids in node_source_ids.items()
-        }
-
-        all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
-
-        # Build connect pairs from edges. Each pair is
-        # (src_func, tgt_func, source_port) where source_port is the
-        # edge's `sourceHandle` if set, otherwise None (single-frame).
-        connect_pairs = [
-            (
-                id_to_func.get(e.source, e.source),
-                id_to_func.get(e.target, e.target),
-                e.sourceHandle or None,
-                e.targetHandle or None,
-            )
-            for e in edges
-        ]
-
-        lines = _generate_pipeline_lines(
-            kind="pipeline",
-            name=pipeline_name,
+    has_occurrences = any(node.data.nodeType == NodeType.SUBMODEL for node in graph.nodes)
+    if graph.submodels or has_occurrences:
+        return _graph_to_code_multi_instances(
+            graph,
+            pipeline_name=pipeline_name,
             description=description,
             preamble=preamble,
-            sorted_nodes=sorted_nodes,
-            id_to_func=id_to_func,
-            node_sources=node_sources,
-            connect_pairs=connect_pairs,
-            node_source_func_names=node_source_func_names,
-            node_source_ids=node_source_ids,
-            preserved_blocks=all_preserved or None,
-            node_to_code_fn=_node_to_code,
+            source_file=source_file,
+            preserved_blocks=preserved_blocks,
         )
 
-        logger.info("code_generated", pipeline_name=pipeline_name, node_count=len(sorted_nodes))
-        return _assert_emitted_files_parse({main_key: "\n".join(lines)})
+    validate_pipeline_graph_shape_contracts(graph, graph_label=pipeline_name)
+    _error_on_name_collisions([node.data.label for node in graph.nodes])
 
-    # Separate nodes into root-level vs submodel children ----------------
-    all_child_ids: set[str] = set()
-    submodel_node_ids: set[str] = set()
-    submodel_child_ids: dict[str, set[str]] = {}
-    submodel_child_nodes: dict[str, dict[str, GraphNode]] = {}
-    for sm_name, sm_meta in submodels.items():
-        child_ids = set(sm_meta.get("childNodeIds", []))
-        all_child_ids.update(child_ids)
-        submodel_node_id = f"submodel__{sm_name}"
-        submodel_node_ids.add(submodel_node_id)
-        submodel_child_ids[submodel_node_id] = child_ids
-        raw_child_nodes = sm_meta.get("graph", {}).get("nodes", [])
-        parsed_child_nodes = [
-            GraphNode.model_validate(raw) if isinstance(raw, dict) else raw
-            for raw in raw_child_nodes
-        ]
-        submodel_child_nodes[submodel_node_id] = {child.id: child for child in parsed_child_nodes}
-
-    nodes = graph.nodes
-    node_map = {node.id: node for node in nodes}
+    main_key = source_file or f"{pipeline_name}.py"
+    node_map = {node.id: node for node in graph.nodes}
     edges = _order_edge_join_incoming_edges(graph.edges, node_map)
-
-    # Root-level nodes: not children and not the submodel placeholder itself
-    root_nodes = [n for n in nodes if n.id not in all_child_ids and n.id not in submodel_node_ids]
-
-    # Root-level edges: only between root-level nodes OR crossing submodel boundary
-    root_node_ids = {n.id for n in root_nodes}
-
-    # Build id -> func_name for root nodes (needed by submodel cross-boundary resolution)
-    root_id_to_func = _build_id_to_func(root_nodes)
-
-    # Generate submodel files --------------------------------------------
-    files: dict[str, str] = {}
-
-    for sm_name, sm_meta in submodels.items():
-        sm_graph = sm_meta.get("graph", {})
-        sm_file = sm_meta.get("file", f"modules/{sm_name}.py").replace("\\", "/")
-        raw_nodes = sm_graph.get("nodes", [])
-        raw_edges = sm_graph.get("edges", [])
-        sm_nodes = [GraphNode.model_validate(n) if isinstance(n, dict) else n for n in raw_nodes]
-        sm_edges = [GraphEdge.model_validate(e) if isinstance(e, dict) else e for e in raw_edges]
-        sm_node_map = {node.id: node for node in sm_nodes}
-        sm_edges = _order_edge_join_incoming_edges(sm_edges, sm_node_map)
-
-        sorted_sm_nodes = _topo_sort(sm_nodes, sm_edges)
-        sm_id_to_func = _build_id_to_func(sorted_sm_nodes)
-        sm_node_sources, sm_node_source_ids = _build_node_input_metadata(sm_edges, sm_node_map)
-        sm_node_source_func_names = {
-            target_id: [sm_id_to_func[source_id] for source_id in source_ids]
-            for target_id, source_ids in sm_node_source_ids.items()
-        }
-
-        # Also include cross-boundary inputs from parent graph edges.
-        # Every edge targeting the submodel placeholder must carry a valid
-        # ``in__<child_id>`` handle — anything else indicates a malformed
-        # edge and we fail loudly rather than silently dropping it.
-        sm_node_id = f"submodel__{sm_name}"
-        sm_child_ids = {n.id for n in sm_nodes}
-        submodel_child_ids[sm_node_id] = sm_child_ids
-        for edge in edges:
-            if edge.target != sm_node_id:
-                continue
-            handle = edge.targetHandle
-            if not handle or not handle.startswith("in__"):
-                raise ParseError(
-                    "Submodel cross-boundary edge has missing or malformed "
-                    "targetHandle; expected 'in__<child_id>'.",
-                    edge_id=edge.id,
-                    handle=handle,
-                    submodel=sm_name,
-                    source=edge.source,
-                    target=edge.target,
-                )
-            child_id = handle[len("in__") :]
-            if child_id not in sm_child_ids:
-                raise ParseError(
-                    "Submodel cross-boundary edge references a child node "
-                    "that does not exist in the submodel.",
-                    edge_id=edge.id,
-                    handle=handle,
-                    child_id=child_id,
-                    submodel=sm_name,
-                    known_children=sorted(sm_child_ids),
-                )
-            source_id = edge.source
-            source_edge = edge
-            if source_id in submodel_node_ids:
-                source_handle = edge.sourceHandle or ""
-                if not source_handle.startswith("out__"):
-                    raise ParseError(
-                        "Submodel cross-boundary edge has missing or malformed "
-                        "sourceHandle; expected 'out__<child_id>'.",
-                        edge_id=edge.id,
-                        handle=edge.sourceHandle,
-                        source=edge.source,
-                        target=edge.target,
-                    )
-                source_id = source_handle.removeprefix("out__")
-                source_node = submodel_child_nodes.get(edge.source, {}).get(source_id)
-                if source_node is None:
-                    raise ParseError(
-                        "Submodel cross-boundary edge references a child node "
-                        "that does not exist in the source submodel.",
-                        edge_id=edge.id,
-                        child_id=source_id,
-                        submodel=edge.source.removeprefix("submodel__"),
-                    )
-                source_edge = edge.model_copy(
-                    update={"sourceHandle": edge.sourcePort},
-                )
-            else:
-                source_node = node_map[source_id]
-            src_name = _edge_input_name_for_codegen(source_edge, source_node)
-            existing = sm_node_sources.setdefault(child_id, [])
-            existing_ids = sm_node_source_ids.setdefault(child_id, [])
-            existing.append(src_name)
-            existing_ids.append(source_id)
-            sm_node_source_func_names.setdefault(child_id, []).append(
-                root_id_to_func.get(source_id, _sanitize_func_name(source_node.data.label))
-            )
-        _validate_duplicate_node_inputs(sm_node_sources, sm_node_map)
-        # Validate out__ cross-boundary edges early, during submodel-file
-        # generation, so a malformed source handle fails with a clear
-        # ParseError here rather than a confusing downstream error when the
-        # mis-wired child node is later emitted.
-        for edge in edges:
-            if edge.source != sm_node_id:
-                continue
-            handle = edge.sourceHandle
-            if not handle or not handle.startswith("out__"):
-                raise ParseError(
-                    "Submodel cross-boundary edge has missing or malformed "
-                    "sourceHandle; expected 'out__<child_id>'.",
-                    edge_id=edge.id,
-                    handle=handle,
-                    submodel=sm_name,
-                    source=edge.source,
-                    target=edge.target,
-                )
-            child_id = handle[len("out__") :]
-            if child_id not in sm_child_ids:
-                raise ParseError(
-                    "Submodel cross-boundary edge references a child node "
-                    "that does not exist in the submodel.",
-                    edge_id=edge.id,
-                    handle=handle,
-                    child_id=child_id,
-                    submodel=sm_name,
-                    known_children=sorted(sm_child_ids),
-                )
-
-        # Build connect pairs from internal edges. Same triple shape as
-        # the root-level construction — sourceHandle threads through so
-        # submodel-internal multi-frame edges (if any) survive a save.
-        sm_connect_pairs = [
-            (
-                sm_id_to_func.get(e.source, e.source),
-                sm_id_to_func.get(e.target, e.target),
-                e.sourceHandle or None,
-                e.targetHandle or None,
-            )
-            for e in sm_edges
-        ]
-
-        sm_lines = _generate_pipeline_lines(
-            kind="submodel",
-            name=sm_name,
-            description=sm_graph.get("pipeline_description") or "",
-            preamble=sm_graph.get("preamble") or "",
-            sorted_nodes=sorted_sm_nodes,
-            id_to_func=sm_id_to_func,
-            node_sources=sm_node_sources,
-            connect_pairs=sm_connect_pairs,
-            node_source_func_names=sm_node_source_func_names,
-            node_source_ids=sm_node_source_ids,
-            preserved_blocks=sm_graph.get("preserved_blocks") or None,
-            node_to_code_fn=_submodel_node_to_code,
-            obj_name="submodel",
+    sorted_nodes = _topo_sort(graph.nodes, edges)
+    id_to_func = _build_id_to_func(sorted_nodes)
+    node_sources, node_source_ids = _build_node_input_metadata(edges, node_map)
+    _validate_duplicate_node_inputs(node_sources, node_map)
+    node_source_func_names = {
+        target_id: [id_to_func[source_id] for source_id in source_ids]
+        for target_id, source_ids in node_source_ids.items()
+    }
+    connect_pairs = [
+        (
+            id_to_func.get(edge.source, edge.source),
+            id_to_func.get(edge.target, edge.target),
+            edge.sourceHandle or None,
+            edge.targetHandle or None,
         )
-
-        files[sm_file] = "\n".join(sm_lines)
-
-    # Generate main pipeline file ----------------------------------------
-
-    sorted_root = (
-        _topo_sort(
-            root_nodes,
-            [e for e in edges if e.source in root_node_ids and e.target in root_node_ids],
-        )
-        if root_nodes
-        else []
-    )
-
-    # Also map submodel child node IDs to func names (for edge generation)
-    for sm_name, sm_meta in submodels.items():
-        sm_graph = sm_meta.get("graph", {})
-        for n in sm_graph.get("nodes", []):
-            nd = GraphNode.model_validate(n) if isinstance(n, dict) else n
-            root_id_to_func[nd.id] = _sanitize_func_name(nd.data.label)
-
-    def _resolve_submodel_endpoint(
-        edge: GraphEdge,
-        node_id: str,
-        handle: str,
-        *,
-        prefix: str,
-        endpoint: str,
-    ) -> str:
-        """Resolve a submodel boundary handle to a child node id."""
-        if node_id not in submodel_node_ids:
-            return node_id
-        if not handle or not handle.startswith(prefix):
-            raise ParseError(
-                "Submodel cross-boundary edge has missing or malformed "
-                f"{endpoint}Handle; expected '{prefix}<child_id>'.",
-                edge_id=edge.id,
-                handle=handle or None,
-                submodel=node_id.removeprefix("submodel__"),
-                source=edge.source,
-                target=edge.target,
-            )
-        child_id = handle[len(prefix) :]
-        known_children = submodel_child_ids.get(node_id, set())
-        if child_id not in known_children:
-            raise ParseError(
-                "Submodel cross-boundary edge references a child node "
-                "that does not exist in the submodel.",
-                edge_id=edge.id,
-                handle=handle,
-                child_id=child_id,
-                submodel=node_id.removeprefix("submodel__"),
-                known_children=sorted(known_children),
-            )
-        return child_id
-
-    # Build source names per root node from root-level edges AND
-    # cross-boundary edges (resolving submodel handles to child node names).
-    submodel_node_maps: dict[str, dict[str, GraphNode]] = {}
-    for sm_name, sm_meta in submodels.items():
-        sm_nodes = [
-            GraphNode.model_validate(raw) if isinstance(raw, dict) else raw
-            for raw in sm_meta.get("graph", {}).get("nodes", [])
-        ]
-        submodel_node_maps[f"submodel__{sm_name}"] = {node.id: node for node in sm_nodes}
-
-    root_node_sources: dict[str, list[str]] = {}
-    root_node_source_ids: dict[str, list[str]] = {}
-    root_node_source_func_names: dict[str, list[str]] = {}
-    for edge in edges:
-        src = edge.source
-        tgt = edge.target
-        sh = edge.sourceHandle or ""
-        th = edge.targetHandle or ""
-
-        # Resolve submodel handles to actual child node names
-        actual_src = _resolve_submodel_endpoint(
-            edge,
-            src,
-            sh,
-            prefix="out__",
-            endpoint="source",
-        )
-        actual_tgt = _resolve_submodel_endpoint(
-            edge,
-            tgt,
-            th,
-            prefix="in__",
-            endpoint="target",
-        )
-
-        # Only care about edges feeding into root nodes
-        if actual_tgt not in root_node_ids:
-            continue
-        if src in submodel_node_ids:
-            source_node = submodel_node_maps[src][actual_src]
-            source_edge = edge.model_copy(
-                update={"sourceHandle": edge.sourcePort},
-            )
-        else:
-            source_node = node_map[src]
-            source_edge = edge
-        src_name = _edge_input_name_for_codegen(source_edge, source_node)
-        root_node_sources.setdefault(actual_tgt, []).append(src_name)
-        # Use the RESOLVED source id (child node id for a cross-boundary edge),
-        # not the raw submodel placeholder id, so ids and names stay aligned
-        # and _parent_name_by_id builds a correct id->func map.
-        root_node_source_ids.setdefault(actual_tgt, []).append(actual_src)
-        root_node_source_func_names.setdefault(actual_tgt, []).append(
-            root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
-        )
-
-    _validate_duplicate_node_inputs(root_node_sources, node_map)
-
-    # Build connect pairs for ALL edges (cross-boundary use real node names).
-    # Four-tuple shape: (src_func, tgt_func, source_port, target_port).
-    # Synthetic in__/out__ handles identify boundary children; sourcePort /
-    # targetPort retain any authored connect ports hidden by those markers.
-    submodel_edge_join_target_roles = build_edge_join_boundary_target_roles(submodels)
-    root_connect_pairs: list[_ConnectPair] = []
-    for edge in edges:
-        src = edge.source
-        tgt = edge.target
-        sh = edge.sourceHandle or ""
-        th = edge.targetHandle or ""
-
-        # Resolve submodel handles to actual node names
-        actual_src = _resolve_submodel_endpoint(
-            edge,
-            src,
-            sh,
-            prefix="out__",
-            endpoint="source",
-        )
-        actual_tgt = _resolve_submodel_endpoint(
-            edge,
-            tgt,
-            th,
-            prefix="in__",
-            endpoint="target",
-        )
-
-        src_func = root_id_to_func.get(actual_src, _sanitize_func_name(actual_src))
-        tgt_func = root_id_to_func.get(actual_tgt, _sanitize_func_name(actual_tgt))
-        # Submodel-boundary `out__<id>` handles aren't user-facing frame
-        # names; only forward sourceHandle as source_port when it's not
-        # a submodel-boundary edge (i.e. the source isn't a submodel
-        # placeholder node). Per the adversarial review's S1: gating on
-        # the prefix alone would also silently drop a regular apiInput
-        # table labelled e.g. "out__claims".
-        is_submodel_boundary = src in submodel_node_ids
-        is_submodel_target_boundary = tgt in submodel_node_ids
-        source_port = edge.sourcePort if is_submodel_boundary else edge.sourceHandle
-        target_port: str | None
-        if edge.targetHandle and not is_submodel_target_boundary:
-            target_port = edge.targetHandle
-        elif is_submodel_target_boundary:
-            target_port = edge.targetPort
-            if target_port is None:
-                target_port = submodel_edge_join_target_roles.get((tgt, actual_tgt, actual_src))
-        else:
-            target_port = None
-        root_connect_pairs.append((src_func, tgt_func, source_port, target_port))
-
-    # Submodel import lines
-    sm_imports = []
-    for sm_name, sm_meta in submodels.items():
-        sm_path = sm_meta.get("file", f"modules/{sm_name}.py").replace("\\", "/")
-        sm_imports.append(f"pipeline.submodel({_safe_path(sm_path)})")
-
+        for edge in edges
+    ]
     all_preserved = preserved_blocks if preserved_blocks is not None else graph.preserved_blocks
-
-    main_lines = _generate_pipeline_lines(
+    lines = _generate_pipeline_lines(
         kind="pipeline",
         name=pipeline_name,
         description=description,
         preamble=preamble,
-        sorted_nodes=sorted_root,
-        id_to_func=root_id_to_func,
-        node_sources=root_node_sources,
-        connect_pairs=root_connect_pairs,
-        node_source_func_names=root_node_source_func_names,
-        node_source_ids=root_node_source_ids,
+        sorted_nodes=sorted_nodes,
+        id_to_func=id_to_func,
+        node_sources=node_sources,
+        connect_pairs=connect_pairs,
+        node_source_func_names=node_source_func_names,
+        node_source_ids=node_source_ids,
         preserved_blocks=all_preserved or None,
-        submodel_imports=sm_imports,
         node_to_code_fn=_node_to_code,
-        dedup_connects=True,
     )
-
-    main_key = source_file or f"{pipeline_name}.py"
-    files[main_key] = "\n".join(main_lines)
-    return _assert_emitted_files_parse(files)
+    logger.info(
+        "code_generated",
+        pipeline_name=pipeline_name,
+        node_count=len(sorted_nodes),
+    )
+    return _assert_emitted_files_parse({main_key: "\n".join(lines)})

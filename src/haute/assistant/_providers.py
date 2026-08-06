@@ -8,7 +8,9 @@ inject a client at the adapter seam.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -16,7 +18,7 @@ from typing import Any, Literal, Protocol, TypeAlias
 
 from haute._logging import get_logger
 from haute.assistant._config import AssistantConfig
-from haute.errors import HauteError
+from haute.errors import ConfigError, HauteError
 
 logger = get_logger(component="assistant.providers")
 
@@ -89,6 +91,10 @@ def _provider_error(provider: str, failure_class: str, detail: str) -> Assistant
     """Build an error from hand-authored text only; never include SDK text."""
 
     return AssistantProviderError(provider, failure_class, detail)
+
+
+def _is_rate_limit_error(error: Exception) -> bool:
+    return "rate" in type(error).__name__.lower()
 
 
 def _classify_sdk_error(provider: str, error: Exception) -> AssistantProviderError:
@@ -181,7 +187,7 @@ def _chunk_shape(chunk: object) -> str:
     return " ".join(parts) or "empty"
 
 
-def _iter_content_text(content: object) -> Iterator[str]:
+def _iter_content_text(content: object, provider: str = "openai") -> Iterator[str]:
     """Normalise an OpenAI content delta into assistant text fragments.
 
     api.openai.com streams plain strings.  OpenAI-compatible gateways serving
@@ -195,7 +201,7 @@ def _iter_content_text(content: object) -> Iterator[str]:
         yield content
         return
     if not isinstance(content, Sequence) or isinstance(content, (str, bytes)):
-        raise _provider_error("openai", "malformed_stream", "content delta is not text")
+        raise _provider_error(provider, "malformed_stream", "content delta is not text")
     for part in content:
         part_type = _attr(part, "type")
         if part_type == "reasoning":
@@ -204,11 +210,11 @@ def _iter_content_text(content: object) -> Iterator[str]:
             text = _attr(part, "text")
             if not isinstance(text, str):
                 raise _provider_error(
-                    "openai", "malformed_stream", "text content part carries no text"
+                    provider, "malformed_stream", "text content part carries no text"
                 )
             yield text
             continue
-        raise _provider_error("openai", "malformed_stream", "unsupported content part type")
+        raise _provider_error(provider, "malformed_stream", "unsupported content part type")
 
 
 def _map_stop_reason(provider: str, reason: object) -> Literal["end", "tool_use"]:
@@ -247,13 +253,10 @@ def _parse_tool_arguments(
             return dict(initial)
         raise _provider_error(provider, "malformed_stream", "tool arguments are not an object")
 
-    def reject_constant(_value: str) -> Any:
-        raise ValueError
-
     try:
         parsed = json.loads(
             raw,
-            parse_constant=reject_constant,
+            parse_constant=_reject_json_constant,
         )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise _provider_error(
@@ -262,6 +265,343 @@ def _parse_tool_arguments(
     if not isinstance(parsed, dict):
         raise _provider_error(provider, "malformed_stream", "tool arguments are not an object")
     return parsed
+
+
+def _reject_json_constant(_value: str) -> Any:
+    """Reject NaN and infinities, which are not finite JSON values."""
+
+    raise ValueError
+
+
+def _tool_input_schemas(
+    tools: Sequence[Mapping[str, Any]],
+) -> dict[str, Mapping[str, object]]:
+    """Index trusted advertised input schemas by tool name."""
+
+    schemas: dict[str, Mapping[str, object]] = {}
+    for tool in tools:
+        name = tool.get("name")
+        schema = tool.get("input_schema")
+        if isinstance(name, str) and isinstance(schema, Mapping):
+            schemas[name] = schema
+    return schemas
+
+
+def _declared_compatible_types(schema: Mapping[str, object]) -> frozenset[str]:
+    """Return exclusively declared compatible JSON types, or no safe target."""
+
+    raw_type = schema.get("type")
+    if isinstance(raw_type, str):
+        declared = frozenset({raw_type})
+    elif (
+        isinstance(raw_type, Sequence)
+        and not isinstance(raw_type, (str, bytes))
+        and all(isinstance(item, str) for item in raw_type)
+    ):
+        declared = frozenset(raw_type)
+    else:
+        return frozenset()
+    compatible = frozenset({"array", "object", "boolean", "integer", "number"})
+    return declared if declared and declared <= compatible else frozenset()
+
+
+def _matches_declared_json_type(value: object, expected: frozenset[str]) -> bool:
+    """Return whether a decoded JSON value has one of the exact declared types."""
+
+    if "array" in expected and isinstance(value, list):
+        return True
+    if "object" in expected and isinstance(value, Mapping):
+        return True
+    if "boolean" in expected and type(value) is bool:
+        return True
+    if "integer" in expected and type(value) is int:
+        return True
+    if "number" in expected:
+        if type(value) is int:
+            return True
+        if type(value) is float and math.isfinite(value):
+            return True
+    return False
+
+
+def _portable_schema_type(schema: Mapping[str, object]) -> str | None:
+    """Return a provider-portable declared type for one schema fragment."""
+
+    raw_type = schema.get("type")
+    if isinstance(raw_type, str):
+        return raw_type
+    if (
+        isinstance(raw_type, Sequence)
+        and not isinstance(raw_type, (str, bytes))
+        and raw_type
+        and all(isinstance(item, str) for item in raw_type)
+    ):
+        non_null = tuple(dict.fromkeys(item for item in raw_type if item != "null"))
+        return non_null[0] if len(non_null) == 1 else None
+
+    branch_types: list[str] = []
+    for keyword in ("oneOf", "anyOf", "allOf"):
+        branches = schema.get(keyword)
+        if not isinstance(branches, Sequence) or isinstance(branches, (str, bytes)):
+            continue
+        for branch in branches:
+            if not isinstance(branch, Mapping):
+                return None
+            branch_type = _portable_schema_type(branch)
+            if branch_type is None and isinstance(branch.get("properties"), Mapping):
+                branch_type = "object"
+            if branch_type is None:
+                return None
+            branch_types.append(branch_type)
+        if branch_types:
+            return branch_types[0] if len(set(branch_types)) == 1 else None
+    return None
+
+
+def _portable_allowed_values(schema: Mapping[str, object]) -> tuple[object, ...] | None:
+    if "const" in schema:
+        return (schema["const"],)
+    enum = schema.get("enum")
+    if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes)) and enum:
+        return tuple(enum)
+    return None
+
+
+@dataclass
+class _SchemaBudget:
+    """Bounded property count projected onto a provider wire schema."""
+
+    remaining: int = 16
+
+
+def _portable_property_schema(
+    schemas: Sequence[Mapping[str, object]],
+    budget: _SchemaBudget,
+) -> dict[str, object]:
+    if schemas and all(schema == schemas[0] for schema in schemas[1:]):
+        return _portable_tool_schema(schemas[0], budget)
+
+    allowed = [_portable_allowed_values(schema) for schema in schemas]
+    if allowed and all(values is not None for values in allowed):
+        combined: list[object] = []
+        for values in allowed:
+            assert values is not None
+            for value in values:
+                if value not in combined:
+                    combined.append(value)
+        return {"enum": combined}
+
+    types = [_portable_schema_type(schema) for schema in schemas]
+    if types and types[0] is not None and all(value == types[0] for value in types):
+        return {"type": types[0]}
+    return {}
+
+
+def _portable_required_names(schema: Mapping[str, object]) -> tuple[str, ...]:
+    required = schema.get("required")
+    if not isinstance(required, Sequence) or isinstance(required, (str, bytes)):
+        return ()
+    return tuple(item for item in required if isinstance(item, str))
+
+
+def _portable_composed_object(
+    schema: Mapping[str, object],
+    budget: _SchemaBudget,
+) -> dict[str, object] | None:
+    """Merge one closed object union when it fits the remaining property budget."""
+
+    raw_branches: object | None = None
+    for keyword in ("oneOf", "anyOf", "allOf"):
+        candidate = schema.get(keyword)
+        if candidate is not None:
+            raw_branches = candidate
+            break
+    if not isinstance(raw_branches, Sequence) or isinstance(raw_branches, (str, bytes)):
+        return None
+
+    branches: list[Mapping[str, object]] = []
+    for branch in raw_branches:
+        if not isinstance(branch, Mapping):
+            return None
+        branches.append(branch)
+    if not branches:
+        return None
+
+    property_maps: list[Mapping[str, object]] = []
+    for branch in branches:
+        properties = branch.get("properties")
+        if (
+            _portable_schema_type(branch) != "object"
+            or not isinstance(properties, Mapping)
+            or branch.get("additionalProperties") is not False
+        ):
+            return None
+        property_maps.append(properties)
+
+    names: list[str] = []
+    for properties in property_maps:
+        for name in properties:
+            if isinstance(name, str) and name not in names:
+                names.append(name)
+    if len(names) > budget.remaining:
+        return {"type": "object"}
+    budget.remaining -= len(names)
+
+    projected_properties: dict[str, object] = {}
+    for name in names:
+        property_schemas: list[Mapping[str, object]] = []
+        for properties in property_maps:
+            property_schema = properties.get(name)
+            if isinstance(property_schema, Mapping):
+                property_schemas.append(property_schema)
+        projected_properties[name] = _portable_property_schema(property_schemas, budget)
+
+    branch_required = [_portable_required_names(branch) for branch in branches]
+    required_sets = [set(names) for names in branch_required]
+    required = [
+        name
+        for name in branch_required[0]
+        if all(name in required_set for required_set in required_sets)
+    ]
+    projected: dict[str, object] = {
+        "type": "object",
+        "properties": projected_properties,
+        "additionalProperties": False,
+    }
+    if required:
+        projected["required"] = required
+    return projected
+
+
+def _portable_tool_schema(
+    schema: Mapping[str, object],
+    budget: _SchemaBudget | None = None,
+) -> dict[str, object]:
+    """Project canonical validation schema onto one bounded provider wire subset."""
+
+    if budget is None:
+        budget = _SchemaBudget()
+    composed = _portable_composed_object(schema, budget)
+    if composed is not None:
+        return composed
+    projected: dict[str, object] = {}
+    projected_type = _portable_schema_type(schema)
+    if projected_type is not None:
+        projected["type"] = projected_type
+
+    description = schema.get("description")
+    if isinstance(description, str):
+        projected["description"] = description
+
+    enum = schema.get("enum")
+    if isinstance(enum, Sequence) and not isinstance(enum, (str, bytes)):
+        projected["enum"] = list(enum)
+    elif "const" in schema:
+        projected["enum"] = [schema["const"]]
+
+    properties = schema.get("properties")
+    if isinstance(properties, Mapping):
+        property_names = [name for name in properties if isinstance(name, str)]
+        if len(property_names) > budget.remaining:
+            return {"type": projected_type or "object"}
+        budget.remaining -= len(property_names)
+        projected_properties = {
+            str(name): _portable_tool_schema(value, budget)
+            for name, value in properties.items()
+            if isinstance(value, Mapping)
+        }
+        projected["properties"] = projected_properties
+        required = schema.get("required")
+        if isinstance(required, Sequence) and not isinstance(required, (str, bytes)):
+            projected_required = [
+                name for name in required if isinstance(name, str) and name in projected_properties
+            ]
+            if projected_required:
+                projected["required"] = projected_required
+
+    items = schema.get("items")
+    if isinstance(items, Mapping):
+        projected["items"] = _portable_tool_schema(items, budget)
+
+    if schema.get("additionalProperties") is False:
+        projected["additionalProperties"] = False
+    return projected
+
+
+def _portable_tools(
+    tools: Sequence[Mapping[str, Any]],
+) -> list[dict[str, object]]:
+    """Return one common, conservative tool contract for every provider wire API."""
+
+    projected: list[dict[str, object]] = []
+    for tool in tools:
+        name = tool.get("name")
+        schema = tool.get("input_schema")
+        if not isinstance(name, str) or not isinstance(schema, Mapping):
+            raise TypeError("Tool definitions require a string name and mapping input_schema")
+        description = tool.get("description", "")
+        projected.append(
+            {
+                "name": name,
+                "description": description if isinstance(description, str) else "",
+                "input_schema": _portable_tool_schema(schema),
+            }
+        )
+    return projected
+
+
+def _normalise_databricks_tool_arguments(
+    arguments: Mapping[str, Any],
+    schema: Mapping[str, object],
+) -> dict[str, Any]:
+    """Decode Databricks' stringified top-level JSON values by schema.
+
+    Databricks-hosted Qwen models have been observed to return a valid outer
+    function-arguments object while encoding container and scalar properties as
+    JSON strings. Only fields whose canonical schema exclusively declares a
+    compatible JSON type are eligible. Strings, nulls, nested values, ambiguous
+    schemas, and non-finite numbers are left untouched. Invalid or wrong-type
+    encodings remain strings so canonical tool validation can reject them as
+    recoverable invalid input.
+    """
+
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return dict(arguments)
+    normalised = dict(arguments)
+    for field, value in arguments.items():
+        field_schema = properties.get(field)
+        if not isinstance(value, str) or not isinstance(field_schema, Mapping):
+            continue
+        expected = _declared_compatible_types(field_schema)
+        if not expected:
+            continue
+        try:
+            decoded = json.loads(value, parse_constant=_reject_json_constant)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            # An eligible field that will now certainly fail canonical
+            # validation as `wrong_type`. Logging the shape — never the value —
+            # is what distinguishes "the gateway sent a dialect we do not
+            # decode" from "the model composed the wrong argument", which the
+            # redacted session record cannot tell apart after the fact.
+            logger.warning(
+                "assistant_databricks_argument_decode_failed",
+                field=field,
+                declared_types=sorted(expected),
+                encoded_length=len(value),
+                looks_like_json_container=value.lstrip()[:1] in {"[", "{"},
+            )
+            continue
+        if _matches_declared_json_type(decoded, expected):
+            normalised[field] = decoded
+        else:
+            logger.warning(
+                "assistant_databricks_argument_decoded_wrong_type",
+                field=field,
+                declared_types=sorted(expected),
+                decoded_type=type(decoded).__name__,
+            )
+    return normalised
 
 
 def _load_anthropic_client(config: AssistantConfig) -> Any:
@@ -277,18 +617,20 @@ def _load_anthropic_client(config: AssistantConfig) -> Any:
         raise _classify_sdk_error("anthropic", exc) from exc
 
 
-def _load_openai_client(config: AssistantConfig) -> Any:
+def _load_openai_client(config: AssistantConfig, provider: str = "openai") -> Any:
     try:
         import openai
     except (ImportError, ModuleNotFoundError) as exc:
-        raise _provider_error("openai", "dependency", "the openai SDK is not installed") from exc
+        raise _provider_error(provider, "dependency", "the openai SDK is not installed") from exc
     kwargs: dict[str, Any] = {"api_key": config.api_key}
     if config.base_url is not None:
         kwargs["base_url"] = config.base_url
+    if provider == "databricks":
+        kwargs["max_retries"] = 0
     try:
         return openai.AsyncOpenAI(**kwargs)
     except Exception as exc:
-        raise _classify_sdk_error("openai", exc) from exc
+        raise _classify_sdk_error(provider, exc) from exc
 
 
 def _json_string(value: object) -> str:
@@ -332,6 +674,8 @@ def _anthropic_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str,
                     ],
                 }
             )
+        elif role == "controller":
+            translated.append({"role": "user", "content": content})
         else:
             translated.append({"role": role, "content": content})
     return translated
@@ -356,13 +700,14 @@ class AnthropicProvider:
         stop_reason: Literal["end", "tool_use"] | None = None
         stop_emitted = False
         pending_tools: dict[int, dict[str, Any]] = {}
+        wire_tools = _portable_tools(tools)
 
         try:
             stream = self.client.messages.stream(
                 model=self.config.model,
                 system=system,
                 messages=_anthropic_messages(messages),
-                tools=list(tools),
+                tools=wire_tools,
                 max_tokens=self.config.max_output_tokens,
             )
             async with stream as response:
@@ -505,6 +850,8 @@ def _openai_messages(system: str, messages: Sequence[Mapping[str, Any]]) -> list
                     "content": _json_string(content),
                 }
             )
+        elif role == "controller":
+            translated.append({"role": "user", "content": content})
         else:
             translated.append({"role": role, "content": content})
     return translated
@@ -527,9 +874,43 @@ def _openai_tools(tools: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 class OpenAIProvider:
     """Normalize the OpenAI Chat Completions streaming API."""
 
+    provider_name = "openai"
+    rate_limit_retry_delays: tuple[float, ...] = ()
+
     def __init__(self, config: AssistantConfig, client: Any | None = None) -> None:
         self.config = config
-        self.client = _load_openai_client(config) if client is None else client
+        self.client = _load_openai_client(config, self.provider_name) if client is None else client
+
+    def _normalise_tool_arguments(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        input_schemas: Mapping[str, Mapping[str, object]],
+    ) -> dict[str, Any]:
+        """Apply provider-specific wire normalisation before tool validation."""
+
+        return arguments
+
+    async def _create_stream(self, request: Mapping[str, Any]) -> Any:
+        for retry_index in range(len(self.rate_limit_retry_delays) + 1):
+            try:
+                return await self.client.chat.completions.create(**request)
+            except Exception as exc:
+                if retry_index >= len(self.rate_limit_retry_delays) or not _is_rate_limit_error(
+                    exc
+                ):
+                    raise
+                delay = self.rate_limit_retry_delays[retry_index]
+                logger.warning(
+                    "assistant_provider_request_retry",
+                    provider=self.provider_name,
+                    failure_class="rate_limit",
+                    retry=retry_index + 1,
+                    max_retries=len(self.rate_limit_retry_delays),
+                    delay_seconds=delay,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable provider retry state")
 
     async def stream_turn(
         self,
@@ -546,11 +927,13 @@ class OpenAIProvider:
         saw_text = False
         calls: dict[int, dict[str, Any]] = {}
         stream: Any | None = None
+        wire_tools = _portable_tools(tools)
+        input_schemas = _tool_input_schemas(tools)
 
         request: dict[str, Any] = {
             "model": self.config.model,
             "messages": _openai_messages(system, messages),
-            "tools": _openai_tools(tools),
+            "tools": _openai_tools(wire_tools),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -560,17 +943,21 @@ class OpenAIProvider:
             request["max_tokens"] = self.config.max_output_tokens
 
         try:
-            stream = await self.client.chat.completions.create(**request)
+            stream = await self._create_stream(request)
             async for chunk in stream:
-                logger.debug("assistant_openai_chunk_shape", shape=_chunk_shape(chunk))
+                logger.debug(
+                    "assistant_openai_chunk_shape",
+                    provider=self.provider_name,
+                    shape=_chunk_shape(chunk),
+                )
                 usage = _attr(chunk, "usage")
                 if usage is not None:
                     saw_usage = True
                     input_tokens = _usage_value(
-                        _attr(usage, "prompt_tokens"), "openai", "prompt_tokens"
+                        _attr(usage, "prompt_tokens"), self.provider_name, "prompt_tokens"
                     )
                     output_tokens = _usage_value(
-                        _attr(usage, "completion_tokens"), "openai", "completion_tokens"
+                        _attr(usage, "completion_tokens"), self.provider_name, "completion_tokens"
                     )
 
                 raw_choices = _attr(chunk, "choices", [])
@@ -581,12 +968,16 @@ class OpenAIProvider:
                 ):
                     choices = raw_choices
                 else:
-                    raise _provider_error("openai", "malformed_stream", "choices is not a sequence")
+                    raise _provider_error(
+                        self.provider_name,
+                        "malformed_stream",
+                        "choices is not a sequence",
+                    )
                 for choice in choices:
                     delta = _attr(choice, "delta")
                     content = _attr(delta, "content")
                     if content is not None:
-                        for text in _iter_content_text(content):
+                        for text in _iter_content_text(content, self.provider_name):
                             saw_text = True
                             yield TextDelta(text=text)
 
@@ -599,13 +990,17 @@ class OpenAIProvider:
                         tool_calls = raw_tool_calls
                     else:
                         raise _provider_error(
-                            "openai", "malformed_stream", "tool calls is not a sequence"
+                            self.provider_name,
+                            "malformed_stream",
+                            "tool calls is not a sequence",
                         )
                     for fragment in tool_calls:
                         index = _attr(fragment, "index")
                         if not isinstance(index, int):
                             raise _provider_error(
-                                "openai", "malformed_stream", "tool fragment has no index"
+                                self.provider_name,
+                                "malformed_stream",
+                                "tool fragment has no index",
                             )
                         call = calls.setdefault(
                             index,
@@ -622,7 +1017,7 @@ class OpenAIProvider:
                         if arguments is not None:
                             if not isinstance(arguments, str):
                                 raise _provider_error(
-                                    "openai",
+                                    self.provider_name,
                                     "malformed_stream",
                                     "tool fragment is not text",
                                 )
@@ -632,7 +1027,9 @@ class OpenAIProvider:
                     if choice_reason is not None:
                         if finish_reason is not None and choice_reason != finish_reason:
                             raise _provider_error(
-                                "openai", "malformed_stream", "multiple finish reasons"
+                                self.provider_name,
+                                "malformed_stream",
+                                "multiple finish reasons",
                             )
                         finish_reason = str(choice_reason)
                         if finish_reason in {"tool_calls", "function_call"} and not emitted_tools:
@@ -641,18 +1038,25 @@ class OpenAIProvider:
                                 name = call["name"]
                                 if not isinstance(call_id, str) or not isinstance(name, str):
                                     raise _provider_error(
-                                        "openai",
+                                        self.provider_name,
                                         "malformed_stream",
                                         "tool call is missing its id or name",
                                     )
                                 arguments = _parse_tool_arguments(
-                                    "openai", "".join(call["arguments"])
+                                    self.provider_name, "".join(call["arguments"])
+                                )
+                                arguments = self._normalise_tool_arguments(
+                                    name,
+                                    arguments,
+                                    input_schemas,
                                 )
                                 yield ToolCallRequest(call_id, name, arguments)
                             emitted_tools = True
                         elif finish_reason not in {"stop", "length", "content_filter"}:
                             raise _provider_error(
-                                "openai", "malformed_stream", "unsupported finish reason"
+                                self.provider_name,
+                                "malformed_stream",
+                                "unsupported finish reason",
                             )
 
             if finish_reason is None:
@@ -664,20 +1068,25 @@ class OpenAIProvider:
                 # output stayed under the budget. Every other shape fails loud.
                 if calls and not emitted_tools:
                     raise _provider_error(
-                        "openai", "malformed_stream", "stream ended mid tool call"
+                        self.provider_name,
+                        "malformed_stream",
+                        "stream ended mid tool call",
                     )
                 if not saw_usage or not saw_text:
                     raise _provider_error(
-                        "openai", "malformed_stream", "stream ended without a finish reason"
+                        self.provider_name,
+                        "malformed_stream",
+                        "stream ended without a finish reason",
                     )
                 if output_tokens >= self.config.max_output_tokens:
                     raise _provider_error(
-                        "openai",
+                        self.provider_name,
                         "truncated",
                         "stream ended at the output token budget without a finish reason",
                     )
                 logger.warning(
                     "assistant_openai_stream_missing_finish",
+                    provider=self.provider_name,
                     output_tokens=output_tokens,
                     budget=self.config.max_output_tokens,
                 )
@@ -685,13 +1094,13 @@ class OpenAIProvider:
             # length / content_filter raise typed truncated/filtered failures
             # here rather than masquerading as a natural end.
             yield TurnStop(
-                _map_stop_reason("openai", finish_reason),
+                _map_stop_reason(self.provider_name, finish_reason),
                 ProviderUsage(input_tokens, output_tokens),
             )
         except AssistantProviderError:
             raise
         except Exception as exc:
-            raise _classify_sdk_error("openai", exc) from exc
+            raise _classify_sdk_error(self.provider_name, exc) from exc
         finally:
             close = getattr(stream, "aclose", None) or getattr(stream, "close", None)
             if callable(close):
@@ -700,10 +1109,42 @@ class OpenAIProvider:
                     await result
 
 
+class DatabricksProvider(OpenAIProvider):
+    """Databricks identity over its OpenAI-compatible Chat Completions API."""
+
+    provider_name = "databricks"
+    rate_limit_retry_delays = (1.0, 3.0)
+
+    def _normalise_tool_arguments(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        input_schemas: Mapping[str, Mapping[str, object]],
+    ) -> dict[str, Any]:
+        schema = input_schemas.get(name)
+        if schema is None:
+            return arguments
+        return _normalise_databricks_tool_arguments(arguments, schema)
+
+
+def create_provider(config: AssistantConfig) -> AssistantProvider:
+    """Construct the configured production adapter at one shared seam."""
+
+    if config.provider == "anthropic":
+        return AnthropicProvider(config)
+    if config.provider == "openai":
+        return OpenAIProvider(config)
+    if config.provider == "databricks":
+        return DatabricksProvider(config)
+    raise ConfigError(f"Unknown assistant provider: {config.provider!r}.")
+
+
 __all__ = [
     "AnthropicProvider",
     "AssistantProvider",
     "AssistantProviderError",
+    "DatabricksProvider",
+    "create_provider",
     "OpenAIProvider",
     "ProviderEvent",
     "ProviderUsage",

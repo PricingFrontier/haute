@@ -1,0 +1,1 @@
+{"tables":[{"name":"fixture factor","factors":["driver_age_band"],"outputColumn":"fixture_factor","entries":[{"driver_age_band":"young","value":1.2},{"driver_age_band":"experienced","value":1.0}],"defaultValue":1.0}],"combinedOutputs":[{"outputColumn":"fixture_result","operation":"multiply","baseValue":100.0}]}

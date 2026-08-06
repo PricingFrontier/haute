@@ -33,6 +33,7 @@ from haute._worker_isolation import (
     _apply_address_space_limit,
     _run_cleanup_callbacks,
     _terminate_process,
+    create_worker_queue,
     process_memory_caps_supported,
 )
 
@@ -332,8 +333,8 @@ def run_worker_protocol(
     root = artifact_root.resolve()
     root.mkdir(parents=True, exist_ok=True)
     ctx = mp.get_context("spawn")
-    result_queue: Any = ctx.Queue(maxsize=1)
-    progress_queue: Any = ctx.Queue(maxsize=WORKER_EVENT_QUEUE_CAPACITY)
+    result_queue: Any = create_worker_queue(ctx, 1)
+    progress_queue: Any = create_worker_queue(ctx, WORKER_EVENT_QUEUE_CAPACITY)
     process = ctx.Process(
         target=_protocol_entrypoint,
         name=worker_config.process_name,

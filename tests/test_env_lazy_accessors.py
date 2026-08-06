@@ -420,8 +420,36 @@ other = os.environ.get(key)
 # or custom non-negative/readiness policies with deliberately different semantics.
 _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
     # Credentials and external integration endpoints.
-    ("src/haute/_databricks_io.py", "<module>._get_credentials", "DATABRICKS_HOST", "os.getenv"),
-    ("src/haute/_databricks_io.py", "<module>._get_credentials", "DATABRICKS_TOKEN", "os.getenv"),
+    (
+        "src/haute/assistant/_config.py",
+        "<module>._databricks_host_from_environment",
+        "DATABRICKS_HOST",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_HOST",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_TOKEN",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_CLIENT_ID",
+        "os.getenv",
+    ),
+    (
+        "src/haute/_databricks_io.py",
+        "<module>._connection_settings",
+        "DATABRICKS_CLIENT_SECRET",
+        "os.getenv",
+    ),
     (
         "src/haute/deploy/_mlflow.py",
         "<module>._check_databricks_connectivity",
@@ -475,6 +503,62 @@ _REVIEWED_DIRECT_ENV_READS: set[DirectEnvRead] = {
         "<module>._get_databricks_client",
         "DATABRICKS_TOKEN",
         "os.getenv",
+    ),
+    (
+        "src/haute/routes/databricks.py",
+        "<module>._get_databricks_client",
+        "DATABRICKS_CLIENT_ID",
+        "os.getenv",
+    ),
+    (
+        "src/haute/routes/databricks.py",
+        "<module>._get_databricks_client",
+        "DATABRICKS_CLIENT_SECRET",
+        "os.getenv",
+    ),
+    # Hosted durable storage: deployment identity and credential locations,
+    # each read per call so a container can be reconfigured without a rebuild.
+    (
+        "src/haute/_project_storage.py",
+        "<module>.state_volume_configured",
+        "HAUTE_STATE_VOLUME",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>._state_volume_root",
+        "HAUTE_STATE_VOLUME",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_uc_transport.py",
+        "<module>._app_name",
+        "DATABRICKS_APP_NAME",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>.resolve_project_dir",
+        "HAUTE_PROJECT_DIR",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>.configure_git_credentials",
+        "HAUTE_GIT_TOKEN",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>._assert_credential_may_reach",
+        "HAUTE_GIT_TOKEN",
+        "os.environ.get",
+    ),
+    (
+        "src/haute/_project_storage.py",
+        "<module>._allowed_hosts",
+        "HAUTE_GIT_ALLOWED_HOSTS",
+        "os.environ.get",
     ),
     ("src/haute/routes/modelling.py", "<module>.mlflow_check", "DATABRICKS_HOST", "os.getenv"),
     # String, boolean, mapping, or custom validation semantics.

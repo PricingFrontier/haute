@@ -72,6 +72,8 @@ function makeParams(overrides: Partial<TracingParams> = {}): TracingParams {
     selectedNode: null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null },
+    activeSubmodelIdentity: null,
+    submodels: {},
     submodelsRef: { current: {} },
     preambleRef: { current: "" },
     nodeStatuses: {} as Record<string, "ok" | "error" | "running">,

@@ -16,16 +16,14 @@ from haute._ram_estimate import (
     MaterialisationEstimate,
     MaterialisationEstimateState,
     RamEstimate,
-    _count_source_rows_for_node,
-    _csv_row_count,
     _dedupe_resolved_columns,
+    _detailed_ancestor_source_metadata,
     _detailed_source_metadata_for_node,
     _DetailedSourceMetadata,
     _edge_join_key_columns_on_path,
     _estimate_base_bytes_per_row,
     _estimate_peak_bytes,
     _EstimateGraphIndex,
-    _jsonl_row_count,
     _parquet_metadata,
     _resolve_edge_join_column_names,
     _resolve_target_column_names,
@@ -36,7 +34,6 @@ from haute._ram_estimate import (
     estimate_gpu_vram_bytes,
     estimate_materialisation_boundary,
     estimate_safe_training_rows,
-    estimate_source_rows,
 )
 from haute.graph_utils import GraphEdge, GraphNode, NodeData, PipelineGraph
 from tests.conftest import build_test_input_snapshot
@@ -164,7 +161,9 @@ def test_materialisation_estimate_distinguishes_empty_from_unavailable() -> None
 def test_ram_estimate_column_index_rejects_recursive_resolution() -> None:
     source = _make_source_node()
     index = _EstimateGraphIndex.build(PipelineGraph(nodes=[source], edges=[]), "live")
-    index.resolving_targets.add(source.id)
+    # Resolution is memoized per (node, arrival port): two consumers of
+    # different tables of one multi-frame source resolve different columns.
+    index.resolving_targets.add((source.id, None))
 
     with pytest.raises(RuntimeError, match="cycle encountered"):
         index.resolve_columns(source.id)
@@ -253,6 +252,152 @@ def test_materialisation_estimate_reports_known_empty_parquet_as_available_zero(
 
     assert estimate.state is MaterialisationEstimateState.AVAILABLE
     assert estimate.estimated_peak_bytes == 0
+
+
+def _json_api_input_graph() -> PipelineGraph:
+    """A JSON API input emitting two tables, each feeding a different node."""
+
+    source = _make_source_node(node_id="quote_in", config={"path": "data/quotes.jsonl"})
+    consumer = _make_transform_node(node_id="claims")
+    other = _make_transform_node(node_id="drivers")
+    return PipelineGraph(
+        nodes=[source, consumer, other],
+        edges=[
+            GraphEdge(
+                id="e1",
+                source="quote_in",
+                target="claims",
+                sourceHandle="proposer_claims",
+            ),
+            GraphEdge(
+                id="e2",
+                source="quote_in",
+                target="drivers",
+                sourceHandle="additional_drivers",
+            ),
+        ],
+    )
+
+
+def test_json_api_input_boundary_is_sized_from_the_tables_that_feed_the_target() -> None:
+    """A v2 JSON cache has no whole-node summary, but each emitted table does.
+
+    Before this, the node contributed nothing and every boundary under an API
+    input was unestimatable — which refused every group-by beneath one.
+    """
+
+    graph = _json_api_input_graph()
+    per_port = {
+        "proposer_claims": _DetailedSourceMetadata(
+            row_count=519481,
+            column_count=8,
+            columns={f"c{index}": "int64" for index in range(8)},
+            column_width_keys={f"c{index}": f"c{index}" for index in range(8)},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=17417163,
+        ),
+        "additional_drivers": _DetailedSourceMetadata(
+            row_count=999999,
+            column_count=3,
+            columns={"d0": "int64"},
+            column_width_keys={"d0": "d0"},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=1,
+        ),
+    }
+
+    with patch(
+        "haute._ram_estimate._json_api_input_port_metadata",
+        side_effect=lambda _node, port: per_port.get(port),
+    ) as resolver:
+        metadata = _detailed_ancestor_source_metadata(graph, "claims")
+
+    # Only the port actually feeding `claims` is consulted or counted; the
+    # sibling branch's larger table must not inflate this boundary.
+    assert [call.args[1] for call in resolver.call_args_list] == ["proposer_claims"]
+    assert metadata.row_count == 519481
+    assert metadata.column_count == 8
+
+
+def test_json_api_input_target_columns_resolve_through_the_arrival_port() -> None:
+    graph = _json_api_input_graph()
+    metadata = _DetailedSourceMetadata(
+        row_count=10,
+        column_count=2,
+        columns={"quote_id": "string", "amount_paid": "double"},
+        column_width_keys={"quote_id": "quote_id", "amount_paid": "amount_paid"},
+        column_uncompressed_size_bytes={},
+        uncompressed_size_bytes=64,
+    )
+
+    with patch(
+        "haute._ram_estimate._json_api_input_port_metadata",
+        side_effect=lambda _node, port: metadata if port == "proposer_claims" else None,
+    ):
+        resolved = _resolve_target_columns(graph, "claims", "live")
+
+    assert resolved is not None
+    assert set(resolved.columns) == {"quote_id", "amount_paid"}
+
+
+def test_json_api_input_ports_resolve_when_their_consumer_is_an_edge_join() -> None:
+    base = _make_source_node(node_id="base_api", config={"path": "data/base.jsonl"})
+    join = _make_source_node(node_id="join_api", config={"path": "data/join.jsonl"})
+    joined = _make_edge_join_node(
+        config={
+            "baseInput": "base_api",
+            "joinInput": "join_api",
+            "how": "left",
+            "on": ["quote_id"],
+            "coalesce": False,
+        }
+    )
+    graph = PipelineGraph(
+        nodes=[base, join, joined],
+        edges=[
+            GraphEdge(
+                id="e1",
+                source=base.id,
+                target=joined.id,
+                sourceHandle="policies",
+            ),
+            GraphEdge(
+                id="e2",
+                source=join.id,
+                target=joined.id,
+                sourceHandle="claims",
+            ),
+        ],
+    )
+    per_port = {
+        (base.id, "policies"): _DetailedSourceMetadata(
+            row_count=10,
+            column_count=2,
+            columns={"quote_id": "string", "premium": "double"},
+            column_width_keys={"quote_id": "quote_id", "premium": "premium"},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=64,
+        ),
+        (join.id, "claims"): _DetailedSourceMetadata(
+            row_count=10,
+            column_count=2,
+            columns={"quote_id": "string", "claim_count": "int64"},
+            column_width_keys={"quote_id": "quote_id", "claim_count": "claim_count"},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=64,
+        ),
+    }
+
+    with patch(
+        "haute._ram_estimate._json_api_input_port_metadata",
+        side_effect=lambda node, port: per_port.get((node.id, port)),
+    ):
+        resolved = _resolve_target_columns(graph, joined.id, "live")
+        join_keys = _edge_join_key_columns_on_path(graph, joined.id, "live")
+
+    assert resolved is not None
+    assert resolved.columns == ("quote_id", "premium", "quote_id_right", "claim_count")
+    assert join_keys == frozenset({"quote_id", "quote_id_right"})
 
 
 def test_materialisation_estimate_reads_each_source_metadata_once(tmp_path) -> None:
@@ -378,67 +523,6 @@ class TestRowCounts:
         rows, cols = _parquet_metadata(str(path))
         assert rows == 500
         assert cols == 2
-
-    def test_csv_row_count(self, tmp_path) -> None:
-        path = tmp_path / "test.csv"
-        df = pl.DataFrame({"x": range(123)})
-        df.write_csv(str(path))
-        assert _csv_row_count(str(path)) == 123
-
-
-# ---------------------------------------------------------------------------
-# estimate_source_rows
-# ---------------------------------------------------------------------------
-
-
-class TestEstimateSourceRows:
-    def test_parquet_data_input(self, tmp_path) -> None:
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"a": range(1000)}).write_parquet(str(path))
-
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) == 1000
-
-    def test_returns_none_for_databricks(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_databricks_input_config("cat.schema.tbl"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_returns_none_for_missing_file(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config("/nonexistent/file.parquet"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_max_across_multiple_sources(self, tmp_path) -> None:
-        p1 = tmp_path / "small.parquet"
-        pl.DataFrame({"a": range(100)}).write_parquet(str(p1))
-        p2 = tmp_path / "big.parquet"
-        pl.DataFrame({"a": range(5000)}).write_parquet(str(p2))
-
-        n1 = _make_source_node(
-            node_id="s1",
-            label="small",
-            node_type="dataInput",
-            config=_ready_file_input_config(p1),
-        )
-        n2 = _make_source_node(
-            node_id="s2",
-            label="big",
-            node_type="dataInput",
-            config=_ready_file_input_config(p2),
-        )
-        graph = PipelineGraph(nodes=[n1, n2], edges=[])
-        assert estimate_source_rows(graph) == 5000
 
 
 # ---------------------------------------------------------------------------
@@ -1292,7 +1376,13 @@ class TestDetailedEdgeJoinColumnResolution:
                 "on": ["quote_id"],
             },
         )
-        graph = PipelineGraph(nodes=[base, join, joined], edges=[])
+        graph = PipelineGraph(
+            nodes=[base, join, joined],
+            edges=[
+                GraphEdge(id="e1", source=base.id, target=joined.id),
+                GraphEdge(id="e2", source=join.id, target=joined.id),
+            ],
+        )
 
         assert (
             _resolve_edge_join_column_names(
@@ -1531,51 +1621,6 @@ class TestEstimatePeakBytes:
 
 
 # ---------------------------------------------------------------------------
-# _csv_row_count edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestCsvRowCountEdgeCases:
-    def test_header_only(self, tmp_path) -> None:
-        path = tmp_path / "header_only.csv"
-        path.write_text("a,b,c\n")
-        assert _csv_row_count(str(path)) == 0
-
-    def test_empty_file(self, tmp_path) -> None:
-        path = tmp_path / "empty.csv"
-        path.write_bytes(b"")
-        assert _csv_row_count(str(path)) == 0
-
-    def test_single_data_row(self, tmp_path) -> None:
-        path = tmp_path / "one_row.csv"
-        path.write_text("a,b\n1,2\n")
-        assert _csv_row_count(str(path)) == 1
-
-
-# ---------------------------------------------------------------------------
-# _jsonl_row_count
-# ---------------------------------------------------------------------------
-
-
-class TestJsonlRowCount:
-    def test_multiple_lines(self, tmp_path) -> None:
-        path = tmp_path / "data.jsonl"
-        lines = [b'{"a":1}\n', b'{"a":2}\n', b'{"a":3}\n']
-        path.write_bytes(b"".join(lines))
-        assert _jsonl_row_count(str(path)) == 3
-
-    def test_empty_file(self, tmp_path) -> None:
-        path = tmp_path / "empty.jsonl"
-        path.write_bytes(b"")
-        assert _jsonl_row_count(str(path)) == 0
-
-    def test_single_line(self, tmp_path) -> None:
-        path = tmp_path / "single.jsonl"
-        path.write_bytes(b'{"x":1}\n')
-        assert _jsonl_row_count(str(path)) == 1
-
-
-# ---------------------------------------------------------------------------
 # estimate_gpu_vram_bytes edge cases
 # ---------------------------------------------------------------------------
 
@@ -1632,76 +1677,6 @@ class TestParquetMetadataEdgeCases:
 
         with pytest.raises(Exception):
             _parquet_metadata(str(tmp_path / "does_not_exist.parquet"))
-
-
-# ---------------------------------------------------------------------------
-# estimate_source_rows edge cases
-# ---------------------------------------------------------------------------
-
-
-class TestEstimateSourceRowsEdgeCases:
-    def test_returns_none_for_databricks(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_databricks_input_config("db.schema.tbl"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_returns_none_for_missing_file(self) -> None:
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config("/no/such/file.parquet"),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) is None
-
-    def test_max_across_multiple_sources(self, tmp_path) -> None:
-        p1 = tmp_path / "a.parquet"
-        pl.DataFrame({"x": range(200)}).write_parquet(str(p1))
-        p2 = tmp_path / "b.parquet"
-        pl.DataFrame({"x": range(3000)}).write_parquet(str(p2))
-
-        n1 = _make_source_node(
-            node_id="s1",
-            node_type="dataInput",
-            config=_ready_file_input_config(p1),
-        )
-        n2 = _make_source_node(
-            node_id="s2",
-            node_type="dataInput",
-            config=_ready_file_input_config(p2),
-        )
-        graph = PipelineGraph(nodes=[n1, n2], edges=[])
-        assert estimate_source_rows(graph) == 3000
-
-    def test_json_jsonl_source(self, tmp_path) -> None:
-        path = tmp_path / "data.jsonl"
-        path.write_bytes(b'{"a":1}\n{"a":2}\n{"a":3}\n')
-
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": str(path)},
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) == 3
-
-    def test_csv_data_input(self, tmp_path) -> None:
-        path = tmp_path / "data.csv"
-        pl.DataFrame({"a": range(42)}).write_csv(str(path))
-
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-        graph = PipelineGraph(nodes=[node], edges=[])
-        assert estimate_source_rows(graph) == 42
-
-    def test_ignores_non_source_nodes(self) -> None:
-        node = _make_transform_node(node_id="transform")
-        graph = PipelineGraph(nodes=[node], edges=[])
-
-        assert estimate_source_rows(graph) is None
 
 
 # ---------------------------------------------------------------------------
@@ -2060,117 +2035,6 @@ class TestAvailableVramParsing:
 
 
 # ---------------------------------------------------------------------------
-# _count_source_rows_for_node — unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestCountSourceRowsForNode:
-    def test_api_input_json_uncached_returns_none(self) -> None:
-        """API_INPUT .json with no cache returns None (v2 has no aggregate row count)."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/nonexistent/data.json"},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result is None
-
-    @pytest.mark.parametrize("suffix", [".jsonl", ".ndjson", ".NDJSON"])
-    def test_api_input_ndjson_uncached_file_exists(self, tmp_path, suffix: str) -> None:
-        """API_INPUT NDJSON aliases with no cache use a physical line count."""
-        path = tmp_path / f"data{suffix}"
-        path.write_bytes(b'{"a":1}\n{"a":2}\n{"a":3}\n{"a":4}\n')
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": str(path)},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result == 4
-
-    def test_api_input_parquet_exists(self, tmp_path) -> None:
-        """API_INPUT with existing parquet file reads metadata."""
-        path = tmp_path / "data.parquet"
-        pl.DataFrame({"x": range(200), "y": range(200)}).write_parquet(str(path))
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": str(path)},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result == 200
-
-    def test_api_input_parquet_missing_returns_none(self) -> None:
-        """API_INPUT with missing parquet path returns None."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/nonexistent/data.parquet"},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result is None
-
-    def test_data_input_databricks_returns_none(self) -> None:
-        """Data Input with a Databricks configuration returns None."""
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_databricks_input_config("db.tbl"),
-        )
-        result = _count_source_rows_for_node(node)
-        assert result is None
-
-    def test_data_input_csv(self, tmp_path) -> None:
-        """Data Input with CSV file counts lines."""
-        path = tmp_path / "data.csv"
-        pl.DataFrame({"a": range(77)}).write_csv(str(path))
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-        result = _count_source_rows_for_node(node)
-        assert result == 77
-
-    def test_data_input_ndjson(self, tmp_path) -> None:
-        """Data Input with NDJSON counts physical record lines."""
-        path = tmp_path / "data.ndjson"
-        path.write_text('{"a":1}\n{"a":2}\n{"a":3}\n', encoding="utf-8")
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_ready_file_input_config(path),
-        )
-
-        assert _count_source_rows_for_node(node) == 3
-
-    def test_data_input_without_snapshot_returns_none(self, tmp_path) -> None:
-        """RAM estimation never falls back to reading an unbuilt provider source."""
-        path = tmp_path / "notes.txt"
-        path.write_text("not,a,supported,table\n", encoding="utf-8")
-        node = _make_source_node(
-            node_type="dataInput",
-            config=_file_input_config(str(path)),
-        )
-
-        assert _count_source_rows_for_node(node) is None
-
-    def test_unexpected_exception_propagates(self) -> None:
-        """Programming failures are not misreported as unavailable metadata."""
-        node = _make_source_node(
-            node_type="apiInput",
-            config={"path": "/some/file.parquet"},
-        )
-        with patch("haute._ram_estimate.Path") as mock_path:
-            mock_path.return_value.exists.side_effect = RuntimeError("boom")
-            # The path check `Path(path).exists()` will raise.
-            with pytest.raises(RuntimeError, match="boom"):
-                _count_source_rows_for_node(node)
-
-    def test_unknown_node_type_returns_none(self) -> None:
-        """A node type that's neither API_INPUT nor Data Input returns None."""
-        node = _make_source_node(
-            node_type="polars",
-            config={"path": "/some/file.parquet"},
-        )
-        result = _count_source_rows_for_node(node)
-        assert result is None
-
-
-# ---------------------------------------------------------------------------
 # _resolve_target_columns — BFS column resolution
 # ---------------------------------------------------------------------------
 
@@ -2257,3 +2121,274 @@ class TestEstimateSafeTrainingRowsSchemaUnavailable:
         assert result.total_rows == 100
         assert result.bytes_per_row == 0
         assert result.probe_columns == 0
+
+
+# ---------------------------------------------------------------------------
+# JSON apiInput per-port cache metadata
+# ---------------------------------------------------------------------------
+
+
+def _json_port_config(data_path) -> dict:
+    """A two-emit-table shred config: one parquet per emitted table."""
+
+    return {
+        "path": str(data_path),
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "policies",
+                "emit": True,
+                "columns": [
+                    {"name": "policy_id", "path": "$[:].policy_id", "type": "int", "selected": True}
+                ],
+            },
+            {
+                "path": "$[:].drivers[:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "driver_id",
+                        "path": "$[:].drivers[:].driver_id",
+                        "type": "int",
+                        "selected": True,
+                    }
+                ],
+            },
+        ],
+    }
+
+
+@pytest.fixture()
+def json_api_input(tmp_path, monkeypatch):
+    """A JSON apiInput with a real built v2 working-layer cache.
+
+    Built through the same reader/writer the engine uses rather than a stub:
+    the point of resolving per port is that a stale or absent cache is
+    rejected here exactly as it is at execution.
+    """
+
+    import json as _json
+
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import build_per_port_cache
+    from haute._sandbox import _get_project_root, set_project_root
+
+    monkeypatch.chdir(tmp_path)
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+
+    data_path = tmp_path / "quotes.json"
+    data_path.write_text(
+        _json.dumps(
+            [
+                {"policy_id": 1, "drivers": [{"driver_id": 1}, {"driver_id": 2}]},
+                {"policy_id": 2, "drivers": [{"driver_id": 3}]},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = _json_port_config(data_path)
+    cache_dir = _json_cache_dir(data_path, "working")
+    committed_dir = _json_cache_dir(data_path, "committed")
+    build_per_port_cache(data_path, config, cache_dir)
+    try:
+        yield data_path, config, cache_dir, committed_dir
+    finally:
+        set_project_root(original_root)
+
+
+class TestJsonApiInputPortMetadata:
+    """A v2 cache has no whole-node summary; each emitted table has its own."""
+
+    def test_each_emitted_table_is_sized_from_its_own_parquet(self, json_api_input) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        policies = _json_api_input_port_metadata(node, "policies")
+        drivers = _json_api_input_port_metadata(node, "drivers")
+
+        assert policies is not None and policies.row_count == 2
+        assert drivers is not None and drivers.row_count == 3
+        # Sizing a boundary from the wrong table is the failure this prevents.
+        assert policies.row_count != drivers.row_count
+
+    def test_committed_layer_is_used_when_working_holds_no_match(self, json_api_input) -> None:
+        """Layer preference is the reader's, not this module's."""
+
+        import shutil
+
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, working_dir, committed_dir = json_api_input
+        committed_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
+        shutil.rmtree(working_dir)
+
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        assert _json_api_input_port_metadata(node, "policies").row_count == 2
+
+    def test_a_port_the_cache_never_emitted_is_unavailable(self, json_api_input) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        assert _json_api_input_port_metadata(node, "vehicles") is None
+
+    def test_a_stale_cache_is_rejected_rather_than_sized_from(self, json_api_input) -> None:
+        """The signature check is the engine's; a boundary must never be
+        estimated from a cache the run itself would rebuild."""
+
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        data_path, config, _cache_dir, _committed_dir = json_api_input
+        data_path.write_text('[{"policy_id": 9, "drivers": []}]', encoding="utf-8")
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    @pytest.mark.parametrize("path_value", ["", None, 17])
+    def test_a_node_without_a_usable_path_is_unavailable(self, path_value) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        node = _make_source_node(node_type="apiInput", config={"path": path_value})
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    def test_a_missing_data_file_is_unavailable(self, tmp_path) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        node = _make_source_node(
+            node_type="apiInput", config={"path": str(tmp_path / "absent.json")}
+        )
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    def test_an_unreadable_cache_warns_and_reports_unavailable(self, json_api_input) -> None:
+        """Estimation degrades to "unknown" rather than raising into a caller
+        that would treat the failure as "unlimited"."""
+
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        with patch(
+            "haute._json_shred._data_file_signature",
+            side_effect=OSError("cache device is gone"),
+        ):
+            with capture_logs() as logs:
+                assert _json_api_input_port_metadata(node, "policies") is None
+
+        assert any(entry["event"] == "api_input_port_metadata_failed" for entry in logs)
+
+    def test_ancestor_sizing_uses_only_the_tables_feeding_the_target(self, json_api_input) -> None:
+        """Sibling branches of one apiInput must not inflate a boundary they
+        do not feed — the whole reason the walk carries the arrival handle."""
+
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
+        source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
+        consumer = _make_transform_node(node_id="claims")
+        sibling = _make_transform_node(node_id="drivers_only")
+        graph = PipelineGraph(
+            nodes=[source, consumer, sibling],
+            edges=[
+                GraphEdge(id="e1", source="quote_in", target="claims", sourceHandle="policies"),
+                GraphEdge(
+                    id="e2", source="quote_in", target="drivers_only", sourceHandle="drivers"
+                ),
+            ],
+        )
+
+        metadata = _detailed_ancestor_source_metadata(graph, "claims")
+
+        assert metadata.row_count == 2
+        assert [item.row_count for item in metadata.sources] == [2]
+
+
+class TestUnavailableEstimateReasons:
+    """The two reasons a boundary cannot be sized.
+
+    Each is now carried into the group-by rejection's remediation, so an
+    analyst can tell an unreadable file from an unsummarisable source shape.
+    Their identity is part of that contract.
+    """
+
+    def test_an_unsizable_ancestor_reports_source_row_count_unavailable(self, tmp_path) -> None:
+        source = _make_source_node(node_type="apiInput", config={"path": ""})
+        target = _make_transform_node()
+        graph = PipelineGraph(
+            nodes=[source, target],
+            edges=[GraphEdge(id="e1", source=source.id, target=target.id)],
+        )
+
+        estimate = estimate_materialisation_boundary(graph, target.id)
+
+        assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+        assert estimate.unavailable_reason == "source_row_count_unavailable"
+
+    def test_an_unresolvable_target_reports_target_schema_unavailable(self, tmp_path) -> None:
+        path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"a": range(4)}).write_parquet(str(path))
+        source = _make_source_node(node_type="apiInput", config={"path": str(path)})
+        target = _make_transform_node()
+        graph = PipelineGraph(
+            nodes=[source, target],
+            edges=[GraphEdge(id="e1", source=source.id, target=target.id)],
+        )
+
+        with patch("haute._ram_estimate._resolve_target_columns", return_value=None):
+            estimate = estimate_materialisation_boundary(graph, target.id)
+
+        assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+        assert estimate.unavailable_reason == "target_schema_unavailable"
+
+
+def test_variable_width_probe_is_empty_when_it_reads_no_rows(tmp_path) -> None:
+    """Parquet metadata can claim rows the scan does not return. The probe
+    measures the representation materialisation actually allocates, so with
+    no sampled row there is nothing to measure and no width to assert."""
+
+    from haute._ram_estimate import _probe_expanded_variable_widths
+
+    path = tmp_path / "empty.parquet"
+    pl.DataFrame(schema={"category": pl.String}).write_parquet(str(path))
+
+    widths = _probe_expanded_variable_widths(str(path), {"category": "string"}, row_count=8)
+
+    assert dict(widths) == {}
+
+
+def test_training_estimate_refuses_to_guess_when_physical_ram_is_unknown() -> None:
+    """ "Unknown" must not silently become "unlimited" on the training path."""
+
+    graph = PipelineGraph(nodes=[_make_source_node()], edges=[])
+
+    with patch("haute._ram_estimate.available_ram_bytes", return_value=None):
+        with pytest.raises(RuntimeError, match="physical RAM is unavailable"):
+            estimate_safe_training_rows(graph, "src1", _build_dummy_node_fn)
+
+
+def test_negative_cgroup_values_are_malformed_not_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative limit or usage cannot be arithmetic on real memory."""
+
+    monkeypatch.setattr("sys.platform", "linux")
+    cgroup = {
+        "/sys/fs/cgroup/memory.max": "-1",
+        "/sys/fs/cgroup/memory.current": "250",
+    }
+    with (
+        patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+        patch("haute._ram_estimate._read_cgroup_memory_file", side_effect=cgroup.get),
+        capture_logs() as logs,
+    ):
+        assert available_ram_bytes() == 2 * 1024
+
+    assert any(entry["event"] == "cgroup_memory_state_malformed" for entry in logs)

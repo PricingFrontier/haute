@@ -47,7 +47,10 @@ def _edge_join_graph(
     left_df.write_parquet(left_path)
     right_df.write_parquet(right_path)
     config = {"baseInput": LEFT_ID, "joinInput": RIGHT_ID, **join_config}
-    edges = [make_edge(LEFT_ID, JOIN_ID), make_edge(RIGHT_ID, JOIN_ID)]
+    edges = [
+        make_edge(LEFT_ID, JOIN_ID, target_handle="base"),
+        make_edge(RIGHT_ID, JOIN_ID, target_handle="join"),
+    ]
     if reverse_edges:
         edges.reverse()
     return make_graph(

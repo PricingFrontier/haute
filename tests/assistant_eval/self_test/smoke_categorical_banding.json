@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "id": "smoke_categorical_banding",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "semantic",
+  "request": "After quotes, add a categorical banding node named region_band. For column region, output region_group. Map north and south to core, east and west to other, with unknown as the default. Connect quotes to region_band.",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": [
+      "banding"
+    ],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [
+      {
+        "source": "quotes",
+        "target": "region_band",
+        "target_handle": null
+      }
+    ],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 7,
+    "max_tool_calls": 14,
+    "max_failed_tool_calls": 1,
+    "max_duplicate_static_reads": 1
+  }
+}

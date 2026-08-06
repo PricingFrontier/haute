@@ -12,6 +12,7 @@ import pytest
 from haute._worker_isolation import (
     IsolatedWorkerConfig,
     IsolatedWorkerCrashedError,
+    IsolatedWorkerHostError,
     IsolatedWorkerMemoryLimitUnsupportedError,
     IsolatedWorkerRemoteError,
     IsolatedWorkerStartError,
@@ -19,6 +20,8 @@ from haute._worker_isolation import (
     IsolatedWorkerTerminationError,
     IsolatedWorkerTimeoutError,
     _terminate_process,
+    create_worker_queue,
+    ensure_spawnable_interpreter,
     process_memory_caps_supported,
     resolve_worker_memory_enforcement,
     run_isolated_worker,
@@ -653,3 +656,138 @@ def test_protocol_supervisor_cleanup_failure_preserves_committed_success(tmp_pat
     assert job["published_path"] == "models/fitted.joblib"
     assert job["cleanup_error_class"] == "OSError"
     assert "cleanup failed" in job["cleanup_error"]
+
+
+# ---------------------------------------------------------------------------
+# Host process machinery — a dead multiprocessing resource tracker
+# ---------------------------------------------------------------------------
+#
+# Measured on Databricks Apps: creating the very first worker queue raised
+# BrokenPipeError from `resource_tracker.register`, because the tracker helper
+# process was dead. Nothing about the job was wrong — no worker had started.
+
+
+class _QueueContext:
+    """Stands in for a multiprocessing context with a scripted Queue()."""
+
+    def __init__(self, *outcomes: BaseException | None) -> None:
+        self._outcomes = list(outcomes)
+        self.calls = 0
+
+    def Queue(self, maxsize: int = 0) -> object:  # noqa: N802 - mirrors mp API
+        self.calls += 1
+        outcome = self._outcomes.pop(0) if self._outcomes else None
+        if outcome is not None:
+            raise outcome
+        return f"queue(maxsize={maxsize})"
+
+
+class TestDeadResourceTrackerRecovery:
+    def test_a_healthy_host_creates_the_queue_directly(self) -> None:
+        ctx = _QueueContext()
+        assert create_worker_queue(ctx, 1) == "queue(maxsize=1)"
+        assert ctx.calls == 1
+
+    def test_one_dead_tracker_is_survived(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The tracker is respawned and the job proceeds, not fails."""
+        resets: list[int] = []
+        monkeypatch.setattr(
+            "haute._worker_isolation._reset_resource_tracker",
+            lambda: resets.append(1),
+        )
+        ctx = _QueueContext(BrokenPipeError(32, "Broken pipe"), None)
+        assert create_worker_queue(ctx, 4) == "queue(maxsize=4)"
+        assert ctx.calls == 2
+        assert resets == [1]  # the dead handle was dropped before retrying
+
+    def test_a_tracker_that_stays_dead_names_the_host_problem(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Never an unexplained internal error: say the host cannot start work."""
+        monkeypatch.setattr("haute._worker_isolation._reset_resource_tracker", lambda: None)
+        ctx = _QueueContext(BrokenPipeError(32, "Broken pipe"), BrokenPipeError(32, "Broken pipe"))
+        with pytest.raises(IsolatedWorkerHostError) as excinfo:
+            create_worker_queue(ctx, 1)
+        assert ctx.calls == 2  # bounded at one retry, never a spin
+        message = str(excinfo.value)
+        assert "Restart the app" in message
+        assert "Broken pipe" not in message  # hand-authored, not raw errno text
+        # Typed as a worker failure, so the supervisor reports THIS message
+        # rather than its generic "unexpected supervisor failure".
+        assert excinfo.value.terminal_reason == "error"
+
+    def test_an_unrelated_error_is_not_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only a dead pipe means 'the host', so only that is recovered."""
+        monkeypatch.setattr("haute._worker_isolation._reset_resource_tracker", lambda: None)
+        ctx = _QueueContext(ValueError("bad maxsize"))
+        with pytest.raises(ValueError):
+            create_worker_queue(ctx, 1)
+        assert ctx.calls == 1
+
+    def test_diagnostics_describe_the_host_without_raising(self) -> None:
+        """The diagnostic runs on a failure path; it must never add its own."""
+        from haute._worker_isolation import _resource_tracker_diagnostics
+
+        info = _resource_tracker_diagnostics()
+        assert "executable" in info
+        assert isinstance(info.get("executable_usable"), bool)
+
+
+class TestSpawnableInterpreter:
+    """The measured root cause: a relative sys.executable plus a chdir.
+
+    Databricks Apps launches the app as ".venv/bin/python". multiprocessing
+    exec's that path for the resource tracker and every worker, so once the
+    hosted boot chdirs into the project directory, every spawn exec-fails
+    (status 255) and the first queue write dies on a broken pipe.
+    """
+
+    def test_an_absolute_runnable_interpreter_is_left_alone(self) -> None:
+        from multiprocessing import spawn
+
+        before = spawn.get_executable()
+        assert ensure_spawnable_interpreter() is None
+        assert spawn.get_executable() == before
+
+    def test_a_relative_interpreter_is_resolved_against_the_launch_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        launch = tmp_path / "app"
+        (launch / ".venv" / "bin").mkdir(parents=True)
+        interpreter = launch / ".venv" / "bin" / "python"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        interpreter.chmod(0o755)
+
+        from multiprocessing import spawn
+
+        original = spawn.get_executable()
+        monkeypatch.chdir(launch)
+        try:
+            spawn.set_executable(".venv/bin/python")
+            resolved = ensure_spawnable_interpreter()
+            assert resolved == str(interpreter)
+            # Absolute now, so it survives the chdir that used to break it.
+            monkeypatch.chdir(tmp_path)
+            assert os.access(resolved, os.X_OK)
+        finally:
+            spawn.set_executable(original)
+
+    def test_a_relative_interpreter_after_the_chdir_falls_back_to_the_kernel(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The safety net: cwd has already moved, so abspath cannot help."""
+        if not Path("/proc/self/exe").exists():
+            pytest.skip("/proc/self/exe is Linux-only")
+
+        from multiprocessing import spawn
+
+        original = spawn.get_executable()
+        monkeypatch.chdir(tmp_path)
+        try:
+            spawn.set_executable("nowhere/bin/python")
+            resolved = ensure_spawnable_interpreter()
+            assert resolved is not None
+            assert os.path.isabs(resolved)
+            assert os.access(resolved, os.X_OK)
+        finally:
+            spawn.set_executable(original)

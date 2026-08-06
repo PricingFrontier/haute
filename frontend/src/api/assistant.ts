@@ -7,6 +7,9 @@ export interface AssistantStatus {
   reason: string | null
   provider: string | null
   model: string | null
+  endpoint_host: string | null
+  trust: "local" | "organization" | "external" | null
+  max_sensitivity: "public" | "internal" | "restricted" | null
   mutations_enabled: boolean
   mutations_reason: string | null
 }
@@ -58,16 +61,50 @@ function requireNullableString(value: unknown, path: string): string | null {
   return value
 }
 
+function requireNullableLiteral<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+): T | null {
+  if (value === null) return null
+  const result = requireString(value, path)
+  if (!allowed.includes(result as T)) {
+    invalidAssistantPayload(path, allowed.map((item) => JSON.stringify(item)).join(" or "))
+  }
+  return result as T
+}
+
 function parseAssistantStatus(value: unknown): AssistantStatus {
   const payload = requireRecord(value, "status")
-  return {
+  const status: AssistantStatus = {
     configured: requireBoolean(payload.configured, "status.configured"),
     reason: requireNullableString(payload.reason, "status.reason"),
     provider: requireNullableString(payload.provider, "status.provider"),
     model: requireNullableString(payload.model, "status.model"),
+    endpoint_host: requireNullableString(payload.endpoint_host, "status.endpoint_host"),
+    trust: requireNullableLiteral(
+      payload.trust,
+      "status.trust",
+      ["local", "organization", "external"] as const,
+    ),
+    max_sensitivity: requireNullableLiteral(
+      payload.max_sensitivity,
+      "status.max_sensitivity",
+      ["public", "internal", "restricted"] as const,
+    ),
     mutations_enabled: requireBoolean(payload.mutations_enabled, "status.mutations_enabled"),
     mutations_reason: requireNullableString(payload.mutations_reason, "status.mutations_reason"),
   }
+  if (
+    status.configured &&
+    (status.endpoint_host === null || status.trust === null || status.max_sensitivity === null)
+  ) {
+    invalidAssistantPayload(
+      "status",
+      "endpoint_host, trust, and max_sensitivity when configured is true",
+    )
+  }
+  return status
 }
 
 function parseAssistantHistoryEntry(value: unknown, path: string): AssistantHistoryEntry {
@@ -90,7 +127,9 @@ function parseAssistantSession(value: unknown): AssistantSessionResult {
   if (!Array.isArray(payload.history)) invalidAssistantPayload("session.history", "an array")
   return {
     sessionId: requireString(payload.session_id, "session.session_id"),
-    history: payload.history.map((entry, index) => parseAssistantHistoryEntry(entry, `session.history[${index}]`)),
+    history: payload.history.map((entry, index) =>
+      parseAssistantHistoryEntry(entry, `session.history[${index}]`),
+    ),
   }
 }
 
@@ -174,6 +213,39 @@ export function createAssistantSession(
     { pipeline, session_id: sessionId },
     { signal },
   ).then(parseAssistantSession)
+}
+
+export interface AssistantSessionSummary {
+  sessionId: string
+  title: string
+  createdAt: number
+  lastUsed: number
+  messageCount: number
+}
+
+function parseAssistantSessionSummary(value: unknown, path: string): AssistantSessionSummary {
+  const entry = requireRecord(value, path)
+  return {
+    sessionId: requireString(entry.session_id, `${path}.session_id`),
+    title: requireString(entry.title, `${path}.title`),
+    createdAt: requireNumber(entry.created_at, `${path}.created_at`),
+    lastUsed: requireNumber(entry.last_used, `${path}.last_used`),
+    messageCount: requireNumber(entry.message_count, `${path}.message_count`),
+  }
+}
+
+export function listAssistantSessions(
+  pipeline: string | null = null,
+  signal?: AbortSignal,
+): Promise<AssistantSessionSummary[]> {
+  const query = pipeline === null ? "" : `?pipeline=${encodeURIComponent(pipeline)}`
+  return request<unknown>(`/api/assistant/sessions${query}`, { signal }).then((value) => {
+    const payload = requireRecord(value, "sessions")
+    if (!Array.isArray(payload.sessions)) invalidAssistantPayload("sessions.sessions", "an array")
+    return payload.sessions.map((entry, index) =>
+      parseAssistantSessionSummary(entry, `sessions.sessions[${index}]`),
+    )
+  })
 }
 
 export interface StreamAssistantMessageOptions {

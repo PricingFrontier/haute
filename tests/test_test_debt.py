@@ -240,6 +240,21 @@ _EXPECTED_DEBT_IDS = {
     # other symlink-guard tests. See tests/test_files_routes.py
     # ::TestBrowseFilesUnresolvedCwd._symlinked_project.
     "e29ebc6050519fc5",
+    # Assistant containment uses real directory/file symlinks to prove that
+    # project-knowledge reads/cache writes and durable-session revival cannot
+    # escape the project. Windows without Developer Mode or symlink privilege
+    # cannot construct those fixtures; Linux CI and capable Windows hosts run
+    # them. See test_assistant_project_knowledge.py and
+    # test_assistant_session_persistence.py.
+    "43dde5a20b2d64f6",
+    "b5b34055c01d1d48",
+    "d0922f4b9430bfba",
+    # The hosted interpreter fix has a last-resort branch that reads
+    # /proc/self/exe, which exists only on Linux. The primary path (resolve
+    # before the working directory moves) is covered on every platform; this
+    # one leg can only be exercised where that file exists.
+    # See tests/test_worker_isolation.py.
+    "e928b1daccb49a17",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

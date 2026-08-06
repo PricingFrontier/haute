@@ -42,8 +42,13 @@ def _node(node_id: str, node_type: NodeType, config: dict[str, Any]) -> GraphNod
     )
 
 
-def _edge(source: str, target: str) -> GraphEdge:
-    return GraphEdge(id=f"{source}-{target}", source=source, target=target)
+def _edge(source: str, target: str, *, target_handle: str | None = None) -> GraphEdge:
+    return GraphEdge(
+        id=f"{source}-{target}",
+        source=source,
+        target=target,
+        targetHandle=target_handle,
+    )
 
 
 def _snapshot_parquet_input(path: Path, **extra: Any) -> dict[str, Any]:
@@ -151,7 +156,10 @@ def _scenario_graph(
                 },
             ),
         ],
-        edges=[_edge("base", "training_input"), _edge("lookup", "training_input")],
+        edges=[
+            _edge("base", "training_input", target_handle="base"),
+            _edge("lookup", "training_input", target_handle="join"),
+        ],
     )
 
 

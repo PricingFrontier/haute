@@ -1,0 +1,1 @@
+{"user":"Create online price scenarios and choose one price per quote under a volume constraint.","assistant":"I added deterministic scenario expansion, transparent income and volume scoring, and an online optimiser configured with explicit quote, scenario, objective, and constraint columns."}

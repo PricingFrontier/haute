@@ -11,6 +11,7 @@ preserving formatting matters.
 from __future__ import annotations
 
 import ast
+from os.path import normcase
 from pathlib import Path
 
 from haute._ast_helpers import (
@@ -34,8 +35,12 @@ from haute._parser_conservation import (
     missing_submodel_error,
 )
 from haute._parser_regex import fallback_parse as _fallback_parse
-from haute._parser_submodels import build_unique_submodel_maps as _build_unique_submodel_maps
-from haute._parser_submodels import extract_submodel_calls as _extract_submodel_calls
+from haute._parser_submodels import (
+    SubmodelRegistration as _SubmodelRegistration,
+)
+from haute._parser_submodels import (
+    extract_submodel_registrations as _extract_submodel_registrations,
+)
 from haute._parser_submodels import merge_submodels as _merge_submodels
 from haute._parser_submodels import parse_submodel_source as _parse_submodel_source
 from haute._project import get_project_root
@@ -195,11 +200,14 @@ def parse_pipeline_source(
     }
 
     # --- Submodel handling ---------------------------------------------------
-    submodel_paths = _extract_submodel_calls(tree)
+    registrations = _extract_submodel_registrations(tree)
+    submodel_paths = [registration.path for registration in registrations]
     submodel_base_dir = _submodel_base_dir or _base_dir
     submodel_graphs: dict[str, PipelineGraph] = {}
     submodel_files: dict[str, str] = {}
-    if submodel_paths:
+    submodel_instance_paths: list[str] | None = None
+    submodel_aliases: set[str] = set()
+    if registrations:
         if submodel_base_dir is None:
             raise ParseError(
                 "pipeline.submodel() references require a source/base directory.",
@@ -207,45 +215,85 @@ def parse_pipeline_source(
             )
 
         resolved_submodel_root = submodel_base_dir.resolve()
-        resolved: list[tuple[str, Path, Path]] = []
+        resolved: list[tuple[_SubmodelRegistration, Path, Path, str]] = []
         missing_paths: list[str] = []
-
-        for rel_path in submodel_paths:
+        for registration in registrations:
             try:
                 sm_filepath, sm_base_dir = resolve_submodel_reference(
-                    rel_path,
+                    registration.path,
                     pipeline_dir=_base_dir,
                     project_root=resolved_submodel_root,
                 )
             except ValueError as exc:
                 raise ParseError(
                     "pipeline.submodel() path escapes the project directory",
-                    path=rel_path,
+                    path=registration.path,
                 ) from exc
             if not sm_filepath.is_file():
-                missing_paths.append(rel_path)
+                missing_paths.append(registration.path)
                 continue
-            resolved.append((rel_path, sm_filepath, sm_base_dir))
+            source_key = normcase(str(sm_filepath.resolve()))
+            resolved.append((registration, sm_filepath, sm_base_dir, source_key))
 
         if missing_paths:
             raise missing_submodel_error(missing_paths)
 
-        parsed_submodels: list[tuple[str, PipelineGraph]] = []
-        for rel_path, sm_filepath, sm_base_dir in resolved:
-            sm_graph = parse_submodel_file(sm_filepath, _base_dir=sm_base_dir)
-            parsed_submodels.append((rel_path, sm_graph))
+        by_source: dict[
+            str,
+            tuple[str, Path, Path, list[_SubmodelRegistration]],
+        ] = {}
+        for registration, sm_filepath, sm_base_dir, source_key in resolved:
+            existing = by_source.get(source_key)
+            if existing is None:
+                by_source[source_key] = (
+                    registration.path,
+                    sm_filepath,
+                    sm_base_dir,
+                    [registration],
+                )
+            else:
+                existing[3].append(registration)
 
-        submodel_graphs, submodel_files = _build_unique_submodel_maps(parsed_submodels)
-
-        if submodel_graphs:
-            graph = _merge_submodels(
-                graph,
-                submodel_graphs,
-                submodel_files,
-                explicit_connects,
-                flatten=flatten,
+        definition_sources: dict[str, str] = {}
+        for source_key, (
+            rel_path,
+            sm_filepath,
+            sm_base_dir,
+            source_registrations,
+        ) in by_source.items():
+            definition_ids = {registration.definition_id for registration in source_registrations}
+            if len(definition_ids) != 1:
+                raise ParseError(
+                    "One resolved submodel file is registered with conflicting definition ids.",
+                    source_file=str(sm_filepath),
+                    definition_ids=sorted(definition_ids),
+                )
+            definition_id = next(iter(definition_ids))
+            previous_source = definition_sources.get(definition_id)
+            if previous_source is not None and previous_source != source_key:
+                raise ParseError(
+                    "One submodel definition id resolves to multiple files.",
+                    definition_id=definition_id,
+                    source_files=[previous_source, source_key],
+                )
+            definition_sources[definition_id] = source_key
+            child_graph = parse_submodel_file(
+                sm_filepath,
+                _base_dir=sm_base_dir,
             )
+            submodel_graphs[definition_id] = child_graph
+            submodel_files[definition_id] = rel_path
 
+        submodel_instance_paths = list(submodel_paths)
+        submodel_aliases = {registration.alias for registration in registrations}
+        graph = _merge_submodels(
+            graph,
+            submodel_graphs,
+            submodel_files,
+            explicit_connects,
+            flatten=flatten,
+            registrations=registrations,
+        )
     assert_parser_structure_conserved(
         raw_nodes=raw_nodes,
         explicit_connects=explicit_connects,
@@ -254,6 +302,8 @@ def parse_pipeline_source(
         submodel_paths=submodel_paths,
         submodel_graphs=submodel_graphs,
         submodel_files=submodel_files,
+        submodel_instance_paths=submodel_instance_paths,
+        submodel_aliases=submodel_aliases,
     )
 
     validate_pipeline_graph_shape_contracts(

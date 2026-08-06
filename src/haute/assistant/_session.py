@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 from uuid import uuid4
 
+from haute._credential_security import redact_sensitive_text
 from haute._logging import get_logger
 
 logger = get_logger(component="assistant.session")
@@ -64,7 +65,7 @@ _SESSION_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 JSONValue: TypeAlias = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 
-_MESSAGE_ROLES = frozenset({"user", "assistant", "tool"})
+_MESSAGE_ROLES = frozenset({"user", "assistant", "tool", "controller"})
 _MISSING = object()
 
 
@@ -321,6 +322,102 @@ class AssistantMessage:
         return result
 
 
+_PERSISTED_TOOL_EVIDENCE_KEYS = frozenset(
+    {
+        "applied_operations",
+        "base_revision",
+        "capability_hash",
+        "git_sha",
+        "graph_fingerprint",
+        "operation_version",
+        "plan_hash",
+        "policy_hash",
+        "project_revision",
+        "result_revision",
+        "source_digest",
+        "verification_error_code",
+        "verification_status",
+        "verification_tier",
+    }
+)
+
+
+_MAX_SESSION_TITLE_CHARS = 80
+
+
+def _session_title(text: str) -> str:
+    """Render one conversation title from its opening user message."""
+
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= _MAX_SESSION_TITLE_CHARS:
+        return collapsed
+    return collapsed[: _MAX_SESSION_TITLE_CHARS - 1].rstrip() + "…"
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSummary:
+    """One conversation as the chat list shows it, without its transcript.
+
+    The store's own record. `schemas.AssistantSessionSummary` is the wire model
+    the route converts this into; the two are deliberately named apart so a
+    reader can tell which side of the transport boundary a value is on.
+    """
+
+    session_id: str
+    title: str
+    created_at: float
+    last_used: float
+    message_count: int
+
+
+def _persisted_message(message: AssistantMessage) -> dict[str, JSONValue]:
+    """Redact provider-working tool payloads for durable restart history."""
+
+    wire: dict[str, JSONValue] = message.as_dict()
+    if isinstance(message.content, str):
+        wire["content"] = redact_sensitive_text(
+            message.content,
+            known_secrets=(
+                env_secret
+                for name in (
+                    "ANTHROPIC_API_KEY",
+                    "OPENAI_API_KEY",
+                    "DATABRICKS_TOKEN",
+                )
+                if (env_secret := os.environ.get(name))
+            ),
+        )
+    if message.tool_calls:
+        wire["tool_calls"] = [
+            {
+                "id": call.id,
+                "name": call.name,
+                "arguments": {"redacted": True},
+            }
+            for call in message.tool_calls
+        ]
+    if message.role == "tool":
+        content = message.content
+        redacted: dict[str, JSONValue] = {"redacted": True}
+        if isinstance(content, dict):
+            for key in sorted(_PERSISTED_TOOL_EVIDENCE_KEYS):
+                evidence_value = content.get(key)
+                if key in content and (
+                    isinstance(evidence_value, (str, int, float, bool)) or evidence_value is None
+                ):
+                    redacted[key] = _copy_json_value(evidence_value)
+            error = content.get("error")
+            if isinstance(error, dict) and isinstance(error.get("code"), str):
+                safe_error: dict[str, JSONValue] = {"code": error["code"]}
+                for key in ("validation_path", "validation_reason"):
+                    value = error.get(key)
+                    if isinstance(value, str):
+                        safe_error[key] = value
+                redacted["error"] = safe_error
+        wire["content"] = redacted
+    return wire
+
+
 @dataclass(frozen=True, slots=True)
 class AssistantTurn:
     """One complete user turn and all messages produced for it."""
@@ -405,6 +502,16 @@ class AssistantSession:
 
         return sum(turn.message_count for turn in self.history)
 
+    @property
+    def title(self) -> str:
+        """Return this conversation's list title: its first user message."""
+
+        for turn in self.history:
+            for message in turn.messages:
+                if message.role == "user" and isinstance(message.content, str):
+                    return _session_title(message.content)
+        return ""
+
     def as_dict(self) -> dict[str, JSONValue]:
         """Return the serializable session state, excluding the live lock."""
 
@@ -415,6 +522,48 @@ class AssistantSession:
             "created_at": self.created_at,
             "last_used": self.last_used,
         }
+
+    def as_persisted_dict(self) -> dict[str, JSONValue]:
+        """Return restartable history with provider-working payloads redacted."""
+
+        return {
+            "id": self.id,
+            "source_file": self.source_file,
+            "history": [
+                {"messages": [_persisted_message(message) for message in turn.messages]}
+                for turn in self.history
+            ],
+            "created_at": self.created_at,
+            "last_used": self.last_used,
+        }
+
+
+def _session_from_payload(payload: object, session_id: str) -> AssistantSession:
+    """Validate and construct one persisted session without retaining it."""
+
+    if not isinstance(payload, Mapping) or payload.get("id") != session_id:
+        raise ValueError("session file does not describe the requested session")
+    for key in ("created_at", "last_used"):
+        stamp = payload.get(key)
+        if (
+            isinstance(stamp, bool)
+            or not isinstance(stamp, (int, float))
+            or not math.isfinite(stamp)
+        ):
+            raise ValueError(f"session file {key} must be a finite number")
+    history = payload.get("history")
+    if not isinstance(history, list):
+        raise ValueError("session file history must be a list")
+    source_file = payload.get("source_file")
+    if not isinstance(source_file, str) or not source_file:
+        raise ValueError("session file source_file must be a non-empty string")
+    return AssistantSession(
+        id=session_id,
+        source_file=source_file,
+        history=list(history),
+        created_at=float(payload["created_at"]),
+        last_used=float(payload["last_used"]),
+    )
 
 
 SessionRef: TypeAlias = str | AssistantSession
@@ -520,7 +669,7 @@ class SessionStore:
             path = self._storage_dir() / f"{session.id}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(session.as_dict()), encoding="utf-8")
+            tmp.write_text(json.dumps(session.as_persisted_dict()), encoding="utf-8")
             os.replace(tmp, path)
         except OSError:
             logger.warning("assistant_session_persist_failed", session_id=session.id, exc_info=True)
@@ -537,7 +686,7 @@ class SessionStore:
                 if _SESSION_ID_PATTERN.fullmatch(session_id) is not None:
                     path.unlink(missing_ok=True)
             others = sorted(
-                (p for p in base.glob("*.json") if p.stem != keep_id),
+                (p for p in base.glob("*.json") if p.stem != keep_id and not p.is_symlink()),
                 key=lambda p: p.stat().st_mtime,
             )
             excess = len(others) + 1 - self.max_persisted_sessions
@@ -564,6 +713,13 @@ class SessionStore:
         if self._storage_dir is None or _SESSION_ID_PATTERN.fullmatch(session_id) is None:
             return None
         path = self._storage_dir() / f"{session_id}.json"
+        if path.is_symlink():
+            logger.warning(
+                "assistant_session_unreadable",
+                session_id=session_id,
+                detail="session file must not be a symbolic link",
+            )
+            return None
         try:
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -573,25 +729,7 @@ class SessionStore:
             return None
         try:
             data = json.loads(raw)
-            if not isinstance(data, Mapping) or data.get("id") != session_id:
-                raise ValueError("session file does not describe the requested session")
-            for key in ("created_at", "last_used"):
-                stamp = data.get(key)
-                if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
-                    raise ValueError(f"session file {key} must be a number")
-            history = data.get("history")
-            if not isinstance(history, list):
-                raise ValueError("session file history must be a list")
-            source_file = data.get("source_file")
-            if not isinstance(source_file, str) or not source_file:
-                raise ValueError("session file source_file must be a non-empty string")
-            session = AssistantSession(
-                id=session_id,
-                source_file=source_file,
-                history=list(history),
-                created_at=float(data["created_at"]),
-                last_used=float(data["last_used"]),
-            )
+            session = _session_from_payload(data, session_id)
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning(
                 "assistant_session_unreadable",
@@ -627,6 +765,81 @@ class SessionStore:
         self._persist(session)
         self._prune_persisted(session_id)
         return session
+
+    def _persisted_summary(self, path: Path) -> tuple[str, SessionSummary] | None:
+        """Summarise one persisted session file without reviving it.
+
+        Reading the file directly rather than through `_revive` is deliberate:
+        listing must not pull every stored conversation into memory, where it
+        would evict live sessions through the LRU bound it shares.
+        """
+
+        session_id = path.stem
+        if _SESSION_ID_PATTERN.fullmatch(session_id) is None:
+            return None
+        if path.is_symlink():
+            logger.warning(
+                "assistant_session_list_unreadable",
+                session_id=session_id,
+                detail="session file must not be a symbolic link",
+            )
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            session = _session_from_payload(payload, session_id)
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "assistant_session_list_unreadable",
+                session_id=session_id,
+                detail=str(exc),
+            )
+            return None
+
+        return session.source_file, SessionSummary(
+            session_id=session_id,
+            title=session.title,
+            created_at=session.created_at,
+            last_used=session.last_used,
+            message_count=session.stored_message_count,
+        )
+
+    def list_sessions(self, source_file: str | os.PathLike[str]) -> tuple[SessionSummary, ...]:
+        """Return this pipeline's conversations, most recently used first.
+
+        A session with no messages is omitted: `create` persists immediately,
+        so an abandoned "new chat" would otherwise sit in the list as an
+        untitled empty row. Live sessions take precedence over their persisted
+        copy, which can lag by one turn.
+        """
+
+        source = self._source_file_text(source_file)
+        summaries: dict[str, SessionSummary] = {}
+        if self._storage_dir is not None:
+            try:
+                paths = sorted(self._storage_dir().glob("*.json"))
+            except OSError:
+                logger.warning("assistant_session_list_failed", exc_info=True)
+                paths = []
+            for path in paths:
+                summary = self._persisted_summary(path)
+                if summary is not None and summary[0] == source:
+                    summaries[summary[1].session_id] = summary[1]
+        for session in self._sessions.values():
+            if session.source_file != source:
+                continue
+            summaries[session.id] = SessionSummary(
+                session_id=session.id,
+                title=session.title,
+                created_at=session.created_at,
+                last_used=session.last_used,
+                message_count=session.stored_message_count,
+            )
+        return tuple(
+            sorted(
+                (item for item in summaries.values() if item.message_count > 0),
+                key=lambda item: (-item.last_used, item.session_id),
+            )
+        )
 
     def lookup(self, session_id: str) -> AssistantSession | None:
         """Return a live session and mark it recently used, or return ``None``.
@@ -754,4 +967,5 @@ __all__ = [
     "PROVIDER_WINDOW_MESSAGES",
     "STORED_HISTORY_MESSAGES",
     "SessionStore",
+    "SessionSummary",
 ]

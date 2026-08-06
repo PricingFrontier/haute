@@ -134,9 +134,9 @@ class TestSubmodelCreateValueErrorSanitisation:
     """
 
     @pytest.fixture()
-    def _isolated_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        monkeypatch.chdir(tmp_path)
-        return tmp_path
+    def _isolated_cwd(self, haute_scratch: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.chdir(haute_scratch)
+        return haute_scratch
 
     def _two_node_graph(self) -> dict:
         return {
@@ -172,6 +172,11 @@ class TestSubmodelCreateValueErrorSanitisation:
         from haute.server import app
 
         client = TestClient(app, raise_server_exceptions=False)
+        (_isolated_cwd / "main.py").write_text(
+            'import haute\n\npipeline = haute.Pipeline("main")\n',
+            encoding="utf-8",
+        )
+        revision = client.get("/api/pipeline").json()["source_revision"]
 
         sensitive = (
             "internal graph walk failure at node '/root/secret/path.py' "
@@ -190,6 +195,7 @@ class TestSubmodelCreateValueErrorSanitisation:
                     "graph": self._two_node_graph(),
                     "source_file": "main.py",
                     "pipeline_name": "main",
+                    "base_revision": revision,
                 },
             )
         assert resp.status_code == 400

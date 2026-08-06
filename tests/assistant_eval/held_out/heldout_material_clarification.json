@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "heldout_material_clarification",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "clarification",
+  "request": "Add rating factors, but do not supply missing-factor policy or factor values.",
+  "required_node_types": [],
+  "required_node_configs": {},
+  "required_edges": [],
+  "max_unrelated_changes": 0,
+  "require_clarification": true,
+  "require_recovery": false
+}

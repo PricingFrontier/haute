@@ -645,6 +645,7 @@ def _execute_lazy(
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
     dataframe_cache_request: execution_facade.DataFrameExecutionCacheRequest | None = None,
+    schema_only: bool = False,
 ) -> tuple[dict[str, _Frame], list[str], dict[str, list[str]], dict[str, str]]:
     """Execute a graph lazily and return per-node LazyFrames.
 
@@ -688,6 +689,10 @@ def _execute_lazy(
             Production code paths (batch sink, deploy scoring, training,
             optimiser) run through here — enforcement on the lazy path
             is what makes contract coverage real end-to-end.
+        schema_only: Declares that the caller reads ``collect_schema()`` and
+            never collects a frame or invokes a sink.  Strategy planning then
+            skips the group-by materialisation-admission gate, which bounds
+            peak memory during materialisation only.
 
     Returns:
         (lazy_outputs, order, parents_of, id_to_name)
@@ -897,6 +902,7 @@ def _execute_lazy(
         ),
         required_columns_by_node=normalised_required_columns,
         execution_context=execution_context,
+        schema_only=schema_only,
     )
     public_projection_plan = public_strategy_result.projection_plan
     projection_plan = public_projection_plan

@@ -511,6 +511,77 @@ class TestLedgerCaptureOnSave:
         assert any("version capture failed" in w for w in result.warnings)
         assert (repo / "demo.py").exists()
 
+    @staticmethod
+    def _strip_identity(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make `repo` genuinely identity-less, isolated from the dev's config.
+
+        A restored hosted container looks exactly like this: a real repo with
+        no user.name/user.email anywhere. HOME/GIT_CONFIG_GLOBAL are redirected
+        so the developer's own global identity cannot leak into the assertion.
+        """
+        empty = tmp_path / "git-home"
+        empty.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(empty))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty / "gitconfig"))
+        monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty / "gitconfig-system"))
+        monkeypatch.delenv("GIT_AUTHOR_NAME", raising=False)
+        monkeypatch.delenv("GIT_AUTHOR_EMAIL", raising=False)
+        monkeypatch.delenv("GIT_COMMITTER_NAME", raising=False)
+        monkeypatch.delenv("GIT_COMMITTER_EMAIL", raising=False)
+        _git(repo, "config", "--unset", "user.name")
+        _git(repo, "config", "--unset", "user.email")
+
+    def test_missing_identity_skips_capture_and_flags_the_response(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        ledger_before = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", LEDGER],
+            cwd=repo,
+            capture_output=True,
+        )
+        self._strip_identity(repo, tmp_path, monkeypatch)
+
+        result = self._service_save(repo)
+
+        assert result.status == "saved"
+        assert result.identity_required is True
+        assert result.git_sha is None
+        assert any("needs a git identity" in w for w in result.warnings)
+        assert (repo / "demo.py").exists()
+        ledger_after = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", LEDGER],
+            cwd=repo,
+            capture_output=True,
+        )
+        assert ledger_after.stdout == ledger_before.stdout, "no ledger commit may be created"
+
+    def test_identity_present_captures_and_leaves_flag_false(self, repo: Path) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        result = self._service_save(repo)
+        assert result.identity_required is False
+        assert result.git_sha is not None
+
+    def test_setting_identity_lets_the_next_save_capture(
+        self, repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from haute._git_state import write_working_branch
+
+        write_working_branch(repo, WORKING)
+        self._strip_identity(repo, tmp_path, monkeypatch)
+        first = self._service_save(repo)
+        assert first.identity_required is True
+
+        set_identity("Restored User", "restored@example.com", cwd=repo)
+        second = self._service_save(repo)
+        assert second.identity_required is False
+        assert second.git_sha is not None
+        assert _git(repo, "rev-parse", LEDGER) == second.git_sha
+
 
 class TestIdentity:
     def test_get_identity_reads_config(self, repo: Path) -> None:
@@ -551,6 +622,19 @@ class TestIdentity:
 
 
 class TestWorkingBranchStatus:
+    def test_git_binary_missing_reports_git_unavailable(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Hosted containers may lack git entirely; that must surface as its
+        # own state (the UI says "git unavailable"), not "no-repository"
+        # (which offers init) and not a 500 from FileNotFoundError.
+        import haute._git as git_module
+
+        monkeypatch.setattr(git_module.shutil, "which", lambda _name: None)
+        st = working_branch_status(repo, cwd=repo)
+        assert st.state == "git-unavailable"
+        assert st.identity_set is False
+
     def test_unset(self, repo: Path) -> None:
         st = working_branch_status(repo, cwd=repo)
         assert st.state == "unset"

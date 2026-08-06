@@ -162,8 +162,8 @@ def _branch_join_graph(
         {
             "nodes": [nodes_by_id[node_id] for node_id in node_order],
             "edges": [
-                make_edge("left", "join"),
-                make_edge("right", "join"),
+                make_edge("left", "join", target_handle="base"),
+                make_edge("right", "join", target_handle="join"),
                 make_edge("join", "m1"),
                 make_edge("m1", "m2"),
             ],
@@ -209,8 +209,8 @@ def _same_origin_branch_join_graph(tmp_path):
             "edges": [
                 make_edge("src", "base"),
                 make_edge("src", "side"),
-                make_edge("base", "join"),
-                make_edge("side", "join"),
+                make_edge("base", "join", target_handle="base"),
+                make_edge("side", "join", target_handle="join"),
                 make_edge("join", "m1"),
                 make_edge("m1", "m2"),
             ],

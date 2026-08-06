@@ -1,0 +1,1 @@
+{"user":"Reuse this enrichment as a separate submodel without duplicating its implementation.","assistant":"Reference a file-backed submodel and wire the parent source through its declared input boundary."}

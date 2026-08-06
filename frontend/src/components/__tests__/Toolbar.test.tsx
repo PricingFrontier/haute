@@ -15,6 +15,10 @@ function makeProps(overrides: Partial<Parameters<typeof Toolbar>[0]> = {}) {
     onZoomOut: vi.fn(),
     onOpenUtility: vi.fn(),
     onOpenImports: vi.fn(),
+    canCreateSubmodel: true,
+    onCreateSubmodel: vi.fn(),
+    canCreateInstance: true,
+    onCreateInstance: vi.fn(),
     onCentre: vi.fn(),
     onAutoLayout: vi.fn(),
     isAutoLayouting: false,
@@ -54,24 +58,28 @@ describe("Toolbar", () => {
     expect(props.onSave).toHaveBeenCalledOnce()
   })
 
-  it("clicking Save & commit (in the save dropdown) calls onSaveCommit", () => {
+  it("clicking Commit calls onSaveCommit", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
-    fireEvent.click(screen.getByTestId("toolbar-save-menu")) // open the split-button menu
+    // Commit is a plain sibling of Save now — no split-button menu to open.
+    expect(screen.queryByTestId("toolbar-save-menu")).toBeNull()
     fireEvent.click(screen.getByTestId("toolbar-save-commit"))
     expect(props.onSaveCommit).toHaveBeenCalledOnce()
   })
 
   it("Layout button is disabled when nodeCount is 0", () => {
     render(<Toolbar {...makeProps({ nodeCount: 0 })} />)
-    const layoutBtn = screen.getByText("Layout")
+    // The label lives in a span inside the button (it's overlaid by the busy
+    // spinner), so target the button itself rather than the text node.
+    const layoutBtn = screen.getByTestId("toolbar-layout")
+    expect(layoutBtn).toHaveTextContent("Layout")
     expect(layoutBtn).toBeDisabled()
   })
 
   it("clicking Layout calls onAutoLayout", () => {
     const props = makeProps()
     render(<Toolbar {...props} />)
-    fireEvent.click(screen.getByText("Layout"))
+    fireEvent.click(screen.getByTestId("toolbar-layout"))
     expect(props.onAutoLayout).toHaveBeenCalledOnce()
   })
 
@@ -82,9 +90,94 @@ describe("Toolbar", () => {
 
     expect(layoutBtn).toBeDisabled()
     expect(layoutBtn).toHaveAttribute("aria-busy", "true")
+    // The visible label is width-stable across states; only the accessible
+    // name and the spinner change while running.
+    expect(layoutBtn).toHaveTextContent("Layout")
 
     fireEvent.click(layoutBtn)
     expect(props.onAutoLayout).not.toHaveBeenCalled()
+  })
+
+  it("clicking Submodel groups the selection", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+  })
+
+  it("clicking Instance creates an instance of the selection", () => {
+    const props = makeProps()
+    render(<Toolbar {...props} />)
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+    expect(props.onCreateInstance).toHaveBeenCalledOnce()
+  })
+
+  it("greys out the selection actions when the selection cannot support them", () => {
+    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    render(<Toolbar {...props} />)
+
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "true")
+  })
+
+  it("still calls the handler when unavailable, so the refusal can explain itself", () => {
+    const props = makeProps({ canCreateSubmodel: false, canCreateInstance: false })
+    render(<Toolbar {...props} />)
+
+    // ``can*`` drives presentation only. The handler owns the policy and
+    // answers an unavailable click with a toast — swallowing the click here
+    // would make the toolbar the one entry point that refuses in silence.
+    fireEvent.click(screen.getByTestId("toolbar-submodel"))
+    fireEvent.click(screen.getByTestId("toolbar-instance"))
+    expect(props.onCreateSubmodel).toHaveBeenCalledOnce()
+    expect(props.onCreateInstance).toHaveBeenCalledOnce()
+  })
+
+  it("keeps unavailable selection actions reachable so they can explain themselves", () => {
+    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: false })} />)
+    const submodel = screen.getByTestId("toolbar-submodel")
+    // Not the `disabled` attribute: that would drop the button from the tab
+    // order and suppress the title that states the requirement.
+    expect(submodel).not.toBeDisabled()
+    expect(submodel).toHaveAttribute("title", expect.stringContaining("select 2 or more"))
+  })
+
+  it("enables the two selection actions independently", () => {
+    render(<Toolbar {...makeProps({ canCreateSubmodel: false, canCreateInstance: true })} />)
+    // One node selected: instancing works, grouping needs a second node.
+    expect(screen.getByTestId("toolbar-submodel")).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByTestId("toolbar-instance")).toHaveAttribute("aria-disabled", "false")
+  })
+
+  it("places the selection actions to the left of Utility", () => {
+    render(<Toolbar {...makeProps()} />)
+    const order = [
+      screen.getByTestId("toolbar-submodel"),
+      screen.getByTestId("toolbar-instance"),
+      screen.getByTestId("toolbar-utility"),
+    ]
+    for (let i = 0; i < order.length - 1; i += 1) {
+      // Node.DOCUMENT_POSITION_FOLLOWING === 4
+      expect(order[i].compareDocumentPosition(order[i + 1]) & 4).toBeTruthy()
+    }
+  })
+
+  it("disables graph mutation controls in a read-only instance", () => {
+    const props = makeProps({ editingDisabled: true, canUndo: true, canRedo: true })
+    render(<Toolbar {...props} />)
+
+    expect(screen.getByTestId("toolbar-undo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-redo")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-layout")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-utility")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-imports")).toBeDisabled()
+    expect(screen.getByTestId("toolbar-assistant")).toBeDisabled()
+    fireEvent.click(screen.getByTestId("toolbar-layout"))
+    fireEvent.click(screen.getByTestId("toolbar-utility"))
+    fireEvent.click(screen.getByTestId("toolbar-imports"))
+    expect(props.onAutoLayout).not.toHaveBeenCalled()
+    expect(props.onOpenUtility).not.toHaveBeenCalled()
+    expect(props.onOpenImports).not.toHaveBeenCalled()
   })
 
   it("Centre button is disabled when nodeCount is 0", () => {
@@ -211,6 +304,14 @@ describe("Toolbar", () => {
   it("chunk input has max attribute matching the backend bound", () => {
     render(<Toolbar {...makeProps()} />)
     expect(getChunkInput()).toHaveAttribute("max", "10000000")
+  })
+
+  it("sizes numeric fields for the complete configured value and valid maximum", () => {
+    useSettingsStore.setState({ rowLimit: 125_000, streamingChunkSize: 10_000_000 })
+    render(<Toolbar {...makeProps()} />)
+
+    expect(getRowLimitInput()).toHaveStyle({ width: "calc(6ch + 16px)" })
+    expect(getChunkInput()).toHaveStyle({ width: "calc(8ch + 16px)" })
   })
 
   it("zoom in button calls onZoomIn", () => {

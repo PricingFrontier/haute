@@ -89,7 +89,7 @@ class TestValidKeysRegistry:
             (NodeType.SCENARIO_EXPANDER, "quote_id"),
             (NodeType.OPTIMISER_APPLY, "artifact_path"),
             (NodeType.CONSTANT, "values"),
-            (NodeType.SUBMODEL, "file"),
+            (NodeType.SUBMODEL, "definitionId"),
         ],
     )
     def test_known_key_present(self, node_type, expected_key):

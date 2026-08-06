@@ -51,12 +51,28 @@ no repository, unset, detached, divergent, or invalid) renders the same way, wit
 purpose, so an assistant that could talk but not edit would only mislead. The status is
 re-checked on every panel open, not polled.
 
+Readiness also shows the effective provider endpoint host, asserted trust
+class, and maximum sensitivity without displaying credentials or URL query
+material. Invalid or missing egress policy disables sending with the
+field-specific backend migration reason.
+
 **A turn streams into the transcript live.** Sending a message appends the user entry,
 disables the composer, and swaps the send button for a stop button. Assistant text renders
 incrementally as deltas arrive. Tool activity renders as compact rows in-place in the
 transcript — "reading pipeline", "applied 3 edits", with failures marked distinctly — so the
 analyst can follow what the agent actually did, in order. A graph-updated event annotates
 the transcript; the canvas itself updates via live-sync, not via this panel.
+
+**Graph authoring applies without a second permission prompt.** The user's
+message authorizes graph authoring. A validated plan may therefore apply
+directly whether it adds Polars code, configures an output, deletes graph
+elements, changes a preamble, or contains a large operation batch. The
+frontend renders the ordinary tool activity and graph-updated events; it has
+no graph-plan confirmation card or confirmation request. Exact plan hashes,
+revision checks, single-use authority, transactional saves and post-save
+verification remain server-owned. Actually running the pipeline or performing
+an external write remains a separate user-initiated execution action; v1
+exposes no assistant execution tool.
 
 **The clean-canvas gate.** The composer refuses to send while the graph has unsaved local
 edits, showing why ("save or discard your canvas changes first") — because the assistant
@@ -75,10 +91,10 @@ executions. The transcript keeps everything already streamed and adds its generi
 marker. Edits already applied remain applied (they are real saves); the marker does not imply
 an undo, but it also does not spell that consequence out.
 
-**One turn, one locally keyed session.** The store holds one active session, created lazily on
-first send. The current source-file string scopes the browser's remembered-session key and
-causes a source change to clear the in-memory transcript/session; it is not passed as the
-`pipeline` value in the session-create request (the current client sends `null`). While a turn
+**One turn, one selected session.** The store holds one active session, created lazily on
+first send or selected explicitly from the backend conversation list. A source change clears
+the in-memory transcript/session; the source string is not passed as the `pipeline` value in
+the session-create request (the current client sends `null`). While a turn
 is in flight the composer is locked from before session creation until the response body has
 ended (stop is the only action); the backend's 409 on concurrent
 sends therefore has exactly one
@@ -86,13 +102,11 @@ normal-operation window — a send in the moments after a stop, while the backen
 in-flight edit — rendered with its own "still finishing" notice rather than a generic
 error.
 New-chat discards the transcript and session id; the next send creates a fresh session.
-Conversations survive both page reloads and server restarts: the store remembers the
-session id in `localStorage` (keyed per pipeline source), offers it back on session
-create, and rehydrates the transcript from the history the backend returns — the backend
-persists committed turns per clone in `.haute/`, so the restart-everything workflow of a
-locally-run tool keeps its chat. When a remembered session is truly gone (pruned, cleaned
-`.haute/`, different pipeline) the backend hands out a fresh session and the panel simply
-starts blank; a 404 on *send* still renders the explicit session-expired notice.
+Conversations survive both page reloads and server restarts because the backend persists
+committed turns per clone in `.haute/`; the panel opens on that list and rehydrates only the
+conversation the user selects. The browser remembers no session id. If a listed conversation
+disappears before it is opened (pruned or cleaned `.haute/`), the backend returns a fresh blank
+session; a 404 on *send* still renders the explicit session-expired notice.
 
 **Failures are inline and loud.** A turn that terminates with the backend's `failed` event
 renders the typed error message inline in the transcript at the point of failure (plus an
@@ -104,7 +118,7 @@ terminal frame is a contract violation: it cancels the response and renders the 
 interrupted rather than silently preserving a false completed state.
 
 **Assistant responses are validated at the feature boundary.** Status and
-session JSON, every history row, and every field of all seven SSE variants are
+session JSON, every history row, and every field of all eight SSE variants are
 checked at runtime before they become typed values or reach a store callback.
 Required object/array/primitive shapes are closed while unrelated additional
 fields are tolerated for additive compatibility. Contract drift raises a
@@ -137,15 +151,15 @@ cannot partially append text or activity.
   lists); rendering it as such is table stakes for a chat product surface. The renderer is
   loaded with the lazy panel body so its cost never lands in the initial bundle (the
   bundle-size gate stays authoritative).
-- **No optimistic transcript persistence.** The browser persists only a per-source session id,
-  not transcript entries. On resume it replaces its empty/in-memory transcript with the
-  server-returned history before appending the new turn; this avoids reconciling speculative
-  client transcript state after reload.
+- **No browser-side conversation persistence.** The browser persists neither ids nor transcript
+  entries. The backend list is authoritative, and opening a selected conversation replaces the
+  empty/in-memory transcript with the server-returned history before another turn can use it;
+  this avoids reconciling speculative client state after reload.
 
 ## Interactions
 
 - **[assistant](../assistant/high-level.md)** — the backend surface this component consumes:
-  status, session create, and the streamed message endpoint; the typed SSE event contract is
+  status, session list/create, and the streamed message endpoint; the typed SSE event contract is
   owned there (in the shared schemas module) and consumed here.
 - **[frontend-shared](../frontend-shared/high-level.md)** — the split API-module pattern and
   `request`/`post` machinery, the toast store for failure surfacing, the UI store for

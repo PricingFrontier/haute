@@ -1094,6 +1094,41 @@ class TestLookupPipelineByName:
 class TestParsePipelineToGraph:
     """Tests for parse_pipeline_to_graph — merges sidecar state into parsed graph."""
 
+    def test_managed_parent_sidecar_is_not_exposed_as_definition_metadata(self, tmp_path):
+        from haute.routes._helpers import parse_pipeline_to_graph
+
+        parent = tmp_path / "pipeline.py"
+        parent.write_text("# parsed through patched parser\n", encoding="utf-8")
+        child = tmp_path / "modules" / "child.py"
+        child.parent.mkdir()
+        child.write_text("# child\n", encoding="utf-8")
+        child.with_suffix(".haute.json").write_text(
+            json.dumps({"managed_parent": "pipeline.py"}),
+            encoding="utf-8",
+        )
+        parsed = PipelineGraph.model_validate(
+            {
+                "nodes": [],
+                "edges": [],
+                "submodels": {
+                    "child": {
+                        "definitionId": "child",
+                        "file": "modules/child.py",
+                        "inputPorts": [],
+                        "outputPorts": [],
+                        "graph": {"nodes": [], "edges": []},
+                    }
+                },
+            }
+        )
+
+        with patch("haute.parser.parse_pipeline_file", return_value=parsed):
+            graph = parse_pipeline_to_graph(parent, project_root=tmp_path)
+
+        definition = graph.submodels["child"]
+        assert not hasattr(definition, "managed")
+        assert "managed" not in definition.model_dump()
+
     def test_positions_applied_from_sidecar(self, tmp_path):
         """Node positions from sidecar file are applied to the parsed graph."""
         from haute.routes._helpers import parse_pipeline_to_graph

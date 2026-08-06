@@ -1,10 +1,12 @@
 import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
+import { isSubmodelInstanceConfig } from "../types/node"
 import { NODE_TYPES } from "./nodeTypes"
+import { sanitizeName } from "./sanitizeName"
 import {
   edgeInputName,
   incomingEdgeInputNames,
   resolveSubmodelBoundaryNode,
-  submodelGraphFromMetadata,
+  resolveSubmodelBoundaryNodes,
 } from "./apiInputPorts"
 
 type ConnectionLike = {
@@ -157,9 +159,45 @@ export function validatePipelineConnection(
     }
   }
 
-  const candidateTarget = resolvedTarget(targetNode, candidate.targetHandle, submodels)
-
   try {
+    if (
+      targetNode.data.nodeType === NODE_TYPES.SUBMODEL
+      && isSubmodelInstanceConfig(targetNode.data.config)
+    ) {
+      const targets = resolveSubmodelBoundaryNodes(
+        targetNode,
+        candidate.targetHandle,
+        "in",
+        submodels,
+      )
+      if (targets.length === 0) {
+        throw new Error(
+          "Canonical submodel input " + String(candidate.targetHandle)
+          + " has no declared targets",
+        )
+      }
+      const existingBinding = edges.some(
+        (edge) =>
+          edge.target === candidate.target
+          && edge.targetHandle === candidate.targetHandle,
+      )
+      if (existingBinding) {
+        const portId = candidate.targetHandle?.slice("in__".length)
+        if (!portId) {
+          throw new Error("Canonical submodel input handle is malformed")
+        }
+        return {
+          ok: false,
+          reason: {
+            kind: "duplicate-input-name",
+            inputName: sanitizeName(portId),
+          },
+        }
+      }
+      return { ok: true }
+    }
+
+    const candidateTarget = resolvedTarget(targetNode, candidate.targetHandle, submodels)
     const existingNames = incomingEdgeInputNames({
       targetNodeId: candidateTarget.id,
       boundaryNodeId: candidate.target,
@@ -167,25 +205,6 @@ export function validatePipelineConnection(
       edges,
       submodels,
     })
-
-    // Boundary edges are only half of a submodel child's inputs. The child's
-    // internal graph contributes names to the same executable input namespace
-    // and must be checked before accepting a new parent edge.
-    if (candidateTarget.id !== targetNode.id) {
-      if (!targetNode.id.startsWith("submodel__")) {
-        throw new Error(`Cannot resolve boundary target ${targetNode.id}`)
-      }
-      const submodelName = targetNode.id.slice("submodel__".length)
-      const graph = submodelGraphFromMetadata(submodels?.[submodelName])
-      if (!graph) throw new Error(`Submodel ${submodelName} has no graph to validate`)
-      existingNames.push(...incomingEdgeInputNames({
-        targetNodeId: candidateTarget.id,
-        nodes: graph.nodes,
-        edges: graph.edges,
-        submodels: graph.submodels,
-      }))
-    }
-
     if (existingNames.includes(candidateName)) {
       return { ok: false, reason: { kind: "duplicate-input-name", inputName: candidateName } }
     }

@@ -7,7 +7,7 @@
 | `src/haute/parser.py` | Public entry points `parse_pipeline_file` / `parse_submodel_file` / `parse_pipeline_source`. Orchestrates the AST-vs-regex-fallback branch, pipeline metadata/node/edge extraction, submodel resolution + merge, graph-shape validation, and warning aggregation for a whole pipeline `.py` file. |
 | `src/haute/_parser_conservation.py` | Shared fail-loud acceptance gate for both parser paths. Verifies that parsed root node IDs, ordered edge/handle identities, submodel references, and cross-boundary endpoints conserve the authored structure; also builds the deterministic missing-submodel diagnostic. |
 | `src/haute/_parser_regex.py` | `fallback_parse` and its helpers: a regex-anchored + AST-fragment recovery parser used when `ast.parse` fails on the whole file. Locates `@pipeline.<type>` decorator blocks, `pipeline.connect()`/`pipeline.submodel()` call sites, and pipeline metadata textually, then re-parses each recovered fragment with real `ast` wherever possible. |
-| `src/haute/_parser_submodels.py` | `extract_submodel_calls` / `parse_submodel_source` / `merge_submodels`: resolves `pipeline.submodel("path")` references, parses each referenced submodel file into its own `PipelineGraph`, and merges child graphs into the parent (hierarchical placeholder or flattened). |
+| `src/haute/_parser_submodels.py` | `extract_submodel_registrations` / `parse_submodel_source` / `merge_submodels`: resolves explicit `pipeline.submodel("path", ...)` registrations, parses each referenced submodel file into its own `PipelineGraph`, and merges canonical occurrences into the parent (hierarchical or flattened). |
 | `src/haute/_expression_parser.py` | `parse_expression` / `evaluate_expression` / `parse_expression_chain` and their supporting classes: AST-based conversion of a Polars with-columns expression to human-readable text (`_ExprConverter`) and to a concrete, Polars-mirroring value (`_ExprEvaluator` / `_BranchTrackingEvaluator`). |
 
 ## Key types and data structures
@@ -23,8 +23,10 @@
   `nested_branches: list[str]`).
 - **`PipelineGraph`** (`src/haute/_types.py`, owned by
   [server-api](../server-api/low-level.md) and produced here) — `nodes`,
-  `edges`, `pipeline_name`, `pipeline_description`, `preamble`, `preserved_blocks`, `source_file`,
-  `warning`, `submodels`. Canonical structure shared with the executor, codegen, deploy, and the
+  `edges`, `pipeline_name`, `pipeline_description`, `preamble`,
+  `preserved_blocks`, `source_file`, `source_revision` (server-populated
+  live-document metadata), `warning`, `submodels`. Canonical structure shared
+  with the executor, codegen, deploy, and the
   server API layer.
 - **`_ExprConverter`** (`_expression_parser.py`) — one AST-node-type-dispatch method per handled
   node kind; accumulates `columns`, `constants`, `expr_type`, `sub_expressions`, and an
@@ -51,8 +53,8 @@
 importing their implementation modules directly →
 collect labels from any nodes already carrying `_load_error` into a graph-level `warning` → if any
 `pipeline.submodel()` calls were found, require `_base_dir` or `_submodel_base_dir` (otherwise
-raise with every unresolved authored path), resolve + parse each submodel file, reject repeated
-references to the same resolved file, and call `_parser_submodels.merge_submodels` → run
+raise with every unresolved authored path), resolve registrations, group repeated paths by canonical definition id, parse
+each definition file once, and call `_parser_submodels.merge_submodels` → run
 the structure-conservation gate → `validate_pipeline_graph_shape_contracts` (owned outside this
 component) → log `pipeline_parsed`.
 
@@ -78,17 +80,17 @@ extraction → recover and merge every authored submodel via `_recover_submodels
 unrecoverable/missing references into one `ParseError` rather than skipping individual calls →
 run the same structure-conservation gate as the healthy path.
 
-**`merge_submodels`** (`_parser_submodels.py`): always builds the hierarchical form first — one
-`submodel__<name>` placeholder node per child graph (via `build_submodel_placeholder`), with
-cross-boundary edges reconstructed from the raw `parent_edges` tuples (2/3/4-tuple shapes are all
-tolerated, for pre-port and ported edge forms) and rewired via `rewire_edges`/`classify_ports`
-(owned by [submodels](../submodels/low-level.md)) — then, only if `flatten=True`, hands the
-hierarchical graph to `flatten_graph` (`_flatten.py`) to dissolve every placeholder at once. This
-keeps a single source of truth for the flatten algorithm rather than letting it exist in two
-places. If a submodel file being parsed itself contains a `pipeline.submodel(...)` call, parsing
-raises `ParseError` naming the containing file and every nested reference. Nesting remains one
-level deep by construction (see [submodels](../submodels/high-level.md#design-rationale)); the
-parser enforces that producer contract rather than returning a truncated child graph.
+**`merge_submodels`** (`_parser_submodels.py`): validate that every parsed
+child's declared `definition_id` matches its registration and that literal
+structured input/output ports are present. Build one `SubmodelDefinition` per
+definition id and one `SUBMODEL` occurrence per registration; each occurrence
+uses its explicit immutable `instance_id`, alias, optional label, and config
+`{definitionId, alias}`. Parent connect endpoints use aliases and declared
+public port ids, which become `in__<portId>`/`out__<portId>` graph handles;
+internal child ids are never accepted as parent endpoints. Only when
+`flatten=True` is the canonical hierarchical graph passed to
+`flatten_graph`. A submodel file containing its own registration raises
+`ParseError`, preserving the one-level nesting contract.
 
 **`parse_expression`** (`_expression_parser.py`): strip a leading BOM → `_cached_parse(code)` →
 bail to `_opaque(...)` on empty input or `SyntaxError` → `_has_control_flow_wrapping_target`: if
@@ -196,26 +198,27 @@ appended before the column that depends on it) → return the parsed expressions
   `unresolved_paths` instead of returning a root-only graph. `fallback_parse` always has a
   resolution root: `_submodel_base_dir`, else `_base_dir`, else
   `Path(source_file).parent`, else `Path.cwd()`.
-- **Repeated submodel files are diagnosed separately**: `build_unique_submodel_maps` groups
-  parsed children by resolved `PipelineGraph.source_file` before grouping by declared name. If
-  one file was authored more than once, the error reports that file and its reference spellings;
-  it does not claim that multiple files were involved.
-- **Submodel names are unique**: before inserting a parsed child graph, the parser compares its
-  declared pipeline name with every previously loaded child from a different file. A collision
-  raises with the shared name and all authored file references instead of overwriting a dictionary
-  entry.
-- **Implicit edges cross loaded submodel boundaries**: parser-private function parameter metadata
-  is retained only long enough for `merge_submodels` to infer root-to-child, child-to-root, and
-  child-to-child edges whose parameter name resolves to a loaded node id. Explicit connects still
-  suppress an inferred edge with the same endpoint pair. The metadata is not emitted in graph
-  payloads or generated source.
-- **Conservation is an acceptance gate**: the parser compares raw decorated-function ids with
-  graph-node ids; locally resolvable explicit edges with their source/target handles and inferred
-  parameter edges with the built edge set; dangling explicit endpoints with the loaded submodel
-  child-id set; and authored submodel paths with merged submodel metadata. Exact duplicate
-  `connect()` identities are checked explicitly and raise the dedicated duplicate-edge diagnostic;
-  every other difference raises `ParseError` before graph-shape validation or return.
-
+- **Repeated definition files are intentional for reusable occurrences**:
+  registrations resolving to one file are grouped and parsed once. They must
+  agree on one explicit definition id.
+- **Definition/file identity is one-to-one**: one definition id resolving to
+  multiple files, conflicting definition ids for one file, or a child whose
+  declared id differs from the parent registration raises `ParseError`.
+- **Occurrence identity is explicit**: missing/non-literal/blank
+  `definition_id`, `instance_id`, or `alias` fields, and duplicate instance ids
+  or aliases, fail before merge. No file/name/node-id inference is attempted.
+- **Public boundary connections are explicit**: a parent `connect` endpoint
+  that names an occurrence alias must also name a declared public port id.
+  Function-parameter inference remains inside its owning root or definition
+  graph; it never reaches through a definition interface or exposes an
+  internal child id.
+- **Conservation is an acceptance gate**: the parser compares authored root
+  nodes and ordered edges, registration paths and explicit identity fields,
+  occurrence aliases and public port ids, and the constructed
+  definition/occurrence registry. Each child source is conserved within its
+  own definition graph. Exact duplicate `connect()` identities raise the
+  dedicated diagnostic; every other difference raises `ParseError` before
+  graph-shape validation or return.
 ## Error handling
 
 - **`ConfigError`** propagates from `src/haute/_config_builder.py` when a healthy parse cannot
@@ -229,8 +232,8 @@ appended before the column that depends on it) → return the parsed expressions
   Python literals and the sanctioned `Contract(...)` constructor are resolvable at parse time);
   `**kwargs` expansion in a decorator in the regex fallback; an `async def` pipeline node
   function; a syntactically invalid referenced submodel file; a missing submodel file; a
-  submodel reference without a resolution root; a repeated resolved submodel file; duplicate
-  declared submodel names across different files; nested submodel references; an exact duplicate
+  submodel reference without a resolution root; a conflicting definition/file registration; a missing or duplicate
+  canonical occurrence identity; an invalid structured public-port contract; nested submodel references; an exact duplicate
   edge identity; a structure-conservation mismatch; or a submodel path that escapes the project
   root. A folder-backed node with no matching `config=` kwarg raises `ConfigError` through
   `_sidecar_required_error`, consistently with other sidecar configuration failures.
@@ -273,7 +276,7 @@ Tests live under `tests/`, split by concern:
   decorator-kwarg value-parsing policy (literals + `Contract(...)` only, everything else fails
   loud) across scalar/compound/multiple/degenerate/invalid-syntax cases; a dedicated TDD gate
   regression-tests one specific historical codebase-review finding.
-- **`test_parser_submodels.py`** — `extract_submodel_calls`, `parse_submodel_source`,
+- **`test_parser_submodels.py`** — `extract_submodel_registrations`, `parse_submodel_source`,
   `merge_submodels`, and cross-boundary-edge reconstruction.
 - **`test_parser_conservation.py`** — regression tests asserting that parsing (and the implicit
   regeneration path) conserves source structure: boilerplate, docstrings, parameter buckets, node

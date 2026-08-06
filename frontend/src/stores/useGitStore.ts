@@ -2,21 +2,36 @@
  * Zustand store for the working-branch model (P2/P3).
  *
  * Holds the latest working-branch readiness signal (from GET /api/git/working-branch),
- * which branch + last-save SHA the toolbar indicator displays, and the open/close
- * state of the git modals (working-branch chooser, divergence, milestone commit).
+ * the current branch and last-save identity used by comparison flows, and the
+ * open/close state of the git modals (working-branch chooser, divergence,
+ * milestone commit). The toolbar indicator consumes only the branch identity.
  *
  * The graph-shaped state and dirty tracking live in useGraphStore; chrome/panel
  * state lives in useUIStore. This store owns only the git working-branch concern.
  */
 import { create } from "zustand"
 
-import { getWorkingBranch } from "../api/client"
-import type { GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
+import {
+  acknowledgeGitBind,
+  bindGitStorage,
+  checkGitUpstream,
+  forkGitStorage,
+  getWorkingBranch,
+  pullGitUpstream,
+  retryGitStorageSync,
+} from "../api/client"
+import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
 
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
 /** Which modal is open. */
-export type GitModalMode = "select" | "divergence" | "milestone"
+export type GitModalMode =
+  | "select"
+  | "divergence"
+  | "milestone"
+  | "storage"
+  | "upstream"
+  | "identity"
 
 /** A version being inspected read-only in the side-by-side comparison view (S11).
  *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
@@ -60,20 +75,8 @@ interface GitState {
    *  it just recorded (S38). Kept separate from historyNonce precisely so the
    *  two can differ in selection behaviour. */
   commitNonce: number
-  /** Bumped when the toolbar commit-SHA indicator is clicked: open the panel on
-   *  the current branch and SELECT the latest save (the ledger-tip commit the
-   *  indicator shows), expanding its milestone if it's folded (S38). */
-  selectLatestSaveNonce: number
-  /** Bumped to ask the panel to select a SPECIFIC commit — used when the toolbar
-   *  indicator is clicked while comparing, to select the compared version rather
-   *  than the latest save (S11). The target sha rides in `selectSaveTarget`. */
-  selectSaveNonce: number
-  /** The sha `selectSaveNonce` asks the panel to locate and select, or null. */
-  selectSaveTarget: string | null
   /** The version under read-only inspection in the side-by-side comparison view,
-   *  or null when not comparing (S11). Drives the dual-canvas overlay + the
-   *  context-aware toolbar indicator (which selects the COMPARED version, not the
-   *  latest save, while a comparison is open). */
+   *  or null when not comparing (S11). Drives the dual-canvas overlay. */
   comparison: GitComparison | null
   /** A version the user has asked to MOVE to (a real detached checkout), pending
    *  the pre-move save/discard/confirm prompt (P6 §3.4). null when no move is
@@ -94,10 +97,6 @@ interface GitState {
   notifyHistoryChanged: () => void
   /** Signal that a milestone was COMMITTED (refresh + select the new milestone). */
   notifyMilestoneCommitted: () => void
-  /** Ask the panel to select the latest save (toolbar commit-SHA click). */
-  requestSelectLatestSave: () => void
-  /** Ask the panel to locate and select a specific commit (S11). */
-  requestSelectSave: (sha: string) => void
   /** Open the read-only comparison view on a commit (S11). */
   openComparison: (comparison: GitComparison) => void
   /** Close the comparison view, returning to the live editor (S11). */
@@ -109,6 +108,20 @@ interface GitState {
   closeMove: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
+  /** Bind the state volume to a remote for durable storage, then refresh readiness. */
+  bindStorage: (remoteUrl: string) => Promise<GitBindStorageResponse>
+  /** Fork a held uc:// location's published state into an empty location. */
+  forkStorage: (sourceUrl: string, targetUrl: string) => Promise<GitForkStorageResponse>
+  /** Clear a finished bind result after the dialog has reported it. */
+  acknowledgeBind: () => Promise<void>
+  /** Measure this fork against its parent. On demand only — the server
+   *  downloads the parent's whole stored bundle to answer. */
+  checkUpstream: () => Promise<GitUpstreamStatus>
+  /** Catch this fork up to its parent, then refresh readiness (the catch-up
+   *  publishes to the fork's own location, so the sync state moves). */
+  pullUpstream: () => Promise<GitFastForwardResponse>
+  /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
+  retrySync: () => Promise<GitWorkingBranchResponse | null>
 }
 
 const useGitStore = create<GitState>()((set, get) => ({
@@ -125,9 +138,6 @@ const useGitStore = create<GitState>()((set, get) => ({
   branchesExpandNonce: 0,
   historyNonce: 0,
   commitNonce: 0,
-  selectLatestSaveNonce: 0,
-  selectSaveNonce: 0,
-  selectSaveTarget: null,
   comparison: null,
   moveTarget: null,
 
@@ -137,6 +147,13 @@ const useGitStore = create<GitState>()((set, get) => ({
     statusInFlight = getWorkingBranch()
       .then((status) => {
         set({ status, loading: false, statusError: null })
+        // Binding runs in the background, so its dialog is closed by the time
+        // a failure lands. Bring it back — the user asked for durable storage
+        // and must find out they haven't got it. Never steals focus from
+        // another open modal.
+        if (status?.storage_bind?.state === "failed" && get().modal === null) {
+          set({ modal: "storage" })
+        }
         return status
       })
       .catch(async (error: unknown) => {
@@ -173,10 +190,6 @@ const useGitStore = create<GitState>()((set, get) => ({
   requestExpandBranches: () => set((s) => ({ branchesExpandNonce: s.branchesExpandNonce + 1 })),
   notifyHistoryChanged: () => set((s) => ({ historyNonce: s.historyNonce + 1 })),
   notifyMilestoneCommitted: () => set((s) => ({ commitNonce: s.commitNonce + 1 })),
-  requestSelectLatestSave: () =>
-    set((s) => ({ selectLatestSaveNonce: s.selectLatestSaveNonce + 1 })),
-  requestSelectSave: (sha) =>
-    set((s) => ({ selectSaveTarget: sha, selectSaveNonce: s.selectSaveNonce + 1 })),
   openComparison: (comparison) => set({ comparison }),
   closeComparison: () => set({ comparison: null }),
   requestMove: (target) => set({ moveTarget: target }),
@@ -184,6 +197,32 @@ const useGitStore = create<GitState>()((set, get) => ({
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),
+
+  bindStorage: async (remoteUrl) => {
+    const result = await bindGitStorage(remoteUrl)
+    await get().loadStatus()
+    return result
+  },
+  acknowledgeBind: async () => {
+    const status = await acknowledgeGitBind()
+    set({ status })
+  },
+  forkStorage: async (sourceUrl, targetUrl) => {
+    // No readiness refresh: forking writes only to the volume — this
+    // session's own binding is untouched until the user binds the fork.
+    return forkGitStorage(sourceUrl, targetUrl)
+  },
+  checkUpstream: async () => checkGitUpstream(),
+  pullUpstream: async () => {
+    const result = await pullGitUpstream()
+    await get().loadStatus()
+    return result
+  },
+  retrySync: async () => {
+    const status = await retryGitStorageSync()
+    set({ status })
+    return status
+  },
 }))
 
 export default useGitStore

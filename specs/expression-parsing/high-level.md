@@ -25,7 +25,7 @@ In scope:
 - `.py` source → `PipelineGraph` (nodes, edges, metadata, preamble, preserved blocks) via
   `ast`, with a regex/partial-AST fallback when the whole file fails `ast.parse`.
 - Resolving and merging `pipeline.submodel("path")` references into the parent graph, either
-  hierarchically (collapsed placeholder nodes) or flattened.
+  hierarchically (collapsed occurrence nodes) or flattened.
 - Polars `with_columns()`/`select()` expression AST → human-readable formula text, referenced
   columns, and literal constants.
 - Substituting concrete row values into a parsed formula and computing a concrete result that
@@ -40,8 +40,8 @@ Out of scope (owned by neighbouring components, cross-linked below):
 - Config-dict construction (`_config_builder`) and conversion of parsed node/edge data into
   `GraphNode`/`GraphEdge` models (`_graph_builders`) — owned by
   [pipeline-config](../pipeline-config/high-level.md).
-- The submodel placeholder/port-classification and flatten algorithms themselves
-  (`_flatten.py`, `_submodel_graph.py`) — [submodels](../submodels/high-level.md); this component
+- The submodel occurrence/port-classification and flatten algorithms themselves
+  (`_flatten.py`, `_submodel_instances.py`) — [submodels](../submodels/high-level.md); this component
   only decides *when* to invoke them and supplies the parsed child graphs.
 - Project-root resolution and config file I/O (`_project.py`, `_config_io.py`) —
   [pipeline-config](../pipeline-config/high-level.md).
@@ -73,19 +73,21 @@ Out of scope (owned by neighbouring components, cross-linked below):
   `_base_dir` or `_submodel_base_dir`. Without a resolution root the parser raises `ParseError`
   with every unresolved authored path; returning only the root nodes would violate the same
   conservation contract as a missing file.
-- Referencing the same resolved submodel file more than once raises a dedicated `ParseError`
-  naming that file and the authored references. This is distinct from two different files
-  declaring the same `Submodel(...)` name.
-- Two different submodel files may not declare the same `Submodel(...)` name. A collision raises
-  `ParseError` naming the shared pipeline name and every involved file; no file wins by load
-  order.
-- `flatten=True` dissolves nested submodel graphs into one flat graph (for the executor, trace,
-  and deploy); the default `False` keeps hierarchical `submodel__<name>` placeholder nodes so the
-  GUI can render a collapsed/expandable submodel box.
-- Parameter-name inference spans a submodel boundary after every child has been loaded. If a root
-  or child function parameter names a node in the parent or another loaded child graph, the parser
-  constructs the same implicit edge it would have constructed within one file; hierarchical and
-  flattened results preserve it.
+- Multiple registrations may resolve to the same definition file only when
+  they carry the same explicit `definition_id`. The file is parsed once and
+  each unique `instance_id`/`alias` becomes a separate occurrence.
+- One definition id may resolve to only one file, and one file may declare
+  only its matching definition id. Conflicts raise `ParseError` before a
+  registry entry is constructed.
+- `flatten=True` expands every occurrence into independently qualified runtime
+  nodes for executor, trace, and deploy. The default keeps canonical
+  occurrence nodes plus a definition registry for the GUI.
+- Parent connections address occurrence aliases and must name declared public
+  input/output port ids. Internal child ids never become parent endpoints or
+  public handles.
+- Every submodel source must declare literal `definition_id`,
+  `input_ports`, and `output_ports` on `haute.Submodel(...)`. The deprecated
+  `outputs=` shape is rejected rather than inferred or migrated.
 - Nested submodels (a submodel file itself calling `pipeline.submodel(...)`) are capped at one
   level. Parsing raises `ParseError` naming the containing file and every nested path, because
   returning the outer graph while omitting the nested references would not conserve authored
@@ -186,7 +188,7 @@ Out of scope (owned by neighbouring components, cross-linked below):
   path) import directly, so both paths produce identically-shaped `GraphNode`/`GraphEdge`
   objects.
 - Depends on and cooperates with [submodels](../submodels/high-level.md): this component decides
-  when a `pipeline.submodel(...)` reference must be resolved and parsed, but the placeholder-node
+  when a `pipeline.submodel(...)` reference must be resolved and parsed, but the occurrence-node
   construction, boundary-port classification, and flatten algorithm live there.
 - `PipelineGraph`, the output type, is the canonical structure shared with the executor, codegen,
   and the server API layer — changes here are visible everywhere a pipeline is rendered or run.
@@ -205,8 +207,10 @@ Out of scope (owned by neighbouring components, cross-linked below):
   safely reconstruct: an unclosed `connect()`/`submodel()`/decorator argument list, a non-literal
   decorator keyword argument or (on the healthy path) a non-literal `submodel()` path, an
   `async def` pipeline node, a missing submodel
-  file, a submodel reference without a resolution root, the same resolved submodel file referenced
-  more than once, two different submodel files declaring the same name, a nested submodel
+  file, a submodel reference without a resolution root, conflicting
+  definition-to-file registrations, duplicate instance ids or aliases,
+  missing canonical identity fields, invalid structured public ports, or a
+  nested submodel
   reference, an exact duplicate edge identity, or any node/edge/handle identity rejected by the
   conservation gate. A parse that silently returned a plausible-but-incomplete graph here would
   corrupt the file on the next save, which this codebase treats as strictly worse than a loud

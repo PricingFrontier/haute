@@ -1,0 +1,1 @@
+[{"case":"The scenario grid has exactly three alternatives per quote.","expectation":"Expansion yields 18 long-format rows and optimisation selects one alternative for every quote."},{"case":"The volume constraint is feasible but active.","expectation":"The real solver completes and its aggregate volume meets the configured minimum within solver tolerance."}]

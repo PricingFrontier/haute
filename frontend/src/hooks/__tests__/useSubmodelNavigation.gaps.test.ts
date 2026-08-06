@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
+import type { SubmodelDefinition } from "../../types/node"
 import useSubmodelNavigation from "../useSubmodelNavigation"
 import useToastStore from "../../stores/useToastStore"
 import useGraphStore from "../../stores/useGraphStore"
@@ -19,25 +20,61 @@ vi.mock("../../utils/layout", () => ({
 import { loadSubmodel } from "../../api/client"
 const mockLoad = vi.mocked(loadSubmodel)
 
+const INSTANCE_ID = "instance_primary"
+const DEFINITION_ID = "definition_pricing"
+
+const definition: SubmodelDefinition = {
+  definitionId: DEFINITION_ID,
+  file: "modules/pricing.py",
+  graph: {
+    nodes: [
+      makeNode("child1", "edgeJoin", { data: { label: "Claims frame" } }),
+      makeNode("child2", "polars", { data: { label: "Quote frame" } }),
+    ],
+    edges: [],
+  },
+  inputPorts: [
+    { portId: "claims", label: "proposer_claims", targets: [{ nodeId: "child1", handleId: "join" }] },
+    { portId: "quote", label: "quote_info", targets: [{ nodeId: "child2", handleId: null }] },
+  ],
+  outputPorts: [
+    { portId: "claims_result", label: "Claims frame", source: { nodeId: "child1", handleId: "result" } },
+  ],
+}
+
+function occurrence() {
+  return makeNode(INSTANCE_ID, "submodel", {
+    data: {
+      label: "pricing",
+      nodeType: "submodel",
+      config: { definitionId: DEFINITION_ID, alias: "pricing" },
+    },
+  })
+}
+
 function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[0]> = {}) {
   return {
-    graphRef: { current: { nodes: [makeNode("n1"), makeNode("n2")] as Node[], edges: [] as Edge[] } },
+    graphRef: { current: { nodes: [occurrence()] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null as { nodes: Node[]; edges: Edge[]; submodels: Record<string, unknown> } | null },
-    submodelsRef: { current: {} as Record<string, unknown> },
+    setActiveSubmodelIdentity: vi.fn(),
+    submodelsRef: { current: { [DEFINITION_ID]: definition } as Record<string, unknown> },
     setNodesRaw: vi.fn(),
     setEdgesRaw: vi.fn(),
     setSelectedNode: vi.fn(),
     setPreviewData: vi.fn(),
+    setPreamble: vi.fn(),
     preambleRef: { current: "" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     pipelineNameRef: { current: "test" },
     fitView: vi.fn(),
     ...overrides,
   }
 }
 
-describe("useSubmodelNavigation — port building & branch gaps", () => {
+describe("useSubmodelNavigation — canonical port building & branch gaps", () => {
   beforeEach(() => {
     useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useGraphStore.setState({ lastSavedSnapshot: null })
@@ -49,199 +86,101 @@ describe("useSubmodelNavigation — port building & branch gaps", () => {
     vi.restoreAllMocks()
   })
 
-  it("builds an input port node + edge from a parent cross-boundary edge", async () => {
+  it("projects declared parent boundaries into Input and Output cards", async () => {
     vi.useFakeTimers()
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      submodel_name: "pricing",
-      graph: { nodes: [makeNode("child1")], edges: [] },
-    })
-    // Parent feeds source node "src1" into submodel via in__child1 handle.
     const params = makeParams()
     params.graphRef.current = {
-      nodes: [makeNode("src1", "polars", { data: { label: "Source One" } })],
+      nodes: [makeNode("src1"), makeNode("tgt1"), occurrence()],
       edges: [
-        makeEdge("src1", "submodel__pricing", {
-          targetHandle: "in__child1",
-        }),
+        { ...makeEdge("src1", INSTANCE_ID), id: "input-claims", sourceHandle: "proposer_claims", targetHandle: "in__claims" } as Edge,
+        { ...makeEdge("src1", INSTANCE_ID), id: "input-quote", sourceHandle: "quote_info", targetHandle: "in__quote" } as Edge,
+        { ...makeEdge(INSTANCE_ID, "tgt1"), id: "output-claims", sourceHandle: "out__claims_result" } as Edge,
       ],
     }
     const { result } = renderHook(() => useSubmodelNavigation(params))
+
     await act(async () => {
-      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
 
-    // The layouted nodes passed to setNodesRaw should include the input port.
-    const setNodes = params.setNodesRaw as ReturnType<typeof vi.fn>
-    const lastNodes: Node[] = setNodes.mock.calls.at(-1)![0]
-    const inputPort = lastNodes.find((n) => n.id === "port_in__src1")
-    expect(inputPort).toBeDefined()
-    expect(inputPort!.data).toMatchObject({ portDirection: "input", label: "Source One" })
+    expect(mockLoad).not.toHaveBeenCalled()
+    const lastNodes: Node[] = (params.setNodesRaw as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]
+    const boundaries = lastNodes.filter((node) => node.type === "submodelPort")
+    expect(boundaries).toHaveLength(2)
+    const input = boundaries.find((node) => node.data.portDirection === "input")
+    const output = boundaries.find((node) => node.data.portDirection === "output")
+    expect(input?.data).toMatchObject({
+      label: "INPUT",
+      ports: [{ id: "claims", label: "proposer_claims" }, { id: "quote", label: "quote_info" }],
+    })
+    expect(output?.data).toMatchObject({ label: "OUTPUT", ports: [] })
 
-    // And an edge port -> child should be created.
-    const setEdges = params.setEdgesRaw as ReturnType<typeof vi.fn>
-    const lastEdges: Edge[] = setEdges.mock.calls.at(-1)![0]
-    expect(lastEdges.some((e) => e.source === "port_in__src1" && e.target === "child1")).toBe(true)
+    const lastEdges: Edge[] = (params.setEdgesRaw as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0]
+    expect(lastEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: input?.id, sourceHandle: "claims", target: "child1", targetHandle: "join" }),
+      expect.objectContaining({ source: input?.id, sourceHandle: "quote", target: "child2", targetHandle: null }),
+      expect.objectContaining({ source: "child1", sourceHandle: "result", target: output?.id, targetHandle: null }),
+    ]))
     vi.useRealTimers()
   })
 
-  it("falls back to source id label when targetHandle missing and child absent", async () => {
-    vi.useFakeTimers()
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      submodel_name: "pricing",
-      graph: { nodes: [makeNode("child1")], edges: [] },
+  it("rejects a parent edge with an undeclared boundary handle", async () => {
+    const params = makeParams({
+      graphRef: {
+        current: {
+          nodes: [makeNode("src1"), occurrence()],
+          edges: [{ ...makeEdge("src1", INSTANCE_ID), targetHandle: "in__missing" } as Edge],
+        },
+      },
     })
-    const params = makeParams()
-    // Edge with no targetHandle -> childId "__unconnected__" which is not in childIds,
-    // so the port node is built but the inner edge is skipped (continue branch).
-    // Also no parent node for "ghost" -> label falls back to the source id.
-    params.graphRef.current = {
-      nodes: [],
-      edges: [makeEdge("ghost", "submodel__pricing")],
-    }
     const { result } = renderHook(() => useSubmodelNavigation(params))
+
     await act(async () => {
-      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
 
-    const setNodes = params.setNodesRaw as ReturnType<typeof vi.fn>
-    const lastNodes: Node[] = setNodes.mock.calls.at(-1)![0]
-    const inputPort = lastNodes.find((n) => n.id === "port_in__ghost")
-    expect(inputPort).toBeDefined()
-    expect(inputPort!.data).toMatchObject({ label: "ghost" })
-
-    const setEdges = params.setEdgesRaw as ReturnType<typeof vi.fn>
-    const lastEdges: Edge[] = setEdges.mock.calls.at(-1)![0]
-    // No edge to "__unconnected__" since that child isn't in the submodel graph.
-    expect(lastEdges.some((e) => e.source === "port_in__ghost")).toBe(false)
-    vi.useRealTimers()
-  })
-
-  it("builds an output port node + edge from a parent cross-boundary edge", async () => {
-    vi.useFakeTimers()
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      submodel_name: "pricing",
-      graph: { nodes: [makeNode("child1")], edges: [] },
-    })
-    const params = makeParams()
-    // Submodel outputs from child1 (out__child1 handle) into parent "tgt1".
-    params.graphRef.current = {
-      nodes: [makeNode("tgt1", "polars", { data: { label: "Target One" } })],
-      edges: [
-        makeEdge("submodel__pricing", "tgt1", {
-          sourceHandle: "out__child1",
-        }),
-      ],
-    }
-    const { result } = renderHook(() => useSubmodelNavigation(params))
-    await act(async () => {
-      await result.current.handleDrillIntoSubmodel("submodel__pricing")
-    })
-
-    const setNodes = params.setNodesRaw as ReturnType<typeof vi.fn>
-    const lastNodes: Node[] = setNodes.mock.calls.at(-1)![0]
-    const outputPort = lastNodes.find((n) => n.id === "port_out__tgt1")
-    expect(outputPort).toBeDefined()
-    expect(outputPort!.data).toMatchObject({ portDirection: "output", label: "Target One" })
-
-    const setEdges = params.setEdgesRaw as ReturnType<typeof vi.fn>
-    const lastEdges: Edge[] = setEdges.mock.calls.at(-1)![0]
-    expect(lastEdges.some((e) => e.source === "child1" && e.target === "port_out__tgt1")).toBe(true)
-    vi.useRealTimers()
-  })
-
-  it("skips output edges whose child is not part of the submodel graph", async () => {
-    vi.useFakeTimers()
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      submodel_name: "pricing",
-      graph: { nodes: [makeNode("child1")], edges: [] },
-    })
-    const params = makeParams()
-    // sourceHandle references a child ("missing") not in the submodel -> skipped.
-    params.graphRef.current = {
-      nodes: [makeNode("tgt1")],
-      edges: [
-        makeEdge("submodel__pricing", "tgt1", {
-          sourceHandle: "out__missing",
-        }),
-      ],
-    }
-    const { result } = renderHook(() => useSubmodelNavigation(params))
-    await act(async () => {
-      await result.current.handleDrillIntoSubmodel("submodel__pricing")
-    })
-
-    const setNodes = params.setNodesRaw as ReturnType<typeof vi.fn>
-    const lastNodes: Node[] = setNodes.mock.calls.at(-1)![0]
-    // No output port built because the only candidate child was filtered out.
-    expect(lastNodes.some((n) => n.id === "port_out__tgt1")).toBe(false)
-    vi.useRealTimers()
-  })
-
-  it("ignores parent output edges that lack a sourceHandle", async () => {
-    vi.useFakeTimers()
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      submodel_name: "pricing",
-      graph: { nodes: [makeNode("child1")], edges: [] },
-    })
-    const params = makeParams()
-    params.graphRef.current = {
-      nodes: [makeNode("tgt1")],
-      // Source is the submodel but no sourceHandle -> filtered out before the loop.
-      edges: [makeEdge("submodel__pricing", "tgt1")],
-    }
-    const { result } = renderHook(() => useSubmodelNavigation(params))
-    await act(async () => {
-      await result.current.handleDrillIntoSubmodel("submodel__pricing")
-    })
-
-    const setNodes = params.setNodesRaw as ReturnType<typeof vi.fn>
-    const lastNodes: Node[] = setNodes.mock.calls.at(-1)![0]
-    expect(lastNodes.some((n) => n.id.startsWith("port_out__"))).toBe(false)
-    vi.useRealTimers()
+    expect(result.current.viewStack).toHaveLength(1)
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "error", text: expect.stringContaining("undeclared") }),
+    ]))
   })
 
   it("handleBreadcrumbNavigate clears parentGraphRef only when returning to depth 0", async () => {
     vi.useFakeTimers()
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      submodel_name: "pricing",
-      graph: { nodes: [makeNode("child1")], edges: [] },
-    })
     const params = makeParams()
-    params.graphRef.current = { nodes: [makeNode("n1")], edges: [] }
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
-      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
-    // parentGraphRef populated by the drill-in.
     expect(params.parentGraphRef.current).not.toBeNull()
+    expect(params.setActiveSubmodelIdentity).toHaveBeenCalledWith({ instanceId: INSTANCE_ID, definitionId: DEFINITION_ID })
 
     act(() => {
       result.current.handleBreadcrumbNavigate(0)
     })
     expect(params.parentGraphRef.current).toBeNull()
+    expect(params.setActiveSubmodelIdentity).toHaveBeenLastCalledWith(null)
     expect(result.current.viewStack).toHaveLength(1)
     vi.useRealTimers()
   })
 
-  it("handleDrillIntoSubmodel no-ops when API returns no graph", async () => {
-    // Deliberately malformed (graph absent) to exercise the no-graph defensive branch.
-    mockLoad.mockResolvedValue({
-      status: "ok",
-      submodel_name: "pricing",
-      graph: undefined,
-    } as unknown as Awaited<ReturnType<typeof loadSubmodel>>)
-    const params = makeParams()
+  it("handleDrillIntoSubmodel no-ops when the embedded graph cannot satisfy its ports", async () => {
+    const params = makeParams({
+      submodelsRef: {
+        current: {
+          [DEFINITION_ID]: {
+            ...definition,
+            graph: { nodes: [], edges: [] },
+          },
+        },
+      },
+    })
     const { result } = renderHook(() => useSubmodelNavigation(params))
     await act(async () => {
-      await result.current.handleDrillIntoSubmodel("submodel__pricing")
+      await result.current.handleDrillIntoSubmodel(INSTANCE_ID)
     })
-    // View stack stays at pipeline level; no node updates.
+    expect(mockLoad).not.toHaveBeenCalled()
     expect(result.current.viewStack).toHaveLength(1)
     expect(params.setNodesRaw).not.toHaveBeenCalled()
   })

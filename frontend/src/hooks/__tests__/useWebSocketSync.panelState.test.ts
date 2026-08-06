@@ -55,10 +55,29 @@ vi.mock("../../stores/useUIStore.ts", () => {
   return { default: useUIStore }
 })
 
-// Wave 7E: dirty tracking moved from useUIStore to useGraphStore.  The
-// hook only reads markSaved from it; stub a no-op mock.
+// The hook reads dirty-state from useGraphStore and applies incoming graphs
+// through loadGraphSnapshot; the mock must provide both or every
+// graph_update rolls back before reaching the dialog cleanup under test.
 vi.mock("../../stores/useGraphStore.ts", () => {
-  const store = { nodes: [], edges: [], submodels: {}, preamble: "", markSaved: vi.fn() }
+  const store = {
+    dirty: false,
+    nodes: [] as unknown[],
+    edges: [] as unknown[],
+    submodels: {} as Record<string, unknown>,
+    preamble: "",
+    markSaved: vi.fn(),
+    loadGraphSnapshot: vi.fn((snapshot: {
+      nodes: unknown[]
+      edges: unknown[]
+      preamble: string
+      submodels: Record<string, unknown>
+    }) => {
+      store.nodes = snapshot.nodes
+      store.edges = snapshot.edges
+      store.preamble = snapshot.preamble
+      store.submodels = snapshot.submodels
+    }),
+  }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
     setState: vi.fn(),
@@ -100,6 +119,8 @@ function makeHookParams() {
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -146,6 +167,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             // Note: "doomed_42" is NOT in the new nodes list
             nodes: [{ id: "survivor_1", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
@@ -176,6 +199,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             nodes: [
               { id: "keeper_1", position: { x: 10, y: 10 }, data: {} },
               { id: "other", position: { x: 20, y: 20 }, data: {} },
@@ -206,6 +231,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             // Missing "gone_b"
             nodes: [
               { id: "a", position: { x: 10, y: 10 }, data: {} },
@@ -235,6 +262,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             nodes: [
               { id: "a", position: { x: 10, y: 10 }, data: {} },
               { id: "b", position: { x: 20, y: 20 }, data: {} },
@@ -268,6 +297,8 @@ describe("useWebSocketSync — orphaned dialog state cleared on WS sync (#39)", 
           type: "graph_update",
           graph: {
             submodels: {},
+            source_revision: "revision-test",
+            preserved_blocks: [],
             nodes: [{ id: "a", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
           },

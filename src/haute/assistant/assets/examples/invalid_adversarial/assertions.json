@@ -1,0 +1,1 @@
+{"target":"response","required_columns":["note"],"checks":["parse","adversarial_rejection"]}

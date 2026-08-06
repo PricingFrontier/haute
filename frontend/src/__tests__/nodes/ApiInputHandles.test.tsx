@@ -182,7 +182,10 @@ function eligibleTable(label: string) {
 describe("apiInput handle identity across zoom levels", () => {
   afterEach(cleanup)
 
-  it("keeps the same ordered raw-label handle set at full, medium, and compact detail", () => {
+  it("keeps the same ordered raw-label handle set however far the canvas zooms", () => {
+    // Nodes render one way at every zoom, so these ids come from the frame rows
+    // at all three. The property they pin outlives the reason it was written:
+    // an edge stays bound to the frame it names, whatever the viewport does.
     const labels = ["policy_items", "driver_claims", "vehicles"]
     const config = { tables: labels.map((label) => eligibleTable(label)) }
 
@@ -191,7 +194,7 @@ describe("apiInput handle identity across zoom levels", () => {
     expect(handleIdsAtZoom(config, 0.2)).toEqual(labels)
   })
 
-  it("keeps the sole frame labelled at full, medium, and compact detail", () => {
+  it("keeps the sole frame labelled however far the canvas zooms", () => {
     const config = {
       tables: [
         eligibleTable("policy_items"),

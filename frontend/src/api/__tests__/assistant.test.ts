@@ -83,6 +83,9 @@ describe("getAssistantStatus", () => {
       reason: null,
       provider: "anthropic",
       model: "m",
+      endpoint_host: "api.anthropic.com",
+      trust: "external",
+      max_sensitivity: "public",
       mutations_enabled: false,
       mutations_reason: "Not a git repository. Run 'git init' first.",
     }
@@ -95,9 +98,11 @@ describe("getAssistantStatus", () => {
 
   it.each([
     ["an array payload", []],
-    ["a missing required field", { configured: true, reason: null, provider: null, model: null, mutations_enabled: true }],
-    ["a wrong primitive field", { configured: "yes", reason: null, provider: null, model: null, mutations_enabled: true, mutations_reason: null }],
-    ["an invalid nullable field", { configured: true, reason: 1, provider: null, model: null, mutations_enabled: true, mutations_reason: null }],
+    ["a missing required field", { configured: true, reason: null, provider: null, model: null, endpoint_host: null, trust: null, max_sensitivity: null, mutations_enabled: true }],
+    ["a wrong primitive field", { configured: "yes", reason: null, provider: null, model: null, endpoint_host: null, trust: null, max_sensitivity: null, mutations_enabled: true, mutations_reason: null }],
+    ["an invalid nullable field", { configured: true, reason: 1, provider: null, model: null, endpoint_host: null, trust: null, max_sensitivity: null, mutations_enabled: true, mutations_reason: null }],
+    ["an invalid trust class", { configured: true, reason: null, provider: null, model: null, endpoint_host: "x", trust: "trusted", max_sensitivity: "public", mutations_enabled: true, mutations_reason: null }],
+    ["a configured status without egress identity", { configured: true, reason: null, provider: "openai", model: "m", endpoint_host: null, trust: null, max_sensitivity: null, mutations_enabled: true, mutations_reason: null }],
   ])("rejects %s with an ordinary validation error", async (_label, payload) => {
     mockFetch.mockReturnValueOnce(jsonResponse(payload))
     const result = getAssistantStatus()

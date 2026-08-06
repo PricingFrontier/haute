@@ -106,7 +106,12 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
   describe("isPipelineResponse acceptance", () => {
     it("returns true for a minimal valid pipeline response", async () => {
       const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ nodes: [], edges: [] })).toBe(true)
+      expect(isPipelineResponse({
+        nodes: [],
+        edges: [],
+        preserved_blocks: [],
+        source_revision: null,
+      })).toBe(true)
     })
 
     it("returns true for a fully populated pipeline response", async () => {
@@ -122,13 +127,21 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
         warning: "something changed",
         sources: ["live", "test"],
         active_source: "test",
+        preserved_blocks: ["KEEP = 1"],
+        source_revision: "revision-full",
       }
       expect(isPipelineResponse(full)).toBe(true)
     })
 
     it("accepts a response with an empty preamble string", async () => {
       const { isPipelineResponse } = await loadGuards()
-      expect(isPipelineResponse({ nodes: [], edges: [], preamble: "" })).toBe(true)
+      expect(isPipelineResponse({
+        nodes: [],
+        edges: [],
+        preamble: "",
+        preserved_blocks: [],
+        source_revision: null,
+      })).toBe(true)
     })
 
     it("accepts nullable metadata fields emitted by the backend response model", async () => {
@@ -143,6 +156,8 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
           source_file: null,
           submodels: null,
           warning: null,
+          preserved_blocks: [],
+          source_revision: null,
         }),
       ).toBe(true)
     })
@@ -184,6 +199,30 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
     it("returns false when `edges` is missing", async () => {
       const { isPipelineResponse } = await loadGuards()
       expect(isPipelineResponse({ nodes: [] })).toBe(false)
+    })
+
+    it("returns false when persisted document metadata is omitted", async () => {
+      const { isPipelineResponse } = await loadGuards()
+      expect(isPipelineResponse({
+        nodes: [],
+        edges: [],
+        preserved_blocks: [],
+      })).toBe(false)
+      expect(isPipelineResponse({
+        nodes: [],
+        edges: [],
+        source_revision: null,
+      })).toBe(false)
+    })
+
+    it("returns false for a blank non-null source revision", async () => {
+      const { isPipelineResponse } = await loadGuards()
+      expect(isPipelineResponse({
+        nodes: [],
+        edges: [],
+        preserved_blocks: [],
+        source_revision: "   ",
+      })).toBe(false)
     })
 
     it("returns false when `nodes` is not an array", async () => {
@@ -241,7 +280,13 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
   describe("parsePipelineResponse", () => {
     it("returns the narrowed value on valid input", async () => {
       const { parsePipelineResponse } = await loadGuards()
-      const input = { nodes: [], edges: [], preamble: "import x" }
+      const input = {
+        nodes: [],
+        edges: [],
+        preamble: "import x",
+        preserved_blocks: [],
+        source_revision: null,
+      }
       const parsed = parsePipelineResponse(input) as {
         nodes: unknown[]
         edges: unknown[]
@@ -260,6 +305,8 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
         nodes: [],
         edges: [],
         warning: null,
+        preserved_blocks: [],
+        source_revision: null,
       }) as { warning?: string | null }
 
       expect(parsed.warning).toBeNull()
@@ -283,6 +330,30 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
     it("throws with a message naming the missing `edges` field", async () => {
       const { parsePipelineResponse } = await loadGuards()
       expect(() => parsePipelineResponse({ nodes: [] })).toThrow(/edges/i)
+    })
+
+    it("throws with a message naming missing persisted document metadata", async () => {
+      const { parsePipelineResponse } = await loadGuards()
+      expect(() => parsePipelineResponse({
+        nodes: [],
+        edges: [],
+        preserved_blocks: [],
+      })).toThrow(/source_revision/i)
+      expect(() => parsePipelineResponse({
+        nodes: [],
+        edges: [],
+        source_revision: null,
+      })).toThrow(/preserved_blocks/i)
+    })
+
+    it("throws for a blank non-null source revision", async () => {
+      const { parsePipelineResponse } = await loadGuards()
+      expect(() => parsePipelineResponse({
+        nodes: [],
+        edges: [],
+        preserved_blocks: [],
+        source_revision: "\t",
+      })).toThrow(/source_revision/i)
     })
 
     it("throws with a message indicating the type mismatch for `nodes`", async () => {
@@ -321,6 +392,8 @@ describe("#116 — isPipelineResponse / parsePipelineResponse", () => {
         pipeline_name: "x",
         preamble: "y",
         sources: ["live"],
+        preserved_blocks: [],
+        source_revision: null,
       }) as {
         nodes: unknown[]
         edges: unknown[]

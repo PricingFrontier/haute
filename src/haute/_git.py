@@ -86,6 +86,11 @@ _FETCH_TIMEOUT_SECONDS: float = 10.0
 # Publication can legitimately take longer than a ref advertisement/fetch, but
 # it must still release the repository mutation lock on a wedged transport.
 _PUSH_TIMEOUT_SECONDS: float = 60.0
+# A hosted restore clones a whole project before the server accepts traffic, so
+# it is allowed materially longer than a push — but still bounded, because an
+# unreachable remote must surface as a gate, never as a container that never
+# finishes booting.
+_CLONE_TIMEOUT_SECONDS: float = 300.0
 # Per-(cwd, remote, kind) last-fetch timestamps. Keyed — not one global float —
 # so concurrent worktrees served by a single process don't share one cooldown
 # window, where one clone's fetch would starve another's (F7). ``kind`` keeps
@@ -382,6 +387,18 @@ def _fetch_refs(remote: str, *refs: str, cwd: Path | None = None) -> bool:
         logger.debug("git_fetch_failed", remote=remote, stderr=result.stderr.strip())
         return False
     return True
+
+
+def git_binary_available() -> bool:
+    """Return whether a git executable exists on PATH.
+
+    Distinguishes "no git installed" (some hosted containers) from "no
+    repository here" — every subprocess helper below raises
+    ``FileNotFoundError`` rather than a git exit code when the binary
+    itself is absent, so callers that would otherwise 500 check this
+    first.
+    """
+    return shutil.which("git") is not None
 
 
 def _is_git_repo(cwd: Path | None = None) -> bool:
@@ -1170,6 +1187,9 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
     """Compute the working-branch readiness signal for a clone.
 
     state is one of:
+      - "git-unavailable" — no git binary on PATH (hosted containers without
+                      git); distinct from "no-repository" so the UI can say
+                      "git is not available here" instead of offering init
       - "no-repository" — the project has no Git repository
       - "unset"     — no working branch recorded
       - "detached"  — HEAD resolves but is not attached to a branch
@@ -1179,6 +1199,13 @@ def working_branch_status(project_root: Path, cwd: Path | None = None) -> GitWor
       - "ready"     — recorded branch is the current lineage and healthy
     """
     from haute._git_state import read_working_branch
+
+    if not git_binary_available():
+        return GitWorkingBranchResponse(
+            state="git-unavailable",
+            current_branch="",
+            identity_set=False,
+        )
 
     if not _is_git_repo(cwd):
         return GitWorkingBranchResponse(
@@ -2672,6 +2699,227 @@ def _remote_names(cwd: Path | None = None) -> list[str]:
     return out.splitlines() if ok and out.strip() else []
 
 
+def ensure_remote(name: str, url: str, cwd: Path | None = None) -> None:
+    """Point remote *name* at *url*, adding it when absent (idempotent).
+
+    Used by hosted project storage to bind a clone to its durable remote.
+    The URL is never written into a log line: it can carry a host, a path,
+    and — for a malformed user entry — credential material.
+    """
+    _validate_ref_name(name)
+    if not url or url.strip() != url or any(char.isspace() for char in url):
+        raise GitDomainError("A remote URL must be a single non-empty token without whitespace.")
+    if name in _remote_names(cwd):
+        _run_git("remote", "set-url", name, url, cwd=cwd)
+    else:
+        _run_git("remote", "add", name, url, cwd=cwd)
+    logger.info("git_remote_bound", remote=name)
+
+
+def remote_url(name: str, cwd: Path | None = None) -> str | None:
+    """Return the configured URL for remote *name*, or ``None`` when absent."""
+    _validate_ref_name(name)
+    ok, url = _run_git_ok("remote", "get-url", name, cwd=cwd)
+    return url.strip() if ok and url.strip() else None
+
+
+def adopt_cloned_lineage(working: str, remote: str = "origin", cwd: Path | None = None) -> None:
+    """Materialise a cloned project's managed lineage as local branches.
+
+    ``git clone`` checks out only the remote's default branch, so a restored
+    hosted project would hold the working branch and its ledger solely as
+    remote-tracking refs — which ``_rev_parse`` does not resolve. The session
+    would then report an invalid repository, show the default branch's file
+    contents rather than the user's latest saves, and fail every publish with
+    "working branch does not exist".
+
+    Creates local ``working`` and (when the remote has one) its ledger, then
+    checks out the ledger — the same shape :func:`set_working_branch` leaves
+    behind, so a restored session is indistinguishable from an adopted one.
+    """
+    _validate_ref_name(working)
+    _validate_ref_name(remote)
+    tracking = f"refs/remotes/{remote}/{working}"
+    if _rev_parse(tracking, cwd=cwd) is None:
+        raise GitDomainError(
+            f"The stored project does not contain branch '{working}'. "
+            "Its storage binding names a branch the remote no longer has."
+        )
+    _run_git("branch", "--force", working, tracking, cwd=cwd)
+
+    ledger = ledger_name(working)
+    ledger_tracking = f"refs/remotes/{remote}/{ledger}"
+    if _rev_parse(ledger_tracking, cwd=cwd) is not None:
+        # Check out the ledger: saves commit there, and a ledger re-spawned
+        # from the working tip would diverge from the published one.
+        _run_git("checkout", "-B", ledger, ledger_tracking, cwd=cwd)
+    else:
+        _run_git("checkout", working, cwd=cwd)
+    logger.info("cloned_lineage_adopted", working=working)
+
+
+def remote_has_content(remote: str, cwd: Path | None = None) -> bool:
+    """Whether *remote* advertises any object refs (i.e. is not an empty repo).
+
+    Hosted binding uses this to choose between adopting the local project
+    onto a fresh remote and lifting an existing project from a populated
+    one. Propagates :class:`GitError` when the remote cannot be inspected
+    at all — an unreachable remote must never read as "empty" and trigger
+    an adopt that would publish over someone's project.
+    """
+    _validate_ref_name(remote)
+    _, _, has_object_refs = _inspect_remote(remote, cwd=cwd)
+    return has_object_refs
+
+
+def clone_project(url: str, destination: Path, branch: str | None = None) -> None:
+    """Clone *url* into *destination*, which must not already exist.
+
+    The prompt-proof remote environment applies (``GIT_TERMINAL_PROMPT=0``
+    plus SSH ``BatchMode``) and the transport is time-bounded, so an
+    unreachable or credential-walled remote fails within
+    ``_CLONE_TIMEOUT_SECONDS`` instead of wedging a hosted boot. Raw
+    stderr is logged, never returned: clone stderr routinely embeds the
+    remote URL and any credential the caller supplied inside it.
+    """
+    if destination.exists():
+        raise GitDomainError(f"Clone destination already exists: {destination.name}")
+    if not url or any(char.isspace() for char in url):
+        raise GitDomainError("A remote URL must be a single non-empty token without whitespace.")
+    if branch is not None:
+        _validate_ref_name(branch)
+
+    cmd = ["git", "clone"]
+    if branch is not None:
+        cmd.extend(["--branch", branch])
+    cmd.extend([url, str(destination)])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_remote_env(),
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning("git_clone_timeout", seconds=_CLONE_TIMEOUT_SECONDS)
+        raise GitError(
+            f"The remote did not respond within {int(_CLONE_TIMEOUT_SECONDS)} seconds."
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        logger.warning("git_clone_failed", error=str(exc))
+        raise GitError("The clone could not be started.") from exc
+    if result.returncode != 0:
+        logger.warning("git_clone_failed", stderr=result.stderr.strip())
+        raise GitError("The remote could not be cloned.")
+
+
+@_serialized_mutation
+def bundle_create(destination: Path, cwd: Path | None = None) -> str:
+    """Write the whole repository — every ref and its history — to *destination*.
+
+    A bundle is git's own single-file repository interchange format and
+    ``git clone`` reads one directly, which is what lets hosted storage
+    mirror a repository over a channel git cannot speak (the Files API).
+    ``--all`` carries every branch, tag, and ``HEAD``, so each bundle is
+    independently complete. Runs under the repository mutation lock so the
+    snapshot can never capture a save mid-commit. Returns the bundled
+    ``HEAD`` commit so the caller can label the artefact.
+    """
+    _assert_git_repo(cwd)
+    _run_git("bundle", "create", str(destination), "--all", cwd=cwd)
+    sha = _rev_parse("HEAD", cwd=cwd)
+    if sha is None:  # pragma: no cover - _assert_git_repo guarantees a HEAD
+        raise GitError("bundled HEAD did not resolve")
+    return sha
+
+
+def bundle_verify(bundle: Path, cwd: Path | None = None) -> None:
+    """Prove *bundle* is a readable, self-contained bundle.
+
+    Hosted storage's bundle is the only durable copy of the project, so it
+    must be verified before it is trusted. ``git bundle verify`` checks the
+    format and that every prerequisite is present — a ``--all`` bundle has
+    none, so a pass means the file stands alone. Needs a repository for
+    context (*cwd*); any repository will do.
+    """
+    _run_git("bundle", "verify", str(bundle), cwd=cwd)
+
+
+def fetch_bundle_refs(bundle: Path, namespace: str, cwd: Path | None = None) -> None:
+    """Populate ``refs/remotes/<namespace>/*`` from *bundle*'s branches.
+
+    Deliberately configures NO git remote: fetching straight from a bundle
+    path fills the tracking namespace and leaves ``git remote`` untouched,
+    so ``_canonical_remote`` still picks ``origin`` as the one divergence
+    baseline. The tracking refs outlive the (temporary) bundle file, which
+    is all an upstream comparison needs. Time-bounded like a clone; stderr
+    is logged, never returned.
+    """
+    _validate_ref_name(namespace)
+    if not bundle.exists():
+        raise GitDomainError("The stored project bundle to compare against is missing.")
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "fetch",
+                str(bundle),
+                f"+refs/heads/*:refs/remotes/{namespace}/*",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=cwd or Path.cwd(),
+            env=_remote_env(),
+            timeout=_CLONE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.warning("git_bundle_fetch_timeout", seconds=_CLONE_TIMEOUT_SECONDS)
+        raise GitError(
+            f"Reading the stored project took longer than {int(_CLONE_TIMEOUT_SECONDS)} seconds."
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        logger.warning("git_bundle_fetch_failed", error=str(exc))
+        raise GitError("The stored project bundle could not be read.") from exc
+    if result.returncode != 0:
+        logger.warning("git_bundle_fetch_failed", stderr=result.stderr.strip())
+        raise GitError("The stored project bundle could not be read.")
+
+
+def pair_divergence(
+    namespace: str, project_root: Path, cwd: Path | None = None
+) -> tuple[GitRemoteLeg, GitRemoteLeg]:
+    """The working branch's and ledger's divergence vs ``<namespace>/<branch>``.
+
+    Reads locally-known tracking refs only — the caller decides how they
+    were freshened (a fetch from a remote, or from a bundle).
+    """
+    from haute._git_state import read_working_branch
+
+    _validate_ref_name(namespace)
+    working = read_working_branch(project_root)
+    if working is None:
+        raise GitDomainError("No working branch is set for this clone.")
+    ledger = ledger_name(working)
+    return (
+        _leg_state(working, namespace, cwd=cwd),
+        _leg_state(ledger, namespace, cwd=cwd),
+    )
+
+
+def commit_exists(sha: str, cwd: Path | None = None) -> bool:
+    """Whether *sha* names a commit object present in this repository.
+
+    Hosted storage uses this to decide whether an existing clone derives
+    from the durable location's published tip (the tip resolves locally)
+    or the location has moved on without it (it does not).
+    """
+    _validate_ref_name(sha)
+    return _rev_parse(f"{sha}^{{commit}}", cwd=cwd) is not None
+
+
 def _leg_state(branch: str, remote: str, cwd: Path | None = None) -> GitRemoteLeg:
     """Divergence of one local *branch* vs ``<remote>/<branch>`` from the
     locally-known remote-tracking ref only — no fetch (callers freshen via
@@ -3245,14 +3493,55 @@ def fast_forward_pair(
     checked-out branch (HEAD-on-ledger), so it advances with ``merge --ff-only``
     (which also updates the working tree); the working ref advances with a CAS
     ``update-ref``. Volatile caches are wiped first (S12); the caller pauses the
-    watcher for the tree replacement (M4)."""
-    from haute._git_state import read_working_branch
+    watcher for the tree replacement (M4).
 
+    This half is only "refresh the namespace": the configured-remote check
+    and the fetch. Every safety check and the transaction itself live in
+    :func:`fast_forward_pair_from_tracking`, which the upstream catch-up
+    path shares."""
     _assert_git_repo(cwd)
     _assert_no_git_op_in_progress(cwd)
     _validate_ref_name(remote)
     if remote not in _remote_names(cwd):
         raise GitDomainError(f"No remote named '{remote}' is configured.")
+
+    # Fetch + prune the configured namespace so the catch-up decision is on an
+    # authoritative snapshot. A missing remote leg is a distinct domain state,
+    # not a transport failure, and a deleted tracking ref cannot remain stale.
+    with _fetch_exec_lock:
+        refreshed = _fetch_refs(remote, cwd=cwd)
+    if not refreshed:
+        raise GitDomainError(
+            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
+        )
+    return fast_forward_pair_from_tracking(remote, project_root, cwd=cwd)
+
+
+@_serialized_mutation
+def fast_forward_pair_from_tracking(
+    namespace: str,
+    project_root: Path,
+    cwd: Path | None = None,
+    *,
+    source_label: str | None = None,
+) -> GitFastForwardResponse:
+    """Apply a fast-forward from ALREADY-REFRESHED ``refs/remotes/<namespace>/*``.
+
+    The safety half of :func:`fast_forward_pair`, shared verbatim with the
+    upstream catch-up path so a fork's catch-up cannot drift from a
+    remote's: HEAD-on-ledger, dirty-tree refusal, both legs present and
+    neither ahead/diverged, the volatile-cache wipe, and the rollback. The
+    caller owns how the namespace was freshened — a fetch from a configured
+    remote, or from a downloaded bundle. *source_label* names that source
+    in user-facing messages when it is not the namespace itself.
+    """
+    from haute._git_state import read_working_branch
+
+    _assert_git_repo(cwd)
+    _assert_no_git_op_in_progress(cwd)
+    _validate_ref_name(namespace)
+    remote = namespace
+    label = source_label if source_label is not None else namespace
 
     working = read_working_branch(project_root)
     if working is None:
@@ -3273,31 +3562,31 @@ def fast_forward_pair(
     if ok_status and status.strip():
         raise GitDomainError("You have unsaved changes. Save or discard them before catching up.")
 
-    # Fetch + prune the configured namespace so the catch-up decision is on an
-    # authoritative snapshot. A missing remote leg is a distinct domain state,
-    # not a transport failure, and a deleted tracking ref cannot remain stale.
-    with _fetch_exec_lock:
-        refreshed = _fetch_refs(remote, cwd=cwd)
-    if not refreshed:
-        raise GitDomainError(
-            f"Could not refresh '{remote}'. Check your connection or credentials and try again."
-        )
     for branch, kind in ((working, "working branch"), (ledger, "save ledger")):
         tracking = f"refs/remotes/{remote}/{branch}"
         if _rev_parse(tracking, cwd=cwd) is None:
             raise GitDomainError(
-                f"Can't catch up from '{remote}': {kind} '{branch}' is missing on the remote."
+                f"Can't catch up from '{label}': {kind} '{branch}' is missing on the remote."
             )
     w_leg = _leg_state(working, remote, cwd=cwd)
     l_leg = _leg_state(ledger, remote, cwd=cwd)
 
     if any(leg.status in ("ahead", "diverged") for leg in (w_leg, l_leg)):
+        # A fork's dead end reads differently from a remote's: nothing is
+        # "the remote's" to a user who forked, and naming both sides is the
+        # whole point. Default text stays byte-identical for the remote path.
+        if source_label is None:
+            raise GitDomainError(
+                "Can't catch up — you have local changes the remote doesn't have. Spin "
+                "off a copy to keep them, then reconcile."
+            )
         raise GitDomainError(
-            "Can't catch up — you have local changes the remote doesn't have. Spin "
-            "off a copy to keep them, then reconcile."
+            f"Can't catch up — both this project and {label} have changed since "
+            "the fork, so there is no clean fast-forward. Spin off a copy to keep "
+            "your work, then reconcile."
         )
     if w_leg.status != "behind" and l_leg.status != "behind":
-        raise GitDomainError(f"Already up to date with '{remote}'.")
+        raise GitDomainError(f"Already up to date with '{label}'.")
 
     # Volatile caches must not survive into the caught-up tree (S12).
     _wipe_volatile_artefacts(cwd or Path.cwd())

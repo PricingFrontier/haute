@@ -3,7 +3,8 @@
 Connection details live on the Data Input node (``http_path`` in config).
 Secrets are resolved from the environment:
     DATABRICKS_HOST
-    DATABRICKS_TOKEN
+    DATABRICKS_TOKEN                                  (PAT; takes precedence)
+    DATABRICKS_CLIENT_ID / DATABRICKS_CLIENT_SECRET   (service-principal OAuth)
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from haute._logging import get_logger
@@ -75,23 +76,58 @@ class FetchIntegrityError(HauteError):
     """
 
 
-def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
-    """Resolve Databricks data credentials.
+def _service_principal_credentials(
+    host: str, client_id: str, client_secret: str
+) -> Callable[[], Any]:
+    """Zero-arg OAuth M2M credentials provider for the SQL connector.
+
+    The databricks-sdk import is deferred to call time so haute installs
+    without the ``databricks`` extra still import this module; only an
+    actual service-principal connection needs the SDK.
+    """
+
+    def provider() -> Any:
+        try:
+            from databricks.sdk.core import Config, oauth_service_principal
+        except ImportError as exc:
+            raise DatabricksConfigError(
+                "Databricks service-principal auth requires the databricks-sdk "
+                "package. Install the databricks extra: haute[databricks]."
+            ) from exc
+
+        return oauth_service_principal(
+            Config(host=f"https://{host}", client_id=client_id, client_secret=client_secret)
+        )
+
+    return provider
+
+
+def _connection_settings(http_path: str | None = None) -> tuple[str, dict[str, Any], str]:
+    """Resolve Databricks connection settings from the environment.
+
+    Auth precedence: an explicit ``DATABRICKS_TOKEN`` (PAT) wins;
+    otherwise a ``DATABRICKS_CLIENT_ID``/``DATABRICKS_CLIENT_SECRET``
+    service-principal pair (injected automatically inside a Databricks
+    App container) authenticates via OAuth M2M.
 
     Args:
         http_path: SQL Warehouse HTTP path from the node config.
 
-    Returns (host, token, http_path).
+    Returns ``(host, auth_kwargs, http_path)`` where ``auth_kwargs`` are
+    passed to ``databricks.sql.connect``. The failure message names every
+    consulted source without echoing any value.
     """
     host = os.getenv("DATABRICKS_HOST", "")
     token = os.getenv("DATABRICKS_TOKEN", "")
+    client_id = os.getenv("DATABRICKS_CLIENT_ID", "")
+    client_secret = os.getenv("DATABRICKS_CLIENT_SECRET", "")
     resolved_http_path = http_path or ""
 
     missing: list[str] = []
     if not host:
         missing.append("DATABRICKS_HOST")
-    if not token:
-        missing.append("DATABRICKS_TOKEN")
+    if not token and not (client_id and client_secret):
+        missing.append("DATABRICKS_TOKEN (or DATABRICKS_CLIENT_ID + DATABRICKS_CLIENT_SECRET)")
     if not resolved_http_path:
         missing.append("http_path on the Data Input node")
 
@@ -99,7 +135,9 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
         raise DatabricksConfigError(
             "Missing Databricks data credentials:\n  "
             + "\n  ".join(missing)
-            + "\nSet host/token in .env and http_path on the Data Input node."
+            + "\nSet host plus a token or service-principal pair in the environment "
+            "(.env locally; injected automatically in a Databricks App) and "
+            "http_path on the Data Input node."
         )
 
     # Strip protocol for the SQL connector (it wants bare hostname)
@@ -109,7 +147,13 @@ def _get_credentials(http_path: str | None = None) -> tuple[str, str, str]:
     elif host.startswith("http://"):
         host = host[len("http://") :]
 
-    return host, token, resolved_http_path
+    if token:
+        auth_kwargs: dict[str, Any] = {"access_token": token}
+    else:
+        auth_kwargs = {
+            "credentials_provider": _service_principal_credentials(host, client_id, client_secret)
+        }
+    return host, auth_kwargs, resolved_http_path
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +225,7 @@ def _iter_databricks_batches(
     """Yield a complete Databricks result through bounded Arrow batches."""
     from databricks import sql as dbsql
 
-    host, token, resolved_http_path = _get_credentials(http_path)
+    host, auth_kwargs, resolved_http_path = _connection_settings(http_path)
     select_clause = query.strip() if query else "SELECT *"
     sql_query = f"{select_clause} FROM {table}"  # noqa: S608
     row_count = 0
@@ -189,7 +233,7 @@ def _iter_databricks_batches(
     with dbsql.connect(
         server_hostname=host,
         http_path=resolved_http_path,
-        access_token=token,
+        **auth_kwargs,
     ) as connection:
         with connection.cursor() as cursor:
             context.checkpoint()

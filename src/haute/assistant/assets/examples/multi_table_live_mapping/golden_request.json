@@ -1,0 +1,1 @@
+{"kind":"live","inputs":["data/request.json"],"tables":["quotes","drivers"]}

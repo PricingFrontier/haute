@@ -18,7 +18,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from haute._types import GraphNode, NodeData, PipelineGraph
+from haute._types import GraphNode, NodeData, PipelineGraph, SubmodelDefinition
 from haute.routes._save_pipeline import SavePipelineService
 from haute.schemas import SavePipelineRequest
 from tests.conftest import make_edge as _make_edge
@@ -60,6 +60,23 @@ def _make_node(
     return GraphNode(
         id=nid,
         data=NodeData(label=label, nodeType=node_type, config=config or {}),
+    )
+
+
+def _submodel_definition(
+    definition_id: str,
+    *nodes: GraphNode,
+) -> SubmodelDefinition:
+    return SubmodelDefinition(
+        definitionId=definition_id,
+        file=f"modules/{definition_id}.py",
+        graph=PipelineGraph(
+            nodes=list(nodes),
+            edges=[],
+            pipeline_name=definition_id,
+        ),
+        inputPorts=[],
+        outputPorts=[],
     )
 
 
@@ -243,26 +260,24 @@ def _make_submodel_graph(
 ) -> PipelineGraph:
     """Build a hierarchical graph with one embedded submodel.
 
-    Mirrors the shape ``merge_submodels`` produces: a ``submodel__<name>``
-    placeholder node in the root ``nodes`` list plus the full child graph
-    stashed under ``submodels[<name>]["graph"]``.
+    Mirrors the canonical shape ``merge_submodels`` produces: one explicit
+    occurrence in the root graph plus a typed definition containing the full
+    child graph.
     """
     all_root: list[GraphNode] = list(root_nodes)
     if include_placeholder:
-        all_root.append(_make_node(f"submodel__{sm_name}", sm_name, "submodel", {}))
+        all_root.append(
+            _make_node(
+                f"submodel_instance__{sm_name}",
+                sm_name,
+                "submodel",
+                {"definitionId": sm_name, "alias": sm_name},
+            )
+        )
     return PipelineGraph(
         nodes=all_root,
         edges=[],
-        submodels={
-            sm_name: {
-                "file": f"modules/{sm_name}.py",
-                "childNodeIds": [n.id for n in nodes],
-                "graph": {
-                    "nodes": [n.model_dump() for n in nodes],
-                    "edges": [],
-                },
-            }
-        },
+        submodels={sm_name: _submodel_definition(sm_name, *nodes)},
     )
 
 
@@ -338,11 +353,9 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             SavePipelineService._validate_unique_sanitized_names(graph)
         assert exc_info.value.status_code == 400
 
-    def test_child_duplicated_in_root_nodes_passes(self) -> None:
-        """Some payloads duplicate a submodel child in the parent ``nodes``
-        list (codegen tolerates this via its ``root_nodes`` filter on
-        ``childNodeIds``).  The duplicate is ONE node in one module, not a
-        cross-module collision — guard must not reject it."""
+    def test_child_duplicated_in_root_nodes_raises_400(self) -> None:
+        """A definition-owned child duplicated in the parent would collide
+        in the canonical flattened namespace, so the guard rejects it."""
         child = _make_node("a", "a", "polars", {"code": "df"})
         graph = _make_submodel_graph(
             child,
@@ -350,7 +363,9 @@ class TestValidateUniqueSanitizedNamesRecursiveScope:
             root_nodes=(child,),
             include_placeholder=False,
         )
-        SavePipelineService._validate_unique_sanitized_names(graph)
+        with pytest.raises(HTTPException) as exc_info:
+            SavePipelineService._validate_unique_sanitized_names(graph)
+        assert exc_info.value.status_code == 400
 
     def test_distinct_names_across_modules_pass(self) -> None:
         """No collision: distinct sanitized names everywhere."""
@@ -571,16 +586,19 @@ class TestWriteCodeMultiFile:
         """When graph has submodels, _write_code should create multiple files."""
         svc = SavePipelineService(tmp_path)
 
-        main_node = _make_node("sub", "submodel__scoring", "submodel")
+        main_node = _make_node(
+            "sub",
+            "scoring",
+            "submodel",
+            {"definitionId": "scoring", "alias": "scoring"},
+        )
         graph = _make_graph(main_node)
         # Set up submodels dict so the multi-file path is taken
         graph.submodels = {
-            "scoring": {
-                "nodes": [
-                    {"id": "s1", "data": {"label": "S1", "nodeType": "polars", "config": {}}},
-                ],
-                "edges": [],
-            },
+            "scoring": _submodel_definition(
+                "scoring",
+                _make_node("s1", "S1", "polars"),
+            )
         }
 
         fake_files = {
@@ -634,7 +652,7 @@ class TestWriteCodeMultiFile:
         """
         svc = SavePipelineService(tmp_path)
         graph = _make_graph()
-        graph.submodels = {"evil": {"nodes": [], "edges": []}}
+        graph.submodels = {"evil": _submodel_definition("evil")}
 
         # Produce a file path that would escape the project root
         fake_files = {
@@ -670,41 +688,19 @@ class TestWriteConfigFiles:
             _make_node("src", "source", "dataInput", {"path": "data.parquet"}),
         )
         child = _make_node("banding", "child_banding", "banding", {"bands": []})
-        graph.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-            }
-        }
+        graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         svc._write_config_files(graph)
 
         assert (tmp_path / "config" / "data_input" / "source.json").exists()
         assert (tmp_path / "config" / "banding" / "child_banding.json").exists()
 
-    def test_writes_config_files_from_nested_submodel_graph(self, tmp_path: Path) -> None:
-        """Config collection follows nested submodel metadata recursively."""
+    def test_writes_config_files_from_submodel_graph(self, tmp_path: Path) -> None:
+        """Config collection includes canonical definition graphs."""
         svc = SavePipelineService(tmp_path)
         deep_child = _make_node("deep", "deep_banding", "banding", {"bands": []})
         graph = _make_graph()
-        graph.submodels = {
-            "outer": {
-                "file": "modules/outer.py",
-                "graph": {
-                    "nodes": [],
-                    "edges": [],
-                    "submodels": {
-                        "inner": {
-                            "file": "modules/inner.py",
-                            "graph": {
-                                "nodes": [deep_child.model_dump(mode="json")],
-                                "edges": [],
-                            },
-                        }
-                    },
-                },
-            }
-        }
+        graph.submodels = {"inner": _submodel_definition("inner", deep_child)}
 
         svc._write_config_files(graph)
 
@@ -717,12 +713,7 @@ class TestWriteConfigFiles:
             _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"}),
         )
         child = _make_node("child", "Shared", "dataInput", {"path": "child.csv"})
-        graph.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-            }
-        }
+        graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         with pytest.raises(HTTPException) as exc_info:
             svc._write_config_files(graph)
@@ -739,18 +730,7 @@ class TestWriteConfigFiles:
         graph = _make_graph()
         child_a = _make_node("child_a", "Shared", "dataInput", {"path": "a.csv"})
         child_b = _make_node("child_b", "Shared", "dataInput", {"path": "b.csv"})
-        graph.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {
-                    "nodes": [
-                        child_a.model_dump(mode="json"),
-                        child_b.model_dump(mode="json"),
-                    ],
-                    "edges": [],
-                },
-            }
-        }
+        graph.submodels = {"pricing": _submodel_definition("pricing", child_a, child_b)}
 
         with pytest.raises(HTTPException) as exc_info:
             svc._write_config_files(graph)
@@ -771,12 +751,7 @@ class TestWriteConfigFiles:
             _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"}),
         )
         child = _make_node("child", "Shared", "dataInput", {"_load_error": "duplicate key"})
-        graph.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-            }
-        }
+        graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         with pytest.raises(HTTPException) as exc_info:
             svc._write_config_files(graph)
@@ -790,16 +765,9 @@ class TestWriteConfigFiles:
         svc = SavePipelineService(tmp_path)
         graph_with_child = _make_graph()
         child = _make_node("banding", "child_banding", "banding", {"bands": []})
-        graph_with_child.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-            }
-        }
+        graph_with_child.submodels = {"pricing": _submodel_definition("pricing", child)}
         graph_without_child = _make_graph()
-        graph_without_child.submodels = {
-            "pricing": {"file": "modules/pricing.py", "graph": {"nodes": [], "edges": []}}
-        }
+        graph_without_child.submodels = {"pricing": _submodel_definition("pricing")}
 
         svc._write_config_files(graph_with_child)
         child_config = tmp_path / "config" / "banding" / "child_banding.json"
@@ -818,12 +786,7 @@ class TestWriteConfigFiles:
         py_path.write_text("# parsed by patched helper\n")
         child = _make_node("banding", "child_banding", "banding", {"bands": []})
         disk_graph = _make_graph()
-        disk_graph.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-            }
-        }
+        disk_graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
             prev = svc._compute_disk_prev_config_files(py_path)
@@ -838,12 +801,7 @@ class TestWriteConfigFiles:
         parent = _make_node("parent", "Shared", "dataInput", {"path": "parent.csv"})
         child = _make_node("child", "Shared", "dataInput", {"path": "child.csv"})
         disk_graph = _make_graph(parent)
-        disk_graph.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-            }
-        }
+        disk_graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         with patch("haute.routes._helpers.parse_pipeline_to_graph", return_value=disk_graph):
             prev = svc._compute_disk_prev_config_files(py_path)
@@ -865,12 +823,7 @@ class TestWriteConfigFiles:
             {"_load_error": "duplicate key"},
         )
         graph = _make_graph()
-        graph.submodels = {
-            "pricing": {
-                "file": "modules/pricing.py",
-                "graph": {"nodes": [child.model_dump(mode="json")], "edges": []},
-            }
-        }
+        graph.submodels = {"pricing": _submodel_definition("pricing", child)}
 
         svc._prev_config_files = {"config/banding/child_banding.json": "{ broken json"}
         svc._write_config_files(graph)
@@ -1589,7 +1542,7 @@ class TestSaveWithPipelineRoot:
         rating_root.mkdir()
         svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
         graph = _make_graph()
-        graph.submodels = {"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}}
+        graph.submodels = {"pricing": _submodel_definition("pricing")}
         body = SavePipelineRequest(
             name="main",
             description="",
@@ -1638,7 +1591,7 @@ class TestSaveWithPipelineRoot:
         other_root.mkdir()
         svc = SavePipelineService(tmp_path, pipeline_root=rating_root)
         graph = _make_graph()
-        graph.submodels = {"pricing": {"file": "modules/pricing.py", "graph": {"nodes": []}}}
+        graph.submodels = {"pricing": _submodel_definition("pricing")}
         body = SavePipelineRequest(
             name="other",
             description="",

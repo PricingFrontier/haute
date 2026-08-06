@@ -1,0 +1,1 @@
+[{"case":"Every factor-table level is represented in the synthetic banding input.","expectation":"Versioned apply produces a selected factor for all six rows without null fallback."},{"case":"The solve and apply artifacts retain factor dtype metadata.","expectation":"String rating keys round-trip without ambiguous coercion."}]

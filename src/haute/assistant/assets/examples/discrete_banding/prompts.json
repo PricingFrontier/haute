@@ -1,0 +1,1 @@
+{"user":"Group these discrete property types and define what happens to unknown values.","assistant":"Use categorical banding with explicit value mappings and an explicit default."}

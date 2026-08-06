@@ -66,11 +66,21 @@ vi.mock("../../stores/useUIStore.ts", () => {
 // Wave 7E: dirty tracking moved from useUIStore to useGraphStore.
 vi.mock("../../stores/useGraphStore.ts", () => {
   const store = {
-    nodes: [{ id: "previous", position: { x: 1, y: 1 }, data: {} }],
-    edges: [{ id: "old-edge", source: "previous", target: "previous" }],
-    submodels: {},
+    nodes: [{ id: "previous", position: { x: 1, y: 1 }, data: {} }] as unknown[],
+    edges: [{ id: "old-edge", source: "previous", target: "previous" }] as unknown[],
+    submodels: {} as Record<string, unknown>,
     preamble: "old preamble",
-    markSaved: vi.fn(),
+    loadGraphSnapshot: vi.fn((snapshot: {
+      nodes: unknown[]
+      edges: unknown[]
+      submodels: Record<string, unknown>
+      preamble: string
+    }) => {
+      store.nodes = snapshot.nodes
+      store.edges = snapshot.edges
+      store.submodels = snapshot.submodels
+      store.preamble = snapshot.preamble
+    }),
   }
   const useGraphStore = Object.assign(() => store, {
     getState: () => store,
@@ -117,6 +127,8 @@ function makeHookParams() {
     setPreamble: vi.fn(),
     preambleRef: { current: "" },
     submodelsRef: { current: {} as Record<string, unknown> },
+    sourceRevisionRef: { current: "revision-old" },
+    preservedBlocksRef: { current: ["OLD_KEEP = 1"] },
     graphRefreshingRef: { current: 0 },
     nodeIdCounter: { current: 0 },
     fitView: vi.fn(),
@@ -140,17 +152,47 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     vi.mocked(getLayoutedElements).mockReset().mockImplementation(async (n: unknown) => n as never)
     vi.mocked(useToastStore.getState().addToast).mockClear()
     useToastStore.getState().toasts.length = 0
-    useGraphStore.getState().submodels = {}
-    // markSaved lives in the module-level store mock, so calls persist
-    // across tests in this file; without a clear, the not.toHaveBeenCalled
-    // assertion below is order-dependent under --sequence.shuffle.
-    vi.mocked(useGraphStore.getState().markSaved).mockClear()
+    const graphStore = useGraphStore.getState()
+    graphStore.nodes = [{ id: "previous", position: { x: 1, y: 1 }, data: {} }]
+    graphStore.edges = [{ id: "old-edge", source: "previous", target: "previous" }]
+    graphStore.submodels = {}
+    graphStore.preamble = "old preamble"
+    vi.mocked(graphStore.loadGraphSnapshot).mockReset().mockImplementation((snapshot) => {
+      graphStore.nodes = snapshot.nodes
+      graphStore.edges = snapshot.edges
+      graphStore.submodels = snapshot.submodels
+      graphStore.preamble = snapshot.preamble
+    })
   })
 
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
     globalThis.WebSocket = originalWebSocket
+  })
+
+  it("installs source revision and preserved blocks with a successful graph update", async () => {
+    const params = makeHookParams()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            submodels: {},
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: ["NEW_KEEP = 2"],
+          },
+        }),
+      }))
+    })
+
+    expect(params.sourceRevisionRef.current).toBe("revision-new")
+    expect(params.preservedBlocksRef.current).toEqual(["NEW_KEEP = 2"])
   })
 
   it("getLayoutedElements throws → graphRefreshingRef is restored to pre-handler value", async () => {
@@ -177,6 +219,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -205,6 +249,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -238,6 +284,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "n1", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [{ id: "e1", source: "n1", target: "n2" }],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -252,10 +300,10 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(nodesCount).toBe(edgesCount)
   })
 
-  it("setter failure rolls back nodes and edges to the previous graph snapshot", async () => {
+  it("atomic snapshot failure leaves the previous graph untouched", async () => {
     const params = makeHookParams()
-    params.setEdgesRaw.mockImplementationOnce(() => {
-      throw new Error("edge setter failed")
+    vi.mocked(useGraphStore.getState().loadGraphSnapshot).mockImplementationOnce(() => {
+      throw new Error("snapshot load failed")
     })
 
     renderHook(() => useWebSocketSync(params))
@@ -269,38 +317,37 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
     })
 
-    expect(params.setNodesRaw).toHaveBeenNthCalledWith(
-      1,
-      [expect.objectContaining({ id: "fresh" })],
-    )
-    expect(params.setNodesRaw).toHaveBeenNthCalledWith(
-      2,
-      [expect.objectContaining({ id: "previous" })],
-    )
-    expect(params.setEdgesRaw).toHaveBeenNthCalledWith(
-      2,
-      [expect.objectContaining({ id: "old-edge" })],
-    )
+    const graphStore = useGraphStore.getState()
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(1)
+    expect(graphStore.nodes).toEqual([expect.objectContaining({ id: "previous" })])
+    expect(graphStore.edges).toEqual([expect.objectContaining({ id: "old-edge" })])
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.setEdgesRaw).not.toHaveBeenCalled()
+    expect(params.sourceRevisionRef.current).toBe("revision-old")
+    expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("WebSocket sync error"),
     )
   })
 
-  it("setter failure rolls back preamble and does not mark the failed graph saved", async () => {
+  it("atomic snapshot failure rolls back request refs and preserves the store", async () => {
     const params = makeHookParams()
     const previousSubmodels = { old: { nodes: [], edges: [] } }
     const incomingSubmodels = { fresh: { nodes: [], edges: [] } }
     params.preambleRef.current = "old preamble"
     params.submodelsRef.current = previousSubmodels
-    useGraphStore.getState().submodels = previousSubmodels
-    params.setPreamble.mockImplementationOnce(() => {
-      throw new Error("preamble setter failed")
+    const graphStore = useGraphStore.getState()
+    graphStore.submodels = previousSubmodels
+    vi.mocked(graphStore.loadGraphSnapshot).mockImplementationOnce(() => {
+      throw new Error("snapshot load failed")
     })
 
     renderHook(() => useWebSocketSync(params))
@@ -315,18 +362,22 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [{ id: "fresh-edge", source: "fresh", target: "fresh" }],
             preamble: "new preamble",
+            source_revision: "revision-new",
+            preserved_blocks: ["NEW_KEEP = 2"],
           },
         }),
       }))
     })
 
-    expect(params.setPreamble).toHaveBeenNthCalledWith(1, "new preamble")
-    expect(params.setPreamble).toHaveBeenNthCalledWith(2, "old preamble")
+    expect(graphStore.loadGraphSnapshot).toHaveBeenCalledTimes(1)
+    expect(graphStore.preamble).toBe("old preamble")
+    expect(graphStore.submodels).toBe(previousSubmodels)
     expect(params.preambleRef.current).toBe("old preamble")
-    expect(params.setSubmodelsRaw).toHaveBeenNthCalledWith(1, incomingSubmodels)
-    expect(params.setSubmodelsRaw).toHaveBeenNthCalledWith(2, previousSubmodels)
+    expect(params.sourceRevisionRef.current).toBe("revision-old")
+    expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
     expect(params.submodelsRef.current).toBe(previousSubmodels)
-    expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    expect(params.setPreamble).not.toHaveBeenCalled()
+    expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("WebSocket sync error"),
@@ -345,6 +396,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
           graph: {
             nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
             edges: [],
+            source_revision: "revision-new",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -353,10 +406,64 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
     expect(params.setNodesRaw).not.toHaveBeenCalled()
     expect(params.setEdgesRaw).not.toHaveBeenCalled()
     expect(params.setSubmodelsRaw).not.toHaveBeenCalled()
-    expect(useGraphStore.getState().markSaved).not.toHaveBeenCalled()
+    expect(useGraphStore.getState().loadGraphSnapshot).not.toHaveBeenCalled()
     expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
       "error",
       expect.stringContaining("missing or invalid `submodels` map"),
+    )
+  })
+
+  it("rejects graph_update frames that omit the source revision", async () => {
+    const params = makeHookParams()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            submodels: {},
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [],
+            preserved_blocks: [],
+          },
+        }),
+      }))
+    })
+
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.sourceRevisionRef.current).toBe("revision-old")
+    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("source_revision"),
+    )
+  })
+
+  it("rejects graph_update frames that omit preserved blocks", async () => {
+    const params = makeHookParams()
+    renderHook(() => useWebSocketSync(params))
+    act(() => { latestWS().onopen?.(new Event("open")) })
+
+    await act(async () => {
+      latestWS().onmessage?.(new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "graph_update",
+          graph: {
+            submodels: {},
+            nodes: [{ id: "fresh", position: { x: 10, y: 10 }, data: {} }],
+            edges: [],
+            source_revision: "revision-new",
+          },
+        }),
+      }))
+    })
+
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
+    expect(params.preservedBlocksRef.current).toEqual(["OLD_KEEP = 1"])
+    expect(vi.mocked(useToastStore.getState().addToast)).toHaveBeenCalledWith(
+      "error",
+      expect.stringContaining("preserved_blocks"),
     )
   })
 
@@ -382,6 +489,8 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "bad", position: { x: Number.NaN, y: Number.NaN }, data: {} }],
             edges: [],
+            source_revision: "revision-failed",
+            preserved_blocks: [],
           },
         }),
       }))
@@ -399,17 +508,22 @@ describe("useWebSocketSync — partial failure rolls back consistently (#37)", (
             submodels: {},
             nodes: [{ id: "good", position: { x: 10, y: 20 }, data: {} }],
             edges: [],
+            source_revision: "revision-good",
+            preserved_blocks: [],
           },
         }),
       }))
     })
 
     // The good update should have applied cleanly
-    expect(params.setNodesRaw).toHaveBeenCalledWith(
-      expect.arrayContaining([
-        expect.objectContaining({ id: "good" }),
-      ]),
+    expect(useGraphStore.getState().loadGraphSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ id: "good" }),
+        ]),
+      }),
     )
+    expect(params.setNodesRaw).not.toHaveBeenCalled()
     // And the ref must be at 0 after the second update's guard timer
     act(() => { vi.advanceTimersByTime(200) })
     expect(params.graphRefreshingRef.current).toBe(0)

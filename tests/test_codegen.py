@@ -292,20 +292,20 @@ class TestNodeToCode:
         assert "return upstream" in code
         _compile_node_code(code)
 
-    def test_transform_without_code_no_sources_raises(self):
-        """Post Item #22: an orphan polars transform (no code, no inputs)
-        is incoherent — must raise ``ConfigError`` rather than emit
-        ``return df`` where ``df`` is unbound."""
-        from haute.errors import ConfigError
-
+    def test_transform_without_code_no_sources_emits_a_raising_placeholder(self):
+        """An orphan polars transform (no code, no inputs) is incoherent to RUN
+        but is an ordinary half-built state to SAVE. It emits a placeholder that
+        raises — never ``return df`` where ``df`` is unbound."""
         node = _n(
             {
                 "id": "t",
                 "data": {"label": "Pass", "nodeType": "polars", "config": {}},
             }
         )
-        with pytest.raises(ConfigError):
-            _node_to_code(node, source_names=[])
+        code = _node_to_code(node, source_names=[])
+        assert "raise NotImplementedError" in code
+        assert "return df" not in code
+        _compile_node_code(code)
 
     def test_output_references_sidecar_and_passes_through(self):
         node = _n(
@@ -415,9 +415,8 @@ class TestNodeToCode:
         assert "score_from_config" in code
         assert "def Score(df: pl.LazyFrame)" in code
         # B18: base_dir parameter resolves config relative to pipeline file
-        assert "base = str(Path(__file__).parent)" in code
+        assert "base = str(_HAUTE_CONFIG_BASE)" in code
         assert "base_dir=base" in code
-        assert "from pathlib import Path" in code
         _compile_node_code(code)
 
     def test_model_score_with_user_code_has_base_dir(self):
@@ -441,9 +440,8 @@ class TestNodeToCode:
         )
         code = _node_to_code(node)
         assert "score_from_config" in code
-        assert "base = str(Path(__file__).parent)" in code
+        assert "base = str(_HAUTE_CONFIG_BASE)" in code
         assert "base_dir=base" in code
-        assert "from pathlib import Path" in code
         assert "df = score_from_config(" in code
         assert "df = df.with_columns(double_score=pl.col('prediction') * 2)" in code
         assert "return df" in code
@@ -1832,6 +1830,103 @@ def transform(df: pl.LazyFrame) -> pl.LazyFrame:
         second_code = graph_to_code(parse_pipeline_source(first_code))
         assert second_code == first_code
 
+    def test_path_alias_without_generated_config_assignment_remains_preamble(self):
+        from haute.parser import parse_pipeline_source
+
+        source = """\
+import polars as pl
+import haute
+
+from pathlib import Path as _HautePath
+USER_PATH = _HautePath("data")
+
+pipeline = haute.Pipeline("main")
+
+@pipeline.polars
+def transform(df: pl.LazyFrame) -> pl.LazyFrame:
+    return df
+"""
+
+        graph = parse_pipeline_source(source)
+        preamble = graph.preamble or ""
+
+        assert "from pathlib import Path as _HautePath" in preamble
+        assert 'USER_PATH = _HautePath("data")' in preamble
+
+    def test_config_scaffold_never_becomes_preamble_or_source_user_code(
+        self,
+        haute_scratch,
+    ):
+        import json
+
+        import polars as pl
+
+        from haute.executor import execute_graph
+        from haute.parser import parse_pipeline_source
+
+        data_dir = haute_scratch / "data"
+        data_dir.mkdir()
+        pl.DataFrame({"value": [7]}).write_parquet(data_dir / "input.parquet")
+        config_dir = haute_scratch / "config" / "data_input"
+        config_dir.mkdir(parents=True)
+        config_dir.joinpath("input_data.json").write_text(
+            json.dumps(_file_input_config("data/input.parquet")),
+            encoding="utf-8",
+        )
+
+        source = '''\
+"""Pipeline: main"""
+
+from pathlib import Path as _HautePath
+
+import haute
+import polars as pl
+
+_HAUTE_CONFIG_BASE = _HautePath(__file__).resolve().parent
+
+pipeline = haute.Pipeline("main")
+
+@pipeline.data_input(config="config/data_input/input_data.json")
+def input_data() -> pl.LazyFrame:
+    from haute._project import get_project_root
+    from haute.graph_utils import resolve_data_input_from_config
+    project_root = get_project_root(_HAUTE_CONFIG_BASE)
+    df = resolve_data_input_from_config(
+        "config/data_input/input_data.json",
+        base_dir=_HAUTE_CONFIG_BASE,
+        project_root=project_root,
+    )
+    return df
+'''
+        source_file = str(haute_scratch / "main.py")
+        parsed = parse_pipeline_source(
+            source,
+            source_file=source_file,
+            _base_dir=haute_scratch,
+        )
+        input_node = parsed.nodes[0]
+
+        assert not (parsed.preamble or "").strip()
+        assert not str(input_node.data.config.get("code") or "").strip()
+        result = execute_graph(parsed, target_node_id=input_node.id)[input_node.id]
+        assert result.status == "ok", result.error
+        assert result.row_count == 1
+
+        regenerated = graph_to_code(parsed)
+        assert regenerated.count("_HAUTE_CONFIG_BASE =") == 1
+        assert regenerated.index("from pathlib import Path as _HautePath") < regenerated.index(
+            "import haute"
+        )
+        assert regenerated.index("pipeline = haute.Pipeline") < regenerated.index(
+            "_HAUTE_CONFIG_BASE ="
+        )
+        reparsed = parse_pipeline_source(
+            regenerated,
+            source_file=source_file,
+            _base_dir=haute_scratch,
+        )
+        assert graph_to_code(reparsed) == regenerated
+
     def test_indented_preserve_marker_stays_in_decorated_node_code(self):
         from haute.parser import parse_pipeline_source
 
@@ -2466,11 +2561,11 @@ class TestBuildExtraKwargsEdgeCases:
 # ---------------------------------------------------------------------------
 
 
-class TestConnectDeduplication:
-    """Separate invalid graph duplicates from boundary-resolution duplicates."""
+class TestCanonicalBindingRejection:
+    """Codegen refuses malformed or over-bound public-port bindings at save."""
 
     @staticmethod
-    def _submodel_graph(edges: list[dict]):
+    def _instance_graph(edges: list[dict]):
         return _g(
             {
                 "nodes": [
@@ -2483,15 +2578,20 @@ class TestConnectDeduplication:
                         },
                     },
                     {
-                        "id": "child_a",
-                        "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                        "id": "instance_sm1",
+                        "type": "submodel",
+                        "data": {
+                            "label": "sm1",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                        },
                     },
                 ],
                 "edges": edges,
                 "submodels": {
                     "sm1": {
+                        "definitionId": "sm1",
                         "file": "modules/sm1.py",
-                        "childNodeIds": ["child_a"],
                         "graph": {
                             "nodes": [
                                 {
@@ -2501,59 +2601,163 @@ class TestConnectDeduplication:
                             ],
                             "edges": [],
                         },
+                        "inputPorts": [
+                            {
+                                "portId": "records",
+                                "label": "Records",
+                                "targets": [{"nodeId": "child_a", "handleId": None}],
+                            }
+                        ],
+                        "outputPorts": [
+                            {
+                                "portId": "scored",
+                                "label": "Scored",
+                                "source": {"nodeId": "child_a", "handleId": None},
+                            }
+                        ],
                     },
                 },
             }
         )
 
-    def test_duplicate_graph_edges_raise_duplicate_input_name(self):
-        graph = self._submodel_graph(
+    def test_double_binding_one_public_input_port_cannot_be_saved(self):
+        graph = self._instance_graph(
             [
                 {
                     "id": "e1",
                     "source": "src",
-                    "target": "submodel__sm1",
-                    "targetHandle": "in__child_a",
+                    "target": "instance_sm1",
+                    "targetHandle": "in__records",
                 },
                 {
                     "id": "e2",
                     "source": "src",
-                    "target": "submodel__sm1",
-                    "targetHandle": "in__child_a",
+                    "target": "instance_sm1",
+                    "targetHandle": "in__records",
+                    "sourceHandle": "frame_b",
                 },
             ]
         )
 
-        with pytest.raises(ParseError) as exc_info:
+        with pytest.raises(ParseError, match="bound more than once") as exc_info:
             graph_to_code_multi(graph, pipeline_name="main")
 
-        message = str(exc_info.value)
-        assert "child_a" in message
-        assert "Source" in message
+        assert "records" in str(exc_info.value)
 
-    def test_boundary_resolution_connect_pair_is_deduplicated(self):
-        """A direct child edge and its boundary form resolve to one connect."""
-        graph = self._submodel_graph(
+    def test_unassigned_input_draft_cannot_be_saved(self):
+        graph = self._instance_graph(
+            [
+                {
+                    "id": "unassigned",
+                    "source": "src",
+                    "target": "instance_sm1",
+                    "targetHandle": None,
+                }
+            ]
+        )
+
+        with pytest.raises(ParseError, match="public-port handle"):
+            graph_to_code_multi(graph, pipeline_name="main")
+
+    def test_definition_child_ids_are_never_parent_endpoints(self):
+        graph = self._instance_graph(
             [
                 {
                     "id": "direct-child-edge",
                     "source": "src",
                     "target": "child_a",
-                },
-                {
-                    "id": "boundary-edge",
-                    "source": "src",
-                    "target": "submodel__sm1",
-                    "targetHandle": "in__child_a",
-                },
+                }
             ]
         )
 
-        files = graph_to_code_multi(graph, pipeline_name="main")
-        main_code = files["main.py"]
+        with pytest.raises(ParseError):
+            graph_to_code_multi(graph, pipeline_name="main")
 
-        assert main_code.count('pipeline.connect("Source", "ChildA")') == 1
-        compile(main_code, "<test>", "exec")
+
+class TestDeclaredSubmodelOutputs:
+    @staticmethod
+    def _graph(output_ports: list[dict[str, object]]):
+        return _g(
+            {
+                "nodes": [
+                    {
+                        "id": "instance_sm1",
+                        "type": "submodel",
+                        "data": {
+                            "label": "sm1",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                        },
+                    }
+                ],
+                "edges": [],
+                "submodels": {
+                    "sm1": {
+                        "definitionId": "sm1",
+                        "file": "modules/sm1.py",
+                        "inputPorts": [],
+                        "outputPorts": output_ports,
+                        "graph": {
+                            "nodes": [
+                                {
+                                    "id": "child_export",
+                                    "data": {
+                                        "label": "child_export",
+                                        "nodeType": "dataInput",
+                                        "config": {"path": "d.parquet"},
+                                    },
+                                },
+                            ],
+                            "edges": [],
+                        },
+                    },
+                },
+            }
+        )
+
+    def test_unused_output_is_emitted_on_submodel_constructor(self):
+        files = graph_to_code_multi(
+            self._graph(
+                [
+                    {
+                        "portId": "export",
+                        "label": "Export",
+                        "source": {"nodeId": "child_export"},
+                    }
+                ]
+            ),
+            pipeline_name="main",
+        )
+
+        assert (
+            "output_ports=[{'portId': 'export', 'label': 'Export', "
+            "'source': {'nodeId': 'child_export', 'handleId': None}}]" in files["modules/sm1.py"]
+        )
+        assert "pipeline.connect" not in files["main.py"]
+
+    @pytest.mark.parametrize(
+        ("ports", "error"),
+        [
+            (
+                [{"portId": "export", "label": "Export", "source": {"nodeId": "missing"}}],
+                "missing child",
+            ),
+            (
+                [
+                    {"portId": "export", "label": "Export", "source": {"nodeId": "child_export"}},
+                    {
+                        "portId": "export",
+                        "label": "Duplicate",
+                        "source": {"nodeId": "child_export"},
+                    },
+                ],
+                "duplicate public port",
+            ),
+        ],
+    )
+    def test_invalid_declared_outputs_fail_loudly(self, ports, error):
+        with pytest.raises(ValueError, match=error):
+            self._graph(ports)
 
 
 # ---------------------------------------------------------------------------
@@ -3443,36 +3647,45 @@ class TestGraphToCodeSingleFileGuard:
                         },
                     },
                     {
-                        "id": "child_a",
-                        "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                        "id": "instance_sm1",
+                        "type": "submodel",
+                        "data": {
+                            "label": "sm1",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                        },
                     },
                 ],
                 "edges": [
                     {
                         "id": "e1",
                         "source": "src",
-                        "target": "submodel__sm1",
+                        "target": "instance_sm1",
                         "targetHandle": "in__child_a",
-                    },
+                    }
                 ],
                 "submodels": {
                     "sm1": {
+                        "definitionId": "sm1",
                         "file": "modules/sm1.py",
-                        "childNodeIds": ["child_a"],
+                        "inputPorts": [
+                            {
+                                "portId": "child_a",
+                                "label": "ChildA",
+                                "targets": [{"nodeId": "child_a"}],
+                            }
+                        ],
+                        "outputPorts": [],
                         "graph": {
                             "nodes": [
                                 {
                                     "id": "child_a",
-                                    "data": {
-                                        "label": "ChildA",
-                                        "nodeType": "polars",
-                                        "config": {},
-                                    },
-                                },
+                                    "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                                }
                             ],
                             "edges": [],
                         },
-                    },
+                    }
                 },
             }
         )
@@ -3543,38 +3756,47 @@ class TestSubmodelImportSafePath:
                         },
                     },
                     {
-                        "id": "child_a",
-                        "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                        "id": "instance_sm1",
+                        "type": "submodel",
+                        "data": {
+                            "label": "sm1",
+                            "nodeType": "submodel",
+                            "config": {"definitionId": "sm1", "alias": "sm1"},
+                        },
                     },
                 ],
                 "edges": [
                     {
                         "id": "e1",
                         "source": "src",
-                        "target": "submodel__sm1",
+                        "target": "instance_sm1",
                         "targetHandle": "in__child_a",
-                    },
+                    }
                 ],
                 "submodels": {
                     "sm1": {
+                        "definitionId": "sm1",
                         # Path with a double-quote AND a Windows backslash —
                         # raw interpolation would emit invalid Python.
                         "file": 'modules/a"b\\c.py',
-                        "childNodeIds": ["child_a"],
+                        "inputPorts": [
+                            {
+                                "portId": "child_a",
+                                "label": "ChildA",
+                                "targets": [{"nodeId": "child_a"}],
+                            }
+                        ],
+                        "outputPorts": [],
                         "graph": {
                             "nodes": [
                                 {
                                     "id": "child_a",
-                                    "data": {
-                                        "label": "ChildA",
-                                        "nodeType": "polars",
-                                        "config": {},
-                                    },
-                                },
+                                    "data": {"label": "ChildA", "nodeType": "polars", "config": {}},
+                                }
                             ],
                             "edges": [],
                         },
-                    },
+                    }
                 },
             }
         )

@@ -11,6 +11,7 @@ import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useGraphStore, { captureGraphSnapshot } from "../stores/useGraphStore"
 import useGitStore from "../stores/useGitStore"
+import { isIdentityPromptDismissed } from "../stores/identityPrompt"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import { validateConfigRefs, formatConfigRefWarnings } from "../utils/validateConfigRefs"
 import { findFirstInvalidEdgeJoin, formatEdgeJoinValidationIssue } from "../utils/edgeJoinValidation"
@@ -20,6 +21,10 @@ import { NODE_TYPES } from "../utils/nodeTypes"
 import { parsePipelineResponse } from "../types/guards"
 import { columnsEqualByFingerprint, type ColumnFingerprintInput } from "../utils/columnFingerprint"
 import { apiInputFrameLabels } from "../utils/apiInputPorts"
+import {
+  runtimeNodeIdForVisibleNode,
+  type DrilledOccurrenceIdentity,
+} from "../utils/submodelRuntimeTarget"
 import { ensureInputSnapshots } from "./ensureInputSnapshots"
 export { columnFingerprint } from "../utils/columnFingerprint"
 
@@ -27,6 +32,7 @@ interface PipelineAPIParams {
   selectedNode: Node | null
   graphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[] }>
   parentGraphRef: React.MutableRefObject<{ nodes: Node[]; edges: PipelineEdge[]; submodels: Record<string, unknown> } | null>
+  activeSubmodelIdentity: DrilledOccurrenceIdentity | null
   submodelsRef: React.MutableRefObject<Record<string, unknown>>
   setNodesRaw: (updater: Node[] | ((nds: Node[]) => Node[])) => void
   setEdgesRaw: (edges: PipelineEdge[]) => void
@@ -37,6 +43,8 @@ interface PipelineAPIParams {
   pipelineNameRef: React.MutableRefObject<string>
   descriptionRef: React.MutableRefObject<string>
   sourceFileRef: React.MutableRefObject<string>
+  sourceRevisionRef: React.MutableRefObject<string>
+  preservedBlocksRef: React.MutableRefObject<string[]>
   nodeIdCounter: React.MutableRefObject<number>
 }
 
@@ -58,7 +66,7 @@ export interface PipelineAPIReturn {
    * by id. */
   previewNodeFrame: (nodeId: string, portLabel: string) => void
   /** Save the pipeline. Resolves true on success, false on failure (never rejects);
-   *  callers chaining follow-on work (save & commit) await this. */
+   *  callers chaining follow-on work (such as Commit) await this. */
   handleSave: () => Promise<boolean>
 }
 
@@ -243,9 +251,9 @@ function previewErrorDetail(err: unknown): string {
 
 export default function usePipelineAPI({
   selectedNode,
-  graphRef, parentGraphRef, submodelsRef,
+  graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef,
   setNodesRaw, setCurrentSourceFile,
-  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef,
+  preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef,
   nodeIdCounter: nodeIdCounterRef,
 }: PipelineAPIParams): PipelineAPIReturn {
   const rowLimit = useSettingsStore((s) => s.rowLimit)
@@ -304,6 +312,9 @@ export default function usePipelineAPI({
         // `.catch` handler below — rather than surfacing downstream as a
         // cryptic "undefined is not iterable" three callbacks deep.
         const data = parsePipelineResponse(raw)
+        if (data.source_file && data.source_revision === null) {
+          throw new Error("parsePipelineResponse: live document has no source_revision")
+        }
         const pipelineNodes = data.nodes
         const pipelineEdges = data.edges
         const loadedPreamble = data.preamble ?? ""
@@ -313,6 +324,8 @@ export default function usePipelineAPI({
         // can never observe the new document with stale mirrors.
         preambleRef.current = loadedPreamble
         submodelsRef.current = loadedSubmodels
+        sourceRevisionRef.current = data.source_revision ?? ""
+        preservedBlocksRef.current = data.preserved_blocks
         useGraphStore.getState().loadGraphSnapshot({
           nodes: pipelineNodes,
           edges: normalizeEdges(pipelineEdges),
@@ -346,7 +359,7 @@ export default function usePipelineAPI({
       disposed = true
       controller.abort()
     }
-  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, submodelsRef, nodeIdCounterRef, addToast])
+  }, [setCurrentSourceFile, preambleRef, pipelineNameRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, submodelsRef, nodeIdCounterRef, addToast])
 
   const fetchPreviewImmediate = useCallback((node: Node, existingRequestId?: number, options?: { bypassCache?: boolean; snapshotsEnsured?: boolean }) => {
     const requestId = existingRequestId ?? ++previewRequestSeq.current
@@ -525,7 +538,11 @@ export default function usePipelineAPI({
           const oldColumns = dsNode ? nodeData(dsNode)._columns : undefined
           previewNode({
             graph: cascadeGraph,
-            nodeId,
+            nodeId: runtimeNodeIdForVisibleNode(
+              graphRef.current.nodes,
+              nodeId,
+              activeSubmodelIdentity,
+            ),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: dsNode ? previewColumnNamesForNode(dsNode) : undefined,
@@ -581,7 +598,11 @@ export default function usePipelineAPI({
       }
       return previewNode({
         graph,
-        nodeId: node.id,
+        nodeId: runtimeNodeIdForVisibleNode(
+          graphRef.current.nodes,
+          node.id,
+          activeSubmodelIdentity,
+        ),
         rowLimit: snapshotRowLimit,
         source: snapshotSource,
         requestedPreviewColumns: previewColumnNamesForNode(node),
@@ -668,7 +689,7 @@ export default function usePipelineAPI({
           }
         })
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const fetchPreview = useCallback((node: Node, options: FetchPreviewOptions = {}) => {
     const requestId = ++previewRequestSeq.current
@@ -799,7 +820,11 @@ export default function usePipelineAPI({
           activeCount += 1
           previewNode({
             graph,
-            nodeId: upstream.id,
+            nodeId: runtimeNodeIdForVisibleNode(
+              graphRef.current.nodes,
+              upstream.id,
+              activeSubmodelIdentity,
+            ),
             rowLimit: snapshotRowLimit,
             source: snapshotSource,
             requestedPreviewColumns: previewColumnNamesForNode(upstream),
@@ -855,7 +880,7 @@ export default function usePipelineAPI({
           previewAbort.current = null
         }
       })
-  }, [fetchPreviewImmediate, graphRef, parentGraphRef, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
+  }, [fetchPreviewImmediate, graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, setNodesRaw, addToast, ensureSnapshotsForNodes])
 
   const previewNodeFrame = useCallback((nodeId: string, portLabel: string) => {
     const node = graphRef.current.nodes.find((n) => n.id === nodeId)
@@ -885,7 +910,11 @@ export default function usePipelineAPI({
         }
         return previewNode({
           graph,
-          nodeId: node.id,
+          nodeId: runtimeNodeIdForVisibleNode(
+            graphRef.current.nodes,
+            node.id,
+            activeSubmodelIdentity,
+          ),
           rowLimit: rowLimitRef.current,
           source: activeSourceRef.current,
           portLabel,
@@ -911,10 +940,10 @@ export default function usePipelineAPI({
         if (previewRequestSeq.current === requestId) setPreviewBusy(false)
         if (previewAbort.current === controller) previewAbort.current = null
       })
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, addToast, ensureSnapshotsForNodes])
+  }, [graphRef, parentGraphRef, activeSubmodelIdentity, submodelsRef, preambleRef, addToast, ensureSnapshotsForNodes])
 
   // Returns true when the save succeeded, false on failure — callers that
-  // chain follow-on work (e.g. save & commit) await this so they only proceed
+  // chain follow-on work (for example Commit) await this so they only proceed
   // once the ledger actually holds the latest editor state. Never rejects.
   const handleSave = useCallback(async (): Promise<boolean> => {
     if (parentGraphRef.current) {
@@ -957,12 +986,14 @@ export default function usePipelineAPI({
         source_file: sourceFileRef.current,
         sources: sc,
         active_source: as_,
+        preserved_blocks: preservedBlocksRef.current,
       })
       // Mark the exact graph snapshot that reached the backend, unless a
       // newer save has already been applied.
       if (saveRequestId > appliedSaveSeq.current) {
         useGraphStore.getState().markSaved(savedSnapshot)
         appliedSaveSeq.current = saveRequestId
+        sourceRevisionRef.current = data.source_revision
       }
       // Reflect the new ledger commit in the toolbar indicator (P2). null
       // when no working branch is configured — the indicator stays as-is.
@@ -972,6 +1003,20 @@ export default function usePipelineAPI({
       // Let an open Git panel re-fetch its history (S38).
       useGitStore.getState().notifyHistoryChanged()
       addToast("success", `Saved → ${data.file}`)
+      // The save succeeded but the backend flagged something unfinished (a
+      // transform with no code, an API Input with no tables). These are
+      // deliberately non-blocking, so they'd be invisible without their own
+      // toast — and the user would only discover the problem on the next run.
+      for (const warning of data.warnings ?? []) {
+        addToast("warning", warning)
+      }
+      // A restored container has no git commit identity, so the save landed on
+      // disk but was never version-captured. Prompt once per session — the
+      // warning above keeps saying so after the user waves it away.
+      if (data.identity_required && !isIdentityPromptDismissed()) {
+        const git = useGitStore.getState()
+        if (git.modal !== "identity") git.openModal("identity")
+      }
       return true
     } catch (err: unknown) {
       const detail = err instanceof ApiError && err.detail
@@ -982,7 +1027,7 @@ export default function usePipelineAPI({
       addToast("error", `Failed to save pipeline: ${detail}`)
       return false
     }
-  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, pipelineNameRef, addToast])
+  }, [graphRef, parentGraphRef, submodelsRef, preambleRef, descriptionRef, sourceFileRef, sourceRevisionRef, preservedBlocksRef, pipelineNameRef, addToast])
 
   const selectedNodeId = selectedNode?.id ?? null
 

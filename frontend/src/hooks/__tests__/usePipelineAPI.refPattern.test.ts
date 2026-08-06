@@ -92,6 +92,7 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     selectedNode: null as Node | null,
     graphRef: { current: { nodes: [] as Node[], edges: [] as Edge[] } },
     parentGraphRef: { current: null },
+    activeSubmodelIdentity: null,
     submodelsRef: { current: {} },
     setNodes: vi.fn(),
     setNodesRaw: vi.fn(),
@@ -101,6 +102,8 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
     pipelineNameRef: { current: "test" },
     descriptionRef: { current: "" },
     sourceFileRef: { current: "test.py" },
+    sourceRevisionRef: { current: "revision-test" },
+    preservedBlocksRef: { current: [] as string[] },
     nodeIdCounter: { current: 0 },
     ...overrides,
   }
@@ -224,7 +227,7 @@ describe("usePipelineAPI — activeSource captured at cascade start (#33, #34)",
     vi.mocked(await import("../../api/client")).savePipeline.mockImplementation(
       (payload) => {
         savePayloads.push(payload as unknown as Record<string, unknown>)
-        return Promise.resolve({ file: "t.py", pipeline_name: "t" })
+        return Promise.resolve({ file: "t.py", pipeline_name: "t", source_revision: "revision-test" })
       },
     )
 

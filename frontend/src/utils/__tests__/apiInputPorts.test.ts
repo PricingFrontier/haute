@@ -254,33 +254,66 @@ describe("edgeInputName", () => {
     ).toBe("Driver_claims_feed")
   })
 
-  it("resolves a flattened submodel out__ handle to the child node's sanitised label", () => {
-    const child: SimpleNode = {
-      ...sourceNode("polars"),
-      id: "child_output",
+  it("resolves a drilled submodel Input edge through its existing frame row", () => {
+    const boundarySource: SimpleNode = {
+      id: "submodel-input",
+      type: "submodelPort",
       data: {
-        ...sourceNode("polars").data,
-        label: "Child output frame",
+        label: "INPUT",
+        description: "",
+        nodeType: "submodelPort",
+        config: {},
+        instanceId: "instance_pricing",
+        definitionId: "definition_pricing",
+        portDirection: "input",
+        ports: [
+          { id: "row-quote", label: "quote_info" },
+          { id: "row-batch", label: "NB batch 2" },
+        ],
+        externalNodeIds: ["quote_api", "nb_batch"],
       },
-    }
-
-    const submodelSource: SimpleNode = {
-      ...sourceNode("submodel"),
-      id: "submodel__pricing",
-    }
-    const edge = {
-      ...sourceEdge("out__child_output"),
-      source: submodelSource.id,
     }
 
     expect(
       edgeInputName(
-        edge,
-        submodelSource,
-        { pricing: { graph: { nodes: [child], edges: [] } } },
+        { ...sourceEdge("row-quote"), source: boundarySource.id },
+        boundarySource,
+        {},
       ),
-    ).toBe("Child_output_frame")
+    ).toBe("row_quote")
+    expect(
+      edgeInputName(
+        { ...sourceEdge("row-batch"), source: boundarySource.id },
+        boundarySource,
+        {},
+      ),
+    ).toBe("row_batch")
   })
+
+  it("rejects a drilled submodel Input edge whose frame row is missing", () => {
+    const boundarySource: SimpleNode = {
+      id: "submodel-input",
+      type: "submodelPort",
+      data: {
+        label: "INPUT",
+        description: "",
+        nodeType: "submodelPort",
+        config: {},
+        instanceId: "instance_pricing",
+        definitionId: "definition_pricing",
+        portDirection: "input",
+        ports: [{ id: "row-quote", label: "quote_info" }],
+        externalNodeIds: ["quote_api"],
+      },
+    }
+
+    expect(() => edgeInputName(
+      { ...sourceEdge("missing-row"), source: boundarySource.id },
+      boundarySource,
+      {},
+    )).toThrow(/missing-row/)
+  })
+
 })
 
 describe("sanitiseLabelForFilesystem", () => {
@@ -748,5 +781,128 @@ describe("applyApiInputConfigChange", () => {
     expect(result.edges).toBe(reloaded)
     expect(result.rebound).toEqual([])
     expect(result.removed).toEqual([])
+  })
+})
+
+describe("canonical submodel boundary resolution", () => {
+  it("uses immutable public port ids for canonical drilled Input names", () => {
+    const boundarySource: SimpleNode = {
+      id: "canonical-input-boundary",
+      type: "submodelPort",
+      data: {
+        label: "INPUT",
+        description: "",
+        nodeType: "submodelPort",
+        config: {},
+        instanceId: "instance_pricing",
+        definitionId: "definition_pricing",
+        portDirection: "input",
+        ports: [{ id: "policy_data", label: "Policy data" }],
+        externalNodeIds: ["quote_api"],
+      },
+    }
+
+    expect(
+      edgeInputName(
+        { ...sourceEdge("policy_data"), source: boundarySource.id },
+        boundarySource,
+        {},
+      ),
+    ).toBe("policy_data")
+  })
+
+  it("resolves an arbitrary-id occurrence output through its public port", () => {
+    const child: SimpleNode = {
+      ...sourceNode("polars"),
+      id: "child_output",
+      data: {
+        ...sourceNode("polars").data,
+        label: "Canonical output frame",
+      },
+    }
+    const occurrence: SimpleNode = {
+      ...sourceNode("submodel"),
+      id: "instance_pricing_secondary",
+      data: {
+        ...sourceNode("submodel").data,
+        config: {
+          definitionId: "definition_pricing",
+          alias: "pricing_secondary",
+        },
+      },
+    }
+    const definition = {
+      definitionId: "definition_pricing",
+      file: "modules/pricing.py",
+      graph: { nodes: [child], edges: [] },
+      inputPorts: [],
+      outputPorts: [
+        {
+          portId: "written_premium",
+          label: "Written premium",
+          source: { nodeId: child.id, handleId: null },
+        },
+      ],
+    }
+
+    expect(
+      edgeInputName(
+        { ...sourceEdge("out__written_premium"), source: occurrence.id },
+        occurrence,
+        { definition_pricing: definition },
+      ),
+    ).toBe("pricing_secondary__written_premium")
+  })
+
+  it("matches every internal target of a canonical fan-out input port", () => {
+    const external: SimpleNode = {
+      ...sourceNode("polars"),
+      id: "external_feed",
+      data: { ...sourceNode("polars").data, label: "External feed" },
+    }
+    const firstTarget: SimpleNode = { ...sourceNode("polars"), id: "child_a" }
+    const secondTarget: SimpleNode = { ...sourceNode("polars"), id: "child_b" }
+    const occurrence: SimpleNode = {
+      ...sourceNode("submodel"),
+      id: "instance_pricing_secondary",
+      data: {
+        ...sourceNode("submodel").data,
+        config: {
+          definitionId: "definition_pricing",
+          alias: "pricing_secondary",
+        },
+      },
+    }
+    const definition = {
+      definitionId: "definition_pricing",
+      file: "modules/pricing.py",
+      graph: { nodes: [firstTarget, secondTarget], edges: [] },
+      inputPorts: [
+        {
+          portId: "policy_data",
+          label: "Policy data",
+          targets: [
+            { nodeId: firstTarget.id, handleId: null },
+            { nodeId: secondTarget.id, handleId: "base" },
+          ],
+        },
+      ],
+      outputPorts: [],
+    }
+    const edge: SimpleEdge = {
+      id: "external_to_pricing",
+      source: external.id,
+      target: occurrence.id,
+      sourceHandle: null,
+      targetHandle: "in__policy_data",
+    }
+
+    expect(apiInputPorts.incomingEdgeInputNames({
+      targetNodeId: secondTarget.id,
+      boundaryNodeId: occurrence.id,
+      nodes: [external, occurrence],
+      edges: [edge],
+      submodels: { definition_pricing: definition },
+    })).toEqual(["policy_data"])
   })
 })

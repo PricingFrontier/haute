@@ -1,0 +1,1 @@
+{"outputMapping":[{"source_port":"enriched","source_column":"enriched_value","output_path":"$[:].enriched_value","enabled":true}],"outputFormat":"json"}

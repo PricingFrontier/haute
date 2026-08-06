@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "smoke_join_roles",
+  "fixture_version": "1",
+  "project_fixture": "join_parquets",
+  "category": "semantic",
+  "request": "Add an edge join named quote_with_competitor with nb_batch as the main/base input and competitor_insight as the joining/right input. Use a left join on quote_id, then add a response output named enriched_quotes containing quote_id, premium, and competitor_price.",
+  "expectations": {
+    "outcome": "applied",
+    "required_node_types": ["edgeJoin", "output"],
+    "forbidden_node_types": [],
+    "forbidden_assistant_text": [],
+    "required_edges": [
+      {"source": "nb_batch", "target": "quote_with_competitor", "target_handle": "base"},
+      {"source": "competitor_insight", "target": "quote_with_competitor", "target_handle": "join"},
+      {"source": "quote_with_competitor", "target": "enriched_quotes", "target_handle": null}
+    ],
+    "require_connected_graph": true,
+    "max_provider_round_trips": 7,
+    "max_tool_calls": 14,
+    "max_failed_tool_calls": 1,
+    "max_duplicate_static_reads": 1
+  }
+}

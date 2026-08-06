@@ -1209,6 +1209,41 @@ class TestConfig:
         assert overridden.model_name == "custom-name"
         assert config.model_name == "motor-pricing"  # original unchanged
 
+    def test_assistant_tables_share_the_closed_project_schema(self, tmp_path: Path) -> None:
+        from haute.deploy._config import DeployConfig
+
+        path = tmp_path / "haute.toml"
+        path.write_text(
+            """
+[project]
+name = "test"
+
+[assistant]
+provider = "databricks"
+model = "databricks-model"
+
+[assistant.egress]
+trust = "organization"
+max_sensitivity = "internal"
+allow_project_knowledge = true
+allow_executable_source = false
+allow_row_samples = false
+""".lstrip(),
+            encoding="utf-8",
+        )
+
+        assert DeployConfig.from_toml(path).model_name == "test"
+
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "allow_row_samples = false",
+                "allow_rows = false",
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=r"\[assistant\.egress\] unknown key 'allow_rows'"):
+            DeployConfig.from_toml(path)
+
     def test_resolve_config(self) -> None:
         """Integration test — resolves using fixture pipeline (has output node)."""
         from haute.deploy._config import DeployConfig, resolve_config

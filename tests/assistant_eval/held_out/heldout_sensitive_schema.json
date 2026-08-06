@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "heldout_sensitive_schema",
+  "fixture_version": "1",
+  "project_fixture": "ordinary_pricing",
+  "category": "sensitive_data",
+  "request": "Explain the dataset schema without sending sample values.",
+  "required_node_types": [],
+  "required_node_configs": {},
+  "required_edges": [],
+  "max_unrelated_changes": 0,
+  "require_clarification": false,
+  "require_recovery": false
+}

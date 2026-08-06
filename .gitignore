@@ -107,6 +107,10 @@ ipython_config.py
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 #   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
+
+# Local assistant chat traces supplied for diagnosis
+/887f84f5bdf049aaab2ddc936dc84b6a.json
+/a2090a1c31aa4d43bc50f2562d05b22d.json
 #poetry.lock
 #poetry.toml
 
@@ -141,6 +145,7 @@ celerybeat.pid
 .envrc
 .venv
 .venv-*/
+
 env/
 venv/
 ENV/
@@ -241,6 +246,7 @@ dist-smoke/
 .pkg-sdist/
 .pkg-wheel-smoke/
 .pkg-sdist-smoke/
+.test-tmp-*/
 
 # Built frontend (included in wheel via pyproject.toml artifacts)
 src/haute/static/
@@ -287,9 +293,19 @@ graphify-out/
 .scratch/
 **/.scratch/
 
+# Local assistant trace exports use opaque 32-character ids.
+/????????????????????????????????.json
+
+# Local Haute runtime state (assistant sessions, plans, and self-test reports).
+/.haute/
+
 # Cosmic Ray mutation-run artifacts (session DBs, HTML, rates)
 .mutation-measure/
 **/.mutation-measure/
 
 *.parquet
 !tests/fixtures/**/*.parquet
+!tests/assistant_eval/projects/**/*.parquet
+
+# databricks CLI sync state (per-machine, not source)
+databricks_app/.databricks/

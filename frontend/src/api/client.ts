@@ -37,6 +37,9 @@ import type {
   GitPushResponse,
   GitFastForwardResponse,
   GitBranchAwayResponse,
+  GitBindStorageResponse,
+  GitForkStorageResponse,
+  GitUpstreamStatus,
   GitCommitContext,
   GitGraphResponse,
   GitMoveResponse,
@@ -107,6 +110,9 @@ import {
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
   parseGitRemotesResponse,
+  parseGitBindStorageResponse,
+  parseGitForkStorageResponse,
+  parseGitUpstreamStatusResponse,
   parseGitPushResponse,
   parseGitFastForwardResponse,
   parseGitGraphResponse,
@@ -638,6 +644,7 @@ export function savePipeline(
     source_file: string
     sources?: string[]
     active_source?: string
+    preserved_blocks: string[]
   },
   options?: MutationOptions,
 ): Promise<SavePipelineResponse> {
@@ -784,6 +791,8 @@ export function createSubmodel(
     source_file: string
     pipeline_name: string
     pipeline_description?: string
+    base_revision: string
+    preserved_blocks: string[]
   },
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelCreateResponse> {
@@ -791,23 +800,26 @@ export function createSubmodel(
 }
 
 export function loadSubmodel(
-  name: string,
+  definitionId: string,
+  parentSourceFile: string,
   options?: { signal?: AbortSignal },
 ): Promise<SubmodelGraphResponse> {
   return request<unknown>(
-    `/api/submodel/${encodeURIComponent(name)}`,
+    `/api/submodel/${encodeURIComponent(definitionId)}?source_file=${encodeURIComponent(parentSourceFile)}`,
     options,
   ).then(parseSubmodelGraphResponse)
 }
 
 export function dissolveSubmodel(
   payload: {
-    submodel_name: string
+    instance_id: string
     graph: GraphPayload
     preamble: string
     source_file: string
     pipeline_name: string
     pipeline_description?: string
+    base_revision: string
+    preserved_blocks: string[]
   },
   options?: { signal?: AbortSignal },
 ): Promise<DissolveSubmodelResponse> {
@@ -1191,7 +1203,18 @@ export function deleteJsonCache(
 }
 
 /**
- * Sniff a v2 schema mapping from the first records of a JSON/JSONL file.
+ * Request budget for complete *Infer Tables* schema discovery.
+ *
+ * The shared client timeout is 30 seconds, but a multi-GB structured input can
+ * legitimately take minutes to scan. We keep inference complete by default
+ * and give it the same budget as cache construction. A hidden head sample is
+ * unsafe: a wholly new field appearing after the sample is ignored by build,
+ * not rejected as a type widening, so it would disappear without warning.
+ */
+export const JSON_CACHE_INFER_TIMEOUT_MS = 1_800_000
+
+/**
+ * Sniff a v2 schema mapping from a structured input file.
  * Drives the ApiInputEditor's *Infer Tables* button.
  *
  * Returns a v2-shaped ``tables`` array; the caller stitches it into the
@@ -1199,12 +1222,12 @@ export function deleteJsonCache(
  */
 export function inferJsonCacheSchema(
   payload: { path: string; sample_size?: number },
-  options?: { signal?: AbortSignal },
+  options?: { signal?: AbortSignal; timeout?: number },
 ): Promise<{ tables: Array<Record<string, unknown>> }> {
   return post<unknown>(
     "/api/json-cache/infer",
     payload,
-    options,
+    { timeout: JSON_CACHE_INFER_TIMEOUT_MS, ...options },
   ).then(parseJsonCacheSchemaInferenceResponse)
 }
 
@@ -1328,6 +1351,62 @@ export function setWorkingBranch(
   return post<unknown>("/api/git/working-branch", { branch, create }, options).then(
     parseGitSetWorkingBranchResponse,
   )
+}
+
+/** Bind this clone's state volume to a remote for durable storage (hosted mode only). */
+export function bindGitStorage(
+  remoteUrl: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitBindStorageResponse> {
+  return post<unknown>("/api/git/storage/bind", { remote_url: remoteUrl }, options).then(
+    parseGitBindStorageResponse,
+  )
+}
+
+/** Fork a held uc:// location's published state into an empty one. */
+export function forkGitStorage(
+  sourceUrl: string,
+  targetUrl: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitForkStorageResponse> {
+  return post<unknown>(
+    "/api/git/storage/fork",
+    { source_url: sourceUrl, target_url: targetUrl },
+    options,
+  ).then(parseGitForkStorageResponse)
+}
+
+/** Measure this fork against the parent it was forked from. On demand only:
+ *  the server downloads the parent's whole stored bundle to answer. */
+export function checkGitUpstream(
+  options?: { signal?: AbortSignal },
+): Promise<GitUpstreamStatus> {
+  return post<unknown>("/api/git/storage/upstream/check", {}, options).then(
+    parseGitUpstreamStatusResponse,
+  )
+}
+
+/** Catch this fork up to its parent's tips, fast-forward only. */
+export function pullGitUpstream(
+  options?: { signal?: AbortSignal },
+): Promise<GitFastForwardResponse> {
+  return post<unknown>("/api/git/storage/upstream/pull", {}, options).then(
+    parseGitFastForwardResponse,
+  )
+}
+
+/** Clear a finished bind result once the dialog has shown it. */
+export function acknowledgeGitBind(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/storage/bind/ack", {}, options).then(parseGitWorkingBranchResponse)
+}
+
+/** Retry a failed sync to the bound remote and return refreshed readiness. */
+export function retryGitStorageSync(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/storage/retry", {}, options).then(parseGitWorkingBranchResponse)
 }
 
 export function setGitIdentity(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 from haute._types import GraphEdge, GraphNode, PipelineGraph
@@ -40,6 +40,8 @@ def assert_parser_structure_conserved(
     submodel_paths: Sequence[str] = (),
     submodel_graphs: Mapping[str, PipelineGraph] | None = None,
     submodel_files: Mapping[str, str] | None = None,
+    submodel_instance_paths: Sequence[str] | None = None,
+    submodel_aliases: Collection[str] = (),
 ) -> None:
     """Reject any parser result that lost an authored structural identity.
 
@@ -101,7 +103,7 @@ def assert_parser_structure_conserved(
 
     loaded_graphs = submodel_graphs or {}
     child_ids = {node.id for graph in loaded_graphs.values() for node in graph.nodes}
-    known_endpoint_ids = root_ids | child_ids
+    known_endpoint_ids = root_ids | child_ids | set(submodel_aliases)
     dangling = [
         identity
         for identity in connect_identities
@@ -114,7 +116,11 @@ def assert_parser_structure_conserved(
         )
 
     authored_paths = list(submodel_paths)
-    loaded_paths = list((submodel_files or {}).values())
+    loaded_paths = (
+        list(submodel_instance_paths)
+        if submodel_instance_paths is not None
+        else list((submodel_files or {}).values())
+    )
     if authored_paths != loaded_paths:
         raise ParseError(
             "Pipeline parser did not conserve authored submodel references.",
