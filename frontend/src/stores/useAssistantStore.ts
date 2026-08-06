@@ -284,6 +284,21 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
     // `sourceFile` is the gate, not the query: the request deliberately sends
     // `pipeline: null` so the server resolves the pipeline exactly as session
     // creation does. With none resolved there is nothing to list.
+    const current = get()
+    if (
+      current.turnStatus === "idle" &&
+      (current.pipelineSource !== null || current.sessionId !== null) &&
+      current.pipelineSource !== sourceFile
+    ) {
+      openGeneration += 1
+      set({
+        view: "list",
+        sessionId: null,
+        pipelineSource: null,
+        entries: [],
+        notice: null,
+      })
+    }
     if (sourceFile === null) {
       listGeneration += 1
       set({ sessions: [], sessionsStatus: "ready" })
@@ -353,6 +368,10 @@ const useAssistantStore = create<AssistantStoreState>()((set, get) => ({
       return
     }
     if (!text.trim()) return
+
+    // A message sent from the immediately mounted composer becomes the active
+    // chat. A slower transcript-open response must not replace it afterwards.
+    openGeneration += 1
 
     if (
       (current.pipelineSource !== null || current.sessionId !== null) &&

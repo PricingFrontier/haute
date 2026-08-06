@@ -82,11 +82,17 @@ pipeline change, a turn finishing — so a slower earlier response would otherwi
 and show a chat nobody chose. `newChat` and the back control bump the open ticket too:
 any navigation supersedes an open still in flight, whose response would otherwise arrive
 afterwards and re-attach the conversation just left — filling a "new chat" with an old
-transcript. The tickets sit at module scope alongside `activeController` because the panel
-can unmount and remount mid-request. `loadSessions(sourceFile)` treats
+transcript. A valid send also bumps the open ticket before creating or streaming its
+session: the message becomes the active chat, so a slower response from the row that was
+opening cannot overwrite the new session and transcript. The tickets sit at module scope
+alongside `activeController` because the panel can unmount and remount mid-request.
+`loadSessions(sourceFile)` treats
 its argument as the gate, not the query: like `createAssistantSession`, the request itself
 deliberately sends `pipeline: null` so the server resolves the pipeline the same way
-session creation does, and with none resolved there is nothing to list.
+session creation does, and with none resolved there is nothing to list. When called for a
+different source while idle, it invalidates the old chat's navigation ticket, clears that
+active session/transcript, and returns to the list; a conversation from one pipeline is never shown
+under another pipeline's canvas.
 
 **Send.** `Composer` submit → `useAssistantStore.getState().sendMessage(text)`:
 
@@ -207,7 +213,7 @@ Implemented Vitest coverage is split between
 and `frontend/src/__tests__/App.assistantLazy.test.ts`. Transcript/composer DOM
 interactions are covered through the store/API boundaries.
 
-- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; source-change reset versus same-source session reuse; 400/404/409 notices; abort-stop; and idle-only New chat. Chat-list coverage pins that the panel opens on the list, that a send never resumes a conversation, that opening one hydrates its transcript at that moment, list load success/failure, returning to the list, refusal to navigate mid-turn, that no session stays addressable while its replacement loads, and that a superseded open or list load cannot overwrite the newer one — whether superseded by another open, by New chat, or by the back control.
+- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; source-change reset versus same-source session reuse; 400/404/409 notices; abort-stop; and idle-only New chat. Chat-list coverage pins that the panel opens on the list, that a send never resumes a conversation, that opening one hydrates its transcript at that moment, list load success/failure, returning to the list, a pipeline change clearing the prior chat, refusal to navigate mid-turn, that no session stays addressable while its replacement loads, and that a superseded open or list load cannot overwrite the newer one — whether superseded by another open, by New chat, by a send, or by the back control.
 - **Chat list rendering** (`frontend/src/panels/assistant/__tests__/SessionList.test.tsx`): loading, empty, and retryable-error states are distinguishable rather than blank; rows render their title (with a fallback label for an untitled conversation) and open the one clicked; rows are inert with no pipeline resolved; and relative-time rendering across its boundaries.
 - **Assistant API boundary** (`frontend/src/api/__tests__/assistant.test.ts`):
   endpoint payloads and abort signal; valid and malformed status/session/history
@@ -237,10 +243,10 @@ The following matrix records the full regression contract; where the scenario is
 - **Stop semantics**: abort marks `stopped`, keeps prior entries, re-enables the composer;
   a 409 on the immediately-following send renders the still-finishing notice without
   auto-retry.
-- **Session recovery**: 404 on send renders the stale-session notice and New chat clears to
-  a working state; a remembered `localStorage` session id is offered on session create and
-  a returned `history` hydrates the transcript (reload/restart resume); a fresh id in the
-  response replaces the remembered one; New chat clears the remembered id.
+- **Session lifecycle**: 404 on send renders the stale-session notice and New chat clears to
+  a working state; the backend list, not browser storage, supplies resumable ids; selecting a
+  row passes that id to session create and the returned `history` hydrates the transcript;
+  New chat clears the active id and the first send always requests a fresh one.
 - **Lazy-loading enforcement**: `App.tsx` never statically imports `AssistantPanel` (mirror of
   the `NodePanel.lazyEditors` test pattern), keeping the panel + markdown renderer out of
   the initial bundle within the bundle-size gate.

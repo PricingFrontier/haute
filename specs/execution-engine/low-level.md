@@ -413,7 +413,8 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   summary — but each table does, and an edge's source handle names the exact table it
   carries. Ancestor sizing therefore resolves one metadata record per source handle that
   actually feeds the target, and target-column resolution carries the arrival handle so a
-  consumer resolves its own table's columns; the per-estimate memo keys are
+  consumer — including a direct Edge Join base or join input — resolves its own table's
+  columns; the per-estimate memo keys are
   `(node, handle)` accordingly. Sibling branches of the same input never inflate a
   boundary they do not feed. Layer preference (`working` then `committed`) and cache
   validity are delegated to the same reader the engine executes with, so a stale cache is

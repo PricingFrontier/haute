@@ -474,7 +474,8 @@ class TestSessionListing:
     """
 
     def test_lists_this_pipeline_s_conversations_most_recent_first(self, tmp_path: Path):
-        store = _store(tmp_path)
+        clock = iter(float(stamp) for stamp in range(1, 7))
+        store = _store(tmp_path, clock=clock.__next__)
         older = store.create("rating/main.py")
         store.append(older, _turn("first question"))
         newer = store.create("rating/main.py")
@@ -533,3 +534,40 @@ class TestSessionListing:
 
         assert [item.session_id for item in listed] == [session.id]
         assert any(e["event"] == "assistant_session_list_unreadable" for e in logs)
+
+    def test_valid_json_that_cannot_be_revived_is_not_advertised(self, tmp_path: Path):
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        valid_turn = _turn("should not appear")
+        payloads = (
+            {
+                "id": "f" * 32,
+                "source_file": "rating/main.py",
+                "history": [valid_turn],
+                "created_at": 1.0,
+                "last_used": 2.0,
+            },
+            {
+                "id": "1" * 32,
+                "source_file": "rating/main.py",
+                "history": [{"messages": [{"role": "assistant", "content": "invalid"}]}],
+                "created_at": 1.0,
+                "last_used": 2.0,
+            },
+            {
+                "id": "2" * 32,
+                "source_file": "rating/main.py",
+                "history": [valid_turn],
+                "created_at": 1.0,
+                "last_used": float("nan"),
+            },
+        )
+        file_ids = ("0" * 32, "1" * 32, "2" * 32)
+        for file_id, payload in zip(file_ids, payloads, strict=True):
+            (sessions / f"{file_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        with structlog.testing.capture_logs() as logs:
+            listed = _store(tmp_path).list_sessions("rating/main.py")
+
+        assert listed == ()
+        assert sum(e["event"] == "assistant_session_list_unreadable" for e in logs) == 3

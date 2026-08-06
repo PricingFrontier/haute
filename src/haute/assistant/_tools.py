@@ -108,6 +108,16 @@ _INTERNAL_PROJECT_TOOLS = frozenset(
         "apply_graph_plan",
     }
 )
+_SAVE_LOCK_READ_TOOLS = frozenset(
+    {
+        "get_pipeline",
+        "get_node_schema",
+        "get_node_config",
+        "get_column_profiles",
+        "get_dataset_schema",
+        "get_project_knowledge",
+    }
+)
 
 
 def _schema_for_frame(frame: pl.LazyFrame) -> list[dict[str, str]]:
@@ -401,8 +411,9 @@ _MAX_PROFILE_VALUE_CHARS = 120
 _EXECUTABLE_CONFIG_KEYS = frozenset({"code", "preamble", "query", "script"})
 _ROW_VALUE_CONFIG_KEYS = frozenset({"records"})
 # Only these dtypes can carry a value list. A categorical encoding is exactly
-# what authoring needs ("is `fault` Y/N or true/false?"), while an identifier,
-# name, or address is high-cardinality by nature and never fits the level cap.
+# what authoring needs ("is `fault` Y/N or true/false?"). The cardinality cap
+# reduces disclosure but is not an authorization boundary: repeated personal
+# values can fit, so the explicit row-sample policy remains authoritative.
 # Polars instantiates every schema dtype, so `isinstance` matches each of these
 # including their parameterised forms (`Enum(categories=[...])`).
 _PROFILABLE_LEVEL_DTYPES = (pl.String, pl.Categorical, pl.Enum, pl.Boolean)
@@ -1841,13 +1852,7 @@ def build_tool_executor(
                 )
             else:  # pragma: no cover - guarded by _TOOL_NAMES
                 return _dispatch_error(name, f"Unknown assistant tool {name!r}.")
-            if name in {
-                "get_pipeline",
-                "get_node_schema",
-                "get_node_config",
-                "get_dataset_schema",
-                "get_project_knowledge",
-            }:
+            if name in _SAVE_LOCK_READ_TOOLS:
                 async with save_lock:
                     result = await asyncio.to_thread(operation)
             else:
@@ -1909,6 +1914,7 @@ __all__ = [
     "get_example",
     "get_node_config",
     "get_node_schema",
+    "get_column_profiles",
     "get_pipeline",
     "get_project_knowledge",
     "plan_recipe",

@@ -219,10 +219,7 @@ async def list_assistant_sessions(pipeline: str | None = None) -> AssistantSessi
         detail = _http_error_detail(exc, "session_pipeline_resolution")
         raise HTTPException(status_code=500, detail=detail) from None
 
-    summaries = await asyncio.to_thread(
-        session_store.list_sessions,
-        _relative_source_file(path),
-    )
+    summaries = session_store.list_sessions(_relative_source_file(path))
     return AssistantSessionListResponse(
         sessions=[
             AssistantSessionSummary(

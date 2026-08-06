@@ -1155,9 +1155,8 @@ def _binds_name(scope: ast.AST, name: str) -> bool:
 
     A parameter or a comprehension target shadows the module binding outright.
     So does any assignment in a function body, which Python makes local for the
-    whole function. The body scan deliberately does not itself stop at further
-    nested scopes: over-counting there can only *widen* what counts as a local
-    shadow, which withholds a warning rather than raising a false one.
+    whole function. Bindings inside a further nested scope belong to that scope
+    and must not suppress a real read in the enclosing function.
     """
 
     if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
@@ -1168,6 +1167,12 @@ def _binds_name(scope: ast.AST, name: str) -> bool:
         )
     if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
         return False
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+        isinstance(node, ast.Global) and name in node.names
+        for statement in scope.body
+        for node in _nodes_in_own_scope(statement)
+    ):
+        return True
     arguments = scope.args
     declared = (
         *arguments.posonlyargs,
@@ -1180,7 +1185,96 @@ def _binds_name(scope: ast.AST, name: str) -> bool:
     # A lambda's body is one expression, not a statement list, and can still
     # bind through a walrus (`lambda x: (df := x)`).
     body: list[ast.AST] = list(scope.body) if isinstance(scope.body, list) else [scope.body]
-    return any(_is_name(node, name, ast.Store) for item in body for node in ast.walk(item))
+    return any(_binds_name_in_own_scope(item, name) for item in body)
+
+
+def _binds_name_in_own_scope(node: ast.AST, name: str) -> bool:
+    """Find a binding without descending into a child lexical scope."""
+
+    if _is_name(node, name, ast.Store) or _is_name(node, name, ast.Del):
+        return True
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name or any(
+            _binds_name_in_own_scope(expression, name)
+            for expression in _scope_entry_expressions(node)
+        )
+    if isinstance(node, ast.Lambda):
+        return any(
+            _binds_name_in_own_scope(expression, name)
+            for expression in _scope_entry_expressions(node)
+        )
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return any(
+            isinstance(candidate, ast.NamedExpr) and _is_name(candidate.target, name, ast.Store)
+            for candidate in _nodes_in_comprehension(node)
+        )
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return any(
+            (alias.asname or alias.name.split(".", maxsplit=1)[0]) == name
+            for alias in node.names
+            if alias.name != "*"
+        )
+    if isinstance(node, ast.ExceptHandler) and node.name == name:
+        return True
+    if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+        return True
+    if isinstance(node, ast.MatchMapping) and node.rest == name:
+        return True
+    return any(_binds_name_in_own_scope(child, name) for child in ast.iter_child_nodes(node))
+
+
+def _scope_entry_expressions(node: ast.AST) -> tuple[ast.expr, ...]:
+    """Expressions evaluated outside a function, lambda, or class body."""
+
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        annotations = tuple(
+            annotation
+            for annotation in (
+                *(argument.annotation for argument in node.args.posonlyargs),
+                *(argument.annotation for argument in node.args.args),
+                *(argument.annotation for argument in node.args.kwonlyargs),
+                node.args.vararg.annotation if node.args.vararg is not None else None,
+                node.args.kwarg.annotation if node.args.kwarg is not None else None,
+                node.returns,
+            )
+            if annotation is not None
+        )
+        return (
+            *node.decorator_list,
+            *node.args.defaults,
+            *(default for default in node.args.kw_defaults if default is not None),
+            *annotations,
+        )
+    if isinstance(node, ast.Lambda):
+        return (
+            *node.args.defaults,
+            *(default for default in node.args.kw_defaults if default is not None),
+        )
+    if isinstance(node, ast.ClassDef):
+        return (*node.decorator_list, *node.bases, *(keyword.value for keyword in node.keywords))
+    return ()
+
+
+def _nodes_in_own_scope(node: ast.AST) -> Iterator[ast.AST]:
+    """Yield nodes without entering a nested lexical scope's body."""
+
+    yield node
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        for expression in _scope_entry_expressions(node):
+            yield from _nodes_in_own_scope(expression)
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _nodes_in_own_scope(child)
+
+
+def _nodes_in_comprehension(node: ast.AST) -> Iterator[ast.AST]:
+    """Yield comprehension nodes while excluding child function/lambda scopes."""
+
+    yield node
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _nodes_in_comprehension(child)
 
 
 def _is_name(node: ast.AST, name: str, context: type[ast.expr_context]) -> bool:
@@ -1198,6 +1292,15 @@ def _names_in_owning_scope(node: ast.AST, name: str) -> Iterator[ast.AST]:
     """
 
     if isinstance(node, _NESTED_SCOPES) and _binds_name(node, name):
+        # A comprehension target is not bound until after its first iterable
+        # has been evaluated in the enclosing scope.
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            yield node
+            yield from _names_in_owning_scope(node.generators[0].iter, name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            yield node
+            for expression in _scope_entry_expressions(node):
+                yield from _names_in_owning_scope(expression, name)
         return
     yield node
     for child in ast.iter_child_nodes(node):

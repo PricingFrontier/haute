@@ -306,11 +306,13 @@ prefix (`_MAX_PROFILE_ROWS`, reported as `rows_scanned`/`scan_bounded`), and sum
 each column: `null_count` always; `distinct_count` whenever the dtype can be counted; for
 string, categorical, enum and boolean columns with at most `_MAX_PROFILE_LEVELS` distinct
 values, those values with their counts; for numeric and temporal columns, `min` and `max`;
-otherwise `values_withheld`. The cardinality bound is the privacy boundary, not a display
-convenience: a name, address, date of birth, or registration is high-cardinality by
-nature and therefore cannot be emitted, while a `Y`/`N`-style encoding is exactly what it
-does emit. Individual level strings are truncated to `_MAX_PROFILE_VALUE_CHARS`. The
-operation's egress class is its own value, `restricted-value-profile`, so a policy review
+otherwise `values_withheld`. The cardinality bound reduces disclosure for high-cardinality
+strings, while low-cardinality strings — including repeated names, addresses, dates of
+birth, or registrations — can be emitted. The explicit `allow_row_samples` grant is the
+authorization boundary; the level cap is not a personal-data guarantee. A `Y`/`N`-style
+encoding is exactly what the tool is intended to emit. Individual level strings are
+truncated to `_MAX_PROFILE_VALUE_CHARS`. The operation's egress class is its own value,
+`restricted-value-profile`, so a policy review
 can see the one data-reading capability plainly.
 
 Every branch is selected by dtype *before* its aggregation runs, through the shared
@@ -418,8 +420,10 @@ conversation bound to that source file, carrying id, title, created/last-used ti
 and message count, most recently used first. The title is the opening user message,
 whitespace-collapsed and bounded to 80 characters. Summaries are read directly from the
 persisted files rather than through `_revive`: listing must not pull every stored
-conversation into memory, where it would evict live sessions through the LRU bound it
-shares. A live session takes precedence over its persisted copy, which can lag by one
+conversation into the retained LRU, where it would evict live sessions. Like every other
+store operation, the merge with live records runs synchronously on the asyncio event-loop
+thread; moving that call to a worker would race the event-loop-owned mapping. A live
+session takes precedence over its persisted copy, which can lag by one
 turn; an unreadable or malformed file is a logged warning treated as absent, matching the
 store's existing degradation posture. A conversation with no messages is omitted, because
 `create` persists immediately and an abandoned "new chat" would otherwise occupy the list
@@ -513,7 +517,11 @@ returns a fresh session with empty `history`; resume is an offer, never an error
    `tool_started`, the round commit filters the unmatched call; closing at either later
    event retains the already-recorded result. Thus every persisted call id has exactly one
    matching result id on every generator-close boundary.
-5. Tool execution: read tools run via `asyncio.to_thread`. `get_node_schema` parses the
+5. Tool execution: read tools run via `asyncio.to_thread`. Reads whose answer depends on
+   the saved graph (`get_pipeline`, `get_node_schema`, `get_node_config`,
+   `get_column_profiles`, `get_dataset_schema`, and `get_project_knowledge`) hold the
+   process-wide `save_lock` across their worker-thread operation, so a concurrent save cannot
+   interleave graph parsing with schema or value resolution. `get_node_schema` parses the
    saved pipeline, then proceeds in this order:
    1. **Validate the target id against the original hierarchical graph** — a submodel
       placeholder, or an id found only inside a submodel's nested graph → structured error
@@ -756,7 +764,10 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   explicit and accepted. Only reads that resolve to the injected binding count, so the
   check skips any nested scope holding a `df` of its own — a `def helper(df)` parameter,
   a `lambda df:`, a comprehension target — because those name that scope's variable and
-  say nothing about wiring order. A statement's loads are judged before its stores, since
+  say nothing about wiring order. Bindings inside a further nested scope do not shadow
+  `df` in the enclosing function. A comprehension's first iterable is evaluated before
+  its target is bound, so a bare `df` read there still resolves to the injected input.
+  A statement's loads are judged before its stores, since
   an assignment evaluates its value first: `df = df.head()` reads the injected frame,
   `df = left` does not. This is an authoring-time rule for assistant edits only, like
   the unknown-config-key strictness above; existing human-authored code is untouched.
@@ -1054,7 +1065,9 @@ fixture for route tests). The implemented coverage is:
   persist failures. Listing coverage pins recency ordering and per-pipeline scoping,
   omission of empty conversations, titles bounded and whitespace-collapsed, survival of a
   restart without reviving any session into memory, and an unreadable file skipped with a
-  warning.
+  warning. A syntactically valid file that fails the same id, timestamp, source, or history
+  validation used by revival is skipped too; listing never advertises a conversation that
+  cannot subsequently be opened.
 - **`tests/test_assistant_integration.py`** — fake-provider end-to-end on a tmp project:
   instruction → ops → real transactional save (files on disk assert codegen/sidecars) →
   `graph.update` published with the post-save fingerprint (asserted via a test subscriber)

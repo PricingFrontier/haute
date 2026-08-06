@@ -198,10 +198,10 @@ that durable fact, in its original position after the mutation tool row.
   column typed `String` may hold `Y`/`N`, `true`/`false`, or `at_fault`/`not_at_fault`,
   and code written against the wrong guess runs, validates, and silently matches nothing.
   It returns distinct levels with counts for small-cardinality columns, bounds for
-  numerics and dates, and never a row — a column with many distinct values has its values
-  withheld, which is what keeps names, addresses and registrations out by construction.
-  This is the only tool that reads project data, and it is gated on the project's
-  `allow_row_samples` policy.
+  numerics and dates, and never a row. A column with many distinct values has its values
+  withheld, reducing unnecessary disclosure; low-cardinality strings can still be returned,
+  including repeated personal data. This is the only tool that reads project data, and the
+  project's explicit `allow_row_samples` policy is therefore the authorization boundary.
 - `get_node_schema` — the column names and dtypes at any node's *output* **and on each of
   its inputs**, resolved by the
   same execution engine that runs the pipeline: the lazy plan is built up to that node —

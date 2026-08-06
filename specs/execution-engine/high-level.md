@@ -269,7 +269,8 @@ running heavy work in a child process the parent can kill on timeout or memory l
   ran a 1,000-row sample through the pipeline before training; inner joins with no key
   overlap in a small sample produced zero rows and broke the estimate. Reading
   parquet footer metadata (row/column counts, per-column uncompressed size) is
-  instant and always available, at the cost of being an estimate rather than an exact
+  immediate when a valid local Parquet source or per-port API-input cache exists, at the
+  cost of being an estimate rather than an exact
   measurement — hence a 3× empirical overhead multiplier and a configurable safety
   factor rather than a computed exact figure.
 - **Operational evidence is deterministic and bounded.** Execution contexts expose
@@ -364,7 +365,7 @@ running heavy work in a child process the parent can kill on timeout or memory l
   cap is unavailable, while best-effort retains process isolation and in-child
   admission/RSS checkpoints without misrepresenting them as an OS hard cap.
 - **RAM estimation degrades to "unknown" rather than guessing.** When source row
-  counts or column schema cannot be determined from parquet metadata (Databricks
-  sources, JSON-shape apiInput caches), `estimate_safe_training_rows` returns
+  counts or column schema cannot be determined from Parquet metadata (for example,
+  Databricks sources or a stale/unreadable API-input cache), `estimate_safe_training_rows` returns
   `safe_row_limit=None` / `total_rows=None` — the caller proceeds without a downsample
   rather than receiving a fabricated number.

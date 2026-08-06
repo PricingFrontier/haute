@@ -23,6 +23,7 @@ Authored test-first per CLAUDE.md TDD.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -164,6 +165,24 @@ class TestSessionList:
         response = client.get("/api/assistant/sessions")
         assert response.status_code == 200
         assert response.json()["sessions"] == []
+
+    def test_reads_the_store_on_its_event_loop_thread(
+        self,
+        client: TestClient,
+        store: SessionStore,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        original = store.list_sessions
+
+        def list_sessions(source_file: str):
+            asyncio.get_running_loop()
+            return original(source_file)
+
+        monkeypatch.setattr(store, "list_sessions", list_sessions)
+
+        response = client.get("/api/assistant/sessions")
+
+        assert response.status_code == 200, response.text
 
     def test_unknown_pipeline_name_is_404(self, client: TestClient, store: SessionStore):
         response = client.get("/api/assistant/sessions", params={"pipeline": "nope"})

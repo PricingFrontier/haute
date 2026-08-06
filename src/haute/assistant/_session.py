@@ -538,6 +538,34 @@ class AssistantSession:
         }
 
 
+def _session_from_payload(payload: object, session_id: str) -> AssistantSession:
+    """Validate and construct one persisted session without retaining it."""
+
+    if not isinstance(payload, Mapping) or payload.get("id") != session_id:
+        raise ValueError("session file does not describe the requested session")
+    for key in ("created_at", "last_used"):
+        stamp = payload.get(key)
+        if (
+            isinstance(stamp, bool)
+            or not isinstance(stamp, (int, float))
+            or not math.isfinite(stamp)
+        ):
+            raise ValueError(f"session file {key} must be a finite number")
+    history = payload.get("history")
+    if not isinstance(history, list):
+        raise ValueError("session file history must be a list")
+    source_file = payload.get("source_file")
+    if not isinstance(source_file, str) or not source_file:
+        raise ValueError("session file source_file must be a non-empty string")
+    return AssistantSession(
+        id=session_id,
+        source_file=source_file,
+        history=list(history),
+        created_at=float(payload["created_at"]),
+        last_used=float(payload["last_used"]),
+    )
+
+
 SessionRef: TypeAlias = str | AssistantSession
 TurnInput: TypeAlias = (
     AssistantTurn | Mapping[str, Any] | Iterable[AssistantMessage | Mapping[str, Any]]
@@ -701,25 +729,7 @@ class SessionStore:
             return None
         try:
             data = json.loads(raw)
-            if not isinstance(data, Mapping) or data.get("id") != session_id:
-                raise ValueError("session file does not describe the requested session")
-            for key in ("created_at", "last_used"):
-                stamp = data.get(key)
-                if isinstance(stamp, bool) or not isinstance(stamp, (int, float)):
-                    raise ValueError(f"session file {key} must be a number")
-            history = data.get("history")
-            if not isinstance(history, list):
-                raise ValueError("session file history must be a list")
-            source_file = data.get("source_file")
-            if not isinstance(source_file, str) or not source_file:
-                raise ValueError("session file source_file must be a non-empty string")
-            session = AssistantSession(
-                id=session_id,
-                source_file=source_file,
-                history=list(history),
-                created_at=float(data["created_at"]),
-                last_used=float(data["last_used"]),
-            )
+            session = _session_from_payload(data, session_id)
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning(
                 "assistant_session_unreadable",
@@ -765,45 +775,32 @@ class SessionStore:
         """
 
         session_id = path.stem
-        if _SESSION_ID_PATTERN.fullmatch(session_id) is None or path.is_symlink():
+        if _SESSION_ID_PATTERN.fullmatch(session_id) is None:
+            return None
+        if path.is_symlink():
+            logger.warning(
+                "assistant_session_list_unreadable",
+                session_id=session_id,
+                detail="session file must not be a symbolic link",
+            )
             return None
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            logger.warning("assistant_session_list_unreadable", session_id=session_id)
-            return None
-        if not isinstance(payload, Mapping):
-            return None
-        source_file = payload.get("source_file")
-        history = payload.get("history")
-        if not isinstance(source_file, str) or not isinstance(history, list):
+            session = _session_from_payload(payload, session_id)
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "assistant_session_list_unreadable",
+                session_id=session_id,
+                detail=str(exc),
+            )
             return None
 
-        title = ""
-        message_count = 0
-        for turn in history:
-            messages = turn.get("messages") if isinstance(turn, Mapping) else None
-            if not isinstance(messages, list):
-                continue
-            message_count += len(messages)
-            if title:
-                continue
-            for message in messages:
-                if not isinstance(message, Mapping):
-                    continue
-                content = message.get("content")
-                if message.get("role") == "user" and isinstance(content, str) and content.strip():
-                    title = _session_title(content)
-                    break
-
-        created_at = payload.get("created_at")
-        last_used = payload.get("last_used")
-        return source_file, SessionSummary(
+        return session.source_file, SessionSummary(
             session_id=session_id,
-            title=title,
-            created_at=float(created_at) if isinstance(created_at, (int, float)) else 0.0,
-            last_used=float(last_used) if isinstance(last_used, (int, float)) else 0.0,
-            message_count=message_count,
+            title=session.title,
+            created_at=session.created_at,
+            last_used=session.last_used,
+            message_count=session.stored_message_count,
         )
 
     def list_sessions(self, source_file: str | os.PathLike[str]) -> tuple[SessionSummary, ...]:

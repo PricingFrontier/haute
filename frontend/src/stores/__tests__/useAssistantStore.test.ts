@@ -355,8 +355,25 @@ describe("chat list navigation", () => {
     expect(sessions[0].title).toBe("First")
   })
 
+  it("returns to the list and clears the active chat when the pipeline changes", async () => {
+    useAssistantStore.setState({
+      view: "chat",
+      sessionId: "old-session",
+      pipelineSource: "old.py",
+      entries: [{ kind: "user", text: "old question" }],
+    })
+
+    await useAssistantStore.getState().loadSessions("new.py")
+
+    const { view, sessionId, pipelineSource, entries } = useAssistantStore.getState()
+    expect(view).toBe("list")
+    expect(sessionId).toBeNull()
+    expect(pipelineSource).toBeNull()
+    expect(entries).toEqual([])
+  })
+
   it("reports a list failure without discarding the current chat", async () => {
-    useAssistantStore.setState({ view: "chat", sessionId: "live" })
+    useAssistantStore.setState({ view: "chat", sessionId: "live", pipelineSource: "main.py" })
     vi.mocked(listAssistantSessions).mockRejectedValue(new ApiError("HTTP 500", 500, "boom"))
 
     await useAssistantStore.getState().loadSessions("main.py")
@@ -425,6 +442,23 @@ describe("chat list navigation", () => {
     const { sessionId, entries } = useAssistantStore.getState()
     expect(sessionId).toBe("quick")
     expect(entries[0]).toEqual({ kind: "user", text: "quick chat" })
+  })
+
+  it("does not let an in-flight open overwrite a new message", async () => {
+    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    vi.mocked(createAssistantSession)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve }))
+      .mockResolvedValueOnce({ sessionId: "fresh", history: [] })
+    scriptStream([completed()])
+
+    const opening = useAssistantStore.getState().openSession("old", "main.py")
+    await useAssistantStore.getState().sendMessage("new question", SEND_OPTS)
+    resolveOpen({ sessionId: "old", history: [] })
+    await opening
+
+    const { sessionId, entries } = useAssistantStore.getState()
+    expect(sessionId).toBe("fresh")
+    expect(entries[0]).toEqual({ kind: "user", text: "new question" })
   })
 
   it.each([

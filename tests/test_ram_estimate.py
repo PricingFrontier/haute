@@ -340,6 +340,66 @@ def test_json_api_input_target_columns_resolve_through_the_arrival_port() -> Non
     assert set(resolved.columns) == {"quote_id", "amount_paid"}
 
 
+def test_json_api_input_ports_resolve_when_their_consumer_is_an_edge_join() -> None:
+    base = _make_source_node(node_id="base_api", config={"path": "data/base.jsonl"})
+    join = _make_source_node(node_id="join_api", config={"path": "data/join.jsonl"})
+    joined = _make_edge_join_node(
+        config={
+            "baseInput": "base_api",
+            "joinInput": "join_api",
+            "how": "left",
+            "on": ["quote_id"],
+            "coalesce": False,
+        }
+    )
+    graph = PipelineGraph(
+        nodes=[base, join, joined],
+        edges=[
+            GraphEdge(
+                id="e1",
+                source=base.id,
+                target=joined.id,
+                sourceHandle="policies",
+            ),
+            GraphEdge(
+                id="e2",
+                source=join.id,
+                target=joined.id,
+                sourceHandle="claims",
+            ),
+        ],
+    )
+    per_port = {
+        (base.id, "policies"): _DetailedSourceMetadata(
+            row_count=10,
+            column_count=2,
+            columns={"quote_id": "string", "premium": "double"},
+            column_width_keys={"quote_id": "quote_id", "premium": "premium"},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=64,
+        ),
+        (join.id, "claims"): _DetailedSourceMetadata(
+            row_count=10,
+            column_count=2,
+            columns={"quote_id": "string", "claim_count": "int64"},
+            column_width_keys={"quote_id": "quote_id", "claim_count": "claim_count"},
+            column_uncompressed_size_bytes={},
+            uncompressed_size_bytes=64,
+        ),
+    }
+
+    with patch(
+        "haute._ram_estimate._json_api_input_port_metadata",
+        side_effect=lambda node, port: per_port.get((node.id, port)),
+    ):
+        resolved = _resolve_target_columns(graph, joined.id, "live")
+        join_keys = _edge_join_key_columns_on_path(graph, joined.id, "live")
+
+    assert resolved is not None
+    assert resolved.columns == ("quote_id", "premium", "quote_id_right", "claim_count")
+    assert join_keys == frozenset({"quote_id", "quote_id_right"})
+
+
 def test_materialisation_estimate_reads_each_source_metadata_once(tmp_path) -> None:
     path = tmp_path / "source.parquet"
     pl.DataFrame({"x": [1, 2, 3]}).write_parquet(path)
@@ -1316,7 +1376,13 @@ class TestDetailedEdgeJoinColumnResolution:
                 "on": ["quote_id"],
             },
         )
-        graph = PipelineGraph(nodes=[base, join, joined], edges=[])
+        graph = PipelineGraph(
+            nodes=[base, join, joined],
+            edges=[
+                GraphEdge(id="e1", source=base.id, target=joined.id),
+                GraphEdge(id="e2", source=join.id, target=joined.id),
+            ],
+        )
 
         assert (
             _resolve_edge_join_column_names(
@@ -2125,9 +2191,10 @@ def json_api_input(tmp_path, monkeypatch):
     )
     config = _json_port_config(data_path)
     cache_dir = _json_cache_dir(data_path, "working")
+    committed_dir = _json_cache_dir(data_path, "committed")
     build_per_port_cache(data_path, config, cache_dir)
     try:
-        yield data_path, config, cache_dir
+        yield data_path, config, cache_dir, committed_dir
     finally:
         set_project_root(original_root)
 
@@ -2138,7 +2205,7 @@ class TestJsonApiInputPortMetadata:
     def test_each_emitted_table_is_sized_from_its_own_parquet(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir = json_api_input
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         policies = _json_api_input_port_metadata(node, "policies")
@@ -2154,11 +2221,9 @@ class TestJsonApiInputPortMetadata:
 
         import shutil
 
-        from haute._json_flatten import _json_cache_dir
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        data_path, config, working_dir = json_api_input
-        committed_dir = _json_cache_dir(data_path, "committed")
+        _data_path, config, working_dir, committed_dir = json_api_input
         committed_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
         shutil.rmtree(working_dir)
@@ -2170,7 +2235,7 @@ class TestJsonApiInputPortMetadata:
     def test_a_port_the_cache_never_emitted_is_unavailable(self, json_api_input) -> None:
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir = json_api_input
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         assert _json_api_input_port_metadata(node, "vehicles") is None
@@ -2181,7 +2246,7 @@ class TestJsonApiInputPortMetadata:
 
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        data_path, config, _cache_dir = json_api_input
+        data_path, config, _cache_dir, _committed_dir = json_api_input
         data_path.write_text('[{"policy_id": 9, "drivers": []}]', encoding="utf-8")
         node = _make_source_node(node_type="apiInput", config=config)
 
@@ -2210,7 +2275,7 @@ class TestJsonApiInputPortMetadata:
 
         from haute._ram_estimate import _json_api_input_port_metadata
 
-        _data_path, config, _cache_dir = json_api_input
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
         node = _make_source_node(node_type="apiInput", config=config)
 
         with patch(
@@ -2226,7 +2291,7 @@ class TestJsonApiInputPortMetadata:
         """Sibling branches of one apiInput must not inflate a boundary they
         do not feed — the whole reason the walk carries the arrival handle."""
 
-        _data_path, config, _cache_dir = json_api_input
+        _data_path, config, _cache_dir, _committed_dir = json_api_input
         source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
         consumer = _make_transform_node(node_id="claims")
         sibling = _make_transform_node(node_id="drivers_only")

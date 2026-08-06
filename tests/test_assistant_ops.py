@@ -804,6 +804,15 @@ class TestSemanticPlans:
             ("def widen(df):\n    return df\ndf = widen(left)", False),
             ("widen = lambda df: df\ndf = widen(left)", False),
             ("df = [df.head() for df in (left, right)][0]", False),
+            # A binding in a deeper scope cannot shadow an enclosing read, and
+            # a comprehension's first iterable is evaluated before its target.
+            (
+                "def widen():\n    def inner():\n        df = left\n    return df\ndf = widen()",
+                True,
+            ),
+            ("df = [left.head() for df in df][0]", True),
+            ("def widen(df=df):\n    return df\ndf = widen()", True),
+            ("def widen():\n    import polars as df\n    return df\ndf = widen()", False),
         ],
     )
     def test_multi_input_polars_code_must_name_the_input_it_starts_from(

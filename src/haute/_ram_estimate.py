@@ -422,6 +422,21 @@ class _EstimateGraphIndex:
             if edge.target == child_id and edge.source in self.node_map
         )
 
+    def parent_port(self, child_id: str, parent_id: str) -> str | None:
+        """Return the handle on one parent edge, or None for a handle-less edge."""
+
+        matches = [
+            edge.sourceHandle
+            for edge in self.pruned_edges
+            if edge.target == child_id and edge.source == parent_id
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"expected exactly one edge from {parent_id!r} to {child_id!r}; "
+                f"found {len(matches)}"
+            )
+        return matches[0]
+
     def resolve_columns(
         self,
         target_node_id: str,
@@ -894,8 +909,8 @@ def _resolve_edge_join_columns_from_index(
     if how not in {"inner", "left"}:
         return None
 
-    base_resolved = index.resolve_columns(base_input)
-    join_resolved = index.resolve_columns(join_input)
+    base_resolved = index.resolve_columns(base_input, index.parent_port(node.id, base_input))
+    join_resolved = index.resolve_columns(join_input, index.parent_port(node.id, join_input))
     if base_resolved is None or join_resolved is None:
         return None
 
@@ -1030,7 +1045,7 @@ def _edge_join_key_columns_on_path(
 
         _, join_input = roles
         resolved = index.resolve_columns(nid)
-        join_resolved = index.resolve_columns(join_input)
+        join_resolved = index.resolve_columns(join_input, index.parent_port(node.id, join_input))
         if resolved is None or join_resolved is None:
             join_keys.update(joined_keys)
             continue

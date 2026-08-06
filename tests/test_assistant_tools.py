@@ -319,8 +319,7 @@ class TestColumnProfiles:
         assert result["scan_bounded"] is False
 
     def test_high_cardinality_columns_withhold_their_values(self, profile_project: Path):
-        """The cardinality bound is the privacy boundary: a name, address, or
-        registration cannot fit under it, so it can never be emitted."""
+        """High-cardinality values are withheld to reduce unnecessary disclosure."""
 
         from haute.assistant._tools import get_column_profiles
 
@@ -365,6 +364,24 @@ class TestColumnProfiles:
 
         assert "error" not in result, result
         json.dumps(result, allow_nan=False)
+
+    async def test_executor_holds_the_save_lock_while_profiling(
+        self,
+        profile_project: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        import haute.assistant._tools as tools_module
+
+        def observe_lock(*_args: object) -> dict[str, object]:
+            return {"save_lock_held": tools_module.save_lock.locked()}
+
+        monkeypatch.setattr(tools_module, "get_column_profiles", observe_lock)
+
+        result = await tools_module.build_tool_executor("main.py")(
+            "get_column_profiles", {"node": "totals", "input": "claims"}
+        )
+
+        assert result["save_lock_held"] is True
 
     def test_temporal_and_decimal_bounds_render_as_their_written_form(
         self, dtype_matrix_project: Path
