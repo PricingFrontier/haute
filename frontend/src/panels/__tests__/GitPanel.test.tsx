@@ -3,7 +3,6 @@ import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-li
 import GitPanel from "../GitPanel"
 import { clearGitPanelCaches } from "../gitPanelCache"
 import useGitStore, { resetGitStatusRequestForTests } from "../../stores/useGitStore"
-import { resetGitBranchLoaderForTests } from "../../stores/gitBranchLoader"
 import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 
@@ -124,7 +123,6 @@ describe("GitPanel", () => {
     // The panel's session caches are module-level (they survive remounts by
     // design) — reset them so tests stay independent.
     clearGitPanelCaches()
-    resetGitBranchLoaderForTests()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     resetGitStatusRequestForTests()
     useGitStore.setState({ status: null, loading: false, statusError: null, branches: [], branchesLoaded: false, branchesLoading: false, branchesError: null, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })

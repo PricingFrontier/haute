@@ -39,7 +39,6 @@ const READY: GitWorkingBranchResponse = {
 
 describe("useGitStore", () => {
   beforeEach(() => {
-    resetGitBranchLoaderForTests()
     useGitStore.setState({
       status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
       branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
@@ -172,7 +171,7 @@ describe("useGitStore", () => {
     expect(useGitStore.getState()).toMatchObject({ branches, branchesLoaded: true, branchesLoading: false })
   })
 
-  it("a request settling after a single-flight reset neither publishes state nor clobbers the newer request", async () => {
+  it("a branch request settling after a single-flight reset neither publishes state nor clobbers the newer request", async () => {
     const staleBranches: GitManagedBranch[] = [{
       name: "stale", is_current: false, is_archived: false, has_unmerged_saves: false,
       has_uncommitted_changes: false,

@@ -205,7 +205,6 @@ import App from "../App"
 import useUIStore from "../stores/useUIStore"
 import useGraphStore from "../stores/useGraphStore"
 import useGitStore from "../stores/useGitStore"
-import { resetGitBranchLoaderForTests } from "../stores/gitBranchLoader"
 import useToastStore from "../stores/useToastStore"
 import useSettingsStore from "../stores/useSettingsStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
@@ -240,7 +239,6 @@ function resetAllStores(): void {
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
-  resetGitBranchLoaderForTests()
   useGitStore.setState({
     status: null,
     loading: false,

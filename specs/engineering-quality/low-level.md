@@ -236,12 +236,15 @@
 - Frontend shuffled tests are a nightly monitor for within-file state leaks,
   not an ordinary PR requirement. A captured seed makes a failed ordering
   reproducible.
-- The toast store is reset globally before every frontend test (a `beforeEach`
-  in `frontend/src/setupTests.ts`); test files must not add their own
-  hook-level copies of that reset. Deliberate toast seeding belongs inside the
-  test or a file-level `beforeEach` (which runs after the global hook); the
-  toast system's own unit tests keep explicit resets as part of their
-  self-contained baseline.
+- The toast store and the branch-loader single-flight are reset globally
+  before every frontend test (a `beforeEach` in `frontend/src/setupTests.ts`);
+  test files must not add their own hook-level copies of those resets.
+  Deliberate toast seeding belongs inside the test or a file-level
+  `beforeEach` (which runs after the global hook); the toast system's own unit
+  tests keep explicit resets as part of their self-contained baseline. The
+  global loader reset is safe because every settle path in
+  `gitBranchLoader.ts` is identity-guarded — a detached request neither
+  publishes state nor clobbers a newer request's slot.
 - `tests/`, `frontend/src/__tests__/`, and the colocated frontend test
   directories are active corpora. `specs/roadmap/`, `repro/`, and generated
   output/reports must not be read as exhaustive or current behaviour merely

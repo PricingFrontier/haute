@@ -44,7 +44,6 @@ import { readFileSync, readdirSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import useToastStore from "../../stores/useToastStore"
-import { resetGitBranchLoaderForTests } from "../../stores/gitBranchLoader"
 
 // ═══════════════════════════════════════════════════════════════════
 //  Source walker (shared by all structural tests)
@@ -456,7 +455,6 @@ import GitPanel from "../GitPanel"
 describe("#83 behavioral: GitPanel history load failure surfaces a toast", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    resetGitBranchLoaderForTests()
     // The v1 GitPanel loads its history (+ branch manager + status) on mount.
     H.getWorkingBranch.mockResolvedValue({
       working_branch: "demo",
