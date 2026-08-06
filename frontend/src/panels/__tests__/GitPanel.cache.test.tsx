@@ -144,7 +144,10 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     mockGetGitGraph.mockImplementation(() => Promise.resolve(structuredClone(graphTwoBranch)))
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    resetGitStatusRequestForTests()
+  })
 
   it("(a) a byte-identical refresh applies no state: rail layout untouched, row nodes stable", async () => {
     render(<GitPanel {...defaultProps} />)

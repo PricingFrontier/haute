@@ -11,7 +11,7 @@ vi.mock("../../api/client", () => ({
   retryGitStorageSync: vi.fn(),
 }))
 
-import useGitStore from "../useGitStore"
+import useGitStore, { resetGitStatusRequestForTests } from "../useGitStore"
 import {
   acknowledgeGitBind,
   bindGitStorage,
@@ -43,6 +43,7 @@ describe("useGitStore", () => {
       branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
     })
     vi.clearAllMocks()
+    resetGitStatusRequestForTests()
   })
   afterEach(() => {
     useGitStore.setState({
@@ -77,6 +78,37 @@ describe("useGitStore", () => {
     expect(getWorkingBranch).toHaveBeenCalledOnce()
     resolve(READY)
     await expect(Promise.all([first, second])).resolves.toEqual([READY, READY])
+  })
+
+  it("a request settling after a single-flight reset neither publishes state nor clobbers the newer request", async () => {
+    // First load is detached mid-flight (what a test's beforeEach reset does).
+    let resolveFirst!: (value: GitWorkingBranchResponse) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((done) => { resolveFirst = done }),
+    )
+    const first = useGitStore.getState().loadStatus()
+    resetGitStatusRequestForTests()
+
+    // Second load starts a genuinely new request in the freed slot.
+    let resolveSecond!: (value: GitWorkingBranchResponse) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((done) => { resolveSecond = done }),
+    )
+    const second = useGitStore.getState().loadStatus()
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+
+    // The detached request settles late: no state write, and the newer
+    // request keeps its single-flight slot (a third call still coalesces
+    // instead of spawning a duplicate fetch).
+    resolveFirst({ ...READY, working_branch: "stale" })
+    await first
+    expect(useGitStore.getState().status).toBeNull()
+    expect(useGitStore.getState().loadStatus()).toBe(second)
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+
+    resolveSecond(READY)
+    await expect(second).resolves.toEqual(READY)
+    expect(useGitStore.getState().status).toEqual(READY)
   })
 
   it("de-duplicates concurrent branch loads and publishes the shared listing", async () => {

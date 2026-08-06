@@ -150,8 +150,12 @@ const useGitStore = create<GitState>()((set, get) => ({
   loadStatus: () => {
     if (statusInFlight) return statusInFlight
     set({ loading: true, statusError: null })
-    statusInFlight = getWorkingBranch()
+    // Identity-guarded settle: after resetGitStatusRequestForTests() (or any
+    // future invalidation) detaches this request, a late settle must neither
+    // publish state nor null out a NEWER request's single-flight slot.
+    const request: Promise<GitWorkingBranchResponse | null> = getWorkingBranch()
       .then((status) => {
+        if (statusInFlight !== request) return status
         set({ status, loading: false, statusError: null })
         // Binding runs in the background, so its dialog is closed by the time
         // a failure lands. Bring it back — the user asked for durable storage
@@ -163,6 +167,7 @@ const useGitStore = create<GitState>()((set, get) => ({
         return status
       })
       .catch(async (error: unknown) => {
+        if (statusInFlight !== request) return null
         // Readiness is best-effort editor chrome. Keep the last successful
         // state for gating, but expose this failure for an explicit retry.
         const { gitErrorMessage } = await import("../utils/gitError")
@@ -173,9 +178,10 @@ const useGitStore = create<GitState>()((set, get) => ({
         return null
       })
       .finally(() => {
-        statusInFlight = null
+        if (statusInFlight === request) statusInFlight = null
       })
-    return statusInFlight
+    statusInFlight = request
+    return request
   },
 
   loadBranches: (options) =>
