@@ -1,11 +1,12 @@
 """Host memory observation — available system RAM and GPU VRAM.
 
-This module answers one question per resource: what does the machine have
-*right now*?  It never fabricates capacity — every probe returns a real
-measurement or ``None`` with a recorded reason, so callers that require a
+This module answers one question per resource: what does the machine have?
+It never fabricates capacity — each RAM probe returns a real measurement or
+``None`` with a recorded failure reason, so callers that require a
 physical-memory limit must fail admission or use an explicit configured
-budget.  Workload-side estimation (how much a job *needs*) lives in
-:mod:`haute._ram_estimate`.
+budget.  ``available_vram_bytes`` reports *total* installed GPU VRAM (the
+CatBoost sizing basis) or ``None`` when no GPU is detected.  Workload-side
+estimation (how much a job *needs*) lives in :mod:`haute._ram_estimate`.
 
 Available RAM is resolved by trying each platform source in order; the first
 observation wins and is clamped to any finite Linux cgroup memory headroom.
@@ -214,10 +215,17 @@ class _VMStatistics64(ctypes.Structure):
     ]
 
 
-# HOST_VM_INFO64_COUNT — the struct measured in integer_t words.  The kernel
-# refuses an undersized count outright, so a future layout change surfaces as
-# a failed probe rather than a misread struct.
-_HOST_VM_INFO64_COUNT = ctypes.sizeof(_VMStatistics64) // ctypes.sizeof(ctypes.c_int)
+# HOST_VM_INFO64_COUNT for the REV1 layout this struct mirrors, in integer_t
+# words.  The kernel refuses counts below the lowest legal revision boundary,
+# but silently CLAMPS an oversized or off-boundary count down to the nearest
+# boundary it knows and still returns KERN_SUCCESS (trailing fields left
+# zero), so a drifted struct cannot be detected at call time.  Pin the REV1
+# count and require the struct to match it exactly.
+_HOST_VM_INFO64_REV1_COUNT = 38
+if ctypes.sizeof(_VMStatistics64) != _HOST_VM_INFO64_REV1_COUNT * ctypes.sizeof(ctypes.c_int):
+    raise RuntimeError(  # pragma: no cover - static layout invariant
+        "_VMStatistics64 layout drifted from the 38-word HOST_VM_INFO64 REV1 contract"
+    )
 
 
 def _macos_available_ram() -> _RamProbe:
@@ -236,6 +244,10 @@ def _macos_available_ram() -> _RamProbe:
     ``host_page_size`` rather than POSIX ``sysconf(SC_PAGE_SIZE)`` — the two
     diverge for translated processes (Rosetta reports a 4 KiB POSIX page while
     the host counts 16 KiB pages).
+
+    The result is an optimistic bound: ``inactive_count`` includes dirty pages
+    reclaimable only through compression or swap, and compressor-held memory is
+    not subtracted.  Admission's OS reserve and safety factor absorb that gap.
     """
     if sys.platform != "darwin":
         return _RamProbe(None)
@@ -248,7 +260,7 @@ def _macos_available_ram() -> _RamProbe:
         libsystem.mach_port_deallocate.argtypes = [_mach_natural_t, _mach_natural_t]
 
         stats = _VMStatistics64()
-        info_count = ctypes.c_uint32(_HOST_VM_INFO64_COUNT)
+        info_count = ctypes.c_uint32(_HOST_VM_INFO64_REV1_COUNT)
         page_size = ctypes.c_size_t()  # vm_size_t is pointer-width
         host_port = libsystem.mach_host_self()
         try:
@@ -265,8 +277,13 @@ def _macos_available_ram() -> _RamProbe:
             )
         finally:
             # ``mach_host_self`` hands back a send right on every call; without
-            # this the per-admission probe would leak port rights.
-            libsystem.mach_port_deallocate(libsystem.mach_task_self(), host_port)
+            # this the per-admission probe would leak port rights.  Guarded
+            # because a leaked right is preferable to discarding a good reading
+            # or masking the body's real error with the deallocate's own.
+            try:
+                libsystem.mach_port_deallocate(libsystem.mach_task_self(), host_port)
+            except (AttributeError, OSError, ctypes.ArgumentError):
+                pass
 
         if stats_result != _MACH_KERN_SUCCESS:
             return _RamProbe(None, f"host_statistics64 returned {stats_result}")

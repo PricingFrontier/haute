@@ -153,7 +153,7 @@ _EXPECTED_DEBT_IDS = {
     "8a0f7160d9044069",
     "a78fb6a12665d489",
     "3512c808a6273e35",
-    "f63085091f758553",
+    "153ecf02f6848509",
     "b47ee7c16fbf5755",
     "9b58538ec2c90223",
     "6881417aa251afb7",
@@ -264,9 +264,9 @@ _EXPECTED_DEBT_IDS = {
     # purgeable exclusion, Mach port release, and every failure path — is
     # covered unconditionally on all platforms by the mocked tests in the same
     # class, which drive the real ctypes struct. See
-    # tests/test_ram_estimate.py::TestAvailableRamMacOS
+    # tests/test_host_memory.py::TestAvailableRamMacOS
     # ::test_real_darwin_kernel_reports_available_memory.
-    "1744dbaf5198542f",
+    "23fb0fa7068e4340",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {
