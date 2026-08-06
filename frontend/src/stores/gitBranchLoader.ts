@@ -35,36 +35,48 @@ export function loadGitBranches(
   if (inFlight) {
     if (!refresh) return inFlight
     if (!queuedRefresh) {
-      queuedRefresh = inFlight
+      const queued: Promise<GitManagedBranch[]> = inFlight
         .catch(() => [])
         .then(() => {
+          // Identity guard: a test reset may have detached this continuation;
+          // a detached refresh must neither clear a newer queue slot nor spawn
+          // a fresh request.
+          if (queuedRefresh !== queued) return []
           queuedRefresh = null
           return loadGitBranches(set)
         })
+      queuedRefresh = queued
     }
     return queuedRefresh
   }
 
   set({ branchesLoading: true, branchesError: null })
-  inFlight = getWorkingBranches()
+  const request: Promise<GitManagedBranch[]> = getWorkingBranches()
     .then((result) => {
-      set({
-        branches: result.branches,
-        branchesLoaded: true,
-        branchesLoading: false,
-        branchesError: null,
-      })
+      // Identity guard: after a test reset this request is detached — resolve
+      // for its own awaiters but do not publish state over a newer request's.
+      if (inFlight === request) {
+        set({
+          branches: result.branches,
+          branchesLoaded: true,
+          branchesLoading: false,
+          branchesError: null,
+        })
+      }
       return result.branches
     })
     .catch((error: unknown) => {
-      set({
-        branchesLoading: false,
-        branchesError: gitErrorMessage(error, "Unable to load branches"),
-      })
+      if (inFlight === request) {
+        set({
+          branchesLoading: false,
+          branchesError: gitErrorMessage(error, "Unable to load branches"),
+        })
+      }
       throw error
     })
     .finally(() => {
-      inFlight = null
+      if (inFlight === request) inFlight = null
     })
-  return inFlight
+  inFlight = request
+  return request
 }

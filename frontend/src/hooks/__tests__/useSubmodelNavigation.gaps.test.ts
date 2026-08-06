@@ -3,8 +3,8 @@ import { renderHook, cleanup, act } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import type { SubmodelDefinition } from "../../types/node"
 import useSubmodelNavigation from "../useSubmodelNavigation"
-import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
+import useGraphStore from "../../stores/useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 
 vi.mock("../../api/client", () => ({

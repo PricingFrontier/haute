@@ -172,6 +172,44 @@ describe("useGitStore", () => {
     expect(useGitStore.getState()).toMatchObject({ branches, branchesLoaded: true, branchesLoading: false })
   })
 
+  it("a request settling after a single-flight reset neither publishes state nor clobbers the newer request", async () => {
+    const staleBranches: GitManagedBranch[] = [{
+      name: "stale", is_current: false, is_archived: false, has_unmerged_saves: false,
+      has_uncommitted_changes: false,
+    }]
+    const freshBranches: GitManagedBranch[] = [{
+      name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
+      has_uncommitted_changes: false,
+    }]
+    let resolveStale!: (value: { current: string; branches: GitManagedBranch[] }) => void
+    let resolveFresh!: (value: { current: string; branches: GitManagedBranch[] }) => void
+    vi.mocked(getWorkingBranches)
+      .mockReturnValueOnce(new Promise((done) => { resolveStale = done }))
+      .mockReturnValueOnce(new Promise((done) => { resolveFresh = done }))
+
+    const stale = useGitStore.getState().loadBranches()
+    await vi.waitFor(() => expect(getWorkingBranches).toHaveBeenCalledOnce())
+    resetGitBranchLoaderForTests()
+    const fresh = useGitStore.getState().loadBranches()
+    await vi.waitFor(() => expect(getWorkingBranches).toHaveBeenCalledTimes(2))
+
+    // The detached request resolves for its own awaiters but publishes nothing.
+    resolveStale({ current: "stale", branches: staleBranches })
+    await expect(stale).resolves.toEqual(staleBranches)
+    expect(useGitStore.getState().branches).toEqual([])
+
+    // The newer request's single-flight slot survives the stale settle: a
+    // subsequent read shares it instead of starting a third request.
+    const shared = useGitStore.getState().loadBranches()
+    await new Promise((tick) => setTimeout(tick, 0))
+    expect(getWorkingBranches).toHaveBeenCalledTimes(2)
+    resolveFresh({ current: "dev", branches: freshBranches })
+    await expect(Promise.all([fresh, shared])).resolves.toEqual([freshBranches, freshBranches])
+    expect(useGitStore.getState()).toMatchObject({
+      branches: freshBranches, branchesLoaded: true, branchesLoading: false,
+    })
+  })
+
   it("openModal with a pendingAction sets both", () => {
     useGitStore.getState().openModal("select", { pendingAction: "commit" })
     expect(useGitStore.getState().modal).toBe("select")
