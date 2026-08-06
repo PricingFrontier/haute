@@ -52,6 +52,19 @@ def _run_git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _configure_identity(repo: Path) -> None:
+    """Give *repo* a commit identity, as the UI's identity prompt does.
+
+    A restored or forked clone carries none — `.haute/` is per-clone and git
+    identity lives in the clone's own config, which is precisely why the
+    product prompts for one before the first commit. A test that commits in
+    such a clone must therefore supply it too; relying on the machine's
+    global identity passes locally and fails wherever git has none.
+    """
+    _run_git(repo, "config", "user.name", "Restored Actuary")
+    _run_git(repo, "config", "user.email", "restored@example.com")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_storage_state(monkeypatch: pytest.MonkeyPatch):
     """Keep module singletons and env out of each other's way.
@@ -117,6 +130,12 @@ def _bind_and_publish(project: Path, *, content: str = "# priced\n") -> str:
     return sha
 
 
+# The directory _forked_project restores the fork into. Named so a test that
+# writes inside it can derive the path from tmp_path in its own body, which
+# is what the write-sandbox lint requires (a helper return is opaque to it).
+_FORK_CONTAINER_DIR = "fork-container"
+
+
 def _forked_project(
     project: Path,
     tmp_path: Path,
@@ -147,8 +166,11 @@ def _forked_project(
     _project_storage.write_binding(StorageBinding(remote_url=FORK_URL, branch=WORKING))
     _replace_container(monkeypatch)
 
-    fork_root = tmp_path / "fork-container"
+    fork_root = tmp_path / _FORK_CONTAINER_DIR
     assert _project_storage.restore_if_bound(fork_root) == "restored"
+    # The fork's container is a fresh clone, so it has no commit identity
+    # until the user supplies one — callers here go on to commit.
+    _configure_identity(fork_root)
     return fork_root
 
 
@@ -745,6 +767,7 @@ class TestContainerDeathSurvival:
         local_branches = _run_git(restored_root, "branch", "--format=%(refname:short)").splitlines()
         assert WORKING in local_branches
         assert f"{WORKING}-save" in local_branches
+        _configure_identity(restored_root)
         (restored_root / "rating.py").write_text("# repriced\n", encoding="utf-8")
         next_sha = _git.commit_save(["rating.py"], WORKING, cwd=restored_root)
         assert next_sha is not None
@@ -1090,6 +1113,7 @@ class TestUcContainerDeathSurvival:
         # A further save publishes the next generation — the restored-from
         # pointer is exempt from the supersession fence even though it was
         # written by the previous container's writer identity.
+        _configure_identity(restored_root)
         (restored_root / "rating.py").write_text("# repriced\n", encoding="utf-8")
         next_sha = _git.commit_save(["rating.py"], WORKING, cwd=restored_root)
         assert next_sha is not None
@@ -1747,7 +1771,9 @@ class TestUpstreamSync:
     ) -> None:
         """Fast-forward only: both sides moved is a dead end, not a merge."""
         fork_root = _forked_project(project, tmp_path, monkeypatch)
-        (fork_root / "rating.py").write_text("# fork's own work\n", encoding="utf-8")
+        (tmp_path / _FORK_CONTAINER_DIR / "rating.py").write_text(
+            "# fork's own work\n", encoding="utf-8"
+        )
         own_sha = _git.commit_save(["rating.py"], WORKING, cwd=fork_root)
         assert own_sha is not None
 

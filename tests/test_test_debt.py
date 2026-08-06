@@ -249,6 +249,12 @@ _EXPECTED_DEBT_IDS = {
     "43dde5a20b2d64f6",
     "b5b34055c01d1d48",
     "d0922f4b9430bfba",
+    # The hosted interpreter fix has a last-resort branch that reads
+    # /proc/self/exe, which exists only on Linux. The primary path (resolve
+    # before the working directory moves) is covered on every platform; this
+    # one leg can only be exercised where that file exists.
+    # See tests/test_worker_isolation.py.
+    "e928b1daccb49a17",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

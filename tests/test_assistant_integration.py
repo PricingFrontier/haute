@@ -266,7 +266,9 @@ class TestMutationEndToEnd:
 
         def degraded_capture(self, touched, removed, warnings):
             warnings.append("Changes saved; version capture failed: simulated")
-            return None
+            # (sha, identity_required): capture degraded for a reason that is
+            # not a missing identity, so the prompt must not fire.
+            return None, False
 
         monkeypatch.setattr(SavePipelineService, "_capture_save_in_ledger", degraded_capture)
 
