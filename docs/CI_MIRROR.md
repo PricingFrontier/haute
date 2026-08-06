@@ -386,7 +386,9 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
 
 Even with every mirrorable gate green locally, a PR can still fail CI on: (1)
 the Windows leg, (2) a Linux-x86-64-only behaviour, (3) a PyPI state change in
-the resolve window. These are bounded and named. Everything else — lint, types,
+the resolve window, or (4) a stale local cache or drifted local platform
+masking what CI's clean environment will catch — see §Environment drift below
+for that class. These are bounded and named. Everything else — lint, types,
 unit + coverage gates, optional-dep smokes, package build+install (incl.
 fresh-resolve yank detection), mutation config, e2e, docs build — is
 reproducible locally and should be run before every push per the runlist above.
@@ -418,9 +420,11 @@ is the wrong one. Instead:
 **Worked example — the Node 25 localStorage shadowing (29 July 2026).** The
 frontend vitest suite broke locally-only: Node ≥ 22.4 ships experimental
 web-storage globals, default-on from Node 25, and Node's file-less
-`localStorage` stub (no `.clear`) landed on `globalThis` before jsdom set up.
-Vitest's jsdom environment skips window keys already present on `globalThis`,
-so the stub silently shadowed jsdom's real `Storage` and every test touching
+`localStorage` landed on `globalThis` before jsdom set up (its shape varies by
+Node version — an inert stub with no `.clear` on 25, an `undefined`-returning
+accessor from 26; the shadowing needs only the key's presence). Vitest's jsdom
+environment skips window keys already present on `globalThis`, so Node's
+global silently shadowed jsdom's real `Storage` and every test touching
 `localStorage.clear` failed with no obvious cause. CI stayed green because its
 Node is pinned to 22.14.0. The fix is
 `test.execArgv: ["--no-experimental-webstorage"]` in

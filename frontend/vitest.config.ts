@@ -5,13 +5,17 @@ export default defineConfig({
     environment: "jsdom",
     // Node >= 22.4 ships experimental web-storage globals (on by default from
     // Node 25), and the jsdom environment skips window keys already present
-    // on globalThis, so Node's globals shadow jsdom's: localStorage as an
-    // inert file-less stub (no .clear), sessionStorage as a real but
-    // process-global Storage that silently leaks state across test files.
-    // Pin the behaviour off on every Node rather than pinning a Node version;
-    // setupTests.ts carries the canary. Requires Node >= 22.4 (older Nodes
-    // reject the flag and crash the workers); from Node 25 this spelling is
-    // the legacy alias of --webstorage.
+    // on globalThis, so Node's globals shadow jsdom's. The shapes vary by
+    // Node version (25: localStorage = inert file-less stub with no .clear;
+    // 26: an accessor returning undefined; sessionStorage: a real but
+    // process-global Storage that leaks state across test files) — what
+    // matters is the key's mere presence, which stops jsdom's real Storage
+    // being installed. Pin the behaviour off on every Node rather than
+    // pinning a Node version; setupTests.ts carries the canary. Requires
+    // Node >= 22.4 (older Nodes reject the flag and crash the workers at
+    // spawn); from Node 25 this spelling is the legacy alias of --webstorage,
+    // and if a future Node drops the alias the symptom is that same
+    // worker-spawn crash on an unrecognised option, not a canary message.
     execArgv: ["--no-experimental-webstorage"],
     include: ["src/**/__tests__/**/*.test.{ts,tsx}", "e2e/__tests__/**/*.test.ts"],
     setupFiles: ["./src/setupTests.ts"],
