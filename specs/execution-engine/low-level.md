@@ -21,7 +21,7 @@
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
-| `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (*total* installed GPU VRAM via nvidia-smi, or nothing when no GPU is detected). Owns the nvidia-smi subprocess chokepoint. |
+| `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the first GPU's total VRAM via nvidia-smi — the CatBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason). Owns the nvidia-smi subprocess chokepoint. |
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 
 ## Key types and data structures
@@ -133,8 +133,9 @@
 - **Unobservable availability** — a probe that fails records its reason, and
   the single `available_ram_unavailable` warning reports every attempted
   source's reason (a source is attempted exactly when it reports a reason), so
-  the diagnostic stays honest when all of them fail. Any probe failure yields
-  `None`, never a fabricated capacity.
+  the diagnostic stays honest when all of them fail. When every applicable
+  probe has failed the result is `None`, never a fabricated capacity; an
+  earlier source's failure never blocks a later source's real observation.
 - **`ExecutionFaultPoint` / `ExecutionTelemetryEvent`** (`_execution_context.py`) —
   immutable sequenced request-local fault boundaries and schema-versioned,
   identifier-free terminal telemetry with a bounded scalar attribute allow-list.

@@ -233,7 +233,11 @@ class TestAvailableRamPlatformPaths:
         read_cgroup.assert_not_called()
 
     def test_linux_proc_meminfo(self) -> None:
-        """Successful /proc/meminfo read returns parsed MemAvailable."""
+        """Successful /proc/meminfo read returns parsed MemAvailable.
+
+        The real cgroup controller files are masked so a memory-constrained
+        Linux CI container cannot clamp the expected value.
+        """
         fake_meminfo = (
             "MemTotal:       16384000 kB\n"
             "MemFree:         2000000 kB\n"
@@ -241,7 +245,10 @@ class TestAvailableRamPlatformPaths:
         )
         from io import StringIO
 
-        with patch("builtins.open", return_value=StringIO(fake_meminfo)):
+        with (
+            patch("builtins.open", return_value=StringIO(fake_meminfo)),
+            patch("haute._host_memory._read_cgroup_memory_file", return_value=None),
+        ):
             result = available_ram_bytes()
         assert result == 8_000_000 * 1024
 
@@ -250,7 +257,10 @@ class TestAvailableRamPlatformPaths:
         fake_meminfo = "MemTotal:       16384000 kB\nMemFree:  2000000 kB\n"
         from io import StringIO
 
-        with patch("builtins.open", return_value=StringIO(fake_meminfo)):
+        with (
+            patch("builtins.open", return_value=StringIO(fake_meminfo)),
+            patch("haute._host_memory._read_cgroup_memory_file", return_value=None),
+        ):
             # sysconf path should be tried next
             with patch("os.sysconf", side_effect=[4096, 4096], create=True):
                 result = available_ram_bytes()
@@ -275,6 +285,41 @@ class TestAvailableRamPlatformPaths:
             result = available_ram_bytes()
 
         assert result is None
+
+    def test_windows_success_reports_available_not_total_bytes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Windows probe returns ullAvailPhys, not ullTotalPhys.
+
+        Guards the total-versus-available defect class on the Windows leg the
+        way the darwin tests guard it on macOS: the fake populates both fields
+        with distinguishable values and the exact available figure must win.
+        """
+        from types import SimpleNamespace
+
+        def fill_status(mem: object) -> bool:
+            mem.ullTotalPhys = 64 * 1024**3
+            mem.ullAvailPhys = 3 * 1024**3
+            return True
+
+        fake_ctypes = SimpleNamespace(
+            Structure=object,
+            c_ulong=int,
+            c_ulonglong=int,
+            sizeof=lambda _value: 1,
+            byref=lambda value: value,
+            windll=SimpleNamespace(
+                kernel32=SimpleNamespace(GlobalMemoryStatusEx=fill_status),
+            ),
+        )
+
+        monkeypatch.setattr("sys.platform", "win32")
+        with (
+            patch("builtins.open", side_effect=OSError),
+            patch("os.sysconf", side_effect=AttributeError, create=True),
+            patch.dict("sys.modules", {"ctypes": fake_ctypes}),
+        ):
+            assert available_ram_bytes() == 3 * 1024**3
 
     def test_windows_global_memory_status_false_is_unavailable(
         self, monkeypatch: pytest.MonkeyPatch

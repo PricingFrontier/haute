@@ -4,9 +4,10 @@ This module answers one question per resource: what does the machine have?
 It never fabricates capacity — each RAM probe returns a real measurement or
 ``None`` with a recorded failure reason, so callers that require a
 physical-memory limit must fail admission or use an explicit configured
-budget.  ``available_vram_bytes`` reports *total* installed GPU VRAM (the
-CatBoost sizing basis) or ``None`` when no GPU is detected.  Workload-side
-estimation (how much a job *needs*) lives in :mod:`haute._ram_estimate`.
+budget.  ``available_vram_bytes`` reports the first GPU's total VRAM (the
+CatBoost single-device sizing basis) or ``None`` when no GPU is detected;
+detection failures are logged with a reason.  Workload-side estimation (how
+much a job *needs*) lives in :mod:`haute._ram_estimate`.
 
 Available RAM is resolved by trying each platform source in order; the first
 observation wins and is clamped to any finite Linux cgroup memory headroom.
@@ -258,10 +259,22 @@ def _macos_available_ram() -> _RamProbe:
         libsystem.mach_host_self.restype = _mach_natural_t
         libsystem.mach_task_self.restype = _mach_natural_t
         libsystem.mach_port_deallocate.argtypes = [_mach_natural_t, _mach_natural_t]
+        # vm_size_t is pointer-width: verified empirically — host_page_size
+        # overwrites all 8 bytes of a sentinel-filled c_size_t.  kern_return_t
+        # is a plain int.
+        libsystem.host_page_size.restype = ctypes.c_int
+        libsystem.host_page_size.argtypes = [_mach_natural_t, ctypes.POINTER(ctypes.c_size_t)]
+        libsystem.host_statistics64.restype = ctypes.c_int
+        libsystem.host_statistics64.argtypes = [
+            _mach_natural_t,
+            ctypes.c_int,
+            ctypes.POINTER(_VMStatistics64),
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
 
         stats = _VMStatistics64()
         info_count = ctypes.c_uint32(_HOST_VM_INFO64_REV1_COUNT)
-        page_size = ctypes.c_size_t()  # vm_size_t is pointer-width
+        page_size = ctypes.c_size_t()
         host_port = libsystem.mach_host_self()
         try:
             page_size_result = int(libsystem.host_page_size(host_port, ctypes.byref(page_size)))
@@ -282,8 +295,8 @@ def _macos_available_ram() -> _RamProbe:
             # or masking the body's real error with the deallocate's own.
             try:
                 libsystem.mach_port_deallocate(libsystem.mach_task_self(), host_port)
-            except (AttributeError, OSError, ctypes.ArgumentError):
-                pass
+            except (AttributeError, OSError, ctypes.ArgumentError) as release_exc:
+                logger.debug("mach_port_release_failed", error=str(release_exc))
 
         if stats_result != _MACH_KERN_SUCCESS:
             return _RamProbe(None, f"host_statistics64 returned {stats_result}")
@@ -323,7 +336,7 @@ def _windows_available_ram() -> _RamProbe:
         if kernel32.GlobalMemoryStatusEx(windows_ctypes.byref(mem)):
             return _RamProbe(int(mem.ullAvailPhys))
         return _RamProbe(None, "GlobalMemoryStatusEx returned false")
-    except (OSError, AttributeError, ImportError) as exc:
+    except (OSError, AttributeError, ImportError, ctypes.ArgumentError) as exc:
         return _RamProbe(None, str(exc))
 
 
@@ -364,10 +377,17 @@ def available_ram_bytes() -> int | None:
 
 
 def available_vram_bytes() -> int | None:
-    """Return total GPU VRAM in bytes, or ``None`` if no GPU is detected."""
-    try:
-        import subprocess
+    """Return the first GPU's total VRAM in bytes, or ``None`` without one.
 
+    An absent ``nvidia-smi`` binary is the expected no-GPU state and is not
+    logged.  Any other failure (broken driver, timeout, unparseable output)
+    is logged with its reason so a detection outage is distinguishable from
+    genuine GPU absence — the return value stays ``None`` either way, so the
+    VRAM pre-check degrades to permissive rather than refusing work.
+    """
+    import subprocess
+
+    try:
         result = subprocess.run(
             [
                 "nvidia-smi",
@@ -382,6 +402,12 @@ def available_vram_bytes() -> int | None:
         if result.returncode == 0:
             line = result.stdout.strip().split("\n")[0].strip()
             return int(line) * 1024 * 1024
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
-        pass
+        logger.warning(
+            "vram_detection_failed",
+            reason=f"nvidia-smi exited {result.returncode}",
+        )
+    except FileNotFoundError:
+        pass  # no nvidia-smi — the ordinary no-GPU machine
+    except (subprocess.TimeoutExpired, ValueError, OSError) as exc:
+        logger.warning("vram_detection_failed", reason=str(exc))
     return None
