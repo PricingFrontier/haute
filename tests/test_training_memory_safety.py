@@ -572,7 +572,7 @@ def test_catboost_gpu_vram_limit_refuses_before_launch(
     )
 
     with (
-        patch("haute._ram_estimate.available_vram_bytes", return_value=1),
+        patch("haute._host_memory.available_vram_bytes", return_value=1),
         patch("haute.modelling.TrainingJob.run", return_value=SimpleNamespace()) as run,
     ):
         resp = client.post(

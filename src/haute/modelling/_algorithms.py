@@ -15,9 +15,9 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim
-from haute._ram_estimate import available_ram_bytes
 
 logger = get_logger(component="algorithms")
 
@@ -102,9 +102,9 @@ def _get_rss_mb() -> float:
 def _get_available_mb() -> float:
     """Return available system RAM in MB.  Returns 0.0 if unavailable.
 
-    Delegates to :func:`haute._ram_estimate.available_ram_bytes` for
-    cross-platform detection (Linux ``/proc``, macOS ``sysconf``,
-    Windows ``GlobalMemoryStatusEx``, 4 GiB fallback).
+    Delegates to :func:`haute._host_memory.available_ram_bytes` for
+    cross-platform detection (Linux ``/proc``, macOS Mach VM counters,
+    Windows ``GlobalMemoryStatusEx``; no fabricated fallback).
     """
     available_bytes = available_ram_bytes()
     return 0.0 if available_bytes is None else available_bytes / (1024 * 1024)

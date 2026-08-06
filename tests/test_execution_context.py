@@ -482,7 +482,7 @@ def test_default_execution_budget_is_adaptive_across_local_engine_profiles(
 
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 16 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 16 * gib)
 
     heavy_profiles = {
         ExecutionProfile.LAZY_SINK,
@@ -520,7 +520,7 @@ def test_explicit_memory_limit_env_still_overrides_adaptive_policy(
     from haute import _execution_admission as admission_mod
 
     _clear_execution_memory_env(monkeypatch)
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 64 * 1024**3)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
     monkeypatch.setenv("HAUTE_AUTO_RANGE_MEMORY_LIMIT_MB", "512")
 
     budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
@@ -539,7 +539,7 @@ def test_heavy_execution_admission_counts_in_flight_budget(
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
 
     first = create_admitted_execution_context(
         operation="optimiser_setup_a",
@@ -575,7 +575,7 @@ def test_heavy_admission_releases_reservation_when_context_construction_fails(
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr(admission_mod, "available_ram_bytes", lambda: 10 * gib)
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
 
     real_context = admission_mod.ExecutionContext
 
@@ -698,7 +698,7 @@ def test_heavy_admission_releases_reservation_when_finalizer_registration_fails(
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr(admission_mod, "available_ram_bytes", lambda: 10 * gib)
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
 
     def fail_finalize(*_args, **_kwargs):
         raise RuntimeError("finalizer registration failed")
@@ -722,7 +722,7 @@ def test_preview_execution_admission_does_not_reserve_heavy_budget(
     _clear_execution_memory_env(monkeypatch)
     gib = 1024 * 1024 * 1024
     monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 10 * gib)
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 10 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 10 * gib)
 
     previews = [
         create_admitted_execution_context(
@@ -742,7 +742,7 @@ def test_fixed_memory_policy_uses_profile_defaults(
     from haute import _execution_admission as admission_mod
 
     _clear_execution_memory_env(monkeypatch)
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 64 * 1024**3)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "fixed")
 
     budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
@@ -762,7 +762,7 @@ def test_strict_server_memory_policy_uses_profile_defaults(
     from haute import _execution_admission as admission_mod
 
     _clear_execution_memory_env(monkeypatch)
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 64 * 1024**3)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 64 * 1024**3)
     monkeypatch.setenv("HAUTE_EXECUTION_MEMORY_POLICY", "strict_server")
 
     budget = admission_mod.execution_budget_for_profile(ExecutionProfile.AUTO_RANGE)
@@ -782,7 +782,7 @@ def test_adaptive_budget_still_respects_process_rss_cap(
     _clear_execution_memory_env(monkeypatch)
     mib = 1024 * 1024
     gib = 1024 * mib
-    monkeypatch.setattr("haute._ram_estimate.available_ram_bytes", lambda: 16 * gib)
+    monkeypatch.setattr("haute._host_memory.available_ram_bytes", lambda: 16 * gib)
     monkeypatch.setenv("HAUTE_AUTO_RANGE_PROCESS_RSS_LIMIT_MB", "2048")
     samples = iter([1500 * mib, 2100 * mib])
 

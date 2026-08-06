@@ -1521,7 +1521,8 @@ def _check_gpu_vram(
     if effective_rows <= 0 or probe_columns <= 0:
         return _VramCheck()
 
-    from haute._ram_estimate import available_vram_bytes, estimate_gpu_vram_bytes
+    from haute._host_memory import available_vram_bytes
+    from haute._ram_estimate import estimate_gpu_vram_bytes
 
     vram_needed = estimate_gpu_vram_bytes(
         effective_rows,

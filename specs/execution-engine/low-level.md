@@ -21,7 +21,8 @@
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
-| `src/haute/_ram_estimate.py` | `available_ram_bytes()`/`available_vram_bytes()` (OS-level memory probing, including Linux cgroup v2/v1 headroom clamping), `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
+| `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()`/`available_vram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping). Never fabricates capacity — each probe reports a real measurement or a recorded failure reason. Owns the nvidia-smi subprocess chokepoint. |
+| `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 
 ## Key types and data structures
 
@@ -103,14 +104,34 @@
   requires `None` and a reason. One estimate memoises metadata/schema lookups,
   accounts conservatively for variable-width columns, and lets unexpected failures
   propagate.
-- **Linux available RAM** — first obtain host availability from
-  `/proc/meminfo` (or `sysconf`), then clamp it to a finite cgroup v2
-  `memory.max - memory.current`. If the v2 controller is absent, use the v1
+- **Available RAM** (`_host_memory.available_ram_bytes`) — tries the platform
+  sources in a fixed order (Linux `/proc/meminfo` `MemAvailable`, POSIX
+  `sysconf` pages, macOS Mach VM counters, Windows `GlobalMemoryStatusEx`);
+  every source reports through one shared probe contract (a measurement, an
+  attempted-but-failed reason, or not-applicable-on-this-platform). The first
+  observation wins and is clamped once to any finite Linux cgroup headroom:
+  cgroup v2 `memory.max - memory.current`, else the v1
   `memory.limit_in_bytes - memory.usage_in_bytes` pair. `max` and the v1
   unlimited sentinel do not clamp; negative headroom clamps to zero.
   Missing/malformed/incomplete controller files are logged and leave the
   independently observed host value unchanged. No synthetic capacity is
   returned when host availability itself is unobservable.
+- **macOS available RAM** — darwin has neither `/proc/meminfo` nor
+  `SC_AVPHYS_PAGES` (absent from `os.sysconf_names` entirely), so its source is
+  the Mach `host_statistics64(HOST_VM_INFO64)` VM page counters: available is
+  `free_count + inactive_count` pages times the host VM page size (from Mach
+  `host_page_size`, not the POSIX page size — the two diverge for translated
+  processes). Speculative read-ahead pages are already inside `free_count` and
+  contribute no separate term. `purgeable_count` is deliberately **excluded**:
+  purgeable is an attribute of pages that remain on the active/inactive queues
+  rather than a disjoint pool, so adding it would double-count pages already
+  inside `inactive_count` and over-admit work. Total installed RAM is never
+  substituted for availability.
+- **Unobservable availability** — a probe that fails records its reason, and
+  the single `available_ram_unavailable` warning reports every attempted
+  source's reason (a source is attempted exactly when it reports a reason), so
+  the diagnostic stays honest when all of them fail. Any probe failure yields
+  `None`, never a fabricated capacity.
 - **`ExecutionFaultPoint` / `ExecutionTelemetryEvent`** (`_execution_context.py`) —
   immutable sequenced request-local fault boundaries and schema-versioned,
   identifier-free terminal telemetry with a bounded scalar attribute allow-list.

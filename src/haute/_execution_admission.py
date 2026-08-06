@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import count
 
-from haute import _ram_estimate
+from haute import _host_memory
 from haute._env import optional_int_env
 from haute._execution_context import (
     ExecutionAdmission,
@@ -353,7 +353,7 @@ def _memory_policy_name() -> str:
 
 def available_ram_bytes() -> int | None:
     """Return available RAM through an admission-local patch point."""
-    return _ram_estimate.available_ram_bytes()
+    return _host_memory.available_ram_bytes()
 
 
 def _adaptive_default_memory_limit_bytes(profile: ExecutionProfile) -> tuple[int, int, int]:
