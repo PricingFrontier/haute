@@ -2055,3 +2055,275 @@ class TestEstimateSafeTrainingRowsSchemaUnavailable:
         assert result.total_rows == 100
         assert result.bytes_per_row == 0
         assert result.probe_columns == 0
+
+
+# ---------------------------------------------------------------------------
+# JSON apiInput per-port cache metadata
+# ---------------------------------------------------------------------------
+
+
+def _json_port_config(data_path) -> dict:
+    """A two-emit-table shred config: one parquet per emitted table."""
+
+    return {
+        "path": str(data_path),
+        "contract": "opaque",
+        "tables": [
+            {
+                "path": "$[:]",
+                "label": "policies",
+                "emit": True,
+                "columns": [
+                    {"name": "policy_id", "path": "$[:].policy_id", "type": "int", "selected": True}
+                ],
+            },
+            {
+                "path": "$[:].drivers[:]",
+                "label": "drivers",
+                "emit": True,
+                "columns": [
+                    {
+                        "name": "driver_id",
+                        "path": "$[:].drivers[:].driver_id",
+                        "type": "int",
+                        "selected": True,
+                    }
+                ],
+            },
+        ],
+    }
+
+
+@pytest.fixture()
+def json_api_input(tmp_path, monkeypatch):
+    """A JSON apiInput with a real built v2 working-layer cache.
+
+    Built through the same reader/writer the engine uses rather than a stub:
+    the point of resolving per port is that a stale or absent cache is
+    rejected here exactly as it is at execution.
+    """
+
+    import json as _json
+
+    from haute._json_flatten import _json_cache_dir
+    from haute._json_shred import build_per_port_cache
+    from haute._sandbox import _get_project_root, set_project_root
+
+    monkeypatch.chdir(tmp_path)
+    original_root = _get_project_root()
+    set_project_root(tmp_path)
+
+    data_path = tmp_path / "quotes.json"
+    data_path.write_text(
+        _json.dumps(
+            [
+                {"policy_id": 1, "drivers": [{"driver_id": 1}, {"driver_id": 2}]},
+                {"policy_id": 2, "drivers": [{"driver_id": 3}]},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    config = _json_port_config(data_path)
+    cache_dir = _json_cache_dir(data_path, "working")
+    build_per_port_cache(data_path, config, cache_dir)
+    try:
+        yield data_path, config, cache_dir
+    finally:
+        set_project_root(original_root)
+
+
+class TestJsonApiInputPortMetadata:
+    """A v2 cache has no whole-node summary; each emitted table has its own."""
+
+    def test_each_emitted_table_is_sized_from_its_own_parquet(self, json_api_input) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, _cache_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        policies = _json_api_input_port_metadata(node, "policies")
+        drivers = _json_api_input_port_metadata(node, "drivers")
+
+        assert policies is not None and policies.row_count == 2
+        assert drivers is not None and drivers.row_count == 3
+        # Sizing a boundary from the wrong table is the failure this prevents.
+        assert policies.row_count != drivers.row_count
+
+    def test_committed_layer_is_used_when_working_holds_no_match(self, json_api_input) -> None:
+        """Layer preference is the reader's, not this module's."""
+
+        import shutil
+
+        from haute._json_flatten import _json_cache_dir
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        data_path, config, working_dir = json_api_input
+        committed_dir = _json_cache_dir(data_path, "committed")
+        committed_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(working_dir, committed_dir, dirs_exist_ok=True)
+        shutil.rmtree(working_dir)
+
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        assert _json_api_input_port_metadata(node, "policies").row_count == 2
+
+    def test_a_port_the_cache_never_emitted_is_unavailable(self, json_api_input) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, _cache_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        assert _json_api_input_port_metadata(node, "vehicles") is None
+
+    def test_a_stale_cache_is_rejected_rather_than_sized_from(self, json_api_input) -> None:
+        """The signature check is the engine's; a boundary must never be
+        estimated from a cache the run itself would rebuild."""
+
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        data_path, config, _cache_dir = json_api_input
+        data_path.write_text('[{"policy_id": 9, "drivers": []}]', encoding="utf-8")
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    @pytest.mark.parametrize("path_value", ["", None, 17])
+    def test_a_node_without_a_usable_path_is_unavailable(self, path_value) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        node = _make_source_node(node_type="apiInput", config={"path": path_value})
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    def test_a_missing_data_file_is_unavailable(self, tmp_path) -> None:
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        node = _make_source_node(
+            node_type="apiInput", config={"path": str(tmp_path / "absent.json")}
+        )
+
+        assert _json_api_input_port_metadata(node, "policies") is None
+
+    def test_an_unreadable_cache_warns_and_reports_unavailable(self, json_api_input) -> None:
+        """Estimation degrades to "unknown" rather than raising into a caller
+        that would treat the failure as "unlimited"."""
+
+        from haute._ram_estimate import _json_api_input_port_metadata
+
+        _data_path, config, _cache_dir = json_api_input
+        node = _make_source_node(node_type="apiInput", config=config)
+
+        with patch(
+            "haute._json_shred._data_file_signature",
+            side_effect=OSError("cache device is gone"),
+        ):
+            with capture_logs() as logs:
+                assert _json_api_input_port_metadata(node, "policies") is None
+
+        assert any(entry["event"] == "api_input_port_metadata_failed" for entry in logs)
+
+    def test_ancestor_sizing_uses_only_the_tables_feeding_the_target(self, json_api_input) -> None:
+        """Sibling branches of one apiInput must not inflate a boundary they
+        do not feed — the whole reason the walk carries the arrival handle."""
+
+        _data_path, config, _cache_dir = json_api_input
+        source = _make_source_node(node_id="quote_in", node_type="apiInput", config=config)
+        consumer = _make_transform_node(node_id="claims")
+        sibling = _make_transform_node(node_id="drivers_only")
+        graph = PipelineGraph(
+            nodes=[source, consumer, sibling],
+            edges=[
+                GraphEdge(id="e1", source="quote_in", target="claims", sourceHandle="policies"),
+                GraphEdge(
+                    id="e2", source="quote_in", target="drivers_only", sourceHandle="drivers"
+                ),
+            ],
+        )
+
+        metadata = _detailed_ancestor_source_metadata(graph, "claims")
+
+        assert metadata.row_count == 2
+        assert [item.row_count for item in metadata.sources] == [2]
+
+
+class TestUnavailableEstimateReasons:
+    """The two reasons a boundary cannot be sized.
+
+    Each is now carried into the group-by rejection's remediation, so an
+    analyst can tell an unreadable file from an unsummarisable source shape.
+    Their identity is part of that contract.
+    """
+
+    def test_an_unsizable_ancestor_reports_source_row_count_unavailable(self, tmp_path) -> None:
+        source = _make_source_node(node_type="apiInput", config={"path": ""})
+        target = _make_transform_node()
+        graph = PipelineGraph(
+            nodes=[source, target],
+            edges=[GraphEdge(id="e1", source=source.id, target=target.id)],
+        )
+
+        estimate = estimate_materialisation_boundary(graph, target.id)
+
+        assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+        assert estimate.unavailable_reason == "source_row_count_unavailable"
+
+    def test_an_unresolvable_target_reports_target_schema_unavailable(self, tmp_path) -> None:
+        path = tmp_path / "quotes.parquet"
+        pl.DataFrame({"a": range(4)}).write_parquet(str(path))
+        source = _make_source_node(node_type="apiInput", config={"path": str(path)})
+        target = _make_transform_node()
+        graph = PipelineGraph(
+            nodes=[source, target],
+            edges=[GraphEdge(id="e1", source=source.id, target=target.id)],
+        )
+
+        with patch("haute._ram_estimate._resolve_target_columns", return_value=None):
+            estimate = estimate_materialisation_boundary(graph, target.id)
+
+        assert estimate.state is MaterialisationEstimateState.UNAVAILABLE
+        assert estimate.unavailable_reason == "target_schema_unavailable"
+
+
+def test_variable_width_probe_is_empty_when_it_reads_no_rows(tmp_path) -> None:
+    """Parquet metadata can claim rows the scan does not return. The probe
+    measures the representation materialisation actually allocates, so with
+    no sampled row there is nothing to measure and no width to assert."""
+
+    from haute._ram_estimate import _probe_expanded_variable_widths
+
+    path = tmp_path / "empty.parquet"
+    pl.DataFrame(schema={"category": pl.String}).write_parquet(str(path))
+
+    widths = _probe_expanded_variable_widths(str(path), {"category": "string"}, row_count=8)
+
+    assert dict(widths) == {}
+
+
+def test_training_estimate_refuses_to_guess_when_physical_ram_is_unknown() -> None:
+    """ "Unknown" must not silently become "unlimited" on the training path."""
+
+    graph = PipelineGraph(nodes=[_make_source_node()], edges=[])
+
+    with patch("haute._ram_estimate.available_ram_bytes", return_value=None):
+        with pytest.raises(RuntimeError, match="physical RAM is unavailable"):
+            estimate_safe_training_rows(graph, "src1", _build_dummy_node_fn)
+
+
+def test_negative_cgroup_values_are_malformed_not_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A negative limit or usage cannot be arithmetic on real memory."""
+
+    monkeypatch.setattr("sys.platform", "linux")
+    cgroup = {
+        "/sys/fs/cgroup/memory.max": "-1",
+        "/sys/fs/cgroup/memory.current": "250",
+    }
+    with (
+        patch("builtins.open", return_value=__import__("io").StringIO("MemAvailable: 2 kB\n")),
+        patch("haute._ram_estimate._read_cgroup_memory_file", side_effect=cgroup.get),
+        capture_logs() as logs,
+    ):
+        assert available_ram_bytes() == 2 * 1024
+
+    assert any(entry["event"] == "cgroup_memory_state_malformed" for entry in logs)

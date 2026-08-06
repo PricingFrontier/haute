@@ -632,7 +632,17 @@ Tests live in `tests/` (flat layout, no package-per-component subdirectories).
   via the `graph_utils` facade.
 - **`test_ram_estimate.py`** — RAM/VRAM probing across platforms (mocked),
   source-metadata resolution (including edge-join key coalescing), and the
-  downsample decision.
+  downsample decision. Per-port JSON `apiInput` sizing is exercised against a
+  cache built by the same writer the engine reads — each emitted table sized
+  from its own parquet, the committed layer used when working holds no match,
+  and an unemitted port, a stale cache, an unusable path, a missing data file
+  and an unreadable cache each reported unavailable rather than guessed; plus
+  ancestor sizing drawing only the tables that feed the target. Both
+  `unavailable_reason` values are pinned by identity, because the group-by
+  rejection now quotes them back to the analyst. This module is under a
+  critical coverage gate: estimates protect users from oversized runtime jobs,
+  and an untested estimator is how a wrong number reaches a caller that treats
+  "unknown" as "unlimited".
 - **`test_worker_isolation.py`** — picklable-result round-trip, remote-exception
   reporting, live draining of a large result before child join (the pipe-feeder
   deadlock regression), crash-without-killing-parent, cleanup-on-failure, timeout,
