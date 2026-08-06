@@ -149,21 +149,28 @@ const useGitStore = create<GitState>()((set, get) => ({
 
   loadStatus: () => {
     if (statusInFlight) return statusInFlight
-    set({ loading: true, statusError: null })
     // Identity-guarded settle: after resetGitStatusRequestForTests() (or any
     // future invalidation) detaches this request, a late settle must neither
-    // publish state nor null out a NEWER request's single-flight slot.
+    // publish state nor null out a NEWER request's single-flight slot. The
+    // guard is re-checked before EVERY set() — any yield point (the await
+    // below) or synchronous subscriber reacting to a set() could have
+    // detached this request in the meantime — and each settle path performs
+    // a single set() so a passed check can't go stale mid-handler.
     const request: Promise<GitWorkingBranchResponse | null> = getWorkingBranch()
       .then((status) => {
         if (statusInFlight !== request) return status
-        set({ status, loading: false, statusError: null })
         // Binding runs in the background, so its dialog is closed by the time
         // a failure lands. Bring it back — the user asked for durable storage
         // and must find out they haven't got it. Never steals focus from
         // another open modal.
-        if (status?.storage_bind?.state === "failed" && get().modal === null) {
-          set({ modal: "storage" })
-        }
+        const surfaceBindFailure =
+          status?.storage_bind?.state === "failed" && get().modal === null
+        set({
+          status,
+          loading: false,
+          statusError: null,
+          ...(surfaceBindFailure ? { modal: "storage" as const } : {}),
+        })
         return status
       })
       .catch(async (error: unknown) => {
@@ -171,6 +178,7 @@ const useGitStore = create<GitState>()((set, get) => ({
         // Readiness is best-effort editor chrome. Keep the last successful
         // state for gating, but expose this failure for an explicit retry.
         const { gitErrorMessage } = await import("../utils/gitError")
+        if (statusInFlight !== request) return null
         set({
           loading: false,
           statusError: gitErrorMessage(error, "Unable to check Git status"),
@@ -181,6 +189,10 @@ const useGitStore = create<GitState>()((set, get) => ({
         if (statusInFlight === request) statusInFlight = null
       })
     statusInFlight = request
+    // Set loading only after the slot is owned: a synchronous subscriber
+    // reacting to this set() by calling loadStatus() coalesces onto this
+    // request instead of racing a second one into the slot.
+    set({ loading: true, statusError: null })
     return request
   },
 

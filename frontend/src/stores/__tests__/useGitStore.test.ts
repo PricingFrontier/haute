@@ -46,6 +46,7 @@ describe("useGitStore", () => {
     resetGitStatusRequestForTests()
   })
   afterEach(() => {
+    resetGitStatusRequestForTests()
     useGitStore.setState({
       status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
       branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
@@ -204,6 +205,7 @@ describe("useGitStore durable-storage actions", () => {
   }
 
   beforeEach(() => {
+    resetGitStatusRequestForTests()
     useGitStore.setState({ status: null, loading: false, statusError: null })
     vi.clearAllMocks()
   })
@@ -293,6 +295,7 @@ describe("useGitStore reopens the storage dialog when a background bind fails", 
   })
 
   beforeEach(() => {
+    resetGitStatusRequestForTests()
     useGitStore.setState({ status: null, modal: null, loading: false, statusError: null })
     vi.clearAllMocks()
   })
