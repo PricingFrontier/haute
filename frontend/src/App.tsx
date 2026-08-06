@@ -86,6 +86,9 @@ const DivergenceModal = lazy(() => import("./components/DivergenceModal"))
 const MilestoneCommitModal = lazy(() => import("./components/MilestoneCommitModal"))
 const MoveConfirmModal = lazy(() => import("./components/MoveConfirmModal"))
 const WorkingBranchModal = lazy(() => import("./components/WorkingBranchModal"))
+const StorageBindModal = lazy(() => import("./components/StorageBindModal"))
+const UpstreamSyncModal = lazy(() => import("./components/UpstreamSyncModal"))
+const IdentityPromptModal = lazy(() => import("./components/IdentityPromptModal"))
 const GitPanel = lazy(() => import("./panels/GitPanel"))
 const UtilityPanel = lazy(() => import("./panels/UtilityPanel"))
 const AssistantPanel = lazy(() => import("./panels/assistant/AssistantPanel"))
@@ -393,7 +396,7 @@ function FlowEditor() {
     // loading in-flight) a synchronous read would see null and save ungated,
     // bypassing the gate. Awaiting the in-flight/fresh load closes that race.
     const st = useGitStore.getState().status ?? (await useGitStore.getState().loadStatus())
-    if (st === null || st.state === "no-repository" || st.state === "ready") {
+    if (st === null || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "ready") {
       void handleSave()
       return
     }
@@ -416,6 +419,10 @@ function FlowEditor() {
     }
     if (st.state === "no-repository") {
       addToast("error", "No git repository — commit is unavailable.")
+      return
+    }
+    if (st.state === "git-unavailable") {
+      addToast("error", "Git is not available in this environment — commit is unavailable.")
       return
     }
     if (st.state === "ready") {
@@ -481,7 +488,7 @@ function FlowEditor() {
         addToast("info", `Moved to ${justMoved} — save to start a new version line here.`)
         return
       }
-      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "detached") return
+      if (!st || st.state === "ready" || st.state === "no-repository" || st.state === "git-unavailable" || st.state === "detached") return
       useGitStore.getState().openModal(st.state === "divergent" ? "divergence" : "select")
     })
   }, [loadGitReadiness, addToast])
@@ -1403,6 +1410,26 @@ function FlowEditor() {
       {gitModal === "milestone" && (
         <Suspense fallback={null}>
           <MilestoneCommitModal onConfirmed={closeGitModal} onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {gitModal === "storage" && (
+        <Suspense fallback={null}>
+          <StorageBindModal onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {gitModal === "upstream" && (
+        <Suspense fallback={null}>
+          <UpstreamSyncModal onClose={closeGitModal} />
+        </Suspense>
+      )}
+
+      {gitModal === "identity" && (
+        <Suspense fallback={null}>
+          {/* Re-save once an identity exists, so the changes that were saved
+              but not version-captured are committed and published now. */}
+          <IdentityPromptModal onSaved={() => void handleSave()} onClose={closeGitModal} />
         </Suspense>
       )}
 

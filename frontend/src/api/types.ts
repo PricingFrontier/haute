@@ -255,6 +255,9 @@ export interface SavePipelineResponse {
    *  branch is configured. Updates the saved comparison anchor. */
   git_sha?: string | null
   source_revision: string
+  /** True when version capture was skipped only because git has no commit
+   *  identity. The app prompts for a name/email and retries the save. */
+  identity_required?: boolean
 }
 
 export interface PreviewNodeResponse extends NodeResult {
@@ -1317,7 +1320,21 @@ export interface UtilityDeleteResponse {
 // Git types
 // ---------------------------------------------------------------------------
 
-export type WorkingBranchState = "no-repository" | "unset" | "detached" | "invalid" | "divergent" | "ready"
+export type WorkingBranchState = "git-unavailable" | "no-repository" | "unset" | "detached" | "invalid" | "divergent" | "ready"
+
+/** Whether this deployment can durably remember a bound remote at all (§ hosted storage). */
+export type StorageState = "unsupported" | "unbound" | "bound"
+
+export type SyncState = "synced" | "pending" | "failed"
+
+export type SyncFailure = "transport" | "rejected" | "config"
+
+export interface GitStorageSync {
+  state: SyncState
+  pending: number
+  failure: SyncFailure | null
+  message: string | null
+}
 
 export interface GitWorkingBranchResponse {
   working_branch: string | null
@@ -1330,6 +1347,63 @@ export interface GitWorkingBranchResponse {
   user_name: string | null
   user_email: string | null
   head_sha?: string | null
+  /** Whether this deployment can durably remember a bound remote. Optional so
+   *  older backends (and existing fixtures) that omit it still type-check; the
+   *  parser defaults it to "unsupported" (hide the storage surface). */
+  storage?: StorageState
+  storage_remote?: string | null
+  /** Parent uc:// URL when the bound location is a fork (provenance). */
+  storage_forked_from?: string | null
+  sync?: GitStorageSync | null
+  /** Progress of a bind running in the background. */
+  storage_bind?: GitStorageBind | null
+}
+
+/** A bind is accepted immediately; the outcome arrives on `storage_bind`. */
+export interface GitBindStorageResponse {
+  outcome: "pending"
+  remote_url: string
+  message: string
+}
+
+export type BindState = "idle" | "running" | "succeeded" | "failed"
+
+export interface GitStorageBind {
+  state: BindState
+  outcome: "adopted" | "restart-required" | null
+  message: string | null
+  /** Set when the bind failed because another app holds the location. */
+  claim: GitStorageClaim | null
+  remote_url: string | null
+}
+
+/** Who holds a uc:// location's lease. */
+export interface GitStorageClaim {
+  app_name: string
+  user: string | null
+  refreshed_at: string | null
+  message: string
+}
+
+export interface GitForkStorageResponse {
+  outcome: "forked"
+  target_url: string
+  parent_url: string
+  parent_generation: number
+  message: string
+}
+
+/** A fork's measured relationship to the parent it was forked from.
+ *  `can_fast_forward` is the single predicate the catch-up affordance keys on;
+ *  `message` is hand-authored prose safe to render verbatim. */
+export interface GitUpstreamStatus {
+  parent_url: string
+  parent_generation: number
+  working: GitRemoteLeg
+  ledger: GitRemoteLeg
+  can_fast_forward: boolean
+  checked_at: string
+  message: string
 }
 
 export interface GitSetWorkingBranchResponse {

@@ -11,13 +11,27 @@
  */
 import { create } from "zustand"
 
-import { getWorkingBranch } from "../api/client"
-import type { GitManagedBranch, GitWorkingBranchResponse } from "../api/types"
+import {
+  acknowledgeGitBind,
+  bindGitStorage,
+  checkGitUpstream,
+  forkGitStorage,
+  getWorkingBranch,
+  pullGitUpstream,
+  retryGitStorageSync,
+} from "../api/client"
+import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
 
 let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
 
 /** Which modal is open. */
-export type GitModalMode = "select" | "divergence" | "milestone"
+export type GitModalMode =
+  | "select"
+  | "divergence"
+  | "milestone"
+  | "storage"
+  | "upstream"
+  | "identity"
 
 /** A version being inspected read-only in the side-by-side comparison view (S11).
  *  `sha` is the commit materialised on the LEFT (historical) canvas; `label` is a
@@ -94,6 +108,20 @@ interface GitState {
   closeMove: () => void
   /** Update just the last-save SHA after a save (cheaper than a full reload). */
   setLastSaveSha: (sha: string | null) => void
+  /** Bind the state volume to a remote for durable storage, then refresh readiness. */
+  bindStorage: (remoteUrl: string) => Promise<GitBindStorageResponse>
+  /** Fork a held uc:// location's published state into an empty location. */
+  forkStorage: (sourceUrl: string, targetUrl: string) => Promise<GitForkStorageResponse>
+  /** Clear a finished bind result after the dialog has reported it. */
+  acknowledgeBind: () => Promise<void>
+  /** Measure this fork against its parent. On demand only — the server
+   *  downloads the parent's whole stored bundle to answer. */
+  checkUpstream: () => Promise<GitUpstreamStatus>
+  /** Catch this fork up to its parent, then refresh readiness (the catch-up
+   *  publishes to the fork's own location, so the sync state moves). */
+  pullUpstream: () => Promise<GitFastForwardResponse>
+  /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
+  retrySync: () => Promise<GitWorkingBranchResponse | null>
 }
 
 const useGitStore = create<GitState>()((set, get) => ({
@@ -119,6 +147,13 @@ const useGitStore = create<GitState>()((set, get) => ({
     statusInFlight = getWorkingBranch()
       .then((status) => {
         set({ status, loading: false, statusError: null })
+        // Binding runs in the background, so its dialog is closed by the time
+        // a failure lands. Bring it back — the user asked for durable storage
+        // and must find out they haven't got it. Never steals focus from
+        // another open modal.
+        if (status?.storage_bind?.state === "failed" && get().modal === null) {
+          set({ modal: "storage" })
+        }
         return status
       })
       .catch(async (error: unknown) => {
@@ -162,6 +197,32 @@ const useGitStore = create<GitState>()((set, get) => ({
 
   setLastSaveSha: (sha) =>
     set((s) => (s.status ? { status: { ...s.status, last_save_sha: sha } } : s)),
+
+  bindStorage: async (remoteUrl) => {
+    const result = await bindGitStorage(remoteUrl)
+    await get().loadStatus()
+    return result
+  },
+  acknowledgeBind: async () => {
+    const status = await acknowledgeGitBind()
+    set({ status })
+  },
+  forkStorage: async (sourceUrl, targetUrl) => {
+    // No readiness refresh: forking writes only to the volume — this
+    // session's own binding is untouched until the user binds the fork.
+    return forkGitStorage(sourceUrl, targetUrl)
+  },
+  checkUpstream: async () => checkGitUpstream(),
+  pullUpstream: async () => {
+    const result = await pullGitUpstream()
+    await get().loadStatus()
+    return result
+  },
+  retrySync: async () => {
+    const status = await retryGitStorageSync()
+    set({ status })
+    return status
+  },
 }))
 
 export default useGitStore

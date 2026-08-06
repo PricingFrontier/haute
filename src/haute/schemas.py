@@ -246,6 +246,11 @@ class SavePipelineResponse(BaseModel):
     # working branch configured; None otherwise. Consumed by the toolbar
     # branch/SHA indicator — the save toast stays git-silent.
     git_sha: str | None = None
+    # True when version capture was skipped purely because git has no commit
+    # identity (common on a restored hosted container). The UI prompts for a
+    # name/email and retries the save; every other capture failure stays a
+    # plain warning with this flag False.
+    identity_required: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -2604,6 +2609,7 @@ class OptimiserMlflowLogResponse(MlflowLogResponse):
 # ---------------------------------------------------------------------------
 
 GitWorkingBranchState = Literal[
+    "git-unavailable",
     "no-repository",
     "unset",
     "detached",
@@ -2613,9 +2619,72 @@ GitWorkingBranchState = Literal[
 ]
 
 
+GitStorageState = Literal["unsupported", "unbound", "bound"]
+GitSyncState = Literal["synced", "pending", "failed"]
+GitSyncFailure = Literal["transport", "rejected", "config"]
+GitBindState = Literal["idle", "running", "succeeded", "failed"]
+
+
+class GitStorageClaim(BaseModel):
+    """Who holds a uc:// location's lease.
+
+    Steering, not stonewalling: the UI names the holder and offers the
+    two ways forward (bind elsewhere, or fork the location).
+    """
+
+    app_name: str
+    user: str | None = None
+    refreshed_at: str | None = None
+    message: str
+
+
+class GitStorageBind(BaseModel):
+    """Progress of a bind running in the background.
+
+    A bind publishes the whole project, so the dialog closes as soon as
+    the instant checks pass and the outcome arrives here instead.
+    """
+
+    state: GitBindState = "idle"
+    outcome: Literal["adopted", "restart-required"] | None = None
+    # Hand-authored failure prose; never raw library text.
+    message: str | None = None
+    # Set when the failure was a held uc:// location, so the dialog can
+    # name the holder and offer to fork.
+    claim: GitStorageClaim | None = None
+    remote_url: str | None = None
+
+
+class GitStorageSync(BaseModel):
+    """Publication state of a hosted project's durable storage.
+
+    Carries counts and a failure CLASS plus a hand-authored message — never
+    raw git stderr, which embeds remote URLs and credential material.
+    """
+
+    state: GitSyncState = "synced"
+    # Commits made locally but not yet published.
+    pending: int = 0
+    failure: GitSyncFailure | None = None
+    message: str | None = None
+
+
 class GitWorkingBranchResponse(BaseModel):
     # The branch recorded against this clone in .haute/state.json, or None.
     working_branch: str | None = None
+    # Durable-storage binding for hosted sessions; "unsupported" everywhere a
+    # binding cannot be remembered (every local session), which hides the
+    # storage surface rather than offering an action that cannot work.
+    storage: GitStorageState = "unsupported"
+    # The bound remote's URL, for display beside the sync state.
+    storage_remote: str | None = None
+    # Parent uc:// URL when the bound location is a fork — provenance
+    # signposting, read once at bind/restore and cached off the Files API.
+    storage_forked_from: str | None = None
+    sync: GitStorageSync | None = None
+    # Progress of a bind running in the background, so the dialog can close
+    # immediately and still report what happened.
+    storage_bind: GitStorageBind | None = None
     # Drives whether the startup modal fires (S27) and which variant (S14).
     state: GitWorkingBranchState = "unset"
     # Human-readable reasons when state is "invalid" (check_invariants output
@@ -2635,6 +2704,37 @@ class GitWorkingBranchResponse(BaseModel):
     identity_set: bool = True
     user_name: str | None = None
     user_email: str | None = None
+
+
+class GitBindStorageRequest(BaseModel):
+    # HTTPS repository URL; credentials come from the app's secret, never here.
+    remote_url: str
+
+
+class GitBindStorageResponse(BaseModel):
+    # Always "pending": the instant checks passed and the network work —
+    # claim, inspect, publish, record — now runs in the background. The
+    # real outcome ("adopted" or "restart-required") arrives on the
+    # readiness response's `storage_bind`, so the dialog never has to hold
+    # the session open across a whole-project publish.
+    outcome: Literal["pending"] = "pending"
+    remote_url: str
+    message: str
+
+
+class GitForkStorageRequest(BaseModel):
+    # Both uc:// locations; the target must be empty.
+    source_url: str
+    target_url: str
+
+
+class GitForkStorageResponse(BaseModel):
+    outcome: Literal["forked"] = "forked"
+    target_url: str
+    parent_url: str
+    # Which published generation of the parent the fork copied.
+    parent_generation: int
+    message: str
 
 
 class GitSetWorkingBranchRequest(BaseModel):
@@ -3004,6 +3104,22 @@ class GitFastForwardResponse(BaseModel):
     remote: str
     working_branch: str
     fast_forwarded: list[str] = Field(default_factory=list)
+
+
+class GitUpstreamStatusResponse(BaseModel):
+    # A fork's measured relationship to the parent it was forked from.
+    # `working`/`ledger` carry the same per-leg honesty as every other
+    # divergence surface; `can_fast_forward` is the single predicate the
+    # catch-up affordance keys on, and `message` is hand-authored prose safe to
+    # surface verbatim.
+    parent_url: str
+    # Which published generation of the parent the comparison was made against.
+    parent_generation: int
+    working: GitRemoteLeg
+    ledger: GitRemoteLeg
+    can_fast_forward: bool
+    checked_at: str
+    message: str
 
 
 class GitPushRejection(BaseModel):

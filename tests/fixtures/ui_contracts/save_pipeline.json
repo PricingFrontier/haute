@@ -6,5 +6,6 @@
   "warnings": [
     "renamed duplicate node"
   ],
-  "git_sha": null
+  "git_sha": null,
+  "identity_required": false
 }

@@ -37,6 +37,9 @@ import type {
   GitPushResponse,
   GitFastForwardResponse,
   GitBranchAwayResponse,
+  GitBindStorageResponse,
+  GitForkStorageResponse,
+  GitUpstreamStatus,
   GitCommitContext,
   GitGraphResponse,
   GitMoveResponse,
@@ -107,6 +110,9 @@ import {
   parseGitCreateWorkingBranchResponse,
   parseGitPrefs,
   parseGitRemotesResponse,
+  parseGitBindStorageResponse,
+  parseGitForkStorageResponse,
+  parseGitUpstreamStatusResponse,
   parseGitPushResponse,
   parseGitFastForwardResponse,
   parseGitGraphResponse,
@@ -1345,6 +1351,62 @@ export function setWorkingBranch(
   return post<unknown>("/api/git/working-branch", { branch, create }, options).then(
     parseGitSetWorkingBranchResponse,
   )
+}
+
+/** Bind this clone's state volume to a remote for durable storage (hosted mode only). */
+export function bindGitStorage(
+  remoteUrl: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitBindStorageResponse> {
+  return post<unknown>("/api/git/storage/bind", { remote_url: remoteUrl }, options).then(
+    parseGitBindStorageResponse,
+  )
+}
+
+/** Fork a held uc:// location's published state into an empty one. */
+export function forkGitStorage(
+  sourceUrl: string,
+  targetUrl: string,
+  options?: { signal?: AbortSignal },
+): Promise<GitForkStorageResponse> {
+  return post<unknown>(
+    "/api/git/storage/fork",
+    { source_url: sourceUrl, target_url: targetUrl },
+    options,
+  ).then(parseGitForkStorageResponse)
+}
+
+/** Measure this fork against the parent it was forked from. On demand only:
+ *  the server downloads the parent's whole stored bundle to answer. */
+export function checkGitUpstream(
+  options?: { signal?: AbortSignal },
+): Promise<GitUpstreamStatus> {
+  return post<unknown>("/api/git/storage/upstream/check", {}, options).then(
+    parseGitUpstreamStatusResponse,
+  )
+}
+
+/** Catch this fork up to its parent's tips, fast-forward only. */
+export function pullGitUpstream(
+  options?: { signal?: AbortSignal },
+): Promise<GitFastForwardResponse> {
+  return post<unknown>("/api/git/storage/upstream/pull", {}, options).then(
+    parseGitFastForwardResponse,
+  )
+}
+
+/** Clear a finished bind result once the dialog has shown it. */
+export function acknowledgeGitBind(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/storage/bind/ack", {}, options).then(parseGitWorkingBranchResponse)
+}
+
+/** Retry a failed sync to the bound remote and return refreshed readiness. */
+export function retryGitStorageSync(
+  options?: { signal?: AbortSignal },
+): Promise<GitWorkingBranchResponse> {
+  return post<unknown>("/api/git/storage/retry", {}, options).then(parseGitWorkingBranchResponse)
 }
 
 export function setGitIdentity(

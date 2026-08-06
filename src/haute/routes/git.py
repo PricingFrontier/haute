@@ -18,8 +18,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import NoReturn
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from haute import _project_storage
 from haute._git import (
     GitDomainError,
     GitError,
@@ -51,10 +52,13 @@ from haute._git import (
 )
 from haute._logging import get_logger
 from haute.graph_utils import PipelineGraph
+from haute.hosted import FORWARDED_USER_SCOPE_KEY
 from haute.routes._helpers import _INTERNAL_ERROR_DETAIL, commit_pipeline_graph, pause_watcher
 from haute.schemas import (
     GitArchiveRequest,
     GitArchiveResponse,
+    GitBindStorageRequest,
+    GitBindStorageResponse,
     GitBranchAwayRequest,
     GitBranchAwayResponse,
     GitCommitContext,
@@ -66,6 +70,8 @@ from haute.schemas import (
     GitDeleteBranchResponse,
     GitFastForwardRequest,
     GitFastForwardResponse,
+    GitForkStorageRequest,
+    GitForkStorageResponse,
     GitGraphResponse,
     GitLedgerSavesResponse,
     GitMilestoneFork,
@@ -83,8 +89,12 @@ from haute.schemas import (
     GitSetIdentityResponse,
     GitSetWorkingBranchRequest,
     GitSetWorkingBranchResponse,
+    GitStorageBind,
+    GitStorageClaim,
+    GitStorageSync,
     GitUndeleteRequest,
     GitUndeleteResponse,
+    GitUpstreamStatusResponse,
     GitWorkingBranchesResponse,
     GitWorkingBranchResponse,
 )
@@ -121,6 +131,53 @@ def _handle_git_error(e: GitError) -> NoReturn:
     raise HTTPException(status_code=400, detail=_INTERNAL_ERROR_DETAIL)
 
 
+def _with_storage_state(status: GitWorkingBranchResponse) -> GitWorkingBranchResponse:
+    """Attach durable-storage state to a readiness response.
+
+    Never raises: storage is additive to git readiness, and a storage
+    fault must not blank the branch indicator. The failure surfaces
+    through the sync state instead.
+    """
+    binding = _project_storage.active_binding()
+    lineage = _project_storage.active_lineage()
+    sync = _project_storage.push_queue().status()
+    bind = _project_storage.bind_task().status()
+    return status.model_copy(
+        update={
+            "storage": _project_storage.storage_state(),
+            "storage_remote": binding.remote_url if binding is not None else None,
+            "storage_forked_from": lineage.parent_url if lineage is not None else None,
+            "sync": GitStorageSync(
+                state=sync.state,
+                pending=sync.pending,
+                failure=sync.failure,
+                message=sync.message,
+            ),
+            "storage_bind": GitStorageBind(
+                state=bind.state,
+                outcome=bind.outcome,
+                message=bind.message,
+                claim=_claim_model(bind.claim, bind.message),
+                remote_url=bind.remote_url,
+            ),
+        }
+    )
+
+
+def _claim_model(
+    claim: _project_storage.UCClaim | None, message: str | None
+) -> GitStorageClaim | None:
+    """Render a lease holder for the client, or ``None`` when unheld."""
+    if claim is None:
+        return None
+    return GitStorageClaim(
+        app_name=claim.app_name,
+        user=claim.user,
+        refreshed_at=claim.refreshed_at,
+        message=message or "",
+    )
+
+
 # ---------------------------------------------------------------------------
 # GET /api/git/working-branch — readiness signal for the startup flow
 # ---------------------------------------------------------------------------
@@ -128,11 +185,12 @@ def _handle_git_error(e: GitError) -> NoReturn:
 
 @router.get("/working-branch", response_model=GitWorkingBranchResponse)
 def git_get_working_branch() -> GitWorkingBranchResponse:
-    """Six-state repository readiness, identity, and the
+    """Repository readiness, identity, durable-storage state, and the
     branches choosable as a working branch — everything the startup modal and
     toolbar indicator need in one call."""
     try:
-        return working_branch_status(Path.cwd())
+        status = working_branch_status(Path.cwd())
+        return _with_storage_state(status)
     except GitError as e:
         _handle_git_error(e)
     except Exception as e:
@@ -216,12 +274,16 @@ def git_commit(body: GitCommitRequest) -> GitCommitResponse:
     route returns **409** with a structured :class:`GitMilestoneFork` body so the
     UI can warn (U4/D4). ``allow_fork`` is the user's "commit anyway" override."""
     try:
-        return commit_milestone(
+        response = commit_milestone(
             body.message,
             Path.cwd(),
             version_label=body.version_label,
             allow_fork=body.allow_fork,
         )
+        # Publish the milestone (and any ledger saves it folded in) when the
+        # project is bound to durable storage. A no-op for local sessions.
+        _project_storage.enqueue_push()
+        return response
     except GitMilestoneForkError as e:
         logger.info("git_commit_would_fork", remote=e.fork.remote)
         raise HTTPException(status_code=409, detail=e.fork.model_dump())
@@ -523,6 +585,217 @@ def git_push(body: GitPushRequest) -> GitPushResponse:
         _handle_git_error(e)
     except Exception as e:
         logger.error("git_push_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/bind — bind this project to durable storage
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/bind", response_model=GitBindStorageResponse)
+def git_bind_storage(body: GitBindStorageRequest, request: Request) -> GitBindStorageResponse:
+    """Start making this hosted project's history durable.
+
+    Only the instant, local checks run here — a malformed URL, an
+    already-bound project, a deployment with nowhere to record a binding
+    — because those are the answers that belong beside the input field.
+    The network work (claim the location, inspect it, publish the whole
+    project, record the binding) then runs in the background, so a bind
+    never holds the session open for the length of a publish. Progress
+    and the real outcome arrive on the readiness response's
+    ``storage_bind``."""
+    try:
+        remote_url = _project_storage.precheck_bind(body.remote_url)
+        _project_storage.bind_task().start(
+            remote_url,
+            Path.cwd(),
+            # Platform-authenticated visitor, when hosted behind an SSO proxy.
+            bound_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
+        )
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error("storage_bind_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    return GitBindStorageResponse(
+        remote_url=remote_url,
+        message="Saving this project to storage — you can keep working.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/bind/ack — clear a finished bind result
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/bind/ack", response_model=GitWorkingBranchResponse)
+def git_acknowledge_bind() -> GitWorkingBranchResponse:
+    """Clear a finished bind result once the UI has shown it.
+
+    The result persists after the bind completes so a slow poll cannot
+    miss it; this is how the UI says it no longer needs it."""
+    _project_storage.bind_task().acknowledge()
+    try:
+        return _with_storage_state(working_branch_status(Path.cwd()))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_bind_ack_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/fork — copy a held location's published state
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/fork", response_model=GitForkStorageResponse)
+def git_fork_storage(body: GitForkStorageRequest, request: Request) -> GitForkStorageResponse:
+    """Fork a uc:// location's latest published generation to an empty one.
+
+    The honest way past a location someone else holds: work on a copy,
+    with provenance recorded so the fork is signposted, not silent. Takes
+    no claim — binding to the target afterwards claims it."""
+    try:
+        lineage = _project_storage.fork_uc_location(
+            body.source_url,
+            body.target_url,
+            Path.cwd(),
+            forked_by=request.scope.get(FORWARDED_USER_SCOPE_KEY),
+        )
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error("storage_fork_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    target = _project_storage.validate_remote_url(body.target_url)
+    return GitForkStorageResponse(
+        target_url=target,
+        parent_url=lineage.parent_url,
+        parent_generation=lineage.parent_generation,
+        message=(
+            f"Forked generation {lineage.parent_generation} into {target}. "
+            "Bind this session to the new location to work on the copy."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/upstream/{check,pull} — a fork's parent relationship
+# ---------------------------------------------------------------------------
+
+
+def _upstream_message(status: _project_storage.UpstreamStatus) -> str:
+    """Hand-authored prose for the upstream dialog.
+
+    The three states the dialog serves: nothing to do, a clean catch-up, and
+    the honest dead end where both sides moved (no merge exists yet — see the
+    approved change contract).
+    """
+    behind = max(status.working.behind or 0, status.ledger.behind or 0)
+    ahead = max(status.working.ahead or 0, status.ledger.ahead or 0)
+    if status.can_fast_forward:
+        changes = "change" if behind == 1 else "changes"
+        return (
+            f"The parent project has {behind} {changes} this copy doesn't have yet. "
+            "Catching up brings them in without touching your own work."
+        )
+    if status.working.status in ("ahead", "diverged") or status.ledger.status in (
+        "ahead",
+        "diverged",
+    ):
+        if ahead and behind:
+            return (
+                f"Both projects have moved since the fork — {ahead} change(s) here and "
+                f"{behind} in the parent. Catching up would need a merge, which this "
+                "version can't do for you."
+            )
+        return (
+            f"This copy is {ahead} change(s) ahead of its parent and the parent has "
+            "nothing new — there is nothing to catch up to."
+        )
+    if status.working.status in ("unknown", "untracked") or status.ledger.status in (
+        "unknown",
+        "untracked",
+    ):
+        return (
+            "This copy's relationship to its parent couldn't be measured — the parent's "
+            "stored project may not carry the same branches."
+        )
+    return "This copy is up to date with the project it was forked from."
+
+
+@router.post("/storage/upstream/check", response_model=GitUpstreamStatusResponse)
+def git_check_upstream() -> GitUpstreamStatusResponse:
+    """Measure this fork against the parent it was forked from.
+
+    On demand only — it downloads the parent's whole stored bundle, which
+    is why it is deliberately absent from the polled readiness response."""
+    try:
+        status = _project_storage.check_upstream(Path.cwd())
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_upstream_check_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+    return GitUpstreamStatusResponse(
+        parent_url=status.parent_url,
+        parent_generation=status.parent_generation,
+        working=status.working,
+        ledger=status.ledger,
+        can_fast_forward=status.can_fast_forward,
+        checked_at=status.checked_at,
+        message=_upstream_message(status),
+    )
+
+
+@router.post("/storage/upstream/pull", response_model=GitFastForwardResponse)
+def git_pull_upstream() -> GitFastForwardResponse:
+    """Catch this fork up to its parent by fast-forward only.
+
+    One-directional by design (parent → fork). The watcher is paused for
+    the wholesale tree replacement, exactly as the remote catch-up does."""
+    try:
+        with pause_watcher():
+            return _project_storage.pull_upstream(Path.cwd())
+    except _project_storage.StorageConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except _project_storage.StorageUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_upstream_pull_failed", error=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/git/storage/retry — retry a failed publication now
+# ---------------------------------------------------------------------------
+
+
+@router.post("/storage/retry", response_model=GitWorkingBranchResponse)
+def git_retry_storage_sync() -> GitWorkingBranchResponse:
+    """Retry publishing after a failure, returning the refreshed readiness."""
+    _project_storage.push_queue().retry_now()
+    try:
+        return _with_storage_state(working_branch_status(Path.cwd()))
+    except GitError as e:
+        _handle_git_error(e)
+    except Exception as e:
+        logger.error("storage_retry_failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=_INTERNAL_ERROR_DETAIL)
 
 

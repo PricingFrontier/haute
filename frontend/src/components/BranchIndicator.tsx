@@ -3,6 +3,107 @@ import { GitBranch } from "lucide-react"
 import useGitStore from "../stores/useGitStore"
 import useUIStore from "../stores/useUIStore"
 
+/** The sync/storage chip shown beside the branch indicator once a working
+ *  branch is ready (S28 durable-storage surface). Hidden entirely when this
+ *  deployment cannot remember a binding ("unsupported", e.g. every local
+ *  session) — the whole storage concept doesn't apply there. */
+function StorageChip() {
+  const status = useGitStore((s) => s.status)
+  const openModal = useGitStore((s) => s.openModal)
+  const retrySync = useGitStore((s) => s.retrySync)
+
+  if (!status || !status.storage || status.storage === "unsupported") return null
+
+  if (status.storage === "unbound") {
+    return (
+      <button
+        type="button"
+        data-testid="storage-indicator"
+        data-storage-state="unbound"
+        onClick={() => openModal("storage")}
+        className="flex items-center text-[11px] font-medium px-1.5 py-0.5 rounded-md hover-chrome"
+        style={{ color: "var(--danger)" }}
+        title="Work is lost if this app restarts — click to save it to a repository."
+      >
+        Not stored
+      </button>
+    )
+  }
+
+  const sync = status.sync
+  if (!sync || sync.state === "synced") {
+    return (
+      <span
+        data-testid="storage-indicator"
+        data-sync-state="synced"
+        className="text-[11px] font-medium px-1.5 py-0.5"
+        style={{ color: "var(--text-muted)" }}
+        title="Saves are stored durably in the bound repository."
+      >
+        Synced
+      </span>
+    )
+  }
+
+  if (sync.state === "pending") {
+    return (
+      <span
+        data-testid="storage-indicator"
+        data-sync-state="pending"
+        className="text-[11px] font-medium px-1.5 py-0.5"
+        style={{ color: "var(--text-muted)" }}
+        title="Saves not yet published to the bound repository."
+      >
+        {sync.pending} unpublished
+      </span>
+    )
+  }
+
+  return (
+    <span
+      data-testid="storage-indicator"
+      data-sync-state="failed"
+      className="flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5"
+      style={{ color: "var(--danger)" }}
+      title={sync.message ?? "Sync to the bound repository failed."}
+    >
+      {sync.message ?? "Sync failed"}
+      <button
+        type="button"
+        data-testid="storage-retry"
+        onClick={() => void retrySync()}
+        className="underline"
+      >
+        Retry
+      </button>
+    </span>
+  )
+}
+
+/** A quiet marker that this project is a copy of another, opening the
+ *  comparison dialog. Deliberately understated: knowing where a fork came from
+ *  matters occasionally, and catching up to the parent is never the primary
+ *  action of a session. */
+function ForkChip() {
+  const forkedFrom = useGitStore((s) => s.status?.storage_forked_from ?? null)
+  const openModal = useGitStore((s) => s.openModal)
+
+  if (!forkedFrom) return null
+
+  return (
+    <button
+      type="button"
+      data-testid="fork-indicator"
+      onClick={() => openModal("upstream")}
+      className="text-[11px] font-medium px-1.5 py-0.5 rounded-md hover-chrome"
+      style={{ color: "var(--text-muted)" }}
+      title={`Forked from ${forkedFrom} — click to compare with it.`}
+    >
+      Forked
+    </button>
+  )
+}
+
 /**
  * Persistent toolbar indicator (S28): the working branch name, which opens the
  * Git sidebar panel hosting the branch manager and the version history (S19).
@@ -62,6 +163,17 @@ export default function BranchIndicator() {
   const ready = status.state === "ready"
 
   if (!ready) {
+    if (status.state === "git-unavailable") {
+      return (
+        <span
+          data-testid="toolbar-branch-indicator"
+          data-branch-state="git-unavailable"
+          title="No git executable is available in this environment."
+        >
+          Git unavailable
+        </span>
+      )
+    }
     if (status.state === "no-repository") {
       return (
         <span
@@ -114,6 +226,8 @@ export default function BranchIndicator() {
         <GitBranch size={13} aria-hidden="true" />
         <span className="truncate">{status.working_branch}</span>
       </button>
+      <StorageChip />
+      <ForkChip />
     </div>
   )
 }

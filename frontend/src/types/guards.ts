@@ -69,7 +69,13 @@ import type {
   GitPushRejection,
   GitPushResponse,
   GitSetIdentityResponse,
+  GitBindStorageResponse,
+  GitForkStorageResponse,
+  GitStorageBind,
+  GitStorageClaim,
+  GitUpstreamStatus,
   GitSetWorkingBranchResponse,
+  GitStorageSync,
   GitWorkingBranchResponse,
   IoCapabilitiesResponse,
   IoCapabilityGroup,
@@ -1028,6 +1034,7 @@ export function parseSavePipelineResponse(value: unknown): SavePipelineResponse 
     pipeline_name: expectString("parseSavePipelineResponse", obj.pipeline_name, "field `pipeline_name`"),
     warnings: optionalStringArray("parseSavePipelineResponse", obj, "warnings"),
     git_sha: optionalNullableString("parseSavePipelineResponse", obj, "git_sha"),
+    identity_required: optionalBoolean("parseSavePipelineResponse", obj, "identity_required"),
   }
 }
 
@@ -2240,7 +2247,36 @@ export function parseUtilityDeleteResponse(value: unknown): UtilityDeleteRespons
   }
 }
 
-const WORKING_BRANCH_STATES = ["no-repository", "unset", "detached", "invalid", "divergent", "ready"] as const
+const WORKING_BRANCH_STATES = ["git-unavailable", "no-repository", "unset", "detached", "invalid", "divergent", "ready"] as const
+
+const STORAGE_STATES = ["unsupported", "unbound", "bound"] as const
+
+const SYNC_STATES = ["synced", "pending", "failed"] as const
+
+const SYNC_FAILURES = ["transport", "rejected", "config"] as const
+
+/** Older backends omit the storage surface entirely — default to "unsupported"
+ *  (hide the surface) rather than throw, and treat `sync` as absent (null). */
+function parseGitStorageSync(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+): GitStorageSync | null {
+  const value = obj[key]
+  if (value === undefined || value === null) return null
+  const syncObj = expectPlainObject(parser, value, `field \`${key}\``)
+  return {
+    state: expectStringLiteral(parser, syncObj.state, `field \`${key}.state\``, SYNC_STATES),
+    pending: optionalNumber(parser, syncObj, "pending"),
+    failure: expectNullableStringLiteral(
+      parser,
+      syncObj.failure === undefined ? null : syncObj.failure,
+      `field \`${key}.failure\``,
+      SYNC_FAILURES,
+    ),
+    message: optionalNullableString(parser, syncObj, "message"),
+  }
+}
 
 export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchResponse {
   const obj = expectPlainObject("parseGitWorkingBranchResponse", value)
@@ -2268,6 +2304,111 @@ export function parseGitWorkingBranchResponse(value: unknown): GitWorkingBranchR
     user_name: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_name"),
     user_email: optionalNullableString("parseGitWorkingBranchResponse", obj, "user_email"),
     head_sha: optionalNullableString("parseGitWorkingBranchResponse", obj, "head_sha"),
+    storage:
+      obj.storage === undefined
+        ? "unsupported"
+        : expectStringLiteral("parseGitWorkingBranchResponse", obj.storage, "field `storage`", STORAGE_STATES),
+    storage_remote: optionalNullableString("parseGitWorkingBranchResponse", obj, "storage_remote"),
+    storage_forked_from: optionalNullableString(
+      "parseGitWorkingBranchResponse",
+      obj,
+      "storage_forked_from",
+    ),
+    sync: parseGitStorageSync("parseGitWorkingBranchResponse", obj, "sync"),
+    storage_bind: parseGitStorageBind("parseGitWorkingBranchResponse", obj, "storage_bind"),
+  }
+}
+
+const BIND_STATES = ["idle", "running", "succeeded", "failed"] as const
+
+const BIND_OUTCOMES = ["adopted", "restart-required"] as const
+
+/** Older backends omit the async-bind surface — read it as absent (null)
+ *  rather than throw, so a stale server still renders the rest. */
+function parseGitStorageBind(
+  parser: string,
+  obj: Record<string, unknown>,
+  key: string,
+): GitStorageBind | null {
+  const value = obj[key]
+  if (value === undefined || value === null) return null
+  const bindObj = expectPlainObject(parser, value, `field \`${key}\``)
+  return {
+    state: expectStringLiteral(parser, bindObj.state, `field \`${key}.state\``, BIND_STATES),
+    outcome: expectNullableStringLiteral(
+      parser,
+      bindObj.outcome === undefined ? null : bindObj.outcome,
+      `field \`${key}.outcome\``,
+      BIND_OUTCOMES,
+    ),
+    message: optionalNullableString(parser, bindObj, "message"),
+    claim: gitStorageClaimFromDetail(bindObj.claim),
+    remote_url: optionalNullableString(parser, bindObj, "remote_url"),
+  }
+}
+
+/** Lenient reader for the structured 409 body a claimed bind returns.
+ *  Returns null when the payload is not claim-shaped (e.g. a plain-string
+ *  detail from an older backend) so callers fall back to generic error text. */
+export function gitStorageClaimFromDetail(value: unknown): GitStorageClaim | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
+  const obj = value as Record<string, unknown>
+  if (typeof obj.app_name !== "string" || !obj.app_name) return null
+  if (typeof obj.message !== "string" || !obj.message) return null
+  return {
+    app_name: obj.app_name,
+    user: typeof obj.user === "string" && obj.user ? obj.user : null,
+    refreshed_at: typeof obj.refreshed_at === "string" && obj.refreshed_at ? obj.refreshed_at : null,
+    message: obj.message,
+  }
+}
+
+export function parseGitForkStorageResponse(value: unknown): GitForkStorageResponse {
+  const obj = expectPlainObject("parseGitForkStorageResponse", value)
+  return {
+    outcome: expectStringLiteral("parseGitForkStorageResponse", obj.outcome, "field `outcome`", [
+      "forked",
+    ] as const),
+    target_url: expectString("parseGitForkStorageResponse", obj.target_url, "field `target_url`"),
+    parent_url: expectString("parseGitForkStorageResponse", obj.parent_url, "field `parent_url`"),
+    parent_generation: expectNumber(
+      "parseGitForkStorageResponse",
+      obj.parent_generation,
+      "field `parent_generation`",
+    ),
+    message: expectString("parseGitForkStorageResponse", obj.message, "field `message`"),
+  }
+}
+
+export function parseGitUpstreamStatusResponse(value: unknown): GitUpstreamStatus {
+  const obj = expectPlainObject("parseGitUpstreamStatusResponse", value)
+  return {
+    parent_url: expectString("parseGitUpstreamStatusResponse", obj.parent_url, "field `parent_url`"),
+    parent_generation: expectNumber(
+      "parseGitUpstreamStatusResponse",
+      obj.parent_generation,
+      "field `parent_generation`",
+    ),
+    working: parseGitRemoteLeg(obj.working, "working"),
+    ledger: parseGitRemoteLeg(obj.ledger, "ledger"),
+    can_fast_forward: expectBoolean(
+      "parseGitUpstreamStatusResponse",
+      obj.can_fast_forward,
+      "field `can_fast_forward`",
+    ),
+    checked_at: expectString("parseGitUpstreamStatusResponse", obj.checked_at, "field `checked_at`"),
+    message: expectString("parseGitUpstreamStatusResponse", obj.message, "field `message`"),
+  }
+}
+
+export function parseGitBindStorageResponse(value: unknown): GitBindStorageResponse {
+  const obj = expectPlainObject("parseGitBindStorageResponse", value)
+  return {
+    outcome: expectStringLiteral("parseGitBindStorageResponse", obj.outcome, "field `outcome`", [
+      "pending",
+    ] as const),
+    remote_url: expectString("parseGitBindStorageResponse", obj.remote_url, "field `remote_url`"),
+    message: expectString("parseGitBindStorageResponse", obj.message, "field `message`"),
   }
 }
 
