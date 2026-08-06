@@ -59,7 +59,7 @@ Invariants:
 - No hosted-mode branch may relax loopback rules when the hosted
   environment contract is absent.
 - Header-rewriting alone must never bypass the local session token gate
-  (pinned by `tests/test_databricks_app_shim.py`).
+  (pinned by `tests/test_hosted.py`).
 - Secrets injected by the platform (`DATABRICKS_CLIENT_SECRET`) must
   never be logged or surfaced through the API.
 
