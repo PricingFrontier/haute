@@ -26,13 +26,23 @@ def _has_fractional_values(
     target: str,
     collect: Callable[[pl.LazyFrame], pl.DataFrame],
     *,
-    cast_to_float: bool = False,
+    decimal: bool = False,
 ) -> bool:
-    """Return whether any finite, non-null target value has a fractional part."""
+    """Return whether any finite, non-null target value has a fractional part.
+
+    Decimal columns compare in native decimal arithmetic — casting to
+    ``Float64`` first would round away the fractional part of values beyond
+    float's ~15-16 significant digits and misclassify them as integral.
+    Decimals cannot hold NaN/Inf (and ``is_finite`` is unsupported on them),
+    so the finite mask applies only to floats, where NaN is treated as
+    missing rather than continuous.
+    """
     column = pl.col(target)
-    if cast_to_float:
-        column = column.cast(pl.Float64)
-    frame = collect(data.select((column.is_finite() & (column != column.floor())).any()))
+    if decimal:
+        predicate = column != column.floor()
+    else:
+        predicate = column.is_finite() & (column != column.floor())
+    frame = collect(data.select(predicate.any()))
     return bool(frame.item())
 
 
@@ -86,7 +96,7 @@ def training_target_task_issue(
             data,
             target,
             collect,
-            cast_to_float=base_type == pl.Decimal,
+            decimal=base_type == pl.Decimal,
         ):
             return None
         return (

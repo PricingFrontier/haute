@@ -131,7 +131,10 @@
   by the producing components at their curation sites, not by this transport.
   Because it is promoted to the terminal message,
   `WorkerFailurePayload.__post_init__` enforces the same 512-character message
-  bound on it. Like every other payload field, it is copied into the terminal
+  bound on it. The key name is reserved under schema version 1 — the change is
+  additive (payloads that never set it keep the wrapper surface), and no
+  version-1 producer used the name before the reservation. Like every other
+  payload field, it is copied into the terminal
   job record's fields by `_isolated_worker_failure_fields`, so a curated failure's
   job status carries a `user_message` key duplicating its `message`.
 

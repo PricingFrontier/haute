@@ -262,7 +262,8 @@ omit it retain the constructor-only legacy split/CV pipeline described above.
 3. **Run selection evidence** — without tuning, each validation fit is an internal
    clone carrying the same plan and `fit_index`. `run_evaluation_fit` uses
    `EvaluationPlan.selection_mask`, trains only that partition, computes configured
-   metrics (a metric `ValueError` here is re-raised via `_metric_stage_error` naming
+   metrics (a metric failure here — `ValueError`, `TypeError`, or an arithmetic error — is
+   re-raised via `_metric_stage_error` naming
    the validation fit, target column, task, and requested metrics — these are the
    first metrics computed on the live route, so the wrap must fire here too), and
    returns `EvaluationFitResult`; it never saves a deployable model,
@@ -284,7 +285,8 @@ omit it retain the constructor-only legacy split/CV pipeline described above.
    rows, if any, occupy the internal holdout partition. `_train_model` resolves the
    algorithm and projections; `_compute_metrics` reads the chosen diagnostics
    partition once and computes primary metrics plus optional diagnostics (a
-   `ValueError` from mandatory metric computation is re-raised with the evaluation
+   metric failure (`ValueError`, `TypeError`, or an arithmetic error) from mandatory
+   metric computation is re-raised with the evaluation
    set, target column, task, and requested metric names wrapped around the library
    error, so a bare sklearn message never crosses the worker boundary). The outer
    orchestrator maps internal partition names to public `development`/`final_test`
@@ -564,7 +566,8 @@ rows/features) and retry.
   evaluation/tuning evidence, missing required columns, a target/task mismatch
   (`training_target_task_issue`), an empty training DataFrame, all-non-finite metric
   inputs, a missing offset column at predict time, or GLM terms referencing absent
-  columns. A `ValueError` from mandatory metric computation in
+  columns. A metric failure (`ValueError`, `TypeError`, or an arithmetic error —
+  never `MemoryError`, which keeps its memory taxonomy) in
   `TrainingJob._compute_metrics` is re-raised as a `ValueError` naming the evaluation
   set, target column, task, and requested metrics, chaining the original.
   `_run_training_process_job` maps a bare `ValueError` from
@@ -587,14 +590,21 @@ rows/features) and retry.
   CatBoost-flavoured exceptions (NaN/Inf hint, feature-count mismatch), prefixes
   `OSError` as a model-save failure, and otherwise falls back to
   `f"Training failed ({exc_type}): {msg}"`.
-- **Curated failure surfacing** — every failure payload the training/dispersion
-  entrypoints build (`_worker_failure_payload`) stamps its curated message on the
-  payload's `user_message` field (`_worker_protocol.WORKER_USER_MESSAGE_FIELD`); the
-  parent supervisor surfaces that field verbatim as the job's terminal message
-  instead of the "Isolated worker raised {type}: {message}" wrapper text, which is
-  retained only in the diagnostic `error` field. See
-  [background-jobs](../background-jobs/low-level.md) for the supervisor side of the
-  contract.
+- **Curated failure surfacing** — `_worker_failure_payload` takes an explicit
+  `user_facing` decision from every call site and stamps the payload's
+  `user_message` field (`_worker_protocol.WORKER_USER_MESSAGE_FIELD`) only for
+  deliberately curated, haute-authored wording: the cancelled/memory-limit/
+  contract-error/bounded-memory branches of `_known_training_worker_failure`, the
+  `ValueError` validation channel (which carries the gate and metric-wrap
+  messages), and the recognised shapes of `_classified_friendly_error`
+  (`_friendly_error`'s classifying twin). The unrecognised fallback
+  (`"Training failed ({exc_type}): {msg}"` — an arbitrary third-party
+  exception's text) and raw `MemoryError` text are NOT stamped and keep the
+  typed "Isolated worker raised {type}: {message}" wrapper surface. For stamped
+  failures the supervisor surfaces the field verbatim as the job's terminal
+  message; the wrapper text is retained in the diagnostic `error` field. See
+  [background-jobs](../background-jobs/low-level.md) for the supervisor side of
+  the contract.
 - **`_record_diag_error`** is the single call site that converts an optional-diagnostic
   exception into a structured `diagnostics_errors` entry (`diagnostic`, `error`,
   `error_type`) plus a `logger.warning` — used identically for SHAP,

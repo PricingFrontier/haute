@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import numpy as np
@@ -23,6 +24,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute._worker_isolation import IsolatedWorkerCrashedError, IsolatedWorkerTimeoutError
 from haute._worker_protocol import (
     WORKER_USER_MESSAGE_FIELD,
     WorkerFailurePayload,
@@ -33,6 +35,29 @@ from haute.modelling._target_check import training_target_task_issue
 from haute.modelling._training_job import TrainingJob
 from haute.routes._background_jobs import IsolatedJobSupervisor
 from haute.routes._train_service import TrainService, _worker_failure_payload
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+_CURATED_ROUND_TRIP_MESSAGE = (
+    "Target column 'sev' contains continuous values, but the training task is "
+    "classification. Choose a discrete target column, or set the task to regression."
+)
+
+
+def _curated_failure_worker(runtime: object, request: object) -> WorkerFailurePayload:
+    """Spawn-picklable worker returning a curated failure payload."""
+    del runtime, request
+    return WorkerFailurePayload(
+        terminal_reason="contract_error",
+        error_type="ValueError",
+        message=_CURATED_ROUND_TRIP_MESSAGE,
+        traceback="ValueError: continuous format is not supported",
+        fields={
+            "error": _CURATED_ROUND_TRIP_MESSAGE,
+            WORKER_USER_MESSAGE_FIELD: _CURATED_ROUND_TRIP_MESSAGE,
+        },
+    )
 
 
 class TestTrainingTargetTaskIssue:
@@ -98,6 +123,25 @@ class TestTrainingTargetTaskIssue:
         assert issue is not None
         assert "'sev'" in issue
         assert "continuous values" in issue
+
+    def test_decimal_fractionality_is_checked_in_native_arithmetic(self) -> None:
+        """A fractional part beyond float precision must still gate.
+
+        Casting to Float64 first would round 12345678901234567890.5 to an
+        integral float and misclassify the target as discrete.
+        """
+        data = pl.LazyFrame(
+            {"sev": pl.Series([Decimal("12345678901234567890.5")], dtype=pl.Decimal(38, 2))}
+        )
+        issue = training_target_task_issue(data, target="sev", task="classification")
+        assert issue is not None
+        assert "'sev'" in issue
+
+    def test_integral_scaled_decimal_flag_passes_classification(self) -> None:
+        data = pl.LazyFrame(
+            {"flag": pl.Series([Decimal("0.00"), Decimal("1.00"), None], dtype=pl.Decimal(38, 2))}
+        )
+        assert training_target_task_issue(data, target="flag", task="classification") is None
 
     def test_custom_collector_is_used_for_the_fractional_scan(self) -> None:
         data = pl.LazyFrame({"sev": [123.45]})
@@ -391,18 +435,78 @@ class TestPreDispatchServiceGate:
 
 
 class TestWorkerBoundaryUserMessage:
-    def test_failure_payload_marks_curated_message_user_facing(self) -> None:
-        payload = _worker_failure_payload(ValueError("boom"), terminal_reason="contract_error")
-        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == "boom"
+    def test_value_error_channel_is_stamped_user_facing(self) -> None:
+        from haute.routes._train_service import _known_training_worker_failure
+
+        payload = _known_training_worker_failure(
+            ValueError("Target column 'sev' not found. Available: ['x1']"),
+            bounded_memory_prefix="Training cannot run in bounded streaming mode",
+        )
+        assert payload is not None
+        assert payload.terminal_reason == "contract_error"
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == payload.message
+
+    def test_memory_error_keeps_the_typed_wrapper_surface(self) -> None:
+        from haute.routes._train_service import _known_training_worker_failure
+
+        payload = _known_training_worker_failure(
+            MemoryError(),
+            bounded_memory_prefix="Training cannot run in bounded streaming mode",
+        )
+        assert payload is not None
+        assert payload.terminal_reason == "memory_limited"
+        assert payload.fields["error_code"] == "memory_limit"
+        assert WORKER_USER_MESSAGE_FIELD not in payload.fields
+
+    def test_unrecognised_exception_shapes_are_not_vouched(self) -> None:
+        """The generic fallback embeds arbitrary third-party text — it keeps
+        the typed wrapper surface instead of being promoted as curated."""
+        from haute.routes._train_service import _classified_friendly_error
+
+        message, recognised = _classified_friendly_error(
+            RuntimeError("failed to lock /var/lib/haute/internal/state.db")
+        )
+        assert message.startswith("Training failed (RuntimeError):")
+        assert recognised is False
+        payload = _worker_failure_payload(
+            RuntimeError("failed to lock /var/lib/haute/internal/state.db"),
+            terminal_reason="error",
+            message=message,
+            user_facing=recognised,
+        )
+        assert WORKER_USER_MESSAGE_FIELD not in payload.fields
+
+    def test_recognised_friendly_shapes_are_vouched(self) -> None:
+        from haute.routes._train_service import _classified_friendly_error
+
+        for exc in (
+            FileNotFoundError("data/train.parquet"),
+            ValueError("GLM terms reference columns not present"),
+            OSError("disk full"),
+        ):
+            _message, recognised = _classified_friendly_error(exc)
+            assert recognised is True, type(exc).__name__
+
+    def test_overlong_curated_message_truncates_instead_of_raising(self) -> None:
+        """A wrapped message beyond the 512-char worker bound must truncate at
+        the payload builder, never detonate into a protocol-length error."""
+        payload = _worker_failure_payload(
+            ValueError("x" * 600),
+            terminal_reason="contract_error",
+            user_facing=True,
+        )
+        assert len(payload.message) == 512
+        assert len(payload.fields[WORKER_USER_MESSAGE_FIELD]) == 512
 
     def test_failure_payload_keeps_explicit_fields_and_adds_marker(self) -> None:
         payload = _worker_failure_payload(
-            MemoryError("out of memory"),
-            terminal_reason="memory_limited",
-            fields={"error": "out of memory", "error_code": "memory_limit"},
+            ValueError("out of range"),
+            terminal_reason="contract_error",
+            fields={"error": "out of range", "error_code": "range"},
+            user_facing=True,
         )
-        assert payload.fields["error_code"] == "memory_limit"
-        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == "out of memory"
+        assert payload.fields["error_code"] == "range"
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == "out of range"
 
     def test_supervisor_surfaces_curated_message_without_wrapper(self) -> None:
         curated = (
@@ -478,3 +582,54 @@ class TestWorkerBoundaryUserMessage:
             completed_message="Completed",
         )
         assert outcome.message == "Isolated worker raised KeyError: 'frame'"
+
+    @pytest.mark.parametrize(
+        ("make_exc", "expected_fragment", "expected_reason"),
+        [
+            (
+                lambda: IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=None),
+                "exited without a result payload",
+                "error",
+            ),
+            (
+                lambda: IsolatedWorkerTimeoutError(timeout_seconds=30.0),
+                "exceeded timeout",
+                "timed_out",
+            ),
+        ],
+    )
+    def test_crash_and_timeout_keep_wrapper_text_through_the_supervisor(
+        self,
+        make_exc: Callable[[], Exception],
+        expected_fragment: str,
+        expected_reason: str,
+    ) -> None:
+        """Failures that never produce a payload keep the typed wrapper text."""
+
+        def execute() -> None:
+            raise make_exc()
+
+        outcome = IsolatedJobSupervisor._produce_outcome(
+            execute,
+            completed_fields=lambda result: {"result": result},
+            completed_message="Completed",
+        )
+        assert outcome.terminal_reason == expected_reason
+        assert expected_fragment in outcome.message
+        assert WORKER_USER_MESSAGE_FIELD not in outcome.fields
+
+    def test_user_message_survives_a_real_spawned_protocol_round_trip(self, tmp_path: Path) -> None:
+        """Pin payload → result queue → parent reconstruction across spawn."""
+        from haute._worker_protocol import WorkerRequest, run_worker_protocol
+
+        with pytest.raises(WorkerRemoteFailureError) as excinfo:
+            run_worker_protocol(
+                _curated_failure_worker,
+                WorkerRequest("round-trip-1", "training", {}),
+                artifact_root=tmp_path / "artifacts",
+                artifact_kinds=frozenset(),
+                max_artifact_size_bytes=0,
+            )
+        exc = excinfo.value
+        assert exc.terminal_reason == "contract_error"
+        assert exc.fields[WORKER_USER_MESSAGE_FIELD] == _CURATED_ROUND_TRIP_MESSAGE

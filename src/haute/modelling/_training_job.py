@@ -70,6 +70,23 @@ logger = get_logger(component="training_job")
 
 _MODEL_EXT_MAP: dict[str, str] = {"catboost": ".cbm", "glm": ".rsglm"}
 
+# The failure classes a target/metric/dtype mismatch produces inside pure
+# metric computation. The metric-stage wrap deliberately trades
+# terminal-reason precision for context: any of these surfaces as a
+# ValueError (mapped to `contract_error`) naming the target, task, and
+# metrics, with the original chained — even when the underlying cause was an
+# internal bug. MemoryError is intentionally NOT included: it must keep its
+# `memory_limited` taxonomy.
+_METRIC_STAGE_FAILURE_TYPES: tuple[type[Exception], ...] = (
+    ValueError,
+    TypeError,
+    ArithmeticError,
+)
+
+# Internal partition names → the labels the evaluation-plan pipeline reports
+# publicly. The legacy constructor-only pipeline reports internal names as-is.
+_PUBLIC_EVALUATION_SET_LABELS = {"holdout": "final test", "train": "development"}
+
 
 def model_contract_filename(model_name: str) -> str:
     """Per-model feature-contract filename (remediation 4b.9).
@@ -906,7 +923,7 @@ class TrainingJob:
                     self.metrics,
                     variance_power=self.variance_power,
                 )
-            except ValueError as exc:
+            except _METRIC_STAGE_FAILURE_TYPES as exc:
                 raise self._metric_stage_error(
                     exc,
                     evaluation_set=f"validation fit {self.evaluation_fit_index}",
@@ -1945,7 +1962,7 @@ class TrainingJob:
             execution_context=execution_context,
         )
 
-    def _metric_stage_error(self, exc: ValueError, *, evaluation_set: str) -> ValueError:
+    def _metric_stage_error(self, exc: Exception, *, evaluation_set: str) -> ValueError:
         """Wrap a mandatory metric failure with the user-model objects involved.
 
         The library error alone ("continuous format is not supported") names
@@ -1953,10 +1970,16 @@ class TrainingJob:
         user-facing boundary, so the wrapped message must carry all three.
         The library detail goes last: worker failure messages are truncated
         to a bounded length, and the call to action must survive that.
+        On the evaluation-plan pipeline the internal partition names map to
+        the labels its reports use publicly (`development`/`final test`);
+        the legacy constructor-only pipeline reports internal names as-is.
         """
+        label = evaluation_set
+        if self.evaluation_plan is not None:
+            label = _PUBLIC_EVALUATION_SET_LABELS.get(evaluation_set, evaluation_set)
         metric_list = ", ".join(self.metrics)
         return ValueError(
-            f"Could not evaluate the trained model on the {evaluation_set} data. The "
+            f"Could not evaluate the trained model on the {label} data. The "
             f"metrics ({metric_list}) were computed against target column "
             f"'{self.target}' with task '{self.task}'. Check that the target's values "
             "match the task and metrics (AUC and log loss need a discrete 0/1 target), "
@@ -2046,7 +2069,7 @@ class TrainingJob:
                 self.metrics,
                 variance_power=vp,
             )
-        except ValueError as exc:
+        except _METRIC_STAGE_FAILURE_TYPES as exc:
             raise self._metric_stage_error(exc, evaluation_set=diagnostics_set) from exc
 
         # When holdout is present, diagnostics were computed on holdout.
@@ -2074,7 +2097,7 @@ class TrainingJob:
                         self.metrics,
                         variance_power=vp,
                     )
-                except ValueError as exc:
+                except _METRIC_STAGE_FAILURE_TYPES as exc:
                     raise self._metric_stage_error(exc, evaluation_set="validation") from exc
                 del val_df
 

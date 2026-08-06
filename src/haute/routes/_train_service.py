@@ -572,15 +572,24 @@ def _find_modelling_node(graph: PipelineGraph, node_id: str) -> GraphNode:
     return find_typed_node(graph, node_id, NodeType.MODELLING, "modelling")
 
 
-def _friendly_error(exc: Exception) -> str:
-    """Translate common training exceptions into actionable messages."""
+def _classified_friendly_error(exc: Exception) -> tuple[str, bool]:
+    """Translate common training exceptions; flag whether the shape is recognised.
+
+    The boolean is the curation signal for the worker boundary: ``True``
+    means the message is a deliberately shaped, haute-authored surface safe
+    to promote verbatim as the job's terminal message; ``False`` means the
+    fallback branch fired and the message body is an arbitrary third-party
+    exception's text, which keeps the typed wrapper surface instead.
+    """
     msg = str(exc)
 
     if isinstance(exc, ValueError):
-        return msg
+        # ValueError is the package's deliberate validation channel: gates,
+        # column checks, and the metric-stage wrap all speak through it.
+        return msg, True
 
     if isinstance(exc, FileNotFoundError):
-        return f"File not found: {msg}"
+        return f"File not found: {msg}", True
 
     exc_type = type(exc).__name__
     if "CatBoost" in exc_type or "catboost" in msg.lower():
@@ -589,15 +598,20 @@ def _friendly_error(exc: Exception) -> str:
                 "Training failed: the data contains NaN or infinite values. "
                 "Add a polars node upstream to handle missing values "
                 "(e.g. .fill_null() or .drop_nulls()) before training."
-            )
+            ), True
         if "feature" in msg.lower() and "number" in msg.lower():
-            return f"Training failed: feature mismatch. {msg}"
-        return f"CatBoost error: {msg}"
+            return f"Training failed: feature mismatch. {msg}", True
+        return f"CatBoost error: {msg}", True
 
     if isinstance(exc, OSError):
-        return f"Could not save model file: {msg}"
+        return f"Could not save model file: {msg}", True
 
-    return f"Training failed ({exc_type}): {msg}"
+    return f"Training failed ({exc_type}): {msg}", False
+
+
+def _friendly_error(exc: Exception) -> str:
+    """Translate common training exceptions into actionable messages."""
+    return _classified_friendly_error(exc)[0]
 
 
 def _assert_json_finite(value: Any, path: str = "result") -> None:
@@ -674,12 +688,29 @@ def _child_execution_context(
     )
 
 
+def _remove_gated_temp_parquet(tmp_parquet: str) -> None:
+    """Best-effort removal of the sunk training parquet at the gate.
+
+    An unlink failure (e.g. a permissions race) is logged, never raised — it
+    must not replace the gate's actionable 422 with a filesystem error.
+    """
+    try:
+        Path(tmp_parquet).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "training_target_gate_temp_cleanup_failed",
+            path=tmp_parquet,
+            error=str(exc),
+        )
+
+
 def _worker_failure_payload(
     exc: Exception,
     *,
     terminal_reason: str,
     message: str | None = None,
     fields: dict[str, Any] | None = None,
+    user_facing: bool,
 ) -> WorkerFailurePayload:
     detail = message if message is not None else str(exc)
     detail = detail[:WORKER_MAX_MESSAGE_LENGTH] or type(exc).__name__
@@ -687,11 +718,13 @@ def _worker_failure_payload(
         :WORKER_MAX_TRACEBACK_LENGTH
     ]
     payload_fields = dict(fields) if fields is not None else {"error": detail}
-    # Every payload built here carries a message the child has curated for the
-    # UI (via _friendly_error or an explicit gate); marking it user-facing lets
-    # the parent supervisor surface it verbatim instead of the
+    # Only deliberately curated messages are marked user-facing (haute-authored
+    # wording: the gates, the metric wrap, ValueError validation messages, the
+    # recognised _classified_friendly_error shapes). An unrecognised
+    # third-party exception's text stays behind the typed
     # "Isolated worker raised {type}: {message}" wrapper.
-    payload_fields.setdefault(WORKER_USER_MESSAGE_FIELD, detail)
+    if user_facing:
+        payload_fields.setdefault(WORKER_USER_MESSAGE_FIELD, detail)
     return WorkerFailurePayload(
         terminal_reason=terminal_reason,
         error_type=type(exc).__name__,
@@ -715,6 +748,7 @@ def _known_training_worker_failure(
             terminal_reason="cancelled",
             message="Cancelled",
             fields={"error": str(exc)},
+            user_facing=True,
         )
     if isinstance(exc, ExecutionMemoryLimitExceededError):
         payload = exc.to_payload()
@@ -727,12 +761,14 @@ def _known_training_worker_failure(
                 "error_code": "memory_limit",
                 "http_status_code": 507,
             },
+            user_facing=True,
         )
     if isinstance(exc, PUBLIC_CONTRACT_ERROR_TYPES):
         return _worker_failure_payload(
             exc,
             terminal_reason="contract_error",
             fields=contract_error_job_fields(exc),
+            user_facing=True,
         )
     if isinstance(exc, BoundedMemoryUnsupportedError):
         message = f"{bounded_memory_prefix}: {exc}"
@@ -741,14 +777,18 @@ def _known_training_worker_failure(
             terminal_reason="contract_error",
             message=message,
             fields={"error": message},
+            user_facing=True,
         )
     if isinstance(exc, ValueError):
-        return _worker_failure_payload(exc, terminal_reason="contract_error")
+        return _worker_failure_payload(exc, terminal_reason="contract_error", user_facing=True)
     if isinstance(exc, MemoryError):
+        # str(MemoryError) is raw third-party text (usually empty) — keep the
+        # typed wrapper surface; error_code drives the UI's memory handling.
         return _worker_failure_payload(
             exc,
             terminal_reason="memory_limited",
             fields={"error": str(exc), "error_code": "memory_limit"},
+            user_facing=False,
         )
     return None
 
@@ -982,11 +1022,13 @@ def _run_training_process_job(
         )
         if known is not None:
             return _with_worker_failure_metrics(known, execution_context)
+        friendly, recognised = _classified_friendly_error(exc)
         return _with_worker_failure_metrics(
             _worker_failure_payload(
                 exc,
                 terminal_reason="error",
-                message=_friendly_error(exc),
+                message=friendly,
+                user_facing=recognised,
             ),
             execution_context,
         )
@@ -1114,11 +1156,13 @@ def _run_dispersion_process_job(
         )
         if known is not None:
             return _with_worker_failure_metrics(known, execution_context)
+        friendly, recognised = _classified_friendly_error(exc)
         return _with_worker_failure_metrics(
             _worker_failure_payload(
                 exc,
                 terminal_reason="error",
-                message=_friendly_error(exc),
+                message=friendly,
+                user_facing=recognised,
             ),
             execution_context,
         )
@@ -1976,12 +2020,10 @@ class TrainService:
         except BaseException:
             # A failure inside the scan itself (corrupt parquet, cancellation,
             # memory pressure) must not orphan the multi-GB temp input either.
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
+            _remove_gated_temp_parquet(tmp_parquet)
             raise
         if issue is not None:
-            if Path(tmp_parquet).exists():
-                os.unlink(tmp_parquet)
+            _remove_gated_temp_parquet(tmp_parquet)
             raise HTTPException(status_code=422, detail=issue)
 
     def _persist_preparation_http_failure(self, job_id: str, exc: HTTPException) -> None:

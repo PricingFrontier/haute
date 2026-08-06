@@ -45,7 +45,10 @@ SCHEMA_VERSION = 1
 # The key routes the child's wording across the boundary — the content
 # expectations (name the user-model objects involved, carry a call to action,
 # no secrets or raw tracebacks) are enforced by the producing components at
-# their curation sites, not by this transport.
+# their curation sites, not by this transport. The key name is reserved under
+# schema version 1: the change is additive (payloads that never set it keep
+# the wrapper surface), and no version-1 producer used the name before the
+# reservation.
 WORKER_USER_MESSAGE_FIELD = "user_message"
 WORKER_EVENT_QUEUE_CAPACITY = 64
 WORKER_MAX_EVENTS = 10_000

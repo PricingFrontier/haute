@@ -148,7 +148,11 @@ Invariants that always hold:
   keys on the configured task only — a classification-flavoured objective under a
   regression task (e.g. a binomial GLM defaulting to AUC/log-loss metrics) is not
   gated, because a binomial target may legitimately be a continuous proportion; that
-  path is covered by the metric-stage context wrap below.
+  path is covered by the metric-stage context wrap below. Non-finite float values
+  are deliberately excluded from the fractional scan: NaN is treated as missing
+  (null-target handling and the metric stage's non-finite filtering own it), so an
+  all-NaN or infinite-valued target passes the gate and fails downstream inside the
+  wrapped metric stage with its own bounded message.
 - Every trained model is saved together with a feature contract pinning its exact
   feature order, dtypes, categorical domains, target, and offset column. Any drift
   detected later (train vs. score) raises rather than producing a plausible-looking
@@ -330,25 +334,34 @@ browser without a server or JS bundle.
   column and task and directing the user to choose a discrete target or switch the
   task to regression.
 - Failures that cross the training/dispersion worker boundary surface the child's
-  wording, not worker jargon: every failure payload the child entrypoints' failure
-  mapper builds carries the message the child produced for the user (shaped by
-  `_friendly_error` or an explicit gate) on its `user_message` field, and the parent
-  supervisor surfaces that message verbatim as the job's terminal message — the
-  internal "Isolated worker raised {type}: …" wrapper text is never shown for those
-  failures. The field is a routing contract, not a per-message content guarantee:
-  message quality is enforced at the producing sites (the gates and wraps in this
-  component, pinned by their tests), while failures that never produce a payload
-  (a child crash, a parent-side timeout) keep the typed wrapper text. Error types
-  and bounded tracebacks stay in diagnostic fields; the curated messages carry
-  domain context (target column, task, metrics) and never secrets or raw
+  wording, not worker jargon — but only when that wording is deliberately curated.
+  The child's failure mapper marks haute-authored messages (the gates, the metric
+  wrap, validation `ValueError`s, and the recognised friendly-error shapes) on the
+  payload's `user_message` field, and the parent supervisor surfaces that message
+  verbatim as the job's terminal message — the internal
+  "Isolated worker raised {type}: …" wrapper text is never shown for those
+  failures. An unrecognised third-party exception's text is not vouched for: it
+  keeps the typed wrapper surface, as do failures that never produce a payload (a
+  child crash, a parent-side timeout). The field is a routing contract, not a
+  per-message content guarantee: message quality is enforced at the producing
+  sites (the gates and wraps in this component, pinned by their tests). Error
+  types and bounded tracebacks stay in diagnostic fields; the curated messages
+  carry domain context (target column, task, metrics) and never secrets or raw
   tracebacks — a filesystem path appears only where the path itself is the
   actionable object (a file-not-found or model-save failure).
-- A mandatory metric-evaluation failure names the evaluation set, target column, task,
-  and requested metrics around the underlying library error, with the instruction to
-  fix the target/task/metric pairing — a bare library message cannot reach the UI from
-  the metric stage. This wrap covers every mandatory metric site: the evaluation
-  plan's validation fits (the first metrics computed on the live route), the final
-  fit's diagnostics-partition metrics, and the separate validation re-read.
+- A mandatory metric-evaluation failure names the evaluation set (using the
+  evaluation plan's public `development`/`final test` labels on that pipeline),
+  target column, task, and requested metrics around the underlying library error,
+  with the instruction to fix the target/task/metric pairing — a bare library
+  message cannot reach the UI from the metric stage. This wrap covers every
+  mandatory metric site: the evaluation plan's validation fits (the first metrics
+  computed on the live route), the final fit's diagnostics-partition metrics, and
+  the separate validation re-read. It catches the failure classes pure metric
+  computation produces (`ValueError`, `TypeError`, arithmetic errors — never
+  `MemoryError`, which keeps its memory taxonomy) and deliberately trades
+  terminal-reason precision for context: a wrapped failure surfaces as
+  `contract_error` with the domain objects named and the original chained, even
+  when the underlying cause was an internal bug.
 - Once a background training run has started, every terminal outcome (`completed`,
   `cancelled`, `timed_out`, `memory_limited`, `contract_error`, `error`) is reflected
   both in the job's status and, for HTTP-raised failures, in the response — the two are
