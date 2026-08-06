@@ -124,7 +124,7 @@ describe("GitPanel", () => {
     // design) — reset them so tests stay independent.
     clearGitPanelCaches()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    useGitStore.setState({ status: null, loading: false, statusError: null, branches: [], branchesLoaded: false, branchesLoading: false, branchesError: null, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     // Switches record undoable VC entries on the graph store's history stacks.
     useGraphStore.setState({ dirty: false, undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
