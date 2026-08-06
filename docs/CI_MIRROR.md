@@ -386,9 +386,10 @@ uv run python scripts/run_mutation_suite.py --output-dir mutation-artifacts --ch
 
 Even with every mirrorable gate green locally, a PR can still fail CI on: (1)
 the Windows leg, (2) a Linux-x86-64-only behaviour, (3) a PyPI state change in
-the resolve window, or (4) a stale local cache or drifted local platform
-masking what CI's clean environment will catch — see §Environment drift below
-for that class. These are bounded and named. Everything else — lint, types,
+the resolve window, or (4) a stale local cache (incremental `tsc`/`mypy`
+state) masking what CI's clean environment will catch — see §Environment
+drift below, which also covers the inverse class (platform drift producing
+local-only failures CI never sees). These are bounded and named. Everything else — lint, types,
 unit + coverage gates, optional-dep smokes, package build+install (incl.
 fresh-resolve yank detection), mutation config, e2e, docs build — is
 reproducible locally and should be run before every push per the runlist above.
@@ -411,7 +412,7 @@ is the wrong one. Instead:
    behaviour is then identical on every Node version that recognises the flag,
    and the platform version is free to float.
 2. **Add a cheap canary assertion that names the invariant.** One or two lines
-   in a setup file (e.g. `frontend/src/setupTests.ts`) that assert the pinned
+   in a setup file (e.g. `frontend/src/setupStorageCanary.ts`) that assert the pinned
    behaviour actually holds, throwing a message that names the cause and
    points at the pin. The next silent drift then fails loudly in one
    self-explaining place, instead of producing dozens of baffling downstream
@@ -426,11 +427,29 @@ accessor from 26; the shadowing needs only the key's presence). Vitest's jsdom
 environment skips window keys already present on `globalThis`, so Node's
 global silently shadowed jsdom's real `Storage` and every test touching
 `localStorage.clear` failed with no obvious cause. CI stayed green because its
-Node is pinned to 22.14.0. The fix is
+Node is pinned to 22.14.0.
+
+The pin itself has two distinct failure modes, with different symptoms:
+
+- **Pin ignored / behaviour drifts anyway** (vitest stops passing the flag,
+  or a future Node moves the behaviour beyond the flag's reach): the canary
+  in `frontend/src/setupStorageCanary.ts` throws its named, self-explaining
+  error at the top of every test file.
+- **Pin rejected** (Node < 22.4, which predates the flag, or a future Node
+  dropping the `--no-experimental-webstorage` legacy alias — from Node 25
+  the canonical spelling is `--webstorage`): the workers crash **at spawn**
+  on an unrecognised option (`node: bad option` /
+  `ERR_WORKER_INVALID_EXEC_ARGV`), before any setup file or test output.
+  The canary never gets to speak; recognise that crash as the pin and
+  update the flag spelling in `frontend/vitest.config.ts`.
+
+A meta-test (`frontend/src/__tests__/webstoragePin.meta.test.ts`) gates the
+pin's presence in the config, because on CI's default-off Node deleting the
+`execArgv` line would otherwise go unnoticed. The fix is
 `test.execArgv: ["--no-experimental-webstorage"]` in
 `frontend/vitest.config.ts` — pinning the behaviour off on every Node ≥ 22.4
 rather than demanding a particular Node locally — plus the canary in
-`frontend/src/setupTests.ts` asserting `localStorage` is a real, functioning
+`frontend/src/setupStorageCanary.ts` asserting `localStorage` is a real, functioning
 `Storage`.
 
 **Sibling drift classes already seen in this repo** (same class — the local

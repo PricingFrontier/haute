@@ -1,40 +1,5 @@
 import "@testing-library/jest-dom/vitest"
 
-// Canary: the test environment's web storage must be jsdom's real Storage.
-// Node >= 22.4 can register its own web-storage keys on globalThis
-// (default-on from Node 25; shape varies — a file-less localStorage stub on
-// 25, an undefined-returning accessor from 26, and a real but process-global
-// sessionStorage that leaks state across test files). The jsdom environment
-// skips window keys already present there, so the key's mere presence
-// silently shadows the real thing. `instanceof Storage` is the provenance
-// check: vitest (4.x) installs jsdom's `Storage` class itself onto the
-// global, so only jsdom-created storages pass — note that is a vitest
-// behaviour, not a jsdom guarantee. Guarded by
-// `test.execArgv: ["--no-experimental-webstorage"]` in vitest.config.ts; if
-// this throws, that pin (or its successor) has stopped holding. (If Node
-// instead REJECTS the flag one day, workers crash at spawn before this file
-// runs.) Keep this file's imports free of module-scope storage reads — ESM
-// hoisting evaluates them before the canary.
-for (const name of ["localStorage", "sessionStorage"] as const) {
-  const storage = globalThis[name]
-  if (!(storage instanceof Storage) || typeof storage.clear !== "function") {
-    throw new Error(
-      `${name} is not jsdom's real Storage — Node's experimental web-storage ` +
-        "global is shadowing it. Check the `--no-experimental-webstorage` " +
-        "pin in vitest.config.ts test.execArgv.",
-    )
-  }
-}
-localStorage.setItem("__storage_canary__", "ok")
-if (localStorage.getItem("__storage_canary__") !== "ok") {
-  throw new Error(
-    "localStorage set/get round-trip failed — the test environment's Storage " +
-      "is not functional. Check the `--no-experimental-webstorage` pin in " +
-      "vitest.config.ts test.execArgv.",
-  )
-}
-localStorage.removeItem("__storage_canary__")
-
 Object.defineProperty(globalThis, "__APP_VERSION__", {
   configurable: true,
   value: "999.0.0-test",
