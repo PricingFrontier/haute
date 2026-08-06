@@ -1700,6 +1700,7 @@ class TestUcFork:
         assert lineage is not None and lineage.parent_url == UC_URL
 
         # The fork publishes to its own location, not the parent's.
+        _configure_identity(restored_root)
         (restored_root / "rating.py").write_text("# forked work\n", encoding="utf-8")
         assert _git.commit_save(["rating.py"], WORKING, cwd=restored_root) is not None
         _project_storage.publish_bound_project(restored_root)
