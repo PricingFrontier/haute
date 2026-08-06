@@ -247,8 +247,9 @@ omit it retain the constructor-only legacy split/CV pipeline described above.
 1. **Prepare one eligible source** — `_prepare_data` reuses an already-sunk parquet or
    materialises a supplied frame, validates required columns and the target/task
    pairing (`training_target_task_issue` — a continuous or non-classifiable target
-   under `task="classification"` raises the same actionable `ValueError` the route
-   gate uses, covering the CLI and exported-script paths), removes null-target rows,
+   under `task="classification"` raises the same actionable message the route gate
+   surfaces, here as a `ValueError`, covering the CLI and exported-script paths;
+   internal evaluation clones skip the re-scan), removes null-target rows,
    derives the final feature set and schema snapshot, and applies GLM term narrowing
    and monotonicity validation once before planning.
 2. **Plan once** — `_build_evaluation_plan` reads only the target or strategy key
@@ -261,9 +262,13 @@ omit it retain the constructor-only legacy split/CV pipeline described above.
 3. **Run selection evidence** — without tuning, each validation fit is an internal
    clone carrying the same plan and `fit_index`. `run_evaluation_fit` uses
    `EvaluationPlan.selection_mask`, trains only that partition, computes configured
-   metrics, and returns `EvaluationFitResult`; it never saves a deployable model,
+   metrics (a metric `ValueError` here is re-raised via `_metric_stage_error` naming
+   the validation fit, target column, task, and requested metrics — these are the
+   first metrics computed on the live route, so the wrap must fire here too), and
+   returns `EvaluationFitResult`; it never saves a deployable model,
    feature contract, MLflow run, SHAP/PDP, or full diagnostics. No-validation performs
-   zero selection fits.
+   zero selection fits. Internal clones skip `_prepare_data`'s target/task re-scan —
+   the outer job already gated the shared prepared source.
 4. **Run bounded tuning when configured** — `_run_tuning_trials` writes/reloads the
    tuning plan, uses one seeded Optuna `TPESampler` through sequential ask/tell, runs
    every baseline/sampled candidate on the exact same validation fits, persists every
@@ -685,8 +690,13 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `test_target_task_gate.py` — `training_target_task_issue` unit coverage (discrete
   dtypes pass, integral floats pass, fractional floats and non-classifiable dtypes
   gate with messages naming the target column, task, and call to action; regression
-  task untouched), the `TrainingJob._prepare_data` gate, and the metric-stage
-  `ValueError` context wrap.
+  task untouched), the `TrainingJob._prepare_data` gate on both the legacy and
+  evaluation-plan pipelines, the metric-stage `ValueError` context wrap on both the
+  final-fit and validation-fit sites, and the route-side pre-dispatch gate
+  (`TestPreDispatchServiceGate`: 422 → `contract_error`, temp-parquet removal on the
+  issue and scan-failure paths, and the wiring test proving the gate precedes
+  `_launch_background`). Its `TestWorkerBoundaryUserMessage` covers both supervisor
+  sides of the curated-message contract.
 - Narrow, remediation-pinned regression suites: `test_training_memory_safety.py`,
   `test_training_temp_cleanup.py`, `test_training_split_streaming.py`,
   `test_training_null_target_fused_split.py`, `test_training_catboost_projection.py`,

@@ -121,15 +121,19 @@
   Version-1 bounds are: queue capacity 64; at most 10,000 delivered events;
   64 KiB per event; 4 MiB result metadata; 64 artifacts; 512-character identifiers
   and messages; 4,096-character relative paths; nesting depth 64.
-- **`WORKER_USER_MESSAGE_FIELD`** (`"user_message"`) — the curated-message contract
-  key. A failure payload whose `fields` carry this key vouches that the value is a
-  user-facing message: it names the user-model objects involved where the child
-  knows them, carries a call to action where one exists, and contains no secrets or
-  raw tracebacks (a filesystem path appears only where the path itself is the
-  actionable object). `IsolatedJobSupervisor` surfaces it verbatim as the job's
-  terminal message instead of the typed wrapper text. Because it is promoted to the
-  terminal message, `WorkerFailurePayload.__post_init__` enforces the same
-  512-character message bound on it.
+- **`WORKER_USER_MESSAGE_FIELD`** (`"user_message"`) — the curated-message routing
+  key. A failure payload whose `fields` carry this key marks the value as the
+  message the child produced for the user; `IsolatedJobSupervisor` surfaces it
+  verbatim as the job's terminal message instead of the typed wrapper text. The key
+  routes the child's wording across the boundary — the content expectations (name
+  the user-model objects, carry a call to action, no secrets or raw tracebacks, a
+  filesystem path only where the path itself is the actionable object) are enforced
+  by the producing components at their curation sites, not by this transport.
+  Because it is promoted to the terminal message,
+  `WorkerFailurePayload.__post_init__` enforces the same 512-character message
+  bound on it. Like every other payload field, it is copied into the terminal
+  job record's fields by `_isolated_worker_failure_fields`, so a curated failure's
+  job status carries a `user_message` key duplicating its `message`.
 
 ### `_artifact_housekeeping.py`
 
@@ -460,6 +464,12 @@ the root itself are never removed.
 
 - `tests/test_partial_failure.py` — adversarial save/preview, filesystem, watcher, WebSocket, stale-index, sidecar-corruption, OOM, and resource-cleanup failure handling.
 - `tests/test_state_transitions.py` — JobStore rejects invalid/double-start operations, wrong-status actions, and protected/invalid/duplicate Git transitions.
+- `tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage` — the
+  curated-message routing contract: `IsolatedJobSupervisor._produce_outcome`
+  surfaces a `user_message` payload field verbatim (wrapper text retained in the
+  diagnostic `error` field), keeps the wrapper for payloads without one, and
+  `WorkerFailurePayload.__post_init__` enforces the 512-character bound on the
+  field.
 
 - `tests/test_job_store.py` — the largest suite; unit-tests CRUD, TTL eviction
   (including exact-boundary and missing-`created_at` cases), artifact-handle cleanup

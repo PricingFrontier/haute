@@ -137,6 +137,38 @@ class TestTrainingJobGate:
         assert "'sev'" in message
         assert "set the task to regression" in message
 
+    def test_gate_fires_through_the_evaluation_plan_pipeline(self, tmp_path: Path) -> None:
+        """The live route's canonical evaluation pipeline runs the same gate.
+
+        `_run_evaluation` prepares the source through `_prepare_data`, so a
+        continuous target under classification gates before any plan is
+        generated or fit is run.
+        """
+        data = pl.DataFrame(
+            {
+                "x1": [0.1, 0.2, 0.3, 0.4, 0.5],
+                "sev": [123.45, 67.8, 9.1, 2.5, 4.75],
+            }
+        )
+        job = TrainingJob(
+            name="gate_eval_model",
+            data=data,
+            target="sev",
+            task="classification",
+            evaluation={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
+            output_dir=str(tmp_path),
+        )
+        with pytest.raises(ValueError, match="continuous values") as excinfo:
+            job.run()
+        message = str(excinfo.value)
+        assert "'sev'" in message
+        assert "set the task to regression" in message
+
 
 class TestMetricStageContext:
     def test_metric_failure_names_target_task_and_metrics(self, tmp_path: Path) -> None:
@@ -179,6 +211,50 @@ class TestMetricStageContext:
         assert "'regression'" in message
         assert "auc" in message
         assert "continuous" in message  # the chained sklearn detail survives
+
+    def test_metric_failure_is_wrapped_on_the_evaluation_plan_path(self, tmp_path: Path) -> None:
+        """The canonical evaluation-plan pipeline wraps its validation-fit metrics.
+
+        The live train route always supplies the canonical ``evaluation``
+        object, so the first metric computation happens inside a validation
+        fit — the wrap must fire there too, not only in the legacy
+        constructor-only pipeline's final-fit metric stage.
+        """
+        rng = np.random.RandomState(42)
+        n = 60
+        x1 = rng.randn(n)
+        data = pl.DataFrame(
+            {
+                "x1": x1,
+                "x2": rng.randn(n),
+                "sev": (x1 + rng.randn(n) * 0.5) + 5.0,
+            }
+        )
+        job = TrainingJob(
+            name="metric_wrap_eval_model",
+            data=data,
+            target="sev",
+            task="regression",
+            loss_function="RMSE",
+            metrics=["auc"],
+            params={"iterations": 4, "depth": 2},
+            evaluation={
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
+            output_dir=str(tmp_path),
+        )
+        with pytest.raises(ValueError) as excinfo:
+            job.run()
+        message = str(excinfo.value)
+        assert "Could not evaluate the trained model" in message
+        assert "validation fit" in message
+        assert "'sev'" in message
+        assert "'regression'" in message
+        assert "auc" in message
+        assert "continuous" in message
 
 
 class TestPreDispatchServiceGate:
@@ -224,7 +300,7 @@ class TestPreDispatchServiceGate:
             operation="training_pipeline",
             profile=ExecutionProfile.TRAINING_PREP,
         )
-        with pytest.raises(Exception):  # noqa: B017 — any scan failure must clean up
+        with pytest.raises(pl.exceptions.ComputeError):
             TrainService._validate_target_task_pairing(
                 str(tmp_parquet),
                 {"target": "sev", "task": "classification"},

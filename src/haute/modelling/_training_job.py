@@ -898,13 +898,19 @@ class TrainingJob:
                 prepared.features,
                 offset=self.offset,
             )
-            metrics = compute_metrics(
-                validation[self.target].to_numpy(),
-                predictions,
-                validation[self.weight].to_numpy() if self.weight else None,
-                self.metrics,
-                variance_power=self.variance_power,
-            )
+            try:
+                metrics = compute_metrics(
+                    validation[self.target].to_numpy(),
+                    predictions,
+                    validation[self.weight].to_numpy() if self.weight else None,
+                    self.metrics,
+                    variance_power=self.variance_power,
+                )
+            except ValueError as exc:
+                raise self._metric_stage_error(
+                    exc,
+                    evaluation_set=f"validation fit {self.evaluation_fit_index}",
+                ) from exc
             return EvaluationFitResult(
                 1,
                 self.evaluation_fit_index,
@@ -1484,20 +1490,25 @@ class TrainingJob:
             # The train route runs the same gate before dispatching the fit
             # worker; repeating it here covers the CLI and exported-script
             # paths, and the shared function keeps the two from drifting.
-            from haute.modelling._target_check import training_target_task_issue
+            # Internal evaluation clones (selection, tuning, and the final
+            # fit — all constructed with evaluation_plan set) re-read a
+            # prepared source the outer job already gated, so they skip the
+            # redundant per-fit target re-scan.
+            if self.evaluation_plan is None:
+                from haute.modelling._target_check import training_target_task_issue
 
-            target_task_issue = training_target_task_issue(
-                pl.scan_parquet(data_path),
-                target=self.target,
-                task=self.task,
-                collect=lambda lf: _training_streaming_collect(
-                    lf,
-                    stage_name="training_target_task_check",
-                    execution_context=execution_context,
-                ),
-            )
-            if target_task_issue is not None:
-                raise ValueError(target_task_issue)
+                target_task_issue = training_target_task_issue(
+                    pl.scan_parquet(data_path),
+                    target=self.target,
+                    task=self.task,
+                    collect=lambda lf: _training_streaming_collect(
+                        lf,
+                        stage_name="training_target_task_check",
+                        execution_context=execution_context,
+                    ),
+                )
+                if target_task_issue is not None:
+                    raise ValueError(target_task_issue)
 
             # Null targets cannot be passed to trainers.  External parquet inputs
             # keep the filter fused into the split sink to avoid an extra wide
