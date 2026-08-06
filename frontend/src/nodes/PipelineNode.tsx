@@ -32,14 +32,6 @@ function LiveSwitchBadge({ accent }: { accent: string }) {
   )
 }
 
-/** Zoom-level selector — only re-renders when crossing a threshold, not on every pixel. */
-const zoomSelector = (s: { transform: [number, number, number] }) => {
-  const z = s.transform[2]
-  if (z > 0.55) return "full"
-  if (z > 0.3) return "medium"
-  return "compact"
-}
-
 type EdgeJoinJoinHandlePosition = Position.Top | Position.Bottom | "both"
 
 const EDGE_JOIN_MARKER_HANDLE_OFFSET_X = 4
@@ -79,78 +71,41 @@ function _isDraggingFromEdgeJoinOutput(state: ReactFlowState): boolean {
   return sourceNode?.internals.userNode.data.nodeType === NODE_TYPES.EDGE_JOIN
 }
 
-/** Source-Handle setup for the right edge of the node.
+/** The ordinary single source Handle on the right edge of the node.
  *
- * At medium/compact zoom, each apiInput frame renders one labelled Handle
- * (id = table label). Full-detail apiInput frame rows mount their own Handles
- * so the row name and output dot share one layout coordinate system.
+ * An apiInput never takes one from here. With at least one eligible frame its
+ * body's frame rows mount the labelled Handles themselves, so a row's name and
+ * its output dot share one layout coordinate system; with no eligible frame it
+ * deliberately has no source handle at all, because a source that emits nothing
+ * cannot be wired. (Before nodes rendered at one detail level, this component
+ * also carried an evenly-spaced labelled set for the zoom levels that hid the
+ * frame rows — there are none now, so there is one place handles come from.)
  *
- * Returning a JSX list rather than mutating render order keeps the call
- * sites at the three zoom levels each a one-line switch.
- *
- * Test ids are positional, not semantic: `output-connector[<idx>]:<node
- * label>`, where idx is the visual top-to-bottom frame order. Ids derive from volatile editor
- * state (emit topology) and recompute on change — fine for a UI harness
- * reading the live DOM, as long as the harness isn't itself mutating
- * emit topology mid-assertion.
+ * Test id is positional, not semantic: `output-connector[0]:<node label>`,
+ * matching the frame rows' own `output-connector[<idx>]` ids. Ids derive from
+ * volatile editor state and recompute on change — fine for a UI harness reading
+ * the live DOM, as long as the harness isn't itself mutating emit topology
+ * mid-assertion.
  */
 function _SourceHandles({
   isApiInput,
-  frameLabels,
-  accent,
   isConnectableEnd,
   nodeLabel,
 }: {
   isApiInput: boolean
-  frameLabels: string[]
-  accent: string
   isConnectableEnd: boolean
   nodeLabel: string
 }) {
-  if (!isApiInput) {
-    return (
-      <Handle
-        type="source"
-        position={Position.Right}
-        isConnectableEnd={isConnectableEnd}
-        data-testid={`output-connector[0]:${nodeLabel}`}
-      />
-    )
-  }
-  // Single source of truth for the frame labels — shared with the body
-  // label column and the edit-time edge reconciler so the canvas, the
-  // editor, and edge validation can never disagree about which frames
-  // exist (see `utils/apiInputPorts`). Handle ids are the RAW table
-  // labels (the id space the backend round-trips); blank/duplicate
-  // labels yield NO handle — never a synthesized `port_<idx>`/`__<idx>`
-  // id the executor could not resolve (W1.4). A sole eligible frame is
-  // labelled exactly like every other eligible frame.
-  if (frameLabels.length === 0) {
+  if (isApiInput) {
     return null
   }
-  // One or more eligible frames: stack labelled Handles down the right edge. Each
-  // Handle's `id` is the table's label — React Flow propagates this to
-  // `onConnect.params.sourceHandle` when a user drags from it.
   return (
-    <>
-      {frameLabels.map((label, idx) => {
-        // Stack the dots vertically; `top` is a percentage so the
-        // Handles space evenly down the right edge regardless of node
-        // height.
-        const topPct = ((idx + 1) / (frameLabels.length + 1)) * 100
-        return (
-          <Handle
-            key={label}
-            id={label}
-            type="source"
-            position={Position.Right}
-            isConnectableEnd={isConnectableEnd}
-            style={{ top: `${topPct}%`, background: accent }}
-            data-testid={`output-connector[${idx}]:${nodeLabel}`}
-          />
-        )
-      })}
-    </>
+    <Handle
+      type="source"
+      position={Position.Right}
+      isConnectableEnd={isConnectableEnd}
+      data-testid={`output-connector[0]:${nodeLabel}`}
+    />
   )
 }
 
@@ -240,7 +195,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // refires only when labels actually change, not on a fresh config object
   // whose topology is unchanged (e.g. a column edit inside a table).
   const frameLabelsSig = JSON.stringify(frameLabels)
-  const zoomLevel = useStore(zoomSelector)
   const edgeJoinJoinHandlePosition = useStore((s) =>
     _edgeJoinJoinHandlePosition(s, id, nodeType),
   )
@@ -250,7 +204,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   }, [
     id,
     frameLabelsSig,
-    zoomLevel,
     edgeJoinJoinHandlePosition,
     updateNodeInternals,
   ])
@@ -258,8 +211,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   const sourceHandles = !isSinkOnly ? (
     <_SourceHandles
       isApiInput={isDeployInput}
-      frameLabels={frameLabels}
-      accent={accent}
       isConnectableEnd={sourceHandlesCanEnd}
       nodeLabel={nodeData.label}
     />
@@ -272,11 +223,9 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
       nodeLabel={nodeData.label}
     />
   ) : null
-  // At full detail, visible frame rows own the API-input source Handles. At
-  // medium/compact detail, `_SourceHandles` renders the same labelled handles
-  // on the node container; with no visible frame it renders nothing.
-  const showApiInputFrameRows =
-    isDeployInput && zoomLevel === "full" && frameLabels.length > 0
+  // Visible frame rows own the API-input source Handles. `_SourceHandles`
+  // covers every other node, and an API input with no emitted frame.
+  const showApiInputFrameRows = isDeployInput && frameLabels.length > 0
   const traceActive = !!nodeData._traceActive
   const traceDimmed = !!nodeData._traceDimmed
   const hoverDimmed = !!nodeData._hoverDimmed
@@ -362,38 +311,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     )
   }
 
-  // Compact mode: tinted background with icon + label — readable at far zoom
-  if (zoomLevel === "compact") {
-    return (
-      <div
-        data-testid={`node-${nodeData.label}`}
-        aria-label={ariaLabel}
-        role="button"
-        className={`relative ${isCompactNode ? "w-[112px]" : "w-[160px]"} cursor-pointer ${isPill ? "rounded-full" : "rounded-lg"}`}
-        style={{
-          background: `linear-gradient(${accent}28, ${accent}1a), var(--bg-elevated)`,
-          border: selected
-            ? `3px solid ${accent}`
-            : `3px solid color-mix(in srgb, ${accent} 25%, var(--bg-canvas))`,
-          boxShadow: [diffShadow, "var(--node-shadow)"].filter(Boolean).join(", "),
-          ...diffOutline,
-          opacity: dimmed ? 0.25 : 1,
-          transition: traceMotionDisabled ? "none" : "opacity 0.2s ease",
-        }}
-      >
-        {targetHandles}
-        <div className="flex items-center gap-2 pl-3 pr-2.5 py-2">
-          <Icon size={14} style={{ color: accent }} className="shrink-0" />
-          <div className="font-bold text-[12px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-            {nodeData.label}
-          </div>
-        </div>
-        {sourceHandles}
-      </div>
-    )
-  }
-
-  // Shared styling for medium + full modes. Every layer is OPAQUE so none of the
+  // Every layer is OPAQUE so none of the
   // canvas bleeds through (S38): the tinted border and banner are composited as
   // solid colours via color-mix (over the canvas for the border, over the card
   // surface for the banner) rather than drawn as semi-transparent overlays.
@@ -424,7 +342,6 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
   // (This opaque-face approach supersedes the earlier inner-edge radius — 9 / 13
   // for a 3px border — that aimed to stop corner "whiskers"; the median radius
   // plus the −1.5px inset solves the same whisker artefact more uniformly.)
-  const bannerBg = `color-mix(in srgb, ${accent} 19%, var(--bg-elevated))`
   const headerRadius = isPill ? "14.5px 14.5px 0 0" : "10.5px 10.5px 0 0"
   const headerInset = { marginTop: "-1.5px", marginLeft: "-1.5px", marginRight: "-1.5px" }
   const bodyStyle = {
@@ -435,39 +352,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
     marginBottom: "-1.5px",
   }
 
-  // Medium mode: header bar + label, no extra badges
-  if (zoomLevel === "medium") {
-    return (
-      <div
-        data-testid={`node-${nodeData.label}`}
-        aria-label={ariaLabel}
-        role="button"
-        className={`relative ${isCompactNode ? "w-[128px]" : "w-[240px]"} cursor-pointer ${isPill ? "rounded-2xl" : "rounded-xl"}`}
-        style={containerStyle}
-      >
-        {targetHandles}
-        {/* Header bar */}
-        <div
-          className="flex items-center gap-2 px-3 py-1.5"
-          style={{ background: bannerBg, borderRadius: headerRadius, ...headerInset }}
-        >
-          <Icon size={14} style={{ color: accent }} className="shrink-0" />
-          <span className="text-[10px] font-bold uppercase tracking-[0.1em] shrink-0" style={{ color: accent }}>
-            {typeLabel}
-          </span>
-        </div>
-        {/* Body */}
-        <div className="px-3 py-1.5" style={bodyStyle}>
-          <div className="font-semibold text-[13px] leading-tight truncate" style={{ color: "var(--text-primary)" }}>
-            {nodeData.label}
-          </div>
-        </div>
-        {sourceHandles}
-      </div>
-    )
-  }
-
-  // Full mode: header bar with badges + body with label and trace
+  // Header bar with badges, body with label, trace, and any frame rows.
   return (
     <div
       data-testid={`node-${nodeData.label}`}
@@ -528,13 +413,12 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         )}
       </div>
 
-      {/* Body — Bundle 3c: when this is a multi-frame apiInput, the
-          full-detail frame rows own the right-edge Handle and display each
-          visible frame in top-to-bottom order. Medium/compact modes render the
-          same handles through `_SourceHandles`; zero-frame apiInputs render
-          none. All non-apiInput types retain their existing body.
-          `bodyStyle` keeps the opaque-face surface consistent with
-          medium mode (VC S38 opaque-face redesign). */}
+      {/* Body — Bundle 3c: when this is a multi-frame apiInput, the frame rows
+          own the right-edge Handles and display each visible frame in
+          top-to-bottom order. A zero-frame apiInput renders none at all. All
+          non-apiInput types retain their existing body. `bodyStyle` keeps the
+          opaque face the card's border and header are composited over
+          (VC S38 opaque-face redesign). */}
       <div className="px-3 py-2" style={bodyStyle}>
         {showApiInputFrameRows ? (
           <>
@@ -589,7 +473,7 @@ function PipelineNode({ id, data: nodeData, selected }: NodeProps<PipelineFlowNo
         )}
       </div>
 
-      {!showApiInputFrameRows && sourceHandles}
+      {sourceHandles}
     </div>
   )
 }

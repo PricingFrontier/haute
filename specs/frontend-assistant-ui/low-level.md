@@ -4,10 +4,12 @@
 
 | File | Responsibility |
 |---|---|
-| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded lazily by React): `PanelShell` chrome, the transcript list (auto-scrolled while streaming), and the composer mount. Receives `isInsideSubmodel` and `currentSourceFile` from the app shell, reads transcript/turn/status actions from `useAssistantStore`, and uses `useUIStore.setAssistantOpen` for close. |
+| `frontend/src/panels/assistant/AssistantPanel.tsx` | The panel body (default export, loaded lazily by React): `PanelShell` chrome and one of two screens — the chat list, or one conversation's transcript (auto-scrolled while streaming) with the composer. Receives `isInsideSubmodel` and `currentSourceFile` from the app shell, reads transcript/turn/status/list actions from `useAssistantStore`, and uses `useUIStore.setAssistantOpen` for close. The header icon becomes a back control inside a chat; the composer mounts only there. |
+| `frontend/src/panels/assistant/SessionList.tsx` | The chat-list screen: one row per saved conversation with its title and relative last-used time, plus distinct loading, empty, and retryable-error states so the opening screen never renders as a blank panel. Rows are disabled while no pipeline is resolved. |
+| `frontend/src/panels/assistant/relativeTime.ts` | Relative-time rendering for list rows, kept out of the component module so the component file exports only components (React Fast Refresh). |
 | `frontend/src/panels/assistant/TranscriptEntryView.tsx` | Memoised renderer for one transcript entry by `kind`: user bubble, assistant markdown segment (streamed text), tool-activity row (running/ok/error states), or turn marker (completed/failed/stopped/interrupted). Owns the markdown rendering (see Control flow); scoped `.assistant-markdown` rules live in `frontend/src/index.css`. |
 | `frontend/src/panels/assistant/Composer.tsx` | Message input, send/stop split behaviour, and disabled-state messaging. Receives `isInsideSubmodel` and `currentSourceFile` from the panel and uses the store-exported send-gate reason helper, so the rendered gate and imperative `sendMessage` guard share one implementation and one set of messages. |
-| `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, notice, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. |
+| `frontend/src/stores/useAssistantStore.ts` | Zustand store owning session id + source binding, transcript entries, turn status, notice, the `view`/`sessions`/`sessionsStatus` list state, and the `sendMessage`/`stopTurn`/`newChat`/`refreshStatus`/`loadSessions`/`openSession`/`showSessionList` actions. A module-scope `activeController` owns the in-flight abort handle, and the SSE consumption loop runs inside `sendMessage`, so a turn survives panel unmounting. |
 | `frontend/src/api/assistant.ts` | Assistant-owned bundle-split endpoint module: `getAssistantStatus`, abortable `createAssistantSession`, and `streamAssistantMessage`. It requests JSON as `unknown`, validates status/session/history locally, and fully parses each SSE variant before invoking the store callback. The stream reader uses the authenticated raw-stream helper from [frontend-shared](../frontend-shared/low-level.md), cancels the reader before propagating parser/callback/transport failures, and keeps contract errors distinct from frontend-shared's ApiError. |
 | `frontend/src/App.tsx` *(modified)* | [frontend-graph-canvas](../frontend-graph-canvas/low-level.md)-owned shell with a right-panel branch: `assistantOpen` renders the lazy `AssistantPanel` inside `<ErrorBoundary name="AssistantPanel">` + `Suspense`; sits ahead of the `NodePanel` default alongside the git/utility/imports branches. Passes `isInsideSubmodel` (derived from its submodel-navigation view stack, which is hook-local state a module-scope store cannot read) into the panel as a prop. |
 | `frontend/src/stores/useUIStore.ts` *(modified)* | [frontend-shared](../frontend-shared/low-level.md)-owned UI state with an `assistantOpen` flag + `setAssistantOpen`, mutually exclusive by construction with `gitOpen`/`utilityOpen`/`importsOpen` (each setter clears the others, matching the existing pattern). |
@@ -50,9 +52,47 @@
 ## Control flow
 
 **Open.** Toolbar button → `setAssistantOpen(true)` (clears the other right-panel flags) →
-`App.tsx` cascade renders `Suspense(lazy AssistantPanel)` in its error boundary → a mount
-effect calls `refreshStatus()` unconditionally on every open (the previous status stays
-rendered as the loading state; never polled).
+`App.tsx` cascade renders `Suspense(lazy AssistantPanel)` in its error boundary → mount
+effects call `refreshStatus()` unconditionally on every open (the previous status stays
+rendered as the loading state; never polled) and `loadSessions(currentSourceFile)`.
+
+**Chat list.** The panel opens on `view: "list"`: `GET /api/assistant/sessions` returns this
+pipeline's saved conversations, most recently used first, each with a title, relative
+last-used time, and message count. Selecting one calls `openSession(sessionId,
+sourceFile)`, which resolves its transcript through `POST /api/assistant/session` with that
+id and switches to `view: "chat"`. `newChat()` clears the transcript and switches to the
+chat screen **without** creating a backend session — `create` persists immediately, so an
+abandoned new chat would appear in the list as an empty untitled row; the first send mints
+it. The back control returns to the list and refreshes it, and a completed turn refreshes
+it too, so a conversation appears under the title its opening message gave it. Both
+navigation actions are refused mid-turn.
+
+The transcript is resolved when a conversation is **opened**, never lazily on send, and no
+session id is remembered client-side. A `localStorage` id that silently resumed inside the
+next send is what made the panel open blank and then surface an earlier conversation above
+the message just sent; the backend list is now the single record of which chats exist.
+
+`openSession` clears `sessionId`/`pipelineSource` **before** awaiting, not after: the chat
+screen mounts the composer immediately, so a message sent while the transcript loads would
+otherwise be posted into the conversation just navigated away from, under an empty screen.
+Both navigation fetches carry a module-scope monotonic ticket (`openGeneration`,
+`listGeneration`) and only the newest may write state. Neither response identifies the
+request it answers, and both are re-issued faster than they resolve — a second row click, a
+pipeline change, a turn finishing — so a slower earlier response would otherwise land last
+and show a chat nobody chose. `newChat` and the back control bump the open ticket too:
+any navigation supersedes an open still in flight, whose response would otherwise arrive
+afterwards and re-attach the conversation just left — filling a "new chat" with an old
+transcript. A valid send also bumps the open ticket before creating or streaming its
+session: the message becomes the active chat, so a slower response from the row that was
+opening cannot overwrite the new session and transcript. The tickets sit at module scope
+alongside `activeController` because the panel can unmount and remount mid-request.
+`loadSessions(sourceFile)` treats
+its argument as the gate, not the query: like `createAssistantSession`, the request itself
+deliberately sends `pipeline: null` so the server resolves the pipeline the same way
+session creation does, and with none resolved there is nothing to list. When called for a
+different source while idle, it invalidates the old chat's navigation ticket, clears that
+active session/transcript, and returns to the list; a conversation from one pipeline is never shown
+under another pipeline's canvas.
 
 **Send.** `Composer` submit → `useAssistantStore.getState().sendMessage(text)`:
 
@@ -68,12 +108,11 @@ rendered as the loading state; never polled).
 2. Create the turn's `AbortController`, make it the module-scope owner, and set
    `turnStatus = "streaming"` synchronously before the first await. This is the lock
    acquisition: a second same-tick send cannot pass while session creation is pending.
-3. Ensure a session: `createAssistantSession(null, rememberedSessionId, signal)` on first
-   send — the current client deliberately sends `pipeline: null`; the remembered id comes from `localStorage`
-   (`haute.assistant.session:<sourceFile>`); the response is requested as
-   `unknown` and parsed locally before its `session_id` is stored to state and
-   `localStorage`; a non-empty validated `history` (the backend's transcript
-   mapping of a resumed session) hydrates `entries` before the new turn's entries append.
+3. Ensure a session: `createAssistantSession(null, null, signal)` on first send — the
+   current client deliberately sends `pipeline: null`, and always a null prior id, so this
+   call only ever mints a fresh conversation. Resuming here would drop a stored transcript
+   into a chat the user opened as new; `openSession` owns resumption. The response is
+   requested as `unknown` and parsed locally before its `session_id` is stored to state.
 4. Append the user entry and open a streaming assistant entry.
 5. `streamAssistantMessage(sessionId, text, signal)` — POST via the exported authenticated
    raw-stream helper, then read the response body: chunks are buffered and split on the
@@ -170,10 +209,12 @@ settled transcript row.
 Implemented Vitest coverage is split between
 `frontend/src/stores/__tests__/useAssistantStore.test.ts`,
 `frontend/src/api/__tests__/assistant.test.ts`,
+`frontend/src/panels/assistant/__tests__/SessionList.test.tsx`,
 and `frontend/src/__tests__/App.assistantLazy.test.ts`. Transcript/composer DOM
 interactions are covered through the store/API boundaries.
 
-- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; source-change reset versus same-source session reuse; session persistence/hydration; 400/404/409 notices; abort-stop; and idle-only New chat.
+- **Store transitions and gates** (`frontend/src/stores/__tests__/useAssistantStore.test.ts`): status success/failure; streaming delta aggregation; tool start/finish settlement; graph-update, completed, failed, cancelled, parser-error, and unterminated-stream terminals; dirty/readiness/submodel/whitespace/streaming gates; source-change reset versus same-source session reuse; 400/404/409 notices; abort-stop; and idle-only New chat. Chat-list coverage pins that the panel opens on the list, that a send never resumes a conversation, that opening one hydrates its transcript at that moment, list load success/failure, returning to the list, a pipeline change clearing the prior chat, refusal to navigate mid-turn, that no session stays addressable while its replacement loads, and that a superseded open or list load cannot overwrite the newer one — whether superseded by another open, by New chat, by a send, or by the back control.
+- **Chat list rendering** (`frontend/src/panels/assistant/__tests__/SessionList.test.tsx`): loading, empty, and retryable-error states are distinguishable rather than blank; rows render their title (with a fallback label for an untitled conversation) and open the one clicked; rows are inert with no pipeline resolved; and relative-time rendering across its boundaries.
 - **Assistant API boundary** (`frontend/src/api/__tests__/assistant.test.ts`):
   endpoint payloads and abort signal; valid and malformed status/session/history
   shapes; chunk-split and multi-frame ordering; keep-alive handling; missing or
@@ -202,10 +243,10 @@ The following matrix records the full regression contract; where the scenario is
 - **Stop semantics**: abort marks `stopped`, keeps prior entries, re-enables the composer;
   a 409 on the immediately-following send renders the still-finishing notice without
   auto-retry.
-- **Session recovery**: 404 on send renders the stale-session notice and New chat clears to
-  a working state; a remembered `localStorage` session id is offered on session create and
-  a returned `history` hydrates the transcript (reload/restart resume); a fresh id in the
-  response replaces the remembered one; New chat clears the remembered id.
+- **Session lifecycle**: 404 on send renders the stale-session notice and New chat clears to
+  a working state; the backend list, not browser storage, supplies resumable ids; selecting a
+  row passes that id to session create and the returned `history` hydrates the transcript;
+  New chat clears the active id and the first send always requests a fresh one.
 - **Lazy-loading enforcement**: `App.tsx` never statically imports `AssistantPanel` (mirror of
   the `NodePanel.lazyEditors` test pattern), keeping the panel + markdown renderer out of
   the initial bundle within the bundle-size gate.

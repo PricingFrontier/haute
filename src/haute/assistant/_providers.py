@@ -579,9 +579,28 @@ def _normalise_databricks_tool_arguments(
         try:
             decoded = json.loads(value, parse_constant=_reject_json_constant)
         except (TypeError, ValueError, json.JSONDecodeError):
+            # An eligible field that will now certainly fail canonical
+            # validation as `wrong_type`. Logging the shape — never the value —
+            # is what distinguishes "the gateway sent a dialect we do not
+            # decode" from "the model composed the wrong argument", which the
+            # redacted session record cannot tell apart after the fact.
+            logger.warning(
+                "assistant_databricks_argument_decode_failed",
+                field=field,
+                declared_types=sorted(expected),
+                encoded_length=len(value),
+                looks_like_json_container=value.lstrip()[:1] in {"[", "{"},
+            )
             continue
         if _matches_declared_json_type(decoded, expected):
             normalised[field] = decoded
+        else:
+            logger.warning(
+                "assistant_databricks_argument_decoded_wrong_type",
+                field=field,
+                declared_types=sorted(expected),
+                decoded_type=type(decoded).__name__,
+            )
     return normalised
 
 

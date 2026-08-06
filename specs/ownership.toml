@@ -162,6 +162,12 @@ consumers = ["explore-eda"]
 reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview-field exclusion that keeps dataframe and report caching independent."
 
 [[shared_file]]
+path = "src/haute/_column_summary.py"
+primary = "explore-eda"
+consumers = ["assistant"]
+reason = "Explore's frame statistics established which Polars dtypes can be counted and how a scalar renders; the assistant's value profiles consume the same facts rather than rediscovering them."
+
+[[shared_file]]
 path = "src/haute/_contracts.py"
 primary = "pipeline-config"
 consumers = ["execution-engine"]

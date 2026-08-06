@@ -46,6 +46,34 @@ def _normalise_path_text(path: str | Path) -> str:  # pragma: no mutate
     return text.replace("\\", "/")
 
 
+def _reject_reserved_device_components(raw_path: str | Path, path: Path) -> None:
+    """Reject DOS device names in a runtime path, on every platform.
+
+    Windows resolves a component such as ``NUL`` or ``CON.csv`` to the device
+    (``\\\\.\\NUL``) rather than to a file inside its directory, so the path
+    escapes its root and the failure surfaces as a misleading "outside the
+    project root". On Linux and macOS the same path is an ordinary file, so
+    without this check one configured path resolves differently depending on
+    who runs it.
+
+    Rejecting everywhere mirrors the save-time guards in
+    ``routes/_save_pipeline.py`` and ``routes/submodel.py``, which share this
+    predicate for the same portability reason: a pipeline authored on one
+    platform must stay loadable on another.
+    """
+
+    from haute._config_io import is_windows_reserved_filename
+
+    for component in path.parts:
+        if is_windows_reserved_filename(component):
+            raise MalformedRuntimePathError(
+                f"Path {raw_path!r} contains the reserved device name {component!r}. "
+                "CON, PRN, AUX, NUL, COM1-COM9 and LPT1-LPT9 (any casing, any "
+                "extension) cannot name a file on Windows, so they are rejected on "
+                "every platform to keep a project portable."
+            )
+
+
 def _resolve_source_file_parent(  # pragma: no mutate
     source_file: str | Path | None,  # pragma: no mutate
     project_root: Path,  # pragma: no mutate
@@ -149,6 +177,7 @@ def resolve_runtime_file_path(
     root = _infer_project_root(project_root=project_root, source_file=source_file)
     normalised_path = _normalise_path_text(raw_path)
     raw = Path(normalised_path)
+    _reject_reserved_device_components(raw_path, raw)
     windows_path = PureWindowsPath(normalised_path)
     if windows_path.drive and not raw.is_absolute():
         raise RuntimePathOutsideProjectError(f"Path {raw_path!r} resolves outside the project root")

@@ -93,9 +93,12 @@ well as occurrence-specific positions and bindings.
   component, `PipelineNode`, dispatched via a shared `nodeTypes` registry
   (`utils/nodeTypeRegistry.ts`) so the live editor canvas and the read-only
   comparison canvases never disagree on which component renders a given node
-  type. Rendering has three zoom-dependent levels of detail — compact,
-  medium, full — chosen by a canvas zoom threshold, plus a distinct
-  marker/pill render path for edge-join nodes that never uses the LOD levels.
+  type. Every node renders at full detail at every zoom level — zoom changes
+  scale and nothing else — plus a distinct marker/pill render path for
+  edge-join nodes. Reduced zoom-dependent renderings were removed: they hid an
+  API input's emitted frames and narrowed other nodes into a truncating label
+  precisely when the whole graph was in view, which is when that structure is
+  most worth seeing.
 - **Canonical data-I/O nodes.** The 19-type frontend vocabulary matches the
   backend enum and includes `dataInput` and `dataOutput`, never historical
   Data Source/Data Sink aliases. Data Input is source-only; Data Output is a
@@ -117,13 +120,10 @@ well as occurrence-specific positions and bindings.
   creates names the frame it delivers and there is no null-id single-frame
   mode. A node with zero eligible frames renders no source handle, so a
   source that emits nothing cannot be wired and every persisted API-input
-  edge names a frame. At the full zoom
-  level the labelled handles are mounted on the body's frame rows, so each
-  dot sits at the vertical centre of the row naming its frame; at
-  medium/compact zoom, where no frame rows render, the same handles are
-  evenly spaced down the right edge. The handle id set is identical
-  at every zoom level, so edges stay bound across zoom changes.
-- **API-input body.** At full detail, an API-input node with at least one
+  edge names a frame. The labelled handles are
+  mounted on the body's frame rows, so each dot sits at the vertical centre of
+  the row naming its frame, and they stay there at every zoom level.
+- **API-input body.** An API-input node with at least one
   eligible emitted frame uses its body as the frame list: each visible
   frame name is a full-width row paired with its output handle, and the
   generic instance name is suppressed (presentation only — the persisted

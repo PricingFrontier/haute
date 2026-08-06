@@ -743,7 +743,14 @@ def _graph_edit_operations_schema() -> dict[str, object]:
                 "node_type": {"type": "string"},
                 "name": {"type": "string"},
                 "config": {"type": "object"},
-                "ref": {"type": "string"},
+                "ref": {
+                    "type": "string",
+                    "description": (
+                        "Declares a batch-local handle for this new node. Write the bare "
+                        "name here without a leading '$' (for example \"agg\"); later "
+                        'operations in the same batch address it as "$agg".'
+                    ),
+                },
             },
             ["op", "node_type", "name"],
         ),
@@ -767,8 +774,25 @@ def _graph_edit_operations_schema() -> dict[str, object]:
                     "op": {"const": operation},
                     "source": ref,
                     "target": ref,
-                    "source_handle": {"type": ["string", "null"]},
-                    "target_handle": {"type": ["string", "null"]},
+                    "source_handle": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Output port on the source node, exactly as get_pipeline "
+                            "reports it under an edge's 'source_handle'. Required only "
+                            "when the source emits several frames, such as an apiInput "
+                            "table; omit it for an ordinary single-output node."
+                        ),
+                    },
+                    "target_handle": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Input port on the target node, exactly as get_pipeline "
+                            "reports it under an edge's 'target_handle'. Only nodes with "
+                            "named input roles use it: an edgeJoin requires 'base' or "
+                            "'join'. Omit it for an ordinary node such as polars, which "
+                            "binds inputs by source name and has no input ports."
+                        ),
+                    },
                 },
                 ["op", "source", "target"],
             )
@@ -846,8 +870,24 @@ def _operation_output_schema(name: str) -> dict[str, object]:
             "singletons",
             "project_revision",
         ),
-        "get_node_schema": ("node", "columns", "ports", "project_revision"),
+        "get_node_schema": (
+            "node",
+            "columns",
+            "ports",
+            "inputs",
+            "unresolved_reason",
+            "project_revision",
+        ),
         "get_node_config": ("node", "sensitivity", "config", "project_revision"),
+        "get_column_profiles": (
+            "node",
+            "input",
+            "columns",
+            "rows_scanned",
+            "scan_bounded",
+            "max_levels",
+            "project_revision",
+        ),
         "list_node_types": ("node_types",),
         "list_datasets": ("datasets", "directories", "recursive", "truncated"),
         "get_dataset_schema": (
@@ -981,7 +1021,9 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         ["code", "message"],
     )
     optional_success_fields = {
-        "get_node_schema": {"columns", "ports"},
+        "get_node_schema": {"columns", "ports", "inputs", "unresolved_reason"},
+        # `input` is null when the node's own output was profiled.
+        "get_column_profiles": {"input"},
         "apply_graph_plan": {
             "verification_status",
             "verification_error_code",
@@ -999,9 +1041,14 @@ def _operation_output_schema(name: str) -> dict[str, object]:
         "not": {"required": ["error"]},
     }
     if name == "get_node_schema":
+        # A node whose own output cannot resolve — an authored-but-empty
+        # transform — is still a successful inspection: the tool reports the
+        # stable reason plus the input schemas the analyst needs to write that
+        # code. It is a third success shape, not an error.
         success_variant["oneOf"] = [
             {"required": ["columns"]},
             {"required": ["ports"]},
+            {"required": ["unresolved_reason", "inputs"]},
         ]
     result = _closed_object(
         properties,
@@ -1049,8 +1096,26 @@ def _recipe_invocation_schema() -> dict[str, object]:
 def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
     descriptions = {
         "get_pipeline": "Inspect the saved pipeline graph and its project revision.",
-        "get_node_schema": "Resolve output columns and dtypes for a saved pipeline node.",
+        "get_node_schema": (
+            "Resolve a saved pipeline node's output columns and dtypes plus the columns "
+            "arriving on each of its inputs, keyed by the name the node's own code uses. "
+            "A node reporting unresolved_reason 'node_has_no_code' is an empty transform "
+            "already wired into the graph and awaiting its code: write that code onto it "
+            "with update_node rather than adding a parallel node beside it."
+        ),
         "get_node_config": "Inspect one saved node's complete configuration.",
+        "get_column_profiles": (
+            "Summarise the values in one node frame before writing code against it: per "
+            "column, the distinct levels of a small-cardinality categorical with their "
+            "counts, or the min/max of a numeric or date column, alongside a null count "
+            "and, where the dtype can be counted, a distinct count. Temporal and decimal "
+            "bounds are reported in their written form ('2024-01-01', '12.50'). "
+            "Call this instead of assuming how a column encodes its categories - "
+            "a 'fault' or 'status' column may hold Y/N, true/false, or a description, and "
+            "the schema alone cannot tell you which. Pass 'input' to profile one of the "
+            "node's inputs by the name its code binds. Returns no rows: a value appears "
+            "only as a distinct level, and a high-cardinality column is withheld."
+        ),
         "list_node_types": "List the manifest-backed node catalogue compatibility view.",
         "list_datasets": (
             "List safe installed-format datasets in one project directory, optionally recursively."
@@ -1084,6 +1149,20 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
         "get_pipeline": _closed_object(),
         "get_node_schema": _closed_object({"node": {"type": "string"}}, ["node"]),
         "get_node_config": _closed_object({"node": {"type": "string"}}, ["node"]),
+        "get_column_profiles": _closed_object(
+            {
+                "node": {"type": "string"},
+                "input": {
+                    "type": "string",
+                    "description": (
+                        "Profile this input of the node instead of the node's own "
+                        "output, named exactly as get_node_schema reports it under "
+                        "'inputs'. Omit to profile the node's own output."
+                    ),
+                },
+            },
+            ["node"],
+        ),
         "list_node_types": _closed_object(),
         "list_datasets": _closed_object(
             {
@@ -1271,8 +1350,12 @@ def _operation_descriptor(name: str) -> OperationCapabilityDescriptor:
             else (
                 "restricted-redacted"
                 if name == "get_node_config"
+                # The only operation that reads project data. Its egress
+                # class is distinct so a policy review can see it plainly.
                 else (
-                    "internal-schema-only"
+                    "restricted-value-profile"
+                    if name == "get_column_profiles"
+                    else "internal-schema-only"
                     if name in {"get_dataset_schema", "get_node_schema"}
                     else (
                         "internal-project-metadata"
@@ -1329,6 +1412,7 @@ def capability_manifest() -> CapabilityManifest:
                 "get_pipeline",
                 "get_node_schema",
                 "get_node_config",
+                "get_column_profiles",
                 "list_node_types",
                 "list_datasets",
                 "get_dataset_schema",

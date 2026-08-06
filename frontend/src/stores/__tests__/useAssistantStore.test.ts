@@ -9,7 +9,9 @@
  * turnStatus ("idle" | "streaming"), status (AssistantStatus | "unknown" |
  * "error"), notice (string | null — inline send-failure messaging).
  * Actions: refreshStatus(), sendMessage(text, { isInsideSubmodel,
- * currentSourceFile }), stopTurn(), newChat().
+ * currentSourceFile }), stopTurn(), newChat(), loadSessions(sourceFile),
+ * openSession(sessionId, sourceFile), showSessionList(sourceFile), plus the
+ * list-screen state view/sessions/sessionsStatus.
  *
  * The api module is mocked (the SSE parser has its own suite); graph and
  * toast stores are the real ones, reset per test for shuffle safety.
@@ -24,12 +26,14 @@ import useToastStore from "../useToastStore"
 vi.mock("../../api/assistant", () => ({
   getAssistantStatus: vi.fn(),
   createAssistantSession: vi.fn(),
+  listAssistantSessions: vi.fn(),
   streamAssistantMessage: vi.fn(),
 }))
 
 import {
   createAssistantSession,
   getAssistantStatus,
+  listAssistantSessions,
   streamAssistantMessage,
   type AssistantStreamEvent,
 } from "../../api/assistant"
@@ -57,12 +61,17 @@ function resetStores() {
     turnStatus: "idle",
     status: READY_STATUS,
     notice: null,
+    view: "list",
+    sessions: [],
+    sessionsStatus: "unknown",
   })
   useGraphStore.setState({ dirty: false })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
-  localStorage.clear()
   vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "session-1", history: [] })
   vi.mocked(getAssistantStatus).mockResolvedValue(READY_STATUS)
+  // Every completed turn refreshes the list; without a default the shared
+  // mock resolves undefined and every unrelated test records a list error.
+  vi.mocked(listAssistantSessions).mockResolvedValue([])
 }
 
 function scriptStream(events: AssistantStreamEvent[]) {
@@ -283,28 +292,30 @@ describe("send gates", () => {
   })
 })
 
-describe("session persistence across reloads and restarts", () => {
-  it("offers the remembered session id and hydrates returned history", async () => {
-    localStorage.setItem("haute.assistant.session:main.py", "old-session")
+describe("chat list navigation", () => {
+  it("opens on the list and never resumes a conversation on send", async () => {
+    // The panel used to look empty until a message was sent, then produced an
+    // earlier transcript above it, because resume happened inside sendMessage.
+    vi.mocked(createAssistantSession).mockResolvedValue({ sessionId: "fresh-9", history: [] })
+    scriptStream([completed()])
+
+    expect(useAssistantStore.getState().view).toBe("list")
+    useAssistantStore.getState().newChat()
+    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+
+    expect(createAssistantSession).toHaveBeenCalledWith(null, null, expect.any(AbortSignal))
+    const { entries, sessionId, view } = useAssistantStore.getState()
+    expect(sessionId).toBe("fresh-9")
+    expect(view).toBe("chat")
+    expect(entries[0]).toEqual({ kind: "user", text: "hi" })
+  })
+
+  it("hydrates a chosen conversation when it is opened, not when it is used", async () => {
     vi.mocked(createAssistantSession).mockResolvedValue({
       sessionId: "old-session",
       history: [
         { kind: "user", text: "add nb_batch", name: "", summary: "", is_error: false },
         { kind: "assistant", text: "Adding it now.", name: "", summary: "", is_error: false },
-        {
-          kind: "tool",
-          text: "",
-          name: "apply_graph_plan",
-          summary: '{"applied": 1}',
-          is_error: false,
-        },
-        {
-          kind: "tool",
-          text: "",
-          name: "graph_updated",
-          summary: "Canvas updated",
-          is_error: false,
-        },
         {
           kind: "tool",
           text: "",
@@ -314,58 +325,177 @@ describe("session persistence across reloads and restarts", () => {
         },
       ],
     })
-    scriptStream([completed()])
 
-    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    await useAssistantStore.getState().openSession("old-session", "main.py")
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session", expect.any(AbortSignal))
-    const { entries, sessionId } = useAssistantStore.getState()
+    expect(createAssistantSession).toHaveBeenCalledWith(null, "old-session")
+    const { entries, sessionId, view } = useAssistantStore.getState()
     expect(sessionId).toBe("old-session")
+    expect(view).toBe("chat")
     expect(entries[0]).toEqual({ kind: "user", text: "add nb_batch" })
     expect(entries[1]).toEqual({ kind: "assistant", text: "Adding it now.", streaming: false })
     expect(entries[2]).toMatchObject({
-      kind: "activity",
-      name: "apply_graph_plan",
-      state: "ok",
-      summary: '{"applied": 1}',
-    })
-    expect(entries[3]).toMatchObject({
-      kind: "activity",
-      name: "graph_updated",
-      state: "ok",
-      summary: "Canvas updated",
-    })
-    expect(entries[4]).toMatchObject({
       kind: "activity",
       name: "get_node_schema",
       state: "error",
       summary: "No node x",
     })
-    // The new turn's user entry appends after the rehydrated transcript.
-    expect(entries[5]).toEqual({ kind: "user", text: "hi" })
   })
 
-  it("remembers a freshly issued session id per pipeline", async () => {
-    vi.mocked(createAssistantSession).mockResolvedValue({
-      sessionId: "fresh-9",
-      history: [],
+  it("loads the pipeline's conversations for the list", async () => {
+    vi.mocked(listAssistantSessions).mockResolvedValue([
+      { sessionId: "a", title: "First", createdAt: 1, lastUsed: 2, messageCount: 4 },
+    ])
+
+    await useAssistantStore.getState().loadSessions("main.py")
+
+    const { sessions, sessionsStatus } = useAssistantStore.getState()
+    expect(sessionsStatus).toBe("ready")
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].title).toBe("First")
+  })
+
+  it("returns to the list and clears the active chat when the pipeline changes", async () => {
+    useAssistantStore.setState({
+      view: "chat",
+      sessionId: "old-session",
+      pipelineSource: "old.py",
+      entries: [{ kind: "user", text: "old question" }],
     })
-    scriptStream([completed()])
 
-    await useAssistantStore.getState().sendMessage("hi", SEND_OPTS)
+    await useAssistantStore.getState().loadSessions("new.py")
 
-    expect(createAssistantSession).toHaveBeenCalledWith(null, null, expect.any(AbortSignal))
-    expect(localStorage.getItem("haute.assistant.session:main.py")).toBe("fresh-9")
+    const { view, sessionId, pipelineSource, entries } = useAssistantStore.getState()
+    expect(view).toBe("list")
+    expect(sessionId).toBeNull()
+    expect(pipelineSource).toBeNull()
+    expect(entries).toEqual([])
   })
 
-  it("newChat forgets the remembered session id", async () => {
-    localStorage.setItem("haute.assistant.session:main.py", "old-session")
-    useAssistantStore.setState({ sessionId: "old-session", pipelineSource: "main.py" })
+  it("reports a list failure without discarding the current chat", async () => {
+    useAssistantStore.setState({ view: "chat", sessionId: "live", pipelineSource: "main.py" })
+    vi.mocked(listAssistantSessions).mockRejectedValue(new ApiError("HTTP 500", 500, "boom"))
 
+    await useAssistantStore.getState().loadSessions("main.py")
+
+    expect(useAssistantStore.getState().sessionsStatus).toBe("error")
+    expect(useAssistantStore.getState().sessionId).toBe("live")
+  })
+
+  it("returns to the list and refreshes it", async () => {
+    vi.mocked(listAssistantSessions).mockResolvedValue([])
+    useAssistantStore.setState({ view: "chat" })
+
+    useAssistantStore.getState().showSessionList("main.py")
+
+    expect(useAssistantStore.getState().view).toBe("list")
+    expect(listAssistantSessions).toHaveBeenCalled()
+  })
+
+  it("refuses to leave a chat or start a new one mid-turn", () => {
+    useAssistantStore.setState({ view: "chat", turnStatus: "streaming", sessionId: "live" })
+
+    useAssistantStore.getState().showSessionList("main.py")
     useAssistantStore.getState().newChat()
 
-    expect(localStorage.getItem("haute.assistant.session:main.py")).toBeNull()
+    expect(useAssistantStore.getState().view).toBe("chat")
+    expect(useAssistantStore.getState().sessionId).toBe("live")
+  })
+
+  it("never leaves the previous conversation addressable while another opens", async () => {
+    // The composer mounts as soon as the chat screen does. Holding the old id
+    // across the await would post the next message into the conversation the
+    // user just navigated away from, while the panel shows the new one.
+    let resolveSecond: (value: { sessionId: string; history: [] }) => void = () => {}
+    vi.mocked(createAssistantSession)
+      .mockResolvedValueOnce({ sessionId: "first", history: [] })
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveSecond = resolve }),
+      )
+
+    await useAssistantStore.getState().openSession("first", "main.py")
+    expect(useAssistantStore.getState().sessionId).toBe("first")
+
+    const opening = useAssistantStore.getState().openSession("second", "main.py")
     expect(useAssistantStore.getState().sessionId).toBeNull()
+
+    resolveSecond({ sessionId: "second", history: [] })
+    await opening
+    expect(useAssistantStore.getState().sessionId).toBe("second")
+  })
+
+  it("ignores a superseded open, so the chat shown is the one last chosen", async () => {
+    let resolveSlow: (value: { sessionId: string; history: never[] }) => void = () => {}
+    vi.mocked(createAssistantSession)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
+      .mockResolvedValueOnce({
+        sessionId: "quick",
+        history: [{ kind: "user", text: "quick chat", name: "", summary: "", is_error: false }],
+      })
+
+    const slow = useAssistantStore.getState().openSession("slow", "main.py")
+    await useAssistantStore.getState().openSession("quick", "main.py")
+
+    resolveSlow({ sessionId: "slow", history: [] })
+    await slow
+
+    const { sessionId, entries } = useAssistantStore.getState()
+    expect(sessionId).toBe("quick")
+    expect(entries[0]).toEqual({ kind: "user", text: "quick chat" })
+  })
+
+  it("does not let an in-flight open overwrite a new message", async () => {
+    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    vi.mocked(createAssistantSession)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOpen = resolve }))
+      .mockResolvedValueOnce({ sessionId: "fresh", history: [] })
+    scriptStream([completed()])
+
+    const opening = useAssistantStore.getState().openSession("old", "main.py")
+    await useAssistantStore.getState().sendMessage("new question", SEND_OPTS)
+    resolveOpen({ sessionId: "old", history: [] })
+    await opening
+
+    const { sessionId, entries } = useAssistantStore.getState()
+    expect(sessionId).toBe("fresh")
+    expect(entries[0]).toEqual({ kind: "user", text: "new question" })
+  })
+
+  it.each([
+    ["New chat", () => useAssistantStore.getState().newChat()],
+    ["going back to the list", () => useAssistantStore.getState().showSessionList("main.py")],
+  ])("discards an in-flight open once %s supersedes it", async (_label, navigate) => {
+    let resolveOpen: (value: { sessionId: string; history: never[] }) => void = () => {}
+    vi.mocked(createAssistantSession).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveOpen = resolve }),
+    )
+
+    const opening = useAssistantStore.getState().openSession("chosen", "main.py")
+    navigate()
+    resolveOpen({ sessionId: "chosen", history: [] })
+    await opening
+
+    // Landing here would silently re-attach a conversation the user left.
+    expect(useAssistantStore.getState().sessionId).toBeNull()
+  })
+
+  it("ignores a superseded list load", async () => {
+    let resolveSlow: (value: never[]) => void = () => {}
+    vi.mocked(listAssistantSessions)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSlow = resolve }))
+      .mockResolvedValueOnce([
+        { sessionId: "b", title: "Newer", createdAt: 1, lastUsed: 9, messageCount: 2 },
+      ])
+
+    const slow = useAssistantStore.getState().loadSessions("main.py")
+    await useAssistantStore.getState().loadSessions("main.py")
+
+    resolveSlow([])
+    await slow
+
+    const { sessions, sessionsStatus } = useAssistantStore.getState()
+    expect(sessionsStatus).toBe("ready")
+    expect(sessions.map((session) => session.sessionId)).toEqual(["b"])
   })
 })
 

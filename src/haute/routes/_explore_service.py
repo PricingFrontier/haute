@@ -19,6 +19,7 @@ from fastapi import HTTPException
 
 import haute.execution as execution_facade
 from haute._cache import canonical_json
+from haute._column_summary import CATEGORICAL_COUNT_FIELD, is_unhashable_dtype
 from haute._execution_admission import (
     ExecutionAdmissionError,
     create_admitted_execution_context,
@@ -73,11 +74,6 @@ logger = get_logger(component="server.explore")
 EXPLORE_CACHE_VERSION = 5
 EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16
 
-# Dtypes whose values are not hashable in Polars and therefore cannot have
-# ``n_unique`` computed.  Pre-detected by dtype so we never invoke n_unique on
-# a column that is guaranteed to fail.
-_UNHASHABLE_DTYPES: tuple[type[pl.DataType], ...] = (pl.Object,)
-
 # Display-truncation length for individual sample values (min/max and
 # categorical value labels). Eighty characters keeps values readable without
 # letting a single wide value dominate a card.
@@ -86,7 +82,6 @@ _VALUE_DISPLAY_TRUNCATION_MARKER = "…"
 _SUMMARY_NAME_LIMIT = 3
 _CATEGORICAL_VALUE_COUNT_LIMIT = 50
 _CATEGORICAL_VALUE_FIELD = "__haute_categorical_value"
-_CATEGORICAL_COUNT_FIELD = "__haute_categorical_count"
 _TEXT_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum, pl.Binary)
 _LEXICAL_MIN_MAX_DTYPE_BASES = (pl.String, pl.Categorical, pl.Enum)
 # Bases cast to String for min/max display so the values match the categorical
@@ -100,17 +95,6 @@ class ExploreFrameStats:
     row_count: int
     columns: list[ExploreColumnStat]
     overview_summary: ExploreOverviewSummary
-
-
-def _is_unhashable_dtype(dtype: pl.DataType) -> bool:
-    """Return True when ``n_unique`` cannot be computed for *dtype*.
-
-    Object columns are excluded because Polars raises ``InvalidOperationError``
-    when their values are hashed. All other dtypes (including Struct, Decimal,
-    Datetime, List, Array, etc.) are allowed through to ``n_unique``.
-    """
-
-    return dtype.base_type() in _UNHASHABLE_DTYPES
 
 
 def _is_float_dtype(dtype: pl.DataType) -> bool:
@@ -208,7 +192,7 @@ def _has_categorical_value_counts(dtype: pl.DataType) -> bool:
 
     return (
         not dtype.is_numeric()
-        and not _is_unhashable_dtype(dtype)
+        and not is_unhashable_dtype(dtype)
         and _supports_categorical_value_counts(dtype)
     )
 
@@ -491,8 +475,8 @@ def _categorical_value_label_expr(name: str, dtype: pl.DataType) -> pl.Expr:
 def _categorical_value_counts_expr(name: str, dtype: pl.DataType) -> pl.Expr:
     return (
         _categorical_value_label_expr(name, dtype)
-        .value_counts(sort=True, name=_CATEGORICAL_COUNT_FIELD)
-        .struct.rename_fields([_CATEGORICAL_VALUE_FIELD, _CATEGORICAL_COUNT_FIELD])
+        .value_counts(sort=True, name=CATEGORICAL_COUNT_FIELD)
+        .struct.rename_fields([_CATEGORICAL_VALUE_FIELD, CATEGORICAL_COUNT_FIELD])
         .head(_CATEGORICAL_VALUE_COUNT_LIMIT)
         .implode()
     )
@@ -515,7 +499,7 @@ def _parse_categorical_value_counts(
         values.append(
             ExploreDistinctValueCount(
                 value=_format_display_value(value_count[_CATEGORICAL_VALUE_FIELD]),
-                count=int(value_count[_CATEGORICAL_COUNT_FIELD]),
+                count=int(value_count[CATEGORICAL_COUNT_FIELD]),
             )
         )
     return sorted(
@@ -594,14 +578,14 @@ def _build_frame_stats(
     column_names = list(schema.names())
     aggregations: list[pl.Expr] = [pl.len().alias("row_count")]
     can_count_unique_rows = bool(column_names) and all(
-        not _is_unhashable_dtype(schema[name]) for name in column_names
+        not is_unhashable_dtype(schema[name]) for name in column_names
     )
     if can_count_unique_rows:
         aggregations.append(pl.struct(column_names).n_unique().alias("unique_rows"))
     for name in column_names:
         dtype = schema[name]
         aggregations.append(pl.col(name).null_count().alias(f"null::{name}"))
-        if not _is_unhashable_dtype(dtype):
+        if not is_unhashable_dtype(dtype):
             aggregations.append(pl.col(name).n_unique().alias(f"unique::{name}"))
         if _supports_min_max(dtype):
             min_max_expr = _min_max_column_expr(name, dtype)
@@ -661,7 +645,7 @@ def _build_frame_stats(
         null_count = int(aggregate_row[f"null::{name}"])
         nan_count = int(aggregate_row[f"nan::{name}"]) if _is_float_dtype(dtype) else None
         distinct_count: int | None
-        if _is_unhashable_dtype(dtype):
+        if is_unhashable_dtype(dtype):
             distinct_count = None
         else:
             distinct_count = int(aggregate_row[f"unique::{name}"])

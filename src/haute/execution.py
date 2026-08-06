@@ -326,8 +326,16 @@ def plan_prepared_execution_strategy(
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None = None,
     execution_context: ExecutionContext | None = None,
     materialisation_estimate: MaterialisationEstimate | None = None,
+    schema_only: bool = False,
 ) -> ExecutionStrategyResult:
-    """Plan projection/streaming strategy for an already prepared graph."""
+    """Plan projection/streaming strategy for an already prepared graph.
+
+    ``schema_only`` declares that the caller resolves lazy schemas and never
+    collects a frame or invokes a sink. The group-by admission gate below
+    bounds peak memory *during materialisation*; schema resolution
+    materialises nothing, so under that declaration the gate is not evaluated
+    and no materialisation boundary is inserted.
+    """
     required_columns_by_node = normalise_required_columns_by_node(
         required_columns_by_node,
         order,
@@ -351,6 +359,7 @@ def plan_prepared_execution_strategy(
         execution_context=execution_context,
         materialisation_estimate=materialisation_estimate,
         required_columns_by_node=required_columns_by_node,
+        schema_only=schema_only,
     )
     if execution_context is not None:
         execution_context.projection_plan = result
@@ -377,6 +386,7 @@ def _group_by_rejection(
     reason_code: str,
     estimated_peak_bytes: int | None,
     headroom_bytes: int | None,
+    estimate_detail: str | None = None,
 ) -> GroupByExecutionUnsupportedError:
     remediation = {
         "profile_requires_bounded_execution": (
@@ -396,6 +406,11 @@ def _group_by_rejection(
             "the source before this group-by."
         ),
     }[reason_code]
+    if estimate_detail:
+        # The estimator already knows which node it could not measure and why.
+        # Discarding that left the analyst with "provide readable metadata" and
+        # no way to tell an unreadable file from an unsummarisable source shape.
+        remediation = f"{remediation} Estimator reported: {estimate_detail}."
     return GroupByExecutionUnsupportedError(
         "Group-by execution is unsupported for the selected execution strategy.",
         node_id=node_id,
@@ -420,6 +435,7 @@ def _finalise_execution_strategy(
     execution_context: ExecutionContext | None,
     materialisation_estimate: MaterialisationEstimate | None,
     required_columns_by_node: Mapping[str, Iterable[str] | AllExceptColumns] | None,
+    schema_only: bool = False,
 ) -> ExecutionStrategyResult:
     strategy: ExecutionStrategy | None = None
     reason_code: str | None = None
@@ -428,7 +444,7 @@ def _finalise_execution_strategy(
     headroom_bytes: int | None = None
     assumptions: tuple[str, ...] = ()
 
-    if group_by_operators:
+    if group_by_operators and not schema_only:
         node_id, operator = next(iter(group_by_operators.items()))
         if profile not in {ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE}:
             raise _group_by_rejection(
@@ -471,6 +487,11 @@ def _finalise_execution_strategy(
                 reason_code="materialisation_estimate_unavailable",
                 estimated_peak_bytes=None,
                 headroom_bytes=headroom_bytes,
+                estimate_detail=(
+                    materialisation_estimate.unavailable_reason
+                    if materialisation_estimate is not None
+                    else "no materialisation estimate was requested"
+                ),
             )
         estimated_peak_bytes = materialisation_estimate.estimated_peak_bytes
         assert estimated_peak_bytes is not None
@@ -1029,8 +1050,14 @@ def execute_lazy_graph(
     execution_context: ExecutionContext | None = None,
     source_by_node: Mapping[str, str] | None = None,
     dataframe_cache_request: DataFrameExecutionCacheRequest | None = None,
+    schema_only: bool = False,
 ) -> LazyExecutionResult:
-    """Execute a graph lazily through the shared production engine."""
+    """Execute a graph lazily through the shared production engine.
+
+    Set ``schema_only`` when the caller resolves schemas through
+    ``collect_schema()`` and never collects a frame or invokes a sink; see
+    ``plan_prepared_execution_strategy`` for what that declaration relaxes.
+    """
     from haute._execute_lazy import _execute_lazy
 
     return _execute_lazy(
@@ -1046,6 +1073,7 @@ def execute_lazy_graph(
         execution_context=execution_context,
         source_by_node=source_by_node,
         dataframe_cache_request=dataframe_cache_request,
+        schema_only=schema_only,
     )
 
 

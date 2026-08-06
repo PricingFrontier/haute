@@ -1176,6 +1176,45 @@ class TestDatabricksProvider:
         assert isinstance(events[-1], TurnStop)
         assert events[-1].reason == "tool_use"
 
+    @pytest.mark.parametrize(
+        ("encoded", "event"),
+        [
+            # A Python repr, not JSON — the single quotes make json.loads fail.
+            ("[{'op': 'delete_node'}]", "assistant_databricks_argument_decode_failed"),
+            # Valid JSON, but one operation rather than the declared batch.
+            ('{"op": "delete_node"}', "assistant_databricks_argument_decoded_wrong_type"),
+        ],
+    )
+    async def test_undecodable_eligible_field_is_logged_by_shape(self, encoded: str, event: str):
+        """An eligible field left as a string will certainly fail canonical
+        validation. Durable session history redacts arguments, so without this
+        the operator cannot tell an undecoded gateway dialect apart from a
+        model that composed the wrong argument."""
+
+        import structlog.testing
+
+        client = _FakeOpenAIClient(_openai_tool_chunks("probe_nested", {"ops": encoded}))
+
+        with structlog.testing.capture_logs() as captured:
+            events = await _collect(
+                DatabricksProvider(
+                    _config(
+                        "databricks",
+                        base_url="https://workspace.cloud.databricks.com/serving-endpoints",
+                    ),
+                    client=client,
+                ),
+                tools=_NESTED_TOOLS,
+            )
+
+        (tool,) = [item for item in events if isinstance(item, ToolCallRequest)]
+        assert tool.arguments["ops"] == encoded, "an undecodable value is never repaired"
+        entries = [item for item in captured if item.get("event") == event]
+        assert len(entries) == 1, captured
+        assert entries[0]["field"] == "ops"
+        assert entries[0]["declared_types"] == ["array"]
+        assert encoded not in repr(captured), "the rejected value itself is never logged"
+
     async def test_malformed_stream_retains_databricks_error_identity(self):
         ns = SimpleNamespace
         client = _FakeOpenAIClient(

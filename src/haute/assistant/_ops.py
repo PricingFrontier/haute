@@ -12,7 +12,7 @@ from __future__ import annotations
 import ast
 import json
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -1138,6 +1138,217 @@ class _PolarsResultVisitor(ast.NodeVisitor):
         pass
 
 
+_BARE_INPUT_NAME = "df"
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _binds_name(scope: ast.AST, name: str) -> bool:
+    """Report whether a nested scope binds *name* as its own local.
+
+    A parameter or a comprehension target shadows the module binding outright.
+    So does any assignment in a function body, which Python makes local for the
+    whole function. Bindings inside a further nested scope belong to that scope
+    and must not suppress a real read in the enclosing function.
+    """
+
+    if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return any(
+            _is_name(node, name, ast.Store)
+            for generator in scope.generators
+            for node in ast.walk(generator.target)
+        )
+    if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return False
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+        isinstance(node, ast.Global) and name in node.names
+        for statement in scope.body
+        for node in _nodes_in_own_scope(statement)
+    ):
+        return True
+    arguments = scope.args
+    declared = (
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+        *(arg for arg in (arguments.vararg, arguments.kwarg) if arg is not None),
+    )
+    if any(argument.arg == name for argument in declared):
+        return True
+    # A lambda's body is one expression, not a statement list, and can still
+    # bind through a walrus (`lambda x: (df := x)`).
+    body: list[ast.AST] = list(scope.body) if isinstance(scope.body, list) else [scope.body]
+    return any(_binds_name_in_own_scope(item, name) for item in body)
+
+
+def _binds_name_in_own_scope(node: ast.AST, name: str) -> bool:
+    """Find a binding without descending into a child lexical scope."""
+
+    if _is_name(node, name, ast.Store) or _is_name(node, name, ast.Del):
+        return True
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name or any(
+            _binds_name_in_own_scope(expression, name)
+            for expression in _scope_entry_expressions(node)
+        )
+    if isinstance(node, ast.Lambda):
+        return any(
+            _binds_name_in_own_scope(expression, name)
+            for expression in _scope_entry_expressions(node)
+        )
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return any(
+            isinstance(candidate, ast.NamedExpr) and _is_name(candidate.target, name, ast.Store)
+            for candidate in _nodes_in_comprehension(node)
+        )
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return any(
+            (alias.asname or alias.name.split(".", maxsplit=1)[0]) == name
+            for alias in node.names
+            if alias.name != "*"
+        )
+    if isinstance(node, ast.ExceptHandler) and node.name == name:
+        return True
+    if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == name:
+        return True
+    if isinstance(node, ast.MatchMapping) and node.rest == name:
+        return True
+    return any(_binds_name_in_own_scope(child, name) for child in ast.iter_child_nodes(node))
+
+
+def _scope_entry_expressions(node: ast.AST) -> tuple[ast.expr, ...]:
+    """Expressions evaluated outside a function, lambda, or class body."""
+
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        annotations = tuple(
+            annotation
+            for annotation in (
+                *(argument.annotation for argument in node.args.posonlyargs),
+                *(argument.annotation for argument in node.args.args),
+                *(argument.annotation for argument in node.args.kwonlyargs),
+                node.args.vararg.annotation if node.args.vararg is not None else None,
+                node.args.kwarg.annotation if node.args.kwarg is not None else None,
+                node.returns,
+            )
+            if annotation is not None
+        )
+        return (
+            *node.decorator_list,
+            *node.args.defaults,
+            *(default for default in node.args.kw_defaults if default is not None),
+            *annotations,
+        )
+    if isinstance(node, ast.Lambda):
+        return (
+            *node.args.defaults,
+            *(default for default in node.args.kw_defaults if default is not None),
+        )
+    if isinstance(node, ast.ClassDef):
+        return (*node.decorator_list, *node.bases, *(keyword.value for keyword in node.keywords))
+    return ()
+
+
+def _nodes_in_own_scope(node: ast.AST) -> Iterator[ast.AST]:
+    """Yield nodes without entering a nested lexical scope's body."""
+
+    yield node
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        for expression in _scope_entry_expressions(node):
+            yield from _nodes_in_own_scope(expression)
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _nodes_in_own_scope(child)
+
+
+def _nodes_in_comprehension(node: ast.AST) -> Iterator[ast.AST]:
+    """Yield comprehension nodes while excluding child function/lambda scopes."""
+
+    yield node
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _nodes_in_comprehension(child)
+
+
+def _is_name(node: ast.AST, name: str, context: type[ast.expr_context]) -> bool:
+    return isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, context)
+
+
+def _names_in_owning_scope(node: ast.AST, name: str) -> Iterator[ast.AST]:
+    """Yield nodes reachable without entering a scope that shadows *name*.
+
+    A nested `def`, `lambda`, or comprehension that binds the name introduces
+    its own variable: `def widen(df)` names its parameter, not the node's
+    injected input, so reading it there says nothing about wiring order. A
+    nested scope that does *not* bind the name still reads the module's, so
+    the walk descends into that one.
+    """
+
+    if isinstance(node, _NESTED_SCOPES) and _binds_name(node, name):
+        # A comprehension target is not bound until after its first iterable
+        # has been evaluated in the enclosing scope.
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            yield node
+            yield from _names_in_owning_scope(node.generators[0].iter, name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            yield node
+            for expression in _scope_entry_expressions(node):
+                yield from _names_in_owning_scope(expression, name)
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _names_in_owning_scope(child, name)
+
+
+def _reads_df_before_binding_it(tree: ast.Module) -> bool:
+    """Report whether the code reads `df` before assigning it.
+
+    Such a read resolves to the node's *first input by edge order*, which the
+    generated module makes explicit as `df = <first input>`. On a single-input
+    node that is the idiom. On a multi-input node it is a silent dependency on
+    wiring order: adding or reordering an edge changes which frame the code
+    operates on, with no error and no visible diff in the code itself.
+
+    Only reads that resolve to that injected binding count, so the walk skips
+    any nested scope holding a `df` of its own. A statement's loads are
+    considered before its stores because an assignment evaluates its value
+    first: `df = df.head()` reads the injected frame, `df = left` does not.
+    """
+
+    for statement in tree.body:
+        names = list(_names_in_owning_scope(statement, _BARE_INPUT_NAME))
+        if any(_is_name(node, _BARE_INPUT_NAME, ast.Load) for node in names):
+            return True
+        if any(_is_name(node, _BARE_INPUT_NAME, ast.Store) for node in names):
+            return False
+    return False
+
+
+def _validate_polars_named_inputs(code: object, node_id: str, input_names: Sequence[str]) -> None:
+    """Require assistant-authored multi-input code to name the input it uses."""
+
+    if len(input_names) < 2 or not isinstance(code, str) or not code.strip():
+        return
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return  # _validate_polars_result_retained owns the syntax verdict
+    if not _reads_df_before_binding_it(tree):
+        return
+    _invalid(
+        f"Node {node_id!r} has {len(input_names)} inputs, so a bare 'df' means whichever "
+        f"input happens to be wired first and silently changes meaning if the wiring "
+        f"changes. Start from the input you mean by name: " + ", ".join(sorted(input_names))
+    )
+
+
 def _validate_polars_result_retained(code: object) -> None:
     if not isinstance(code, str):
         _invalid("Explicit Polars code must be a string")
@@ -1156,6 +1367,30 @@ def _validate_polars_result_retained(code: object) -> None:
             "a transformed frame; bare Polars expressions are immutable and their "
             "result would be discarded"
         )
+
+
+def _incoming_input_names(
+    result: PipelineGraph,
+    node_id: str,
+    nodes_by_id: Mapping[str, GraphNode],
+) -> tuple[str, ...]:
+    """Return the input names this node's own code binds, in edge order."""
+
+    from haute._graph_utils import edge_input_name
+
+    names: list[str] = []
+    for edge in result.edges:
+        if edge.target != node_id:
+            continue
+        source_node = nodes_by_id.get(edge.source)
+        if source_node is None:
+            continue
+        try:
+            names.append(edge_input_name(edge, source_node))
+        except ValueError:
+            # A malformed edge is the save validator's verdict, not this one's.
+            continue
+    return tuple(names)
 
 
 def _validate_assistant_authored_graph(
@@ -1177,6 +1412,11 @@ def _validate_assistant_authored_graph(
             and "code" in node.data.config
         ):
             _validate_polars_result_retained(node.data.config["code"])
+            _validate_polars_named_inputs(
+                node.data.config["code"],
+                node_id,
+                _incoming_input_names(result, node_id, nodes_by_id),
+            )
 
     incident_nodes = {node_id for edge in result.edges for node_id in (edge.source, edge.target)}
     disconnected = sorted(set(authored_added) - incident_nodes)

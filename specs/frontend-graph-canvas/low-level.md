@@ -5,7 +5,7 @@
 | File | Responsibility |
 | --- | --- |
 | `frontend/src/App.tsx` | `FlowEditor` — the canvas orchestrator: wires `<ReactFlow>` event props to interaction hooks, derives a transient highlighted edge from the active edge-join insertion candidate, renders its accessible status, owns local selection/context-menu/dialog state, picks the active preview pane, handles `onUpdateNode` (including api-input edge reconciliation), adapts the shared Submodel creation policy and owns the Instance toolbar handler (the `can*` props drive presentation only, so an unavailable click still toasts its reason), and gates Save/Commit on git working-branch status. Exports `App`, which mounts `FlowEditor` inside `ReactFlowProvider`. |
-| `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type across three zoom LODs and the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component on the full-detail body, evenly spaced at medium/compact) and edge-join geometry-dependent handle placement; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
+| `frontend/src/nodes/PipelineNode.tsx` | Renders every non-submodel node type at full detail regardless of zoom, plus the edge-join marker variant; computes source/target `Handle` sets, including multi-frame api-input handles (row-mounted through the shared `FramePortRows` component) and edge-join geometry-dependent handle placement; owns api-input instance-name suppression and the zero-frame "No emitted frames" state. |
 | `frontend/src/nodes/FramePortRows.tsx` | Shared full-detail frame-row primitive used by API Input, the parent Submodel card, and drilled Input/Output boundary cards. It owns the common semibold 13px label typography, truncation/title behavior, and row-relative source/target handle placement. |
 | `frontend/src/nodes/SubmodelNode.tsx` | Resolves occurrences through `config.definitionId` and the typed definition registry, then renders labelled `in__<portId>`/`out__<portId>` rows, a registry-derived accessible child count, and a visible invalid-definition alert. Cards have no default target. |
 | `frontend/src/nodes/SubmodelPortNode.tsx` | Renders one composite Input or Output boundary card inside a drilled submodel. Both headers use the same right-pointing arrow while their handles retain their graph semantics. Input turns its ordered `ports` into shared source-handle rows; Output renders one shared target handle and never lists exported frames. |
@@ -358,15 +358,16 @@ newer overlapping transform.
     body rows, so they cannot diverge. Its collision-safe serialised
     signature (`JSON.stringify` — labels are validated identifiers now,
     but the serialisation stays collision-safe by construction, same
-    rationale as `columnFingerprint`'s length-prefixing), the bucketed
-    `zoomLevel`, and the live `edgeJoinJoinHandlePosition` drive a
+    rationale as `columnFingerprint`'s length-prefixing) and the live
+    `edgeJoinJoinHandlePosition` drive a
     `useUpdateNodeInternals(id)` effect so React Flow re-measures handle
-    positions whenever port topology changes or a zoom-threshold crossing
-    relocates the handles between the container and the frame rows.
-    `zoomLevel` comes from a `useStore` selector on the pane's zoom
-    transform, bucketed into `full`/`medium`/`compact` so a zoom-threshold
-    crossing — not every pixel of zoom — triggers a re-render. At full
-    detail an api-input with ≥1 eligible frame renders the frame-row body:
+    positions whenever port topology changes.
+    **Every node renders at full detail at every zoom.** There is no
+    level-of-detail switch: reduced renderings previously replaced a node's
+    body below a zoom threshold, which hid an api input's emitted frames and
+    narrowed other nodes into a truncating label — losing exactly the
+    structure a zoomed-out view exists to show. An api-input with ≥1 eligible
+    frame renders the frame-row body:
     one relatively-positioned row per frame carrying a right-aligned
     truncating name in the same 13px semibold primary-text typography as
     node names (full name as `title` tooltip) and that row's labelled
@@ -375,16 +376,18 @@ newer overlapping transform.
     centred on the node's right border. The instance name is
     suppressed in that body; the trace-value pill, when active, renders
     above the rows. Zero eligible frames keeps the instance name, adds a
-    muted "No emitted frames" line, and renders no source handle. At
-    medium/compact zoom no frame rows render and `_SourceHandles` supplies
-    the same handle id set — labelled handles evenly spaced down the right
-    edge, or no handles for zero eligible frames. Positional
+    muted "No emitted frames" line, and renders no source handle.
+    `_SourceHandles` covers every other node — a single right-edge handle —
+    and renders nothing at all for an api input, whose frame rows are the sole
+    origin of its labelled handles. It holds no labelled path of its own: the
+    evenly-spaced set it once carried existed only for the zoom levels that hid
+    the frame rows, so removing those removed its only caller. Positional
     `output-connector[<idx>]:<node label>` test
-    ids follow the visual top-to-bottom order in both modes, and the name
+    ids follow the visual top-to-bottom order, and the name
     span keeps its `api-input-body-label-<label>` test id. Edge-join nodes
     short-circuit to an entirely separate marker/pill render before the
-    LOD branches run; their status and warning dots sit inside the visible
-    marker ellipse rather than outside its right edge.
+    ordinary card renders at all; their status and warning dots sit inside the
+    visible marker ellipse rather than outside its right edge.
 12. **Node delete (`useNodeHandlers.handleDeleteNode`).** Calls
     `setNodesAndEdges` once (node filter + edge filter closed over the same
     call, one undo entry), nulls `selectedNode`/`previewData` if they
@@ -610,11 +613,14 @@ newer overlapping transform.
   Duplicate labels render **one** handle — the first occurrence only, never
   a disambiguated `label__<idx>`. (See `_SourceHandles` in `PipelineNode.tsx`
   and `frontend/src/__tests__/nodes/ApiInputHandles.test.tsx`.)
-- **The api-input handle id set is zoom-invariant.** Full detail mounts the
-  source handles on the body's frame rows; medium/compact space the same
-  handles down the right edge. Only geometry moves across a zoom threshold
-  (node height already changes per LOD today); ids never do, so edges stay
-  bound.
+- **Zoom changes nothing but scale.** Every node renders one way at every zoom
+  level, so an api input's frame rows, and every node's type badge and name,
+  stay on screen with the whole graph in view. Handle ids and geometry are
+  therefore both zoom-invariant and edges cannot rebind on a zoom change.
+  The removed level-of-detail switch traded exactly the information a
+  zoomed-out view is for; if a very large graph ever makes far-zoom rendering
+  costly, the answer is virtualising off-screen nodes, not hiding the ports of
+  on-screen ones.
 - **The visible rows and the labelled handles are the same list.** Both
   read `apiInputFrameLabels`, so a config with two emit tables of which one
   has an invalid label renders exactly one row and one labelled handle (the
@@ -918,8 +924,8 @@ again through the editor and save paths.
     the api-input frame-row body (instance-name suppression with ≥1
     visible frame, the single-frame name row, the zero-frame name +
     "No emitted frames" state, row/handle pairing and ordering, status/
-    warning/trace adornments coexisting with rows, and medium/compact
-    bodies unchanged).
+    warning/trace adornments coexisting with rows, and the body unchanged
+    across zoom levels).
   - `frontend/src/__tests__/nodes/SubmodelNode.test.tsx` — canonical registry
     resolution, structured input/output port ids and labels, absence of a
     default target, registry-derived child count, visible invalid-definition
@@ -934,8 +940,11 @@ again through the editor and save paths.
     raw labels (the sole-frame labelled handle explicitly pinned);
     no source handle for zero eligible frames (no eligible tables or an
     all-invalid label set); blank/duplicate/non-identifier labels render no
-    handle; row-mounted full-detail handles carry the same ids as the
-    medium/compact rendering (zoom-invariant id set).
+    handle; and the same ordered id set at 1.0, 0.5 and 0.2 zoom, which the
+    frame rows now supply at every one of them.
+    `frontend/src/nodes/__tests__/PipelineNode.test.tsx` covers the rendering
+    those handles hang off — the frame rows themselves, and an ordinary node's
+    type badge and name — surviving far zoom.
 - **App / integration — `frontend/src/__tests__/`:**
   - `frontend/src/__tests__/App.integration.test.tsx` — mount and initial load sequencing (no
     WebSocket sync while the initial load is pending); empty-pipeline

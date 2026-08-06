@@ -463,3 +463,111 @@ class TestDegradation:
         assert any(e["event"] == "assistant_session_persist_failed" for e in logs)
         assert store.lookup(session.id) is session
         assert len(session.history) == 1
+
+
+class TestSessionListing:
+    """The chat list is served from persisted state, not from the browser.
+
+    A client-remembered "last session" id is what made the panel open blank
+    and then surface an earlier transcript mid-conversation; the store is now
+    the single record of which conversations exist.
+    """
+
+    def test_lists_this_pipeline_s_conversations_most_recent_first(self, tmp_path: Path):
+        clock = iter(float(stamp) for stamp in range(1, 7))
+        store = _store(tmp_path, clock=clock.__next__)
+        older = store.create("rating/main.py")
+        store.append(older, _turn("first question"))
+        newer = store.create("rating/main.py")
+        store.append(newer, _turn("second question"))
+        other_pipeline = store.create("other/main.py")
+        store.append(other_pipeline, _turn("elsewhere"))
+
+        listed = store.list_sessions("rating/main.py")
+
+        assert [item.session_id for item in listed] == [newer.id, older.id]
+        assert [item.title for item in listed] == ["second question", "first question"]
+        assert all(item.message_count == 2 for item in listed)
+
+    def test_empty_conversations_are_not_listed(self, tmp_path: Path):
+        """`create` persists immediately, so an abandoned new chat exists on
+        disk with nothing to show and no title to show it under."""
+
+        store = _store(tmp_path)
+        store.create("rating/main.py")
+
+        assert store.list_sessions("rating/main.py") == ()
+
+    def test_survives_a_restart_without_reviving_every_session(self, tmp_path: Path):
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(session, _turn("persisted question"))
+
+        restarted = _store(tmp_path)
+        listed = restarted.list_sessions("rating/main.py")
+
+        assert [item.session_id for item in listed] == [session.id]
+        assert listed[0].title == "persisted question"
+        # Listing must not pull conversations into memory: they share the LRU
+        # bound with live sessions and would evict them.
+        assert len(restarted) == 0
+
+    def test_a_long_first_message_is_bounded_and_collapsed(self, tmp_path: Path):
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(session, _turn("word  \n  spaced " + "x" * 200))
+
+        (listed,) = store.list_sessions("rating/main.py")
+
+        assert listed.title.startswith("word spaced ")
+        assert len(listed.title) <= 80
+        assert listed.title.endswith("…")
+
+    def test_an_unreadable_session_file_is_skipped_with_a_warning(self, tmp_path: Path):
+        store = _store(tmp_path)
+        session = store.create("rating/main.py")
+        store.append(session, _turn("readable"))
+        (tmp_path / "sessions" / f"{'0' * 32}.json").write_text("{not json")
+
+        with structlog.testing.capture_logs() as logs:
+            listed = store.list_sessions("rating/main.py")
+
+        assert [item.session_id for item in listed] == [session.id]
+        assert any(e["event"] == "assistant_session_list_unreadable" for e in logs)
+
+    def test_valid_json_that_cannot_be_revived_is_not_advertised(self, tmp_path: Path):
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        valid_turn = _turn("should not appear")
+        payloads = (
+            {
+                "id": "f" * 32,
+                "source_file": "rating/main.py",
+                "history": [valid_turn],
+                "created_at": 1.0,
+                "last_used": 2.0,
+            },
+            {
+                "id": "1" * 32,
+                "source_file": "rating/main.py",
+                "history": [{"messages": [{"role": "assistant", "content": "invalid"}]}],
+                "created_at": 1.0,
+                "last_used": 2.0,
+            },
+            {
+                "id": "2" * 32,
+                "source_file": "rating/main.py",
+                "history": [valid_turn],
+                "created_at": 1.0,
+                "last_used": float("nan"),
+            },
+        )
+        file_ids = ("0" * 32, "1" * 32, "2" * 32)
+        for file_id, payload in zip(file_ids, payloads, strict=True):
+            (sessions / f"{file_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        with structlog.testing.capture_logs() as logs:
+            listed = _store(tmp_path).list_sessions("rating/main.py")
+
+        assert listed == ()
+        assert sum(e["event"] == "assistant_session_list_unreadable" for e in logs) == 3

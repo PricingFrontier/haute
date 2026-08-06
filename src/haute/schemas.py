@@ -147,6 +147,22 @@ class AssistantSessionResponse(BaseModel):
     history: list[AssistantTranscriptEntry] = []
 
 
+class AssistantSessionSummary(BaseModel):
+    """One conversation as the chat list renders it, without its transcript."""
+
+    session_id: str
+    # The opening user message, whitespace-collapsed and length-bounded. Empty
+    # only for a session whose first turn carried no user text.
+    title: str = ""
+    created_at: float
+    last_used: float
+    message_count: int
+
+
+class AssistantSessionListResponse(BaseModel):
+    sessions: list[AssistantSessionSummary] = []
+
+
 class AssistantMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

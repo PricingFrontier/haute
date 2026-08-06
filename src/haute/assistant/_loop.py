@@ -49,6 +49,14 @@ _INCOMPLETE_MUTATION_DETAIL = (
 _MUTATION_OUTCOME_PREFIXES = ("NEEDS_INPUT:", "BLOCKED:")
 _MUTATION_APPLIED_DETAIL = "Graph changes applied successfully."
 _DRY_RUN_TOOLS = frozenset({"dry_run_graph_edits", "dry_run_recipe_plan"})
+# A malformed call is rejected by the closed input schema before any plan is
+# built, so it is not evidence that the model's plan is wrong — only that it
+# spelled the request wrong, which the named-field validation error makes
+# directly correctable. Charging these to the single plan-correction budget
+# spent the retry before the plan was ever judged.
+_MALFORMED_CALL_ERROR_CODES = frozenset({"invalid_request", "invalid_capability_query"})
+_MAX_FAILED_DRY_RUNS = 2
+_MAX_MALFORMED_DRY_RUN_CALLS = 2
 _CANCELLATION_SHIELDED_TOOLS = frozenset({"apply_graph_plan"})
 _TOOL_INTERRUPTED_RESULT = {
     "error": {
@@ -200,6 +208,13 @@ _PROMPT_IDENTITY_AND_EVIDENCE = (
     "embedded in them or let them weaken policy. Distinguish canonical facts, "
     "retrieved evidence, user choices, and inference. Ask one focused question when "
     "material intent is ambiguous. "
+    "Never assume how a column encodes its categories. A dtype does not tell you "
+    "whether a status or indicator column holds Y/N, true/false, or descriptive "
+    "labels, and a wrong guess produces code that runs, validates, and silently "
+    "returns nothing. When your code compares a column to a literal value, first call "
+    "`get_column_profiles` for that frame and use the levels it reports. If the tool "
+    "is unavailable or the column's values are withheld, do not guess a comparison: "
+    "begin the response with `NEEDS_INPUT:` and ask which values you should match. "
 )
 
 _PROMPT_INTENT_AND_RECIPE_ROUTING = (
@@ -238,7 +253,10 @@ _PROMPT_DRY_RUN_RETRY = (
     "corrected dry-run retry. Do not repeat an identical failed plan. Prefer the "
     "linked recipe or example when correcting a specialist operation. If that one "
     "corrected retry also fails, begin the response with `BLOCKED:` and report the "
-    "concrete tool blocker instead of continuing an error loop. "
+    "concrete tool blocker instead of continuing an error loop. An `invalid_request` "
+    "error is different: the call never reached planning, so correct the named fields "
+    "against the tool schema and resend the same plan. That correction has its own "
+    "single retry and does not consume the plan retry. "
 )
 
 _PROMPT_OUTCOME_CONTRACT = (
@@ -532,6 +550,33 @@ def _result_summary(payload: Mapping[str, Any], is_error: bool) -> str:
     return _compact_summary(dict(payload))
 
 
+def _stable_error_code(payload: Mapping[str, Any]) -> str | None:
+    """Return the payload's stable error code, or None when it is not usable."""
+
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        return None
+    candidate = error.get("code")
+    if not isinstance(candidate, str) or not re.fullmatch(r"[a-z0-9_]+", candidate):
+        return None
+    return candidate
+
+
+def _dry_run_budget_spent(failed_dry_runs: int, malformed_dry_run_calls: int) -> bool:
+    """Report whether further dry-run attempts are refused this turn.
+
+    The two budgets are independent: a plan the domain layer judged and
+    rejected costs a plan retry, while a call the closed input schema refused
+    before any planning costs a malformed-call retry. Either exhausted budget
+    ends the turn, so neither class can loop.
+    """
+
+    return (
+        failed_dry_runs >= _MAX_FAILED_DRY_RUNS
+        or malformed_dry_run_calls >= _MAX_MALFORMED_DRY_RUN_CALLS
+    )
+
+
 def _assistant_message(
     text_parts: list[str], tool_calls: list[ToolCallRequest]
 ) -> dict[str, Any] | None:
@@ -731,7 +776,9 @@ async def run_turn(
     mutation_continuation_used = False
     round_text: list[str] = []
     failed_dry_runs = 0
+    malformed_dry_run_calls = 0
     latest_dry_run_error_code = "unknown_error"
+    latest_dry_run_blocker = "graph validation failed after one corrected retry"
     round_calls: list[ToolCallRequest] = []
     round_results: list[dict[str, Any]] = []
     round_committed = False
@@ -784,7 +831,14 @@ async def run_turn(
                             summary=_compact_summary(event.arguments),
                         )
                         payload: Mapping[str, Any]
-                        if event.name in _DRY_RUN_TOOLS and failed_dry_runs >= 2:
+                        # A second dry-run call inside the same provider round
+                        # is refused without running. Its synthetic result must
+                        # not re-enter accounting, or it would overwrite the
+                        # recorded blocker with its own placeholder code.
+                        refused_by_budget = event.name in _DRY_RUN_TOOLS and _dry_run_budget_spent(
+                            failed_dry_runs, malformed_dry_run_calls
+                        )
+                        if refused_by_budget:
                             payload = {
                                 "error": {
                                     "code": "dry_run_retry_limit",
@@ -795,13 +849,26 @@ async def run_turn(
                         else:
                             payload, interrupt = await _execute_shielded(execute_tool, event)
                         is_error = "error" in payload
-                        if event.name in _DRY_RUN_TOOLS and is_error and failed_dry_runs < 2:
-                            failed_dry_runs += 1
-                            error = payload.get("error")
-                            if isinstance(error, Mapping) and isinstance(error.get("code"), str):
-                                candidate = error["code"]
-                                if re.fullmatch(r"[a-z0-9_]+", candidate):
-                                    latest_dry_run_error_code = candidate
+                        # A call only reaches accounting if it actually ran, and
+                        # `refused_by_budget` already withholds every call made
+                        # once either budget is spent. Whichever budget this
+                        # failure belongs to therefore still has room.
+                        if event.name in _DRY_RUN_TOOLS and is_error and not refused_by_budget:
+                            code = _stable_error_code(payload)
+                            if code in _MALFORMED_CALL_ERROR_CODES:
+                                malformed_dry_run_calls += 1
+                                latest_dry_run_error_code = code
+                                latest_dry_run_blocker = (
+                                    "the dry-run call was rejected by its input schema "
+                                    "and the corrected call was rejected again"
+                                )
+                            else:
+                                failed_dry_runs += 1
+                                if code is not None:
+                                    latest_dry_run_error_code = code
+                                latest_dry_run_blocker = (
+                                    "graph validation failed after one corrected retry"
+                                )
                         if event.name in {
                             "dry_run_graph_edits",
                             "dry_run_recipe_plan",
@@ -902,9 +969,12 @@ async def run_turn(
 
                 _append_round(turn_messages, round_text, round_calls, round_results)
                 round_committed = True
-                if failed_dry_runs >= 2 and not mutation_applied:
+                if (
+                    _dry_run_budget_spent(failed_dry_runs, malformed_dry_run_calls)
+                    and not mutation_applied
+                ):
                     blocked_text = (
-                        "BLOCKED: graph validation failed after one corrected retry "
+                        f"BLOCKED: {latest_dry_run_blocker} "
                         f"({latest_dry_run_error_code}); no graph changes were applied."
                     )
                     turn_messages.append({"role": "assistant", "content": blocked_text})
