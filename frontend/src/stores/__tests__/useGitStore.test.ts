@@ -246,3 +246,65 @@ describe("useGitStore durable-storage actions", () => {
     expect(useGitStore.getState().status?.sync?.pending).toBe(2)
   })
 })
+
+describe("useGitStore reopens the storage dialog when a background bind fails", () => {
+  const failedBind = (): GitWorkingBranchResponse => ({
+    ...READY,
+    storage: "unbound",
+    storage_bind: {
+      state: "failed",
+      outcome: null,
+      message: "That location is in use by another app.",
+      claim: null,
+      remote_url: "uc://cat.sch.vol/projects/demo",
+    },
+  })
+
+  beforeEach(() => {
+    useGitStore.setState({ status: null, modal: null, loading: false, statusError: null })
+    vi.clearAllMocks()
+  })
+
+  it("brings the dialog back, since the user asked for durable storage and has not got it", async () => {
+    vi.mocked(getWorkingBranch).mockResolvedValue(failedBind())
+
+    await useGitStore.getState().loadStatus()
+
+    expect(useGitStore.getState().modal).toBe("storage")
+  })
+
+  it("never steals focus from a modal the user already has open", async () => {
+    useGitStore.setState({ modal: "divergence" })
+    vi.mocked(getWorkingBranch).mockResolvedValue(failedBind())
+
+    await useGitStore.getState().loadStatus()
+
+    expect(useGitStore.getState().modal).toBe("divergence")
+  })
+
+  it("leaves the UI alone when the bind did not fail", async () => {
+    vi.mocked(getWorkingBranch).mockResolvedValue({
+      ...READY,
+      storage: "bound",
+      storage_bind: {
+        state: "succeeded",
+        outcome: "adopted",
+        message: null,
+        claim: null,
+        remote_url: "uc://cat.sch.vol/projects/demo",
+      },
+    })
+
+    await useGitStore.getState().loadStatus()
+
+    expect(useGitStore.getState().modal).toBeNull()
+  })
+
+  it("leaves the UI alone when readiness carries no bind at all", async () => {
+    vi.mocked(getWorkingBranch).mockResolvedValue(READY)
+
+    await useGitStore.getState().loadStatus()
+
+    expect(useGitStore.getState().modal).toBeNull()
+  })
+})
