@@ -183,6 +183,8 @@ if not str(target).startswith(str(base)):
 
 - Each commit is atomic: one logical change per commit.
 - Commit messages follow conventional format: `feat:`, `fix:`, `refactor:`, `docs:`, `chore:`.
+  *Note: this rule currently stands — follow it. Whether it is eventually struck or
+  actively enforced is an open decision tracked separately from this document.*
 - No generated files (`node_modules/`, `__pycache__/`, build output) in commits.
 
 ## 18. Design Before Code
@@ -438,13 +440,25 @@ The script runs these checks in order and reports every selected failure:
 
 | Check | What it catches | Approximate time |
 |-------|----------------|-----------------|
-| `ruff check src/` | Python lint errors | 1s |
-| `ruff format --check src/ tests/` | Python formatting | 1s |
+| `ruff check .` | Python lint errors | 1s |
+| `ruff format --check .` | Python formatting | 1s |
 | `mypy src/haute/` | Python type errors | 5s |
-| `tsc -b --noEmit` (frontend) | TypeScript type errors | 5s |
-| `eslint .` (frontend) | JS/TS lint errors (no-explicit-any, unused vars, React hooks rules) | 3s |
-| `pytest tests/ -n 4 --cov=src/haute` | Python test failures, coverage < 90% | 4 min |
-| `npm test` (frontend) | Frontend test failures | 20s |
+| `pytest tests/ --collect-only -q` | Broken test imports/collection | 10s |
+| `pytest tests/ -n 4 --cov=src/haute --cov-branch --cov-fail-under=90` + `scripts/check_critical_coverage.py` | Python test failures, global line+branch coverage < 90%, per-file critical coverage (60s per-test timeout) | 4 min |
+| `HAUTE_BUILD_FRONTEND=1 uv build` | Package build failures | 1 min |
+| `npm run typecheck` (frontend, `tsc -b --noEmit`) | TypeScript type errors | 5s |
+| `npm run lint` (frontend, `eslint .`) | JS/TS lint errors (no-explicit-any, unused vars, React hooks rules) | 3s |
+| `npm run build` (frontend) | Production build failures | 30s |
+| `npm run check:bundle` (frontend) | Bundle budget and UI dependency violations | 1s |
+| `npm run test:benchmark:pr` (frontend) | Render/hash performance regressions | 30s |
+| `npm run test:coverage` (frontend) | Frontend test failures, coverage thresholds, per-file critical coverage | 1 min |
+
+`--quick` runs only the lint, format, and type rows — it skips every test, build, and
+budget gate, and composes with the `-only` flags. `--backend-only` / `--frontend-only`
+run the corresponding half of the table: a full frontend-only run includes the build,
+bundle-budget, benchmark, and coverage gates — *not* just typecheck + lint + tests.
+Opt-in extras: `--perf` adds the backend perf suite, and `--init-smoke` runs the
+fresh-install wheel smoke on its own.
 
 Use `--quick` during active development (catches ~80% of CI failures in 15 seconds). Run the full version before opening a PR. Set `PYTEST_WORKERS=<n>` to tune the backend test worker count for unusually small or large machines.
 
@@ -469,12 +483,22 @@ Hooks do **not** run tests (too slow for commit-time). Run tests via the preflig
 For opt-in performance, benchmark, bundle, and memory smoke lanes, see
 [Local Performance Checks](PERFORMANCE_CHECKS.md).
 
-If you only touched backend Python:
+If you only touched backend Python, run the backend half of preflight:
 ```bash
-uv run ruff check src/ && uv run mypy src/haute/ && uv run pytest tests/ -q
+./scripts/preflight.sh --backend-only
+```
+For a faster inner loop while iterating (not a substitute for the full backend gate):
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run mypy src/haute/ && uv run pytest tests/ -q
 ```
 
-If you only touched frontend TypeScript:
+If you only touched frontend TypeScript, run the frontend half of preflight — it is the
+same gate CI applies (typecheck, lint, build, bundle budget, PR benchmark gate, and
+coverage-gated tests):
+```bash
+./scripts/preflight.sh --frontend-only
+```
+For a faster inner loop while iterating (not a substitute for the full frontend gate):
 ```bash
 cd frontend && npm run typecheck && npm run lint && npm test
 ```
