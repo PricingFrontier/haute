@@ -5,6 +5,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 import { loadGitBranches, resetGitBranchLoaderForTests } from "../gitBranchLoader"
+import { DEFAULT_STALE_PENDING_AFTER_MS, StalePendingRequestError } from "../singleFlight"
 import { getWorkingBranches } from "../../api/client"
 import type { GitManagedBranch } from "../../api/types"
 
@@ -106,6 +107,79 @@ describe("gitBranchLoader single-flight", () => {
     c.resolve({ current: "c", branches: fresh })
     await expect(secondQueue).resolves.toEqual(fresh)
     expect(published.at(-1)).toMatchObject({ branches: fresh, branchesLoaded: true })
+  })
+
+  it("a branch request that never settles is detached after the stall bound instead of starving every later load", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getWorkingBranches)
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockReturnValueOnce(Promise.resolve({ current: "b", branches: [branch("b")] }))
+
+      const stalled = loadGitBranches(set)
+      const stallOutcome = expect(stalled).rejects.toBeInstanceOf(StalePendingRequestError)
+      await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS)
+
+      // The loader's reject-on-failure contract holds, and the failure is
+      // published like any other load error.
+      await stallOutcome
+      expect(published.at(-1)).toMatchObject({ branchesLoading: false })
+      expect(typeof published.at(-1)?.branchesError).toBe("string")
+
+      // The slot is free: the next load issues a fresh request and publishes.
+      await expect(loadGitBranches(set)).resolves.toEqual([branch("b")])
+      expect(getWorkingBranches).toHaveBeenCalledTimes(2)
+      expect(published.at(-1)).toMatchObject({ branchesLoaded: true, branchesError: null })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("a reset cancels the watchdog: a detached hung request cannot fire a late rejection or error publish", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getWorkingBranches)
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockReturnValueOnce(Promise.resolve({ current: "b", branches: [branch("b")] }))
+      // Deliberately unhandled: if the reset failed to cancel the watchdog,
+      // the late StalePendingRequestError rejection would surface as an
+      // unhandled rejection and fail this test.
+      void loadGitBranches(set)
+      resetGitBranchLoaderForTests()
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS * 2)
+      expect(published.some((s) => typeof s.branchesError === "string")).toBe(false)
+
+      // The slot is clean: a fresh load issues and publishes normally.
+      await expect(loadGitBranches(set)).resolves.toEqual([branch("b")])
+      expect(published.at(-1)).toMatchObject({ branchesLoaded: true, branchesError: null })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("a throwing subscriber inside the stall publish cannot stop the awaiters from settling", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getWorkingBranches).mockReturnValueOnce(new Promise(() => {}))
+      const throwingSet = (state: Partial<Record<string, unknown>>) => {
+        published.push(state as Record<string, unknown>)
+        if (typeof state.branchesError === "string") throw new Error("subscriber exploded")
+      }
+      const stalled = loadGitBranches(throwingSet)
+      const outcome = expect(stalled).rejects.toBeInstanceOf(StalePendingRequestError)
+
+      // The subscriber's throw still propagates out of the timer callback
+      // (it is a real bug worth surfacing), but the settle must have run
+      // first: a stuck request must not become stuck-request-plus-crashed-
+      // timer that hangs every awaiter.
+      await expect(
+        vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS),
+      ).rejects.toThrow("subscriber exploded")
+      await outcome
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("a rejection settling after a reset rejects its own awaiters without publishing an error over the newer request", async () => {

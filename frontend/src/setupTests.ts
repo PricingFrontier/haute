@@ -22,6 +22,15 @@ beforeEach(async () => {
   // exercise the wrong singleton (real fetches, unreset state).
   const { resetGitBranchLoaderForTests } = await import("./stores/gitBranchLoader")
   resetGitBranchLoaderForTests()
+  // And for the status single-flight, which now also arms a real
+  // stalled-request watchdog timer per issued request: without a global
+  // reset, a never-settling mocked getWorkingBranch from one test stays
+  // in-flight across the rest of its file, and in a long file run the
+  // watchdog fires mid-unrelated-test and writes into the global store.
+  // Reset detaches the request, so a later firing timer is identity-guarded
+  // into a no-op.
+  const { resetGitStatusRequestForTests } = await import("./stores/useGitStore")
+  resetGitStatusRequestForTests()
 })
 
 Object.defineProperty(globalThis, "__APP_VERSION__", {

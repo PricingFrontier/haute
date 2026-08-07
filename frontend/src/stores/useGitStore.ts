@@ -21,13 +21,14 @@ import {
   retryGitStorageSync,
 } from "../api/client"
 import type { GitBindStorageResponse, GitFastForwardResponse, GitForkStorageResponse, GitManagedBranch, GitUpstreamStatus, GitWorkingBranchResponse } from "../api/types"
+import { createSingleFlight } from "./singleFlight"
 
-let statusInFlight: Promise<GitWorkingBranchResponse | null> | null = null
+const statusFlight = createSingleFlight<GitWorkingBranchResponse | null>()
 
 /** Tests that hold a mocked getWorkingBranch open forever leave the
  *  single-flight stuck, starving every later loadStatus() in the same file. */
 export const resetGitStatusRequestForTests = () => {
-  statusInFlight = null
+  statusFlight.reset()
 }
 
 /** Which modal is open. */
@@ -90,7 +91,11 @@ interface GitState {
    *  working tree. */
   moveTarget: GitComparison | null
 
-  loadStatus: () => Promise<GitWorkingBranchResponse | null>
+  /** Load readiness. `refresh: true` guarantees the published state comes from
+   *  a request issued no earlier than the call — required after a mutation,
+   *  where joining an already-in-flight request would publish pre-mutation
+   *  state as final. */
+  loadStatus: (options?: { refresh?: boolean }) => Promise<GitWorkingBranchResponse | null>
   loadBranches: (options?: { refresh?: boolean }) => Promise<GitManagedBranch[]>
   openModal: (mode: GitModalMode, opts?: { pendingAction?: GitPendingAction }) => void
   closeModal: () => void
@@ -147,54 +152,56 @@ const useGitStore = create<GitState>()((set, get) => ({
   comparison: null,
   moveTarget: null,
 
-  loadStatus: () => {
-    if (statusInFlight) return statusInFlight
-    // Identity-guarded settle: after resetGitStatusRequestForTests() (or any
-    // future invalidation) detaches this request, a late settle must neither
-    // publish state nor null out a NEWER request's single-flight slot. The
-    // guard is re-checked before EVERY set() — any yield point (the await
-    // below) or synchronous subscriber reacting to a set() could have
-    // detached this request in the meantime — and each settle path performs
-    // a single set() so a passed check can't go stale mid-handler.
-    const request: Promise<GitWorkingBranchResponse | null> = getWorkingBranch()
-      .then((status) => {
-        if (statusInFlight !== request) return status
-        // Binding runs in the background, so its dialog is closed by the time
-        // a failure lands. Bring it back — the user asked for durable storage
-        // and must find out they haven't got it. Never steals focus from
-        // another open modal.
-        const surfaceBindFailure =
-          status?.storage_bind?.state === "failed" && get().modal === null
-        set({
-          status,
-          loading: false,
-          statusError: null,
-          ...(surfaceBindFailure ? { modal: "storage" as const } : {}),
-        })
-        return status
-      })
-      .catch(async (error: unknown) => {
-        if (statusInFlight !== request) return null
-        // Readiness is best-effort editor chrome. Keep the last successful
-        // state for gating, but expose this failure for an explicit retry.
-        const { gitErrorMessage } = await import("../utils/gitError")
-        if (statusInFlight !== request) return null
-        set({
-          loading: false,
-          statusError: gitErrorMessage(error, "Unable to check Git status"),
-        })
-        return null
-      })
-      .finally(() => {
-        if (statusInFlight === request) statusInFlight = null
-      })
-    statusInFlight = request
-    // Set loading only after the slot is owned: a synchronous subscriber
-    // reacting to this set() by calling loadStatus() coalesces onto this
-    // request instead of racing a second one into the slot.
-    set({ loading: true, statusError: null })
-    return request
-  },
+  loadStatus: (options) =>
+    // Single-flight/queue/reset/stall bookkeeping lives in ./singleFlight;
+    // this fetcher owns only publication. Identity-guarded settle: after
+    // resetGitStatusRequestForTests() (or a stall detach) this request must
+    // neither publish state nor null out a NEWER request's slot. The guard is
+    // re-checked before EVERY set() — any yield point (the await below) or
+    // synchronous subscriber reacting to a set() could have detached this
+    // request in the meantime — and each settle path performs a single set()
+    // so a passed check can't go stale mid-handler.
+    statusFlight.load(
+      (isCurrent) =>
+        getWorkingBranch()
+          .then((status) => {
+            if (!isCurrent()) return status
+            // Binding runs in the background, so its dialog is closed by the
+            // time a failure lands. Bring it back — the user asked for durable
+            // storage and must find out they haven't got it. Never steals
+            // focus from another open modal.
+            const surfaceBindFailure =
+              status?.storage_bind?.state === "failed" && get().modal === null
+            set({
+              status,
+              loading: false,
+              statusError: null,
+              ...(surfaceBindFailure ? { modal: "storage" as const } : {}),
+            })
+            return status
+          })
+          .catch(async (error: unknown) => {
+            if (!isCurrent()) return null
+            // Readiness is best-effort editor chrome. Keep the last successful
+            // state for gating, but expose this failure for an explicit retry.
+            const { gitErrorMessage } = await import("../utils/gitError")
+            if (!isCurrent()) return null
+            set({
+              loading: false,
+              statusError: gitErrorMessage(error, "Unable to check Git status"),
+            })
+            return null
+          }),
+      {
+        refresh: options?.refresh,
+        detachedValue: () => null,
+        onStart: () => set({ loading: true, statusError: null }),
+        onStale: (error) => set({ loading: false, statusError: error.message }),
+        // loadStatus never rejects — awaiters (mutations, modals) branch on
+        // null instead of wrapping in try/catch.
+        staleResult: () => null,
+      },
+    ),
 
   loadBranches: (options) =>
     import("./gitBranchLoader").then(({ loadGitBranches }) =>
@@ -224,7 +231,9 @@ const useGitStore = create<GitState>()((set, get) => ({
 
   bindStorage: async (remoteUrl) => {
     const result = await bindGitStorage(remoteUrl)
-    await get().loadStatus()
+    // refresh: joining a status request issued BEFORE the bind would publish
+    // pre-bind readiness as the final state.
+    await get().loadStatus({ refresh: true })
     return result
   },
   acknowledgeBind: async () => {
@@ -239,7 +248,8 @@ const useGitStore = create<GitState>()((set, get) => ({
   checkUpstream: async () => checkGitUpstream(),
   pullUpstream: async () => {
     const result = await pullGitUpstream()
-    await get().loadStatus()
+    // refresh: same pre-mutation-join hazard as bindStorage.
+    await get().loadStatus({ refresh: true })
     return result
   },
   retrySync: async () => {

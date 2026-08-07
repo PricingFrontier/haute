@@ -13,6 +13,7 @@ vi.mock("../../api/client", () => ({
 
 import useGitStore, { resetGitStatusRequestForTests } from "../useGitStore"
 import { resetGitBranchLoaderForTests } from "../gitBranchLoader"
+import { DEFAULT_STALE_PENDING_AFTER_MS } from "../singleFlight"
 import {
   acknowledgeGitBind,
   bindGitStorage,
@@ -275,6 +276,189 @@ describe("useGitStore", () => {
     expect(useGitStore.getState().moveTarget).toEqual(target)
     useGitStore.getState().closeMove()
     expect(useGitStore.getState().moveTarget).toBeNull()
+  })
+})
+
+describe("useGitStore loadStatus refresh and stall recovery", () => {
+  const STALE: GitWorkingBranchResponse = { ...READY, working_branch: "pre-mutation" }
+
+  function deferredStatus() {
+    let resolve!: (value: GitWorkingBranchResponse) => void
+    const promise = new Promise<GitWorkingBranchResponse>((done) => { resolve = done })
+    return { promise, resolve }
+  }
+
+  const flush = () => new Promise((tick) => setTimeout(tick, 0))
+
+  beforeEach(() => {
+    resetGitStatusRequestForTests()
+    useGitStore.setState({ status: null, loading: false, statusError: null, modal: null })
+    vi.clearAllMocks()
+  })
+  afterEach(() => {
+    // Order matters: restore real timers BEFORE the reset. useRealTimers()
+    // discards any still-armed fake watchdog along with the fake clock; the
+    // reset then detaches (and cancels the watchdog of) whatever hung mock
+    // request the next test could otherwise inherit. Reversed, a watchdog
+    // armed between the two calls' effects would rely on the identity guard
+    // alone instead of never existing.
+    vi.useRealTimers()
+    resetGitStatusRequestForTests()
+  })
+
+  it("a refresh is never satisfied by a request issued before it: the pre-mutation response cannot become the final published state", async () => {
+    const a = deferredStatus()
+    const b = deferredStatus()
+    vi.mocked(getWorkingBranch)
+      .mockReturnValueOnce(a.promise)
+      .mockReturnValueOnce(b.promise)
+
+    const joined = useGitStore.getState().loadStatus()
+    const refreshed = useGitStore.getState().loadStatus({ refresh: true })
+    // The refresh queues behind the in-flight request instead of joining it.
+    expect(getWorkingBranch).toHaveBeenCalledOnce()
+
+    a.resolve(STALE)
+    await expect(joined).resolves.toEqual(STALE)
+    await flush()
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2) // the queued follow-up fired
+
+    b.resolve(READY)
+    await expect(refreshed).resolves.toEqual(READY)
+    expect(useGitStore.getState().status).toEqual(READY)
+  })
+
+  it("concurrent refreshes behind the same request coalesce into one follow-up", async () => {
+    const a = deferredStatus()
+    const b = deferredStatus()
+    vi.mocked(getWorkingBranch)
+      .mockReturnValueOnce(a.promise)
+      .mockReturnValueOnce(b.promise)
+
+    useGitStore.getState().loadStatus()
+    const first = useGitStore.getState().loadStatus({ refresh: true })
+    const second = useGitStore.getState().loadStatus({ refresh: true })
+    expect(first).toBe(second)
+
+    a.resolve(STALE)
+    await flush()
+    b.resolve(READY)
+    await expect(Promise.all([first, second])).resolves.toEqual([READY, READY])
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+  })
+
+  it("bindStorage's readiness refresh cannot be satisfied by a status request already in flight when the bind ran", async () => {
+    const preBind = deferredStatus()
+    const postBind = deferredStatus()
+    vi.mocked(getWorkingBranch)
+      .mockReturnValueOnce(preBind.promise)
+      .mockReturnValueOnce(postBind.promise)
+    vi.mocked(bindGitStorage).mockResolvedValue({
+      outcome: "pending" as const,
+      remote_url: "uc://cat.sch.vol/projects/demo",
+      message: "Saving this project to storage — you can keep working.",
+    })
+
+    // A poller's status request is already in flight when the bind completes.
+    useGitStore.getState().loadStatus()
+    const bound = useGitStore.getState().bindStorage("uc://cat.sch.vol/projects/demo")
+    await flush()
+    expect(getWorkingBranch).toHaveBeenCalledOnce() // refresh queued, not joined
+
+    preBind.resolve(STALE)
+    await flush()
+    postBind.resolve({ ...READY, storage: "bound" })
+    await bound
+    // Without the refresh the pre-bind response would be the final state here.
+    expect(useGitStore.getState().status?.storage).toBe("bound")
+  })
+
+  it("a status request that never settles is detached after the stall bound instead of starving every later load", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(new Promise(() => {}))
+
+    const stalled = useGitStore.getState().loadStatus()
+    await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS)
+
+    // loadStatus's never-reject contract holds; the failure is published for
+    // an explicit retry, exactly like an API error.
+    await expect(stalled).resolves.toBeNull()
+    expect(useGitStore.getState().loading).toBe(false)
+    expect(useGitStore.getState().statusError).toMatch(/no response/i)
+
+    // The slot is free: the next load issues a fresh request and publishes.
+    vi.mocked(getWorkingBranch).mockResolvedValueOnce(READY)
+    await expect(useGitStore.getState().loadStatus()).resolves.toEqual(READY)
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+    expect(useGitStore.getState().status).toEqual(READY)
+    expect(useGitStore.getState().statusError).toBeNull()
+  })
+
+  it("a stall-detached request settling late neither publishes nor disturbs the successor request", async () => {
+    vi.useFakeTimers()
+    const hung = deferredStatus()
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(hung.promise)
+    const stalled = useGitStore.getState().loadStatus()
+    await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS)
+    await expect(stalled).resolves.toBeNull()
+
+    const successor = deferredStatus()
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(successor.promise)
+    const second = useGitStore.getState().loadStatus()
+
+    // The stalled request's fetcher settles late: no publish, and the
+    // successor keeps its single-flight slot (a third call joins it instead
+    // of spawning a duplicate fetch).
+    hung.resolve(STALE)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useGitStore.getState().status).toBeNull()
+    expect(useGitStore.getState().loadStatus()).toBe(second)
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+
+    successor.resolve(READY)
+    await expect(second).resolves.toEqual(READY)
+    expect(useGitStore.getState().status).toEqual(READY)
+    expect(useGitStore.getState().statusError).toBeNull()
+  })
+
+  it("a reset cancels the watchdog: a detached hung request cannot fire a late stall error into later work", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(new Promise(() => {}))
+    // Abandoned on detach: its awaiter would only settle via its own fetcher.
+    void useGitStore.getState().loadStatus()
+    resetGitStatusRequestForTests()
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS * 2)
+    // The cancelled watchdog published nothing.
+    expect(useGitStore.getState().statusError).toBeNull()
+    expect(useGitStore.getState().status).toBeNull()
+
+    // The slot is clean: a fresh request issues and publishes normally.
+    vi.mocked(getWorkingBranch).mockResolvedValueOnce(READY)
+    await expect(useGitStore.getState().loadStatus()).resolves.toEqual(READY)
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+    expect(useGitStore.getState().status).toEqual(READY)
+  })
+
+  it("a mutation refresh queued behind a stalled request still issues its own fresh request (the mutation cannot hang forever)", async () => {
+    vi.useFakeTimers()
+    const fresh = deferredStatus()
+    vi.mocked(getWorkingBranch)
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockReturnValueOnce(fresh.promise)
+
+    useGitStore.getState().loadStatus()
+    const refreshed = useGitStore.getState().loadStatus({ refresh: true })
+    expect(getWorkingBranch).toHaveBeenCalledOnce()
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS)
+    // The stalled anchor settled, so the queued refresh fired a real request.
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+
+    fresh.resolve(READY)
+    await expect(refreshed).resolves.toEqual(READY)
+    expect(useGitStore.getState().status).toEqual(READY)
+    expect(useGitStore.getState().statusError).toBeNull()
   })
 })
 
