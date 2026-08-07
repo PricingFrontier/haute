@@ -1132,6 +1132,23 @@ class TestEstimateEndpoint:
         assert "estimated_mb" in data
         assert "training_mb" in data
 
+    def test_estimate_gpu_unknown_vram_returns_advisory_warning(self, client, training_data):
+        """Unknown VRAM surfaces as gpu_warning in the response, without the
+        switch-to-CPU refusal suffix reserved for observed-insufficient VRAM."""
+        graph = _make_modelling_graph(
+            training_data,
+            params=_fast_training_params(task_type="GPU"),
+        )
+        with patch("haute._host_memory.available_vram_bytes", return_value=None):
+            resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gpu_warning"] is not None
+        assert "could not be detected" in data["gpu_warning"]
+        assert "Switch task_type" not in data["gpu_warning"]
+        assert data["gpu_vram_available_mb"] is None
+        assert data["gpu_vram_estimated_mb"] is not None
+
     def test_estimate_includes_exact_bounded_evaluation_preview(
         self,
         client,

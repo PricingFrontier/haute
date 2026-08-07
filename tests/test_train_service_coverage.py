@@ -155,10 +155,14 @@ class TestCheckGpuFallbackFailure:
                 job_id=job_id,
             )
 
-        # Exception swallowed: original warning returned, task_type left on GPU.
+        # Exception swallowed: original warning returned, task_type left on GPU,
+        # and the failed check is surfaced as a job advisory rather than silence.
         assert result == "prior warning"
         assert train_params["task_type"] == "GPU"
-        assert store.require_job(job_id)["status"] == "running"
+        job = store.require_job(job_id)
+        assert job["status"] == "running"
+        assert "could not be checked" in job["gpu_warning"]
+        assert job["warning"] == f"prior warning\n{job['gpu_warning']}"
 
     def test_non_gpu_task_returns_early(self):
         """Non-GPU task_type short-circuits without any VRAM probe."""

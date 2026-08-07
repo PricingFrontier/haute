@@ -36,7 +36,7 @@ import polars as pl
 from haute._api_input_schema import is_json_api_input_path
 from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
 from haute._graph_utils import build_parents_of
-from haute._host_memory import available_ram_bytes
+from haute._host_memory import available_ram_bytes, require_positive_available_ram
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
@@ -939,19 +939,11 @@ def estimate_safe_training_rows(
 
     Returns a :class:`RamEstimate` with the decision and warning message.
     """
-    available = available_ram_bytes()
-    if available is None:
-        raise RuntimeError(
-            "physical RAM is unavailable; configure an explicit execution memory limit"
-        )
-    if available < 1:
-        # Zero is an observation (the host or cgroup memory limit is fully
-        # consumed), not an unknown — refusing here beats flooring the safe-row
-        # calculation to _MIN_SAFE_ROWS against a budget known to be empty.
-        raise RuntimeError(
-            "available memory is exhausted (the host or cgroup memory limit is reached); "
-            "free memory before training"
-        )
+    # Refusing a zero budget here beats flooring the safe-row calculation to
+    # _MIN_SAFE_ROWS against capacity known to be empty; the shared validator
+    # keeps this consumer's None/negative/zero semantics and remedies aligned
+    # with admission's.
+    available = require_positive_available_ram(available_ram_bytes())
 
     # ── 1. Source metadata for row count ──────────────────────────────
     estimate_index = _EstimateGraphIndex.build(graph, source)

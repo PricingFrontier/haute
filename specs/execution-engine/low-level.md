@@ -129,15 +129,29 @@
     availability-over-strictness trade taken deliberately.
   - *An observed zero is exhaustion, not absence.* `available_ram_bytes()`
     returning `0` means the host or cgroup memory limit is configured and
-    fully consumed — an honest measurement, never conflated with
+    fully consumed *right now* — an honest measurement, never conflated with
     unobservable. Capacity-deriving consumers (adaptive admission, the
-    in-flight limit, `estimate_safe_training_rows`) refuse a zero with the
-    exhaustion remedy ("available memory is exhausted (the host or cgroup
-    memory limit is reached); free memory …"), which is distinct from the
-    unobservable remedy ("physical RAM is unavailable; configure an explicit
-    execution memory limit"). They never floor a zero budget up into
-    fabricated capacity (e.g. the minimum-safe-rows floor is not applied
-    against a known-empty budget).
+    in-flight limit, `estimate_safe_training_rows`) all validate through one
+    shared helper (`_host_memory.require_positive_available_ram`) and refuse
+    a zero with the exhaustion remedy ("available memory is exhausted (the
+    host or cgroup memory limit is currently fully used); free memory and
+    retry"). The remedy deliberately does **not** offer configuring an
+    explicit limit: an explicit limit bypasses the zero observation rather
+    than creating capacity, so it belongs only to the unobservable remedy
+    ("physical RAM is unavailable; configure an explicit execution memory
+    limit"). Because cgroup v2 `memory.current` includes reclaimable page
+    cache, a zero can be transient I/O pressure that self-heals — hence
+    retry guidance rather than a configuration change. Consumers never
+    floor a zero budget up into fabricated capacity: the training
+    estimator's refusal here is a behaviour change from the pre-#171-review
+    code, which floored a zero budget to the 500-row minimum and proceeded.
+    (A tiny-but-positive budget still floors to the minimum-safe-rows
+    constant — that is the deliberate minimum-viability floor, applied only
+    to capacity that was actually observed.) A *negative* value is a probe
+    defect, not exhaustion — the cgroup clamp floors real headroom at zero,
+    so no honest observation is negative; the helper routes negatives to the
+    defect remedy ("memory probe defect; configure an explicit execution
+    memory limit").
   - *Host availability itself never fabricates.* When every applicable probe
     fails the result is `None`; no synthetic capacity is returned, and
     capacity sources fail closed on it with the unobservable remedy above.
@@ -147,7 +161,14 @@
     check attaches a user-visible warning (estimated need, detection
     unavailable) but does not refuse the launch (`_VramCheck.insufficient`
     stays false); only VRAM actually observed and smaller than the estimate
-    blocks GPU training with the switch-to-CPU remedy.
+    blocks GPU training with the switch-to-CPU remedy. An internal failure
+    of the pre-check itself is likewise swallowed but surfaced as a job
+    advisory, never silently.
+  - *Visibility bar per refinement.* "Fails open, visibly" means a different
+    surface per refinement, matched to who can act on it: the cgroup clamp's
+    failure is an operator condition and logs server-side warnings only; the
+    VRAM pre-check's unknown state is a user decision point and surfaces in
+    the job warning and the `/estimate` response (`gpu_warning`).
 - **macOS available RAM** — darwin has neither `/proc/meminfo` nor
   `SC_AVPHYS_PAGES` (absent from `os.sysconf_names` entirely), so its source is
   the Mach `host_statistics64(HOST_VM_INFO64)` VM page counters: available is

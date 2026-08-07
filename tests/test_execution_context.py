@@ -305,6 +305,29 @@ def test_adaptive_admission_reports_exhaustion_when_headroom_is_zero(
         execution_budget_for_profile(profile)
 
 
+def test_in_flight_limit_reports_exhaustion_when_probe_observes_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit-env budget's in-flight check still refuses observed-zero RAM.
+
+    This is exactly where the old None/zero conflation lived: the budget
+    carries no available-RAM figure, the live probe answers zero, and the
+    reservation must report exhaustion — not "physical RAM is unavailable".
+    """
+    from haute._execution_admission import create_admitted_execution_context
+
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setenv("HAUTE_OPTIMISER_MEMORY_LIMIT_MB", "512")
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 0)
+
+    with pytest.raises(RuntimeError, match="available memory is exhausted"):
+        create_admitted_execution_context(
+            operation="optimiser_setup",
+            profile=ExecutionProfile.OPTIMISER_SETUP,
+            memory_sampler=lambda: 100,
+        )
+
+
 def test_adaptive_default_memory_budgets_never_exceed_available_ram(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

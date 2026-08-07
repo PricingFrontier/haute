@@ -2706,9 +2706,9 @@ class TrainService:
                     estimated_mb=vram_check.estimated_mb,
                     available_mb=vram_check.available_mb,
                 )
-                self._store.update_job(job_id, gpu_warning=gpu_warning)
                 self._store.update_job(
                     job_id,
+                    gpu_warning=gpu_warning,
                     warning=f"{ram_warning}\n{gpu_warning}" if ram_warning else gpu_warning,
                 )
                 raise _gpu_vram_http_exception(
@@ -2724,9 +2724,9 @@ class TrainService:
                     "gpu_vram_unknown",
                     estimated_mb=vram_check.estimated_mb,
                 )
-                self._store.update_job(job_id, gpu_warning=vram_check.warning)
                 self._store.update_job(
                     job_id,
+                    gpu_warning=vram_check.warning,
                     warning=(
                         f"{ram_warning}\n{vram_check.warning}"
                         if ram_warning
@@ -2737,6 +2737,15 @@ class TrainService:
             raise
         except Exception as exc:
             logger.warning("vram_estimate_failed", error=str(exc))
+            check_failed = (
+                "GPU VRAM feasibility could not be checked before launch; "
+                "GPU training may fail or exhaust GPU memory."
+            )
+            self._store.update_job(
+                job_id,
+                gpu_warning=check_failed,
+                warning=f"{ram_warning}\n{check_failed}" if ram_warning else check_failed,
+            )
 
         return ram_warning
 

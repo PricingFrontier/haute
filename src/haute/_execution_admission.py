@@ -356,28 +356,8 @@ def available_ram_bytes() -> int | None:
     return _host_memory.available_ram_bytes()
 
 
-def _require_positive_available_ram(available: object) -> int:
-    """Validate an observed-available-RAM value for capacity-deriving callers.
-
-    ``None`` (or a non-integer) means availability is unobservable; zero is an
-    honest observation that the host or cgroup memory limit is fully consumed.
-    The two states get distinct remedies — an exhausted limit is not fixed by
-    configuring one.
-    """
-    if not isinstance(available, int) or isinstance(available, bool):
-        raise RuntimeError(
-            "physical RAM is unavailable; configure an explicit execution memory limit"
-        )
-    if available < 1:
-        raise RuntimeError(
-            "available memory is exhausted (the host or cgroup memory limit is reached); "
-            "free memory or configure an explicit execution memory limit"
-        )
-    return available
-
-
 def _adaptive_default_memory_limit_bytes(profile: ExecutionProfile) -> tuple[int, int, int]:
-    available = _require_positive_available_ram(available_ram_bytes())
+    available = _host_memory.require_positive_available_ram(available_ram_bytes())
     policy = _ADAPTIVE_MEMORY_POLICY[profile]
     reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
     usable = max(available - reserve, 1)
@@ -549,7 +529,7 @@ def _in_flight_limit_bytes(budget: ExecutionBudget) -> int:
     available = budget.available_ram_bytes
     if available is None:
         available = available_ram_bytes()
-    available = _require_positive_available_ram(available)
+    available = _host_memory.require_positive_available_ram(available)
     reserve = budget.os_reserve_bytes
     if reserve is None:
         reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
