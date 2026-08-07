@@ -5,6 +5,7 @@ vi.mock("../../api/client", () => ({
 }))
 
 import { loadGitBranches, resetGitBranchLoaderForTests } from "../gitBranchLoader"
+import { DEFAULT_STALE_PENDING_AFTER_MS, StalePendingRequestError } from "../singleFlight"
 import { getWorkingBranches } from "../../api/client"
 import type { GitManagedBranch } from "../../api/types"
 
@@ -106,6 +107,32 @@ describe("gitBranchLoader single-flight", () => {
     c.resolve({ current: "c", branches: fresh })
     await expect(secondQueue).resolves.toEqual(fresh)
     expect(published.at(-1)).toMatchObject({ branches: fresh, branchesLoaded: true })
+  })
+
+  it("a branch request that never settles is detached after the stall bound instead of starving every later load", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(getWorkingBranches)
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockReturnValueOnce(Promise.resolve({ current: "b", branches: [branch("b")] }))
+
+      const stalled = loadGitBranches(set)
+      const stallOutcome = expect(stalled).rejects.toBeInstanceOf(StalePendingRequestError)
+      await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS)
+
+      // The loader's reject-on-failure contract holds, and the failure is
+      // published like any other load error.
+      await stallOutcome
+      expect(published.at(-1)).toMatchObject({ branchesLoading: false })
+      expect(typeof published.at(-1)?.branchesError).toBe("string")
+
+      // The slot is free: the next load issues a fresh request and publishes.
+      await expect(loadGitBranches(set)).resolves.toEqual([branch("b")])
+      expect(getWorkingBranches).toHaveBeenCalledTimes(2)
+      expect(published.at(-1)).toMatchObject({ branchesLoaded: true, branchesError: null })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("a rejection settling after a reset rejects its own awaiters without publishing an error over the newer request", async () => {
