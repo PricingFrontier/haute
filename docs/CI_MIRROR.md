@@ -261,6 +261,92 @@ matters for a PR if it runs on `pull_request: branches: [main]`.
 8. **GitHub-only steps.** Artifact upload (`actions/upload-artifact`), Pages
    deploy (`actions/deploy-pages`), and runner provisioning are not gates — the
    gate is the build/test step *before* the upload. Excluded with justification.
+9. **Platform-default drift (local toolchain defaults floating ahead of CI's
+   pins).** Local machines run newer Node/tool versions than CI pins, so a
+   default that flips upstream (e.g. Node 25 turning its experimental
+   web-storage globals on) diverges the environments without any gate being
+   missing — and unlike #1–#8 the failure can land on *either* side
+   (local-red/CI-green or the reverse). Mitigation policy, the worked
+   example, and the sibling stale-cache classes are in §Environment drift,
+   directly below.
+
+### Environment drift: pin the behaviour, not the platform
+
+Local-vs-CI divergence is not always a *missing* local gate — sometimes the
+platforms themselves quietly disagree. When a platform default drifts under a
+tool, the durable defence is **not** to enforce a platform version everywhere
+(that just re-breaks on the next upgrade, and local machines float ahead of
+CI's pins anyway). Node in particular has no global "behave like version X"
+compat switch, so version-pinning is the only *platform-level* lever — and it
+is the wrong one. Instead:
+
+1. **Pin each drifting behaviour explicitly, at the tool-config layer.** Turn
+   the specific experimental/default-flipped behaviour off with its own
+   `--no-experimental-*` flag (or equivalent config knob) in the config of the
+   tool that cares — `test.execArgv` in `frontend/vitest.config.ts` for the
+   vitest workers, `NODE_OPTIONS` for other Node-invoking scripts. The
+   behaviour is then identical on every Node version that recognises the flag,
+   and the platform version is free to float.
+2. **Add a cheap canary assertion that names the invariant.** One or two lines
+   in a setup file (e.g. `frontend/src/setupStorageCanary.ts`) that assert the pinned
+   behaviour actually holds, throwing a message that names the cause and
+   points at the pin. The next silent drift then fails loudly in one
+   self-explaining place, instead of producing dozens of baffling downstream
+   failures. Keep the check body in a unit-tested module (here
+   `frontend/src/testSupport/storageCanary.ts`) — setup files are
+   coverage-excluded, so an inline check could be refactored into a no-op
+   with nothing failing.
+
+**Worked example — the Node 25 localStorage shadowing (29 July 2026).** The
+frontend vitest suite broke locally-only: Node ≥ 22.4 ships experimental
+web-storage globals, default-on from Node 25, and Node's file-less
+`localStorage` landed on `globalThis` before jsdom set up (its shape varies by
+Node version — an inert stub with no `.clear` on 25, an `undefined`-returning
+accessor from 26; the shadowing needs only the key's presence). Vitest's jsdom
+environment skips window keys already present on `globalThis`, so Node's
+global silently shadowed jsdom's real `Storage` and every test touching
+`localStorage.clear` failed with no obvious cause. CI stayed green because its
+Node is pinned to 22.14.0.
+
+The pin itself has two distinct failure modes, with different symptoms:
+
+- **Pin ignored / behaviour drifts anyway** (vitest stops passing the flag,
+  or a future Node moves the behaviour beyond the flag's reach): the canary
+  in `frontend/src/setupStorageCanary.ts` throws its named, self-explaining
+  error at the top of every test file.
+- **Pin rejected** (Node < 22.4, which predates the flag, or a future Node
+  dropping the `--no-experimental-webstorage` legacy alias — from Node 25
+  the canonical spelling is `--webstorage`): the workers crash **at spawn**
+  on an unrecognised option (`node: bad option` /
+  `ERR_WORKER_INVALID_EXEC_ARGV`), before any setup file or test output.
+  The canary never gets to speak; recognise that crash as the pin and
+  update the flag spelling in `frontend/vitest.config.ts`.
+
+A meta-test (`frontend/src/__tests__/webstoragePin.meta.test.ts`) gates the
+pin's presence in the config, because on CI's default-off Node deleting the
+`execArgv` line would otherwise go unnoticed. The fix is
+`test.execArgv: ["--no-experimental-webstorage"]` in
+`frontend/vitest.config.ts` — pinning the behaviour off on every Node ≥ 22.4
+rather than demanding a particular Node locally — plus the canary in
+`frontend/src/setupStorageCanary.ts` asserting `localStorage` is a real, functioning
+`Storage` (check body + unit tests:
+`frontend/src/testSupport/storageCanary.ts` and its `__tests__`).
+
+**Sibling drift classes already seen in this repo** (same class — the local
+cache or environment diverges from CI's clean one — different tools):
+
+- **Stale `tsc` `.tsbuildinfo` false-negatives**: a local `npm run typecheck`
+  (`tsc -b`) can pass on a stale incremental cache where CI's clean build
+  fails. Mirror CI by clearing the incremental state when a type-sensitive
+  change misbehaves.
+- **mypy cache false-negatives**: same shape — local mypy can miss type errors
+  CI's clean environment catches; clear `.mypy_cache` for type-sensitive
+  changes.
+
+These two drift in the opposite direction (local-green/CI-red, versus the
+localStorage incident's local-red/CI-green), but the defence generalises: make
+the invariant explicit where the tool is configured, and prefer a loud, named
+failure over a silent divergence.
 
 ## The runlist — ordered, copy-pasteable, for a standard PR
 
@@ -388,85 +474,11 @@ Even with every mirrorable gate green locally, a PR can still fail CI on: (1)
 the Windows leg, (2) a Linux-x86-64-only behaviour, (3) a PyPI state change in
 the resolve window, or (4) a stale local cache (incremental `tsc`/`mypy`
 state) masking what CI's clean environment will catch — see §Environment
-drift below, which also covers the inverse class (platform drift producing
-local-only failures CI never sees). These are bounded and named. Everything else — lint, types,
+drift under §Deficiencies above, which also covers the inverse class (platform
+drift producing local-only failures CI never sees). These are bounded and named. Everything else — lint, types,
 unit + coverage gates, optional-dep smokes, package build+install (incl.
 fresh-resolve yank detection), mutation config, e2e, docs build — is
 reproducible locally and should be run before every push per the runlist above.
-
-## Environment drift: pin the behaviour, not the platform
-
-Local-vs-CI divergence is not always a *missing* local gate — sometimes the
-platforms themselves quietly disagree. When a platform default drifts under a
-tool, the durable defence is **not** to enforce a platform version everywhere
-(that just re-breaks on the next upgrade, and local machines float ahead of
-CI's pins anyway). Node in particular has no global "behave like version X"
-compat switch, so version-pinning is the only *platform-level* lever — and it
-is the wrong one. Instead:
-
-1. **Pin each drifting behaviour explicitly, at the tool-config layer.** Turn
-   the specific experimental/default-flipped behaviour off with its own
-   `--no-experimental-*` flag (or equivalent config knob) in the config of the
-   tool that cares — `test.execArgv` in `frontend/vitest.config.ts` for the
-   vitest workers, `NODE_OPTIONS` for other Node-invoking scripts. The
-   behaviour is then identical on every Node version that recognises the flag,
-   and the platform version is free to float.
-2. **Add a cheap canary assertion that names the invariant.** One or two lines
-   in a setup file (e.g. `frontend/src/setupStorageCanary.ts`) that assert the pinned
-   behaviour actually holds, throwing a message that names the cause and
-   points at the pin. The next silent drift then fails loudly in one
-   self-explaining place, instead of producing dozens of baffling downstream
-   failures.
-
-**Worked example — the Node 25 localStorage shadowing (29 July 2026).** The
-frontend vitest suite broke locally-only: Node ≥ 22.4 ships experimental
-web-storage globals, default-on from Node 25, and Node's file-less
-`localStorage` landed on `globalThis` before jsdom set up (its shape varies by
-Node version — an inert stub with no `.clear` on 25, an `undefined`-returning
-accessor from 26; the shadowing needs only the key's presence). Vitest's jsdom
-environment skips window keys already present on `globalThis`, so Node's
-global silently shadowed jsdom's real `Storage` and every test touching
-`localStorage.clear` failed with no obvious cause. CI stayed green because its
-Node is pinned to 22.14.0.
-
-The pin itself has two distinct failure modes, with different symptoms:
-
-- **Pin ignored / behaviour drifts anyway** (vitest stops passing the flag,
-  or a future Node moves the behaviour beyond the flag's reach): the canary
-  in `frontend/src/setupStorageCanary.ts` throws its named, self-explaining
-  error at the top of every test file.
-- **Pin rejected** (Node < 22.4, which predates the flag, or a future Node
-  dropping the `--no-experimental-webstorage` legacy alias — from Node 25
-  the canonical spelling is `--webstorage`): the workers crash **at spawn**
-  on an unrecognised option (`node: bad option` /
-  `ERR_WORKER_INVALID_EXEC_ARGV`), before any setup file or test output.
-  The canary never gets to speak; recognise that crash as the pin and
-  update the flag spelling in `frontend/vitest.config.ts`.
-
-A meta-test (`frontend/src/__tests__/webstoragePin.meta.test.ts`) gates the
-pin's presence in the config, because on CI's default-off Node deleting the
-`execArgv` line would otherwise go unnoticed. The fix is
-`test.execArgv: ["--no-experimental-webstorage"]` in
-`frontend/vitest.config.ts` — pinning the behaviour off on every Node ≥ 22.4
-rather than demanding a particular Node locally — plus the canary in
-`frontend/src/setupStorageCanary.ts` asserting `localStorage` is a real, functioning
-`Storage`.
-
-**Sibling drift classes already seen in this repo** (same class — the local
-cache or environment diverges from CI's clean one — different tools):
-
-- **Stale `tsc` `.tsbuildinfo` false-negatives**: a local `npm run typecheck`
-  (`tsc -b`) can pass on a stale incremental cache where CI's clean build
-  fails. Mirror CI by clearing the incremental state when a type-sensitive
-  change misbehaves.
-- **mypy cache false-negatives**: same shape — local mypy can miss type errors
-  CI's clean environment catches; clear `.mypy_cache` for type-sensitive
-  changes.
-
-These two drift in the opposite direction (local-green/CI-red, versus the
-localStorage incident's local-red/CI-green), but the defence generalises: make
-the invariant explicit where the tool is configured, and prefer a loud, named
-failure over a silent divergence.
 
 ## Review history
 
