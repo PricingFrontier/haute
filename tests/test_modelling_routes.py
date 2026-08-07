@@ -1499,7 +1499,11 @@ class TestBackgroundThreadErrors:
             assert "Invalid target column" in status["message"]
 
     def test_background_runtime_error(self, client, training_data, monkeypatch):
-        """RuntimeError in TrainingJob.run() is translated via _friendly_error."""
+        """RuntimeError in TrainingJob.run() surfaces the curated fallback.
+
+        The terminal message names the exception type and training context but
+        never the third-party message body; the raw text stays diagnostic.
+        """
         graph = _make_modelling_graph(training_data)
 
         class FailingJob:
@@ -1517,10 +1521,17 @@ class TestBackgroundThreadErrors:
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
-            assert "CUDA out of memory" in status["message"]
+            assert "RuntimeError" in status["message"]
+            assert "CUDA out of memory" not in status["message"]
+            # The raw third-party text stays in the server-side job record
+            # (the public status response whitelist never exposed it).
+            from haute.routes.modelling import _store
+
+            job = _store.require_job(data["job_id"])
+            assert "CUDA out of memory" in job["worker_remote_traceback"]
 
     def test_background_generic_exception(self, client, training_data, monkeypatch):
-        """Generic exception in TrainingJob.run() includes exception type."""
+        """The curated fallback names the exception type and the fit's target."""
         graph = _make_modelling_graph(training_data)
 
         class FailingJob:
@@ -1538,7 +1549,13 @@ class TestBackgroundThreadErrors:
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
-            assert "unexpected crash" in status["message"]
+            assert "RuntimeError" in status["message"]
+            assert "target" in status["message"]
+            assert "unexpected crash" not in status["message"]
+            from haute.routes.modelling import _store
+
+            job = _store.require_job(data["job_id"])
+            assert "unexpected crash" in job["worker_remote_traceback"]
 
     def test_ram_warning_propagated(self, client, training_data, monkeypatch):
         """RAM warning from estimate should appear in job status."""
