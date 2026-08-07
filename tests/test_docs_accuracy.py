@@ -55,6 +55,10 @@ _LEVEL_TWO_HEADING = re.compile(r"^##(?!#)\s+\S.*$", flags=re.MULTILINE)
 _MODULE_MAP_ROW = re.compile(r"^\s*\|\s*(.*?)\s*\|", flags=re.MULTILINE)
 _FRONTEND_SOURCE_SUFFIXES = frozenset({".css", ".ts", ".tsx"})
 _FRONTEND_TEST_ONLY_DIRS = frozenset({"__tests__", "test-utils", "testSupport"})
+# Vitest setup files belong to the verification system, not the shipped
+# application (specs/README.md §component coverage); mirrored in
+# hatch_build.py's production-input manifest exclusions.
+_FRONTEND_VITEST_SETUP_FILES = frozenset({"setupTests.ts", "setupStorageCanary.ts"})
 _BACKEND_BEHAVIOUR_ASSETS = frozenset(
     {
         "_polars_io_arguments.json",
@@ -1303,7 +1307,7 @@ def _is_frontend_production_source(path: Path) -> bool:
         return False
     if any(part in _FRONTEND_TEST_ONLY_DIRS for part in relative.parts):
         return False
-    if path.name == "setupTests.ts":
+    if path.name in _FRONTEND_VITEST_SETUP_FILES:
         return False
     return re.search(r"[.](?:test|spec)[.](?:css|ts|tsx)$", path.name) is None
 

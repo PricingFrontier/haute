@@ -151,8 +151,9 @@ The component specs cover maintained behaviour, not just the importable runtime:
   map. Generated `src/haute/static/` assets are covered as a build output rather than one component
   per hashed file; `src/haute/py.typed` is a distribution marker.
 - Every production `.ts`, `.tsx`, and `.css` source under `frontend/src/` is named in a frontend
-  component's low-level module map. Test-only directories and `setupTests.ts` belong to the
-  verification system rather than the shipped application.
+  component's low-level module map. Test-only directories and the vitest setup files
+  (`setupTests.ts`, `setupStorageCanary.ts`) belong to the verification system rather than the
+  shipped application.
 - Packaging, dependency locks, frontend compilation, static-asset bundling, and documentation-site
   publication are owned by [build-and-distribution](build-and-distribution/high-level.md).
 - CI workflows, lint/type/coverage gates, repository scripts, mutation testing, browser E2E, and
