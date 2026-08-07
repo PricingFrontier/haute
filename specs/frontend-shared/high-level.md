@@ -36,8 +36,18 @@ In scope:
   (`useNodeResultsStore`), app-wide settings/caches (`useSettingsStore`),
   toast notifications (`useToastStore`), and layout/modal chrome
   (`useUIStore`).
-- The design-token layer (`theme/colors.ts`) — CSS-variable-backed colour
-  constants used by every visual component.
+- The design-token layer, which lives in `index.css`: the CSS
+  custom-property primitives (surface/text/accent hues and the
+  success/warning/danger intensity ladders, chart and syntax colours)
+  plus the role tokens layered over them (`--font-data`, the
+  success-family roles, the `--diff-*` aliases), which name what an
+  element is for rather than its shade. Components consume these as
+  `var(--...)` references directly, in stylesheets and inline styles
+  alike. `theme/colors.ts` is a narrower TypeScript-side companion:
+  grouped `var(--...)` string constants
+  (structure/status/model/chart/syntax) for code that needs a token as a
+  JS value, plus the literal `NODE_GROUP_COLORS` palette — it is one
+  consumer-facing view of the token layer, not the layer itself.
 - Chrome widgets and app-shell surfaces: `ErrorBoundary`, `Toast`,
   `ModalShell`, `Tooltip`, `ContextMenu`, `KeyboardShortcuts`, `Toolbar`,
   `ImportsPanel`, `BackgroundJobPolling`, `NodeSearch`, `BreadcrumbBar`.
@@ -242,10 +252,16 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   so that a component depending on "is the palette open" doesn't
   re-render on every MLflow poll tick.
 - **CSS variables, not hard-coded hex, for anything theme-sensitive.**
-  `theme/colors.ts` re-exports `var(--...)` tokens (light/dark themes swap
-  the underlying CSS custom properties) rather than literal colours,
-  except for the small `NODE_GROUP_COLORS` palette, which is
-  fixed-per-node-type branding rather than a theme concern.
+  Theme-sensitive colour is declared once as custom properties in
+  `index.css`, with role tokens aliasing the raw intensity-ladder
+  primitives so call sites reference purpose, not shade; components use
+  `var(--...)` rather than literal colours (the role-layer boundary is
+  enforced by the tokenization gate in
+  `__tests__/cssColorTokenization.test.ts`). `theme/colors.ts` follows
+  the same rule where TypeScript needs a colour value, re-exporting
+  `var(--...)` strings rather than hex — except for the small
+  `NODE_GROUP_COLORS` palette, which is fixed-per-node-type branding
+  rather than a theme concern.
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't
