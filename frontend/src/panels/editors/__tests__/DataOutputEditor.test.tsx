@@ -31,7 +31,7 @@ import {
 } from "../../../api/client"
 import { GraphProvider } from "../../GraphContext"
 import DataOutputEditor from "../DataOutputEditor"
-import { resetIoCapabilitiesCacheForTests } from "../_ioFormats"
+import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
 import useOutputWriteStore, {
   resetOutputWriteStoreForTests,
 } from "../../../stores/useOutputWriteStore"
@@ -208,7 +208,7 @@ function renderEditor(
 beforeEach(() => {
   vi.clearAllMocks()
   resetOutputWriteStoreForTests()
-  resetIoCapabilitiesCacheForTests()
+  resetIoCapabilitiesRequestForTests()
   vi.mocked(fetchIoCapabilities).mockReset().mockResolvedValue({
     schema_version: 1,
     groups,

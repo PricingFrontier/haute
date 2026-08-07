@@ -49,7 +49,7 @@ import {
   getInputCacheStatus,
 } from "../../../api/client"
 import DataInputEditor from "../DataInputEditor"
-import { resetIoCapabilitiesCacheForTests } from "../_ioFormats"
+import { resetIoCapabilitiesRequestForTests } from "../_ioFormats"
 
 const groups: IoCapabilityGroup[] = [
   {
@@ -302,7 +302,7 @@ function renderEditor(
 
 beforeEach(() => {
   vi.clearAllMocks()
-  resetIoCapabilitiesCacheForTests()
+  resetIoCapabilitiesRequestForTests()
   vi.mocked(fetchIoCapabilities).mockResolvedValue({
     schema_version: 1,
     groups,

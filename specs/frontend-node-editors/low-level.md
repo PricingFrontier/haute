@@ -119,9 +119,8 @@ guarded `/api/io-capabilities` client returns ordered groups, fields,
 directional formats/modes/arguments/engines, snapshot build class and schema
 requirements, writer class, and publication modes; each mount refreshes it and
 only concurrent pending requests coalesce. Test seam:
-`resetIoCapabilitiesCacheForTests()` clears the in-flight coalescing promise —
-the module's only state; despite the name, no result cache exists to clear.
-`_IoFormatEditor` renders one
+`resetIoCapabilitiesRequestForTests()` clears the in-flight coalescing promise —
+the module's only state. `_IoFormatEditor` renders one
 selected group/direction, while dedicated provider sections cover file,
 database, lakehouse, Databricks, and inline fields. `OnReplaceConfig` constructs
 and commits one fresh active branch for a provider change. Data Input provider
