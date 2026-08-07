@@ -2015,14 +2015,24 @@ class TrainService:
         """
         from haute._polars_utils import streaming_collect
         from haute.modelling._target_check import training_target_task_issue
-        from haute.modelling._train_config import effective_metrics
+        from haute.modelling._train_config import TrainingConfigError, effective_metrics
 
+        # Derive the effective metrics before the data scan: it is a pure
+        # config computation, and a malformed metrics config (normally caught
+        # by the route's upfront validation) must map to the same
+        # 422/contract_error taxonomy as the gate itself, not fall through
+        # the scan-failure path below.
+        try:
+            metrics = effective_metrics(config)
+        except TrainingConfigError as exc:
+            _remove_gated_temp_parquet(tmp_parquet)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             issue = training_target_task_issue(
                 pl.scan_parquet(tmp_parquet),
                 target=str(config.get("target", "")),
                 task=str(config.get("task", "regression")),
-                metrics=effective_metrics(config),
+                metrics=metrics,
                 collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
             )
         except BaseException:

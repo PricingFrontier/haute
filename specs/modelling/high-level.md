@@ -235,7 +235,11 @@ and those metrics are undefined on a continuous target, so that run is rejected
 pre-dispatch too rather than dying later at the metric stage. A binomial fit on a
 continuous proportion target stays legitimate and reachable — setting the reported
 metrics explicitly to regression metrics empties the effective set of classification
-metrics and the gate stands aside, which the rejection message itself points out. And because the fit runs in a spawn child, message
+metrics and the gate stands aside, which the rejection message itself points out —
+qualified to objectives that accept a continuous target (a binomial GLM family; a
+CatBoost Logloss/CrossEntropy loss never reaches this branch, since
+`resolve_loss_function` rejects it under a regression task at config time). And
+because the fit runs in a spawn child, message
 quality has to survive the process boundary: the child stamps every curated failure
 message on the failure payload's `user_message` field, and the parent supervisor
 surfaces that wording verbatim instead of re-wrapping it in worker jargon. This is the

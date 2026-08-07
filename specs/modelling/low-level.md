@@ -196,12 +196,15 @@
    `training_target_task_issue` (`_target_check.py`) then validates the sunk parquet's
    target column against the configured task and the effective metric set
    (`effective_metrics` — explicit config metrics or the objective-implied defaults,
-   the same derivation `build_training_job_kwargs` uses) — a classification task
-   pointed at a continuous (or otherwise non-classifiable) target, or a continuous
+   the same derivation `build_training_job_kwargs` uses; a malformed metrics config
+   maps to the same 422/`contract_error` with the parquet removed) — a classification
+   task pointed at a continuous (or otherwise non-classifiable) target gates
+   regardless of the metric set (the fit itself is undefined on it), and a continuous
    target whose effective metrics include AUC/log loss (implied by a binomial family
-   or Logloss/CrossEntropy loss even under `task="regression"`), removes the temp
-   parquet and rejects HTTP 422/`contract_error` with a message naming the target
-   column, task, and metrics, before any fit worker is spawned;
+   even under `task="regression"`, or set explicitly) gates on the metric-keyed
+   branch; either removes the temp parquet and rejects HTTP 422/`contract_error`
+   with a message naming the target column, task, and offending metrics, before any
+   fit worker is spawned;
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`), creates a same-filesystem
    staging root, and starts a daemon supervisor thread around a spawn child.

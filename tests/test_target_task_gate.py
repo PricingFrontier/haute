@@ -148,6 +148,28 @@ class TestTrainingTargetTaskIssue:
         issue = training_target_task_issue(data, target="prop", task="regression", metrics=["AUC"])
         assert issue is not None
         assert "'prop'" in issue
+        # The message names the normalised offending metric, not the raw list.
+        assert "(auc)" in issue
+
+    def test_task_is_matched_case_insensitively(self) -> None:
+        """A creatively-cased task must not skip the gate entirely."""
+        data = pl.LazyFrame({"sev": [123.45, 0.0, 1.0]})
+        issue = training_target_task_issue(
+            data, target="sev", task="Classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+        )
+        assert issue is not None
+        assert "'sev'" in issue
+
+    def test_message_names_only_the_offending_metrics(self) -> None:
+        """gini/rmse ride alongside auc in a mixed explicit list — the
+        message must indict only the discrete-label metrics."""
+        data = pl.LazyFrame({"prop": [0.25, 0.5]})
+        issue = training_target_task_issue(
+            data, target="prop", task="regression", metrics=["gini", "auc", "rmse"]
+        )
+        assert issue is not None
+        assert "(auc)" in issue
+        assert "(gini" not in issue
 
     def test_regression_task_with_classification_metrics_passes_integral_flag(self) -> None:
         data = pl.LazyFrame({"flag": [0.0, 1.0, None, 1.0]})
@@ -371,6 +393,43 @@ class TestTrainingJobGate:
         prepared = job._prepare_data(lambda message, fraction: None)
         assert prepared is not None
 
+    def test_escape_hatch_trains_a_binomial_glm_on_proportions_end_to_end(
+        self, tmp_path: Path
+    ) -> None:
+        """The exact scenario the rejection message prescribes must work:
+        config-built binomial GLM, continuous proportion target, explicit
+        regression metrics — through the builder, the gate, the fit, and the
+        metric stage to a completed result."""
+        from haute.modelling._train_config import build_training_job_kwargs
+
+        rng = np.random.RandomState(42)
+        n = 80
+        x1 = rng.randn(n)
+        prop = 1.0 / (1.0 + np.exp(-(0.8 * x1 + rng.randn(n) * 0.3)))
+        data_path = tmp_path / "proportions.parquet"
+        pl.DataFrame({"x1": x1, "prop": prop}).write_parquet(data_path)
+        config = {
+            "name": "hatch_binomial_model",
+            "target": "prop",
+            "task": "regression",
+            "algorithm": "glm",
+            "family": "binomial",
+            "terms": {"x1": {"type": "linear"}},
+            "metrics": ["gini", "rmse"],
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
+            "output_dir": str(tmp_path),
+        }
+        kwargs = build_training_job_kwargs(config, data=str(data_path))
+        assert kwargs["metrics"] == ["gini", "rmse"]
+        result = TrainingJob(**kwargs).run()
+        assert "gini" in result.metrics
+        assert "rmse" in result.metrics
+
 
 class TestMetricStageContext:
     def test_metric_failure_names_target_task_and_metrics(self, tmp_path: Path) -> None:
@@ -413,7 +472,10 @@ class TestMetricStageContext:
         assert "'sev'" in message
         assert "'regression'" in message
         assert "auc" in message
-        assert "multi_class" in message  # the chained sklearn detail survives
+        # The library detail is chained last (truncation-safe) without
+        # coupling to sklearn's exact wording.
+        assert "Underlying error:" in message
+        assert isinstance(excinfo.value.__cause__, ValueError)
 
     def test_metric_failure_is_wrapped_on_the_evaluation_plan_path(self, tmp_path: Path) -> None:
         """The canonical evaluation-plan pipeline wraps its validation-fit metrics.
@@ -458,7 +520,8 @@ class TestMetricStageContext:
         assert "'sev'" in message
         assert "'regression'" in message
         assert "auc" in message
-        assert "multi_class" in message
+        assert "Underlying error:" in message
+        assert isinstance(excinfo.value.__cause__, ValueError)
 
 
 class TestPreDispatchServiceGate:
@@ -550,6 +613,28 @@ class TestPreDispatchServiceGate:
             execution_context=context,
         )
         assert tmp_parquet.exists()
+
+    def test_validate_target_task_pairing_maps_malformed_metrics_to_422(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed metrics config (normally rejected by the route's
+        upfront validation) is a config problem, not a scan failure — it must
+        map to 422/contract_error and still not orphan the temp parquet."""
+        tmp_parquet = tmp_path / "train_input.parquet"
+        pl.DataFrame({"x1": [0.1, 0.2], "sev": [123.45, 6.7]}).write_parquet(tmp_parquet)
+        context = ExecutionContext(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            TrainService._validate_target_task_pairing(
+                str(tmp_parquet),
+                {"target": "sev", "task": "regression", "metrics": "auc"},
+                execution_context=context,
+            )
+        assert excinfo.value.status_code == 422
+        assert "non-empty string list" in str(excinfo.value.detail)
+        assert not tmp_parquet.exists()
 
     def test_validate_target_task_pairing_removes_parquet_when_the_scan_fails(
         self, tmp_path: Path

@@ -463,6 +463,21 @@ class TestDefaultMetricsDerivation:
             "auc",
             "logloss",
         ]
+        # And the drift-prevention itself: the builder's kwargs carry exactly
+        # this helper's answer, for implied and explicit metrics alike.
+        for config in (
+            {**binomial_glm, "evaluation": MINIMAL_EVALUATION},
+            {**binomial_glm, "evaluation": MINIMAL_EVALUATION, "metrics": ["gini", "rmse"]},
+            {
+                "target": "y",
+                "task": "regression",
+                "loss_function": "Poisson",
+                "evaluation": MINIMAL_EVALUATION,
+            },
+        ):
+            assert build_training_job_kwargs(config, data="d")["metrics"] == effective_metrics(
+                config
+            )
 
     def test_effective_metrics_rejects_malformed_explicit_metrics(self):
         with pytest.raises(TrainingConfigError, match="non-empty string list"):

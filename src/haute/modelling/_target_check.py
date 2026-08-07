@@ -25,6 +25,10 @@ import polars as pl
 # Reported metrics that are undefined without discrete class labels. A
 # continuous target reaching sklearn's roc_auc_score/log_loss with any of
 # these requested dies at the metric stage, so the gate rejects it up front.
+# This is the complete set of classification metrics in _metrics.py's
+# registry today (gini is a native Lorenz implementation, defined on
+# continuous targets); extend it alongside any new registry entry that
+# needs discrete labels.
 _DISCRETE_LABEL_METRICS = frozenset({"auc", "logloss"})
 
 
@@ -88,7 +92,7 @@ def training_target_task_issue(
     through their own (streaming, execution-context-aware) collector; the
     default collects through Polars' streaming engine.
     """
-    classification_task = str(task) == "classification"
+    classification_task = str(task).lower() == "classification"
     label_metrics = sorted({str(metric).lower() for metric in metrics} & _DISCRETE_LABEL_METRICS)
     if not classification_task and not label_metrics:
         return None
@@ -132,13 +136,14 @@ def training_target_task_issue(
             )
         return (
             f"Target column '{target}' contains continuous values, but the reported "
-            f"metrics ({', '.join(metrics)}) include classification metrics — AUC and "
-            f"log loss need a discrete 0/1 target. The training task is {task}, so "
+            f"metrics include classification metrics ({', '.join(label_metrics)}), "
+            f"which need a discrete 0/1 target. The training task is {task}, so "
             "these metrics are either set explicitly or implied by a "
             "classification-flavoured objective (e.g. a binomial family). Choose a "
-            "discrete target column (e.g. a 0/1 claim flag), or set the reported "
-            "metrics explicitly to regression metrics (e.g. gini, rmse) to keep the "
-            "continuous target."
+            "discrete target column (e.g. a 0/1 claim flag), or — for objectives "
+            "that accept a continuous target, such as a binomial GLM family — set "
+            "the reported metrics explicitly to regression metrics (e.g. gini, "
+            "rmse) to keep the continuous target."
         )
     if not classification_task:
         return None
