@@ -276,8 +276,11 @@
   --chart-negative: #f44336;
   --chart-neutral: #9e9e9e;
   /* Trace-panel semantic aliases (StepCard, TraceDetail, WaterfallChart,
-     OptimiserApplyDetail): column-diff and delta-sign colours.  Call sites
-     reference these with the alias target as inline fallback.  Note
+     OptimiserApplyDetail): column-diff and delta-sign colours.  Call
+     sites reference these bare — these declarations are the single
+     source of each value (no inline fallbacks duplicating the targets).
+     --color-added is consumed via --trace-added-text, where it stays a
+     caller-overridable hook.  Note
      --color-added tracks --success-hover, deliberately BRIGHTER than
      --diff-added's --success: these colour small (10-11px) trace text,
      kept exactly as the call sites shipped, whereas --diff-* tint the

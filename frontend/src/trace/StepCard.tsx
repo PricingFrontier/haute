@@ -81,7 +81,7 @@ export function StepCard({
 
   const tagColors = {
     added: { bg: "var(--trace-added-bg)", color: "var(--trace-added-text)", label: "+" },
-    modified: { bg: "var(--warning-bright-soft)", color: "var(--color-modified, var(--warning))", label: "~" },
+    modified: { bg: "var(--warning-bright-soft)", color: "var(--color-modified)", label: "~" },
     value: { bg: "rgba(255,255,255,.06)", color: "var(--text-secondary)", label: "=" },
   }
 
@@ -301,10 +301,10 @@ export function StepCard({
               <span style={{ color: "var(--trace-added-text)" }}>+{columns_added.length} added</span>
             )}
             {columns_modified.length > 0 && (
-              <span style={{ color: "var(--color-modified, var(--warning))" }}>~{columns_modified.length} modified</span>
+              <span style={{ color: "var(--color-modified)" }}>~{columns_modified.length} modified</span>
             )}
             {columns_removed.length > 0 && (
-              <span style={{ color: "var(--color-removed, var(--danger-text))" }}>-{columns_removed.length} removed</span>
+              <span style={{ color: "var(--color-removed)" }}>-{columns_removed.length} removed</span>
             )}
             <span style={{ color: "var(--text-muted)" }}>
               {step.schema_diff.columns_passed.length} passed through
@@ -329,10 +329,10 @@ export function StepCard({
                 rowColor = "var(--trace-added-text)"
                 prefix = "+"
               } else if (isModified) {
-                rowColor = "var(--color-modified, var(--warning))"
+                rowColor = "var(--color-modified)"
                 prefix = "~"
               } else if (isRemoved) {
-                rowColor = "var(--color-removed, var(--danger-text))"
+                rowColor = "var(--color-removed)"
                 prefix = "-"
               }
 
