@@ -12,6 +12,7 @@ from typing import Any, Literal, TypeVar, cast
 
 from haute._sandbox import _get_project_root
 from haute._types import PipelineGraph
+from haute._validation_error import HauteValidationError
 
 PathPreference = Literal["project", "pipeline"]
 _CallableT = TypeVar("_CallableT", bound=Callable[..., Any])
@@ -21,7 +22,7 @@ _RUNTIME_PROJECT_ROOT: ContextVar[Path | None] = ContextVar(  # pragma: no mutat
 )
 
 
-class RuntimePathError(ValueError):
+class RuntimePathError(HauteValidationError):
     """Base class for user-facing runtime path validation failures."""
 
 

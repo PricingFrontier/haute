@@ -20,6 +20,7 @@ from haute._polars_utils import (
     is_bounded_execution_profile,
     normalise_execution_profile,
 )
+from haute._validation_error import HauteValidationError
 from haute.errors import BoundedMemoryUnsupportedError, SchemaMismatchError
 
 logger = get_logger(component="io")
@@ -38,7 +39,7 @@ _SUPPORTED_SOURCE_SUFFIXES = (".csv", ".json", ".jsonl", ".ndjson", ".parquet")
 _COMPRESSION_SUFFIXES = frozenset({".bz2", ".gz", ".xz", ".zst"})
 
 
-class UnsupportedSourceFormatError(ValueError):
+class UnsupportedSourceFormatError(HauteValidationError):
     """A safe unsupported-source diagnostic containing no filesystem path."""
 
     supported_suffixes = _SUPPORTED_SOURCE_SUFFIXES

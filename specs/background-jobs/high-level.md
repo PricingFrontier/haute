@@ -259,7 +259,7 @@ Depended on:
   `user_message` field, and the supervisor uses that curated wording as the job's
   terminal message; failures without one keep the typed wrapper text. When the
   supervisor claims the `error` field for that wrapper text, a child-supplied
-  `error` value is not lost — it moves to `worker_error`. The crash and timeout
+  `error` string is not lost — it moves to `worker_error`. The crash and timeout
   wrappers — the surfaces that can only be parent-authored, since a crashed or
   timed-out child left no payload to curate — are themselves written as
   user-facing wording: a hedged may-have-run-out-of-memory phrasing when the

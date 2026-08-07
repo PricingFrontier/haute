@@ -557,7 +557,8 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   attaches it only to `POLARS`/`LIVE_SWITCH` nodes rather than aborting the whole
   preview; every non-preview profile propagates it through the shared HTTP/job
   contract-error adapter.
-- `PreviewProjectionError` (`executor.py`, extends `ValueError`) — a requested
+- `PreviewProjectionError` (`executor.py`, extends `HauteValidationError`, a
+  `ValueError` subclass) — a requested
   preview-column projection references columns not present on the target frame.
 - `CycleError` (`_topo.py`, extends `HauteError`) — raised from `topo_sort_ids` on a
   cyclic graph, listing every participating node.

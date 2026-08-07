@@ -510,8 +510,14 @@ def test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts(
         )
 
     assert isinstance(result, WorkerFailurePayload)
-    assert result.error_type == "HauteValidationError"
-    assert message in result.message
+    # Result-shape checks are system faults: deliberately a plain ValueError,
+    # so the terminal message is the type-only fallback and the specific
+    # integrity detail stays diagnostic.
+    assert result.error_type == "ValueError"
+    assert result.terminal_reason == "error"
+    assert "unexpected internal error" in result.message
+    assert message not in result.message
+    assert message in result.fields["error"]
 
 
 @pytest.mark.parametrize(
@@ -1404,6 +1410,9 @@ def test_dispersion_worker_remains_isolated_and_emits_fit_events(tmp_path: Path)
         _dispersion_request(Path(), job_kwargs=[]),
         _dispersion_request(Path(), param="unknown"),
         _dispersion_request(Path(), profile=123),
+        # An unrecognised profile STRING: the enum's own ValueError is
+        # re-raised as the marker so it stays a curated contract_error.
+        _dispersion_request(Path(), profile="training-prep-v2"),
         _dispersion_request(Path(), memory_limit_bytes=0),
     ],
 )

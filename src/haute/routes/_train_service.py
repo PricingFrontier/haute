@@ -694,7 +694,13 @@ def _friendly_error(
 
 
 def _assert_json_finite(value: Any, path: str = "result") -> None:
-    """Raise when a training result contains a non-JSON numeric value."""
+    """Raise when a training result contains a non-JSON numeric value.
+
+    Deliberately a plain ``ValueError``, not ``HauteValidationError``: a
+    malformed result is a system fault (the marker would relabel it a
+    ``contract_error`` and surface it verbatim as the user's fault). The same
+    holds for the result-shape and persisted-artifact linkage checks below.
+    """
     if isinstance(value, BaseModel):
         _assert_json_finite(value.model_dump(mode="python"), path)
         return
@@ -709,7 +715,7 @@ def _assert_json_finite(value: Any, path: str = "result") -> None:
     if isinstance(value, Real) and not isinstance(value, bool):
         numeric = float(value)
         if not math.isfinite(numeric):
-            raise HauteValidationError(f"non-finite numeric value at {path}")
+            raise ValueError(f"non-finite numeric value at {path}")
 
 
 def _job_elapsed_seconds(job: dict[str, Any], fallback: float = 0.0) -> float:
@@ -749,7 +755,14 @@ def _child_execution_context(
     raw_profile = payload.get("profile")
     if not isinstance(raw_profile, str):
         raise HauteValidationError("Worker profile must be a string")
-    profile = ExecutionProfile(raw_profile)
+    try:
+        profile = ExecutionProfile(raw_profile)
+    except ValueError:
+        # The enum's own ValueError is a dependency exception — re-raise as
+        # the marker so protocol validation stays on the curated channel.
+        raise HauteValidationError(
+            f"Worker profile {raw_profile!r} is not a recognised execution profile"
+        ) from None
     raw_limit = payload.get("memory_limit_bytes")
     if raw_limit is not None and (
         isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or raw_limit <= 0
@@ -803,8 +816,7 @@ def _worker_failure_payload(
     # wording: the gates, the metric wrap, HauteValidationError validation
     # messages, the _friendly_error shapes — whose fallback names only the
     # target/objective context and exception type, never the third-party
-    # message body). Raw
-    # third-party text stays behind the typed
+    # message body). Raw third-party text stays behind the typed
     # "Isolated worker raised {type}: {message}" wrapper.
     if user_facing:
         payload_fields.setdefault(WORKER_USER_MESSAGE_FIELD, detail)
@@ -1055,12 +1067,12 @@ def _run_training_process_job(
         )
         artifacts = [model_manifest, contract_manifest]
         if not isinstance(train_result.evaluation, dict):
-            raise HauteValidationError("Training evaluation result must be an object")
+            raise ValueError("Training evaluation result must be an object")
         response_evaluation = dict(train_result.evaluation)
         for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
             raw_path = response_evaluation.get(response_field)
             if not isinstance(raw_path, str) or not raw_path:
-                raise HauteValidationError(f"Training evaluation result has no {response_field}")
+                raise ValueError(f"Training evaluation result has no {response_field}")
             artifact = build_artifact_manifest(
                 artifact_root=staged_output.parent,
                 path=Path(raw_path).resolve(),
@@ -1073,12 +1085,12 @@ def _run_training_process_job(
         response_tuning: dict[str, Any] | None = None
         if train_result.tuning is not None:
             if not isinstance(train_result.tuning, dict):
-                raise HauteValidationError("Training tuning result must be an object")
+                raise ValueError("Training tuning result must be an object")
             response_tuning = dict(train_result.tuning)
             for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
                 raw_path = response_tuning.get(response_field)
                 if not isinstance(raw_path, str) or not raw_path:
-                    raise HauteValidationError(f"Training tuning result has no {response_field}")
+                    raise ValueError(f"Training tuning result has no {response_field}")
                 artifact = build_artifact_manifest(
                     artifact_root=staged_output.parent,
                     path=Path(raw_path).resolve(),
@@ -1349,9 +1361,7 @@ def _validate_evaluation_artifact_contents(
             results_sha256=results_sha256,
         )
         if expected_report.to_plain_data() != report.to_plain_data():
-            raise HauteValidationError(
-                "evaluation report does not match the persisted plan and results"
-            )
+            raise ValueError("evaluation report does not match the persisted plan and results")
         return {
             "schema_version": 1,
             "strategy": plan.config.strategy,
@@ -1392,7 +1402,7 @@ def _validate_tuning_artifact_contents(
         report_path = staged_and_final["tuning_report"][0]
         plan = load_tuning_plan(plan_path)
         if plan.evaluation_plan_sha256 != evaluation_plan_sha256:
-            raise HauteValidationError("tuning plan does not link to the evaluation plan")
+            raise ValueError("tuning plan does not link to the evaluation plan")
         plan_sha256 = file_sha256(plan_path)
         trials = load_tuning_trials(trials_path, plan_sha256=plan_sha256)
         trials_sha256 = file_sha256(trials_path)
@@ -1405,7 +1415,7 @@ def _validate_tuning_artifact_contents(
             final_tree_count=report.final_tree_count,
         )
         if expected_report.to_plain_data() != report.to_plain_data():
-            raise HauteValidationError("tuning report does not match the persisted plan and trials")
+            raise ValueError("tuning report does not match the persisted plan and trials")
         return {
             **report.to_plain_data(),
             "trials": [trial.to_plain_data() for trial in trials.trials],

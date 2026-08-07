@@ -22,4 +22,8 @@ class HauteValidationError(ValueError):
 
     Deliberately derives from ``ValueError`` rather than ``HauteError`` so
     every existing ``except ValueError`` validation handler keeps catching it.
+
+    Do not raise this inside a pydantic validator: pydantic wraps any
+    ``ValueError`` subclass into its own ``ValidationError``, which drops the
+    marker — the message would then take the fallback, not travel verbatim.
     """

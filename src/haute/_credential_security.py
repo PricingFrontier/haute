@@ -6,6 +6,8 @@ import re
 from collections.abc import Iterable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from haute._validation_error import HauteValidationError
+
 _CREDENTIAL_NAMES = frozenset(
     {
         "accesskey",
@@ -50,7 +52,7 @@ _ASSIGNMENT_RE = re.compile(
 _REDACTED = "<redacted>"
 
 
-class CredentialMaterialError(ValueError):
+class CredentialMaterialError(HauteValidationError):
     """A URI or mapping key would persist inline credential material."""
 
 

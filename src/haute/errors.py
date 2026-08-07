@@ -15,8 +15,9 @@ extend ``MemoryError``, deadline errors extend ``TimeoutError``, validation
 errors extend ``ValueError`` (via :class:`HauteValidationError`, defined in
 ``_validation_error.py`` and re-exported here for convenience), and
 missing-artifact errors extend ``FileNotFoundError`` so that existing
-``except MemoryError`` / ``except TimeoutError`` / ``except FileNotFoundError``
-handlers keep catching them. A single ``except HauteError`` therefore does not
+``except MemoryError`` / ``except TimeoutError`` / ``except ValueError`` /
+``except FileNotFoundError`` handlers keep catching them. A single
+``except HauteError`` therefore does not
 catch the entire Haute error surface; catch the relevant stdlib base (or the
 specific exception class) when you need those. The classes defined in this
 module are the ones the ``HauteError`` promise applies to.

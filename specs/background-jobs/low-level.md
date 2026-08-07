@@ -333,7 +333,7 @@ The thread executes one total outcome pipeline:
    `_SupervisorOutcome`. A worker failure whose payload fields carry
    `WORKER_USER_MESSAGE_FIELD` uses that curated string as the outcome message
    rather than `str(exc)` ("Isolated worker raised …"); the wrapper text is kept in
-   the diagnostic `error` field, and a child-supplied `error` value it would
+   the diagnostic `error` field, and a child-supplied `error` string it would
    overwrite moves to `worker_error` (only when non-empty and actually
    different from the wrapper). Any other `BaseException` becomes an `error`
    outcome with a bounded generic message plus

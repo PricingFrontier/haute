@@ -54,6 +54,7 @@ from haute._path_resolution import (
 from haute._registry import ensure_registry_ready
 from haute._sandbox import safe_globals, validate_user_code
 from haute._types import NodeData
+from haute._validation_error import HauteValidationError
 from haute.errors import PreambleError
 from haute.graph_utils import (
     NodeType,
@@ -139,7 +140,7 @@ def _pipeline_dir(graph: PipelineGraph) -> Path | None:  # pragma: no mutate
     return p.resolve().parent
 
 
-class PreviewProjectionError(ValueError):
+class PreviewProjectionError(HauteValidationError):
     """Requested preview columns cannot be projected from the target DataFrame."""
 
 

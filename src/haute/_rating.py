@@ -30,6 +30,7 @@ from haute._rating_step_config import (
     validate_unique_rating_table_outputs,
 )
 from haute._types import _Frame
+from haute._validation_error import HauteValidationError
 from haute.errors import RatingExtremaUndefinedError, RatingFactorMissingError
 
 logger = get_logger(component="rating")
@@ -463,7 +464,7 @@ _RATING_PRIMITIVE_DTYPES: Mapping[str, pl.DataType] = MappingProxyType(
 )
 
 
-class RatingTableMissError(ValueError):
+class RatingTableMissError(HauteValidationError):
     """A rating-table lookup left rows without a matching entry.
 
     Raised at materialisation time when a table has no usable
