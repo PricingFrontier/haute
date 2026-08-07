@@ -17,7 +17,7 @@ const formatValue = formatTraceValue
 const traceDetailValueStyle = {
   color: "var(--text-secondary)",
   fontSize: 11,
-  fontFamily: "var(--font-mono, monospace)",
+  fontFamily: "var(--font-data)",
 }
 
 export function RatingStepDetailBlock({

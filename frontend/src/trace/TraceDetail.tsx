@@ -79,7 +79,7 @@ export function TraceCalculationFrame({
             title={resultTitle}
             style={{
               minWidth: 0,
-              fontFamily: "var(--font-mono, monospace)",
+              fontFamily: "var(--font-data)",
               fontSize: 13,
               fontWeight: 600,
               fontVariantNumeric: "tabular-nums",

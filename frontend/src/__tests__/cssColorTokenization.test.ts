@@ -48,7 +48,10 @@
  *      is worse here than in CSS: the declaration is invalid at
  *      computed-value time, so the property silently becomes its initial
  *      value — `transparent` backgrounds, `currentColor` borders — with
- *      no build error and no console warning.
+ *      no build error and no console warning.  Convention (review-policed,
+ *      not gate-policed): components prefer the index.css role token that
+ *      aliases a Tailwind token (e.g. --font-data) over the raw Tailwind
+ *      name — see the adoption pin below.
  *
  *   4. index.css must NOT redeclare a Tailwind theme token in its plain
  *      (unlayered) `:root` block.  Unlayered declarations outrank every
@@ -66,7 +69,8 @@
  *   `:root` block.  If the token is a Tailwind theme token the app
  *   genuinely uses, add it to TAILWIND_PROVIDED_TOKENS with the utility
  *   regex that keeps it emitted — do NOT declare it in :root (see the
- *   shadow rule below).  Only if the property is genuinely
+ *   shadow rule below) — and in ts/tsx prefer the index.css role token
+ *   that aliases it (e.g. --font-data).  Only if the property is genuinely
  *   caller-supplied (some JSX sets it via inline `style={{ ... }}`) add
  *   it to PARAMETERISED_TOKENS *and* give every reference an inline
  *   fallback.
@@ -372,9 +376,11 @@ const PARAMETERISED_TOKENS = new Set([
  * verify a token really appears in the built CSS before adding it.
  */
 const TAILWIND_PROVIDED_TOKENS = new Map<string, RegExp>([
-  // Trace detail components use var(--font-mono, monospace); the token
+  // The mono face behind the --font-data role token in index.css (trace
+  // value text goes through the role token, not this name).  The token
   // stays emitted because `.font-mono` utility classes are used
-  // throughout the app.
+  // throughout the app — and Tailwind's preflight references it
+  // unconditionally via --default-mono-font-family.
   ["--font-mono", /(?<![\w-])font-mono(?![\w-])/],
 ])
 
@@ -673,6 +679,65 @@ describe("index.css — design-token contract", () => {
   })
 })
 
+describe("Tailwind-provided tokens", () => {
+  it("the shadow guard's declaration scan covers non-:root blocks", () => {
+    // Pin the whole-file property the shadow guards rely on: a token
+    // declared in an `html, body { ... }` block (or any other unlayered
+    // block) is found by findTokenDeclarations exactly like a :root
+    // declaration.  Without this canary, a refactor that narrowed the
+    // scan to the first :root block would silently re-open the html/body
+    // shadow hole.
+    const decls = findTokenDeclarations("html, body, #root { --font-mono: x; }")
+    expect(decls.has("--font-mono")).toBe(true)
+  })
+
+  it("each mapped token survives into the app's compiled output (compiled-emission guard)", async () => {
+    // The input-side emission guard above pins the PREMISE of emission
+    // (theme.css declaration + live utility usage).  This one pins the
+    // OUTPUT: a Tailwind upgrade could keep theme.css textually intact yet
+    // stop emitting the custom property (e.g. moving the font block to
+    // `@theme inline`, whose values are substituted at build time and
+    // never emitted).  The input guard would pass while every
+    // var(--font-mono) — and so --font-data — silently became invalid at
+    // computed-value time.
+    //
+    // The compilation target is the APP's real entry (src/index.css), not
+    // Tailwind's package entry — the invariant is "our build emits the
+    // token", and an index.css edit that dropped the default theme must
+    // fail here too.  No utility candidates are passed: emission must hold
+    // even for a page that uses no Tailwind utilities, via index.css's own
+    // var() reference (or, for --font-mono, Tailwind's preflight).  The
+    // assertion runs on comment-stripped output and anchors the token name
+    // so neither a stray comment nor a longer token (--font-mono-x) can
+    // satisfy it.
+    let compile: typeof import("tailwindcss").compile
+    try {
+      ;({ compile } = await import("tailwindcss"))
+    } catch {
+      throw new Error("Cannot import tailwindcss — is frontend/node_modules installed? (npm ci --prefix frontend)")
+    }
+    const twEntry = path.resolve(HERE, "..", "..", "node_modules", "tailwindcss", "index.css")
+    const compiled = await compile(CSS, {
+      base: path.dirname(CSS_PATH),
+      async loadStylesheet(id: string, base: string) {
+        // `@import "tailwindcss"` resolves to the package entry; the
+        // package's internal imports (theme/preflight/utilities.css)
+        // resolve relative to the importing file.
+        const file = id === "tailwindcss" ? twEntry : path.resolve(base, id)
+        return { path: file, base: path.dirname(file), content: readFileSync(file, "utf8") }
+      },
+    })
+    const output = stripComments(compiled.build([]))
+    for (const token of TAILWIND_PROVIDED_TOKENS.keys()) {
+      const declRe = new RegExp(`(^|[^-\\w])${token}\\s*:`, "m")
+      expect(
+        declRe.test(output),
+        `${token} is not emitted by the app's compiled CSS — the TAILWIND_PROVIDED_TOKENS premise no longer holds`,
+      ).toBe(true)
+    }
+  })
+})
+
 describe("ts/tsx source — design-token contract", () => {
   it("every var(--name) in live source resolves to an index.css token (or is an allowlisted parameterised token with a fallback)", () => {
     // Regression guard for the bug class where a component references a
@@ -791,6 +856,20 @@ describe("ts/tsx source — design-token contract", () => {
       return !texts.some((t) => setterRe.test(t))
     })
     expect(orphaned).toEqual([])
+  })
+
+  it("the typography role token is adopted in live source (adoption pin)", () => {
+    // The three trace-detail sites migrated to var(--font-data) are the
+    // role layer's seed adoption.  Nothing else pins them: a revert to a
+    // raw font stack (or to var(--font-mono, monospace)) would pass every
+    // resolution rule.  Requiring at least one live reference keeps the
+    // role token honest — a declared-but-unreferenced role token is a
+    // regression, not a tidy-up.
+    const files = collectSourceFiles(SRC_ROOT)
+    const referenced = files.some((f) =>
+      findVarRefs(stripComments(readFileSync(f, "utf8"))).some((r) => r.name === "--font-data"),
+    )
+    expect(referenced, "no live ts/tsx source references var(--font-data)").toBe(true)
   })
 
   it("skips template-interpolated token names (dynamic refs like var(--diff-${status}))", () => {
