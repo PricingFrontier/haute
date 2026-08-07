@@ -1022,18 +1022,71 @@ describe("ts/tsx source — design-token contract", () => {
     expect(orphaned).toEqual([])
   })
 
-  it("the typography role token is adopted in live source (adoption pin)", () => {
-    // The three trace-detail sites migrated to var(--font-data) are the
-    // role layer's seed adoption.  Nothing else pins them: a revert to a
-    // raw font stack (or to var(--font-mono, monospace)) would pass every
-    // resolution rule.  Requiring at least one live reference keeps the
-    // role token honest — a declared-but-unreferenced role token is a
-    // regression, not a tidy-up.
-    const files = collectSourceFiles(SRC_ROOT)
-    const referenced = files.some((f) =>
-      findVarRefs(stripComments(readFileSync(f, "utf8"))).some((r) => r.name === "--font-data"),
+  it("every typography role token is adopted in live source (adoption pin)", () => {
+    // The trace sites' var(--font-data) and ErrorBoundary's
+    // var(--font-code) are the role layer's seed adoption.  Nothing else
+    // pins them: a revert to a raw font stack (or to
+    // var(--font-mono, monospace)) would pass every resolution rule.
+    // The role list is DERIVED from the :root block's --font-*
+    // declarations rather than enumerated, so the pin is universal: a
+    // future role token declared but never referenced fails here instead
+    // of passing silently.  Tailwind-provided primitives are excluded on
+    // principle (they are faces, not roles) — though the shadow guard
+    // already keeps --font-mono out of :root.
+    const { start, end } = findRootBlockRange(CSS_CODE)
+    const roles = [...findTokenDeclarations(CSS_CODE.slice(start, end))].filter(
+      (name) => name.startsWith("--font-") && !TAILWIND_PROVIDED_TOKENS.has(name),
     )
-    expect(referenced, "no live ts/tsx source references var(--font-data)").toBe(true)
+    expect(roles.length, "no --font-* role tokens declared in index.css :root").toBeGreaterThan(0)
+    const files = collectSourceFiles(SRC_ROOT)
+    const referenced = new Set(
+      files.flatMap((f) => findVarRefs(stripComments(readFileSync(f, "utf8"))).map((r) => r.name)),
+    )
+    const orphaned = roles.filter((role) => !referenced.has(role))
+    expect(
+      orphaned,
+      `typography role token(s) declared in index.css but never referenced from live ts/tsx source: ${orphaned.join(", ")}`,
+    ).toEqual([])
+  })
+
+  it("live source declares no raw monospace fontFamily (mono role-layer gate)", () => {
+    // The migration's end state — every mono surface routed through a
+    // --font-* role token — would otherwise be enforced by review
+    // discipline alone: nothing stopped a new `fontFamily: "monospace"`
+    // from quietly reopening the class.  Flag any fontFamily whose string
+    // value names a generic or concrete mono face directly.  Sole
+    // exemption: CodeMirrorEditor's deliberate custom stack inside
+    // EditorView.theme() (see the --font-code comment in index.css) — a
+    // recorded decision, not an oversight.
+    const EXEMPT = new Set(["panels/editors/CodeMirrorEditor.tsx"])
+    const MONO_FACE =
+      /fontFamily\s*:\s*["'`][^"'`]*(?:monospace|SFMono|SF Mono|Menlo|Consolas|Courier)/
+    const offenders: string[] = []
+    for (const file of collectSourceFiles(SRC_ROOT)) {
+      const rel = path.relative(SRC_ROOT, file).split(path.sep).join(path.posix.sep)
+      if (EXEMPT.has(rel)) continue
+      const lines = stripComments(readFileSync(file, "utf8")).split("\n")
+      lines.forEach((line, i) => {
+        if (MONO_FACE.test(line)) offenders.push(`  ${rel}:${i + 1}  ${line.trim()}`)
+      })
+    }
+    if (offenders.length > 0) {
+      throw new Error(
+        `Found ${offenders.length} raw monospace fontFamily literal(s) in live source. ` +
+          `Route the surface through a --font-* role token from index.css (or add one) instead:\n` +
+          offenders.join("\n"),
+      )
+    }
+    expect(offenders).toEqual([])
+    // Exemption honesty: if the editor ever migrates onto a role token,
+    // the exemption must be deleted rather than linger as a silent hole.
+    for (const rel of EXEMPT) {
+      const text = stripComments(readFileSync(path.join(SRC_ROOT, rel), "utf8"))
+      expect(
+        MONO_FACE.test(text),
+        `${rel} is exempted but no longer contains a raw mono fontFamily — remove the exemption`,
+      ).toBe(true)
+    }
   })
 
   it("live source does not mention private primitive tokens (role-layer gate)", () => {
