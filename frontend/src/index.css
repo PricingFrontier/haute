@@ -134,9 +134,9 @@
      call site inherits the override for free.  The hook's scope is
      deliberately exactly this role: the matched chip and positive-delta
      roles below used to sit behind it too and no longer do — an override
-     recolours added markings, nothing else.  (--color-modified, its
-     sibling for the "modified" marking, still lives at its StepCard call
-     site pending the warning-family PR.) */
+     recolours added markings, nothing else.  (The "modified" marking has
+     no role token yet — its call sites reference the --color-modified
+     alias in :root directly, pending the warning-family PR.) */
   --trace-added-text: var(--color-added, var(--success-hover));
   --trace-added-bg: var(--success-soft-mid);
 
