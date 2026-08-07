@@ -3,6 +3,23 @@
 :root {
   color-scheme: dark;
 
+  /* Typography roles.  The mono face itself is Tailwind v4's --font-mono
+     theme token (node_modules/tailwindcss/theme.css, emitted into
+     @layer theme).  Never redeclare --font-mono here: this :root block is
+     unlayered, so a redeclaration would outrank @layer theme and shadow
+     Tailwind's value (pinned by the shadow guard in
+     __tests__/cssColorTokenization.test.ts; a deliberate face override
+     belongs in an @theme block, which the guard exempts).  Role tokens
+     alias the face so call sites name what the text is for, not how it
+     looks.
+     The `monospace` fallback here is LIVE, not speculative: the primitive
+     is Tailwind-emitted, so under real drift (an @theme-inline style
+     upgrade, or a build that never ran the gate) call sites degrade to
+     the generic mono face instead of silently inheriting sans.  Recorded
+     decision — distinct from the dead app-declared-alias fallbacks
+     removed elsewhere, which could never fire. */
+  --font-data: var(--font-mono, monospace);
+
   /* Surfaces - blue-black */
   --bg-base: #0f1117;
   --bg-canvas: #131620;

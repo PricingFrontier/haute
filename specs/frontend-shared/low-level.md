@@ -43,7 +43,7 @@
 | `frontend/src/hooks/useMlflowBrowser.ts` | Lazy-loads MLflow experiments/runs/models/versions for dropdown UIs; shared by `ModelScoreEditor` and `OptimiserApplyEditor` (node-editors). |
 | `frontend/src/hooks/useSchemaFetch.ts` | Fetch-schema-on-mount-and-on-path-change pattern used by `frontend/src/panels/editors/ApiInputEditor.tsx` and `frontend/src/panels/editors/DataInputEditor.tsx` (node-editors). |
 | `frontend/src/hooks/useStaleConfigEstimate.ts` | Generic "estimate endpoint keyed by config hash + source + structural version, refetch when any of the three changes" pattern, built on `hashConfig`. Takes a required `context: {source, structuralVersion}` argument alongside the cached result. |
-| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, and canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components. Also owns the `.toolbar-btn` action-button surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable) and the `.toolbar-number-input` spinner suppression. |
+| `frontend/src/index.css` | Global Tailwind import and dark-theme CSS-variable contract: root sizing/type, native-control and scrollbar defaults, React Flow interaction overrides, canonical semantic surface/status/chart/git-node tokens consumed directly by the theme module and components, and typography role tokens (`--font-data`) that alias Tailwind theme tokens rather than redeclaring them (no Tailwind theme token may be redeclared in the file's plain blocks — they are unlayered and would shadow `@layer theme`; a deliberate override belongs in an `@theme` block, which the gate exempts automatically; and components conventionally reference the role token rather than the raw Tailwind name — adoption and emission both pinned by `__tests__/cssColorTokenization.test.ts`). Also owns the `.toolbar-btn` action-button surface (resting/hover/pressed fills, engaged `aria-pressed` toggle, and a flat unavailable state that keeps its label readable) and the `.toolbar-number-input` spinner suppression. |
 | `frontend/src/utils/chartHelpers.ts` | Small pure chart leaf helpers: compact K/M/scientific axis labels and inclusive evenly spaced Y ticks (a degenerate range yields one tick). |
 | `frontend/src/utils/formatTrace.ts` | Cross-surface trace-value/expression/calculation/schema-summary presentation formatting: retains date-shaped strings, represents non-finite numbers explicitly, quotes ordinary strings, escapes column names before substitution, and uses longest names first to avoid partial replacement. |
 | `frontend/src/utils/mlflowOptimiser.ts` | Pure MLflow run/model metadata classifier: the canonical `params.mode` value selects ratebook versus online; absent or invalid values yield the empty mode. |
@@ -459,10 +459,13 @@ no-op blur, external-value draft reset, and form-label/control semantics.
 `frontend/src/utils/__tests__/formatTrace.test.ts` respectively pin numeric
 ticks/formatting and trace substitutions/non-finite display.
 `frontend/src/components/NodeTypeIcon.tsx`,
-`frontend/src/components/form/index.ts`, `frontend/src/index.css`, and
+`frontend/src/components/form/index.ts`, and
 `frontend/src/utils/mlflowOptimiser.ts` currently have no dedicated test file; the
-icon/form/CSS files are simple presentation or re-export surfaces, while the optimiser
-classifier is an uncovered pure helper.
+icon/form files are simple presentation or re-export surfaces, while the optimiser
+classifier is an uncovered pure helper.  `frontend/src/index.css` is pinned by
+`frontend/src/__tests__/cssColorTokenization.test.ts` (design-token contract: no hex
+outside `:root`, no dangling `var()` references, Tailwind-provided-token emission and
+shadow guards).
 
 Known gaps: `frontend/src/components/Toolbar.tsx`'s inline timing/memory formatting helpers
 (`formatTiming`/`formatMemory`, distinct from and not delegating to
