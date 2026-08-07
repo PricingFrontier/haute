@@ -239,7 +239,6 @@ function resetAllStores(): void {
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
   useGitStore.setState({
     status: null,
     loading: false,

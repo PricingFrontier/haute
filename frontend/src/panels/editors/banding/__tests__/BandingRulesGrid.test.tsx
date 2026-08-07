@@ -29,7 +29,6 @@ function makeFactor(overrides: Partial<BandingFactor> = {}): BandingFactor {
 describe("BandingRulesGrid", () => {
   afterEach(() => {
     cleanup()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     restoreClipboard()
   })
 

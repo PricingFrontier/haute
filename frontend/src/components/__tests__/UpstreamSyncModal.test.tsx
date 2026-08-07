@@ -36,7 +36,6 @@ describe("UpstreamSyncModal — a fork's relationship to its parent", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useGitStore.setState({ modal: "upstream" })
-    useToastStore.setState({ toasts: [] })
   })
   afterEach(cleanup)
 

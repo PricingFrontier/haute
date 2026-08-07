@@ -166,7 +166,6 @@ import App from "../App"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
-import useToastStore from "../stores/useToastStore"
 import useUIStore from "../stores/useUIStore"
 
 function resetStores(): void {
@@ -192,7 +191,6 @@ function resetStores(): void {
     hoveredNodeId: null,
     nodeSearchOpen: false,
   })
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
   useNodeResultsStore.setState({
     previews: {},
     pinnedPreviewNodeId: null,

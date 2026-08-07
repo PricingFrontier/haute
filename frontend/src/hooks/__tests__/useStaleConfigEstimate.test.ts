@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
 import { renderHook, waitFor, cleanup, act } from "@testing-library/react"
 import { useStaleConfigEstimate } from "../useStaleConfigEstimate"
 import useToastStore from "../../stores/useToastStore"
@@ -12,10 +12,6 @@ interface FakeEstimate {
 const configA = { algorithm: "catboost", gpu: false }
 const configB = { algorithm: "catboost", gpu: true }
 const sampleEstimate: FakeEstimate = { estimated_mb: 1024, available_mb: 4096 }
-
-beforeEach(() => {
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
-})
 
 afterEach(() => {
   cleanup()

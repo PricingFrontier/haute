@@ -45,7 +45,6 @@ beforeEach(() => {
   vi.clearAllMocks()
   useGraphStore.setState({ undoStack: [], redoStack: [], vcBusy: false })
   useGitStore.setState({ status: null, historyNonce: 0 })
-  useToastStore.setState({ toasts: [] })
   mockSetWorkingBranch.mockResolvedValue({})
   mockArchive.mockResolvedValue({ archived_as: "archive/x" })
   mockDelete.mockResolvedValue({ status: "deleted", branch: "x" })

@@ -28,7 +28,6 @@ function resetStores() {
     trainResults: {},
     trainJobs: {},
   })
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
 
 async function advance(ms: number): Promise<void> {

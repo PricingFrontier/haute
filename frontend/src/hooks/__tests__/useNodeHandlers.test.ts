@@ -26,7 +26,6 @@ function makeParams() {
 
 describe("useNodeHandlers", () => {
   beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useNodeResultsStore.setState({ previews: {}, columnCache: {} })
     vi.mocked(getLayoutedElements).mockReset()
     vi.mocked(getLayoutedElements).mockImplementation(async (nodes: Node[]) => nodes)

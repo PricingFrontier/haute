@@ -81,7 +81,6 @@ describe("git identity save prompt", () => {
   beforeEach(() => {
     resetIdentityPromptForTests()
     useGitStore.setState({ modal: null, pendingAction: null })
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     mockSave.mockReset()
     mockSetIdentity.mockClear()
   })

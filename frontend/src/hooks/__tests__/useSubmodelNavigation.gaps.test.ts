@@ -76,7 +76,6 @@ function makeParams(overrides: Partial<Parameters<typeof useSubmodelNavigation>[
 
 describe("useSubmodelNavigation — canonical port building & branch gaps", () => {
   beforeEach(() => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useGraphStore.setState({ lastSavedSnapshot: null })
     mockLoad.mockReset()
   })

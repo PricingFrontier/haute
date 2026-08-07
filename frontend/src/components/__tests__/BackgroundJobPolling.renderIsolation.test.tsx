@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import BackgroundJobPolling from "../BackgroundJobPolling"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
-import useToastStore from "../../stores/useToastStore"
 import { makeNode } from "../../test-utils/factories"
 
 function resetStores() {
@@ -31,7 +30,6 @@ function resetStores() {
     trainResults: {},
     trainJobs: {},
   })
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
 
 describe("BackgroundJobPolling", () => {

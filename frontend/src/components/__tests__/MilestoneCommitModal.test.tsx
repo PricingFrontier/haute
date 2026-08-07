@@ -48,7 +48,6 @@ describe("MilestoneCommitModal", () => {
       pendingAction: null,
       loading: false,
     })
-    useToastStore.setState({ toasts: [] })
   })
   afterEach(cleanup)
 

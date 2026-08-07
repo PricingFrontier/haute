@@ -14,7 +14,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { renderHook, cleanup, act, waitFor } from "@testing-library/react"
 import type { Node, Edge } from "@xyflow/react"
 import usePipelineAPI from "../usePipelineAPI"
-import useToastStore from "../../stores/useToastStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
@@ -83,7 +82,6 @@ function makeParams(overrides: Partial<Parameters<typeof usePipelineAPI>[0]> = {
 describe("usePipelineAPI — aborted preview clears stale data (#31)", () => {
   beforeEach(() => {
     vi.useRealTimers()
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     useSettingsStore.setState({ rowLimit: 1000, activeSource: "live", sources: ["live"] })
     useGraphStore.setState({
       nodes: [],

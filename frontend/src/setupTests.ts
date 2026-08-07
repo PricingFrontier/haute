@@ -1,4 +1,28 @@
 import "@testing-library/jest-dom/vitest"
+import { beforeEach } from "vitest"
+
+import useToastStore from "./stores/useToastStore"
+
+// The toast store is a module-level singleton read by nearly every hook and
+// component test. Reset it globally so a file that forgets its own copy can't
+// leak toasts into whichever tests the nightly shuffle runs after it. Files
+// that mock the store module are unaffected — setup-file imports resolve
+// before a test file's hoisted vi.mock() factories run, so this import is
+// always the real store. File-level beforeEach hooks run after this one, so
+// deliberate seeding wins.
+beforeEach(async () => {
+  useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  // Same rationale for the branch-loader single-flight: a test that mocks
+  // getWorkingBranches as never-settling would otherwise starve loadBranches()
+  // in every later-shuffled test. The loader's settle paths are identity-
+  // guarded, which is what makes a global reset safe. The import MUST be
+  // dynamic: the loader depends on api/client, which test files mock — a
+  // static import here would pin a real-client loader instance into the
+  // module registry before any vi.mock registers, and tests would then
+  // exercise the wrong singleton (real fetches, unreset state).
+  const { resetGitBranchLoaderForTests } = await import("./stores/gitBranchLoader")
+  resetGitBranchLoaderForTests()
+})
 
 Object.defineProperty(globalThis, "__APP_VERSION__", {
   configurable: true,

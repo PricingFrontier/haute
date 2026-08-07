@@ -13,13 +13,31 @@ type SetGitBranchState = (state: Partial<GitBranchState>) => void
 
 let inFlight: Promise<GitManagedBranch[]> | null = null
 let queuedRefresh: Promise<GitManagedBranch[]> | null = null
+// The request the queued refresh is anchored behind. A refresh requested while
+// a DIFFERENT request is active must queue behind that newer request rather
+// than being satisfied by a queue from an older generation.
+let queuedAnchor: Promise<GitManagedBranch[]> | null = null
+
+/** Tests that hold a mocked getWorkingBranches open forever leave the
+ *  single-flight stuck, starving every later loadBranches() in the same file.
+ *  Called globally from setupTests; safe because every settle path below is
+ *  identity-guarded, so a detached request can neither publish state nor
+ *  clobber a newer request's slot. */
+export function resetGitBranchLoaderForTests(): void {
+  inFlight = null
+  queuedRefresh = null
+  queuedAnchor = null
+}
 
 /**
  * Fetch and publish the shared branch listing.
  *
  * A normal concurrent read shares the active request. A refresh requested by a
- * completed mutation while that read is active queues exactly one follow-up so
- * the older response cannot become the final published state.
+ * completed mutation while that read is active queues exactly one follow-up
+ * PER ACTIVE REQUEST, so the older response cannot become the final published
+ * state: if the previously queued refresh was anchored behind an earlier
+ * request, a new refresh re-queues behind the current one instead of joining
+ * the stale queue.
  */
 export function loadGitBranches(
   set: SetGitBranchState,
@@ -27,37 +45,54 @@ export function loadGitBranches(
 ): Promise<GitManagedBranch[]> {
   if (inFlight) {
     if (!refresh) return inFlight
-    if (!queuedRefresh) {
-      queuedRefresh = inFlight
+    if (!queuedRefresh || queuedAnchor !== inFlight) {
+      const anchor = inFlight
+      const queued: Promise<GitManagedBranch[]> = anchor
         .catch(() => [])
         .then(() => {
+          // Identity guard: a test reset or a newer queued refresh may have
+          // detached this continuation; a detached refresh must neither clear
+          // a newer queue slot nor spawn its own request. Superseded awaiters
+          // join whatever newer work exists (a reset leaves none, so they get
+          // an empty listing).
+          if (queuedRefresh !== queued) return queuedRefresh ?? inFlight ?? []
           queuedRefresh = null
+          queuedAnchor = null
           return loadGitBranches(set)
         })
+      queuedRefresh = queued
+      queuedAnchor = anchor
     }
     return queuedRefresh
   }
 
   set({ branchesLoading: true, branchesError: null })
-  inFlight = getWorkingBranches()
+  const request: Promise<GitManagedBranch[]> = getWorkingBranches()
     .then((result) => {
-      set({
-        branches: result.branches,
-        branchesLoaded: true,
-        branchesLoading: false,
-        branchesError: null,
-      })
+      // Identity guard: after a test reset this request is detached — resolve
+      // for its own awaiters but do not publish state over a newer request's.
+      if (inFlight === request) {
+        set({
+          branches: result.branches,
+          branchesLoaded: true,
+          branchesLoading: false,
+          branchesError: null,
+        })
+      }
       return result.branches
     })
     .catch((error: unknown) => {
-      set({
-        branchesLoading: false,
-        branchesError: gitErrorMessage(error, "Unable to load branches"),
-      })
+      if (inFlight === request) {
+        set({
+          branchesLoading: false,
+          branchesError: gitErrorMessage(error, "Unable to load branches"),
+        })
+      }
       throw error
     })
     .finally(() => {
-      inFlight = null
+      if (inFlight === request) inFlight = null
     })
-  return inFlight
+  inFlight = request
+  return request
 }

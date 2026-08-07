@@ -131,7 +131,6 @@ beforeEach(() => {
     },
     openSections: {},
   })
-  useToastStore.setState({ toasts: [], _toastCounter: 0 })
   mockTrainModel.mockReset()
   mockCancelTrain.mockReset()
   vi.stubGlobal("confirm", vi.fn(() => true))

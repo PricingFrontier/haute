@@ -68,7 +68,7 @@
  * comments are stripped before scanning so documentation that mentions
  * the old pattern in a rationale comment does not fail the pin.
  */
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup } from "@testing-library/react"
 import { readFileSync } from "node:fs"
 import path from "node:path"
@@ -401,10 +401,6 @@ import ToastContainer from "../../components/Toast"
 import useToastStore from "../../stores/useToastStore"
 
 describe("Toast — dismiss button hover is className-driven (behavioural)", () => {
-  beforeEach(() => {
-    useToastStore.setState({ toasts: [] })
-  })
-
   it("dismiss button — mouseEnter does not imperatively mutate inline style", () => {
     // Seed the store with a toast so the container actually renders.
     useToastStore.setState({

@@ -585,7 +585,6 @@ describe("GitPanel", () => {
   })
 
   it("degrades to no rail when the graph fetch fails: list intact, no toast", async () => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     mockGetGitGraph.mockRejectedValue(new Error("boom"))
     render(<GitPanel {...defaultProps} />)
     await waitFor(() => expect(screen.getAllByTestId("git-panel-milestone")).toHaveLength(2))

@@ -44,9 +44,6 @@ describe("useKeyboardShortcuts", () => {
     useUIStore.setState({
       shortcutsOpen: false, submodelDialog: null, nodeSearchOpen: false,
     })
-    useToastStore.setState({
-      toasts: [], _toastCounter: 0,
-    })
     params = makeParams()
     renderHook(() => useKeyboardShortcuts(params))
   })
