@@ -21,7 +21,7 @@
 | `src/haute/_graph_utils.py` | Pure-function graph helpers decoupled from the Pydantic models: `build_parents_of`, `upstream_node_ids`, `_sanitize_func_name`, `edge_input_name` (the single edge→input-name derivation: apiInput-frame edge → its frame label verbatim, else sanitised source-node label; consumed by the executor, codegen, projection, and the deploy scorer so all four agree byte-for-byte), `build_instance_mapping`, `resolve_orig_source_names`, and edge-id construction. |
 | `src/haute/_worker_isolation.py` | `run_isolated_worker()` — spawn a child process for one function call with an optional address-space resource cap, timeout, and cooperative stop-reason polling; typed error hierarchy for every terminal state. |
 | `src/haute/chunking.py` | `ChunkPlanRequest`/`chunk_plan()` (proves a graph suffix is chunk-safe, sizes chunks from projected target width, and rejects an over-budget single target row), `iter_chunked_frames()`/`run_chunked_reduce()`/`collect_chunked()` (the serial runner), the per-`NodeType` `ChunkCapability` registry, and the AST-based row-local user-code whitelist. |
-| `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the first GPU's total VRAM via nvidia-smi — the CatBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason). Owns the nvidia-smi subprocess chokepoint. |
+| `src/haute/_host_memory.py` | Host memory observation: `available_ram_bytes()` (per-platform probes behind one shared result contract, including Linux cgroup v2/v1 headroom clamping resolved at the process's own cgroup with ancestor-min semantics — each probe reports a real measurement or a recorded failure reason, never fabricated capacity) and `available_vram_bytes()` (the first GPU's total VRAM via nvidia-smi — the CatBoost single-device sizing basis — or nothing when no GPU is present; detection failures other than an absent binary are logged with a reason). Owns the nvidia-smi subprocess chokepoint. |
 | `src/haute/_ram_estimate.py` | Workload-side estimation: `estimate_safe_training_rows()` (parquet-metadata-based peak-memory estimate and downsample decision), `estimate_gpu_vram_bytes()`, and the `MaterialisationEstimate` contract consumed by strategy planning. It imports graph models directly from `_types.py` so admission and route cold imports do not re-enter the execution facade. |
 
 ## Key types and data structures
@@ -111,7 +111,16 @@
   attempted-but-failed reason, or not-applicable-on-this-platform). The first
   observation wins and is clamped once to any finite Linux cgroup headroom:
   cgroup v2 `memory.max - memory.current`, else the v1
-  `memory.limit_in_bytes - memory.usage_in_bytes` pair. `max` and the v1
+  `memory.limit_in_bytes - memory.usage_in_bytes` pair. The controller files
+  are read at the process's **own** cgroup, resolved from `/proc/self/cgroup`
+  and `/proc/self/mountinfo` (v2 unified and v1 hybrid), not just the mount
+  root — a systemd service slice or a container sharing the host cgroup
+  namespace keeps its binding limits below `/sys/fs/cgroup`. Headroom is the
+  **minimum** across the process's cgroup and its ancestors up to the mount
+  point (a parent's limit binds its children; a level whose controller files
+  are absent contributes nothing). Any resolution failure — unreadable or
+  malformed proc files, no matching mount, a cgroup path outside the mount
+  root — degrades to the historical mount-root read. `max` and the v1
   unlimited sentinel do not clamp; negative headroom clamps to zero.
 - **Degraded-observation contract** — one policy governs every degraded memory
   state, split by whether the value is a capacity *source* or a best-effort
