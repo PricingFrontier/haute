@@ -17,6 +17,7 @@ currently startable package.
 |---|---|---|
 | [Background jobs and API lifecycle](background-jobs-api.md) | Worker terminal states, artifacts, events, cleanup | — |
 | [Explore and EDA](explore-eda.md) | Report correctness, scale, UX, analysis, export | `EDA-E09` |
+| [Modelling](modelling.md) | Adaptive low-memory fitting (exact GLM, approximate GBM) | `MOD-M01` |
 | [Optimiser](optimiser.md) | Apply/save correctness, scaling, lifecycle, workers | `OPT-P11` |
 
 ## Working protocol
