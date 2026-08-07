@@ -1222,8 +1222,8 @@ export default function OptimiserConfig({
           )}
 
           {/* Convergence status */}
-          <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "var(--success-soft)" : "var(--warning-soft-subtle)", border: `1px solid ${solveResult.converged ? "var(--success-border)" : "var(--warning-soft-selected)"}` }}>
-            <div style={{ color: solveResult.converged ? "var(--success)" : "var(--warning-strong)" }}>
+          <div className="px-3 py-2 rounded-lg text-xs space-y-1" style={{ background: solveResult.converged ? "var(--banner-success-bg)" : "var(--warning-soft-subtle)", border: `1px solid ${solveResult.converged ? "var(--banner-success-border)" : "var(--warning-soft-selected)"}` }}>
+            <div style={{ color: solveResult.converged ? "var(--banner-success-text)" : "var(--warning-strong)" }}>
               {solveResult.converged ? "Converged" : "Did not converge"}
               {solveIterationSummary ? ` in ${solveIterationSummary.long}` : ""}
               {solveResult.n_quotes != null && solveResult.n_steps != null && (

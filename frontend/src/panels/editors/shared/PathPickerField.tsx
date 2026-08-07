@@ -33,10 +33,10 @@ export default function PathPickerField({
       {value && (
         <div
           className="px-2.5 py-2 rounded-lg flex items-center gap-2"
-          style={{ background: "var(--success-soft)", border: "1px solid var(--success-border)" }}
+          style={{ background: "var(--banner-success-bg)", border: "1px solid var(--banner-success-border)" }}
         >
-          <Check size={14} style={{ color: "var(--success)" }} className="shrink-0" />
-          <span className="text-xs font-mono truncate flex-1" style={{ color: "var(--success-hover)" }}>
+          <Check size={14} style={{ color: "var(--banner-success-text)" }} className="shrink-0" />
+          <span className="text-xs font-mono truncate flex-1" style={{ color: "var(--banner-success-data)" }}>
             {value}
           </span>
           <button
@@ -44,7 +44,7 @@ export default function PathPickerField({
             data-testid="file-change-btn"
             onClick={() => setExpanded(!expanded)}
             className="shrink-0 text-[11px] font-semibold px-2 py-0.5 rounded transition-colors"
-            style={{ color: "var(--success-hover)" }}
+            style={{ color: "var(--banner-success-action)" }}
           >
             {expanded ? "close" : "change"}
           </button>

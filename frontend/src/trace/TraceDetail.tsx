@@ -7,7 +7,7 @@ function toneStyle(tone: Tone): CSSProperties {
     return { color: "var(--accent)", background: "var(--accent-soft)" }
   }
   if (tone === "success") {
-    return { color: "var(--color-added, var(--success-hover))", background: "var(--success-soft-mid)" }
+    return { color: "var(--trace-chip-matched-text)", background: "var(--trace-chip-matched-bg)" }
   }
   if (tone === "warning") {
     return { color: "var(--warning)", background: "var(--warning-bright-soft-strong)" }

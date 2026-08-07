@@ -146,7 +146,7 @@ export function ModelScoreDetailBlock({ detail }: {
                 <span style={{ overflowWrap: "anywhere", color: "var(--text-muted)" }}>
                   {featureValue.hasValue ? formatValue(featureValue.value) : "not provided"}
                 </span>
-                <span className="text-right" style={{ color: value >= 0 ? "var(--success-hover)" : "var(--danger-text)" }}>
+                <span className="text-right" style={{ color: value >= 0 ? "var(--delta-positive-text)" : "var(--danger-text)" }}>
                   {formatSignedValue(value)}
                 </span>
                 <span className="text-right" style={{ color: "var(--text-primary)" }}>
@@ -194,7 +194,7 @@ export function ModelScoreDetailBlock({ detail }: {
                 <span style={{ color: "var(--text-muted)" }}>
                   {contribution.feature_value !== undefined ? formatValue(contribution.feature_value) : ""}
                 </span>
-                <span style={{ color: value == null || value >= 0 ? "var(--success-hover)" : "var(--danger-text)" }}>
+                <span style={{ color: value == null || value >= 0 ? "var(--delta-positive-text)" : "var(--danger-text)" }}>
                   {signedValue}
                 </span>
               </div>

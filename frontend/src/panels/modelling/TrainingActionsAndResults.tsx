@@ -140,12 +140,12 @@ export function TrainingActionsAndResults({
       )}
       {ramEstimate && !ramEstimateLoading && adjusted && (
         <div className="px-3 py-2.5 rounded-lg text-xs space-y-1.5" style={{
-          background: adjusted.wasDownsampled ? "var(--warning-soft-subtle)" : "var(--success-soft-subtle)",
-          border: `1px solid ${adjusted.wasDownsampled ? "var(--warning-border)" : "var(--success-soft-strong)"}`,
+          background: adjusted.wasDownsampled ? "var(--warning-soft-subtle)" : "var(--train-summary-success-bg)",
+          border: `1px solid ${adjusted.wasDownsampled ? "var(--warning-border)" : "var(--train-summary-success-border)"}`,
         }}>
           <div className="flex items-center gap-2">
             {adjusted.wasDownsampled && <AlertTriangle size={12} className="shrink-0" style={{ color: "var(--warning-strong)" }} />}
-            <span className="font-medium" style={{ color: adjusted.wasDownsampled ? "var(--warning)" : "var(--success)" }}>
+            <span className="font-medium" style={{ color: adjusted.wasDownsampled ? "var(--warning)" : "var(--train-summary-success-text)" }}>
               {adjusted.wasDownsampled ? "Will downsample" : "Dataset fits in memory"}
             </span>
           </div>
@@ -248,9 +248,9 @@ export function TrainingActionsAndResults({
 
       {/* Completion badge — results are in the preview panel below */}
       {trainResult && trainResult.status !== "error" && !training && !submitting && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--success-soft-faint)", border: "1px solid var(--success-border)" }}>
-          <CheckCircle2 size={12} style={{ color: "var(--success)" }} className="shrink-0" />
-          <span style={{ color: "var(--success)" }}>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs" style={{ background: "var(--train-complete-bg)", border: "1px solid var(--train-complete-border)" }}>
+          <CheckCircle2 size={12} style={{ color: "var(--train-complete-text)" }} className="shrink-0" />
+          <span style={{ color: "var(--train-complete-text)" }}>
             Model trained — results in preview panel below
           </span>
         </div>

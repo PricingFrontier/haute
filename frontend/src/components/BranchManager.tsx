@@ -574,7 +574,7 @@ export default function BranchManager({ selectedBranch, onPeek, onSave }: Branch
                 className="flex items-center gap-1.5 px-3 py-1.5 w-full text-left hover:bg-[var(--bg-hover)] disabled:opacity-40"
                 style={{ color: "var(--text-primary)" }}
               >
-                <RotateCcw size={12} style={{ color: "var(--success)" }} /> Restore
+                <RotateCcw size={12} style={{ color: "var(--branch-restore-text)" }} /> Restore
               </button>
             )}
             <button
@@ -700,7 +700,7 @@ function BranchRow({
             data-testid="branch-manager-restore"
             onClick={onRestore}
             disabled={anyBusy}
-            className="p-1 rounded transition-colors text-[var(--text-muted)] hover:bg-[var(--success-soft)] hover:text-[var(--success)] disabled:opacity-40"
+            className="p-1 rounded transition-colors text-[var(--text-muted)] hover:bg-[var(--branch-restore-hover-bg)] hover:text-[var(--branch-restore-text)] disabled:opacity-40"
           >
             <RotateCcw size={12} />
           </button>

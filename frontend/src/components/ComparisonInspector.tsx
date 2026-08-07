@@ -21,7 +21,7 @@ const STATUS_META: Record<
   ComparisonInspect["status"],
   { label: string; color: string; soft: string }
 > = {
-  added: { label: "Added", color: "var(--diff-added)", soft: "var(--success-soft)" },
+  added: { label: "Added", color: "var(--diff-added)", soft: "var(--diff-added-soft)" },
   removed: { label: "Removed", color: "var(--diff-removed)", soft: "var(--danger-soft)" },
   changed: { label: "Changed", color: "var(--diff-changed)", soft: "var(--warning-soft)" },
   unchanged: { label: "Unchanged", color: "var(--text-muted)", soft: "var(--bg-hover)" },

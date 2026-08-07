@@ -80,7 +80,7 @@ export function StepCard({
   }
 
   const tagColors = {
-    added: { bg: "var(--success-soft-mid)", color: "var(--color-added, var(--success-hover))", label: "+" },
+    added: { bg: "var(--trace-added-bg)", color: "var(--trace-added-text)", label: "+" },
     modified: { bg: "var(--warning-bright-soft)", color: "var(--color-modified, var(--warning))", label: "~" },
     value: { bg: "rgba(255,255,255,.06)", color: "var(--text-secondary)", label: "=" },
   }
@@ -298,7 +298,7 @@ export function StepCard({
           {/* Schema changes summary */}
           <div className="flex flex-wrap gap-2 py-2 text-[10px]">
             {columns_added.length > 0 && (
-              <span style={{ color: "var(--color-added, var(--success-hover))" }}>+{columns_added.length} added</span>
+              <span style={{ color: "var(--trace-added-text)" }}>+{columns_added.length} added</span>
             )}
             {columns_modified.length > 0 && (
               <span style={{ color: "var(--color-modified, var(--warning))" }}>~{columns_modified.length} modified</span>
@@ -326,7 +326,7 @@ export function StepCard({
               let rowColor = "var(--text-secondary)"
               let prefix = ""
               if (isAdded) {
-                rowColor = "var(--color-added, var(--success-hover))"
+                rowColor = "var(--trace-added-text)"
                 prefix = "+"
               } else if (isModified) {
                 rowColor = "var(--color-modified, var(--warning))"

@@ -83,7 +83,7 @@ export function OptimiserOnlineDetail({ detail }: {
               <span key={name} className="inline-flex min-w-0 items-center gap-1">
                 <span style={{ color: "var(--text-muted)" }}>+</span>
                 <span style={{ color: "var(--text-muted)", overflowWrap: "anywhere" }}>lambda {name}</span>
-                <span style={{ color: value >= 0 ? "var(--color-added, var(--success-hover))" : "var(--danger-text)" }}>
+                <span style={{ color: value >= 0 ? "var(--delta-positive-text)" : "var(--danger-text)" }}>
                   {formatSignedValue(value)}
                 </span>
               </span>

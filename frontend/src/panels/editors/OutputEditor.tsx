@@ -1153,9 +1153,9 @@ function FrameBlock({
                 onClick={onAddRow}
                 className="text-[11px] font-semibold px-2 py-0.5 rounded flex items-center gap-1"
                 style={{
-                  color: "var(--success)",
-                  border: "1px solid var(--success-border)",
-                  background: "var(--success-soft)",
+                  color: "var(--add-pill-text)",
+                  border: "1px solid var(--add-pill-border)",
+                  background: "var(--add-pill-bg)",
                 }}
                 title="Add an empty mapping row"
               >

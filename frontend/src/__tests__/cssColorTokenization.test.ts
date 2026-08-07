@@ -172,6 +172,57 @@ function stripThemeBlocks(css: string): string {
   return out
 }
 
+// ---------------------------------------------------------------------------
+// Private primitive tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * Family PATTERNS for the graded ladder primitives that only the role
+ * tokens in index.css's :root block may reference.  A call site (ts/tsx,
+ * or a CSS rule body) that reaches for one directly bypasses the role
+ * layer — the role tokens exist so a shade retune touches one alias line
+ * per role instead of a grep across the tree.
+ *
+ * Patterns, not a hand-copied name list: the concrete tokens are derived
+ * from whatever the ladder currently declares, so a new ladder step is
+ * private from birth rather than silently public until someone remembers
+ * to update a list.  Extend family by family as the semantic layer rolls
+ * out (warning, danger, accent to follow).
+ */
+const PRIVATE_PRIMITIVE_PATTERNS = [
+  // Success family: the graded soft/border steps and the hover step.
+  // Deliberately NOT private: the base hue --success (still a direct
+  // anchor for ~25 sites) and --success-fill* (main's Commit button pair,
+  // unclassified until its own role token lands).
+  /--success-(?:soft|border|hover)[\w-]*/,
+]
+
+interface PrimitiveMention {
+  match: string
+  line: number
+}
+
+/**
+ * Every occurrence of a private-primitive IDENTIFIER in `text` — an
+ * identifier scan, not a var() parse, so Tailwind arbitrary-property
+ * shorthand (`bg-(--success-soft)`), dynamic template construction
+ * (`var(--success-soft-${tier})`, caught via its static prefix), and
+ * fallback-carrying references are all found.  A leading word/dash
+ * boundary stops `--x--success-soft`-style false joins.
+ */
+function findPrivatePrimitiveMentions(text: string): PrimitiveMention[] {
+  const hits: PrimitiveMention[] = []
+  for (const pattern of PRIVATE_PRIMITIVE_PATTERNS) {
+    const re = new RegExp(`(?<![-\\w])${pattern.source}`, "g")
+    let m: RegExpExecArray | null
+    while ((m = re.exec(text)) !== null) {
+      const line = text.slice(0, m.index).split("\n").length
+      hits.push({ match: m[0], line })
+    }
+  }
+  return hits.sort((a, b) => a.line - b.line)
+}
+
 function findRootBlockRange(css: string): { start: number; end: number } {
   const match = /:root\s*\{/.exec(css)
   if (!match) {
@@ -431,6 +482,22 @@ function findTokenDeclarations(css: string): Set<string> {
   return decls
 }
 
+/**
+ * Like findTokenDeclarations, but capturing each token's declared VALUE
+ * (whitespace collapsed, trailing `;` required).  Used by the
+ * behaviour-preservation pin to assert role-token → primitive aliases.
+ * Last declaration wins, matching the CSS cascade within one block.
+ */
+function findTokenDeclarationValues(css: string): Map<string, string> {
+  const values = new Map<string, string>()
+  const re = /(^|[\s{;])(--[a-zA-Z_][a-zA-Z0-9_-]*)\s*:\s*([^;}]+);/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(css)) !== null) {
+    values.set(m[2], m[3].trim().replace(/\s+/g, " "))
+  }
+  return values
+}
+
 // ---------------------------------------------------------------------------
 // TS/TSX source scanner (contract property 3)
 // ---------------------------------------------------------------------------
@@ -454,6 +521,26 @@ function collectSourceFiles(dir: string): string[] {
     if (!/\.(ts|tsx)$/.test(entry)) continue
     if (/\.(test|spec)\.(ts|tsx)$/.test(entry)) continue
     out.push(full)
+  }
+  return out
+}
+
+/**
+ * Enumerate `.css` stylesheets under `frontend/src` (skipping `__tests__/`).
+ * index.css is the only one today; scanning the tree keeps any future
+ * stylesheet inside the role-layer contract from the moment it is added
+ * rather than making the single-file scope a silent assumption.
+ */
+function collectStylesheets(dir: string): string[] {
+  const out: string[] = []
+  for (const entry of readdirSync(dir)) {
+    const full = path.join(dir, entry)
+    if (statSync(full).isDirectory()) {
+      if (entry === "__tests__") continue
+      out.push(...collectStylesheets(full))
+      continue
+    }
+    if (/\.css$/.test(entry)) out.push(full)
   }
   return out
 }
@@ -677,6 +764,83 @@ describe("index.css — design-token contract", () => {
     const missing = required.filter((t) => !declared.has(t))
     expect(missing).toEqual([])
   })
+
+  it("stylesheets do not mention private primitive tokens outside index.css's :root (role-layer gate, CSS side)", () => {
+    // :root is where the ladder is declared and where the role-token
+    // aliases live; everything else — index.css rule bodies and any other
+    // stylesheet under src/ — must go through the role tokens.  Identifier
+    // scan, same as the ts/tsx side.
+    const offenders: string[] = []
+    const { start, end } = findRootBlockRange(CSS_CODE)
+    for (const hit of findPrivatePrimitiveMentions(CSS_CODE.slice(0, start) + CSS_CODE.slice(end))) {
+      // Line numbers are meaningless on the spliced text; name the region.
+      offenders.push(`  index.css (outside :root)  ${hit.match}`)
+    }
+    for (const file of collectStylesheets(SRC_ROOT)) {
+      if (path.resolve(file) === CSS_PATH) continue
+      const rel = path.relative(SRC_ROOT, file).split(path.sep).join(path.posix.sep)
+      for (const hit of findPrivatePrimitiveMentions(stripComments(readFileSync(file, "utf8")))) {
+        offenders.push(`  ${rel}:${hit.line}  ${hit.match}`)
+      }
+    }
+    if (offenders.length > 0) {
+      throw new Error(
+        `Found ${offenders.length} mention(s) of private primitive tokens outside index.css's :root. ` +
+          `Reference the role token that aliases the primitive instead:\n` +
+          offenders.join("\n"),
+      )
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it("success role tokens alias their expected primitives (behaviour-preservation pin)", () => {
+    // The role layer is a pure re-labelling: each role token must resolve
+    // to exactly the primitive its call sites rendered with before the
+    // migration.  This map IS the review surface for shade changes — a
+    // retune must edit it, visibly.  (The near-miss this pins against: a
+    // draft of this PR silently normalised three banner shades and broke
+    // intra-component tone parity.)
+    const expected: Record<string, string> = {
+      "--trace-added-text": "var(--color-added, var(--success-hover))",
+      "--trace-added-bg": "var(--success-soft-mid)",
+      "--trace-chip-matched-text": "var(--success-hover)",
+      "--trace-chip-matched-bg": "var(--success-soft-mid)",
+      "--delta-positive-text": "var(--success-hover)",
+      "--flash-success-text": "var(--success-hover)",
+      "--banner-success-bg": "var(--success-soft)",
+      "--banner-success-border": "var(--success-border)",
+      "--banner-success-text": "var(--success)",
+      "--banner-success-data": "var(--success-hover)",
+      "--banner-success-action": "var(--success-hover)",
+      "--editor-status-success-bg": "var(--success-soft-subtle)",
+      "--editor-status-success-border": "var(--success-border)",
+      "--editor-status-success-text": "var(--success)",
+      "--train-summary-success-bg": "var(--success-soft-subtle)",
+      "--train-summary-success-border": "var(--success-soft-strong)",
+      "--train-summary-success-text": "var(--success)",
+      "--train-complete-bg": "var(--success-soft-faint)",
+      "--train-complete-border": "var(--success-border)",
+      "--train-complete-text": "var(--success)",
+      "--add-pill-text": "var(--success)",
+      "--add-pill-border": "var(--success-border)",
+      "--add-pill-bg": "var(--success-soft)",
+      "--column-confirm-text": "var(--success)",
+      "--column-confirm-border": "var(--success-border)",
+      "--column-origin-manual-text": "var(--success)",
+      "--column-origin-manual-bg": "var(--success-soft)",
+      "--cache-ready-text": "var(--success)",
+      "--cache-ready-border": "var(--success-border-strong)",
+      "--cache-ready-bg": "var(--success-soft)",
+      "--branch-restore-text": "var(--success)",
+      "--branch-restore-hover-bg": "var(--success-soft)",
+      "--diff-added-soft": "var(--success-soft)",
+    }
+    const declared = findTokenDeclarationValues(CSS_CODE)
+    const mismatches = Object.entries(expected)
+      .filter(([name, value]) => declared.get(name) !== value)
+      .map(([name, value]) => `  ${name}: expected "${value}", declared "${declared.get(name) ?? "(missing)"}"`)
+    expect(mismatches).toEqual([])
+  })
 })
 
 describe("Tailwind-provided tokens", () => {
@@ -870,6 +1034,36 @@ describe("ts/tsx source — design-token contract", () => {
       findVarRefs(stripComments(readFileSync(f, "utf8"))).some((r) => r.name === "--font-data"),
     )
     expect(referenced, "no live ts/tsx source references var(--font-data)").toBe(true)
+  })
+
+  it("live source does not mention private primitive tokens (role-layer gate)", () => {
+    // Without this rule the "private primitives" comment in index.css is
+    // prose, not a contract: the first `var(--success-soft)` written at a
+    // call site would pass the resolution rule above (the token IS
+    // declared) and quietly re-open direct ladder access.  The scan
+    // matches the token IDENTIFIERS themselves, not parsed var() calls,
+    // so it also catches Tailwind v4 arbitrary-property shorthand
+    // (`bg-(--success-soft)`), template-interpolated names whose static
+    // prefix is a ladder step (`var(--success-soft-${tier})`), and
+    // fallback-carrying refs — routing through the role token is the
+    // point, not resolvability.
+    const offenders: string[] = []
+    for (const file of collectSourceFiles(SRC_ROOT)) {
+      const text = stripComments(readFileSync(file, "utf8"))
+      for (const hit of findPrivatePrimitiveMentions(text)) {
+        const rel = path.relative(SRC_ROOT, file).split(path.sep).join(path.posix.sep)
+        offenders.push(`  ${rel}:${hit.line}  ${hit.match}`)
+      }
+    }
+    if (offenders.length > 0) {
+      throw new Error(
+        `Found ${offenders.length} mention(s) of private primitive tokens in ts/tsx source. ` +
+          `Reference the index.css role token that aliases the primitive (or add a new role ` +
+          `token there) instead of the ladder step:\n` +
+          offenders.join("\n"),
+      )
+    }
+    expect(offenders).toEqual([])
   })
 
   it("skips template-interpolated token names (dynamic refs like var(--diff-${status}))", () => {
