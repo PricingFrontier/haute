@@ -11,7 +11,7 @@ vi.mock("../../api/client", () => ({
   retryGitStorageSync: vi.fn(),
 }))
 
-import useGitStore from "../useGitStore"
+import useGitStore, { resetGitStatusRequestForTests } from "../useGitStore"
 import {
   acknowledgeGitBind,
   bindGitStorage,
@@ -43,8 +43,10 @@ describe("useGitStore", () => {
       branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
     })
     vi.clearAllMocks()
+    resetGitStatusRequestForTests()
   })
   afterEach(() => {
+    resetGitStatusRequestForTests()
     useGitStore.setState({
       status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
       branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
@@ -77,6 +79,80 @@ describe("useGitStore", () => {
     expect(getWorkingBranch).toHaveBeenCalledOnce()
     resolve(READY)
     await expect(Promise.all([first, second])).resolves.toEqual([READY, READY])
+  })
+
+  it("a request settling after a single-flight reset neither publishes state nor clobbers the newer request", async () => {
+    // First load is detached mid-flight (what a test's beforeEach reset does).
+    let resolveFirst!: (value: GitWorkingBranchResponse) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((done) => { resolveFirst = done }),
+    )
+    const first = useGitStore.getState().loadStatus()
+    resetGitStatusRequestForTests()
+
+    // Second load starts a genuinely new request in the freed slot.
+    let resolveSecond!: (value: GitWorkingBranchResponse) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((done) => { resolveSecond = done }),
+    )
+    const second = useGitStore.getState().loadStatus()
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+
+    // The detached request settles late: no state write, and the newer
+    // request keeps its single-flight slot (a third call still coalesces
+    // instead of spawning a duplicate fetch).
+    resolveFirst({ ...READY, working_branch: "stale" })
+    await first
+    expect(useGitStore.getState().status).toBeNull()
+    expect(useGitStore.getState().loadStatus()).toBe(second)
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+
+    resolveSecond(READY)
+    await expect(second).resolves.toEqual(READY)
+    expect(useGitStore.getState().status).toEqual(READY)
+  })
+
+  it("a detached request rejecting cannot write an error over the newer request's state", async () => {
+    let rejectFirst!: (error: Error) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((_done, fail) => { rejectFirst = fail }),
+    )
+    const first = useGitStore.getState().loadStatus()
+    resetGitStatusRequestForTests()
+
+    let resolveSecond!: (value: GitWorkingBranchResponse) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((done) => { resolveSecond = done }),
+    )
+    const second = useGitStore.getState().loadStatus()
+
+    rejectFirst(new Error("stale failure"))
+    await expect(first).resolves.toBeNull()
+    expect(useGitStore.getState().statusError).toBeNull()
+    expect(useGitStore.getState().loadStatus()).toBe(second)
+
+    resolveSecond(READY)
+    await expect(second).resolves.toEqual(READY)
+    expect(useGitStore.getState().statusError).toBeNull()
+  })
+
+  it("a request detached while resolving its error message does not publish the error", async () => {
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      Promise.reject(new Error("boom")),
+    )
+    const first = useGitStore.getState().loadStatus()
+    // Two microtask ticks let the rejection reach the catch handler, which
+    // passes its first identity check and suspends at the dynamic gitError
+    // import; the reset then detaches the request before it resumes. (If an
+    // engine drains differently the reset simply lands before the handler's
+    // first check instead — the assertions hold on either path.)
+    await Promise.resolve()
+    await Promise.resolve()
+    resetGitStatusRequestForTests()
+
+    await expect(first).resolves.toBeNull()
+    expect(useGitStore.getState().statusError).toBeNull()
+    expect(useGitStore.getState().loading).toBe(true)
   })
 
   it("de-duplicates concurrent branch loads and publishes the shared listing", async () => {
@@ -172,6 +248,7 @@ describe("useGitStore durable-storage actions", () => {
   }
 
   beforeEach(() => {
+    resetGitStatusRequestForTests()
     useGitStore.setState({ status: null, loading: false, statusError: null })
     vi.clearAllMocks()
   })
@@ -261,6 +338,7 @@ describe("useGitStore reopens the storage dialog when a background bind fails", 
   })
 
   beforeEach(() => {
+    resetGitStatusRequestForTests()
     useGitStore.setState({ status: null, modal: null, loading: false, statusError: null })
     vi.clearAllMocks()
   })

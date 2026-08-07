@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import { clearGitPanelCaches } from "../gitPanelCache"
-import useGitStore from "../../stores/useGitStore"
+import useGitStore, { resetGitStatusRequestForTests } from "../../stores/useGitStore"
 import type { GitWorkingBranchResponse } from "../../api/types"
 
 // Perf behaviours of the Version Control panel:
@@ -127,8 +127,11 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     clearGitPanelCaches()
+    // (e)/(e2) hold getWorkingBranch open forever; without this the stuck
+    // single-flight starves loadStatus() in every test shuffled after them.
+    resetGitStatusRequestForTests()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
-    useGitStore.setState({ status: null, loading: false, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    useGitStore.setState({ status: null, loading: false, statusError: null, branches: [], branchesLoaded: false, branchesLoading: false, branchesError: null, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockSetWorkingBranch.mockResolvedValue({})
     // Fresh, deep-equal object per call: proves the short-circuit works on
@@ -141,7 +144,10 @@ describe("GitPanel session cache + unchanged-payload short-circuit", () => {
     mockGetGitGraph.mockImplementation(() => Promise.resolve(structuredClone(graphTwoBranch)))
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    resetGitStatusRequestForTests()
+  })
 
   it("(a) a byte-identical refresh applies no state: rail layout untouched, row nodes stable", async () => {
     render(<GitPanel {...defaultProps} />)

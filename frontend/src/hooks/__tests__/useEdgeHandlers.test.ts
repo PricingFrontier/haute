@@ -70,6 +70,12 @@ function connectionEndState({
 const mouseUpEvent = { clientX: 200, clientY: 150 } as MouseEvent
 
 describe("useEdgeHandlers", () => {
+  beforeEach(() => {
+    // Toast assertions read the global store; without this, error toasts from
+    // whichever tests shuffle ran earlier leak into exact-match expectations.
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
+  })
+
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
@@ -452,7 +458,6 @@ describe("useEdgeHandlers", () => {
   })
 
   it("onConnectEnd honours React Flow rejection after reverse-direction validation passes", () => {
-    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     const params = makeParams()
     params.validateConnection = vi.fn(() => ({ ok: true as const }))
     const { result } = renderHook(() => useEdgeHandlers(params))
