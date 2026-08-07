@@ -139,17 +139,35 @@ class IsolatedWorkerRemoteError(IsolatedWorkerError):
 
 
 class IsolatedWorkerCrashedError(IsolatedWorkerError):
-    """Raised when the child exits without returning a result payload."""
+    """Raised when the child exits without returning a result payload.
+
+    The message is parent-authored — a crashed child left no payload to
+    curate — so it is written directly for the user rather than in
+    supervisor jargon. The exit code stays on the exception (and in the
+    job's ``worker_exitcode`` field) for diagnostics.
+    """
 
     def __init__(self, *, exitcode: int | None, memory_limit_bytes: int | None) -> None:
-        terminal_reason: WorkerTerminalReason = (
-            "memory_limited"
-            if _exitcode_looks_memory_limited(exitcode, memory_limit_bytes)
-            else "error"
-        )
+        memory_limited = _exitcode_looks_memory_limited(exitcode, memory_limit_bytes)
+        exit_detail = "" if exitcode is None else f" (exit code {exitcode})"
+        if memory_limited:
+            # The exit-code heuristic is indicative, not proof (a native abort
+            # or an external kill can look the same) — the wording hedges
+            # rather than asserting an out-of-memory condition as fact.
+            message = (
+                f"The background process was stopped and may have run out of memory"
+                f"{exit_detail}. Reduce the data size, or run on a server with more "
+                "memory, then try again."
+            )
+        else:
+            message = (
+                "The background process stopped unexpectedly before returning a result"
+                f"{exit_detail}. This usually means it crashed or was stopped by the "
+                "operating system — check the server logs, then try again."
+            )
         super().__init__(
-            f"Isolated worker exited without a result payload (exitcode={exitcode!r})",
-            terminal_reason=terminal_reason,
+            message,
+            terminal_reason="memory_limited" if memory_limited else "error",
         )
         self.exitcode = exitcode
 

@@ -190,7 +190,14 @@ def _memory_limit_http_exception(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
 ) -> HTTPException:
     detail = exc.to_payload()
-    detail.setdefault("message", str(exc))
+    if isinstance(exc, ExecutionMemoryLimitExceededError):
+        # str(exc) names the internal operation and raw byte counts; author
+        # the public message from the structured attributes instead. Assigned
+        # unconditionally: a payload-carried "message" must not win over the
+        # curated wording.
+        detail["message"] = _memory_limit_user_message(exc, operation_noun="Training")
+    else:
+        detail.setdefault("message", str(exc))
     return HTTPException(status_code=507, detail=detail)
 
 
@@ -581,46 +588,122 @@ def _find_modelling_node(graph: PipelineGraph, node_id: str) -> GraphNode:
     return find_typed_node(graph, node_id, NodeType.MODELLING, "modelling")
 
 
-def _classified_friendly_error(exc: Exception) -> tuple[str, bool]:
-    """Translate common training exceptions; flag whether the shape is recognised.
+def _format_byte_size(size_bytes: int) -> str:
+    """Render a byte count in human units for user-facing messages."""
+    value = float(size_bytes)
+    unit = "bytes"
+    for larger_unit in ("KiB", "MiB", "GiB", "TiB"):
+        if abs(value) < 1024.0:
+            break
+        value /= 1024.0
+        unit = larger_unit
+    return f"{size_bytes} bytes" if unit == "bytes" else f"{value:.1f} {unit}"
 
-    The boolean is the curation signal for the worker boundary: ``True``
-    means the message is a deliberately shaped, haute-authored surface safe
-    to promote verbatim as the job's terminal message; ``False`` means the
-    fallback branch fired and the message body is an arbitrary third-party
-    exception's text, which keeps the typed wrapper surface instead.
+
+def _training_context_phrase(job_kwargs: Mapping[str, Any] | None) -> str:
+    """Name the failing fit's target and objective from bounded config values.
+
+    Used in failure messages so the user learns *which* fit failed without the
+    message quoting anything from the data or the filesystem.
     """
-    msg = str(exc)
+    if not isinstance(job_kwargs, Mapping):
+        return "the model"
+    target = job_kwargs.get("target")
+    params = job_kwargs.get("params")
+    objective = (
+        job_kwargs.get("loss_function")
+        or (params.get("family") if isinstance(params, Mapping) else None)
+        # Raw node configs (the preparation path) carry the GLM family at the
+        # top level rather than under built params.
+        or job_kwargs.get("family")
+    )
+    if not (isinstance(target, str) and target):
+        return "the model"
+    if isinstance(objective, str) and objective:
+        return f"target {target!r} (objective {objective!r})"
+    return f"target {target!r}"
 
+
+def _friendly_error(
+    exc: Exception,
+    *,
+    operation_noun: str = "Training",
+    context: str = "the model",
+) -> str:
+    """Translate a training-path exception into a curated, actionable message.
+
+    Every returned shape is haute-authored and safe to promote verbatim as the
+    job's terminal message; the raw exception text stays in the diagnostic
+    ``error`` field and the traceback. Apart from the `ValueError` validation
+    channel, no shape interpolates a third-party message body (which may carry
+    internal paths or secrets) — third-party failures name the exception type
+    and the target/objective context only, and they stay a plain system
+    ``error`` — a system fault is never relabelled as a ``contract_error``.
+    """
     if isinstance(exc, ValueError):
         # ValueError is the package's deliberate validation channel: gates,
-        # column checks, and the metric-stage wrap all speak through it.
-        return msg, True
-
-    if isinstance(exc, FileNotFoundError):
-        return f"File not found: {msg}", True
+        # column checks, and the metric-stage wrap all speak through it. This
+        # is provenance by convention, not enforcement — a dependency's
+        # ValueError rides the same channel.
+        return str(exc)
 
     exc_type = type(exc).__name__
-    if "CatBoost" in exc_type or "catboost" in msg.lower():
+
+    if isinstance(exc, FileNotFoundError):
+        # At the fit stage the missing path is typically an internal staged
+        # asset, so the message does not quote it; the path stays in the
+        # diagnostic fields and traceback.
+        return (
+            f"{operation_noun} could not find a file it needs. The full error, "
+            "including the path, is recorded in the job's error details."
+        )
+
+    # Keyed on the exception TYPE: a non-CatBoost error that merely mentions
+    # "catboost" in its text must not take a CatBoost-specific shape.
+    if "CatBoost" in exc_type:
+        msg = str(exc)
         if "nan" in msg.lower() or "inf" in msg.lower():
             return (
-                "Training failed: the data contains NaN or infinite values. "
-                "Add a polars node upstream to handle missing values "
+                f"{operation_noun} failed: the data contains NaN or infinite "
+                "values. Add a polars node upstream to handle missing values "
                 "(e.g. .fill_null() or .drop_nulls()) before training."
-            ), True
+            )
         if "feature" in msg.lower() and "number" in msg.lower():
-            return f"Training failed: feature mismatch. {msg}", True
-        return f"CatBoost error: {msg}", True
+            return (
+                f"{operation_noun} failed: feature mismatch — the data's "
+                "columns do not match what the model expects. The full error "
+                "is recorded in the job's error details."
+            )
+        return (
+            f"{operation_noun} of {context} failed with a CatBoost error "
+            f"({exc_type}). The full error is recorded in the job's error details."
+        )
 
     if isinstance(exc, OSError):
-        return f"Could not save model file: {msg}", True
+        # Surface only an OS-authored reason: exc.strerror is
+        # constructor-supplied (a dependency can put arbitrary text there), so
+        # the reason is re-derived from the numeric errno.
+        reason: str | None = None
+        if isinstance(exc.errno, int):
+            try:
+                reason = os.strerror(exc.errno)
+            except (ValueError, OverflowError):
+                reason = None
+        if reason:
+            return (
+                f"{operation_noun} could not save its output files ({reason}). "
+                "Check the server's disk space and file permissions, then try again."
+            )
+        return (
+            f"{operation_noun} could not save its output files because of a "
+            "file-system error. Check the server's disk space and file "
+            "permissions, then try again."
+        )
 
-    return f"Training failed ({exc_type}): {msg}", False
-
-
-def _friendly_error(exc: Exception) -> str:
-    """Translate common training exceptions into actionable messages."""
-    return _classified_friendly_error(exc)[0]
+    return (
+        f"{operation_noun} of {context} failed with an unexpected internal error "
+        f"({exc_type}). The full error is recorded in the job's error details."
+    )
 
 
 def _assert_json_finite(value: Any, path: str = "result") -> None:
@@ -729,8 +812,9 @@ def _worker_failure_payload(
     payload_fields = dict(fields) if fields is not None else {"error": detail}
     # Only deliberately curated messages are marked user-facing (haute-authored
     # wording: the gates, the metric wrap, ValueError validation messages, the
-    # recognised _classified_friendly_error shapes). An unrecognised
-    # third-party exception's text stays behind the typed
+    # _friendly_error shapes — whose fallback names only the target/objective
+    # context and exception type, never the third-party message body). Raw
+    # third-party text stays behind the typed
     # "Isolated worker raised {type}: {message}" wrapper.
     if user_facing:
         payload_fields.setdefault(WORKER_USER_MESSAGE_FIELD, detail)
@@ -743,10 +827,51 @@ def _worker_failure_payload(
     )
 
 
+def _memory_limit_user_message(
+    exc: ExecutionMemoryLimitExceededError,
+    *,
+    operation_noun: str,
+) -> str:
+    """Author the user-facing memory-limit message from structured attributes.
+
+    ``str(exc)`` names the internal operation and raw byte counts; that stays
+    in the diagnostic ``error`` field. This shape says what ran out of memory
+    and what to do about it.
+    """
+    if exc.reason == "memory_sampler_unavailable":
+        return (
+            f"{operation_noun} was stopped because the server could no longer "
+            "measure its memory use. Try again; if this keeps happening, "
+            "restart the app."
+        )
+    used = exc.rss_bytes
+    allowed = exc.limit_bytes
+    if exc.reason == "process_rss_limit_exceeded" and exc.rss_limit_bytes is not None:
+        allowed = exc.rss_limit_bytes
+    elif used is not None and exc.baseline_rss_bytes is not None:
+        # Sampler noise can put the observed RSS below the admission baseline;
+        # never render a negative usage.
+        used = max(used - exc.baseline_rss_bytes, 0)
+    # This runs on a failure path: a partially-populated exception must
+    # degrade to omitting the sizes, never crash into a TypeError that
+    # replaces the real memory error.
+    detail = (
+        ""
+        if used is None or allowed is None
+        else f" ({_format_byte_size(used)} used, {_format_byte_size(allowed)} allowed)"
+    )
+    return (
+        f"{operation_noun} needs more memory than this server allows{detail}. "
+        "Reduce the data size or the number of features, or run on a server "
+        "with more memory, then try again."
+    )
+
+
 def _known_training_worker_failure(
     exc: Exception,
     *,
     bounded_memory_prefix: str,
+    operation_noun: str = "Training",
 ) -> WorkerFailurePayload | None:
     if isinstance(exc, ExecutionCancelledError):
         # Match the preparation path's terminal message: the internal
@@ -764,6 +889,7 @@ def _known_training_worker_failure(
         return _worker_failure_payload(
             exc,
             terminal_reason="memory_limited",
+            message=_memory_limit_user_message(exc, operation_noun=operation_noun),
             fields={
                 "error": str(exc),
                 "error_detail": payload,
@@ -882,12 +1008,14 @@ def _run_training_process_job(
 ) -> WorkerResultManifest | WorkerFailurePayload:
     """Spawn entrypoint for fit, evaluation, diagnostics, and staged artifacts."""
     execution_context: ExecutionContext | None = None
+    failure_context = "the model"
     try:
         payload = _worker_request_payload(request, expected_kind="training")
         raw_kwargs = payload.get("job_kwargs")
         if not isinstance(raw_kwargs, dict):
             raise ValueError("Training worker job_kwargs must be an object")
         job_kwargs = dict(raw_kwargs)
+        failure_context = _training_context_phrase(job_kwargs)
         staged_output = runtime.staged_path("output")
         staged_output.mkdir()
         job_kwargs["output_dir"] = str(staged_output)
@@ -1028,16 +1156,17 @@ def _run_training_process_job(
         known = _known_training_worker_failure(
             exc,
             bounded_memory_prefix="Training cannot run in bounded streaming mode",
+            operation_noun="Training",
         )
         if known is not None:
             return _with_worker_failure_metrics(known, execution_context)
-        friendly, recognised = _classified_friendly_error(exc)
         return _with_worker_failure_metrics(
             _worker_failure_payload(
                 exc,
                 terminal_reason="error",
-                message=friendly,
-                user_facing=recognised,
+                message=_friendly_error(exc, context=failure_context),
+                fields={"error": str(exc) or type(exc).__name__},
+                user_facing=True,
             ),
             execution_context,
         )
@@ -1049,6 +1178,7 @@ def _run_dispersion_process_job(
 ) -> WorkerResultManifest | WorkerFailurePayload:
     """Spawn entrypoint for the bounded GLM profile-likelihood search."""
     execution_context: ExecutionContext | None = None
+    failure_context = "the model"
     try:
         payload = _worker_request_payload(request, expected_kind="dispersion")
         raw_kwargs = payload.get("job_kwargs")
@@ -1071,6 +1201,7 @@ def _run_dispersion_process_job(
             operation="dispersion_estimate",
         )
         job_kwargs = dict(raw_kwargs)
+        failure_context = _training_context_phrase(job_kwargs)
         job = TrainingJob(**job_kwargs)
         train_params = job_kwargs["params"]
 
@@ -1162,16 +1293,21 @@ def _run_dispersion_process_job(
         known = _known_training_worker_failure(
             exc,
             bounded_memory_prefix=("Dispersion estimation cannot run in bounded streaming mode"),
+            operation_noun="Dispersion estimation",
         )
         if known is not None:
             return _with_worker_failure_metrics(known, execution_context)
-        friendly, recognised = _classified_friendly_error(exc)
         return _with_worker_failure_metrics(
             _worker_failure_payload(
                 exc,
                 terminal_reason="error",
-                message=friendly,
-                user_facing=recognised,
+                message=_friendly_error(
+                    exc,
+                    operation_noun="Dispersion estimation",
+                    context=failure_context,
+                ),
+                fields={"error": str(exc) or type(exc).__name__},
+                user_facing=True,
             ),
             execution_context,
         )
@@ -2002,7 +2138,10 @@ class TrainService:
         except Exception as exc:
             logger.exception("training_preparation_failed", job_id=job_id)
             self._lifecycle.transition(
-                job_id, to="error", message=_friendly_error(exc), fields={"error": str(exc)}
+                job_id,
+                to="error",
+                message=_friendly_error(exc, context=_training_context_phrase(config)),
+                fields={"error": str(exc)},
             )
         finally:
             if not worker_owns_cleanup:

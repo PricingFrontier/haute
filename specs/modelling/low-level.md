@@ -593,25 +593,47 @@ rows/features) and retry.
   (`memory_limited` for 507, `contract_error` for other 4xx, `error` otherwise) before
   re-raising, so the job store and the HTTP response can never disagree about outcome.
 - **Generic `Exception`** catch-all in each process entrypoint maps to an `error`
-  failure payload with the message produced by `_friendly_error(exc)` — a heuristic
-  translator that
-  returns `ValueError` messages verbatim, prefixes `FileNotFoundError`, special-cases
-  CatBoost-flavoured exceptions (NaN/Inf hint, feature-count mismatch), prefixes
-  `OSError` as a model-save failure, and otherwise falls back to
-  `f"Training failed ({exc_type}): {msg}"`.
+  failure payload with the message produced by
+  `_friendly_error(exc, operation_noun=..., context=...)` — a heuristic
+  translator whose every shape is haute-authored, and which — apart from the
+  `ValueError` channel — never interpolates a third-party message body:
+  `ValueError` messages verbatim (the validation channel; provenance by
+  convention, not enforcement — a dependency's `ValueError` rides the same
+  channel, an accepted residual of the #159 design), `FileNotFoundError` as a
+  path-free could-not-find-a-file shape (a fit-stage missing file is typically
+  an internal staged asset, so this deliberately narrows #159's
+  path-as-actionable ruling — the path stays in the diagnostic fields and
+  traceback), CatBoost failures keyed on the exception TYPE name (never a
+  message substring, so a non-CatBoost error that mentions catboost in its text
+  cannot take these shapes) with a NaN/Inf hint, a body-free feature-mismatch
+  shape, and a body-free generic shape naming the type and training context,
+  `OSError` rendered as a save failure whose reason is re-derived from the
+  numeric errno via `os.strerror` (`exc.strerror` is constructor-supplied and
+  untrusted; no errno → a generic file-system-error wording) — never the
+  internal temp/staging path embedded in `str(exc)` — and an unexpected-error
+  fallback naming the operation, the target/objective context, and the exception
+  type. `context` is built by
+  `_training_context_phrase(job_kwargs)` (`target 'x' (objective 'y')`, falling
+  back to `"the model"`); the entrypoints capture it right after parsing
+  `job_kwargs` so a fit-stage failure names what was being trained. The fallback
+  stays a plain system `error` — a system fault is never relabelled as
+  `contract_error`.
 - **Curated failure surfacing** — `_worker_failure_payload` takes an explicit
   `user_facing` decision from every call site and stamps the payload's
   `user_message` field (`_worker_protocol.WORKER_USER_MESSAGE_FIELD`) only for
   deliberately curated, haute-authored wording: the cancelled/memory-limit/
-  contract-error/bounded-memory branches of `_known_training_worker_failure`, the
-  `ValueError` validation channel (which carries the gate and metric-wrap
-  messages), and the recognised shapes of `_classified_friendly_error`
-  (`_friendly_error`'s classifying twin). The unrecognised fallback
-  (`"Training failed ({exc_type}): {msg}"` — an arbitrary third-party
-  exception's text) and raw `MemoryError` text are NOT stamped and keep the
-  typed "Isolated worker raised {type}: {message}" wrapper surface. For stamped
-  failures the supervisor surfaces the field verbatim as the job's terminal
-  message; the wrapper text is retained in the diagnostic `error` field. See
+  contract-error/bounded-memory branches of `_known_training_worker_failure`
+  (the memory-limit branch authors its message from the exception's structured
+  attributes via `_memory_limit_user_message` — human-readable used/allowed
+  sizes plus a call to action, never the internal operation name, which stays
+  in the diagnostic `error` field), the `ValueError` validation channel (which
+  carries the gate and metric-wrap messages), and every `_friendly_error` shape
+  (all curated as above, so the entrypoints pass `user_facing=True` and thread
+  the raw `str(exc)` into `fields["error"]` explicitly). Raw `MemoryError` text
+  is NOT stamped and keeps the typed "Isolated worker raised {type}: {message}"
+  wrapper surface. For stamped failures the supervisor surfaces the field
+  verbatim as the job's terminal message; the wrapper text is retained in the
+  diagnostic `error` field. See
   [background-jobs](../background-jobs/low-level.md) for the supervisor side of
   the contract.
 - **`_record_diag_error`** is the single call site that converts an optional-diagnostic

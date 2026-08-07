@@ -982,11 +982,14 @@ class TestFriendlyError:
         exc = ValueError("Target column 'z' not found")
         assert _friendly_error(exc) == "Target column 'z' not found"
 
-    def test_file_not_found(self):
-        exc = FileNotFoundError("/data/missing.parquet")
+    def test_file_not_found_does_not_quote_the_path(self):
+        """A fit-stage missing file is typically an internal staged asset —
+        the path stays diagnostic, never in the terminal message."""
+        exc = FileNotFoundError(2, "No such file or directory", "/data/missing.parquet")
         result = _friendly_error(exc)
-        assert result.startswith("File not found:")
-        assert "missing.parquet" in result
+        assert "could not find a file it needs" in result
+        assert "missing.parquet" not in result
+        assert "/data" not in result
 
     def test_catboost_nan(self):
         """CatBoost NaN/Inf errors should recommend upstream transforms."""
@@ -1000,24 +1003,69 @@ class TestFriendlyError:
         exc = type("CatBoostError", (Exception,), {})("feature number mismatch: expected 10 got 8")
         result = _friendly_error(exc)
         assert "feature mismatch" in result.lower()
+        # The third-party body is never interpolated.
+        assert "expected 10" not in result
 
     def test_catboost_generic(self):
-        exc = type("CatBoostError", (Exception,), {})("internal pool error")
+        """The generic CatBoost shape names the type, never the body."""
+        exc = type("CatBoostError", (Exception,), {})("internal pool error at /tmp/pool")
         result = _friendly_error(exc)
-        assert result.startswith("CatBoost error:")
-        assert "internal pool error" in result
+        assert "CatBoostError" in result
+        assert "internal pool error" not in result
+        assert "/tmp" not in result
+
+    def test_catboost_generic_names_training_context(self):
+        exc = type("CatBoostError", (Exception,), {})("internal pool error")
+        result = _friendly_error(exc, context="target 'sev' (objective 'RMSE')")
+        assert "target 'sev' (objective 'RMSE')" in result
+        assert "internal pool error" not in result
+
+    def test_catboost_in_message_only_is_not_classified_catboost(self):
+        """Classification keys on the exception TYPE — a non-CatBoost error
+        that merely mentions catboost in its text takes the generic fallback
+        and never embeds its body."""
+        exc = RuntimeError("catboost cache failed at /var/lib/haute/token=abc")
+        result = _friendly_error(exc)
+        assert "RuntimeError" in result
+        assert "CatBoost error" not in result
+        assert "/var/lib" not in result
+        assert "token" not in result
 
     def test_os_error(self):
-        exc = OSError("Permission denied: /models/model.cbm")
+        """The errno-derived OS reason is surfaced; the staging path is not."""
+        exc = OSError(13, "Permission denied", "/models/model.cbm")
         result = _friendly_error(exc)
-        assert result.startswith("Could not save model file:")
+        assert result.startswith("Training could not save its output files")
         assert "Permission denied" in result
+        assert "/models" not in result
 
-    def test_fallback_includes_type(self):
+    def test_os_error_strerror_is_rederived_from_errno(self):
+        """OSError.strerror is constructor-supplied — a dependency can put
+        arbitrary text there. The reason comes from os.strerror(errno)."""
+        exc = OSError(5, "failed opening /tmp/secret credential=xyz")
+        result = _friendly_error(exc)
+        assert "/tmp/secret" not in result
+        assert "credential" not in result
+        assert "Input/output error" in result
+
+    def test_os_error_without_errno_uses_generic_reason(self):
+        exc = OSError("raw single-argument message")
+        result = _friendly_error(exc)
+        assert "file-system error" in result
+        assert "raw single-argument message" not in result
+        assert "OSError" not in result
+
+    def test_fallback_includes_type_but_not_third_party_text(self):
         exc = RuntimeError("something unexpected")
         result = _friendly_error(exc)
         assert "RuntimeError" in result
-        assert "something unexpected" in result
+        assert "something unexpected" not in result
+        assert "error details" in result
+
+    def test_fallback_names_training_context(self):
+        exc = RuntimeError("boom")
+        result = _friendly_error(exc, context="target 'freq' (objective 'Poisson')")
+        assert result.startswith("Training of target 'freq' (objective 'Poisson') failed")
 
     def test_catboost_inf_message(self):
         """'inf' in message also triggers NaN/Inf advice."""
@@ -1036,13 +1084,15 @@ class TestFriendlyError:
         result = _friendly_error(exc)
         assert ".fill_null()" in result or ".drop_nulls()" in result
 
-    def test_catboost_feature_mismatch_includes_original_message(self):
+    def test_catboost_feature_mismatch_excludes_original_message(self):
+        """Flipped from the pre-curation pin: the CatBoost body is never
+        interpolated, even in the feature-mismatch shape."""
         exc = type("CatBoostError", (Exception,), {})(
             "feature number mismatch: expected 5 but got 3"
         )
         result = _friendly_error(exc)
         assert "feature mismatch" in result.lower()
-        assert "expected 5 but got 3" in result
+        assert "expected 5 but got 3" not in result
 
 
 class TestClampRowLimit:
@@ -1496,7 +1546,11 @@ class TestBackgroundThreadErrors:
             assert "Invalid target column" in status["message"]
 
     def test_background_runtime_error(self, client, training_data, monkeypatch):
-        """RuntimeError in TrainingJob.run() is translated via _friendly_error."""
+        """RuntimeError in TrainingJob.run() surfaces the curated fallback.
+
+        The terminal message names the exception type and training context but
+        never the third-party message body; the raw text stays diagnostic.
+        """
         graph = _make_modelling_graph(training_data)
 
         class FailingJob:
@@ -1514,10 +1568,20 @@ class TestBackgroundThreadErrors:
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
-            assert "CUDA out of memory" in status["message"]
+            # The curated fallback is promoted verbatim: the entrypoint must
+            # stamp user_message, or the wrapper prefix would appear here.
+            assert status["message"].startswith("Training of ")
+            assert "RuntimeError" in status["message"]
+            assert "CUDA out of memory" not in status["message"]
+            # The raw third-party text stays in the server-side job record
+            # (the public status response whitelist never exposed it).
+            from haute.routes.modelling import _store
+
+            job = _store.require_job(data["job_id"])
+            assert "CUDA out of memory" in job["worker_remote_traceback"]
 
     def test_background_generic_exception(self, client, training_data, monkeypatch):
-        """Generic exception in TrainingJob.run() includes exception type."""
+        """The curated fallback names the exception type and the fit's target."""
         graph = _make_modelling_graph(training_data)
 
         class FailingJob:
@@ -1535,7 +1599,14 @@ class TestBackgroundThreadErrors:
             launched[0].join_and_raise(timeout=10)
             status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
             assert status["status"] == "error"
-            assert "unexpected crash" in status["message"]
+            assert status["message"].startswith("Training of ")
+            assert "RuntimeError" in status["message"]
+            assert "target" in status["message"]
+            assert "unexpected crash" not in status["message"]
+            from haute.routes.modelling import _store
+
+            job = _store.require_job(data["job_id"])
+            assert "unexpected crash" in job["worker_remote_traceback"]
 
     def test_ram_warning_propagated(self, client, training_data, monkeypatch):
         """RAM warning from estimate should appear in job status."""
@@ -2320,6 +2391,31 @@ class TestDispersionErrorPaths:
         )
         assert thread is not None
         return job_id, tmp_parquet, thread
+
+    def test_worker_fallback_stamps_curated_message(self, tmp_path: Path):
+        """Entrypoint-level stamp pin: an unexpected in-worker exception must
+        surface the curated dispersion fallback verbatim (no wrapper prefix,
+        no third-party body) — removing the entrypoint's user_message stamp
+        turns the terminal message into the typed wrapper and fails here."""
+        store, service = self._service()
+
+        class ExplodingJob:
+            def __init__(self, **_kwargs):
+                pass
+
+            def _prepare_data(self, *_args, **_kwargs):
+                raise RuntimeError("librs panic at /opt/rustystats/cache")
+
+        with patch("haute.modelling.TrainingJob", ExplodingJob):
+            job_id, _tmp_parquet, thread = self._launch(service, store, tmp_path)
+            thread.join_and_raise(timeout=10)
+
+        job = store.require_job(job_id)
+        assert job["status"] == "error"
+        assert job["message"].startswith("Dispersion estimation of ")
+        assert "RuntimeError" in job["message"]
+        assert "librs panic" not in job["message"]
+        assert "/opt/rustystats" not in job["message"]
 
     def test_start_maps_execute_http_error_to_contract_error(self, nb_training_data):
         from haute.schemas import DispersionEstimateRequest
