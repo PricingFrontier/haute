@@ -1,14 +1,16 @@
-"""Target/task pairing gate and worker-boundary message contract.
+"""Target/task/metric pairing gate and worker-boundary message contract.
 
 Pins the fix for the motivating low-context error surface: a continuous
-target under ``task="classification"`` used to train to the metric stage and
-surface sklearn's bare "ValueError: continuous format is not supported" with
-no target column, no task, and no call to action. The gate
-(`haute.modelling._target_check.training_target_task_issue`) now rejects the
-pairing before dispatch with the user-model objects named; the metric stage
-wraps any remaining library error with the same context; and the failure
-payload's ``user_message`` field carries curated wording verbatim across the
-worker boundary.
+target under ``task="classification"`` — or under objective-implied AUC/log
+loss defaults with ``task="regression"`` (e.g. a binomial family) — used to
+train to the metric stage and surface sklearn's bare "ValueError: continuous
+format is not supported" with no target column, no task, and no call to
+action. The gate (`haute.modelling._target_check.training_target_task_issue`)
+now keys on the EFFECTIVE metric set and rejects the pairing before dispatch
+with the user-model objects named; the metric stage wraps any remaining
+library error with the same context; and the failure payload's
+``user_message`` field carries curated wording verbatim across the worker
+boundary.
 """
 
 from __future__ import annotations
@@ -60,10 +62,19 @@ def _curated_failure_worker(runtime: object, request: object) -> WorkerFailurePa
     )
 
 
+_CLASSIFICATION_DEFAULT_METRICS = ["auc", "logloss"]
+_REGRESSION_DEFAULT_METRICS = ["gini", "rmse"]
+
+
 class TestTrainingTargetTaskIssue:
-    def test_regression_task_never_gates(self) -> None:
+    def test_regression_task_with_regression_metrics_never_gates(self) -> None:
         data = pl.LazyFrame({"sev": [1.5, 2.25, 3.75]})
-        assert training_target_task_issue(data, target="sev", task="regression") is None
+        assert (
+            training_target_task_issue(
+                data, target="sev", task="regression", metrics=_REGRESSION_DEFAULT_METRICS
+            )
+            is None
+        )
 
     @pytest.mark.parametrize(
         "values",
@@ -77,15 +88,27 @@ class TestTrainingTargetTaskIssue:
     )
     def test_discrete_targets_pass_classification(self, values: pl.Series) -> None:
         data = pl.LazyFrame([values])
-        assert training_target_task_issue(data, target="flag", task="classification") is None
+        assert (
+            training_target_task_issue(
+                data, target="flag", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
 
     def test_integral_float_flag_passes_classification(self) -> None:
         data = pl.LazyFrame({"flag": [0.0, 1.0, None, 1.0, float("nan")]})
-        assert training_target_task_issue(data, target="flag", task="classification") is None
+        assert (
+            training_target_task_issue(
+                data, target="flag", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
 
     def test_continuous_float_gates_classification(self) -> None:
         data = pl.LazyFrame({"sev": [123.45, 0.0, 1.0]})
-        issue = training_target_task_issue(data, target="sev", task="classification")
+        issue = training_target_task_issue(
+            data, target="sev", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+        )
         assert issue is not None
         # The message must name the user-model objects and a call to action.
         assert "'sev'" in issue
@@ -93,33 +116,127 @@ class TestTrainingTargetTaskIssue:
         assert "regression" in issue
         assert "Choose a discrete target column" in issue
 
+    def test_classification_task_gates_even_with_regression_metrics(self) -> None:
+        """The classification FIT is undefined on a continuous target — the
+        gate cannot be escaped by requesting regression metrics."""
+        data = pl.LazyFrame({"sev": [123.45, 0.0, 1.0]})
+        issue = training_target_task_issue(
+            data, target="sev", task="classification", metrics=_REGRESSION_DEFAULT_METRICS
+        )
+        assert issue is not None
+        assert "'sev'" in issue
+        assert "classification" in issue
+
+    def test_regression_task_with_classification_metrics_gates_continuous_target(self) -> None:
+        """The binomial-family bypass: objective-implied AUC/log loss under
+        ``task="regression"`` must gate pre-dispatch, naming the metrics."""
+        data = pl.LazyFrame({"prop": [0.25, 0.5, 0.75]})
+        issue = training_target_task_issue(
+            data, target="prop", task="regression", metrics=_CLASSIFICATION_DEFAULT_METRICS
+        )
+        assert issue is not None
+        assert "'prop'" in issue
+        assert "regression" in issue
+        assert "auc, logloss" in issue
+        assert "Choose a discrete target column" in issue
+        # The escape hatch for a legitimate continuous-proportion binomial
+        # fit must be named: set regression metrics explicitly.
+        assert "set the reported metrics explicitly to regression metrics" in issue
+
+    def test_metric_names_are_matched_case_insensitively(self) -> None:
+        data = pl.LazyFrame({"prop": [0.25, 0.5]})
+        issue = training_target_task_issue(data, target="prop", task="regression", metrics=["AUC"])
+        assert issue is not None
+        assert "'prop'" in issue
+        # The message names the normalised offending metric, not the raw list.
+        assert "(auc)" in issue
+
+    def test_task_is_matched_case_insensitively(self) -> None:
+        """A creatively-cased task must not skip the gate entirely."""
+        data = pl.LazyFrame({"sev": [123.45, 0.0, 1.0]})
+        issue = training_target_task_issue(
+            data, target="sev", task="Classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+        )
+        assert issue is not None
+        assert "'sev'" in issue
+
+    def test_message_names_only_the_offending_metrics(self) -> None:
+        """gini/rmse ride alongside auc in a mixed explicit list — the
+        message must indict only the discrete-label metrics."""
+        data = pl.LazyFrame({"prop": [0.25, 0.5]})
+        issue = training_target_task_issue(
+            data, target="prop", task="regression", metrics=["gini", "auc", "rmse"]
+        )
+        assert issue is not None
+        assert "(auc)" in issue
+        assert "(gini" not in issue
+
+    def test_regression_task_with_classification_metrics_passes_integral_flag(self) -> None:
+        data = pl.LazyFrame({"flag": [0.0, 1.0, None, 1.0]})
+        assert (
+            training_target_task_issue(
+                data, target="flag", task="regression", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
+
+    def test_regression_task_with_classification_metrics_defers_non_float_targets(self) -> None:
+        """On the metric-keyed branch only fractional float/decimal targets
+        gate; other dtypes stay owned by the fit's own target validation."""
+        data = pl.LazyFrame({"when": pl.Series([1, 2]).cast(pl.Date)})
+        assert (
+            training_target_task_issue(
+                data, target="when", task="regression", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
+
     def test_non_classifiable_dtype_gates_classification(self) -> None:
         data = pl.LazyFrame({"when": pl.Series([1, 2]).cast(pl.Date)})
-        issue = training_target_task_issue(data, target="when", task="classification")
+        issue = training_target_task_issue(
+            data, target="when", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+        )
         assert issue is not None
         assert "'when'" in issue
         assert "regression" in issue
 
     def test_missing_target_column_is_not_this_gates_job(self) -> None:
         data = pl.LazyFrame({"other": [1.5]})
-        assert training_target_task_issue(data, target="sev", task="classification") is None
+        assert (
+            training_target_task_issue(
+                data, target="sev", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
 
     def test_all_null_target_defers_to_the_null_count_gate(self) -> None:
         """A Null-typed column is a null-count problem, not a type problem."""
         data = pl.LazyFrame({"flag": [None, None]})
-        assert training_target_task_issue(data, target="flag", task="classification") is None
+        assert (
+            training_target_task_issue(
+                data, target="flag", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
 
     def test_integral_decimal_flag_passes_classification(self) -> None:
         data = pl.LazyFrame(
             {"flag": pl.Series([Decimal("0"), Decimal("1")], dtype=pl.Decimal(3, 0))}
         )
-        assert training_target_task_issue(data, target="flag", task="classification") is None
+        assert (
+            training_target_task_issue(
+                data, target="flag", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
 
     def test_fractional_decimal_gates_classification(self) -> None:
         data = pl.LazyFrame(
             {"sev": pl.Series([Decimal("123.45"), Decimal("6.70")], dtype=pl.Decimal(10, 2))}
         )
-        issue = training_target_task_issue(data, target="sev", task="classification")
+        issue = training_target_task_issue(
+            data, target="sev", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+        )
         assert issue is not None
         assert "'sev'" in issue
         assert "continuous values" in issue
@@ -133,7 +250,9 @@ class TestTrainingTargetTaskIssue:
         data = pl.LazyFrame(
             {"sev": pl.Series([Decimal("12345678901234567890.5")], dtype=pl.Decimal(38, 2))}
         )
-        issue = training_target_task_issue(data, target="sev", task="classification")
+        issue = training_target_task_issue(
+            data, target="sev", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+        )
         assert issue is not None
         assert "'sev'" in issue
 
@@ -141,7 +260,12 @@ class TestTrainingTargetTaskIssue:
         data = pl.LazyFrame(
             {"flag": pl.Series([Decimal("0.00"), Decimal("1.00"), None], dtype=pl.Decimal(38, 2))}
         )
-        assert training_target_task_issue(data, target="flag", task="classification") is None
+        assert (
+            training_target_task_issue(
+                data, target="flag", task="classification", metrics=_CLASSIFICATION_DEFAULT_METRICS
+            )
+            is None
+        )
 
     def test_custom_collector_is_used_for_the_fractional_scan(self) -> None:
         data = pl.LazyFrame({"sev": [123.45]})
@@ -152,7 +276,11 @@ class TestTrainingTargetTaskIssue:
             return lf.collect()
 
         issue = training_target_task_issue(
-            data, target="sev", task="classification", collect=collect
+            data,
+            target="sev",
+            task="classification",
+            metrics=_CLASSIFICATION_DEFAULT_METRICS,
+            collect=collect,
         )
         assert issue is not None
         assert len(collected) == 1
@@ -213,14 +341,104 @@ class TestTrainingJobGate:
         assert "'sev'" in message
         assert "set the task to regression" in message
 
+    def test_prepare_data_gates_objective_implied_metrics_under_regression(
+        self, tmp_path: Path
+    ) -> None:
+        """The binomial-family bypass closed: a Logloss objective under
+        ``task="regression"`` defaults the metrics to AUC/log loss, so a
+        continuous target must gate at prepare time, not the metric stage."""
+        data = pl.DataFrame(
+            {
+                "x1": [0.1, 0.2, 0.3, 0.4],
+                "prop": [0.25, 0.5, 0.75, 0.1],
+            }
+        )
+        job = TrainingJob(
+            name="gate_implied_metrics_model",
+            data=data,
+            target="prop",
+            task="regression",
+            loss_function="Logloss",
+            output_dir=str(tmp_path),
+        )
+        assert job.metrics == ["auc", "logloss"]  # the objective-implied defaults
+        with pytest.raises(ValueError, match="continuous values") as excinfo:
+            job.run()
+        message = str(excinfo.value)
+        assert "'prop'" in message
+        assert "auc, logloss" in message
+        assert "set the reported metrics explicitly to regression metrics" in message
+
+    def test_prepare_data_passes_explicit_regression_metrics_over_proportions(
+        self, tmp_path: Path
+    ) -> None:
+        """The escape hatch: explicit regression metrics keep a legitimate
+        continuous-proportion fit trainable — the gate must not fire, so the
+        run proceeds past _prepare_data (here into the fit itself)."""
+        data = pl.DataFrame(
+            {
+                "x1": [0.1, 0.2, 0.3, 0.4],
+                "prop": [0.25, 0.5, 0.75, 0.1],
+            }
+        )
+        job = TrainingJob(
+            name="gate_escape_hatch_model",
+            data=data,
+            target="prop",
+            task="regression",
+            loss_function="Logloss",
+            metrics=["gini", "rmse"],
+            output_dir=str(tmp_path),
+        )
+        prepared = job._prepare_data(lambda message, fraction: None)
+        assert prepared is not None
+
+    def test_escape_hatch_trains_a_binomial_glm_on_proportions_end_to_end(
+        self, tmp_path: Path
+    ) -> None:
+        """The exact scenario the rejection message prescribes must work:
+        config-built binomial GLM, continuous proportion target, explicit
+        regression metrics — through the builder, the gate, the fit, and the
+        metric stage to a completed result."""
+        from haute.modelling._train_config import build_training_job_kwargs
+
+        rng = np.random.RandomState(42)
+        n = 80
+        x1 = rng.randn(n)
+        prop = 1.0 / (1.0 + np.exp(-(0.8 * x1 + rng.randn(n) * 0.3)))
+        data_path = tmp_path / "proportions.parquet"
+        pl.DataFrame({"x1": x1, "prop": prop}).write_parquet(data_path)
+        config = {
+            "name": "hatch_binomial_model",
+            "target": "prop",
+            "task": "regression",
+            "algorithm": "glm",
+            "family": "binomial",
+            "terms": {"x1": {"type": "linear"}},
+            "metrics": ["gini", "rmse"],
+            "evaluation": {
+                "schema_version": 1,
+                "strategy": "random",
+                "seed": 42,
+                "validation": {"method": "single", "size": 0.2},
+            },
+            "output_dir": str(tmp_path),
+        }
+        kwargs = build_training_job_kwargs(config, data=str(data_path))
+        assert kwargs["metrics"] == ["gini", "rmse"]
+        result = TrainingJob(**kwargs).run()
+        assert "gini" in result.metrics
+        assert "rmse" in result.metrics
+
 
 class TestMetricStageContext:
     def test_metric_failure_names_target_task_and_metrics(self, tmp_path: Path) -> None:
         """A metric/task mismatch the gate cannot catch still surfaces with context.
 
-        Regression task passes the target gate, but AUC over a continuous
-        target raises inside sklearn; the wrap must name the evaluation set,
-        target, task, and metric list around the library error.
+        A multi-class integer target passes the gate (integers are discrete
+        labels), but binary AUC over it raises inside sklearn; the wrap must
+        name the evaluation set, target, task, and metric list around the
+        library error.
         """
         rng = np.random.RandomState(42)
         n = 60
@@ -229,7 +447,7 @@ class TestMetricStageContext:
             {
                 "x1": x1,
                 "x2": rng.randn(n),
-                "sev": (x1 + rng.randn(n) * 0.5) + 5.0,
+                "sev": rng.randint(0, 3, n),
             }
         )
         with (
@@ -254,7 +472,10 @@ class TestMetricStageContext:
         assert "'sev'" in message
         assert "'regression'" in message
         assert "auc" in message
-        assert "continuous" in message  # the chained sklearn detail survives
+        # The library detail is chained last (truncation-safe) without
+        # coupling to sklearn's exact wording.
+        assert "Underlying error:" in message
+        assert isinstance(excinfo.value.__cause__, ValueError)
 
     def test_metric_failure_is_wrapped_on_the_evaluation_plan_path(self, tmp_path: Path) -> None:
         """The canonical evaluation-plan pipeline wraps its validation-fit metrics.
@@ -262,7 +483,8 @@ class TestMetricStageContext:
         The live train route always supplies the canonical ``evaluation``
         object, so the first metric computation happens inside a validation
         fit — the wrap must fire there too, not only in the legacy
-        constructor-only pipeline's final-fit metric stage.
+        constructor-only pipeline's final-fit metric stage. The multi-class
+        integer target passes the pre-dispatch gate but breaks binary AUC.
         """
         rng = np.random.RandomState(42)
         n = 60
@@ -271,7 +493,7 @@ class TestMetricStageContext:
             {
                 "x1": x1,
                 "x2": rng.randn(n),
-                "sev": (x1 + rng.randn(n) * 0.5) + 5.0,
+                "sev": rng.randint(0, 3, n),
             }
         )
         job = TrainingJob(
@@ -298,7 +520,8 @@ class TestMetricStageContext:
         assert "'sev'" in message
         assert "'regression'" in message
         assert "auc" in message
-        assert "continuous" in message
+        assert "Underlying error:" in message
+        assert isinstance(excinfo.value.__cause__, ValueError)
 
 
 class TestPreDispatchServiceGate:
@@ -333,6 +556,85 @@ class TestPreDispatchServiceGate:
             execution_context=context,
         )
         assert tmp_parquet.exists()
+
+    def test_validate_target_task_pairing_rejects_binomial_family_under_regression(
+        self, tmp_path: Path
+    ) -> None:
+        """A binomial GLM under ``task="regression"`` implies AUC/log loss —
+        a continuous target must fail here pre-dispatch, not at the metric
+        stage inside the child."""
+        tmp_parquet = tmp_path / "train_input.parquet"
+        pl.DataFrame({"x1": [0.1, 0.2], "prop": [0.25, 0.75]}).write_parquet(tmp_parquet)
+        context = ExecutionContext(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            TrainService._validate_target_task_pairing(
+                str(tmp_parquet),
+                {
+                    "target": "prop",
+                    "task": "regression",
+                    "algorithm": "glm",
+                    "family": "binomial",
+                    "terms": ["x1"],
+                },
+                execution_context=context,
+            )
+        assert excinfo.value.status_code == 422
+        detail = str(excinfo.value.detail)
+        assert "'prop'" in detail
+        assert "auc, logloss" in detail
+        assert "set the reported metrics explicitly to regression metrics" in detail
+        assert not tmp_parquet.exists()
+
+    def test_validate_target_task_pairing_honours_explicit_regression_metrics(
+        self, tmp_path: Path
+    ) -> None:
+        """Explicit regression metrics keep a continuous-proportion binomial
+        fit dispatchable — the effective metric set has no classification
+        metric, so the gate must not fire."""
+        tmp_parquet = tmp_path / "train_input.parquet"
+        pl.DataFrame({"x1": [0.1, 0.2], "prop": [0.25, 0.75]}).write_parquet(tmp_parquet)
+        context = ExecutionContext(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+        )
+        TrainService._validate_target_task_pairing(
+            str(tmp_parquet),
+            {
+                "target": "prop",
+                "task": "regression",
+                "algorithm": "glm",
+                "family": "binomial",
+                "terms": ["x1"],
+                "metrics": ["gini", "rmse"],
+            },
+            execution_context=context,
+        )
+        assert tmp_parquet.exists()
+
+    def test_validate_target_task_pairing_maps_malformed_metrics_to_422(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed metrics config (normally rejected by the route's
+        upfront validation) is a config problem, not a scan failure — it must
+        map to 422/contract_error and still not orphan the temp parquet."""
+        tmp_parquet = tmp_path / "train_input.parquet"
+        pl.DataFrame({"x1": [0.1, 0.2], "sev": [123.45, 6.7]}).write_parquet(tmp_parquet)
+        context = ExecutionContext(
+            operation="training_pipeline",
+            profile=ExecutionProfile.TRAINING_PREP,
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            TrainService._validate_target_task_pairing(
+                str(tmp_parquet),
+                {"target": "sev", "task": "regression", "metrics": "auc"},
+                execution_context=context,
+            )
+        assert excinfo.value.status_code == 422
+        assert "non-empty string list" in str(excinfo.value.detail)
+        assert not tmp_parquet.exists()
 
     def test_validate_target_task_pairing_removes_parquet_when_the_scan_fails(
         self, tmp_path: Path

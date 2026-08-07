@@ -1999,23 +1999,40 @@ class TrainService:
         *,
         execution_context: ExecutionContext,
     ) -> None:
-        """Gate a target whose materialised values cannot serve the configured task.
+        """Gate a target whose materialised values cannot serve the task/metrics.
 
         Runs on the sunk training parquet, after materialisation but before
-        the fit worker is dispatched, so a config/data mismatch (the
-        motivating case: a continuous target under a classification task)
-        fails with the target column and task named instead of surfacing a
-        context-free library error from inside the child. Removes the temp
-        parquet before raising — no later owner exists for it on this path.
+        the fit worker is dispatched, so a config/data mismatch (a continuous
+        target under a classification task, or under objective-implied
+        AUC/log-loss defaults — e.g. a binomial family with
+        ``task="regression"``) fails with the target column, task, and metrics
+        named instead of surfacing a context-free library error from inside
+        the child. The gate keys on the effective metric set
+        (``effective_metrics`` — explicit config metrics or the
+        objective-implied defaults), the same derivation
+        ``build_training_job_kwargs`` uses. Removes the temp parquet before
+        raising — no later owner exists for it on this path.
         """
         from haute._polars_utils import streaming_collect
         from haute.modelling._target_check import training_target_task_issue
+        from haute.modelling._train_config import TrainingConfigError, effective_metrics
 
+        # Derive the effective metrics before the data scan: it is a pure
+        # config computation, and a malformed metrics config (normally caught
+        # by the route's upfront validation) must map to the same
+        # 422/contract_error taxonomy as the gate itself, not fall through
+        # the scan-failure path below.
+        try:
+            metrics = effective_metrics(config)
+        except TrainingConfigError as exc:
+            _remove_gated_temp_parquet(tmp_parquet)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         try:
             issue = training_target_task_issue(
                 pl.scan_parquet(tmp_parquet),
                 target=str(config.get("target", "")),
                 task=str(config.get("task", "regression")),
+                metrics=metrics,
                 collect=lambda lf: streaming_collect(lf, execution_context=execution_context),
             )
         except BaseException:

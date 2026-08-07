@@ -16,6 +16,7 @@ from haute.modelling._train_config import (
     build_train_params,
     build_training_job_kwargs,
     default_metrics,
+    effective_metrics,
 )
 
 # Minimal canonical evaluation object — every public modelling config must
@@ -433,6 +434,54 @@ class TestDefaultMetricsDerivation:
             "gini",
             "tweedie_deviance",
         ]
+
+    def test_effective_metrics_matches_the_builder_derivation(self):
+        """The pre-dispatch target/task/metric gate keys on this helper — it
+        must agree with what ``build_training_job_kwargs`` produces, explicit
+        metrics and objective-implied defaults alike."""
+        binomial_glm = {
+            "target": "y",
+            "task": "regression",
+            "algorithm": "glm",
+            "family": "binomial",
+            "all_factors": True,
+        }
+        assert effective_metrics(binomial_glm) == ["auc", "logloss"]
+        assert effective_metrics(
+            {"target": "y", "task": "regression", "loss_function": "Logloss"}
+        ) == ["auc", "logloss"]
+        assert effective_metrics(
+            {"target": "y", "task": "regression", "loss_function": "RMSE"}
+        ) == ["gini", "rmse"]
+        assert effective_metrics({**binomial_glm, "metrics": ["gini", "rmse"]}) == [
+            "gini",
+            "rmse",
+        ]
+        # A GLM config's loss_function (if a stray one appears) must not leak
+        # into the derivation, mirroring the builder.
+        assert effective_metrics({**binomial_glm, "loss_function": "Poisson"}) == [
+            "auc",
+            "logloss",
+        ]
+        # And the drift-prevention itself: the builder's kwargs carry exactly
+        # this helper's answer, for implied and explicit metrics alike.
+        for config in (
+            {**binomial_glm, "evaluation": MINIMAL_EVALUATION},
+            {**binomial_glm, "evaluation": MINIMAL_EVALUATION, "metrics": ["gini", "rmse"]},
+            {
+                "target": "y",
+                "task": "regression",
+                "loss_function": "Poisson",
+                "evaluation": MINIMAL_EVALUATION,
+            },
+        ):
+            assert build_training_job_kwargs(config, data="d")["metrics"] == effective_metrics(
+                config
+            )
+
+    def test_effective_metrics_rejects_malformed_explicit_metrics(self):
+        with pytest.raises(TrainingConfigError, match="non-empty string list"):
+            effective_metrics({"target": "y", "metrics": "auc"})
 
     def test_training_job_fallback_metrics_follow_loss(self):
         """TrainingJob is also constructed directly (not only via the
