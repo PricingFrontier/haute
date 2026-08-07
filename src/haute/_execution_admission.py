@@ -357,11 +357,7 @@ def available_ram_bytes() -> int | None:
 
 
 def _adaptive_default_memory_limit_bytes(profile: ExecutionProfile) -> tuple[int, int, int]:
-    available = available_ram_bytes()
-    if not isinstance(available, int) or isinstance(available, bool) or available < 1:
-        raise RuntimeError(
-            "physical RAM is unavailable; configure an explicit execution memory limit"
-        )
+    available = _host_memory.require_positive_available_ram(available_ram_bytes())
     policy = _ADAPTIVE_MEMORY_POLICY[profile]
     reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))
     usable = max(available - reserve, 1)
@@ -533,10 +529,7 @@ def _in_flight_limit_bytes(budget: ExecutionBudget) -> int:
     available = budget.available_ram_bytes
     if available is None:
         available = available_ram_bytes()
-    if not isinstance(available, int) or isinstance(available, bool) or available < 1:
-        raise RuntimeError(
-            "physical RAM is unavailable; configure an explicit execution memory limit"
-        )
+    available = _host_memory.require_positive_available_ram(available)
     reserve = budget.os_reserve_bytes
     if reserve is None:
         reserve = min(_resolve_os_reserve_bytes(), max(available // 2, 1))

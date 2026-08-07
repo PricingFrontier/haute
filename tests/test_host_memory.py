@@ -18,7 +18,39 @@ import pytest
 from structlog.testing import capture_logs
 
 from haute import _host_memory
-from haute._host_memory import available_ram_bytes, available_vram_bytes
+from haute._host_memory import (
+    available_ram_bytes,
+    available_vram_bytes,
+    require_positive_available_ram,
+)
+
+# ---------------------------------------------------------------------------
+# require_positive_available_ram — the shared consumer-side validator
+# ---------------------------------------------------------------------------
+
+
+class TestRequirePositiveAvailableRam:
+    def test_none_is_unobservable(self) -> None:
+        with pytest.raises(RuntimeError, match="physical RAM is unavailable"):
+            require_positive_available_ram(None)
+
+    def test_bool_is_unobservable_not_one_byte(self) -> None:
+        """True must not pass as an integer budget of one byte."""
+        with pytest.raises(RuntimeError, match="physical RAM is unavailable"):
+            require_positive_available_ram(True)
+
+    def test_negative_is_a_probe_defect_not_exhaustion(self) -> None:
+        """The cgroup clamp floors headroom at zero, so negatives are defects."""
+        with pytest.raises(RuntimeError, match="memory probe defect"):
+            require_positive_available_ram(-1)
+
+    def test_zero_is_exhaustion_with_retry_remedy(self) -> None:
+        with pytest.raises(RuntimeError, match="available memory is exhausted"):
+            require_positive_available_ram(0)
+
+    def test_positive_passes_through(self) -> None:
+        assert require_positive_available_ram(42) == 42
+
 
 # ---------------------------------------------------------------------------
 # available_ram_bytes

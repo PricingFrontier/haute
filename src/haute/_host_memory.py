@@ -30,7 +30,38 @@ logger = get_logger(component="host_memory")
 __all__ = [
     "available_ram_bytes",
     "available_vram_bytes",
+    "require_positive_available_ram",
 ]
+
+
+def require_positive_available_ram(available: object) -> int:
+    """Validate an observed available-RAM value for capacity-deriving callers.
+
+    ``None`` (or a non-integer) means availability is unobservable, and a
+    negative value is a probe defect (the cgroup clamp floors real headroom at
+    zero, so no honest observation is negative) — both refuse with the
+    configure-an-explicit-limit remedy.  Zero is an honest observation that
+    the host or cgroup memory limit is fully consumed *right now*; because
+    cgroup v2 ``memory.current`` includes reclaimable page cache, that state
+    can be transient, so its remedy is free-memory-and-retry.  Configuring an
+    explicit limit is deliberately not offered for exhaustion: it would
+    bypass the zero observation rather than create capacity.
+    """
+    if not isinstance(available, int) or isinstance(available, bool):
+        raise RuntimeError(
+            "physical RAM is unavailable; configure an explicit execution memory limit"
+        )
+    if available < 0:
+        raise RuntimeError(
+            "available memory observation is negative (memory probe defect); "
+            "configure an explicit execution memory limit"
+        )
+    if available == 0:
+        raise RuntimeError(
+            "available memory is exhausted (the host or cgroup memory limit is "
+            "currently fully used); free memory and retry"
+        )
+    return available
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +414,8 @@ def available_vram_bytes() -> int | None:
     logged.  Any other failure (broken driver, timeout, unparseable output)
     is logged with its reason so a detection outage is distinguishable from
     genuine GPU absence — the return value stays ``None`` either way, so the
-    VRAM pre-check degrades to permissive rather than refusing work.
+    VRAM pre-check degrades to a user-visible advisory warning rather than
+    refusing work.
     """
     import subprocess
 

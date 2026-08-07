@@ -249,7 +249,7 @@ def estimate_training(body: TrainEstimateRequest) -> TrainEstimateResponse:
             n_non_feature += 1
         n_features = max(ram_est.probe_columns - n_non_feature, 1)
         vram_check = _check_gpu_vram(effective_rows, n_features, node_params)
-        if vram_check.warning:
+        if vram_check.insufficient and vram_check.warning:
             vram_check.warning += (
                 " Switch task_type to CPU or reduce rows/features before starting GPU training."
             )

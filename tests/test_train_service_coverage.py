@@ -155,10 +155,14 @@ class TestCheckGpuFallbackFailure:
                 job_id=job_id,
             )
 
-        # Exception swallowed: original warning returned, task_type left on GPU.
+        # Exception swallowed: original warning returned, task_type left on GPU,
+        # and the failed check is surfaced as a job advisory rather than silence.
         assert result == "prior warning"
         assert train_params["task_type"] == "GPU"
-        assert store.require_job(job_id)["status"] == "running"
+        job = store.require_job(job_id)
+        assert job["status"] == "running"
+        assert "could not be checked" in job["gpu_warning"]
+        assert job["warning"] == f"prior warning\n{job['gpu_warning']}"
 
     def test_non_gpu_task_returns_early(self):
         """Non-GPU task_type short-circuits without any VRAM probe."""
@@ -1208,6 +1212,47 @@ class TestCheckGpuVramHelper:
         assert check.estimated_mb is not None
         assert check.available_mb is not None
 
+    def test_unknown_vram_warns_without_refusing(self):
+        """Unknown VRAM is advisory: warning set, ``insufficient`` stays False."""
+        from haute.routes import _train_service
+
+        with (
+            patch(
+                "haute._ram_estimate.estimate_gpu_vram_bytes",
+                return_value=1 * 1024**3,
+            ),
+            patch(
+                "haute._host_memory.available_vram_bytes",
+                return_value=None,
+            ),
+        ):
+            check = _train_service._check_gpu_vram(1000, 10, {})
+
+        assert check.warning is not None
+        assert "could not be detected" in check.warning
+        assert check.insufficient is False
+        assert check.available_mb is None
+        assert check.estimated_mb is not None
+
+    def test_insufficient_vram_sets_blocking_flag(self):
+        """Observed-too-small VRAM is the one state that refuses a launch."""
+        from haute.routes import _train_service
+
+        with (
+            patch(
+                "haute._ram_estimate.estimate_gpu_vram_bytes",
+                return_value=8 * 1024**3,
+            ),
+            patch(
+                "haute._host_memory.available_vram_bytes",
+                return_value=1 * 1024**3,
+            ),
+        ):
+            check = _train_service._check_gpu_vram(1000, 10, {})
+
+        assert check.warning is not None
+        assert check.insufficient is True
+
 
 # ---------------------------------------------------------------------------
 # Public cancel guards and the start() categorical-levels merge.
@@ -1335,6 +1380,40 @@ class TestCheckGpuFallbackNoWarning:
 
         assert result == "ram!"
         assert store.require_job(job_id)["status"] == "running"
+
+    def test_gpu_task_with_unknown_vram_warns_and_proceeds(self):
+        """Unknown VRAM attaches a job warning but does not refuse the launch."""
+        from haute.routes._job_store import JobStore
+        from haute.routes._train_service import _VramCheck
+
+        store = JobStore()
+        service = TrainService(store)
+        job_id = store.create_job({"status": "running"})
+
+        advisory = "GPU VRAM could not be detected (no NVIDIA GPU found)."
+        train_params: dict[str, object] = {"task_type": "GPU"}
+        with patch(
+            "haute.routes._train_service._check_gpu_vram",
+            return_value=_VramCheck(
+                estimated_mb=10.0,
+                available_mb=None,
+                warning=advisory,
+                insufficient=False,
+            ),
+        ):
+            result = service._check_gpu_vram_before_launch(
+                train_params,
+                row_limit=50,
+                total_source_rows=100,
+                probe_columns=4,
+                ram_warning="ram!",
+                job_id=job_id,
+            )
+
+        assert result == "ram!"
+        job = store.require_job(job_id)
+        assert job["gpu_warning"] == advisory
+        assert job["warning"] == f"ram!\n{advisory}"
 
 
 # ---------------------------------------------------------------------------
