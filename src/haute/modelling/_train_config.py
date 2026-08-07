@@ -105,6 +105,36 @@ def default_metrics(
     return ["gini", "rmse"]
 
 
+def effective_metrics(config: Mapping[str, Any]) -> list[str]:
+    """The reported-metric list training will actually use for this config.
+
+    Explicit ``config["metrics"]`` wins; otherwise the objective-implied
+    defaults from :func:`default_metrics` apply — notably, a
+    classification-flavoured objective (binomial family, Logloss/CrossEntropy
+    loss) implies AUC/log loss even under ``task="regression"``. Shared by
+    ``build_training_job_kwargs`` and the train route's pre-dispatch
+    target/task/metric gate so the two derivations can never drift.
+    """
+    algorithm = str(config.get("algorithm", "catboost")).lower()
+    task = str(config.get("task", "regression"))
+    if algorithm == "glm":
+        family = config.get("family")
+        loss_function = None
+    else:
+        family = None
+        loss_function = config.get("loss_function")
+    metrics = config.get("metrics") or default_metrics(
+        task,
+        loss_function=loss_function,
+        family=family,
+    )
+    if not isinstance(metrics, list) or not all(
+        isinstance(metric, str) and metric for metric in metrics
+    ):
+        raise TrainingConfigError("Configured metrics must be a non-empty string list.")
+    return list(metrics)
+
+
 def training_objective_issue(config: Mapping[str, Any]) -> str | None:
     """Return an actionable message when the training objective is incomplete.
 
@@ -233,8 +263,6 @@ def build_training_job_kwargs(
     params = build_train_params(config)
     algorithm = str(config.get("algorithm", "catboost")).lower()
     task = str(config.get("task", "regression"))
-    family = params.get("family") if algorithm == "glm" else None
-    loss_function = None if algorithm == "glm" else config.get("loss_function")
     variance_power = config.get("var_power") if algorithm == "glm" else config.get("variance_power")
     legacy_fields = [key for key in ("split", "cross_validation") if key in config]
     if legacy_fields:
@@ -243,15 +271,7 @@ def build_training_job_kwargs(
             "were replaced by the canonical versioned evaluation object."
         )
     evaluation = parse_evaluation_config(config.get("evaluation"))
-    metrics = config.get("metrics") or default_metrics(
-        task,
-        loss_function=loss_function,
-        family=family,
-    )
-    if not isinstance(metrics, list) or not all(
-        isinstance(metric, str) and metric for metric in metrics
-    ):
-        raise TrainingConfigError("Configured metrics must be a non-empty string list.")
+    metrics = effective_metrics(config)
     tuning = parse_tuning_config(
         config.get("tuning"),
         algorithm=algorithm,

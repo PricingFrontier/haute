@@ -137,22 +137,32 @@ Invariants that always hold:
   exported: an unset loss/family, Tweedie variance power, Negative Binomial `theta`, GLM
   factor set, or elastic-net L1 ratio is rejected with an actionable message rather than
   silently defaulting.
-- A classification task never trains against a continuous target. Once training data is
-  materialised, the target column's values are checked against the task — in the train
-  route before the fit worker is dispatched, and again inside `TrainingJob` itself so
-  the CLI and exported-script paths share the same gate. A float or decimal target with
-  fractional values (or a target whose type cannot serve as class labels) under
-  `task="classification"` is rejected with a message naming the target column and task
-  and directing the user to choose a discrete target or switch the task to regression,
-  instead of failing later inside a metrics library with a context-free error. The gate
-  keys on the configured task only — a classification-flavoured objective under a
-  regression task (e.g. a binomial GLM defaulting to AUC/log-loss metrics) is not
-  gated, because a binomial target may legitimately be a continuous proportion; that
-  path is covered by the metric-stage context wrap below. Non-finite float values
-  are deliberately excluded from the fractional scan: NaN is treated as missing
-  (null-target handling and the metric stage's non-finite filtering own it), so an
-  all-NaN or infinite-valued target passes the gate and fails downstream inside the
-  wrapped metric stage with its own bounded message.
+- A classification task never trains against a continuous target, and classification
+  metrics are never computed against one. Once training data is materialised, the
+  target column's values are checked against the task and the effective metric set —
+  in the train route before the fit worker is dispatched, and again inside
+  `TrainingJob` itself so the CLI and exported-script paths share the same gate. A
+  float or decimal target with fractional values (or a target whose type cannot serve
+  as class labels) under `task="classification"` is rejected with a message naming
+  the target column and task and directing the user to choose a discrete target or
+  switch the task to regression, instead of failing later inside a metrics library
+  with a context-free error. The gate originally keyed on the configured task only —
+  a classification-flavoured objective under a regression task (e.g. a binomial GLM
+  defaulting to AUC/log-loss metrics) was left to the metric-stage context wrap,
+  because a binomial target may legitimately be a continuous proportion. But that run
+  still dies once AUC/log loss are computed, only later and with less context, so the
+  gate now keys on the effective metric set as well: a fractional target whose
+  effective metrics (explicit config metrics, or the objective-implied defaults —
+  the same derivation the job builder uses) include AUC/log loss is rejected
+  pre-dispatch with the metrics named and the escape hatch stated. The legitimate
+  continuous-proportion binomial fit remains reachable by setting the reported
+  metrics explicitly to regression metrics, which removes every classification
+  metric from the effective set. On this metric-keyed branch, non-float target types
+  defer to the fit's own validation. Non-finite float values are deliberately
+  excluded from the fractional scan: NaN is treated as missing (null-target handling
+  and the metric stage's non-finite filtering own it), so an all-NaN or
+  infinite-valued target passes the gate and fails downstream inside the wrapped
+  metric stage with its own bounded message.
 - Every trained model is saved together with a feature contract pinning its exact
   feature order, dtypes, categorical domains, target, and offset column. Any drift
   detected later (train vs. score) raises rather than producing a plausible-looking
@@ -212,12 +222,20 @@ trainable, plausible-looking model — just not the one the user intended.
 route's upfront validation, so the two paths cannot drift apart on what counts as
 "complete."
 
-The same posture extends to the target/task pairing and to the worker error boundary.
-A continuous target under a classification task used to train all the way to the
-metric stage and surface sklearn's bare "continuous format is not supported" — no
-target column, no task, no fix — so `_target_check.training_target_task_issue` gates
-the pairing with the objects the user can act on (target column, task), at both the
-route and `TrainingJob` layers. And because the fit runs in a spawn child, message
+The same posture extends to the target/task/metric pairing and to the worker error
+boundary. A continuous target under a classification task used to train all the way
+to the metric stage and surface sklearn's bare "continuous format is not supported" —
+no target column, no task, no fix — so `_target_check.training_target_task_issue`
+gates the pairing with the objects the user can act on (target column, task,
+metrics), at both the route and `TrainingJob` layers. The gate keys on the EFFECTIVE
+metric set (explicit config metrics or the objective-implied defaults from
+`effective_metrics`), not the declared task alone: a binomial family or
+Logloss/CrossEntropy loss under `task="regression"` implies AUC/log loss by default,
+and those metrics are undefined on a continuous target, so that run is rejected
+pre-dispatch too rather than dying later at the metric stage. A binomial fit on a
+continuous proportion target stays legitimate and reachable — setting the reported
+metrics explicitly to regression metrics empties the effective set of classification
+metrics and the gate stands aside, which the rejection message itself points out. And because the fit runs in a spawn child, message
 quality has to survive the process boundary: the child stamps every curated failure
 message on the failure payload's `user_message` field, and the parent supervisor
 surfaces that wording verbatim instead of re-wrapping it in worker jargon. This is the
@@ -328,11 +346,13 @@ browser without a server or JS bundle.
   HTTP classification (`http_status_code` 422 for missing required columns or
   bounded-streaming unsupported; 500 for a generic failure) on the terminal status,
   and the job transitions to `contract_error`/`error` accordingly.
-- A target column whose values cannot serve the configured task (a continuous target
-  under classification) is rejected after materialisation but before the fit worker is
-  dispatched: the job transitions to `contract_error` with a message naming the target
-  column and task and directing the user to choose a discrete target or switch the
-  task to regression.
+- A target column whose values cannot serve the configured task or effective metric
+  set (a continuous target under classification, or under AUC/log-loss metrics
+  implied by a classification-flavoured objective with `task="regression"`) is
+  rejected after materialisation but before the fit worker is dispatched: the job
+  transitions to `contract_error` with a message naming the target column, task, and
+  (on the metric-keyed branch) the metrics, directing the user to choose a discrete
+  target, switch the task, or set regression metrics explicitly.
 - Failures that cross the training/dispersion worker boundary surface the child's
   wording, not worker jargon — but only when that wording is deliberately curated.
   The child's failure mapper marks haute-authored messages (the gates, the metric
@@ -353,8 +373,11 @@ browser without a server or JS bundle.
   evaluation plan's public `development`/`final test` labels on that pipeline),
   target column, task, and requested metrics around the underlying library error,
   with the instruction to fix the target/task/metric pairing — a bare library
-  message cannot reach the UI from the metric stage. This wrap covers every
-  mandatory metric site: the evaluation plan's validation fits (the first metrics
+  message cannot reach the UI from the metric stage. With the pre-dispatch gate
+  keyed on the effective metric set, this wrap is the residual net for the
+  target/metric mismatches the gate's one fractional-values scan cannot see (e.g.
+  binary AUC over a multi-class integer target) and for every other metric-stage
+  failure. It covers every mandatory metric site: the evaluation plan's validation fits (the first metrics
   computed on the live route), the final fit's diagnostics-partition metrics, and
   the separate validation re-read. It catches the failure classes pure metric
   computation produces (`ValueError`, `TypeError`, arithmetic errors — never

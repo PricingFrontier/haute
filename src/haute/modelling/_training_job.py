@@ -1503,10 +1503,12 @@ class TrainingJob:
             )
             self._validate_columns(schema_df)
 
-            # The target's values must be able to serve the configured task.
-            # The train route runs the same gate before dispatching the fit
-            # worker; repeating it here covers the CLI and exported-script
-            # paths, and the shared function keeps the two from drifting.
+            # The target's values must be able to serve the configured task
+            # and the effective metric set (objective-implied defaults
+            # included). The train route runs the same gate before dispatching
+            # the fit worker; repeating it here covers the CLI and
+            # exported-script paths, and the shared function keeps the two
+            # from drifting.
             # Internal evaluation clones (selection, tuning, and the final
             # fit — all constructed with evaluation_plan set) re-read a
             # prepared source the outer job already gated, so they skip the
@@ -1518,6 +1520,7 @@ class TrainingJob:
                     pl.scan_parquet(data_path),
                     target=self.target,
                     task=self.task,
+                    metrics=self.metrics,
                     collect=lambda lf: _training_streaming_collect(
                         lf,
                         stage_name="training_target_task_check",
