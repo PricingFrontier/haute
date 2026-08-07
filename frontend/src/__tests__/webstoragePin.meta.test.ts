@@ -21,6 +21,14 @@ import { describe, expect, it } from "vitest"
 // Vitest workers run with cwd at the project root (frontend/); import.meta.url
 // is an http: URL under the jsdom transform, so resolve from cwd instead.
 const configText = readFileSync(join(process.cwd(), "vitest.config.ts"), "utf8")
+const canaryModuleText = readFileSync(
+  join(process.cwd(), "src", "testSupport", "storageCanary.ts"),
+  "utf8",
+)
+const canarySetupText = readFileSync(
+  join(process.cwd(), "src", "setupStorageCanary.ts"),
+  "utf8",
+)
 
 describe("webstorage pin meta-test", () => {
   it("keeps --no-experimental-webstorage in test.execArgv", () => {
@@ -33,5 +41,21 @@ describe("webstorage pin meta-test", () => {
     expect(configText).toMatch(
       /setupFiles:\s*\[\s*"\.\/src\/setupStorageCanary\.ts"/,
     )
+  })
+
+  // The canary must run before any module that could read storage at module
+  // scope (ESM hoisting evaluates imports first). Comments alone don't hold
+  // that invariant: these gate it on source text, same pattern as above.
+  it("keeps the canary module import-free", () => {
+    expect(canaryModuleText).not.toMatch(/^[ \t]*import\b/m)
+    expect(canaryModuleText).not.toMatch(/\bimport\s*\(/)
+    expect(canaryModuleText).not.toMatch(/\brequire\s*\(/)
+  })
+
+  it("keeps the canary module itself as the setup file's only import", () => {
+    const imports = canarySetupText.match(/^[ \t]*import\b.*$/gm) ?? []
+    expect(imports).toEqual([
+      'import { assertStorageProvenance } from "./testSupport/storageCanary"',
+    ])
   })
 })
