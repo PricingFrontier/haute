@@ -32,7 +32,7 @@ function loadIoCapabilities(): Promise<IoCapabilitiesResponse> {
 }
 
 /** Test hook: clear the module-level in-flight request between tests. */
-export function resetIoCapabilitiesCacheForTests(): void {
+export function resetIoCapabilitiesRequestForTests(): void {
   inflight = null
 }
 

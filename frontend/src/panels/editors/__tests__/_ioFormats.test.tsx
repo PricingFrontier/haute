@@ -9,7 +9,7 @@ vi.mock("../../../api/client", () => ({
   fetchIoCapabilities: (...args: unknown[]) => mockFetchIoCapabilities(...args),
 }))
 
-import { resetIoCapabilitiesCacheForTests, useIoCapabilities } from "../_ioFormats"
+import { resetIoCapabilitiesRequestForTests, useIoCapabilities } from "../_ioFormats"
 
 function capabilities(label: string): IoCapabilitiesResponse {
   return {
@@ -37,7 +37,7 @@ function CapabilityProbe({ name }: { name: string }) {
 describe("useIoCapabilities", () => {
   beforeEach(() => {
     mockFetchIoCapabilities.mockReset()
-    resetIoCapabilitiesCacheForTests()
+    resetIoCapabilitiesRequestForTests()
   })
 
   afterEach(cleanup)
