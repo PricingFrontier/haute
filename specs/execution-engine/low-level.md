@@ -113,9 +113,41 @@
   cgroup v2 `memory.max - memory.current`, else the v1
   `memory.limit_in_bytes - memory.usage_in_bytes` pair. `max` and the v1
   unlimited sentinel do not clamp; negative headroom clamps to zero.
-  Missing/malformed/incomplete controller files are logged and leave the
-  independently observed host value unchanged. No synthetic capacity is
-  returned when host availability itself is unobservable.
+- **Degraded-observation contract** — one policy governs every degraded memory
+  state, split by whether the value is a capacity *source* or a best-effort
+  *refinement* of an independent observation:
+  - *Unreadable/malformed/incomplete cgroup state fails open, by decision.*
+    The cgroup clamp refines a host measurement that was independently
+    observed; a controller whose files are missing, unreadable, or
+    non-numeric is logged (`cgroup_memory_state_incomplete` /
+    `cgroup_memory_state_malformed`) and leaves the host value unchanged.
+    Failing closed would refuse all adaptive admission on any host with an
+    odd cgroup mount for a harm that is conditional (a real limit must exist
+    *and* be smaller than the estimate), while the runtime defence-in-depth
+    (per-context RSS budgets, the in-flight reservation, the OS reserve, and
+    the memory-pressure sampler) bounds the over-admission cost. This is an
+    availability-over-strictness trade taken deliberately.
+  - *An observed zero is exhaustion, not absence.* `available_ram_bytes()`
+    returning `0` means the host or cgroup memory limit is configured and
+    fully consumed — an honest measurement, never conflated with
+    unobservable. Capacity-deriving consumers (adaptive admission, the
+    in-flight limit, `estimate_safe_training_rows`) refuse a zero with the
+    exhaustion remedy ("available memory is exhausted (the host or cgroup
+    memory limit is reached); free memory …"), which is distinct from the
+    unobservable remedy ("physical RAM is unavailable; configure an explicit
+    execution memory limit"). They never floor a zero budget up into
+    fabricated capacity (e.g. the minimum-safe-rows floor is not applied
+    against a known-empty budget).
+  - *Host availability itself never fabricates.* When every applicable probe
+    fails the result is `None`; no synthetic capacity is returned, and
+    capacity sources fail closed on it with the unobservable remedy above.
+  - *Unknown VRAM warns, observed-insufficient VRAM refuses.* The GPU VRAM
+    pre-check is advisory ahead of CatBoost's own device errors: when
+    `available_vram_bytes()` is `None` on a GPU-selected training path, the
+    check attaches a user-visible warning (estimated need, detection
+    unavailable) but does not refuse the launch (`_VramCheck.insufficient`
+    stays false); only VRAM actually observed and smaller than the estimate
+    blocks GPU training with the switch-to-CPU remedy.
 - **macOS available RAM** — darwin has neither `/proc/meminfo` nor
   `SC_AVPHYS_PAGES` (absent from `os.sysconf_names` entirely), so its source is
   the Mach `host_statistics64(HOST_VM_INFO64)` VM page counters: available is

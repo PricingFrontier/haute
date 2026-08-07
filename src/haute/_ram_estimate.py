@@ -944,6 +944,14 @@ def estimate_safe_training_rows(
         raise RuntimeError(
             "physical RAM is unavailable; configure an explicit execution memory limit"
         )
+    if available < 1:
+        # Zero is an observation (the host or cgroup memory limit is fully
+        # consumed), not an unknown — refusing here beats flooring the safe-row
+        # calculation to _MIN_SAFE_ROWS against a budget known to be empty.
+        raise RuntimeError(
+            "available memory is exhausted (the host or cgroup memory limit is reached); "
+            "free memory before training"
+        )
 
     # ── 1. Source metadata for row count ──────────────────────────────
     estimate_index = _EstimateGraphIndex.build(graph, source)

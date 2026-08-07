@@ -289,6 +289,22 @@ def test_adaptive_admission_fails_when_physical_ram_is_unavailable(
         execution_budget_for_profile(profile)
 
 
+@pytest.mark.parametrize(
+    "profile",
+    [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.LAZY_SINK],
+)
+def test_adaptive_admission_reports_exhaustion_when_headroom_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: ExecutionProfile,
+) -> None:
+    """An observed zero is an exhausted limit, not unobservable RAM."""
+    _clear_execution_memory_env(monkeypatch)
+    monkeypatch.setattr("haute._execution_admission.available_ram_bytes", lambda: 0)
+
+    with pytest.raises(RuntimeError, match="available memory is exhausted"):
+        execution_budget_for_profile(profile)
+
+
 def test_adaptive_default_memory_budgets_never_exceed_available_ram(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

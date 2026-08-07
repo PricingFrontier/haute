@@ -288,19 +288,28 @@ def _validate_glm_family_link(family: str, link: str) -> None:
 
 
 class _VramCheck:
-    """Result of a GPU VRAM feasibility check."""
+    """Result of a GPU VRAM feasibility check.
 
-    __slots__ = ("estimated_mb", "available_mb", "warning")
+    ``insufficient`` is True only when VRAM was actually observed and the
+    estimate exceeds it — the one state that refuses a GPU launch.  An
+    unknown VRAM (no GPU detected, or detection failed) sets ``warning``
+    without ``insufficient``: the pre-check is advisory ahead of CatBoost's
+    own device errors, so unknown warns rather than blocks.
+    """
+
+    __slots__ = ("estimated_mb", "available_mb", "warning", "insufficient")
 
     def __init__(
         self,
         estimated_mb: float | None = None,
         available_mb: float | None = None,
         warning: str | None = None,
+        insufficient: bool = False,
     ) -> None:
         self.estimated_mb = estimated_mb
         self.available_mb = available_mb
         self.warning = warning
+        self.insufficient = insufficient
 
 
 def _clamp_row_limit(
@@ -1536,16 +1545,25 @@ def _check_gpu_vram(
     available_mb = round(vram / 1024**2, 1) if vram is not None else None
 
     warning: str | None = None
-    if vram is not None and vram_needed > vram:
+    insufficient = False
+    if vram is None:
+        warning = (
+            f"GPU VRAM could not be detected (no NVIDIA GPU found, or nvidia-smi is "
+            f"unavailable). GPU training needs ~{vram_needed / 1024**3:.1f} GB VRAM and "
+            f"may fail on a smaller GPU."
+        )
+    elif vram_needed > vram:
         warning = (
             f"GPU training needs ~{vram_needed / 1024**3:.1f} GB VRAM "
             f"but GPU has {vram / 1024**3:.1f} GB."
         )
+        insufficient = True
 
     return _VramCheck(
         estimated_mb=estimated_mb,
         available_mb=available_mb,
         warning=warning,
+        insufficient=insufficient,
     )
 
 
@@ -2678,7 +2696,7 @@ class TrainService:
                 probe_columns,
                 train_params,
             )
-            if vram_check.warning:
+            if vram_check.insufficient:
                 gpu_warning = (
                     f"{vram_check.warning} Select CPU and retry, or reduce rows/features "
                     "before retrying GPU training."
@@ -2698,6 +2716,22 @@ class TrainService:
                     estimated_mb=vram_check.estimated_mb,
                     available_mb=vram_check.available_mb,
                     job_id=job_id,
+                )
+            if vram_check.warning:
+                # Unknown VRAM: advisory only — the launch proceeds and
+                # CatBoost's own device errors remain the hard gate.
+                logger.warning(
+                    "gpu_vram_unknown",
+                    estimated_mb=vram_check.estimated_mb,
+                )
+                self._store.update_job(job_id, gpu_warning=vram_check.warning)
+                self._store.update_job(
+                    job_id,
+                    warning=(
+                        f"{ram_warning}\n{vram_check.warning}"
+                        if ram_warning
+                        else vram_check.warning
+                    ),
                 )
         except HTTPException:
             raise

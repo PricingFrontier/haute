@@ -383,7 +383,8 @@ def available_vram_bytes() -> int | None:
     logged.  Any other failure (broken driver, timeout, unparseable output)
     is logged with its reason so a detection outage is distinguishable from
     genuine GPU absence — the return value stays ``None`` either way, so the
-    VRAM pre-check degrades to permissive rather than refusing work.
+    VRAM pre-check degrades to a user-visible advisory warning rather than
+    refusing work.
     """
     import subprocess
 

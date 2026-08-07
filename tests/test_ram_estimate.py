@@ -2013,3 +2013,13 @@ def test_training_estimate_refuses_to_guess_when_physical_ram_is_unknown() -> No
     with patch("haute._ram_estimate.available_ram_bytes", return_value=None):
         with pytest.raises(RuntimeError, match="physical RAM is unavailable"):
             estimate_safe_training_rows(graph, "src1", _build_dummy_node_fn)
+
+
+def test_training_estimate_refuses_zero_headroom_instead_of_flooring() -> None:
+    """A zero observed budget refuses; it never floors up to minimum safe rows."""
+
+    graph = PipelineGraph(nodes=[_make_source_node()], edges=[])
+
+    with patch("haute._ram_estimate.available_ram_bytes", return_value=0):
+        with pytest.raises(RuntimeError, match="available memory is exhausted"):
+            estimate_safe_training_rows(graph, "src1", _build_dummy_node_fn)
