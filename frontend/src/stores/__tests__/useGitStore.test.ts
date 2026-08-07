@@ -39,8 +39,15 @@ const READY: GitWorkingBranchResponse = {
 }
 
 // The store singleton is pristine at import time; resetForTests must restore
-// exactly this snapshot, however the store's shape grows.
-const PRISTINE = { ...useGitStore.getState() }
+// exactly this snapshot, however the store's shape grows. Data fields only,
+// deep-cloned: a shallow spread would share the pristine `branches` reference
+// with the store, so an in-place corruption would move both sides of the
+// comparison identically and the pin would be blind to it.
+const PRISTINE = structuredClone(
+  Object.fromEntries(
+    Object.entries(useGitStore.getState()).filter(([, v]) => typeof v !== "function"),
+  ),
+)
 
 describe("useGitStore", () => {
   beforeEach(async () => {
@@ -63,7 +70,37 @@ describe("useGitStore", () => {
       }],
     })
     useGitStore.getState().resetForTests()
-    expect(useGitStore.getState()).toEqual(PRISTINE)
+    expect(useGitStore.getState()).toMatchObject(PRISTINE)
+
+    // In-place corruption of the published array must not survive a reset:
+    // the baseline hands out a fresh array per reset, never a shared one.
+    useGitStore.getState().branches.push({
+      name: "corrupt", is_current: false, is_archived: false, has_unmerged_saves: false,
+      has_uncommitted_changes: false,
+    })
+    useGitStore.getState().resetForTests()
+    expect(useGitStore.getState().branches).toEqual([])
+  })
+
+  it("resetGitStoreForTests unsticks both held-open single-flights (status and branch loader)", async () => {
+    // Stick both: never-settling fetches occupy each single-flight slot.
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(new Promise(() => {}))
+    vi.mocked(getWorkingBranches).mockReturnValueOnce(new Promise(() => {}))
+    void useGitStore.getState().loadStatus()
+    void useGitStore.getState().loadBranches()
+    await vi.waitFor(() => expect(getWorkingBranches).toHaveBeenCalledOnce())
+    expect(getWorkingBranch).toHaveBeenCalledOnce()
+
+    // A refactor that drops either clear from the family reset would otherwise
+    // pass every test and resurface only as a nightly shuffle starvation.
+    await resetGitStoreForTests()
+
+    vi.mocked(getWorkingBranch).mockResolvedValueOnce(READY)
+    vi.mocked(getWorkingBranches).mockResolvedValueOnce({ current: "dev", branches: [] })
+    await expect(useGitStore.getState().loadStatus()).resolves.toEqual(READY)
+    await expect(useGitStore.getState().loadBranches()).resolves.toEqual([])
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+    expect(getWorkingBranches).toHaveBeenCalledTimes(2)
   })
 
   it("loadStatus stores the result and returns it", async () => {

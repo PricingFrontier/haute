@@ -54,8 +54,12 @@ export interface GitComparison {
 export type GitPendingAction = "save" | "commit" | null
 
 /** The store's data half. Every field added here MUST get an initial value in
- *  `initialGitData` below (TypeScript enforces it), and `resetForTests` spreads
- *  that object — so a new field cannot silently leak between shuffled tests. */
+ *  `freshGitData` below (TypeScript enforces it for required members), and
+ *  `resetForTests` spreads that object — so a new field here cannot silently
+ *  leak between shuffled tests. Two conventions keep that guarantee honest:
+ *  keep every field REQUIRED (zustand's merge-mode set() never clears absent
+ *  keys, so an optional field would dodge both the compiler and the reset),
+ *  and file data here, never in GitActions. */
 interface GitData {
   /** Latest readiness signal, or null before the first load. */
   status: GitWorkingBranchResponse | null
@@ -145,8 +149,11 @@ interface GitActions {
 type GitState = GitData & GitActions
 
 /** Initial value for every data field. `resetForTests` restores exactly this
- *  object, so the reset can never drift behind the store's shape. */
-const initialGitData: GitData = {
+ *  shape, so the reset can never drift behind the store's. A factory, not a
+ *  shared const: `branches` must be a FRESH array per reset — with a shared
+ *  reference, one in-place mutation would corrupt the baseline permanently and
+ *  every later "reset" would restore the corruption. */
+const freshGitData = (): GitData => ({
   status: null,
   loading: false,
   statusError: null,
@@ -162,10 +169,10 @@ const initialGitData: GitData = {
   commitNonce: 0,
   comparison: null,
   moveTarget: null,
-}
+})
 
 const useGitStore = create<GitState>()((set, get) => ({
-  ...initialGitData,
+  ...freshGitData(),
 
   loadStatus: (options) =>
     // Single-flight/queue/reset/stall bookkeeping lives in ./singleFlight;
@@ -273,7 +280,7 @@ const useGitStore = create<GitState>()((set, get) => ({
     return status
   },
 
-  resetForTests: () => set(initialGitData),
+  resetForTests: () => set(freshGitData()),
 }))
 
 /** One-call reset of the whole git-store family between tests: the data state
