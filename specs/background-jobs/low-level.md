@@ -121,6 +121,22 @@
   Version-1 bounds are: queue capacity 64; at most 10,000 delivered events;
   64 KiB per event; 4 MiB result metadata; 64 artifacts; 512-character identifiers
   and messages; 4,096-character relative paths; nesting depth 64.
+- **`WORKER_USER_MESSAGE_FIELD`** (`"user_message"`) — the curated-message routing
+  key. A failure payload whose `fields` carry this key marks the value as the
+  message the child produced for the user; `IsolatedJobSupervisor` surfaces it
+  verbatim as the job's terminal message instead of the typed wrapper text. The key
+  routes the child's wording across the boundary — the content expectations (name
+  the user-model objects, carry a call to action, no secrets or raw tracebacks, a
+  filesystem path only where the path itself is the actionable object) are enforced
+  by the producing components at their curation sites, not by this transport.
+  Because it is promoted to the terminal message,
+  `WorkerFailurePayload.__post_init__` enforces the same 512-character message
+  bound on it. The key name is reserved under schema version 1 — the change is
+  additive (payloads that never set it keep the wrapper surface), and no
+  version-1 producer used the name before the reservation. Like every other
+  payload field, it is copied into the terminal
+  job record's fields by `_isolated_worker_failure_fields`, so a curated failure's
+  job status carries a `user_message` key duplicating its `message`.
 
 ### `_artifact_housekeeping.py`
 
@@ -314,9 +330,13 @@ primitive for supported direct callers and its focused tests. Both delegate to
 The thread executes one total outcome pipeline:
 
 1. `_produce_outcome` maps success or a typed `IsolatedWorkerError` to a
-   `_SupervisorOutcome`. Any other `BaseException` becomes an `error` outcome with a
-   bounded generic message plus `worker_error_class`/`supervisor_error_class`; the
-   original exception is retained as `exception_to_report`.
+   `_SupervisorOutcome`. A worker failure whose payload fields carry
+   `WORKER_USER_MESSAGE_FIELD` uses that curated string as the outcome message
+   rather than `str(exc)` ("Isolated worker raised …"); the wrapper text is kept in
+   the diagnostic `error` field. Any other `BaseException` becomes an `error`
+   outcome with a bounded generic message plus
+   `worker_error_class`/`supervisor_error_class`; the original exception is
+   retained as `exception_to_report`.
 2. `_finish_outcome` runs the parent completion/cleanup callback. A cleanup failure
    is retained as `cleanup_error`/`cleanup_error_class` without changing the worker
    outcome, and is logged with its job ID and traceback for operator diagnosis. In
@@ -439,7 +459,7 @@ the root itself are never removed.
 | `HTTPException(400)` | `JobStore.require_completed_job` | When the job exists but isn't `completed`; message includes the actual status. |
 | `SingleFlightConflictError(RuntimeError)` | `SingleFlightCoordinator.acquire` | Not caught inside this component; optimiser route code (`_optimiser_service.py`) converts the equivalent caller-side conflict into `HTTPException(409)`. |
 | `BackgroundJobStoppedError(RuntimeError)` | Not raised by this component itself — it is the typed exception in-process worker code is expected to raise after observing `CancellableJobRegistry.cancellation_reason(job_id)` is non-`None`. | Caught by remaining in-process consumers such as `_optimiser_service.py`; migrated process workers use the protocol stop callback and typed failure payloads. |
-| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
+| `IsolatedWorkerError` and subtypes | Raised inside `run_isolated_worker` or `run_worker_protocol` (owned by worker isolation/transport) | Converted by `IsolatedJobSupervisor` into a typed lifecycle outcome, preferring a child-curated `user_message` payload field over the typed wrapper text for the terminal message. Unexpected parent exceptions become `error`; terminal-persistence failure is exposed through `IsolatedSupervisorThread.join_and_raise()`. |
 | `BlockingWorkTimeoutError(TimeoutError)` | `run_blocking_with_response_timeout` | Raised to the awaiting route handler on response timeout; route code (`src/haute/routes/pipeline.py`, `json_cache.py`, `output_assemble.py`) catches it to build a 504 response. |
 | `asyncio.CancelledError` | Re-raised by `run_blocking_with_response_timeout` after draining the background task | Propagates to the ASGI layer as normal task cancellation. |
 
@@ -447,6 +467,12 @@ the root itself are never removed.
 
 - `tests/test_partial_failure.py` — adversarial save/preview, filesystem, watcher, WebSocket, stale-index, sidecar-corruption, OOM, and resource-cleanup failure handling.
 - `tests/test_state_transitions.py` — JobStore rejects invalid/double-start operations, wrong-status actions, and protected/invalid/duplicate Git transitions.
+- `tests/test_target_task_gate.py::TestWorkerBoundaryUserMessage` — the
+  curated-message routing contract: `IsolatedJobSupervisor._produce_outcome`
+  surfaces a `user_message` payload field verbatim (wrapper text retained in the
+  diagnostic `error` field), keeps the wrapper for payloads without one, and
+  `WorkerFailurePayload.__post_init__` enforces the 512-character bound on the
+  field.
 
 - `tests/test_job_store.py` — the largest suite; unit-tests CRUD, TTL eviction
   (including exact-boundary and missing-`created_at` cases), artifact-handle cleanup

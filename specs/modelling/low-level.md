@@ -11,6 +11,7 @@
 | `src/haute/modelling/_evaluation.py` | Strict version-1 evaluation config, exact development/final-test and validation-fit plan generation, plan/result/report codecs, digest linkage, strategy summaries, and validation-row-weighted aggregation. |
 | `src/haute/modelling/_tuning.py` | Strict bounded CatBoost tuning config/search-space validation, seeded trial resolution, winner/tree-count selection, and tuning plan/trials/report codecs. |
 | `src/haute/modelling/_train_config.py` | Single source of truth for modelling-node config → training-job kwargs (`build_training_job_kwargs`, `build_train_params`, `parse_evaluation_config`, `parse_tuning_config`, `training_objective_issue`, `default_metrics`). |
+| `src/haute/modelling/_target_check.py` | `training_target_task_issue()` — data-dependent target-column vs task gate returning an actionable message (or nothing when the pairing is valid), shared by the train route's pre-dispatch validation and `TrainingJob._prepare_data`. |
 | `src/haute/modelling/_split.py` | Internal partition-mask execution used by a final or selection fit. Its `SplitConfig` is a private test seam for direct callers exercising the shared partition/fit machinery; it is not a public modelling-node config contract and is not exported. |
 | `src/haute/modelling/_metrics.py` | Primary metric functions and diagnostic data computation (double lift, AvE, residuals, actual-vs-predicted, Lorenz, PDP). |
 | `src/haute/modelling/_feature_contract.py` | `FeatureContract` build/save/load/cache, contract comparison, and categorical-level normalisation/validation. |
@@ -192,6 +193,11 @@
    projects away excluded columns while retaining explicit `feature_columns` even
    when a stale `exclude` entry also names them, and streams the result to a temp parquet with
    `bounded_sink`;
+   `training_target_task_issue` (`_target_check.py`) then validates the sunk parquet's
+   target column against the configured task — a classification task pointed at a
+   continuous (or otherwise non-classifiable) target removes the temp parquet and
+   rejects HTTP 422/`contract_error` with a message naming the target column and task,
+   before any fit worker is spawned;
    `_launch_background` builds the `TrainingJob` via `build_training_job_kwargs`
    (`params` overridden by the GPU-adjusted `train_params`), creates a same-filesystem
    staging root, and starts a daemon supervisor thread around a spawn child.
@@ -239,7 +245,11 @@ live modelling-node and exported-script call. Direct/test callers that deliberat
 omit it retain the constructor-only legacy split/CV pipeline described above.
 
 1. **Prepare one eligible source** — `_prepare_data` reuses an already-sunk parquet or
-   materialises a supplied frame, validates required columns, removes null-target rows,
+   materialises a supplied frame, validates required columns and the target/task
+   pairing (`training_target_task_issue` — a continuous or non-classifiable target
+   under `task="classification"` raises the same actionable message the route gate
+   surfaces, here as a `ValueError`, covering the CLI and exported-script paths;
+   internal evaluation clones skip the re-scan), removes null-target rows,
    derives the final feature set and schema snapshot, and applies GLM term narrowing
    and monotonicity validation once before planning.
 2. **Plan once** — `_build_evaluation_plan` reads only the target or strategy key
@@ -252,9 +262,14 @@ omit it retain the constructor-only legacy split/CV pipeline described above.
 3. **Run selection evidence** — without tuning, each validation fit is an internal
    clone carrying the same plan and `fit_index`. `run_evaluation_fit` uses
    `EvaluationPlan.selection_mask`, trains only that partition, computes configured
-   metrics, and returns `EvaluationFitResult`; it never saves a deployable model,
+   metrics (a metric failure here — `ValueError`, `TypeError`, or an arithmetic error — is
+   re-raised via `_metric_stage_error` naming
+   the validation fit, target column, task, and requested metrics — these are the
+   first metrics computed on the live route, so the wrap must fire here too), and
+   returns `EvaluationFitResult`; it never saves a deployable model,
    feature contract, MLflow run, SHAP/PDP, or full diagnostics. No-validation performs
-   zero selection fits.
+   zero selection fits. Internal clones skip `_prepare_data`'s target/task re-scan —
+   the outer job already gated the shared prepared source.
 4. **Run bounded tuning when configured** — `_run_tuning_trials` writes/reloads the
    tuning plan, uses one seeded Optuna `TPESampler` through sequential ask/tell, runs
    every baseline/sampled candidate on the exact same validation fits, persists every
@@ -269,7 +284,11 @@ omit it retain the constructor-only legacy split/CV pipeline described above.
    `EvaluationPlan.final_mask`: every development row is training data and final-test
    rows, if any, occupy the internal holdout partition. `_train_model` resolves the
    algorithm and projections; `_compute_metrics` reads the chosen diagnostics
-   partition once and computes primary metrics plus optional diagnostics. The outer
+   partition once and computes primary metrics plus optional diagnostics (a
+   metric failure (`ValueError`, `TypeError`, or an arithmetic error) from mandatory
+   metric computation is re-raised with the evaluation
+   set, target column, task, and requested metric names wrapped around the library
+   error, so a bare sklearn message never crosses the worker boundary). The outer
    orchestrator maps internal partition names to public `development`/`final_test`
    labels, attaches the evaluation/tuning reports, and saves the native model plus
    feature contract.
@@ -544,9 +563,14 @@ rows/features) and retry.
   block via `_record_diag_error`; recorded in `diagnostics_errors`, never propagates to
   fail the whole run.
 - **`ValueError`** — the dominant validation error across the package: invalid
-  evaluation/tuning evidence, missing required columns, an empty training DataFrame,
-  all-non-finite metric inputs, a missing offset column at predict time, or GLM terms
-  referencing absent columns. `_run_training_process_job` maps a bare `ValueError` from
+  evaluation/tuning evidence, missing required columns, a target/task mismatch
+  (`training_target_task_issue`), an empty training DataFrame, all-non-finite metric
+  inputs, a missing offset column at predict time, or GLM terms referencing absent
+  columns. A metric failure (`ValueError`, `TypeError`, or an arithmetic error —
+  never `MemoryError`, which keeps its memory taxonomy) in
+  `TrainingJob._compute_metrics` is re-raised as a `ValueError` naming the evaluation
+  set, target column, task, and requested metrics, chaining the original.
+  `_run_training_process_job` maps a bare `ValueError` from
   `TrainingJob.run()` to a `contract_error` failure payload (distinct from the
   catch-all `error`), and the parent supervisor persists that terminal reason.
 - **Execution-engine exceptions** (`ExecutionCancelledError`,
@@ -566,6 +590,21 @@ rows/features) and retry.
   CatBoost-flavoured exceptions (NaN/Inf hint, feature-count mismatch), prefixes
   `OSError` as a model-save failure, and otherwise falls back to
   `f"Training failed ({exc_type}): {msg}"`.
+- **Curated failure surfacing** — `_worker_failure_payload` takes an explicit
+  `user_facing` decision from every call site and stamps the payload's
+  `user_message` field (`_worker_protocol.WORKER_USER_MESSAGE_FIELD`) only for
+  deliberately curated, haute-authored wording: the cancelled/memory-limit/
+  contract-error/bounded-memory branches of `_known_training_worker_failure`, the
+  `ValueError` validation channel (which carries the gate and metric-wrap
+  messages), and the recognised shapes of `_classified_friendly_error`
+  (`_friendly_error`'s classifying twin). The unrecognised fallback
+  (`"Training failed ({exc_type}): {msg}"` — an arbitrary third-party
+  exception's text) and raw `MemoryError` text are NOT stamped and keep the
+  typed "Isolated worker raised {type}: {message}" wrapper surface. For stamped
+  failures the supervisor surfaces the field verbatim as the job's terminal
+  message; the wrapper text is retained in the diagnostic `error` field. See
+  [background-jobs](../background-jobs/low-level.md) for the supervisor side of
+  the contract.
 - **`_record_diag_error`** is the single call site that converts an optional-diagnostic
   exception into a structured `diagnostics_errors` entry (`diagnostic`, `error`,
   `error_type`) plus a `logger.warning` — used identically for SHAP,
@@ -658,6 +697,16 @@ Tests live in the flat `tests/` directory rather than mirroring the package layo
 - `test_algorithms_coverage.py` — targeted coverage of `_algorithms.py` /
   `_training_job.py` paths not hit elsewhere (platform-specific RSS reads, CatBoost and
   MLflow mocked out via `unittest.mock`).
+- `test_target_task_gate.py` — `training_target_task_issue` unit coverage (discrete
+  dtypes pass, integral floats pass, fractional floats and non-classifiable dtypes
+  gate with messages naming the target column, task, and call to action; regression
+  task untouched), the `TrainingJob._prepare_data` gate on both the legacy and
+  evaluation-plan pipelines, the metric-stage `ValueError` context wrap on both the
+  final-fit and validation-fit sites, and the route-side pre-dispatch gate
+  (`TestPreDispatchServiceGate`: 422 → `contract_error`, temp-parquet removal on the
+  issue and scan-failure paths, and the wiring test proving the gate precedes
+  `_launch_background`). Its `TestWorkerBoundaryUserMessage` covers both supervisor
+  sides of the curated-message contract.
 - Narrow, remediation-pinned regression suites: `test_training_memory_safety.py`,
   `test_training_temp_cleanup.py`, `test_training_split_streaming.py`,
   `test_training_null_target_fused_split.py`, `test_training_catboost_projection.py`,

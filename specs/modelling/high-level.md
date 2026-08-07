@@ -137,6 +137,22 @@ Invariants that always hold:
   exported: an unset loss/family, Tweedie variance power, Negative Binomial `theta`, GLM
   factor set, or elastic-net L1 ratio is rejected with an actionable message rather than
   silently defaulting.
+- A classification task never trains against a continuous target. Once training data is
+  materialised, the target column's values are checked against the task — in the train
+  route before the fit worker is dispatched, and again inside `TrainingJob` itself so
+  the CLI and exported-script paths share the same gate. A float or decimal target with
+  fractional values (or a target whose type cannot serve as class labels) under
+  `task="classification"` is rejected with a message naming the target column and task
+  and directing the user to choose a discrete target or switch the task to regression,
+  instead of failing later inside a metrics library with a context-free error. The gate
+  keys on the configured task only — a classification-flavoured objective under a
+  regression task (e.g. a binomial GLM defaulting to AUC/log-loss metrics) is not
+  gated, because a binomial target may legitimately be a continuous proportion; that
+  path is covered by the metric-stage context wrap below. Non-finite float values
+  are deliberately excluded from the fractional scan: NaN is treated as missing
+  (null-target handling and the metric stage's non-finite filtering own it), so an
+  all-NaN or infinite-valued target passes the gate and fails downstream inside the
+  wrapped metric stage with its own bounded message.
 - Every trained model is saved together with a feature contract pinning its exact
   feature order, dtypes, categorical domains, target, and offset column. Any drift
   detected later (train vs. score) raises rather than producing a plausible-looking
@@ -195,6 +211,20 @@ trainable, plausible-looking model — just not the one the user intended.
 `training_objective_issue` gates this identically at config-build time and at the
 route's upfront validation, so the two paths cannot drift apart on what counts as
 "complete."
+
+The same posture extends to the target/task pairing and to the worker error boundary.
+A continuous target under a classification task used to train all the way to the
+metric stage and surface sklearn's bare "continuous format is not supported" — no
+target column, no task, no fix — so `_target_check.training_target_task_issue` gates
+the pairing with the objects the user can act on (target column, task), at both the
+route and `TrainingJob` layers. And because the fit runs in a spawn child, message
+quality has to survive the process boundary: the child stamps every curated failure
+message on the failure payload's `user_message` field, and the parent supervisor
+surfaces that wording verbatim instead of re-wrapping it in worker jargon. This is the
+inverse twin of the sanitise-by-default posture: sanitisation strips detail that would
+leak (paths, secrets, raw stderr); the user-message contract adds detail that informs
+(the user-model objects involved and a call to action). Both are properties of the
+same error-surface chokepoints.
 
 RustyStats does not estimate either GLM dispersion parameter it accepts as a fit
 argument — an unset Negative Binomial `theta` silently fits at 1.0, an unset Tweedie
@@ -298,6 +328,40 @@ browser without a server or JS bundle.
   HTTP classification (`http_status_code` 422 for missing required columns or
   bounded-streaming unsupported; 500 for a generic failure) on the terminal status,
   and the job transitions to `contract_error`/`error` accordingly.
+- A target column whose values cannot serve the configured task (a continuous target
+  under classification) is rejected after materialisation but before the fit worker is
+  dispatched: the job transitions to `contract_error` with a message naming the target
+  column and task and directing the user to choose a discrete target or switch the
+  task to regression.
+- Failures that cross the training/dispersion worker boundary surface the child's
+  wording, not worker jargon — but only when that wording is deliberately curated.
+  The child's failure mapper marks haute-authored messages (the gates, the metric
+  wrap, validation `ValueError`s, and the recognised friendly-error shapes) on the
+  payload's `user_message` field, and the parent supervisor surfaces that message
+  verbatim as the job's terminal message — the internal
+  "Isolated worker raised {type}: …" wrapper text is never shown for those
+  failures. An unrecognised third-party exception's text is not vouched for: it
+  keeps the typed wrapper surface, as do failures that never produce a payload (a
+  child crash, a parent-side timeout). The field is a routing contract, not a
+  per-message content guarantee: message quality is enforced at the producing
+  sites (the gates and wraps in this component, pinned by their tests). Error
+  types and bounded tracebacks stay in diagnostic fields; the curated messages
+  carry domain context (target column, task, metrics) and never secrets or raw
+  tracebacks — a filesystem path appears only where the path itself is the
+  actionable object (a file-not-found or model-save failure).
+- A mandatory metric-evaluation failure names the evaluation set (using the
+  evaluation plan's public `development`/`final test` labels on that pipeline),
+  target column, task, and requested metrics around the underlying library error,
+  with the instruction to fix the target/task/metric pairing — a bare library
+  message cannot reach the UI from the metric stage. This wrap covers every
+  mandatory metric site: the evaluation plan's validation fits (the first metrics
+  computed on the live route), the final fit's diagnostics-partition metrics, and
+  the separate validation re-read. It catches the failure classes pure metric
+  computation produces (`ValueError`, `TypeError`, arithmetic errors — never
+  `MemoryError`, which keeps its memory taxonomy) and deliberately trades
+  terminal-reason precision for context: a wrapped failure surfaces as
+  `contract_error` with the domain objects named and the original chained, even
+  when the underlying cause was an internal bug.
 - Once a background training run has started, every terminal outcome (`completed`,
   `cancelled`, `timed_out`, `memory_limited`, `contract_error`, `error`) is reflected
   both in the job's status and, for HTTP-raised failures, in the response — the two are

@@ -70,6 +70,23 @@ logger = get_logger(component="training_job")
 
 _MODEL_EXT_MAP: dict[str, str] = {"catboost": ".cbm", "glm": ".rsglm"}
 
+# The failure classes a target/metric/dtype mismatch produces inside pure
+# metric computation. The metric-stage wrap deliberately trades
+# terminal-reason precision for context: any of these surfaces as a
+# ValueError (mapped to `contract_error`) naming the target, task, and
+# metrics, with the original chained — even when the underlying cause was an
+# internal bug. MemoryError is intentionally NOT included: it must keep its
+# `memory_limited` taxonomy.
+_METRIC_STAGE_FAILURE_TYPES: tuple[type[Exception], ...] = (
+    ValueError,
+    TypeError,
+    ArithmeticError,
+)
+
+# Internal partition names → the labels the evaluation-plan pipeline reports
+# publicly. The legacy constructor-only pipeline reports internal names as-is.
+_PUBLIC_EVALUATION_SET_LABELS = {"holdout": "final test", "train": "development"}
+
 
 def model_contract_filename(model_name: str) -> str:
     """Per-model feature-contract filename (remediation 4b.9).
@@ -898,13 +915,19 @@ class TrainingJob:
                 prepared.features,
                 offset=self.offset,
             )
-            metrics = compute_metrics(
-                validation[self.target].to_numpy(),
-                predictions,
-                validation[self.weight].to_numpy() if self.weight else None,
-                self.metrics,
-                variance_power=self.variance_power,
-            )
+            try:
+                metrics = compute_metrics(
+                    validation[self.target].to_numpy(),
+                    predictions,
+                    validation[self.weight].to_numpy() if self.weight else None,
+                    self.metrics,
+                    variance_power=self.variance_power,
+                )
+            except _METRIC_STAGE_FAILURE_TYPES as exc:
+                raise self._metric_stage_error(
+                    exc,
+                    evaluation_set=f"validation fit {self.evaluation_fit_index}",
+                ) from exc
             return EvaluationFitResult(
                 1,
                 self.evaluation_fit_index,
@@ -1480,6 +1503,30 @@ class TrainingJob:
             )
             self._validate_columns(schema_df)
 
+            # The target's values must be able to serve the configured task.
+            # The train route runs the same gate before dispatching the fit
+            # worker; repeating it here covers the CLI and exported-script
+            # paths, and the shared function keeps the two from drifting.
+            # Internal evaluation clones (selection, tuning, and the final
+            # fit — all constructed with evaluation_plan set) re-read a
+            # prepared source the outer job already gated, so they skip the
+            # redundant per-fit target re-scan.
+            if self.evaluation_plan is None:
+                from haute.modelling._target_check import training_target_task_issue
+
+                target_task_issue = training_target_task_issue(
+                    pl.scan_parquet(data_path),
+                    target=self.target,
+                    task=self.task,
+                    collect=lambda lf: _training_streaming_collect(
+                        lf,
+                        stage_name="training_target_task_check",
+                        execution_context=execution_context,
+                    ),
+                )
+                if target_task_issue is not None:
+                    raise ValueError(target_task_issue)
+
             # Null targets cannot be passed to trainers.  External parquet inputs
             # keep the filter fused into the split sink to avoid an extra wide
             # clean file; owned temp inputs are already materialized, so publish a
@@ -1915,6 +1962,31 @@ class TrainingJob:
             execution_context=execution_context,
         )
 
+    def _metric_stage_error(self, exc: Exception, *, evaluation_set: str) -> ValueError:
+        """Wrap a mandatory metric failure with the user-model objects involved.
+
+        The library error alone ("continuous format is not supported") names
+        neither the target column nor the task nor a fix; this is a
+        user-facing boundary, so the wrapped message must carry all three.
+        The library detail goes last: worker failure messages are truncated
+        to a bounded length, and the call to action must survive that.
+        On the evaluation-plan pipeline the internal partition names map to
+        the labels its reports use publicly (`development`/`final test`);
+        the legacy constructor-only pipeline reports internal names as-is.
+        """
+        label = evaluation_set
+        if self.evaluation_plan is not None:
+            label = _PUBLIC_EVALUATION_SET_LABELS.get(evaluation_set, evaluation_set)
+        metric_list = ", ".join(self.metrics)
+        return ValueError(
+            f"Could not evaluate the trained model on the {label} data. The "
+            f"metrics ({metric_list}) were computed against target column "
+            f"'{self.target}' with task '{self.task}'. Check that the target's values "
+            "match the task and metrics (AUC and log loss need a discrete 0/1 target), "
+            f"then adjust the target column, the task, or the reported metrics. "
+            f"Underlying error: {exc}"
+        )
+
     def _compute_metrics(
         self,
         split_result: _SplitResult,
@@ -1989,13 +2061,16 @@ class TrainingJob:
 
         # Primary metrics from the diagnostics set
         vp = self.variance_power
-        metrics = compute_metrics(
-            y_true,
-            y_pred,
-            w,
-            self.metrics,
-            variance_power=vp,
-        )
+        try:
+            metrics = compute_metrics(
+                y_true,
+                y_pred,
+                w,
+                self.metrics,
+                variance_power=vp,
+            )
+        except _METRIC_STAGE_FAILURE_TYPES as exc:
+            raise self._metric_stage_error(exc, evaluation_set=diagnostics_set) from exc
 
         # When holdout is present, diagnostics were computed on holdout.
         # Also compute validation metrics separately so both are available.
@@ -2014,13 +2089,16 @@ class TrainingJob:
                 val_y_true = val_df[self.target].to_numpy()
                 val_y_pred = algo.predict(model, val_df, features, offset=self.offset)
                 val_w = val_df[self.weight].to_numpy() if self.weight else None
-                metrics = compute_metrics(
-                    val_y_true,
-                    val_y_pred,
-                    val_w,
-                    self.metrics,
-                    variance_power=vp,
-                )
+                try:
+                    metrics = compute_metrics(
+                        val_y_true,
+                        val_y_pred,
+                        val_w,
+                        self.metrics,
+                        variance_power=vp,
+                    )
+                except _METRIC_STAGE_FAILURE_TYPES as exc:
+                    raise self._metric_stage_error(exc, evaluation_set="validation") from exc
                 del val_df
 
         # Double-lift

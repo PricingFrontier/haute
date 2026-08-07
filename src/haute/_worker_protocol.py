@@ -38,6 +38,18 @@ from haute._worker_isolation import (
 )
 
 SCHEMA_VERSION = 1
+# Curated-message routing key. A failure payload whose ``fields`` carry this
+# key marks the value as the message the child produced for the user; the
+# parent supervisor surfaces it verbatim as the job's terminal message instead
+# of the typed wrapper text ("Isolated worker raised {type}: {message}").
+# The key routes the child's wording across the boundary — the content
+# expectations (name the user-model objects involved, carry a call to action,
+# no secrets or raw tracebacks) are enforced by the producing components at
+# their curation sites, not by this transport. The key name is reserved under
+# schema version 1: the change is additive (payloads that never set it keep
+# the wrapper surface), and no version-1 producer used the name before the
+# reservation.
+WORKER_USER_MESSAGE_FIELD = "user_message"
 WORKER_EVENT_QUEUE_CAPACITY = 64
 WORKER_MAX_EVENTS = 10_000
 WORKER_MAX_EVENT_BYTES = 64 * 1024
@@ -222,6 +234,11 @@ class WorkerFailurePayload:
         _require_message(self.message, "message")
         _require_bounded_text(self.traceback, "traceback", WORKER_MAX_TRACEBACK_LENGTH)
         _validate_plain_data(self.fields, "fields")
+        # A curated user-facing message is promoted to the job's terminal
+        # message by the parent supervisor, so it carries the same bound as
+        # the payload message itself.
+        if type(self.fields) is dict and WORKER_USER_MESSAGE_FIELD in self.fields:
+            _require_message(self.fields[WORKER_USER_MESSAGE_FIELD], "fields.user_message")
         if len(pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL)) > WORKER_MAX_METADATA_BYTES:
             raise WorkerProtocolError("serialized failure payload exceeds byte limit")
 
