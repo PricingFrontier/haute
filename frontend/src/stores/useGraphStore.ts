@@ -159,10 +159,10 @@ export interface GraphStore {
   /**
    * Restore the complete initial state between tests — never call in app
    * code. Deliberately un-gated, matching the established ForTests
-   * precedent (useOutputWriteStore et al.). Callers must let any in-flight
-   * VC undo/redo promises settle before resetting: their catch/finally
-   * handlers `set()` unconditionally and would write stale VC state over a
-   * fresh reset.
+   * precedent (useOutputWriteStore et al.). Throws while a VC undo/redo is
+   * in flight (`vcBusy`): those entries' catch/finally handlers `set()`
+   * unconditionally, so a reset under them would be silently overwritten
+   * with stale VC state — settle the promise first.
    */
   resetForTests: () => void
 }
@@ -1043,15 +1043,24 @@ const useGraphStore = create<GraphStore>()((set, get) => {
 
     // ── Test-only ───────────────────────────────────────────────────────
 
-    resetForTests: () => set(createInitialGraphState()),
+    resetForTests: () => {
+      if (get().vcBusy) {
+        throw new Error(
+          "resetForTests called while a VC undo/redo is in flight (vcBusy). " +
+            "Settle that promise first — its completion handlers set() unconditionally " +
+            "and would overwrite the fresh reset with stale VC state.",
+        )
+      }
+      set(createInitialGraphState())
+    },
   }
 })
 
 // Convenience wrapper for suites that import the store statically (parity
-// with resetOutputWriteStoreForTests). The consolidation test cannot use it —
-// it reaches the store through a guarded dynamic import for importError
-// diagnostics — so its first consumers are the other graph-store suites as
-// they migrate off partial setState resets.
+// with resetOutputWriteStoreForTests); consumed by the undoAtomicity and
+// fieldEditUndo suites. The consolidation test cannot use it — it reaches
+// the store through a guarded dynamic import for importError diagnostics —
+// and calls the store action directly instead.
 export const resetGraphStoreForTests = () =>
   useGraphStore.getState().resetForTests()
 

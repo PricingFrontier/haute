@@ -18,27 +18,9 @@
  */
 import { describe, it, expect, beforeEach } from "vitest"
 import { act } from "@testing-library/react"
-import useGraphStore from "../useGraphStore"
+import useGraphStore, { resetGraphStoreForTests } from "../useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 import type { Node, Edge } from "@xyflow/react"
-
-function resetStore() {
-  useGraphStore.setState({
-    nodes: [],
-    edges: [],
-    preamble: "",
-    lastSavedSnapshot: null,
-    undoStack: [],
-    redoStack: [],
-    structuralVersion: 0,
-    structuralFingerprint: "nodes:||edges:||preamble:\"\"",
-    panelContextVersion: 0,
-    panelContextFingerprint: "nodes:||edges:",
-    persistedFingerprint: "nodes:[]|edges:[]|preamble:\"\"",
-    savedPersistedFingerprint: null,
-    dirty: false,
-  })
-}
 
 /** Load a graph without history, then clear the stacks for a clean baseline. */
 function seed(nodes: Node[], edges: Edge[]) {
@@ -64,7 +46,7 @@ const ids = (arr: { id: string }[]) => arr.map((x) => x.id).sort()
 
 describe("useGraphStore — undo atomicity", () => {
   beforeEach(() => {
-    resetStore()
+    resetGraphStoreForTests()
   })
 
   it("single-node delete (with edges) is ONE undo entry; one undo restores node AND edges", () => {

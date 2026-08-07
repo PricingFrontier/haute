@@ -16,23 +16,11 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, act } from "@testing-library/react"
-import useGraphStore from "../useGraphStore"
+import useGraphStore, { resetGraphStoreForTests } from "../useGraphStore"
 import { makeNode } from "../../test-utils/factories"
 import CommittedTextField from "../../components/form/CommittedTextField"
 
 const ID = "n1"
-
-function reset() {
-  useGraphStore.setState({
-    nodes: [],
-    edges: [],
-    preamble: "",
-    lastSavedSnapshot: null,
-    undoStack: [],
-    redoStack: [],
-    dirty: false,
-  })
-}
 
 /** Minimal faithful stand-in for a sidebar label/config field: its value comes
  *  from the store, and a commit routes through the SAME history-aware setNodes
@@ -67,7 +55,7 @@ function currentLabel(): string {
 }
 
 describe("useGraphStore — one undo per inline field edit", () => {
-  beforeEach(reset)
+  beforeEach(resetGraphStoreForTests)
   afterEach(cleanup)
 
   it("a whole field edit is ONE undo step; one undo restores the pre-edit value", () => {

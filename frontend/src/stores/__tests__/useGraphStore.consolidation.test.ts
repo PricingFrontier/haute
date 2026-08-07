@@ -114,6 +114,12 @@ export interface GraphStoreShape {
   lastSavedSnapshot: GraphSnapshot | null
   undoStack: HistoryEntryShape[]
   redoStack: HistoryEntryShape[]
+  /** True while a VC entry's async undo/redo runs — history is locked. */
+  vcBusy: boolean
+  structuralVersion: number
+  structuralFingerprint: string
+  panelContextVersion: number
+  panelContextFingerprint: string
   persistedFingerprint: string
   savedPersistedFingerprint: string | null
   dirty: boolean
@@ -245,6 +251,69 @@ describe("useGraphStore — consolidation", () => {
       expect(s.undoStack).toEqual([])
       expect(s.redoStack).toEqual([])
       expect(s.dirty).toBe(false)
+    })
+
+    it("resetForTests restores every data field after all are dirtied (empirical completeness)", () => {
+      const store = requireStore()
+      const dataFieldsOf = (s: GraphStoreShape): Record<string, unknown> =>
+        Object.fromEntries(
+          Object.entries(s).filter(([, v]) => typeof v !== "function"),
+        )
+
+      act(() => {
+        store.getState().resetForTests()
+      })
+      const pristine = dataFieldsOf(store.getState())
+
+      // One non-initial value per CURRENT data field. The key-set assertion
+      // below forces this map to grow whenever the store gains a data field,
+      // keeping the completeness claim empirical rather than merely typed.
+      const dirtySnapshot: GraphSnapshot = {
+        nodes: [makeNode("dirty-snap")],
+        edges: [],
+        preamble: "dirty",
+        submodels: {},
+      }
+      const dirtied: Record<string, unknown> = {
+        nodes: [makeNode("dirty-node")],
+        edges: [makeEdge("a", "b", { id: "dirty-edge" })],
+        preamble: "import dirty",
+        submodels: { sub: {} },
+        lastSavedSnapshot: dirtySnapshot,
+        undoStack: [dirtySnapshot],
+        redoStack: [dirtySnapshot],
+        vcBusy: true,
+        structuralVersion: 41,
+        structuralFingerprint: "dirty-structural",
+        panelContextVersion: 43,
+        panelContextFingerprint: "dirty-panel",
+        persistedFingerprint: "dirty-persisted",
+        savedPersistedFingerprint: "dirty-saved",
+        dirty: true,
+      }
+      expect(new Set(Object.keys(dirtied))).toEqual(new Set(Object.keys(pristine)))
+
+      act(() => {
+        store.setState(dirtied as Partial<GraphStoreShape>)
+      })
+      const dirtiedState = dataFieldsOf(store.getState())
+      for (const key of Object.keys(pristine)) {
+        expect(dirtiedState[key], `field not actually dirtied: ${key}`).not.toEqual(pristine[key])
+      }
+
+      // vcBusy=true marks a VC undo/redo in flight — resetting under it
+      // would be overwritten by the entry's completion handlers, so the
+      // store refuses loudly rather than resetting incompletely.
+      expect(() => store.getState().resetForTests()).toThrow(/vcBusy/)
+
+      // Settle (as a finished VC promise would), then the reset is total.
+      act(() => {
+        store.setState({ vcBusy: false })
+      })
+      act(() => {
+        store.getState().resetForTests()
+      })
+      expect(dataFieldsOf(store.getState())).toEqual(pristine)
     })
 
     it("exposes the required action functions", () => {
