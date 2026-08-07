@@ -131,6 +131,9 @@ export interface GraphStoreShape {
   isDirty: () => boolean
   canUndo: () => boolean
   canRedo: () => boolean
+
+  // Test-only — restores the complete initial state
+  resetForTests: () => void
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -174,17 +177,10 @@ function requireStore(): UseGraphStore {
 }
 
 function reset() {
-  const store = requireStore()
-  store.setState({
-    nodes: [],
-    edges: [],
-    preamble: "",
-    submodels: {},
-    lastSavedSnapshot: null,
-    undoStack: [],
-    redoStack: [],
-    dirty: false,
-  })
+  // Store-level reset covers the FULL state shape (including vcBusy and the
+  // version/fingerprint caches), so tests here cannot leak state into each
+  // other under the nightly shuffle lane even as the store grows new keys.
+  requireStore().getState().resetForTests()
 }
 
 // ─────────────────────────────────────────────────────────────────

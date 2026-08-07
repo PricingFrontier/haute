@@ -155,6 +155,9 @@ export interface GraphStore {
   isDirty: () => boolean
   canUndo: () => boolean
   canRedo: () => boolean
+
+  /** Restore the complete initial state between tests — never call in app code. */
+  resetForTests: () => void
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────
@@ -448,17 +451,29 @@ function computePanelContextPatch(
 
 // ─── Store ───────────────────────────────────────────────────────────────
 
-const useGraphStore = create<GraphStore>()((set, get) => {
-  /**
-   * Push the current pre-mutation state onto undoStack, clear redoStack,
-   * and respect MAX_HISTORY by dropping the oldest entry when overflowing.
-   */
-  function pushSnapshotInternal(): HistoryEntry[] {
-    const { undoStack } = get()
-    const snap = captureGraphSnapshot(get())
-    return appendHistoryEntry(undoStack, snap)
-  }
-
+/**
+ * Complete initial state slice — the single source of truth for both store
+ * creation and `resetForTests`, so a state key added here can never be
+ * silently omitted from test resets.
+ */
+function createInitialGraphState(): Pick<
+  GraphStore,
+  | "nodes"
+  | "edges"
+  | "preamble"
+  | "submodels"
+  | "lastSavedSnapshot"
+  | "undoStack"
+  | "redoStack"
+  | "vcBusy"
+  | "structuralVersion"
+  | "structuralFingerprint"
+  | "panelContextVersion"
+  | "panelContextFingerprint"
+  | "persistedFingerprint"
+  | "savedPersistedFingerprint"
+  | "dirty"
+> {
   return {
     nodes: [],
     edges: [],
@@ -475,6 +490,22 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     persistedFingerprint: computePersistedFingerprint([], [], "", {}),
     savedPersistedFingerprint: null,
     dirty: false,
+  }
+}
+
+const useGraphStore = create<GraphStore>()((set, get) => {
+  /**
+   * Push the current pre-mutation state onto undoStack, clear redoStack,
+   * and respect MAX_HISTORY by dropping the oldest entry when overflowing.
+   */
+  function pushSnapshotInternal(): HistoryEntry[] {
+    const { undoStack } = get()
+    const snap = captureGraphSnapshot(get())
+    return appendHistoryEntry(undoStack, snap)
+  }
+
+  return {
+    ...createInitialGraphState(),
 
     // ── History-aware actions ────────────────────────────────────────────
 
@@ -1004,7 +1035,14 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     canUndo: () => get().undoStack.length > 0 && !get().vcBusy,
 
     canRedo: () => get().redoStack.length > 0 && !get().vcBusy,
+
+    // ── Test-only ───────────────────────────────────────────────────────
+
+    resetForTests: () => set(createInitialGraphState()),
   }
 })
+
+export const resetGraphStoreForTests = () =>
+  useGraphStore.getState().resetForTests()
 
 export default useGraphStore
