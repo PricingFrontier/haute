@@ -155,6 +155,16 @@ export interface GraphStore {
   isDirty: () => boolean
   canUndo: () => boolean
   canRedo: () => boolean
+
+  /**
+   * Restore the complete initial state between tests — never call in app
+   * code. Deliberately un-gated, matching the established ForTests
+   * precedent (useOutputWriteStore et al.). Throws while a VC undo/redo is
+   * in flight (`vcBusy`): those entries' catch/finally handlers `set()`
+   * unconditionally, so a reset under them would be silently overwritten
+   * with stale VC state — settle the promise first.
+   */
+  resetForTests: () => void
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────
@@ -448,17 +458,27 @@ function computePanelContextPatch(
 
 // ─── Store ───────────────────────────────────────────────────────────────
 
-const useGraphStore = create<GraphStore>()((set, get) => {
-  /**
-   * Push the current pre-mutation state onto undoStack, clear redoStack,
-   * and respect MAX_HISTORY by dropping the oldest entry when overflowing.
-   */
-  function pushSnapshotInternal(): HistoryEntry[] {
-    const { undoStack } = get()
-    const snap = captureGraphSnapshot(get())
-    return appendHistoryEntry(undoStack, snap)
-  }
+/**
+ * The non-function (data) keys of `GraphStore`, derived rather than
+ * enumerated: a data field added anywhere in the interface joins this type
+ * automatically, so `createInitialGraphState` fails typecheck until it
+ * initialises the new field. (A function-typed STATE field would evade the
+ * derivation by classifying as an action — keep state non-callable.)
+ */
+type GraphStoreData = Pick<
+  GraphStore,
+  {
+    [K in keyof GraphStore]: GraphStore[K] extends (...args: never[]) => unknown ? never : K
+  }[keyof GraphStore]
+>
 
+/**
+ * Complete initial state slice — the single source of truth for both store
+ * creation and `resetForTests`. The derived `GraphStoreData` return type
+ * means a data field cannot be initialised inline in the store literal
+ * without also being added (and therefore reset) here.
+ */
+function createInitialGraphState(): GraphStoreData {
   return {
     nodes: [],
     edges: [],
@@ -475,6 +495,22 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     persistedFingerprint: computePersistedFingerprint([], [], "", {}),
     savedPersistedFingerprint: null,
     dirty: false,
+  }
+}
+
+const useGraphStore = create<GraphStore>()((set, get) => {
+  /**
+   * Push the current pre-mutation state onto undoStack, clear redoStack,
+   * and respect MAX_HISTORY by dropping the oldest entry when overflowing.
+   */
+  function pushSnapshotInternal(): HistoryEntry[] {
+    const { undoStack } = get()
+    const snap = captureGraphSnapshot(get())
+    return appendHistoryEntry(undoStack, snap)
+  }
+
+  return {
+    ...createInitialGraphState(),
 
     // ── History-aware actions ────────────────────────────────────────────
 
@@ -1004,7 +1040,28 @@ const useGraphStore = create<GraphStore>()((set, get) => {
     canUndo: () => get().undoStack.length > 0 && !get().vcBusy,
 
     canRedo: () => get().redoStack.length > 0 && !get().vcBusy,
+
+    // ── Test-only ───────────────────────────────────────────────────────
+
+    resetForTests: () => {
+      if (get().vcBusy) {
+        throw new Error(
+          "resetForTests called while a VC undo/redo is in flight (vcBusy). " +
+            "Settle that promise first — its completion handlers set() unconditionally " +
+            "and would overwrite the fresh reset with stale VC state.",
+        )
+      }
+      set(createInitialGraphState())
+    },
   }
 })
+
+// Convenience wrapper for suites that import the store statically (parity
+// with resetOutputWriteStoreForTests); consumed by the undoAtomicity and
+// fieldEditUndo suites. The consolidation test cannot use it — it reaches
+// the store through a guarded dynamic import for importError diagnostics —
+// and calls the store action directly instead.
+export const resetGraphStoreForTests = () =>
+  useGraphStore.getState().resetForTests()
 
 export default useGraphStore
