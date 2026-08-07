@@ -118,20 +118,16 @@
   namespace keeps its binding limits below `/sys/fs/cgroup`. Headroom is the
   **minimum** across the process's cgroup and its ancestors up to the mount
   point (a parent's limit binds its children; a level whose controller files
-  are absent contributes nothing). Any resolution failure — unreadable or
-  malformed proc files, no matching mount, a cgroup path outside the mount
-  root — degrades a step at a time: an unresolvable cgroup path still reads
-  at the **parsed** mount point, and only unusable proc files fall back to
-  the compiled-in default mount. With several mounts of one hierarchy the
-  mount whose root most specifically contains the cgroup path wins; a walk
-  deeper than the depth limit fails open rather than reporting a partial
-  chain as complete. mountinfo octal decoding is restricted to the kernel's
-  escape set (space/tab/newline/backslash) and decoded path fields are
-  rejected on traversal or NUL content, so a hostile mount record cannot
-  redirect controller reads. Known limitation, accepted: the proc files are
-  re-parsed per probe call (admission is per-execution, not per-row, and
-  caching would mis-locate a process migrated between cgroups). `max` and the v1
-  unlimited sentinel do not clamp; negative headroom clamps to zero.
+  are absent contributes nothing). With several mounts of one hierarchy the
+  mount whose root most specifically contains the cgroup path wins. mountinfo
+  octal decoding is restricted to the kernel's escape set
+  (space/tab/newline/backslash) and decoded path fields are rejected on
+  traversal or NUL content, so a hostile mount record cannot redirect
+  controller reads. Known limitation, accepted: the proc files are re-parsed
+  per probe call (admission is per-execution, not per-row, and caching would
+  mis-locate a process migrated between cgroups). `max` and the v1 unlimited
+  sentinel do not clamp; negative headroom clamps to zero. Resolution and
+  read failures degrade per the Degraded-observation contract below.
 - **Degraded-observation contract** — one policy governs every degraded memory
   state, split by whether the value is a capacity *source* or a best-effort
   *refinement* of an independent observation:
@@ -140,6 +136,14 @@
     observed; a controller whose files are missing, unreadable, or
     non-numeric is logged (`cgroup_memory_state_incomplete` /
     `cgroup_memory_state_malformed`) and leaves the host value unchanged.
+    Self-cgroup resolution failures degrade a step at a time before reaching
+    that fail-open floor: an unresolvable cgroup path still reads at the
+    **parsed** mount point (`cgroup_self_path_unresolved`), and only unusable
+    proc files fall back to the compiled-in default mount
+    (`cgroup_self_state_unreadable`). An ancestor walk deeper than the depth
+    limit fails open outright (`cgroup_ancestor_walk_truncated`) — a partial
+    chain must never pass for a complete observation, because the dropped
+    levels nearest the mount point hold the broadest limits.
     Failing closed would refuse all adaptive admission on any host with an
     odd cgroup mount for a harm that is conditional (a real limit must exist
     *and* be smaller than the estimate), while the runtime defence-in-depth
