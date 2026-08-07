@@ -760,34 +760,61 @@ class TestWorkerBoundaryUserMessage:
         assert payload.fields["error_code"] == "memory_limit"
         assert WORKER_USER_MESSAGE_FIELD not in payload.fields
 
-    def test_unrecognised_exception_shapes_are_not_vouched(self) -> None:
-        """The generic fallback embeds arbitrary third-party text — it keeps
-        the typed wrapper surface instead of being promoted as curated."""
-        from haute.routes._train_service import _classified_friendly_error
+    def test_unexpected_exception_fallback_is_curated_without_third_party_text(self) -> None:
+        """The fallback names the fit context and exception type only — the
+        arbitrary third-party message body (which may carry internal paths)
+        stays in the diagnostic ``error`` field, and the failure remains a
+        plain system ``error``, never a ``contract_error``."""
+        from haute.routes._train_service import _friendly_error
 
-        message, recognised = _classified_friendly_error(
-            RuntimeError("failed to lock /var/lib/haute/internal/state.db")
-        )
-        assert message.startswith("Training failed (RuntimeError):")
-        assert recognised is False
+        exc = RuntimeError("failed to lock /var/lib/haute/internal/state.db")
+        message = _friendly_error(exc, context="target 'sev' (objective 'Tweedie')")
+        assert "RuntimeError" in message
+        assert "target 'sev' (objective 'Tweedie')" in message
+        assert "/var/lib" not in message
         payload = _worker_failure_payload(
-            RuntimeError("failed to lock /var/lib/haute/internal/state.db"),
+            exc,
             terminal_reason="error",
             message=message,
-            user_facing=recognised,
+            fields={"error": str(exc)},
+            user_facing=True,
         )
-        assert WORKER_USER_MESSAGE_FIELD not in payload.fields
+        assert payload.terminal_reason == "error"
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == message
+        assert payload.fields["error"] == "failed to lock /var/lib/haute/internal/state.db"
 
-    def test_recognised_friendly_shapes_are_vouched(self) -> None:
-        from haute.routes._train_service import _classified_friendly_error
+    def test_model_save_os_error_names_the_reason_not_the_staging_path(self) -> None:
+        from haute.routes._train_service import _friendly_error
 
-        for exc in (
-            FileNotFoundError("data/train.parquet"),
-            ValueError("GLM terms reference columns not present"),
-            OSError("disk full"),
-        ):
-            _message, recognised = _classified_friendly_error(exc)
-            assert recognised is True, type(exc).__name__
+        exc = OSError(28, "No space left on device", "/tmp/.haute-training-j1/output/model.cbm")
+        message = _friendly_error(exc)
+        assert "No space left on device" in message
+        assert "/tmp" not in message
+        assert "model.cbm" not in message
+
+    def test_memory_limit_failure_names_budget_and_call_to_action(self) -> None:
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+        from haute.routes._train_service import _known_training_worker_failure
+
+        exc = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=3 * 1024**3,
+            limit_bytes=2 * 1024**3,
+            job_id="abc",
+        )
+        payload = _known_training_worker_failure(
+            exc,
+            bounded_memory_prefix="Training cannot run in bounded streaming mode",
+            operation_noun="Training",
+        )
+        assert payload is not None
+        assert payload.terminal_reason == "memory_limited"
+        assert payload.fields[WORKER_USER_MESSAGE_FIELD] == payload.message
+        assert "3.0 GiB used, 2.0 GiB allowed" in payload.message
+        assert "try again" in payload.message
+        assert "training_job" not in payload.message
+        # The internal wording stays available for diagnostics.
+        assert "training_job" in payload.fields["error"]
 
     def test_overlong_curated_message_truncates_instead_of_raising(self) -> None:
         """A wrapped message beyond the 512-char worker bound must truncate at
@@ -890,7 +917,7 @@ class TestWorkerBoundaryUserMessage:
         [
             (
                 lambda: IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=None),
-                "exited without a result payload",
+                "stopped unexpectedly before returning a result",
                 "error",
             ),
             (

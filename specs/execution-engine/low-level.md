@@ -565,7 +565,11 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   (child raised a Python exception; carries `remote_type`/`remote_message`/
   `remote_traceback`), `IsolatedWorkerCrashedError` (child exited without a result;
   reclassified to `terminal_reason="memory_limited"` when the exit code looks like
-  `SIGKILL`/`SIGABRT` under a configured cap), `IsolatedWorkerTimeoutError`,
+  `SIGKILL`/`SIGABRT` under a configured cap — its message is parent-authored
+  user-facing wording, since a crashed child left no payload to curate: an
+  out-of-memory phrasing for the reclassified case, an unexpected-stop phrasing
+  otherwise, each carrying the exit code, which also stays on the exception's
+  `exitcode` attribute), `IsolatedWorkerTimeoutError`,
   `IsolatedWorkerStoppedError` (parent-requested stop; raises `ValueError` if
   constructed with `terminal_reason="completed"`, which is not a valid stop reason),
   `IsolatedWorkerMemoryLimitUnsupportedError` (platform can't enforce the requested

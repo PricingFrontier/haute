@@ -360,19 +360,27 @@ browser without a server or JS bundle.
 - Failures that cross the training/dispersion worker boundary surface the child's
   wording, not worker jargon — but only when that wording is deliberately curated.
   The child's failure mapper marks haute-authored messages (the gates, the metric
-  wrap, validation `ValueError`s, and the recognised friendly-error shapes) on the
-  payload's `user_message` field, and the parent supervisor surfaces that message
-  verbatim as the job's terminal message — the internal
-  "Isolated worker raised {type}: …" wrapper text is never shown for those
-  failures. An unrecognised third-party exception's text is not vouched for: it
-  keeps the typed wrapper surface, as do failures that never produce a payload (a
-  child crash, a parent-side timeout). The field is a routing contract, not a
-  per-message content guarantee: message quality is enforced at the producing
-  sites (the gates and wraps in this component, pinned by their tests). Error
-  types and bounded tracebacks stay in diagnostic fields; the curated messages
-  carry domain context (target column, task, metrics) and never secrets or raw
-  tracebacks — a filesystem path appears only where the path itself is the
-  actionable object (a file-not-found or model-save failure).
+  wrap, validation `ValueError`s, and the friendly-error shapes — including an
+  unexpected-error fallback that names the target/objective and the exception
+  type but not the third-party message body, and a memory-limit message giving
+  used/allowed sizes with a call to action) on the payload's `user_message`
+  field, and the parent supervisor surfaces that message verbatim as the job's
+  terminal message — the internal "Isolated worker raised {type}: …" wrapper
+  text is never shown for those failures. An arbitrary third-party exception's
+  text is never vouched for as a terminal message: the fallback wraps it in a
+  haute-authored system-error shape (still a plain `error`, never relabelled as
+  `contract_error`) and keeps the raw text in diagnostic fields. Failures that
+  never produce a payload (a child crash, a parent-side timeout) keep the
+  parent-authored wrapper surface, whose crash wording is itself written for the
+  user (out-of-memory vs. unexpected-stop phrasing, with the exit code). The
+  field is a routing contract, not a per-message content guarantee: message
+  quality is enforced at the producing sites (the gates and wraps in this
+  component, pinned by their tests). Error types and bounded tracebacks stay in
+  diagnostic fields; the curated messages carry domain context (target column,
+  task, metrics) and never secrets or raw tracebacks — a filesystem path appears
+  only where the path itself is the actionable object (a file-not-found
+  failure); a model-save failure names the OS-level reason, not the internal
+  staging path.
 - A mandatory metric-evaluation failure names the evaluation set (using the
   evaluation plan's public `development`/`final test` labels on that pipeline),
   target column, task, and requested metrics around the underlying library error,

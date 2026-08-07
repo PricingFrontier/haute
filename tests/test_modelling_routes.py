@@ -1004,20 +1004,40 @@ class TestFriendlyError:
     def test_catboost_generic(self):
         exc = type("CatBoostError", (Exception,), {})("internal pool error")
         result = _friendly_error(exc)
-        assert result.startswith("CatBoost error:")
+        assert result.startswith("CatBoost could not train the model:")
+        assert "internal pool error" in result
+
+    def test_catboost_generic_names_training_context(self):
+        exc = type("CatBoostError", (Exception,), {})("internal pool error")
+        result = _friendly_error(exc, context="target 'sev' (objective 'RMSE')")
+        assert "target 'sev' (objective 'RMSE')" in result
         assert "internal pool error" in result
 
     def test_os_error(self):
-        exc = OSError("Permission denied: /models/model.cbm")
+        """The OS-level reason is surfaced; the staging path is not."""
+        exc = OSError(13, "Permission denied", "/models/model.cbm")
         result = _friendly_error(exc)
-        assert result.startswith("Could not save model file:")
+        assert result.startswith("Training could not save its output files")
         assert "Permission denied" in result
+        assert "/models" not in result
 
-    def test_fallback_includes_type(self):
+    def test_os_error_without_strerror_names_the_type(self):
+        exc = OSError("raw single-argument message")
+        result = _friendly_error(exc)
+        assert "OSError" in result
+        assert "raw single-argument message" not in result
+
+    def test_fallback_includes_type_but_not_third_party_text(self):
         exc = RuntimeError("something unexpected")
         result = _friendly_error(exc)
         assert "RuntimeError" in result
-        assert "something unexpected" in result
+        assert "something unexpected" not in result
+        assert "error details" in result
+
+    def test_fallback_names_training_context(self):
+        exc = RuntimeError("boom")
+        result = _friendly_error(exc, context="target 'freq' (objective 'Poisson')")
+        assert result.startswith("Training of target 'freq' (objective 'Poisson') failed")
 
     def test_catboost_inf_message(self):
         """'inf' in message also triggers NaN/Inf advice."""
