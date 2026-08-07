@@ -53,7 +53,10 @@ export interface GitComparison {
  *  modal. */
 export type GitPendingAction = "save" | "commit" | null
 
-interface GitState {
+/** The store's data half. Every field added here MUST get an initial value in
+ *  `initialGitData` below (TypeScript enforces it), and `resetForTests` spreads
+ *  that object — so a new field cannot silently leak between shuffled tests. */
+interface GitData {
   /** Latest readiness signal, or null before the first load. */
   status: GitWorkingBranchResponse | null
   /** True while a status fetch is in flight (suppresses premature modal logic). */
@@ -90,7 +93,9 @@ interface GitState {
    *  pending. Distinct from `comparison` (read-only view) — a move mutates the
    *  working tree. */
   moveTarget: GitComparison | null
+}
 
+interface GitActions {
   /** Load readiness. `refresh: true` guarantees the published state comes from
    *  a request issued no earlier than the call — required after a mutation,
    *  where joining an already-in-flight request would publish pre-mutation
@@ -133,9 +138,15 @@ interface GitState {
   pullUpstream: () => Promise<GitFastForwardResponse>
   /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
   retrySync: () => Promise<GitWorkingBranchResponse | null>
+  /** Restore every `GitData` field to its initial value (test isolation only). */
+  resetForTests: () => void
 }
 
-const useGitStore = create<GitState>()((set, get) => ({
+type GitState = GitData & GitActions
+
+/** Initial value for every data field. `resetForTests` restores exactly this
+ *  object, so the reset can never drift behind the store's shape. */
+const initialGitData: GitData = {
   status: null,
   loading: false,
   statusError: null,
@@ -151,6 +162,10 @@ const useGitStore = create<GitState>()((set, get) => ({
   commitNonce: 0,
   comparison: null,
   moveTarget: null,
+}
+
+const useGitStore = create<GitState>()((set, get) => ({
+  ...initialGitData,
 
   loadStatus: (options) =>
     // Single-flight/queue/reset/stall bookkeeping lives in ./singleFlight;
@@ -257,6 +272,20 @@ const useGitStore = create<GitState>()((set, get) => ({
     set({ status })
     return status
   },
+
+  resetForTests: () => set(initialGitData),
 }))
+
+/** One-call reset of the whole git-store family between tests: the data state
+ *  plus both module-level single-flights (the status request above and the
+ *  branch loader's). Async because the loader import must stay dynamic, like
+ *  `loadBranches`' — a static import would fold the split chunk back into the
+ *  main bundle. */
+export const resetGitStoreForTests = async (): Promise<void> => {
+  resetGitStatusRequestForTests()
+  const { resetGitBranchLoaderForTests } = await import("./gitBranchLoader")
+  resetGitBranchLoaderForTests()
+  useGitStore.getState().resetForTests()
+}
 
 export default useGitStore

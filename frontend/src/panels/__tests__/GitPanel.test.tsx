@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor, within } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import { clearGitPanelCaches } from "../gitPanelCache"
-import useGitStore, { resetGitStatusRequestForTests } from "../../stores/useGitStore"
+import useGitStore, { resetGitStoreForTests } from "../../stores/useGitStore"
 import useGraphStore from "../../stores/useGraphStore"
 import useToastStore from "../../stores/useToastStore"
 
@@ -118,14 +118,13 @@ const graphSaveFork = {
 describe("GitPanel", () => {
   const defaultProps = { onClose: vi.fn() }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     // The panel's session caches are module-level (they survive remounts by
     // design) — reset them so tests stay independent.
     clearGitPanelCaches()
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
-    resetGitStatusRequestForTests()
-    useGitStore.setState({ status: null, loading: false, statusError: null, branches: [], branchesLoaded: false, branchesLoading: false, branchesError: null, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    await resetGitStoreForTests()
     // Switches record undoable VC entries on the graph store's history stacks.
     useGraphStore.setState({ dirty: false, undoStack: [], redoStack: [], vcBusy: false })
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
@@ -138,9 +137,9 @@ describe("GitPanel", () => {
     mockGetGitGraph.mockResolvedValue(emptyGraph)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
-    resetGitStatusRequestForTests()
+    await resetGitStoreForTests()
   })
 
   it("renders the panel", async () => {

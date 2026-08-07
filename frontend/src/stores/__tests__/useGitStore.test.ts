@@ -11,7 +11,7 @@ vi.mock("../../api/client", () => ({
   retryGitStorageSync: vi.fn(),
 }))
 
-import useGitStore, { resetGitStatusRequestForTests } from "../useGitStore"
+import useGitStore, { resetGitStatusRequestForTests, resetGitStoreForTests } from "../useGitStore"
 import { resetGitBranchLoaderForTests } from "../gitBranchLoader"
 import { DEFAULT_STALE_PENDING_AFTER_MS } from "../singleFlight"
 import {
@@ -38,21 +38,32 @@ const READY: GitWorkingBranchResponse = {
   user_email: "u@x.y",
 }
 
+// The store singleton is pristine at import time; resetForTests must restore
+// exactly this snapshot, however the store's shape grows.
+const PRISTINE = { ...useGitStore.getState() }
+
 describe("useGitStore", () => {
-  beforeEach(() => {
-    useGitStore.setState({
-      status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
-      branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
-    })
+  beforeEach(async () => {
+    await resetGitStoreForTests()
     vi.clearAllMocks()
-    resetGitStatusRequestForTests()
   })
-  afterEach(() => {
-    resetGitStatusRequestForTests()
+  afterEach(async () => {
+    await resetGitStoreForTests()
+  })
+
+  it("resetForTests restores every data field to its initial value", () => {
     useGitStore.setState({
-      status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
-      branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
+      status: READY, loading: true, statusError: "boom", branchesLoaded: true,
+      branchesLoading: true, branchesError: "boom", modal: "select", pendingAction: "save",
+      peekBranch: "pricing/nick/spur", branchesExpandNonce: 3, historyNonce: 4, commitNonce: 5,
+      comparison: { sha: "a", label: "A" }, moveTarget: { sha: "b", label: "B" },
+      branches: [{
+        name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
+        has_uncommitted_changes: false,
+      }],
     })
+    useGitStore.getState().resetForTests()
+    expect(useGitStore.getState()).toEqual(PRISTINE)
   })
 
   it("loadStatus stores the result and returns it", async () => {
@@ -470,9 +481,8 @@ describe("useGitStore durable-storage actions", () => {
     sync: { state: "synced", pending: 0, failure: null, message: null },
   }
 
-  beforeEach(() => {
-    resetGitStatusRequestForTests()
-    useGitStore.setState({ status: null, loading: false, statusError: null })
+  beforeEach(async () => {
+    await resetGitStoreForTests()
     vi.clearAllMocks()
   })
 
@@ -560,9 +570,8 @@ describe("useGitStore reopens the storage dialog when a background bind fails", 
     },
   })
 
-  beforeEach(() => {
-    resetGitStatusRequestForTests()
-    useGitStore.setState({ status: null, modal: null, loading: false, statusError: null })
+  beforeEach(async () => {
+    await resetGitStoreForTests()
     vi.clearAllMocks()
   })
 
