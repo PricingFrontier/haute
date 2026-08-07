@@ -12,6 +12,8 @@ from typing import Literal
 from mlflow.models import ModelSignature
 from mlflow.types import ColSpec, DataType, Schema, TensorSpec
 
+from haute.errors import HauteValidationError
+
 _POLARS_TO_MLFLOW: dict[str, DataType] = {
     "Int64": DataType.long,
     "Float64": DataType.double,
@@ -31,13 +33,13 @@ def _map_dtype(dtype: str) -> DataType:
     if dtype == "Date" or _CANONICAL_DATETIME.fullmatch(dtype):
         return DataType.datetime
     if _CANONICAL_DECIMAL.fullmatch(dtype):
-        raise ValueError(
+        raise HauteValidationError(
             f"Polars dtype {dtype!r} cannot be represented exactly in an MLflow "
             "3.x signature: MLflow has no exact Decimal scalar. Cast upstream "
             "explicitly to String for precision-preserving text or Float64 if you "
             "accept precision loss."
         )
-    raise ValueError(
+    raise HauteValidationError(
         f"Unknown polars dtype {dtype!r}. Supported dtypes: {sorted(_POLARS_TO_MLFLOW)}"
     )
 
@@ -77,21 +79,23 @@ def build_signature(
         after them).
     """
     if not features:
-        raise ValueError("features must be non-empty; a signature needs at least one input")
+        raise HauteValidationError(
+            "features must be non-empty; a signature needs at least one input"
+        )
 
     missing = [f for f in features if f not in feature_types]
     if missing:
-        raise ValueError(
+        raise HauteValidationError(
             f"Missing dtype in feature_types for: {missing}. "
             f"Every feature must have an explicit polars dtype."
         )
 
     extras = [c for c in categorical_features if c not in features]
     if extras:
-        raise ValueError(f"categorical_features contains names not in features: {extras}")
+        raise HauteValidationError(f"categorical_features contains names not in features: {extras}")
 
     if offset_name is not None and offset_name in features:
-        raise ValueError(
+        raise HauteValidationError(
             f"offset column {offset_name!r} shadows a feature name; the offset "
             "is a separate model input, not a design-matrix feature"
         )

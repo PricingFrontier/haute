@@ -8,6 +8,8 @@ from typing import Any, Literal
 
 import polars as pl
 
+from haute.errors import HauteValidationError
+
 
 @dataclass
 class SplitConfig:
@@ -26,21 +28,25 @@ class SplitConfig:
 
     def __post_init__(self) -> None:
         if not 0 <= self.validation_size < 1:
-            raise ValueError(f"validation_size must be between 0 and 1, got {self.validation_size}")
+            raise HauteValidationError(
+                f"validation_size must be between 0 and 1, got {self.validation_size}"
+            )
         if not 0 <= self.holdout_size < 1:
-            raise ValueError(f"holdout_size must be between 0 and 1, got {self.holdout_size}")
+            raise HauteValidationError(
+                f"holdout_size must be between 0 and 1, got {self.holdout_size}"
+            )
         if self.validation_size + self.holdout_size >= 1:
-            raise ValueError(
+            raise HauteValidationError(
                 f"validation_size ({self.validation_size}) + holdout_size ({self.holdout_size}) "
                 f"must be less than 1"
             )
         if self.strategy == "temporal":
             if not self.date_column:
-                raise ValueError("date_column is required for temporal split")
+                raise HauteValidationError("date_column is required for temporal split")
             if not self.cutoff_date:
-                raise ValueError("cutoff_date is required for temporal split")
+                raise HauteValidationError("cutoff_date is required for temporal split")
         if self.strategy == "group" and not self.group_column:
-            raise ValueError("group_column is required for group split")
+            raise HauteValidationError("group_column is required for group split")
 
 
 DEFAULT_SPLIT_DICT: dict[str, Any] = {
@@ -60,7 +66,7 @@ def split_data(
     :func:`split_mask` for the full 3-way partition.
     """
     if len(df) == 0:
-        raise ValueError("Cannot split an empty DataFrame")
+        raise HauteValidationError("Cannot split an empty DataFrame")
 
     if config.strategy == "random":
         return _random_split(df, config.validation_size, config.seed)
@@ -72,7 +78,7 @@ def split_data(
         assert config.group_column is not None
         return _group_split(df, config.group_column, config.validation_size, config.seed)
     else:
-        raise ValueError(f"Unknown split strategy: {config.strategy}")
+        raise HauteValidationError(f"Unknown split strategy: {config.strategy}")
 
 
 # Partition constants
@@ -100,13 +106,13 @@ def split_mask(
     (which inspect column values).
     """
     if n_rows == 0:
-        raise ValueError("Cannot split an empty DataFrame")
+        raise HauteValidationError("Cannot split an empty DataFrame")
 
     if config.strategy == "random":
         return _random_mask(n_rows, config.validation_size, config.holdout_size, config.seed)
     elif config.strategy == "temporal":
         if df is None or config.date_column is None or config.cutoff_date is None:
-            raise ValueError("Temporal split requires df, date_column, and cutoff_date")
+            raise HauteValidationError("Temporal split requires df, date_column, and cutoff_date")
         return _temporal_mask(
             df,
             config.date_column,
@@ -116,7 +122,7 @@ def split_mask(
         )
     elif config.strategy == "group":
         if df is None or config.group_column is None:
-            raise ValueError("Group split requires df and group_column")
+            raise HauteValidationError("Group split requires df and group_column")
         return _group_mask(
             df,
             config.group_column,
@@ -125,7 +131,7 @@ def split_mask(
             config.seed,
         )
     else:
-        raise ValueError(f"Unknown split strategy: {config.strategy}")
+        raise HauteValidationError(f"Unknown split strategy: {config.strategy}")
 
 
 def _random_split(
@@ -158,7 +164,7 @@ def _require_no_null_dates(df: pl.DataFrame, date_column: str) -> None:
     """
     null_count = df[date_column].null_count()
     if null_count:
-        raise ValueError(
+        raise HauteValidationError(
             f"Temporal split: date column '{date_column}' contains "
             f"{null_count} null value(s) out of {len(df)} row(s). "
             "Every row needs a non-null date to be assigned a partition — "
@@ -177,7 +183,7 @@ def _temporal_split(
     :func:`_require_no_null_dates`.
     """
     if date_column not in df.columns:
-        raise ValueError(f"Date column '{date_column}' not found in DataFrame")
+        raise HauteValidationError(f"Date column '{date_column}' not found in DataFrame")
     _require_no_null_dates(df, date_column)
 
     cutoff = pl.lit(cutoff_date).str.to_date()
@@ -224,7 +230,7 @@ def _group_split(
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Split by hashing group values — all rows in a group go to the same set."""
     if group_column not in df.columns:
-        raise ValueError(f"Group column '{group_column}' not found in DataFrame")
+        raise HauteValidationError(f"Group column '{group_column}' not found in DataFrame")
 
     unique_groups = df[group_column].unique().to_list()
     test_groups = _assign_group_split(unique_groups, validation_size, seed)
@@ -284,7 +290,7 @@ def _temporal_mask(
     :func:`_require_no_null_dates`.
     """
     if date_column not in df.columns:
-        raise ValueError(f"Date column '{date_column}' not found in DataFrame")
+        raise HauteValidationError(f"Date column '{date_column}' not found in DataFrame")
     _require_no_null_dates(df, date_column)
     cutoff = pl.lit(cutoff_date).str.to_date()
     date_col = pl.col(date_column)
@@ -333,7 +339,7 @@ def _group_mask(
 ) -> pl.Series:
     """Int8 partition mask by group hashing."""
     if group_column not in df.columns:
-        raise ValueError(f"Group column '{group_column}' not found in DataFrame")
+        raise HauteValidationError(f"Group column '{group_column}' not found in DataFrame")
 
     import numpy as np
 

@@ -45,6 +45,7 @@ from haute._source_cache import (
 from haute.routes._background_jobs import CancellableJobRegistry, SingleFlightCoordinator
 from haute.routes._job_lifecycle import JobLifecycle, require_job_status
 from haute.routes._job_store import get_job_store
+from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._runtime_path_errors import runtime_path_http_exception
 from haute.schemas import (
     InputCacheBuildRequest,
@@ -364,8 +365,11 @@ def _run_build(
         lifecycle.transition(
             job_id,
             to="memory_limited",
-            message="Input snapshot build exceeded its memory budget.",
+            # Shared user-facing shape (matching training and auto-range);
+            # str(exc) names the internal operation and stays diagnostic.
+            message=memory_limit_user_message(exc, operation_noun="The input snapshot build"),
             fields={
+                "error": str(exc),
                 "error_code": "memory_limit",
                 "progress": {
                     **_progress_payload(store.require_job(job_id)).model_dump(

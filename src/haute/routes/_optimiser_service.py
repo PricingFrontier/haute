@@ -109,6 +109,7 @@ from haute.routes._job_lifecycle import (
     require_job_status,
 )
 from haute.routes._job_store import JobStore, register_artifact_cleaner
+from haute.routes._memory_messages import memory_limit_user_message
 from haute.routes._optimiser_limits import (
     enforce_frontier_compute_budget,
     limited_frontier_payload,
@@ -395,7 +396,12 @@ def _null_value_detail_from_counts(
 def _memory_limit_http_exception(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
 ) -> HTTPException:
-    return HTTPException(status_code=507, detail=exc.to_payload())
+    detail = exc.to_payload()
+    # str(exc) names the internal operation and raw byte counts; author the
+    # public message from the structured attributes via the shared shape
+    # (matching the training and input-snapshot surfaces).
+    detail["message"] = memory_limit_user_message(exc, operation_noun="Auto-range")
+    return HTTPException(status_code=507, detail=detail)
 
 
 def _is_memory_limit_http_exception(exc: HTTPException) -> bool:
@@ -416,6 +422,12 @@ def _normalise_memory_limit_payload(detail: object) -> dict[str, object]:
 
 
 def _memory_limit_message(payload: Mapping[str, object]) -> str:
+    # A "message" key can only have been stamped by _memory_limit_http_exception
+    # (the exceptions' to_payload() carries no message) — prefer that curated
+    # wording so the job's terminal message matches the HTTP surface.
+    message = payload.get("message")
+    if isinstance(message, str) and message:
+        return message
     reason = payload.get("reason")
     if isinstance(reason, str) and reason:
         return f"Auto-range exceeded its memory budget ({reason})."

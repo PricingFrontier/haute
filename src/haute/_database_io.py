@@ -23,12 +23,13 @@ from haute._credential_security import (
     CredentialMaterialError,
     validate_credential_free_uri,
 )
+from haute._validation_error import HauteValidationError
 
 if TYPE_CHECKING:
     from haute._source_cache import SourceCacheBuildContext
 
 
-class DatabaseConfigError(ValueError):
+class DatabaseConfigError(HauteValidationError):
     """A database source cannot be resolved safely."""
 
 

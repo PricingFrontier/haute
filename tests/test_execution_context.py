@@ -4773,7 +4773,14 @@ def test_training_start_maps_admission_failure_to_http_507(
     assert job["error_code"] == "memory_limit"
     assert job["error_detail"]["profile"] == "training_prep"
     assert job["error_detail"]["reason"] == "process_rss_limit_exceeded"
-    assert "process_rss_limit_exceeded" in job["error"]
+    # The public message/error is the shared curated admission wording; the
+    # internal reason string stays in error_detail only.
+    assert job["error"] == (
+        "Training was not started because the server does not have enough free "
+        "memory for it (the server is already using 65.0 MiB of its 64.0 MiB "
+        "memory cap). Wait for other work to finish, reduce the data size, or "
+        "run on a server with more memory, then try again."
+    )
 
 
 def test_training_start_maps_runtime_memory_failure_to_http_507(

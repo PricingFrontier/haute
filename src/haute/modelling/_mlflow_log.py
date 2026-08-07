@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from haute._logging import get_logger
+from haute.errors import HauteValidationError
 from haute.modelling._result_types import ModelCardMetadata, ModelDiagnostics
 
 logger = get_logger(component="mlflow_log")
@@ -219,7 +220,7 @@ def log_experiment(
             "final_tree_count",
         ):
             if field not in tuning:
-                raise ValueError(f"tuning summary is missing {field}")
+                raise HauteValidationError(f"tuning summary is missing {field}")
             enhanced_params[f"tuning_{field}"] = tuning[field]
 
     with mlflow.start_run(run_name=run_name) as run:
@@ -412,7 +413,7 @@ def log_experiment(
                     or not isinstance(value, int | float)
                     or not math.isfinite(float(value))
                 ):
-                    raise ValueError(f"tuning summary {field} must be finite")
+                    raise HauteValidationError(f"tuning summary {field} must be finite")
                 _check_cancelled()
                 mlflow.log_metric(
                     f"tuning_{label}_{metric_name}",

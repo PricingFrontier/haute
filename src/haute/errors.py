@@ -11,10 +11,13 @@ format it manually.
 Not every Haute exception lives here. A number of domain-specific exceptions
 are defined next to the code that raises them and deliberately derive from a
 stdlib base instead of ``HauteError`` — for example resource-exhaustion errors
-extend ``MemoryError``, deadline errors extend ``TimeoutError``, and
+extend ``MemoryError``, deadline errors extend ``TimeoutError``, validation
+errors extend ``ValueError`` (via :class:`HauteValidationError`, defined in
+``_validation_error.py`` and re-exported here for convenience), and
 missing-artifact errors extend ``FileNotFoundError`` so that existing
-``except MemoryError`` / ``except TimeoutError`` / ``except FileNotFoundError``
-handlers keep catching them. A single ``except HauteError`` therefore does not
+``except MemoryError`` / ``except TimeoutError`` / ``except ValueError`` /
+``except FileNotFoundError`` handlers keep catching them. A single
+``except HauteError`` therefore does not
 catch the entire Haute error surface; catch the relevant stdlib base (or the
 specific exception class) when you need those. The classes defined in this
 module are the ones the ``HauteError`` promise applies to.
@@ -24,6 +27,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any, ClassVar, TypeGuard
+
+from haute._validation_error import HauteValidationError as HauteValidationError
 
 
 class HauteError(Exception):

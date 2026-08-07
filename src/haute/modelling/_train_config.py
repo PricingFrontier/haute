@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from haute.errors import HauteValidationError
 from haute.modelling._evaluation import EvaluationConfig
 from haute.modelling._tuning import TuningConfig
 
@@ -41,8 +42,12 @@ GLM_CONFIG_KEYS: tuple[str, ...] = (
 )
 
 
-class TrainingConfigError(ValueError):
-    """Raised when a modelling node config cannot produce a training job."""
+class TrainingConfigError(HauteValidationError):
+    """Raised when a modelling node config cannot produce a training job.
+
+    Extends :class:`HauteValidationError`: every message raised here is
+    haute-authored validation wording, safe to surface verbatim.
+    """
 
 
 def parse_evaluation_config(raw: Any) -> dict[str, Any]:

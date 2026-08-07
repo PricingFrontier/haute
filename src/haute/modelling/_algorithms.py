@@ -18,6 +18,7 @@ import polars as pl
 from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
 from haute._polars_utils import _malloc_trim
+from haute.errors import HauteValidationError
 
 logger = get_logger(component="algorithms")
 
@@ -152,7 +153,7 @@ def _extract_offset_baseline(
 ) -> np.ndarray:
     """Return the offset column as a float baseline array, loud when absent."""
     if offset not in df.columns:
-        raise ValueError(
+        raise HauteValidationError(
             f"{context}: offset column {offset!r} is missing from the input "
             f"data. The model was trained with this offset and predictions "
             f"without it would be silently mis-scaled. Available columns: "
@@ -284,7 +285,7 @@ def resolve_loss_function(
 
     valid = REGRESSION_LOSSES if task == "regression" else CLASSIFICATION_LOSSES
     if loss_name not in valid:
-        raise ValueError(
+        raise HauteValidationError(
             f"Loss '{loss_name}' is not valid for task '{task}'. Choose from: {sorted(valid)}"
         )
 

@@ -173,11 +173,19 @@ class IsolatedWorkerCrashedError(IsolatedWorkerError):
 
 
 class IsolatedWorkerTimeoutError(IsolatedWorkerError):
-    """Raised when the parent terminates a worker that exceeded its timeout."""
+    """Raised when the parent terminates a worker that exceeded its timeout.
+
+    Like the crash wrapper, the message is parent-authored — a timed-out
+    child produced no payload to curate — so it is written directly for the
+    user rather than in supervisor jargon. The limit stays on the exception's
+    ``timeout_seconds`` for diagnostics.
+    """
 
     def __init__(self, *, timeout_seconds: float) -> None:
         super().__init__(
-            f"Isolated worker exceeded timeout of {timeout_seconds:g} seconds",
+            f"The background process was stopped after exceeding its time limit "
+            f"of {timeout_seconds:g} seconds. Try again with less data, or "
+            "increase the configured timeout.",
             terminal_reason="timed_out",
         )
         self.timeout_seconds = timeout_seconds
@@ -685,6 +693,16 @@ def _exitcode_looks_memory_limited(
     exitcode: int | None,
     memory_limit_bytes: int | None,
 ) -> bool:
+    # SIGABRT is deliberately classified alongside SIGKILL, but only when a
+    # memory cap was configured: under RLIMIT_AS a native allocator that
+    # cannot allocate raises bad_alloc and aborts, so SIGABRT is the cap's
+    # PRIMARY out-of-memory signature (SIGKILL covers the kernel OOM killer).
+    # Narrowing to SIGKILL-only would misroute exactly the failures the cap
+    # exists to catch. The residual misdiagnosis vector — a native assertion
+    # or heap-corruption abort under a cap — is accepted: the crash wording
+    # hedges ("may have run out of memory") and the exit code stays on the
+    # exception and in ``worker_exitcode``, at the cost of the UI showing
+    # memory guidance for such an abort.
     if memory_limit_bytes is None or exitcode is None:
         return False
     try:

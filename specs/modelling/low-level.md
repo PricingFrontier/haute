@@ -23,6 +23,7 @@
 | `src/haute/modelling/_export.py` | `generate_training_script()` code generation for standalone Python training scripts. |
 | `src/haute/routes/modelling.py` | FastAPI router for training, status/cancel, estimates, MLflow check/log, export, model-cache clear, and dispersion jobs. |
 | `src/haute/routes/_train_service.py` | `TrainService`: validation, RAM/VRAM estimates, pipeline materialisation, background training/dispersion lifecycle, cancellation, and cleanup. |
+| `src/haute/routes/_memory_messages.py` | Shared curated wording for memory-limit failures (`memory_limit_user_message`, `format_byte_size`) used by training, auto-range, and the input-snapshot build. |
 | `src/haute/schemas.py` | Shared Pydantic request/response contracts owned by [server-api](../server-api/low-level.md) and used by `/api/modelling/*` routes. |
 
 ## Key types and data structures
@@ -596,10 +597,16 @@ rows/features) and retry.
   failure payload with the message produced by
   `_friendly_error(exc, operation_noun=..., context=...)` — a heuristic
   translator whose every shape is haute-authored, and which — apart from the
-  `ValueError` channel — never interpolates a third-party message body:
-  `ValueError` messages verbatim (the validation channel; provenance by
-  convention, not enforcement — a dependency's `ValueError` rides the same
-  channel, an accepted residual of the #159 design), `FileNotFoundError` as a
+  validation channel — never interpolates a third-party message body:
+  `HauteValidationError` messages verbatim (the validation channel; provenance
+  is enforced by the marker type, defined in `_validation_error.py` as a
+  `ValueError` subclass, re-exported by `errors.py`, and raised at haute's own
+  validation sites — gates, column checks,
+  the metric wrap, config/protocol validation; `TrainingConfigError` extends
+  it. A dependency's plain `ValueError` — including a pydantic
+  `ValidationError` — does not ride the channel: it takes the type-only
+  unexpected-error fallback, closing the #159 design's dependency-`ValueError`
+  residual), `FileNotFoundError` as a
   path-free could-not-find-a-file shape (a fit-stage missing file is typically
   an internal staged asset, so this deliberately narrows #159's
   path-as-actionable ruling — the path stays in the diagnostic fields and
@@ -624,10 +631,13 @@ rows/features) and retry.
   deliberately curated, haute-authored wording: the cancelled/memory-limit/
   contract-error/bounded-memory branches of `_known_training_worker_failure`
   (the memory-limit branch authors its message from the exception's structured
-  attributes via `_memory_limit_user_message` — human-readable used/allowed
-  sizes plus a call to action, never the internal operation name, which stays
-  in the diagnostic `error` field), the `ValueError` validation channel (which
-  carries the gate and metric-wrap messages), and every `_friendly_error` shape
+  attributes via the shared `routes/_memory_messages.memory_limit_user_message`
+  — human-readable used/allowed sizes plus a call to action, never the internal
+  operation name, which stays in the diagnostic `error` field; the same shape
+  serves the training 507 response, the auto-range job, and the input-snapshot
+  build, so the wording cannot drift between surfaces), the
+  `HauteValidationError` validation channel (which carries the gate and
+  metric-wrap messages), and every `_friendly_error` shape
   (all curated as above, so the entrypoints pass `user_facing=True` and thread
   the raw `str(exc)` into `fields["error"]` explicitly). Raw `MemoryError` text
   is NOT stamped and keeps the typed "Isolated worker raised {type}: {message}"

@@ -13,6 +13,7 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
+from haute.errors import HauteValidationError
 from haute.modelling._charts import (
     COLOR_IMPORTANCE,
     COLOR_SHAP,
@@ -147,7 +148,7 @@ def generate_model_card(
         def tuning_number(field: str) -> str:
             value = tuning[field]
             if isinstance(value, bool) or not isinstance(value, int | float):
-                raise ValueError(f"tuning {field} must be numeric")
+                raise HauteValidationError(f"tuning {field} must be numeric")
             return f"{float(value):.4f}" if math.isfinite(float(value)) else "N/A"
 
         tuning_rows = [

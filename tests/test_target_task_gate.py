@@ -737,16 +737,36 @@ class TestPreDispatchServiceGate:
 
 
 class TestWorkerBoundaryUserMessage:
-    def test_value_error_channel_is_stamped_user_facing(self) -> None:
+    def test_haute_validation_error_channel_is_stamped_user_facing(self) -> None:
+        from haute.errors import HauteValidationError
         from haute.routes._train_service import _known_training_worker_failure
 
         payload = _known_training_worker_failure(
-            ValueError("Target column 'sev' not found. Available: ['x1']"),
+            HauteValidationError("Target column 'sev' not found. Available: ['x1']"),
             bounded_memory_prefix="Training cannot run in bounded streaming mode",
         )
         assert payload is not None
         assert payload.terminal_reason == "contract_error"
         assert payload.fields[WORKER_USER_MESSAGE_FIELD] == payload.message
+
+    def test_plain_value_error_does_not_ride_the_validation_channel(self) -> None:
+        """Provenance is enforced by the marker type: a dependency's bare
+        ``ValueError`` is not vouched for, so it falls through to the
+        entrypoint's ``_friendly_error`` fallback (a plain ``error``) instead
+        of surfacing verbatim as a ``contract_error``."""
+        from haute.routes._train_service import _friendly_error, _known_training_worker_failure
+
+        exc = ValueError("could not convert string to float: '/tmp/leaky/path'")
+        assert (
+            _known_training_worker_failure(
+                exc,
+                bounded_memory_prefix="Training cannot run in bounded streaming mode",
+            )
+            is None
+        )
+        message = _friendly_error(exc, context="target 'sev'")
+        assert "could not convert" not in message
+        assert "ValueError" in message
 
     def test_memory_error_keeps_the_typed_wrapper_surface(self) -> None:
         from haute.routes._train_service import _known_training_worker_failure
@@ -798,8 +818,9 @@ class TestWorkerBoundaryUserMessage:
 
         exc = ExecutionMemoryLimitExceededError(
             "training_job",
-            rss_bytes=3 * 1024**3,
+            rss_bytes=4 * 1024**3,
             limit_bytes=2 * 1024**3,
+            baseline_rss_bytes=1024**3,
             job_id="abc",
         )
         payload = _known_training_worker_failure(
@@ -822,7 +843,7 @@ class TestWorkerBoundaryUserMessage:
         size omission when a bound is missing — a partially-populated
         exception must degrade to omitting sizes, never TypeError."""
         from haute._execution_context import ExecutionMemoryLimitExceededError
-        from haute.routes._train_service import _memory_limit_user_message
+        from haute.routes._memory_messages import memory_limit_user_message
 
         sampler_lost = ExecutionMemoryLimitExceededError(
             "training_job",
@@ -830,7 +851,7 @@ class TestWorkerBoundaryUserMessage:
             limit_bytes=1024**3,
             reason="memory_sampler_unavailable",
         )
-        message = _memory_limit_user_message(sampler_lost, operation_noun="Training")
+        message = memory_limit_user_message(sampler_lost, operation_noun="Training")
         assert "could no longer measure its memory use" in message
 
         process_cap = ExecutionMemoryLimitExceededError(
@@ -841,7 +862,7 @@ class TestWorkerBoundaryUserMessage:
             rss_limit_bytes=3 * 1024**3,
             reason="process_rss_limit_exceeded",
         )
-        message = _memory_limit_user_message(process_cap, operation_noun="Training")
+        message = memory_limit_user_message(process_cap, operation_noun="Training")
         assert "4.0 GiB used, 3.0 GiB allowed" in message
 
         growth = ExecutionMemoryLimitExceededError(
@@ -850,7 +871,7 @@ class TestWorkerBoundaryUserMessage:
             limit_bytes=1024**3,
             baseline_rss_bytes=2 * 1024**3 + 512 * 1024**2,
         )
-        message = _memory_limit_user_message(growth, operation_noun="Training")
+        message = memory_limit_user_message(growth, operation_noun="Training")
         assert "512.0 MiB used, 1.0 GiB allowed" in message
 
         below_baseline = ExecutionMemoryLimitExceededError(
@@ -859,7 +880,7 @@ class TestWorkerBoundaryUserMessage:
             limit_bytes=1024**3,
             baseline_rss_bytes=2 * 1024**3,
         )
-        message = _memory_limit_user_message(below_baseline, operation_noun="Training")
+        message = memory_limit_user_message(below_baseline, operation_noun="Training")
         assert "(0 bytes used" in message
 
         no_limit = ExecutionMemoryLimitExceededError(
@@ -867,9 +888,101 @@ class TestWorkerBoundaryUserMessage:
             rss_bytes=1024**3,
             limit_bytes=None,  # type: ignore[arg-type]
         )
-        message = _memory_limit_user_message(no_limit, operation_noun="Training")
+        message = memory_limit_user_message(no_limit, operation_noun="Training")
         assert "used" not in message
         assert "needs more memory than this server allows." in message
+
+    def test_admission_refusal_takes_the_not_started_shape(self) -> None:
+        """Each known admission-refusal reason gets its own wording — sizes
+        only where the attributes are actually comparable (the process cap and
+        the in-flight reservation pair), never the internal reason string; an
+        unknown reason degrades to the generic refusal with no sizes."""
+        from haute._execution_admission import ExecutionAdmissionError
+        from haute._execution_context import ExecutionProfile
+        from haute.routes._memory_messages import memory_limit_user_message
+
+        process_cap = ExecutionAdmissionError(
+            "training_job",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=1024**3,
+            rss_at_admission_bytes=2 * 1024**3,
+            process_rss_limit_bytes=1024**3,
+            reason="process_rss_limit_exceeded",
+        )
+        message = memory_limit_user_message(process_cap, operation_noun="Training")
+        assert message.startswith("Training was not started")
+        # Not the runtime "(X used, Y allowed)" pair: nothing ran yet, so the
+        # sizes are attributed to the server, not the refused operation.
+        assert "the server is already using 2.0 GiB of its 1.0 GiB memory cap" in message
+        assert "process_rss_limit_exceeded" not in message
+
+        sampler_lost = ExecutionAdmissionError(
+            "training_job",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=1024**3,
+            rss_at_admission_bytes=None,
+            reason="memory_sampler_unavailable",
+        )
+        message = memory_limit_user_message(sampler_lost, operation_noun="Training")
+        assert message.startswith("Training was not started")
+        assert "could not measure its memory use" in message
+        assert "enough free memory" not in message
+
+        in_flight = ExecutionAdmissionError(
+            "training_job",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=1024**3,
+            rss_at_admission_bytes=1024**3,
+            reason="in_flight_memory_budget_exceeded",
+            in_flight_reserved_bytes=3 * 1024**3,
+            in_flight_limit_bytes=4 * 1024**3,
+        )
+        message = memory_limit_user_message(in_flight, operation_noun="Training")
+        assert message.startswith("Training was not started")
+        assert "other running work" in message
+        assert "3.0 GiB reserved, 4.0 GiB allowed" in message
+
+        unknown = ExecutionAdmissionError(
+            "training_job",
+            profile=ExecutionProfile.TRAINING_PREP,
+            memory_limit_bytes=1024**3,
+            rss_at_admission_bytes=2 * 1024**3,
+            process_rss_limit_bytes=1024**3,
+            reason="private admission detail",
+        )
+        message = memory_limit_user_message(unknown, operation_noun="Training")
+        assert message.startswith("Training was not started")
+        # The attribute pair is only known to be comparable for the process
+        # cap — an unrecognised reason renders no sizes and never the reason.
+        assert "used" not in message
+        assert "private admission detail" not in message
+
+    def test_runtime_overrun_without_baseline_never_mispairs_sizes(self) -> None:
+        """With no admission baseline, rss_bytes is TOTAL process RSS — it
+        must pair with the absolute enforced bound (rss_limit_bytes), never
+        the growth budget, and omit sizes when no absolute bound is known."""
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+        from haute.routes._memory_messages import memory_limit_user_message
+
+        absolute_bound = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=4 * 1024**3,
+            limit_bytes=1024**3,
+            baseline_rss_bytes=None,
+            rss_limit_bytes=3 * 1024**3,
+        )
+        message = memory_limit_user_message(absolute_bound, operation_noun="Training")
+        assert "4.0 GiB used, 3.0 GiB allowed" in message
+
+        no_bound = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=4 * 1024**3,
+            limit_bytes=1024**3,
+            baseline_rss_bytes=None,
+            rss_limit_bytes=None,
+        )
+        message = memory_limit_user_message(no_bound, operation_noun="Training")
+        assert "used" not in message
 
     def test_507_detail_message_is_curated_even_when_payload_carries_one(self) -> None:
         """The curated wording is assigned unconditionally — a payload-carried
@@ -990,6 +1103,29 @@ class TestWorkerBoundaryUserMessage:
         )
         assert outcome.message == "Isolated worker raised KeyError: 'frame'"
 
+    def test_child_error_text_survives_the_wrapper_overwrite(self) -> None:
+        """The supervisor claims the "error" field for the typed wrapper text;
+        the child's own diagnostic text must move to "worker_error", not be
+        lost."""
+        payload = WorkerFailurePayload(
+            terminal_reason="error",
+            error_type="RuntimeError",
+            message="Training of the model failed with an unexpected internal error.",
+            traceback="RuntimeError: raw child text",
+            fields={"error": "raw child text with the real diagnostic detail"},
+        )
+
+        def execute() -> None:
+            raise WorkerRemoteFailureError(payload)
+
+        outcome = IsolatedJobSupervisor._produce_outcome(
+            execute,
+            completed_fields=lambda result: {"result": result},
+            completed_message="Completed",
+        )
+        assert outcome.fields["worker_error"] == "raw child text with the real diagnostic detail"
+        assert outcome.fields["error"].startswith("Isolated worker raised RuntimeError")
+
     @pytest.mark.parametrize(
         ("make_exc", "expected_fragment", "expected_reason"),
         [
@@ -1007,7 +1143,7 @@ class TestWorkerBoundaryUserMessage:
             ),
             (
                 lambda: IsolatedWorkerTimeoutError(timeout_seconds=30.0),
-                "exceeded timeout",
+                "exceeding its time limit of 30 seconds",
                 "timed_out",
             ),
         ],

@@ -257,12 +257,16 @@ Depended on:
   remote exceptions, `worker_exitcode` for crashes, `error_code` for memory limits).
   A child that curated a user-facing failure message marks it on the payload's
   `user_message` field, and the supervisor uses that curated wording as the job's
-  terminal message; failures without one keep the typed wrapper text. The crash
-  wrapper — the one surface that can only be parent-authored, since a crashed
-  child left no payload to curate — is itself written as user-facing wording:
-  a hedged may-have-run-out-of-memory phrasing when the exit code looks
-  memory-limited (the heuristic is indicative, not proof), an unexpected-stop
-  phrasing otherwise, each carrying the exit code when available.
+  terminal message; failures without one keep the typed wrapper text. When the
+  supervisor claims the `error` field for that wrapper text, a child-supplied
+  `error` string is not lost — it moves to `worker_error`. The crash and timeout
+  wrappers — the surfaces that can only be parent-authored, since a crashed or
+  timed-out child left no payload to curate — are themselves written as
+  user-facing wording: a hedged may-have-run-out-of-memory phrasing when the
+  exit code looks memory-limited (the heuristic is indicative, not proof), an
+  unexpected-stop phrasing otherwise, each carrying the exit code when
+  available; and a stopped-after-its-time-limit phrasing naming the limit for
+  timeouts.
   An unrecognised reason string coerces to `error` rather than raising, so the job
   still reaches a terminal state.
 
