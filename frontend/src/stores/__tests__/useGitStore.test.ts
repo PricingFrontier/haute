@@ -112,6 +112,49 @@ describe("useGitStore", () => {
     expect(useGitStore.getState().status).toEqual(READY)
   })
 
+  it("a detached request rejecting cannot write an error over the newer request's state", async () => {
+    let rejectFirst!: (error: Error) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((_done, fail) => { rejectFirst = fail }),
+    )
+    const first = useGitStore.getState().loadStatus()
+    resetGitStatusRequestForTests()
+
+    let resolveSecond!: (value: GitWorkingBranchResponse) => void
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      new Promise((done) => { resolveSecond = done }),
+    )
+    const second = useGitStore.getState().loadStatus()
+
+    rejectFirst(new Error("stale failure"))
+    await expect(first).resolves.toBeNull()
+    expect(useGitStore.getState().statusError).toBeNull()
+    expect(useGitStore.getState().loadStatus()).toBe(second)
+
+    resolveSecond(READY)
+    await expect(second).resolves.toEqual(READY)
+    expect(useGitStore.getState().statusError).toBeNull()
+  })
+
+  it("a request detached while resolving its error message does not publish the error", async () => {
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(
+      Promise.reject(new Error("boom")),
+    )
+    const first = useGitStore.getState().loadStatus()
+    // Two microtask ticks let the rejection reach the catch handler, which
+    // passes its first identity check and suspends at the dynamic gitError
+    // import; the reset then detaches the request before it resumes. (If an
+    // engine drains differently the reset simply lands before the handler's
+    // first check instead — the assertions hold on either path.)
+    await Promise.resolve()
+    await Promise.resolve()
+    resetGitStatusRequestForTests()
+
+    await expect(first).resolves.toBeNull()
+    expect(useGitStore.getState().statusError).toBeNull()
+    expect(useGitStore.getState().loading).toBe(true)
+  })
+
   it("de-duplicates concurrent branch loads and publishes the shared listing", async () => {
     const branches: GitManagedBranch[] = [{
       name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
