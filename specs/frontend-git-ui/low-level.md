@@ -71,6 +71,11 @@ list. Notable invariants:
 - `closeModal` always clears `pendingAction` — a dismissed modal must never leave a queued
   action to fire on a later, unrelated confirmation.
 
+Test seam: `resetGitStoreForTests()` is the family reset — one awaited call restores every
+`GitState` data field to its initial value (the data half is spread from one
+required-fields object, so a new field cannot silently survive a reset) and clears the two
+single-flight seams above.
+
 **`RowDescriptor`** (`gitgraph/layout.ts`) — `{ kind: "pending-save" | "milestone" | "save"
 | "placeholder"; sha; expanded?; milestoneSha? }`. Mirrors `GitPanel`'s render order
 exactly (`GitPanel.railRowData`): pending saves first, then milestones newest-first, each
