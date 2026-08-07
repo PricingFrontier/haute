@@ -298,8 +298,18 @@ _FRONTEND_STATIC_COMPUTED_MEMBER = "<static-computed>"
 # Frontend test skip/fixme/fail/only/conditional/todo sites are expected to be rare and
 # reviewed.
 # Keys are debt-site fingerprints; values are the reviewed reason for retaining
-# the debt. The current frontend budget is intentionally zero.
-_EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {}
+# the debt.
+_EXPECTED_FRONTEND_DEBT_REASONS: dict[str, str] = {
+    "bea80452a437e66c": (
+        "Deliberate tripwire (PR #181 review adjudication): documents the "
+        "self-consistent-foreign-Storage blind spot the storage canary cannot "
+        "see — env.Storage is the same untrusted global as the instances, so "
+        "the check proves jsdom provenance only while vitest's KEYS behaviour "
+        "installs jsdom's Storage class. If vitest changes that, this "
+        "it.fails flips to failing, which is the signal to redesign the "
+        "provenance check."
+    ),
+}
 
 
 @dataclass(frozen=True)

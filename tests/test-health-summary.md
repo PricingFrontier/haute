@@ -8,7 +8,7 @@ Generated deterministically from the live test-debt scanners and mutation target
 | Backend importorskip | 63 | Backend AST scanner |
 | Backend xfail | 1 | Backend AST scanner |
 | Backend flaky | 0 | Backend AST scanner (zero-budget fingerprint ratchet) |
-| Frontend marker debt | 0 | Frontend source scanner |
+| Frontend marker debt | 1 | Frontend source scanner |
 | Playwright CI retries | 2 | frontend/playwright.config.ts: process.env.CI ? 2 : 0 |
 | Mutation `executor` | 15.00% | mutation/targets.json max_survival_rate |
 | Mutation `job-store` | 6.00% | mutation/targets.json max_survival_rate |
