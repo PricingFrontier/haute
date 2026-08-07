@@ -54,10 +54,17 @@ list. Notable invariants:
 - `statusError` is transport/server failure text, never a synonym for a successful
   `state: "no-repository"` response. `loadStatus()` retains the last successful status,
   clears `statusError` on success, and exposes retry by simply being callable again.
+  Concurrent `loadStatus()` calls share one module-level in-flight promise. Test seam:
+  `resetGitStatusRequestForTests()` clears that promise so a never-settling mocked
+  request cannot starve later loads in the same test file.
 - `branches` has one store owner. Concurrent `loadBranches()` calls share the same in-flight
   promise; a completed mutation/save/commit schedules at most one new endpoint call.
   `loadBranches()` delegates to the lazy `gitBranchLoader.ts` coordinator, while
   `useGitStore` remains the sole publisher and consumer-facing owner of the result.
+  The coordinator's settle paths are identity-guarded: a request detached by a newer
+  queued refresh (or a reset) neither publishes state nor clobbers a newer request's
+  slot. Test seam: `resetGitBranchLoaderForTests()` clears the coordinator's
+  in-flight/queued promises.
 - `historyNonce` and `commitNonce` both trigger `GitPanel.refresh()` but only `commitNonce`
   additionally selects the newly-committed milestone, and only when the panel is not
   peeking (`peekingRef.current` false at the time the refresh resolves).
