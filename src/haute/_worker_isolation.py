@@ -151,9 +151,13 @@ class IsolatedWorkerCrashedError(IsolatedWorkerError):
         memory_limited = _exitcode_looks_memory_limited(exitcode, memory_limit_bytes)
         exit_detail = "" if exitcode is None else f" (exit code {exitcode})"
         if memory_limited:
+            # The exit-code heuristic is indicative, not proof (a native abort
+            # or an external kill can look the same) — the wording hedges
+            # rather than asserting an out-of-memory condition as fact.
             message = (
-                f"The background process ran out of memory and was stopped{exit_detail}. "
-                "Reduce the data size, or run on a server with more memory, then try again."
+                f"The background process was stopped and may have run out of memory"
+                f"{exit_detail}. Reduce the data size, or run on a server with more "
+                "memory, then try again."
             )
         else:
             message = (

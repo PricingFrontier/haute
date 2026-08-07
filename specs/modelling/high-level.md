@@ -372,15 +372,18 @@ browser without a server or JS bundle.
   `contract_error`) and keeps the raw text in diagnostic fields. Failures that
   never produce a payload (a child crash, a parent-side timeout) keep the
   parent-authored wrapper surface, whose crash wording is itself written for the
-  user (out-of-memory vs. unexpected-stop phrasing, with the exit code). The
+  user (a hedged may-have-run-out-of-memory phrasing when the exit code looks
+  memory-limited — the heuristic is indicative, not proof — vs. an
+  unexpected-stop phrasing, with the exit code when available). The
   field is a routing contract, not a per-message content guarantee: message
   quality is enforced at the producing sites (the gates and wraps in this
   component, pinned by their tests). Error types and bounded tracebacks stay in
   diagnostic fields; the curated messages carry domain context (target column,
-  task, metrics) and never secrets or raw tracebacks — a filesystem path appears
-  only where the path itself is the actionable object (a file-not-found
-  failure); a model-save failure names the OS-level reason, not the internal
-  staging path.
+  task, metrics) and never secrets, raw tracebacks, or filesystem paths — a
+  missing-file or save failure names the failure class and the errno-derived
+  OS reason, keeping the path itself diagnostic. The `ValueError` validation
+  channel travels verbatim by provenance convention (haute authors its
+  validation messages as `ValueError`s), not by enforcement.
 - A mandatory metric-evaluation failure names the evaluation set (using the
   evaluation plan's public `development`/`final test` labels on that pipeline),
   target column, task, and requested metrics around the underlying library error,

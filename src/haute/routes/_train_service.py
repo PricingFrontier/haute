@@ -192,8 +192,10 @@ def _memory_limit_http_exception(
     detail = exc.to_payload()
     if isinstance(exc, ExecutionMemoryLimitExceededError):
         # str(exc) names the internal operation and raw byte counts; author
-        # the public message from the structured attributes instead.
-        detail.setdefault("message", _memory_limit_user_message(exc, operation_noun="Training"))
+        # the public message from the structured attributes instead. Assigned
+        # unconditionally: a payload-carried "message" must not win over the
+        # curated wording.
+        detail["message"] = _memory_limit_user_message(exc, operation_noun="Training")
     else:
         detail.setdefault("message", str(exc))
     return HTTPException(status_code=507, detail=detail)
@@ -623,42 +625,70 @@ def _friendly_error(
 
     Every returned shape is haute-authored and safe to promote verbatim as the
     job's terminal message; the raw exception text stays in the diagnostic
-    ``error`` field and the traceback. The unexpected-error fallback names the
-    target/objective context and the exception type but deliberately not the
-    third-party message body (which may carry internal paths), and it stays a
-    plain system ``error`` — a system fault is never relabelled as a
-    ``contract_error``.
+    ``error`` field and the traceback. Apart from the `ValueError` validation
+    channel, no shape interpolates a third-party message body (which may carry
+    internal paths or secrets) — third-party failures name the exception type
+    and the target/objective context only, and they stay a plain system
+    ``error`` — a system fault is never relabelled as a ``contract_error``.
     """
-    msg = str(exc)
-
     if isinstance(exc, ValueError):
         # ValueError is the package's deliberate validation channel: gates,
-        # column checks, and the metric-stage wrap all speak through it.
-        return msg
-
-    if isinstance(exc, FileNotFoundError):
-        # The missing path is itself the actionable object here.
-        return f"File not found: {msg}"
+        # column checks, and the metric-stage wrap all speak through it. This
+        # is provenance by convention, not enforcement — a dependency's
+        # ValueError rides the same channel.
+        return str(exc)
 
     exc_type = type(exc).__name__
-    if "CatBoost" in exc_type or "catboost" in msg.lower():
+
+    if isinstance(exc, FileNotFoundError):
+        # At the fit stage the missing path is typically an internal staged
+        # asset, so the message does not quote it; the path stays in the
+        # diagnostic fields and traceback.
+        return (
+            f"{operation_noun} could not find a file it needs. The full error, "
+            "including the path, is recorded in the job's error details."
+        )
+
+    # Keyed on the exception TYPE: a non-CatBoost error that merely mentions
+    # "catboost" in its text must not take a CatBoost-specific shape.
+    if "CatBoost" in exc_type:
+        msg = str(exc)
         if "nan" in msg.lower() or "inf" in msg.lower():
             return (
-                "Training failed: the data contains NaN or infinite values. "
-                "Add a polars node upstream to handle missing values "
+                f"{operation_noun} failed: the data contains NaN or infinite "
+                "values. Add a polars node upstream to handle missing values "
                 "(e.g. .fill_null() or .drop_nulls()) before training."
             )
         if "feature" in msg.lower() and "number" in msg.lower():
-            return f"Training failed: feature mismatch. {msg}"
-        return f"CatBoost could not train {context}: {msg}"
+            return (
+                f"{operation_noun} failed: feature mismatch — the data's "
+                "columns do not match what the model expects. The full error "
+                "is recorded in the job's error details."
+            )
+        return (
+            f"{operation_noun} of {context} failed with a CatBoost error "
+            f"({exc_type}). The full error is recorded in the job's error details."
+        )
 
     if isinstance(exc, OSError):
-        # str(OSError) embeds the internal staging path; surface only the
-        # OS-level reason and keep the path in the diagnostic fields.
-        reason = exc.strerror or exc_type
+        # Surface only an OS-authored reason: exc.strerror is
+        # constructor-supplied (a dependency can put arbitrary text there), so
+        # the reason is re-derived from the numeric errno.
+        reason: str | None = None
+        if isinstance(exc.errno, int):
+            try:
+                reason = os.strerror(exc.errno)
+            except (ValueError, OverflowError):
+                reason = None
+        if reason:
+            return (
+                f"{operation_noun} could not save its output files ({reason}). "
+                "Check the server's disk space and file permissions, then try again."
+            )
         return (
-            f"{operation_noun} could not save its output files ({reason}). "
-            "Check the server's disk space and file permissions, then try again."
+            f"{operation_noun} could not save its output files because of a "
+            "file-system error. Check the server's disk space and file "
+            "permissions, then try again."
         )
 
     return (
@@ -810,10 +840,15 @@ def _memory_limit_user_message(
     if exc.reason == "process_rss_limit_exceeded" and exc.rss_limit_bytes is not None:
         allowed = exc.rss_limit_bytes
     elif used is not None and exc.baseline_rss_bytes is not None:
-        used = used - exc.baseline_rss_bytes
+        # Sampler noise can put the observed RSS below the admission baseline;
+        # never render a negative usage.
+        used = max(used - exc.baseline_rss_bytes, 0)
+    # This runs on a failure path: a partially-populated exception must
+    # degrade to omitting the sizes, never crash into a TypeError that
+    # replaces the real memory error.
     detail = (
         ""
-        if used is None
+        if used is None or allowed is None
         else f" ({_format_byte_size(used)} used, {_format_byte_size(allowed)} allowed)"
     )
     return (

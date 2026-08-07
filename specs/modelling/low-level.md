@@ -595,14 +595,24 @@ rows/features) and retry.
 - **Generic `Exception`** catch-all in each process entrypoint maps to an `error`
   failure payload with the message produced by
   `_friendly_error(exc, operation_noun=..., context=...)` — a heuristic
-  translator whose every shape is haute-authored: `ValueError` messages verbatim
-  (the validation channel), `FileNotFoundError` prefixed (the missing path is the
-  actionable object), CatBoost-flavoured exceptions special-cased (NaN/Inf hint,
-  feature-count mismatch, and a generic shape naming the training context),
-  `OSError` rendered as a save failure naming only `exc.strerror` — never the
+  translator whose every shape is haute-authored, and which — apart from the
+  `ValueError` channel — never interpolates a third-party message body:
+  `ValueError` messages verbatim (the validation channel; provenance by
+  convention, not enforcement — a dependency's `ValueError` rides the same
+  channel, an accepted residual of the #159 design), `FileNotFoundError` as a
+  path-free could-not-find-a-file shape (a fit-stage missing file is typically
+  an internal staged asset, so this deliberately narrows #159's
+  path-as-actionable ruling — the path stays in the diagnostic fields and
+  traceback), CatBoost failures keyed on the exception TYPE name (never a
+  message substring, so a non-CatBoost error that mentions catboost in its text
+  cannot take these shapes) with a NaN/Inf hint, a body-free feature-mismatch
+  shape, and a body-free generic shape naming the type and training context,
+  `OSError` rendered as a save failure whose reason is re-derived from the
+  numeric errno via `os.strerror` (`exc.strerror` is constructor-supplied and
+  untrusted; no errno → a generic file-system-error wording) — never the
   internal temp/staging path embedded in `str(exc)` — and an unexpected-error
   fallback naming the operation, the target/objective context, and the exception
-  type but deliberately not the third-party message body. `context` is built by
+  type. `context` is built by
   `_training_context_phrase(job_kwargs)` (`target 'x' (objective 'y')`, falling
   back to `"the model"`); the entrypoints capture it right after parsing
   `job_kwargs` so a fit-stage failure names what was being trained. The fallback

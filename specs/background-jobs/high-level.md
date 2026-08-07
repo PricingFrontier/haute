@@ -260,8 +260,9 @@ Depended on:
   terminal message; failures without one keep the typed wrapper text. The crash
   wrapper — the one surface that can only be parent-authored, since a crashed
   child left no payload to curate — is itself written as user-facing wording:
-  it distinguishes an out-of-memory kill from an unexpected stop and carries
-  the exit code.
+  a hedged may-have-run-out-of-memory phrasing when the exit code looks
+  memory-limited (the heuristic is indicative, not proof), an unexpected-stop
+  phrasing otherwise, each carrying the exit code when available.
   An unrecognised reason string coerces to `error` rather than raising, so the job
   still reaches a terminal state.
 

@@ -816,6 +816,84 @@ class TestWorkerBoundaryUserMessage:
         # The internal wording stays available for diagnostics.
         assert "training_job" in payload.fields["error"]
 
+    def test_memory_limit_message_branches_never_crash_the_failure_path(self) -> None:
+        """Every authored branch of the memory-limit message: sampler loss,
+        process-cap override, baseline subtraction (with negative clamp), and
+        size omission when a bound is missing — a partially-populated
+        exception must degrade to omitting sizes, never TypeError."""
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+        from haute.routes._train_service import _memory_limit_user_message
+
+        sampler_lost = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=None,
+            limit_bytes=1024**3,
+            reason="memory_sampler_unavailable",
+        )
+        message = _memory_limit_user_message(sampler_lost, operation_noun="Training")
+        assert "could no longer measure its memory use" in message
+
+        process_cap = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=4 * 1024**3,
+            limit_bytes=1024**3,
+            baseline_rss_bytes=1024**3,
+            rss_limit_bytes=3 * 1024**3,
+            reason="process_rss_limit_exceeded",
+        )
+        message = _memory_limit_user_message(process_cap, operation_noun="Training")
+        assert "4.0 GiB used, 3.0 GiB allowed" in message
+
+        growth = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=3 * 1024**3,
+            limit_bytes=1024**3,
+            baseline_rss_bytes=2 * 1024**3 + 512 * 1024**2,
+        )
+        message = _memory_limit_user_message(growth, operation_noun="Training")
+        assert "512.0 MiB used, 1.0 GiB allowed" in message
+
+        below_baseline = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=1024**3,
+            limit_bytes=1024**3,
+            baseline_rss_bytes=2 * 1024**3,
+        )
+        message = _memory_limit_user_message(below_baseline, operation_noun="Training")
+        assert "(0 bytes used" in message
+
+        no_limit = ExecutionMemoryLimitExceededError(
+            "training_job",
+            rss_bytes=1024**3,
+            limit_bytes=None,  # type: ignore[arg-type]
+        )
+        message = _memory_limit_user_message(no_limit, operation_noun="Training")
+        assert "used" not in message
+        assert "needs more memory than this server allows." in message
+
+    def test_507_detail_message_is_curated_even_when_payload_carries_one(self) -> None:
+        """The curated wording is assigned unconditionally — a payload-carried
+        message (now or via a future to_payload change) cannot expose
+        str(exc)."""
+        from haute._execution_context import ExecutionMemoryLimitExceededError
+        from haute.routes._train_service import _memory_limit_http_exception
+
+        class PayloadMessageError(ExecutionMemoryLimitExceededError):
+            def to_payload(self) -> dict[str, object]:
+                payload = super().to_payload()
+                payload["message"] = str(self)
+                return payload
+
+        exc = PayloadMessageError(
+            "training_job",
+            rss_bytes=3 * 1024**3,
+            limit_bytes=2 * 1024**3,
+        )
+        http_exc = _memory_limit_http_exception(exc)
+        assert isinstance(http_exc.detail, dict)
+        assert "training_job" not in http_exc.detail["message"]
+        assert "needs more memory than this server allows" in http_exc.detail["message"]
+
     def test_overlong_curated_message_truncates_instead_of_raising(self) -> None:
         """A wrapped message beyond the 512-char worker bound must truncate at
         the payload builder, never detonate into a protocol-length error."""
@@ -919,6 +997,13 @@ class TestWorkerBoundaryUserMessage:
                 lambda: IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=None),
                 "stopped unexpectedly before returning a result",
                 "error",
+            ),
+            (
+                # SIGKILL under a configured cap: the OOM wording is hedged —
+                # the exit-code heuristic is indicative, not proof.
+                lambda: IsolatedWorkerCrashedError(exitcode=-9, memory_limit_bytes=100),
+                "may have run out of memory",
+                "memory_limited",
             ),
             (
                 lambda: IsolatedWorkerTimeoutError(timeout_seconds=30.0),
