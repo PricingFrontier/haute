@@ -150,7 +150,9 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     )
     mockBranchAway.mockRejectedValue(new Error("worktree dirty"))
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Enabled implies the remotes have loaded AND the sole remote is selected;
+    // clicking in that window would no-op on a disabled button.
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() =>
       expect(screen.getByTestId("git-push-rejected-branch-away")).toBeInTheDocument(),
@@ -178,7 +180,9 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     )
     mockBranchAway.mockRejectedValue({ code: "EBUSY" })
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Enabled implies the remotes have loaded AND the sole remote is selected;
+    // clicking in that window would no-op on a disabled button.
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() =>
       expect(screen.getByTestId("git-push-rejected-branch-away")).toBeInTheDocument(),
@@ -201,7 +205,9 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
       new ApiError("HTTP 409 conflict", 409, JSON.stringify(garbage), garbage),
     )
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Enabled implies the remotes have loaded AND the sole remote is selected;
+    // clicking in that window would no-op on a disabled button.
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() =>
       expect(mockAddToast).toHaveBeenCalledWith("error", "Push failed: HTTP 409 conflict"),
@@ -217,7 +223,9 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
       new ApiError("HTTP 409 conflict", 409, JSON.stringify(malformed), malformed),
     )
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Enabled implies the remotes have loaded AND the sole remote is selected;
+    // clicking in that window would no-op on a disabled button.
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
 
     await waitFor(() =>
@@ -233,7 +241,9 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     mockGetGitRemotes.mockResolvedValue({ remotes: [remote()], working_branch: "dev" })
     mockGitPush.mockRejectedValue(new ApiError("HTTP 409 conflict", 409, "no body"))
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Enabled implies the remotes have loaded AND the sole remote is selected;
+    // clicking in that window would no-op on a disabled button.
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
     await waitFor(() =>
       expect(mockAddToast).toHaveBeenCalledWith("error", "Push failed: no body"),
@@ -259,7 +269,9 @@ describe("RemotePushControl — error paths and catch-up matrix", () => {
     )
 
     render(<RemotePushControl pendingSaveCount={0} />)
-    await waitFor(() => expect(screen.getByTestId("git-push-control")).toBeInTheDocument())
+    // Enabled implies the remotes have loaded AND the sole remote is selected;
+    // clicking in that window would no-op on a disabled button.
+    await waitFor(() => expect(screen.getByTestId("git-push-button")).toBeEnabled())
     fireEvent.click(screen.getByTestId("git-push-button"))
 
     await waitFor(() => expect(screen.getByTestId("git-push-rejected")).toBeInTheDocument())

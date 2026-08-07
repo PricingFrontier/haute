@@ -53,7 +53,14 @@ export interface GitComparison {
  *  modal. */
 export type GitPendingAction = "save" | "commit" | null
 
-interface GitState {
+/** The store's data half. Every field added here MUST get an initial value in
+ *  `freshGitData` below (TypeScript enforces it for required members), and
+ *  `resetForTests` spreads that object — so a new field here cannot silently
+ *  leak between shuffled tests. Two conventions keep that guarantee honest:
+ *  keep every field REQUIRED (zustand's merge-mode set() never clears absent
+ *  keys, so an optional field would dodge both the compiler and the reset),
+ *  and file data here, never in GitActions. */
+interface GitData {
   /** Latest readiness signal, or null before the first load. */
   status: GitWorkingBranchResponse | null
   /** True while a status fetch is in flight (suppresses premature modal logic). */
@@ -90,7 +97,9 @@ interface GitState {
    *  pending. Distinct from `comparison` (read-only view) — a move mutates the
    *  working tree. */
   moveTarget: GitComparison | null
+}
 
+interface GitActions {
   /** Load readiness. `refresh: true` guarantees the published state comes from
    *  a request issued no earlier than the call — required after a mutation,
    *  where joining an already-in-flight request would publish pre-mutation
@@ -133,9 +142,31 @@ interface GitState {
   pullUpstream: () => Promise<GitFastForwardResponse>
   /** Retry a failed sync to the bound remote, refreshing readiness afterwards. */
   retrySync: () => Promise<GitWorkingBranchResponse | null>
+  /** Restore every `GitData` field to its initial value (test isolation only). */
+  resetForTests: () => void
 }
 
-const useGitStore = create<GitState>()((set, get) => ({
+type GitState = GitData & GitActions
+
+/** Compile-time guard closing the one filing mistake the split can't stop
+ *  structurally: a DATA field mis-declared in GitActions would type-check,
+ *  yet never join the reset. Resolves to a key union that must be never —
+ *  adding a non-function member to GitActions turns this into a type error. */
+type NonFunctionGitActionKeys = {
+  [K in keyof GitActions]: GitActions[K] extends (...args: never[]) => unknown ? never : K
+}[keyof GitActions]
+type StaticAssert<T extends true> = T
+/** Exported only so noUnusedLocals keeps the assertion alive; never import it. */
+export type GitActionsHoldOnlyFunctions = StaticAssert<
+  [NonFunctionGitActionKeys] extends [never] ? true : false
+>
+
+/** Initial value for every data field. `resetForTests` restores exactly this
+ *  shape, so the reset can never drift behind the store's. A factory, not a
+ *  shared const: `branches` must be a FRESH array per reset — with a shared
+ *  reference, one in-place mutation would corrupt the baseline permanently and
+ *  every later "reset" would restore the corruption. */
+const freshGitData = (): GitData => ({
   status: null,
   loading: false,
   statusError: null,
@@ -151,6 +182,10 @@ const useGitStore = create<GitState>()((set, get) => ({
   commitNonce: 0,
   comparison: null,
   moveTarget: null,
+})
+
+const useGitStore = create<GitState>()((set, get) => ({
+  ...freshGitData(),
 
   loadStatus: (options) =>
     // Single-flight/queue/reset/stall bookkeeping lives in ./singleFlight;
@@ -257,6 +292,20 @@ const useGitStore = create<GitState>()((set, get) => ({
     set({ status })
     return status
   },
+
+  resetForTests: () => set(freshGitData()),
 }))
+
+/** One-call reset of the whole git-store family between tests: the data state
+ *  plus both module-level single-flights (the status request above and the
+ *  branch loader's). Async because the loader import must stay dynamic, like
+ *  `loadBranches`' — a static import would fold the split chunk back into the
+ *  main bundle. */
+export const resetGitStoreForTests = async (): Promise<void> => {
+  resetGitStatusRequestForTests()
+  const { resetGitBranchLoaderForTests } = await import("./gitBranchLoader")
+  resetGitBranchLoaderForTests()
+  useGitStore.getState().resetForTests()
+}
 
 export default useGitStore

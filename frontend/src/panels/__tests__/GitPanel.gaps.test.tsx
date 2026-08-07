@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react"
 import GitPanel from "../GitPanel"
 import { clearGitPanelCaches } from "../gitPanelCache"
-import useGitStore, { resetGitStatusRequestForTests } from "../../stores/useGitStore"
+import useGitStore, { resetGitStoreForTests } from "../../stores/useGitStore"
 
 // Mirror of GitPanel.test.tsx's client mock — the panel reads working-branch
 // status from useGitStore and fetches milestone/ledger history directly.
@@ -57,13 +57,12 @@ const milestones = {
 describe("GitPanel — uncovered fork/view/peek paths", () => {
   const defaultProps = { onClose: vi.fn() }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks()
     // The panel's session caches are module-level (they survive remounts by
     // design) — reset them so tests stay independent.
     clearGitPanelCaches()
-    resetGitStatusRequestForTests()
-    useGitStore.setState({ status: null, loading: false, statusError: null, branches: [], branchesLoaded: false, branchesLoading: false, branchesError: null, modal: null, pendingAction: null, peekBranch: null, historyNonce: 0, commitNonce: 0, branchesExpandNonce: 0, moveTarget: null, comparison: null })
+    await resetGitStoreForTests()
     mockGetWorkingBranch.mockResolvedValue(readyStatus)
     mockGetMilestones.mockResolvedValue(milestones)
     mockGetPendingSaves.mockResolvedValue({ saves: [] })
@@ -72,9 +71,9 @@ describe("GitPanel — uncovered fork/view/peek paths", () => {
     mockGetWorkingBranches.mockResolvedValue({ current: "pricing-dev", branches: [] })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
-    resetGitStatusRequestForTests()
+    await resetGitStoreForTests()
   })
 
   it("reloads the page after a fork that switches the working branch", async () => {

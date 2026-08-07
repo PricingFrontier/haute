@@ -11,7 +11,7 @@ vi.mock("../../api/client", () => ({
   retryGitStorageSync: vi.fn(),
 }))
 
-import useGitStore, { resetGitStatusRequestForTests } from "../useGitStore"
+import useGitStore, { resetGitStatusRequestForTests, resetGitStoreForTests } from "../useGitStore"
 import { resetGitBranchLoaderForTests } from "../gitBranchLoader"
 import { DEFAULT_STALE_PENDING_AFTER_MS } from "../singleFlight"
 import {
@@ -38,21 +38,69 @@ const READY: GitWorkingBranchResponse = {
   user_email: "u@x.y",
 }
 
+// The store singleton is pristine at import time; resetForTests must restore
+// exactly this snapshot, however the store's shape grows. Data fields only,
+// deep-cloned: a shallow spread would share the pristine `branches` reference
+// with the store, so an in-place corruption would move both sides of the
+// comparison identically and the pin would be blind to it.
+const PRISTINE = structuredClone(
+  Object.fromEntries(
+    Object.entries(useGitStore.getState()).filter(([, v]) => typeof v !== "function"),
+  ),
+)
+
 describe("useGitStore", () => {
-  beforeEach(() => {
-    useGitStore.setState({
-      status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
-      branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
-    })
+  beforeEach(async () => {
+    await resetGitStoreForTests()
     vi.clearAllMocks()
-    resetGitStatusRequestForTests()
   })
-  afterEach(() => {
-    resetGitStatusRequestForTests()
+  afterEach(async () => {
+    await resetGitStoreForTests()
+  })
+
+  it("resetForTests restores every data field to its initial value", () => {
     useGitStore.setState({
-      status: null, loading: false, statusError: null, branches: [], branchesLoaded: false,
-      branchesLoading: false, branchesError: null, modal: null, pendingAction: null,
+      status: READY, loading: true, statusError: "boom", branchesLoaded: true,
+      branchesLoading: true, branchesError: "boom", modal: "select", pendingAction: "save",
+      peekBranch: "pricing/nick/spur", branchesExpandNonce: 3, historyNonce: 4, commitNonce: 5,
+      comparison: { sha: "a", label: "A" }, moveTarget: { sha: "b", label: "B" },
+      branches: [{
+        name: "dev", is_current: true, is_archived: false, has_unmerged_saves: false,
+        has_uncommitted_changes: false,
+      }],
     })
+    useGitStore.getState().resetForTests()
+    expect(useGitStore.getState()).toMatchObject(PRISTINE)
+
+    // In-place corruption of the published array must not survive a reset:
+    // the baseline hands out a fresh array per reset, never a shared one.
+    useGitStore.getState().branches.push({
+      name: "corrupt", is_current: false, is_archived: false, has_unmerged_saves: false,
+      has_uncommitted_changes: false,
+    })
+    useGitStore.getState().resetForTests()
+    expect(useGitStore.getState().branches).toEqual([])
+  })
+
+  it("resetGitStoreForTests unsticks both held-open single-flights (status and branch loader)", async () => {
+    // Stick both: never-settling fetches occupy each single-flight slot.
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(new Promise(() => {}))
+    vi.mocked(getWorkingBranches).mockReturnValueOnce(new Promise(() => {}))
+    void useGitStore.getState().loadStatus()
+    void useGitStore.getState().loadBranches()
+    await vi.waitFor(() => expect(getWorkingBranches).toHaveBeenCalledOnce())
+    expect(getWorkingBranch).toHaveBeenCalledOnce()
+
+    // A refactor that drops either clear from the family reset would otherwise
+    // pass every test and resurface only as a nightly shuffle starvation.
+    await resetGitStoreForTests()
+
+    vi.mocked(getWorkingBranch).mockResolvedValueOnce(READY)
+    vi.mocked(getWorkingBranches).mockResolvedValueOnce({ current: "dev", branches: [] })
+    await expect(useGitStore.getState().loadStatus()).resolves.toEqual(READY)
+    await expect(useGitStore.getState().loadBranches()).resolves.toEqual([])
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+    expect(getWorkingBranches).toHaveBeenCalledTimes(2)
   })
 
   it("loadStatus stores the result and returns it", async () => {
@@ -470,9 +518,8 @@ describe("useGitStore durable-storage actions", () => {
     sync: { state: "synced", pending: 0, failure: null, message: null },
   }
 
-  beforeEach(() => {
-    resetGitStatusRequestForTests()
-    useGitStore.setState({ status: null, loading: false, statusError: null })
+  beforeEach(async () => {
+    await resetGitStoreForTests()
     vi.clearAllMocks()
   })
 
@@ -560,9 +607,8 @@ describe("useGitStore reopens the storage dialog when a background bind fails", 
     },
   })
 
-  beforeEach(() => {
-    resetGitStatusRequestForTests()
-    useGitStore.setState({ status: null, modal: null, loading: false, statusError: null })
+  beforeEach(async () => {
+    await resetGitStoreForTests()
     vi.clearAllMocks()
   })
 
