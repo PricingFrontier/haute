@@ -118,7 +118,10 @@
 guarded `/api/io-capabilities` client returns ordered groups, fields,
 directional formats/modes/arguments/engines, snapshot build class and schema
 requirements, writer class, and publication modes; each mount refreshes it and
-only concurrent pending requests coalesce. `_IoFormatEditor` renders one
+only concurrent pending requests coalesce. Test seam:
+`resetIoCapabilitiesCacheForTests()` clears the in-flight coalescing promise —
+the module's only state; despite the name, no result cache exists to clear.
+`_IoFormatEditor` renders one
 selected group/direction, while dedicated provider sections cover file,
 database, lakehouse, Databricks, and inline fields. `OnReplaceConfig` constructs
 and commits one fresh active branch for a provider change. Data Input provider
@@ -142,7 +145,8 @@ selected capability requires a bounded schema, merging detected dtypes into
 `arguments.schema` without discarding other arguments. `DataOutputEditor` has
 no code panel. Its per-node Zustand entry carries request id, semantic request
 identity, phase, and structured result/error; request-id checks reject late
-results. Destination preview comes from `/api/pipeline/output-destination`,
+results. Test seam: `resetOutputWriteStoreForTests()` clears every per-node
+write entry and the request-id counter. Destination preview comes from `/api/pipeline/output-destination`,
 and write identity is projected from the semantic flattened graph, output
 node, execution source, and streaming settings. A 409 becomes
 `confirm_overwrite`; only that action retries with `overwrite=true`.

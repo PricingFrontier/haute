@@ -91,6 +91,12 @@ the key scenarios covered, and known coverage gaps.
   acceptance test as `test-path::test_symbol`, so the retirement guard has positive evidence.
   Cite a pre-existing symbol that will be modified as a bare path until a new acceptance symbol
   proves the changed behaviour.
+- When a specced invariant guards module-level state that a test-only reset helper clears
+  (a `*ForTests` export or equivalent), note that seam in one standalone sentence beside
+  the invariant guarding the state it resets, prefixed `Test seam:` — not folded into the
+  invariant sentence as a parenthetical. The seam is part of the module's contract — the
+  invariant must hold across a reset — and an unspecced test-only export otherwise reads
+  as drift. This is a low-level.md concern; high-level.md never mentions test seams.
 - Every file named in `## Testing` resolves unambiguously in the repository. Frontend unit and
   browser references are additionally repository-root-relative and start with `frontend/`; a
   frontend basename or path relative only to `frontend/src/` is invalid even when it happens to

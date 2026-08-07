@@ -187,6 +187,9 @@ newer overlapping transform.
   fingerprints to that snapshot, clears both history stacks, recomputes the
   structural and panel-context fingerprints, and increments both versions
   exactly once in one Zustand transition.
+  Test seam: `resetGraphStoreForTests()` restores the full initial state and throws
+  while a VC undo/redo is in flight (`vcBusy`) — that entry's completion handlers
+  `set()` unconditionally and would overwrite the fresh reset with stale VC state.
 - **`HauteNodeData`** (`types/node.ts`) — base node data shape:
   `label`, `nodeType`, `description?`, `config?`, `code?`, `func_name?`, plus
   underscore-prefixed *transient* fields that are runtime-only and never

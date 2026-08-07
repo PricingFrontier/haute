@@ -16,7 +16,7 @@
 | `frontend/src/components/BranchIndicator.tsx` | Owned by [frontend-git-ui](../frontend-git-ui/low-level.md); this component adds the chips it hosts. The storage/sync chip beside the branch indicator. |
 | `frontend/src/components/StorageBindModal.tsx` | The bind dialog, including the distinct restart-required state. |
 | `frontend/src/components/IdentityPromptModal.tsx` | Asks for a git name and email when a save committed but version capture could not, and retries the save once one is recorded — a restored clone carries no identity. |
-| `frontend/src/stores/identityPrompt.ts` | Per-browser-session dismissal for that prompt, so waving it away does not silence the accompanying warning on later saves. |
+| `frontend/src/stores/identityPrompt.ts` | Per-browser-session dismissal for that prompt, so waving it away does not silence the accompanying warning on later saves. Test seam: `resetIdentityPromptForTests()` clears the module-level dismissal flag between tests. |
 | `frontend/src/types/guards.ts`, `frontend/src/api/{types,client}.ts`, `frontend/src/stores/useGitStore.ts` | Parsing, API calls, and store actions for the above. Guards are owned by [frontend-shared](../frontend-shared/low-level.md) and the git store by [frontend-git-ui](../frontend-git-ui/low-level.md); this component adds the storage fields and actions. |
 | `tests/test_project_storage.py` | Module tests, including the container-death survival scenario against a `file://` bare repo. |
 | `tests/test_storage_routes.py` | HTTP-surface tests, including the no-raw-stderr regression. |
