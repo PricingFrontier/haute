@@ -156,7 +156,14 @@ export interface GraphStore {
   canUndo: () => boolean
   canRedo: () => boolean
 
-  /** Restore the complete initial state between tests — never call in app code. */
+  /**
+   * Restore the complete initial state between tests — never call in app
+   * code. Deliberately un-gated, matching the established ForTests
+   * precedent (useOutputWriteStore et al.). Callers must let any in-flight
+   * VC undo/redo promises settle before resetting: their catch/finally
+   * handlers `set()` unconditionally and would write stale VC state over a
+   * fresh reset.
+   */
   resetForTests: () => void
 }
 
@@ -452,28 +459,26 @@ function computePanelContextPatch(
 // ─── Store ───────────────────────────────────────────────────────────────
 
 /**
- * Complete initial state slice — the single source of truth for both store
- * creation and `resetForTests`, so a state key added here can never be
- * silently omitted from test resets.
+ * The non-function (data) keys of `GraphStore`, derived rather than
+ * enumerated: a data field added anywhere in the interface joins this type
+ * automatically, so `createInitialGraphState` fails typecheck until it
+ * initialises the new field. (A function-typed STATE field would evade the
+ * derivation by classifying as an action — keep state non-callable.)
  */
-function createInitialGraphState(): Pick<
+type GraphStoreData = Pick<
   GraphStore,
-  | "nodes"
-  | "edges"
-  | "preamble"
-  | "submodels"
-  | "lastSavedSnapshot"
-  | "undoStack"
-  | "redoStack"
-  | "vcBusy"
-  | "structuralVersion"
-  | "structuralFingerprint"
-  | "panelContextVersion"
-  | "panelContextFingerprint"
-  | "persistedFingerprint"
-  | "savedPersistedFingerprint"
-  | "dirty"
-> {
+  {
+    [K in keyof GraphStore]: GraphStore[K] extends (...args: never[]) => unknown ? never : K
+  }[keyof GraphStore]
+>
+
+/**
+ * Complete initial state slice — the single source of truth for both store
+ * creation and `resetForTests`. The derived `GraphStoreData` return type
+ * means a data field cannot be initialised inline in the store literal
+ * without also being added (and therefore reset) here.
+ */
+function createInitialGraphState(): GraphStoreData {
   return {
     nodes: [],
     edges: [],
@@ -1042,6 +1047,11 @@ const useGraphStore = create<GraphStore>()((set, get) => {
   }
 })
 
+// Convenience wrapper for suites that import the store statically (parity
+// with resetOutputWriteStoreForTests). The consolidation test cannot use it —
+// it reaches the store through a guarded dynamic import for importError
+// diagnostics — so its first consumers are the other graph-store suites as
+// they migrate off partial setState resets.
 export const resetGraphStoreForTests = () =>
   useGraphStore.getState().resetForTests()
 

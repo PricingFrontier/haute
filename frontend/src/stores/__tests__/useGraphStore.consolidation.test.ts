@@ -78,6 +78,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { renderHook, cleanup, act } from "@testing-library/react"
 import { useRef } from "react"
 import type { Node, Edge } from "@xyflow/react"
+import type { GraphStore as ProductionGraphStore } from "../useGraphStore"
 import { makeNode, makeEdge } from "../../test-utils/factories"
 
 // ─────────────────────────────────────────────────────────────────
@@ -92,8 +93,18 @@ export interface GraphSnapshot {
   submodels: Record<string, unknown>
 }
 
+/**
+ * History stacks also carry version-control entries (branch switch /
+ * archive / delete) whose inverses ride Undo/Redo — see the production
+ * `VcHistoryEntry`. The contract only pins the discriminant.
+ */
+export type HistoryEntryShape = GraphSnapshot | { kind: "vc" }
+
 // This interface is exported purely for documentation — the store file
-// may redeclare it. It is NOT imported by production code.
+// may redeclare it. It is NOT imported by production code. The
+// "production satisfies the documented contract" test below type-checks
+// the real store against this shape, so drift fails the build instead of
+// hiding behind the `as UseGraphStore` cast.
 export interface GraphStoreShape {
   // State
   nodes: Node[]
@@ -101,8 +112,8 @@ export interface GraphStoreShape {
   preamble: string
   submodels: Record<string, unknown>
   lastSavedSnapshot: GraphSnapshot | null
-  undoStack: GraphSnapshot[]
-  redoStack: GraphSnapshot[]
+  undoStack: HistoryEntryShape[]
+  redoStack: HistoryEntryShape[]
   persistedFingerprint: string
   savedPersistedFingerprint: string | null
   dirty: boolean
@@ -125,7 +136,7 @@ export interface GraphStoreShape {
   redo: () => void
 
   // Dirty derivation — set after save
-  markSaved: () => void
+  markSaved: (snapshot?: GraphSnapshot) => void
 
   // Selectors (pure, callable from getState())
   isDirty: () => boolean
@@ -183,6 +194,14 @@ function reset() {
   requireStore().getState().resetForTests()
 }
 
+/** Narrow a history entry to a graph snapshot for stack-content assertions. */
+function asGraphSnapshot(entry: HistoryEntryShape | undefined): GraphSnapshot {
+  if (!entry || "kind" in entry) {
+    throw new Error(`expected a graph-snapshot history entry, got ${JSON.stringify(entry)}`)
+  }
+  return entry
+}
+
 // ─────────────────────────────────────────────────────────────────
 
 describe("useGraphStore — consolidation", () => {
@@ -204,6 +223,16 @@ describe("useGraphStore — consolidation", () => {
         useGraphStore,
         `import error: ${String(importError)}`,
       ).not.toBeNull()
+    })
+
+    it("production GraphStore satisfies the documented contract (type-level)", () => {
+      // Compile-time drift guard: the runtime cast in the dynamic import
+      // (`as UseGraphStore`) would silently hide contract drift, so this
+      // assignment re-checks the real store type against GraphStoreShape.
+      // If it stops compiling, update the contract above deliberately.
+      type ProductionSatisfiesContract = ProductionGraphStore extends GraphStoreShape ? true : never
+      const productionSatisfiesContract: ProductionSatisfiesContract = true
+      expect(productionSatisfiesContract).toBe(true)
     })
 
     it("exposes the required state keys with correct initial values", () => {
@@ -375,7 +404,7 @@ describe("useGraphStore — consolidation", () => {
       })
       const s = store.getState()
       expect(s.undoStack).toHaveLength(1)
-      expect(s.undoStack[0].nodes).toHaveLength(1) // pre-mutation state
+      expect(asGraphSnapshot(s.undoStack[0]).nodes).toHaveLength(1) // pre-mutation state
       expect(s.nodes).toHaveLength(2)
       expect(s.canUndo()).toBe(true)
     })
@@ -433,7 +462,7 @@ describe("useGraphStore — consolidation", () => {
       expect(store.getState().canUndo()).toBe(false)
       expect(store.getState().canRedo()).toBe(true)
       expect(store.getState().redoStack).toHaveLength(1)
-      expect(store.getState().redoStack[0].nodes).toHaveLength(2)
+      expect(asGraphSnapshot(store.getState().redoStack[0]).nodes).toHaveLength(2)
     })
 
     it("redo pops redoStack and pushes current onto undoStack", () => {
@@ -525,8 +554,8 @@ describe("useGraphStore — consolidation", () => {
       // After 101 setNodes calls with pre-states [[], [n1], [n2], ..., [n100]],
       // the first 100 undo entries should be [[n1], [n2], ..., [n100]] —
       // the original empty-array pre-state was evicted.
-      expect(store.getState().undoStack[0].nodes).toHaveLength(1)
-      expect(store.getState().undoStack[0].nodes[0].id).toBe("n1")
+      expect(asGraphSnapshot(store.getState().undoStack[0]).nodes).toHaveLength(1)
+      expect(asGraphSnapshot(store.getState().undoStack[0]).nodes[0].id).toBe("n1")
     })
 
     it("101st undo evicts the oldest redoStack entry", () => {
