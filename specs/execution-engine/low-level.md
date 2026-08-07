@@ -120,7 +120,17 @@
   point (a parent's limit binds its children; a level whose controller files
   are absent contributes nothing). Any resolution failure — unreadable or
   malformed proc files, no matching mount, a cgroup path outside the mount
-  root — degrades to the historical mount-root read. `max` and the v1
+  root — degrades a step at a time: an unresolvable cgroup path still reads
+  at the **parsed** mount point, and only unusable proc files fall back to
+  the compiled-in default mount. With several mounts of one hierarchy the
+  mount whose root most specifically contains the cgroup path wins; a walk
+  deeper than the depth limit fails open rather than reporting a partial
+  chain as complete. mountinfo octal decoding is restricted to the kernel's
+  escape set (space/tab/newline/backslash) and decoded path fields are
+  rejected on traversal or NUL content, so a hostile mount record cannot
+  redirect controller reads. Known limitation, accepted: the proc files are
+  re-parsed per probe call (admission is per-execution, not per-row, and
+  caching would mis-locate a process migrated between cgroups). `max` and the v1
   unlimited sentinel do not clamp; negative headroom clamps to zero.
 - **Degraded-observation contract** — one policy governs every degraded memory
   state, split by whether the value is a capacity *source* or a best-effort

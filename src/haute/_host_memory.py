@@ -92,10 +92,17 @@ _CGROUP_WALK_DEPTH_LIMIT = 64
 
 
 def _read_cgroup_memory_file(path: str) -> str | None:
-    """Read one cgroup control file, returning ``None`` when absent."""
+    """Read one cgroup control file, returning ``None`` when absent.
+
+    Decoded with ``errors="replace"``: controller files are ASCII, but
+    ``/proc/self/cgroup`` carries raw kernel dentry names which may hold any
+    non-``/`` byte — a sibling's non-UTF-8 cgroup name must degrade to an
+    unresolvable path, not crash the probe with ``UnicodeDecodeError``.
+    """
     try:
-        return Path(path).read_text(encoding="utf-8").strip()
-    except OSError:
+        return Path(path).read_bytes().decode("utf-8", errors="replace").strip()
+    except (OSError, ValueError):
+        # ValueError: an embedded NUL in the path is rejected at open time.
         return None
 
 
@@ -137,17 +144,25 @@ def _parse_proc_self_cgroup(text: str) -> tuple[str | None, str | None]:
     return v2_path, v1_path
 
 
+# The only octal escapes the kernel emits in mountinfo paths (show_path in
+# fs/proc_namespace.c escapes space, tab, newline, and backslash).  Decoding
+# is restricted to exactly this set: a permissive all-octal decoder would let
+# a hostile name smuggle ``\057`` (``/``) or ``\056`` (``.``) past any
+# validation done on the raw string.
+_MOUNTINFO_OCTAL_ESCAPES = {"040": " ", "011": "\t", "012": "\n", "134": "\\"}
+
+
 def _unescape_mountinfo_field(field: str) -> str:
-    """Decode the octal escapes (``\\040`` etc.) mountinfo uses in paths."""
+    """Decode the kernel's mountinfo octal escapes; other sequences pass through."""
     if "\\" not in field:
         return field
     out: list[str] = []
     index = 0
     while index < len(field):
         char = field[index]
-        octal = field[index + 1 : index + 4]
-        if char == "\\" and len(octal) == 3 and all(digit in "01234567" for digit in octal):
-            out.append(chr(int(octal, 8)))
+        decoded = _MOUNTINFO_OCTAL_ESCAPES.get(field[index + 1 : index + 4])
+        if char == "\\" and decoded is not None:
+            out.append(decoded)
             index += 4
         else:
             out.append(char)
@@ -155,37 +170,50 @@ def _unescape_mountinfo_field(field: str) -> str:
     return "".join(out)
 
 
+def _usable_mount_path(field: str) -> bool:
+    """True when a decoded mountinfo path field is safe to build read paths from.
+
+    Kernel-generated fields are absolute and cannot contain ``..`` components
+    or NUL bytes; anything else indicates a malformed or hostile record and
+    the line is skipped rather than allowed to redirect controller reads.
+    """
+    return field.startswith("/") and "\x00" not in field and ".." not in field.split("/")
+
+
 def _parse_proc_self_mountinfo(
     text: str,
-) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
-    """Return (root, mount point) for the cgroup2 and v1-memory mounts.
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Return every (root, mount point) for the cgroup2 and v1-memory mounts.
 
-    mountinfo fields: ``ID parent major:minor root mount-point options
-    [optional...] - fstype source super-options``.  Malformed lines are
-    skipped; the first matching mount per hierarchy wins.
+    mountinfo fields: ``ID parent major:minor root mount-point mount-options
+    [optional...] - fstype source super-options``.  The separator can appear
+    no earlier than index 6 (six mandatory fields precede it); shorter records
+    are malformed and skipped, as is any record whose decoded path fields are
+    unusable — a bad line must never redirect controller reads.  All matches
+    are returned; the caller selects among multiple mounts per hierarchy.
     """
-    v2_mount: tuple[str, str] | None = None
-    v1_mount: tuple[str, str] | None = None
+    v2_mounts: list[tuple[str, str]] = []
+    v1_mounts: list[tuple[str, str]] = []
     for line in text.splitlines():
         fields = line.split(" ")
         try:
             separator = fields.index("-")
         except ValueError:
             continue
-        if separator < 5 or separator + 1 >= len(fields):
+        if separator < 6 or separator + 1 >= len(fields):
             continue
         root = _unescape_mountinfo_field(fields[3])
         mount_point = _unescape_mountinfo_field(fields[4])
         fs_type = fields[separator + 1]
-        if not root.startswith("/") or not mount_point.startswith("/"):
+        if not _usable_mount_path(root) or not _usable_mount_path(mount_point):
             continue
         if fs_type == "cgroup2":
-            v2_mount = v2_mount if v2_mount is not None else (root, mount_point)
+            v2_mounts.append((root, mount_point))
         elif fs_type == "cgroup" and separator + 3 < len(fields):
             super_options = fields[separator + 3]
             if "memory" in super_options.split(","):
-                v1_mount = v1_mount if v1_mount is not None else (root, mount_point)
-    return v2_mount, v1_mount
+                v1_mounts.append((root, mount_point))
+    return v2_mounts, v1_mounts
 
 
 def _resolve_cgroup_directory(cgroup_path: str, mount_root: str, mount_point: str) -> str | None:
@@ -195,6 +223,11 @@ def _resolve_cgroup_directory(cgroup_path: str, mount_root: str, mount_point: st
     directory is the mount point plus the cgroup path's remainder below that
     root.  Returns ``None`` when the path is not under the mount root (a
     cross-namespace view this process cannot read through this mount).
+
+    The ``..`` check is not input sanitisation — every field here is
+    kernel-generated — it recognises the literal ``/../..`` shape the kernel
+    reports for a cgroup outside the reader's cgroup-namespace root, which
+    cannot be mapped through any mount.
     """
     if ".." in cgroup_path.split("/"):
         return None
@@ -210,49 +243,96 @@ def _resolve_cgroup_directory(cgroup_path: str, mount_root: str, mount_point: st
     return f"{mount}/{suffix}" if mount != "/" else f"/{suffix}"
 
 
+def _resolve_hierarchy_location(
+    version: str,
+    default_mount: str,
+    cgroup_path: str | None,
+    mounts: list[tuple[str, str]],
+) -> _CgroupLocation:
+    """Resolve one hierarchy's walk location, degrading a step at a time.
+
+    A parsed mount always beats the compiled-in default mount point (the
+    hierarchy may be mounted elsewhere, e.g. ``/sys/fs/cgroup/unified``);
+    the process's own directory then refines it when the cgroup path maps
+    under a mount's root.  With several mounts of the hierarchy (user
+    namespaces, nspawn), the one whose root most specifically contains the
+    cgroup path wins — the binding limit may only be reachable through a
+    subtree mount a broader first-match would shadow.
+    """
+    if not mounts:
+        return _CgroupLocation(default_mount, default_mount)
+    best: _CgroupLocation | None = None
+    best_root_depth = -1
+    if cgroup_path is not None:
+        for mount_root, mount_point in mounts:
+            directory = _resolve_cgroup_directory(cgroup_path, mount_root, mount_point)
+            if directory is None:
+                continue
+            root_depth = len((mount_root.rstrip("/") or "/").split("/"))
+            if root_depth > best_root_depth:
+                best = _CgroupLocation(directory, mount_point)
+                best_root_depth = root_depth
+        if best is not None:
+            return best
+        logger.warning(
+            "cgroup_self_path_unresolved",
+            version=version,
+            cgroup_path=cgroup_path,
+            candidate_mounts=len(mounts),
+            mount_root=mounts[0][0],
+            mount_point=mounts[0][1],
+        )
+    return _CgroupLocation(mounts[0][1], mounts[0][1])
+
+
 def _resolve_cgroup_locations() -> tuple[_CgroupLocation, _CgroupLocation]:
-    """Resolve the v2 and v1 walk locations, defaulting to the mount roots."""
-    v2_location = _CgroupLocation(_CGROUP_V2_DEFAULT_MOUNT, _CGROUP_V2_DEFAULT_MOUNT)
-    v1_location = _CgroupLocation(_CGROUP_V1_MEMORY_DEFAULT_MOUNT, _CGROUP_V1_MEMORY_DEFAULT_MOUNT)
+    """Resolve the v2 and v1 walk locations, defaulting to the mount roots.
+
+    Re-parses ``/proc/self/mountinfo`` on every probe call rather than caching
+    the resolution: admission checks are per-execution, not per-row, and a
+    stale cache would mis-locate a process migrated between cgroups.
+    """
+    v2_path: str | None = None
+    v1_path: str | None = None
+    v2_mounts: list[tuple[str, str]] = []
+    v1_mounts: list[tuple[str, str]] = []
     cgroup_text = _read_cgroup_memory_file(_PROC_SELF_CGROUP)
     mountinfo_text = _read_cgroup_memory_file(_PROC_SELF_MOUNTINFO)
     if cgroup_text is None or mountinfo_text is None:
-        return v2_location, v1_location
-    v2_path, v1_path = _parse_proc_self_cgroup(cgroup_text)
-    v2_mount, v1_mount = _parse_proc_self_mountinfo(mountinfo_text)
-    if v2_path is not None and v2_mount is not None:
-        directory = _resolve_cgroup_directory(v2_path, *v2_mount)
-        if directory is not None:
-            v2_location = _CgroupLocation(directory, v2_mount[1])
-        else:
-            logger.warning(
-                "cgroup_self_path_unresolved",
-                version="v2",
-                cgroup_path=v2_path,
-                mount_root=v2_mount[0],
-                mount_point=v2_mount[1],
-            )
-    if v1_path is not None and v1_mount is not None:
-        directory = _resolve_cgroup_directory(v1_path, *v1_mount)
-        if directory is not None:
-            v1_location = _CgroupLocation(directory, v1_mount[1])
-        else:
-            logger.warning(
-                "cgroup_self_path_unresolved",
-                version="v1",
-                cgroup_path=v1_path,
-                mount_root=v1_mount[0],
-                mount_point=v1_mount[1],
-            )
-    return v2_location, v1_location
+        logger.warning(
+            "cgroup_self_state_unreadable",
+            cgroup_readable=cgroup_text is not None,
+            mountinfo_readable=mountinfo_text is not None,
+        )
+    else:
+        v2_path, v1_path = _parse_proc_self_cgroup(cgroup_text)
+        v2_mounts, v1_mounts = _parse_proc_self_mountinfo(mountinfo_text)
+    return (
+        _resolve_hierarchy_location("v2", _CGROUP_V2_DEFAULT_MOUNT, v2_path, v2_mounts),
+        _resolve_hierarchy_location("v1", _CGROUP_V1_MEMORY_DEFAULT_MOUNT, v1_path, v1_mounts),
+    )
 
 
-def _cgroup_ancestor_chain(location: _CgroupLocation) -> list[str]:
-    """Directories from the process's cgroup up to the mount point, inclusive."""
+def _cgroup_ancestor_chain(location: _CgroupLocation) -> list[str] | None:
+    """Directories from the process's cgroup up to the mount point, inclusive.
+
+    Returns ``None`` when the walk would exceed the depth limit: a truncated
+    chain must not pass for a complete one — the levels nearest the mount
+    point are the broadest limits, and silently dropping them would let a
+    loose leaf limit mask a binding ancestor (over-admission).
+    """
     top = location.mount_point.rstrip("/") or "/"
     current = location.directory.rstrip("/") or "/"
     chain: list[str] = []
-    while len(chain) < _CGROUP_WALK_DEPTH_LIMIT:
+    while True:
+        if len(chain) >= _CGROUP_WALK_DEPTH_LIMIT:
+            logger.warning(
+                "cgroup_ancestor_walk_truncated",
+                directory=location.directory,
+                mount_point=location.mount_point,
+                depth_limit=_CGROUP_WALK_DEPTH_LIMIT,
+            )
+            return None
         chain.append(current)
         if current == top or "/" not in current or current == "/":
             break
@@ -319,11 +399,16 @@ def _hierarchy_headroom(
     A level where the controller files are absent (controller not enabled
     there, or the hierarchy's true root) contributes nothing; a level with
     incomplete or malformed state fails the whole probe open, matching the
-    single-level behaviour this generalises.
+    single-level behaviour this generalises.  A depth-truncated walk also
+    fails open — a partial chain could report a looser limit than the one
+    that actually binds.
     """
+    chain = _cgroup_ancestor_chain(location)
+    if chain is None:
+        return True, None
     present = False
     minimum: int | None = None
-    for level in _cgroup_ancestor_chain(location):
+    for level in chain:
         prefix = level.rstrip("/")
         level_present, headroom, abort = _level_headroom(
             version,
