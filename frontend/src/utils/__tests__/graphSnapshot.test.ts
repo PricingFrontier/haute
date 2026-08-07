@@ -1,7 +1,7 @@
 /**
  * Format pin for the serialized persisted-fingerprint produced by the graph
- * snapshot path (`serializeSnapshot`, reached in the store via
- * `computePersistedFingerprint`).
+ * snapshot path (`serializeSnapshot`, which the graph store uses to derive
+ * `persistedFingerprint` on every mutation).
  *
  * The fingerprint string is compared verbatim against `savedPersistedFingerprint`
  * to derive the dirty flag, and any change to its serialized shape (key order,
@@ -19,9 +19,12 @@ import { serializeSnapshot, EMPTY_SNAPSHOT } from "../graphSnapshot"
 import useGraphStore from "../../stores/useGraphStore"
 
 // ---------------------------------------------------------------------------
-// Fixtures — deliberately include everything the serializer must strip:
-// React Flow UI fields (`selected`, `dragging`, `measured`), `_`-prefixed
-// transient node-data metadata, and the same shapes nested inside submodels.
+// Fixtures — between them the two nodes carry all six stripped React Flow UI
+// fields (`selected`, `dragging`, `positionAbsolute`, `measured`, `resizing`,
+// `computed`), `_`-prefixed transient node-data metadata, and a *nested*
+// `_`-prefixed key that must SURVIVE (the metadata strip is shallow by
+// design). The same shapes recur inside submodels. Node array order is
+// deliberately non-sorted ("n1" before "n0") to pin caller-order retention.
 // ---------------------------------------------------------------------------
 
 const NODE = {
@@ -34,11 +37,22 @@ const NODE = {
   measured: { width: 100, height: 40 },
 } as Node
 
+const NODE2 = {
+  id: "n0",
+  type: "dataInput",
+  position: { x: 0, y: 0 },
+  data: { label: "src", config: { _kept: true } },
+  positionAbsolute: { x: 0, y: 0 },
+  resizing: true,
+  computed: { width: 1 },
+  selected: false,
+} as unknown as Node
+
 const EDGE = {
   id: "e1",
   source: "n1",
   sourceHandle: "out",
-  target: "n2",
+  target: "n0",
   targetHandle: "in",
   sourcePort: null,
   selected: true,
@@ -54,6 +68,8 @@ const SUBMODELS: Record<string, unknown> = {
         position: { x: 0, y: 0 },
         data: { kind: "input", _meta: 1 },
         selected: true,
+        resizing: true,
+        positionAbsolute: { x: 1, y: 1 },
       },
     ],
     edges: [{ source: "s1", target: "s2", selected: true }],
@@ -62,12 +78,14 @@ const SUBMODELS: Record<string, unknown> = {
 
 /**
  * The pinned serialized format: JSON with alphabetically sorted keys at every
- * level, arrays in caller order, UI/transient fields stripped, `null` values
- * preserved.
+ * level, arrays in caller order (nodes are NOT sorted by id), UI/transient
+ * fields stripped (shallow for `_`-metadata — nested `_kept` survives),
+ * `null` values preserved.
  */
 const EXPECTED_FINGERPRINT =
-  '{"edges":[{"id":"e1","source":"n1","sourceHandle":"out","sourcePort":null,"target":"n2","targetHandle":"in"}],' +
-  '"nodes":[{"data":{"alpha":1,"label":"price"},"id":"n1","position":{"x":10,"y":20},"type":"expression"}],' +
+  '{"edges":[{"id":"e1","source":"n1","sourceHandle":"out","sourcePort":null,"target":"n0","targetHandle":"in"}],' +
+  '"nodes":[{"data":{"alpha":1,"label":"price"},"id":"n1","position":{"x":10,"y":20},"type":"expression"},' +
+  '{"data":{"config":{"_kept":true},"label":"src"},"id":"n0","position":{"x":0,"y":0},"type":"dataInput"}],' +
   '"preamble":"import polars as pl",' +
   '"submodels":{"sub1":{"edges":[{"source":"s1","target":"s2"}],"nodes":[{"data":{"kind":"input"},"id":"s1","position":{"x":0,"y":0}}]}}}'
 
@@ -81,7 +99,7 @@ describe("persisted-fingerprint serialized format", () => {
   it("pins the full serialized shape byte-for-byte", () => {
     expect(
       serializeSnapshot({
-        nodes: [NODE],
+        nodes: [NODE, NODE2],
         edges: [EDGE],
         preamble: PREAMBLE,
         submodels: SUBMODELS,
@@ -89,7 +107,7 @@ describe("persisted-fingerprint serialized format", () => {
     ).toBe(EXPECTED_FINGERPRINT)
   })
 
-  it("is insensitive to object key insertion order", () => {
+  it("is insensitive to object key insertion order at every level", () => {
     const reorderedNode = {
       measured: { width: 100, height: 40 },
       data: { _transient: "dropped", alpha: 1, label: "price" },
@@ -100,12 +118,38 @@ describe("persisted-fingerprint serialized format", () => {
       id: "n1",
     } as Node
 
+    const reorderedEdge = {
+      targetHandle: "in",
+      sourcePort: null,
+      target: "n0",
+      selected: true,
+      sourceHandle: "out",
+      source: "n1",
+      id: "e1",
+    } as PipelineEdge
+
+    const reorderedSubmodels: Record<string, unknown> = {
+      sub1: {
+        edges: [{ selected: true, target: "s2", source: "s1" }],
+        nodes: [
+          {
+            positionAbsolute: { x: 1, y: 1 },
+            resizing: true,
+            selected: true,
+            data: { _meta: 1, kind: "input" },
+            position: { y: 0, x: 0 },
+            id: "s1",
+          },
+        ],
+      },
+    }
+
     expect(
       serializeSnapshot({
-        nodes: [reorderedNode],
-        edges: [EDGE],
+        nodes: [reorderedNode, NODE2],
+        edges: [reorderedEdge],
         preamble: PREAMBLE,
-        submodels: SUBMODELS,
+        submodels: reorderedSubmodels,
       }),
     ).toBe(EXPECTED_FINGERPRINT)
   })
@@ -121,23 +165,39 @@ describe("graph store produces the pinned format", () => {
       lastSavedSnapshot: null,
       undoStack: [],
       redoStack: [],
-      persistedFingerprint: EMPTY_SNAPSHOT,
+      // Deliberately wrong: every assertion below proves the store's own
+      // mutation path RECOMPUTED the fingerprint, not that the reset seeded it.
+      persistedFingerprint: "STALE-SENTINEL",
       savedPersistedFingerprint: null,
       dirty: false,
     })
   })
 
-  it("initial-state fingerprint is the empty sentinel", () => {
-    expect(useGraphStore.getState().persistedFingerprint).toBe(EXPECTED_EMPTY)
-  })
-
-  it("store mutations recompute the fingerprint in the pinned format", () => {
+  it("every mutation recomputes the fingerprint in the pinned format", () => {
     const store = useGraphStore.getState()
-    store.setNodes([NODE])
-    store.setEdges([EDGE])
-    store.setPreamble(PREAMBLE)
-    store.setSubmodelsRaw(SUBMODELS)
+    const fingerprint = () => useGraphStore.getState().persistedFingerprint
 
-    expect(useGraphStore.getState().persistedFingerprint).toBe(EXPECTED_FINGERPRINT)
+    store.setNodes([NODE, NODE2])
+    expect(fingerprint()).toBe(
+      serializeSnapshot({ nodes: [NODE, NODE2], edges: [], preamble: "", submodels: {} }),
+    )
+
+    store.setEdges([EDGE])
+    expect(fingerprint()).toBe(
+      serializeSnapshot({ nodes: [NODE, NODE2], edges: [EDGE], preamble: "", submodels: {} }),
+    )
+
+    store.setPreamble(PREAMBLE)
+    expect(fingerprint()).toBe(
+      serializeSnapshot({
+        nodes: [NODE, NODE2],
+        edges: [EDGE],
+        preamble: PREAMBLE,
+        submodels: {},
+      }),
+    )
+
+    store.setSubmodelsRaw(SUBMODELS)
+    expect(fingerprint()).toBe(EXPECTED_FINGERPRINT)
   })
 })
