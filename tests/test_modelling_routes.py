@@ -518,7 +518,7 @@ class TestTrainEndpoint:
         )
         # Pretend GPU has only 1 byte VRAM -- forces async refusal before fit.
         with (
-            patch("haute._ram_estimate.available_vram_bytes", return_value=1),
+            patch("haute._host_memory.available_vram_bytes", return_value=1),
             patch("haute.modelling.TrainingJob.run", return_value=_completed_train_result()) as run,
         ):
             resp = client.post(
@@ -1262,7 +1262,7 @@ class TestEstimateEndpoint:
             training_data,
             params=_fast_training_params(task_type="GPU"),
         )
-        with patch("haute._ram_estimate.available_vram_bytes", return_value=1):
+        with patch("haute._host_memory.available_vram_bytes", return_value=1):
             resp = client.post("/api/modelling/estimate", json={"graph": graph, "node_id": "train"})
         assert resp.status_code == 200
         data = resp.json()

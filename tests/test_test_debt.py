@@ -153,7 +153,7 @@ _EXPECTED_DEBT_IDS = {
     "8a0f7160d9044069",
     "a78fb6a12665d489",
     "3512c808a6273e35",
-    "f63085091f758553",
+    "153ecf02f6848509",
     "b47ee7c16fbf5755",
     "9b58538ec2c90223",
     "6881417aa251afb7",
@@ -255,6 +255,18 @@ _EXPECTED_DEBT_IDS = {
     # one leg can only be exercised where that file exists.
     # See tests/test_worker_isolation.py.
     "e928b1daccb49a17",
+    # macOS available-RAM probe — the Mach ``host_statistics64`` counters exist
+    # only on darwin, so the unmocked-kernel assertion is darwin-gated. This is
+    # the test that would have caught the original defect (darwin had no
+    # working branch at all: no ``/proc/meminfo``, and ``SC_AVPHYS_PAGES`` is
+    # absent from ``os.sysconf_names`` there), so it is deliberately a real
+    # syscall rather than a mock. The branch's logic — free+inactive accounting,
+    # purgeable exclusion, Mach port release, and every failure path — is
+    # covered unconditionally on all platforms by the mocked tests in the same
+    # class, which drive the real ctypes struct. See
+    # tests/test_host_memory.py::TestAvailableRamMacOS
+    # ::test_real_darwin_kernel_reports_available_memory.
+    "23fb0fa7068e4340",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

@@ -48,11 +48,14 @@ running heavy work in a child process the parent can kill on timeout or memory l
   process with an optional address-space cap, timeout, and cooperative-stop support.
 - Metadata-based RAM pre-estimation for training (`_ram_estimate.py`) so a training run
   can downsample before it starts rather than OOM mid-fit.
-- Linux available-memory discovery clamps the host's reported availability to
-  observable container headroom: cgroup v2 `memory.max - memory.current`,
-  falling back to the v1 limit/usage pair when v2 is absent. An unlimited
-  cgroup leaves the host value unchanged; malformed or incomplete controller
-  state is reported and never turned into invented capacity.
+- Host memory observation (`_host_memory.py`): available-RAM discovery on
+  Linux (`/proc/meminfo`), macOS (Mach VM counters), and Windows
+  (`GlobalMemoryStatusEx`), plus GPU VRAM detection. On Linux the host's
+  reported availability is clamped to observable container headroom: cgroup
+  v2 `memory.max - memory.current`, falling back to the v1 limit/usage pair
+  when v2 is absent. An unlimited cgroup leaves the host value unchanged;
+  malformed or incomplete controller state is reported and never turned into
+  invented capacity.
 - Shared config-driven node-apply logic (`_node_apply.py`) for `liveSwitch`,
   `scenarioExpander`, `optimiserApply`, and `OUTPUT` response-document assembly —
   the one implementation both the canvas executor and codegen-generated `.py`

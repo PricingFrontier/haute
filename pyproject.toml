@@ -278,6 +278,12 @@ rationale = "Format registry defines the dataInput/dataOutput argument surface a
 # which caps measurable coverage. Ratchet if engines join CI.
 
 [[tool.haute.critical_coverage.files]]
+path = "src/haute/_host_memory.py"
+min_statement_coverage = 98.0
+min_branch_coverage = 94.0
+rationale = "Host memory observation decides how much work admission will accept."
+
+[[tool.haute.critical_coverage.files]]
 path = "src/haute/_ram_estimate.py"
 min_statement_coverage = 98.0
 min_branch_coverage = 94.0

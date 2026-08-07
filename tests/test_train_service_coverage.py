@@ -1198,7 +1198,7 @@ class TestCheckGpuVramHelper:
                 return_value=1 * 1024**3,
             ),
             patch(
-                "haute._ram_estimate.available_vram_bytes",
+                "haute._host_memory.available_vram_bytes",
                 return_value=8 * 1024**3,
             ),
         ):

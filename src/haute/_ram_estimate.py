@@ -15,24 +15,28 @@ This replaces the previous probe-based approach which ran a 1 000-row
 sample through the pipeline.  The probe was fragile: inner joins with
 no key overlap in small samples produced zero rows, breaking the
 estimate.  Metadata is always available and always accurate.
+
+Host-side observation (what the machine has: available RAM/VRAM, cgroup
+headroom) lives in :mod:`haute._host_memory`; this module estimates what
+the workload needs and compares the two.
 """
 
 from __future__ import annotations
 
 import math
-import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple
 
 import polars as pl
 
 from haute._api_input_schema import is_json_api_input_path
 from haute._edge_join import build_edge_join_kwargs, edge_join_key_columns_by_role
 from haute._graph_utils import build_parents_of
+from haute._host_memory import available_ram_bytes
 from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
 from haute._types import GraphEdge, GraphNode, NodeType, PipelineGraph
@@ -42,8 +46,6 @@ logger = get_logger(component="ram_estimate")
 __all__ = [
     "MaterialisationEstimate",
     "MaterialisationEstimateState",
-    "available_ram_bytes",
-    "available_vram_bytes",
     "estimate_gpu_vram_bytes",
     "estimate_materialisation_boundary",
     "estimate_safe_training_rows",
@@ -111,200 +113,8 @@ class MaterialisationEstimate:
 
 
 # ---------------------------------------------------------------------------
-# System RAM
+# GPU VRAM estimation
 # ---------------------------------------------------------------------------
-
-
-_CGROUP_V2_MEMORY_MAX = "/sys/fs/cgroup/memory.max"
-_CGROUP_V2_MEMORY_CURRENT = "/sys/fs/cgroup/memory.current"
-_CGROUP_V1_MEMORY_LIMIT = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
-_CGROUP_V1_MEMORY_USAGE = "/sys/fs/cgroup/memory/memory.usage_in_bytes"
-_CGROUP_V1_UNLIMITED_SENTINEL = 1 << 60
-
-
-def _read_cgroup_memory_file(path: str) -> str | None:
-    """Read one cgroup control file, returning ``None`` when absent."""
-    try:
-        return Path(path).read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-
-
-def _cgroup_memory_headroom_bytes() -> int | None:
-    """Return observable Linux cgroup memory headroom, if it is finite."""
-
-    def controller_headroom(
-        version: str,
-        limit_path: str,
-        current_path: str,
-        *,
-        supports_max: bool,
-    ) -> tuple[bool, int | None]:
-        raw_limit = _read_cgroup_memory_file(limit_path)
-        raw_current = _read_cgroup_memory_file(current_path)
-        if raw_limit is None and raw_current is None:
-            return False, None
-        if raw_limit is None or raw_current is None:
-            logger.warning(
-                "cgroup_memory_state_incomplete",
-                version=version,
-                limit_path=limit_path,
-                current_path=current_path,
-            )
-            return True, None
-        if supports_max and raw_limit == "max":
-            return True, None
-        try:
-            limit = int(raw_limit)
-            current = int(raw_current)
-        except ValueError:
-            logger.warning(
-                "cgroup_memory_state_malformed",
-                version=version,
-                limit=raw_limit,
-                current=raw_current,
-            )
-            return True, None
-        if limit < 0 or current < 0:
-            logger.warning(
-                "cgroup_memory_state_malformed",
-                version=version,
-                limit=raw_limit,
-                current=raw_current,
-            )
-            return True, None
-        if not supports_max and limit >= _CGROUP_V1_UNLIMITED_SENTINEL:
-            return True, None
-        return True, max(limit - current, 0)
-
-    v2_present, v2_headroom = controller_headroom(
-        "v2",
-        _CGROUP_V2_MEMORY_MAX,
-        _CGROUP_V2_MEMORY_CURRENT,
-        supports_max=True,
-    )
-    if v2_present:
-        return v2_headroom
-    _v1_present, v1_headroom = controller_headroom(
-        "v1",
-        _CGROUP_V1_MEMORY_LIMIT,
-        _CGROUP_V1_MEMORY_USAGE,
-        supports_max=False,
-    )
-    return v1_headroom
-
-
-def _clamp_available_ram_to_cgroup(host_available: int | None) -> int | None:
-    if host_available is None or sys.platform != "linux":
-        return host_available
-    headroom = _cgroup_memory_headroom_bytes()
-    return host_available if headroom is None else min(host_available, headroom)
-
-
-def available_ram_bytes() -> int | None:
-    """Return available system RAM in bytes, or ``None`` when unobservable.
-
-    - **Linux**: reads ``/proc/meminfo`` (most accurate).
-    - **macOS / POSIX**: ``os.sysconf`` page-based query.
-    - **Windows**: ``GlobalMemoryStatusEx`` via ctypes.
-    No fallback capacity is fabricated: callers that require a physical-memory
-    limit must fail admission or require an explicit configured budget.
-    """
-    proc_meminfo_error: str | None = None
-    sysconf_error: str | None = None
-    sysconf_pages: int | None = None
-    sysconf_page_size: int | None = None
-    windows_attempted = False
-    windows_error: str | None = None
-
-    try:
-        with open("/proc/meminfo", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return _clamp_available_ram_to_cgroup(int(line.split()[1]) * 1024)
-        proc_meminfo_error = "MemAvailable not found"
-    except (OSError, ValueError, IndexError) as exc:
-        proc_meminfo_error = str(exc)
-
-    try:
-        import os
-
-        sysconf = cast(Any, os).sysconf
-        sysconf_pages = int(sysconf("SC_AVPHYS_PAGES"))
-        sysconf_page_size = int(sysconf("SC_PAGE_SIZE"))
-        if sysconf_pages > 0 and sysconf_page_size > 0:
-            return _clamp_available_ram_to_cgroup(sysconf_pages * sysconf_page_size)
-        sysconf_error = "non-positive sysconf memory values"
-    except (AttributeError, OSError, ValueError) as exc:
-        sysconf_error = str(exc)
-
-    if sys.platform == "win32":
-        windows_attempted = True
-        try:
-            import ctypes
-
-            class MemoryStatusEx(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-
-            mem = MemoryStatusEx()
-            mem.dwLength = ctypes.sizeof(MemoryStatusEx)
-            kernel32 = cast(Any, ctypes).windll.kernel32
-            if kernel32.GlobalMemoryStatusEx(ctypes.byref(mem)):
-                return _clamp_available_ram_to_cgroup(int(mem.ullAvailPhys))
-            windows_error = "GlobalMemoryStatusEx returned false"
-        except (OSError, AttributeError, ImportError) as exc:
-            windows_error = str(exc)
-
-    logger.warning(
-        "available_ram_unavailable",
-        platform=sys.platform,
-        proc_meminfo_error=proc_meminfo_error,
-        sysconf_error=sysconf_error,
-        sysconf_pages=sysconf_pages,
-        sysconf_page_size=sysconf_page_size,
-        windows_attempted=windows_attempted,
-        windows_error=windows_error,
-    )
-    return None
-
-
-# ---------------------------------------------------------------------------
-# GPU VRAM
-# ---------------------------------------------------------------------------
-
-
-def available_vram_bytes() -> int | None:
-    """Return total GPU VRAM in bytes, or ``None`` if no GPU is detected."""
-    try:
-        import subprocess
-
-        result = subprocess.run(
-            [
-                "nvidia-smi",
-                "--query-gpu=memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=5,
-        )
-        if result.returncode == 0:
-            line = result.stdout.strip().split("\n")[0].strip()
-            return int(line) * 1024 * 1024
-    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, OSError):
-        pass
-    return None
 
 
 # CatBoost GPU stores per row:

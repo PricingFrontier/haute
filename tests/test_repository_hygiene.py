@@ -72,7 +72,7 @@ _SCAN_SKIP_DIRS = {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 # The only modules in src/haute/ allowed to import subprocess, and why.
 _SUBPROCESS_IMPORT_ALLOWLIST = {
     "src/haute/_git.py",  # git chokepoint (caller)
-    "src/haute/_ram_estimate.py",  # nvidia-smi chokepoint (caller; function-local import)
+    "src/haute/_host_memory.py",  # nvidia-smi chokepoint (caller; function-local import)
     "src/haute/cli/_serve.py",  # npm chokepoint (caller, via _helpers._npm)
     "src/haute/deploy/_container.py",  # docker chokepoint (caller)
     # import-only: deliberate F401-suppressed patch-target — tests patch the
@@ -87,7 +87,7 @@ _SUBPROCESS_IMPORT_ALLOWLIST = {
 # entries above never make calls, so they carry no text-mode call sites).
 _CALLER_CHOKEPOINTS = (
     "src/haute/_git.py",
-    "src/haute/_ram_estimate.py",
+    "src/haute/_host_memory.py",
     "src/haute/cli/_serve.py",
     "src/haute/deploy/_container.py",
 )
