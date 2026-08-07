@@ -271,6 +271,12 @@ type ResolvedRetryPolicy = Required<RetryPolicy>
 type RequestOptions = RequestInit & ApiClientOptions
 type MutationOptions = Pick<ApiClientOptions, "signal" | "timeout">
 
+// PAIRED INVARIANT with stores/singleFlight.ts: the retry loop's worst case
+// (default 30s timeout × (maxRetries + 1) attempts + backoff ≈ 121s) must stay
+// BELOW DEFAULT_STALE_PENDING_AFTER_MS (150s), so a slow network always
+// surfaces the transport's specific ApiTimeoutError before the store-level
+// stalled-request backstop fires. Raise that constant in step with any change
+// that lengthens this budget.
 const DEFAULT_RETRY_POLICY: ResolvedRetryPolicy = {
   maxRetries: 3,
   baseDelayMs: 100,

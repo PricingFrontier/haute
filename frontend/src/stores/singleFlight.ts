@@ -33,9 +33,16 @@
  *   store-level backstop, not the primary timeout.
  */
 
-/** Above the API client's retry-loop worst case (~121s), so the transport's
- *  own ApiTimeoutError is always the error the user actually sees for a slow
- *  network; this backstop fires only for a genuinely unbounded promise. */
+/** Above the API client's retry-loop worst case, so the transport's own
+ *  ApiTimeoutError is always the error the user actually sees for a slow
+ *  network; this backstop fires only for a genuinely unbounded promise.
+ *
+ *  PAIRED INVARIANT with api/client.ts (request(): default timeout 30_000 ×
+ *  (DEFAULT_RETRY_POLICY.maxRetries + 1) attempts + ~700ms backoff ≈ 121s):
+ *  this constant must stay ABOVE that budget, or the watchdog pre-empts the
+ *  transport's specific timeout error with the generic stalled-request
+ *  message. A matching comment sits on DEFAULT_RETRY_POLICY — change either
+ *  side only in step with the other. */
 export const DEFAULT_STALE_PENDING_AFTER_MS = 150_000
 
 export class StalePendingRequestError extends Error {
@@ -87,6 +94,11 @@ export function createSingleFlight<T>(
   // while a DIFFERENT request is active must queue behind that newer request
   // rather than being satisfied by a queue from an older generation.
   let queuedAnchor: Promise<T> | null = null
+  // Cancels the active request's watchdog timer. reset() must run this: a
+  // detached request keeps the pre-reset semantics (its awaiters settle with
+  // the fetcher's real eventual result), so its watchdog must never fire a
+  // stale error into whatever is running when the 150s elapse.
+  let cancelWatchdog: (() => void) | null = null
 
   const issue = (
     fetcher: SingleFlightFetcher<T>,
@@ -97,23 +109,34 @@ export function createSingleFlight<T>(
       fetcher(() => inFlight === request),
       new Promise<T>((resolve, reject) => {
         staleTimer = setTimeout(() => {
-          const error = new StalePendingRequestError(stalePendingAfterMs)
+          // A detached request's fire is a pure no-op: its awaiters keep the
+          // detach semantics (settle with the fetcher's real eventual result),
+          // and settling here would throw a stale rejection into whatever is
+          // running when the timer elapses. reset() also cancels this timer;
+          // this guard covers a fire already queued when the reset landed.
+          if (inFlight !== request) return
           // Free the slot first: onStale's publish may synchronously trigger
           // a subscriber that loads again, and that load must start fresh.
-          if (inFlight === request) {
-            inFlight = null
+          inFlight = null
+          const error = new StalePendingRequestError(stalePendingAfterMs)
+          try {
             options.onStale?.(error)
+          } finally {
+            // The settle must survive a throwing onStale subscriber — a stuck
+            // request must not become stuck-request-plus-crashed-timer that
+            // hangs every awaiter (including a queued mutation refresh).
+            if (options.staleResult) resolve(options.staleResult())
+            else reject(error)
           }
-          // Settle awaiters even when already detached (by a reset): nobody
-          // should wait forever on a promise that will never produce state.
-          if (options.staleResult) resolve(options.staleResult())
-          else reject(error)
         }, stalePendingAfterMs)
       }),
     ]).finally(() => {
       clearTimeout(staleTimer)
+      if (cancelWatchdog === cancel) cancelWatchdog = null
       if (inFlight === request) inFlight = null
     })
+    const cancel = () => clearTimeout(staleTimer)
+    cancelWatchdog = cancel
     inFlight = request
     options.onStart?.()
     return request
@@ -152,6 +175,8 @@ export function createSingleFlight<T>(
   return {
     load,
     reset: () => {
+      cancelWatchdog?.()
+      cancelWatchdog = null
       inFlight = null
       queuedRefresh = null
       queuedAnchor = null

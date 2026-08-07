@@ -296,6 +296,12 @@ describe("useGitStore loadStatus refresh and stall recovery", () => {
     vi.clearAllMocks()
   })
   afterEach(() => {
+    // Order matters: restore real timers BEFORE the reset. useRealTimers()
+    // discards any still-armed fake watchdog along with the fake clock; the
+    // reset then detaches (and cancels the watchdog of) whatever hung mock
+    // request the next test could otherwise inherit. Reversed, a watchdog
+    // armed between the two calls' effects would rely on the identity guard
+    // alone instead of never existing.
     vi.useRealTimers()
     resetGitStatusRequestForTests()
   })
@@ -386,6 +392,52 @@ describe("useGitStore loadStatus refresh and stall recovery", () => {
     expect(getWorkingBranch).toHaveBeenCalledTimes(2)
     expect(useGitStore.getState().status).toEqual(READY)
     expect(useGitStore.getState().statusError).toBeNull()
+  })
+
+  it("a stall-detached request settling late neither publishes nor disturbs the successor request", async () => {
+    vi.useFakeTimers()
+    const hung = deferredStatus()
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(hung.promise)
+    const stalled = useGitStore.getState().loadStatus()
+    await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS)
+    await expect(stalled).resolves.toBeNull()
+
+    const successor = deferredStatus()
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(successor.promise)
+    const second = useGitStore.getState().loadStatus()
+
+    // The stalled request's fetcher settles late: no publish, and the
+    // successor keeps its single-flight slot (a third call joins it instead
+    // of spawning a duplicate fetch).
+    hung.resolve(STALE)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(useGitStore.getState().status).toBeNull()
+    expect(useGitStore.getState().loadStatus()).toBe(second)
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+
+    successor.resolve(READY)
+    await expect(second).resolves.toEqual(READY)
+    expect(useGitStore.getState().status).toEqual(READY)
+    expect(useGitStore.getState().statusError).toBeNull()
+  })
+
+  it("a reset cancels the watchdog: a detached hung request cannot fire a late stall error into later work", async () => {
+    vi.useFakeTimers()
+    vi.mocked(getWorkingBranch).mockReturnValueOnce(new Promise(() => {}))
+    // Abandoned on detach: its awaiter would only settle via its own fetcher.
+    void useGitStore.getState().loadStatus()
+    resetGitStatusRequestForTests()
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_STALE_PENDING_AFTER_MS * 2)
+    // The cancelled watchdog published nothing.
+    expect(useGitStore.getState().statusError).toBeNull()
+    expect(useGitStore.getState().status).toBeNull()
+
+    // The slot is clean: a fresh request issues and publishes normally.
+    vi.mocked(getWorkingBranch).mockResolvedValueOnce(READY)
+    await expect(useGitStore.getState().loadStatus()).resolves.toEqual(READY)
+    expect(getWorkingBranch).toHaveBeenCalledTimes(2)
+    expect(useGitStore.getState().status).toEqual(READY)
   })
 
   it("a mutation refresh queued behind a stalled request still issues its own fresh request (the mutation cannot hang forever)", async () => {
