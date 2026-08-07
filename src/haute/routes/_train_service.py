@@ -56,7 +56,7 @@ from haute._worker_protocol import (
     WorkerRuntime,
     build_artifact_manifest,
 )
-from haute.errors import BoundedMemoryUnsupportedError
+from haute.errors import BoundedMemoryUnsupportedError, HauteValidationError
 from haute.execution import (
     AllExceptColumns,
     build_dataframe_execution_cache_request,
@@ -95,6 +95,7 @@ from haute.routes._job_lifecycle import (
     bind_running_execution_metrics_publisher,
 )
 from haute.routes._job_store import JobStore
+from haute.routes._memory_messages import memory_limit_user_message
 from haute.schemas import (
     DispersionEstimateRequest,
     DispersionEstimateResponse,
@@ -180,7 +181,7 @@ def _seeded_training_sample(lf: pl.LazyFrame, row_limit: int) -> pl.LazyFrame:
     the mask, so the data columns still stream through the bounded sink.
     """
     if row_limit <= 0:
-        raise ValueError(f"row_limit must be positive, got {row_limit}")
+        raise HauteValidationError(f"row_limit must be positive, got {row_limit}")
     return lf.filter(
         pl.int_range(pl.len()).shuffle(seed=_TRAINING_DOWNSAMPLE_SEED) < row_limit,
     )
@@ -190,14 +191,11 @@ def _memory_limit_http_exception(
     exc: ExecutionAdmissionError | ExecutionMemoryLimitExceededError,
 ) -> HTTPException:
     detail = exc.to_payload()
-    if isinstance(exc, ExecutionMemoryLimitExceededError):
-        # str(exc) names the internal operation and raw byte counts; author
-        # the public message from the structured attributes instead. Assigned
-        # unconditionally: a payload-carried "message" must not win over the
-        # curated wording.
-        detail["message"] = _memory_limit_user_message(exc, operation_noun="Training")
-    else:
-        detail.setdefault("message", str(exc))
+    # str(exc) names the internal operation and raw byte counts; author the
+    # public message from the structured attributes instead. Assigned
+    # unconditionally: a payload-carried "message" must not win over the
+    # curated wording.
+    detail["message"] = memory_limit_user_message(exc, operation_noun="Training")
     return HTTPException(status_code=507, detail=detail)
 
 
@@ -346,12 +344,12 @@ def _string_list_config(config: Mapping[str, Any], key: str) -> list[str]:
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise ValueError(f"{key} must be a list of column names")
+        raise HauteValidationError(f"{key} must be a list of column names")
     columns: list[str] = []
     seen: set[str] = set()
     for value in raw:
         if not isinstance(value, str) or not value:
-            raise ValueError(f"{key} must contain non-empty string column names")
+            raise HauteValidationError(f"{key} must contain non-empty string column names")
         if value in seen:
             continue
         columns.append(value)
@@ -435,14 +433,14 @@ def _build_training_feature_selection(
     """
     schema = list(schema_columns)
     if any(not isinstance(column, str) or not column for column in schema):
-        raise ValueError("training schema must contain non-empty column names")
+        raise HauteValidationError("training schema must contain non-empty column names")
     if len(schema) != len(set(schema)):
-        raise ValueError("training schema contains duplicate column names")
+        raise HauteValidationError("training schema contains duplicate column names")
     schema_set = set(schema)
     metadata_reasons = _training_metadata_reasons(config)
     missing_metadata = [column for column in metadata_reasons if column not in schema_set]
     if missing_metadata:
-        raise ValueError(
+        raise HauteValidationError(
             "Training input is missing required column(s): "
             f"{missing_metadata}. Available columns: {schema}"
         )
@@ -454,7 +452,7 @@ def _build_training_feature_selection(
         mode = "explicit"
         missing_features = [column for column in explicit_features if column not in schema_set]
         if missing_features:
-            raise ValueError(
+            raise HauteValidationError(
                 "Configured feature column(s) not found in training data: "
                 f"{missing_features}. Available columns: {schema}"
             )
@@ -463,7 +461,7 @@ def _build_training_feature_selection(
         mode = "glm_terms"
         missing_terms = sorted(term_columns - schema_set)
         if missing_terms:
-            raise ValueError(
+            raise HauteValidationError(
                 "GLM terms reference columns not found in training data: "
                 f"{missing_terms}. Available columns: {schema}"
             )
@@ -474,7 +472,7 @@ def _build_training_feature_selection(
         features = [column for column in schema if column not in non_features]
 
     if not features:
-        raise ValueError(
+        raise HauteValidationError(
             "No feature columns remaining after applying target, metadata, and exclusion settings."
         )
 
@@ -588,18 +586,6 @@ def _find_modelling_node(graph: PipelineGraph, node_id: str) -> GraphNode:
     return find_typed_node(graph, node_id, NodeType.MODELLING, "modelling")
 
 
-def _format_byte_size(size_bytes: int) -> str:
-    """Render a byte count in human units for user-facing messages."""
-    value = float(size_bytes)
-    unit = "bytes"
-    for larger_unit in ("KiB", "MiB", "GiB", "TiB"):
-        if abs(value) < 1024.0:
-            break
-        value /= 1024.0
-        unit = larger_unit
-    return f"{size_bytes} bytes" if unit == "bytes" else f"{value:.1f} {unit}"
-
-
 def _training_context_phrase(job_kwargs: Mapping[str, Any] | None) -> str:
     """Name the failing fit's target and objective from bounded config values.
 
@@ -634,17 +620,18 @@ def _friendly_error(
 
     Every returned shape is haute-authored and safe to promote verbatim as the
     job's terminal message; the raw exception text stays in the diagnostic
-    ``error`` field and the traceback. Apart from the `ValueError` validation
-    channel, no shape interpolates a third-party message body (which may carry
-    internal paths or secrets) — third-party failures name the exception type
-    and the target/objective context only, and they stay a plain system
-    ``error`` — a system fault is never relabelled as a ``contract_error``.
+    ``error`` field and the traceback. Apart from the ``HauteValidationError``
+    validation channel, no shape interpolates a third-party message body
+    (which may carry internal paths or secrets) — third-party failures name
+    the exception type and the target/objective context only, and they stay a
+    plain system ``error`` — a system fault is never relabelled as a
+    ``contract_error``.
     """
-    if isinstance(exc, ValueError):
-        # ValueError is the package's deliberate validation channel: gates,
-        # column checks, and the metric-stage wrap all speak through it. This
-        # is provenance by convention, not enforcement — a dependency's
-        # ValueError rides the same channel.
+    if isinstance(exc, HauteValidationError):
+        # HauteValidationError is the package's deliberate validation channel:
+        # gates, column checks, and the metric-stage wrap all speak through
+        # it. Provenance is enforced by the marker type — a dependency's plain
+        # ValueError takes the type-only fallback below instead.
         return str(exc)
 
     exc_type = type(exc).__name__
@@ -722,7 +709,7 @@ def _assert_json_finite(value: Any, path: str = "result") -> None:
     if isinstance(value, Real) and not isinstance(value, bool):
         numeric = float(value)
         if not math.isfinite(numeric):
-            raise ValueError(f"non-finite numeric value at {path}")
+            raise HauteValidationError(f"non-finite numeric value at {path}")
 
 
 def _job_elapsed_seconds(job: dict[str, Any], fallback: float = 0.0) -> float:
@@ -744,10 +731,12 @@ def _bounded_loss_history(
 
 def _worker_request_payload(request: WorkerRequest, *, expected_kind: str) -> dict[str, Any]:
     if request.kind != expected_kind:
-        raise ValueError(f"Worker request kind must be {expected_kind!r}, got {request.kind!r}")
+        raise HauteValidationError(
+            f"Worker request kind must be {expected_kind!r}, got {request.kind!r}"
+        )
     payload = request.payload
     if not isinstance(payload, dict):
-        raise ValueError("Worker request payload must be an object")
+        raise HauteValidationError("Worker request payload must be an object")
     return payload
 
 
@@ -759,13 +748,13 @@ def _child_execution_context(
 ) -> ExecutionContext:
     raw_profile = payload.get("profile")
     if not isinstance(raw_profile, str):
-        raise ValueError("Worker profile must be a string")
+        raise HauteValidationError("Worker profile must be a string")
     profile = ExecutionProfile(raw_profile)
     raw_limit = payload.get("memory_limit_bytes")
     if raw_limit is not None and (
         isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or raw_limit <= 0
     ):
-        raise ValueError("Worker memory_limit_bytes must be a positive integer or null")
+        raise HauteValidationError("Worker memory_limit_bytes must be a positive integer or null")
     baseline = current_rss_bytes()
     rss_limit = (
         baseline + raw_limit if baseline is not None and isinstance(raw_limit, int) else raw_limit
@@ -811,9 +800,10 @@ def _worker_failure_payload(
     ]
     payload_fields = dict(fields) if fields is not None else {"error": detail}
     # Only deliberately curated messages are marked user-facing (haute-authored
-    # wording: the gates, the metric wrap, ValueError validation messages, the
-    # _friendly_error shapes — whose fallback names only the target/objective
-    # context and exception type, never the third-party message body). Raw
+    # wording: the gates, the metric wrap, HauteValidationError validation
+    # messages, the _friendly_error shapes — whose fallback names only the
+    # target/objective context and exception type, never the third-party
+    # message body). Raw
     # third-party text stays behind the typed
     # "Isolated worker raised {type}: {message}" wrapper.
     if user_facing:
@@ -824,46 +814,6 @@ def _worker_failure_payload(
         message=detail,
         traceback=remote_traceback or type(exc).__name__,
         fields=payload_fields,
-    )
-
-
-def _memory_limit_user_message(
-    exc: ExecutionMemoryLimitExceededError,
-    *,
-    operation_noun: str,
-) -> str:
-    """Author the user-facing memory-limit message from structured attributes.
-
-    ``str(exc)`` names the internal operation and raw byte counts; that stays
-    in the diagnostic ``error`` field. This shape says what ran out of memory
-    and what to do about it.
-    """
-    if exc.reason == "memory_sampler_unavailable":
-        return (
-            f"{operation_noun} was stopped because the server could no longer "
-            "measure its memory use. Try again; if this keeps happening, "
-            "restart the app."
-        )
-    used = exc.rss_bytes
-    allowed = exc.limit_bytes
-    if exc.reason == "process_rss_limit_exceeded" and exc.rss_limit_bytes is not None:
-        allowed = exc.rss_limit_bytes
-    elif used is not None and exc.baseline_rss_bytes is not None:
-        # Sampler noise can put the observed RSS below the admission baseline;
-        # never render a negative usage.
-        used = max(used - exc.baseline_rss_bytes, 0)
-    # This runs on a failure path: a partially-populated exception must
-    # degrade to omitting the sizes, never crash into a TypeError that
-    # replaces the real memory error.
-    detail = (
-        ""
-        if used is None or allowed is None
-        else f" ({_format_byte_size(used)} used, {_format_byte_size(allowed)} allowed)"
-    )
-    return (
-        f"{operation_noun} needs more memory than this server allows{detail}. "
-        "Reduce the data size or the number of features, or run on a server "
-        "with more memory, then try again."
     )
 
 
@@ -889,7 +839,7 @@ def _known_training_worker_failure(
         return _worker_failure_payload(
             exc,
             terminal_reason="memory_limited",
-            message=_memory_limit_user_message(exc, operation_noun=operation_noun),
+            message=memory_limit_user_message(exc, operation_noun=operation_noun),
             fields={
                 "error": str(exc),
                 "error_detail": payload,
@@ -914,7 +864,10 @@ def _known_training_worker_failure(
             fields={"error": message},
             user_facing=True,
         )
-    if isinstance(exc, ValueError):
+    if isinstance(exc, HauteValidationError):
+        # The marker type vouches the message is haute-authored validation
+        # wording; a dependency's plain ValueError falls through to the
+        # entrypoint's _friendly_error fallback (a plain "error") instead.
         return _worker_failure_payload(exc, terminal_reason="contract_error", user_facing=True)
     if isinstance(exc, MemoryError):
         # str(MemoryError) is raw third-party text (usually empty) — keep the
@@ -1013,7 +966,7 @@ def _run_training_process_job(
         payload = _worker_request_payload(request, expected_kind="training")
         raw_kwargs = payload.get("job_kwargs")
         if not isinstance(raw_kwargs, dict):
-            raise ValueError("Training worker job_kwargs must be an object")
+            raise HauteValidationError("Training worker job_kwargs must be an object")
         job_kwargs = dict(raw_kwargs)
         failure_context = _training_context_phrase(job_kwargs)
         staged_output = runtime.staged_path("output")
@@ -1102,12 +1055,12 @@ def _run_training_process_job(
         )
         artifacts = [model_manifest, contract_manifest]
         if not isinstance(train_result.evaluation, dict):
-            raise ValueError("Training evaluation result must be an object")
+            raise HauteValidationError("Training evaluation result must be an object")
         response_evaluation = dict(train_result.evaluation)
         for kind, response_field in _EVALUATION_ARTIFACT_PATHS.items():
             raw_path = response_evaluation.get(response_field)
             if not isinstance(raw_path, str) or not raw_path:
-                raise ValueError(f"Training evaluation result has no {response_field}")
+                raise HauteValidationError(f"Training evaluation result has no {response_field}")
             artifact = build_artifact_manifest(
                 artifact_root=staged_output.parent,
                 path=Path(raw_path).resolve(),
@@ -1120,12 +1073,12 @@ def _run_training_process_job(
         response_tuning: dict[str, Any] | None = None
         if train_result.tuning is not None:
             if not isinstance(train_result.tuning, dict):
-                raise ValueError("Training tuning result must be an object")
+                raise HauteValidationError("Training tuning result must be an object")
             response_tuning = dict(train_result.tuning)
             for kind, response_field in _TUNING_ARTIFACT_PATHS.items():
                 raw_path = response_tuning.get(response_field)
                 if not isinstance(raw_path, str) or not raw_path:
-                    raise ValueError(f"Training tuning result has no {response_field}")
+                    raise HauteValidationError(f"Training tuning result has no {response_field}")
                 artifact = build_artifact_manifest(
                     artifact_root=staged_output.parent,
                     path=Path(raw_path).resolve(),
@@ -1184,9 +1137,9 @@ def _run_dispersion_process_job(
         raw_kwargs = payload.get("job_kwargs")
         param = payload.get("param")
         if not isinstance(raw_kwargs, dict):
-            raise ValueError("Dispersion worker job_kwargs must be an object")
+            raise HauteValidationError("Dispersion worker job_kwargs must be an object")
         if param not in _DISPERSION_PARAM_FAMILIES:
-            raise ValueError(f"Unknown dispersion parameter {param!r}")
+            raise HauteValidationError(f"Unknown dispersion parameter {param!r}")
 
         from haute.modelling import TrainingJob
         from haute.modelling._rustystats import (
@@ -1222,7 +1175,7 @@ def _run_dispersion_process_job(
             term_names = set(raw_terms)
             missing = term_names - set(features)
             if missing:
-                raise ValueError(
+                raise HauteValidationError(
                     "GLM terms reference columns not present in the training data: "
                     f"{sorted(missing)}."
                 )
@@ -1396,7 +1349,9 @@ def _validate_evaluation_artifact_contents(
             results_sha256=results_sha256,
         )
         if expected_report.to_plain_data() != report.to_plain_data():
-            raise ValueError("evaluation report does not match the persisted plan and results")
+            raise HauteValidationError(
+                "evaluation report does not match the persisted plan and results"
+            )
         return {
             "schema_version": 1,
             "strategy": plan.config.strategy,
@@ -1437,7 +1392,7 @@ def _validate_tuning_artifact_contents(
         report_path = staged_and_final["tuning_report"][0]
         plan = load_tuning_plan(plan_path)
         if plan.evaluation_plan_sha256 != evaluation_plan_sha256:
-            raise ValueError("tuning plan does not link to the evaluation plan")
+            raise HauteValidationError("tuning plan does not link to the evaluation plan")
         plan_sha256 = file_sha256(plan_path)
         trials = load_tuning_trials(trials_path, plan_sha256=plan_sha256)
         trials_sha256 = file_sha256(trials_path)
@@ -1450,7 +1405,7 @@ def _validate_tuning_artifact_contents(
             final_tree_count=report.final_tree_count,
         )
         if expected_report.to_plain_data() != report.to_plain_data():
-            raise ValueError("tuning report does not match the persisted plan and trials")
+            raise HauteValidationError("tuning report does not match the persisted plan and trials")
         return {
             **report.to_plain_data(),
             "trials": [trial.to_plain_data() for trial in trials.trials],
@@ -1737,7 +1692,7 @@ def _evaluation_preview_payload(
         )
     if plan.config.strategy == "temporal":
         if date_values is None or len(date_values) != plan.row_count:
-            raise ValueError("temporal evaluation preview requires exact date values")
+            raise HauteValidationError("temporal evaluation preview requires exact date values")
 
         def date_range(positions: tuple[int, ...]) -> dict[str, str] | None:
             if not positions:
@@ -1964,7 +1919,7 @@ class TrainService:
             )
             evaluation_lf = lazy_outputs.get(body.node_id)
             if evaluation_lf is None:
-                raise ValueError("No training data arrived at the modelling node.")
+                raise HauteValidationError("No training data arrived at the modelling node.")
             if row_limit is not None:
                 evaluation_lf = _seeded_training_sample(
                     evaluation_lf,
@@ -1973,7 +1928,7 @@ class TrainService:
             available_columns = set(evaluation_lf.collect_schema().names())
             missing_columns = sorted(set(selected_columns) - available_columns)
             if missing_columns:
-                raise ValueError(
+                raise HauteValidationError(
                     f"evaluation preview is missing required column(s): {missing_columns}"
                 )
             projection = [
@@ -1989,7 +1944,7 @@ class TrainService:
                 execution_context=execution_context,
             )
             if frame.height < 1:
-                raise ValueError(f"Target column {target!r} contains only null values")
+                raise HauteValidationError(f"Target column {target!r} contains only null values")
             target_values = frame[target].to_list() if task == "classification" else None
             group_values = (
                 frame[evaluation.group_column].to_list()
@@ -2993,7 +2948,7 @@ class TrainService:
 
             target_lf = lazy_outputs.get(body.node_id)
             if target_lf is None:
-                raise ValueError(
+                raise HauteValidationError(
                     "No training data arrived at the modelling node. "
                     "Make sure an upstream data source is connected and producing data."
                 )

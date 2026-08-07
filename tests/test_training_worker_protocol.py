@@ -510,7 +510,7 @@ def test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts(
         )
 
     assert isinstance(result, WorkerFailurePayload)
-    assert result.error_type == "ValueError"
+    assert result.error_type == "HauteValidationError"
     assert message in result.message
 
 
@@ -527,7 +527,7 @@ def test_training_entrypoint_rejects_incomplete_evaluation_and_tuning_artifacts(
                     "memory_limit_bytes": None,
                 },
             ),
-            "ValueError",
+            "HauteValidationError",
         ),
         (_request(Path()), "PreambleError"),
     ],
@@ -1415,7 +1415,7 @@ def test_dispersion_worker_maps_malformed_requests_to_contract_failures(
     )
     assert isinstance(result, WorkerFailurePayload)
     assert result.terminal_reason == "contract_error"
-    assert result.error_type in {"ValueError", "TypeError"}
+    assert result.error_type in {"HauteValidationError", "TypeError"}
 
 
 @pytest.mark.parametrize(

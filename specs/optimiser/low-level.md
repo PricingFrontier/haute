@@ -590,7 +590,11 @@ returned as a generic `status: "error"` payload.
   worker thread failing to even start; a generic/unclassified pipeline or grid failure; an
   invalid server-owned artifact handle; a corrupt persisted artifact), 507
   (`ExecutionAdmissionError`/`ExecutionMemoryLimitExceededError`
-  wrapped via `_memory_limit_http_exception`). This applies to `POST /frontier` only up through its
+  wrapped via `_memory_limit_http_exception`, whose payload `message` is the
+  shared curated wording from `routes/_memory_messages.memory_limit_user_message`
+  — the same shape training and the input-snapshot build use — and the
+  memory-limited job's terminal message reuses it rather than the generic
+  exceeded-its-memory-budget fallback). This applies to `POST /frontier` only up through its
   synchronous validation phase (runtime resolution, compute budget, already-running-sweep check);
   once validation and worker launch succeed, the request returns 200 with a `status: "started"`
   body.

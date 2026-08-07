@@ -485,7 +485,14 @@ def test_admitted_eager_memory_refusal_has_a_stable_safe_status(
     assert terminal["status"] == "memory_limited"
     assert terminal["terminal_reason"] == "memory_limited"
     assert terminal["error_code"] == "memory_limit"
-    assert terminal["message"] == "Input snapshot build exceeded its memory budget."
+    # The shared memory-message shape (see routes/_memory_messages.py): the
+    # admission wording with human-readable sizes, never the internal reason.
+    assert terminal["message"] == (
+        "The input snapshot build was not started because the server does not "
+        "have enough free memory for it (2.0 KiB used, 1.0 KiB allowed). Wait "
+        "for other work to finish, reduce the data size, or run on a server "
+        "with more memory, then try again."
+    )
     assert "private admission detail" not in terminal["message"]
 
 

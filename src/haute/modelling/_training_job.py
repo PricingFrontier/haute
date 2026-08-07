@@ -18,7 +18,7 @@ import polars as pl
 from haute._execution_context import ExecutionCancelledError, ExecutionContext
 from haute._logging import get_logger
 from haute._polars_utils import streaming_collect
-from haute.errors import HauteError
+from haute.errors import HauteError, HauteValidationError
 from haute.modelling._algorithms import (
     ALGORITHM_REGISTRY,
     IterationCallback,
@@ -470,7 +470,7 @@ class TrainingJob:
         self.monotone_constraints = monotone_constraints
         self.feature_weights = feature_weights
         if split is not None and evaluation is not None:
-            raise ValueError("split and evaluation are competing contracts")
+            raise HauteValidationError("split and evaluation are competing contracts")
         self.evaluation: EvaluationConfig | None
         if evaluation is None:
             self.evaluation = None
@@ -481,7 +481,7 @@ class TrainingJob:
         if tuning is None:
             self.tuning = None
         elif self.evaluation is None:
-            raise ValueError("tuning requires an explicit evaluation contract")
+            raise HauteValidationError("tuning requires an explicit evaluation contract")
         elif isinstance(tuning, TuningConfig):
             self.tuning = tuning
         else:
@@ -493,19 +493,19 @@ class TrainingJob:
                 configured_metrics=self.metrics,
             )
         if evaluation_plan is not None and self.evaluation is None:
-            raise ValueError("evaluation_plan requires an explicit evaluation contract")
+            raise HauteValidationError("evaluation_plan requires an explicit evaluation contract")
         if evaluation_plan is None and fit_index is not None:
-            raise ValueError("fit_index requires an evaluation_plan")
+            raise HauteValidationError("fit_index requires an evaluation_plan")
         if (
             evaluation_plan is not None
             and fit_index is not None
             and not (0 <= fit_index < len(evaluation_plan.validation_fits))
         ):
-            raise ValueError("fit_index is outside evaluation plan")
+            raise HauteValidationError("fit_index is outside evaluation plan")
         self.evaluation_plan = evaluation_plan
         self.evaluation_fit_index = fit_index
         if plan_source_sha256 is not None and evaluation_plan is None:
-            raise ValueError("plan_source_sha256 requires an evaluation_plan")
+            raise HauteValidationError("plan_source_sha256 requires an evaluation_plan")
         self._plan_source_sha256 = plan_source_sha256
         evaluation_key = None
         if self.evaluation is not None:
@@ -518,9 +518,9 @@ class TrainingJob:
             )
         if evaluation_key:
             if evaluation_key in self.feature_columns:
-                raise ValueError("evaluation key cannot be an explicit feature column")
+                raise HauteValidationError("evaluation key cannot be an explicit feature column")
             if self.algorithm == "glm" and evaluation_key in (self.params.get("terms") or {}):
-                raise ValueError("evaluation key cannot be a GLM term")
+                raise HauteValidationError("evaluation key cannot be a GLM term")
             if evaluation_key not in self.id_columns:
                 self.id_columns.append(evaluation_key)
         from haute.modelling._feature_contract import normalise_categorical_levels
@@ -814,7 +814,7 @@ class TrainingJob:
                 term_names = set(glm_terms)
                 missing = term_names - set(prepared.features)
                 if missing:
-                    raise ValueError(
+                    raise HauteValidationError(
                         "GLM terms reference columns not found in training data: "
                         f"{sorted(missing)}. Available columns: "
                         f"{prepared.features[:20]}" + ("..." if len(prepared.features) > 20 else "")
@@ -847,7 +847,7 @@ class TrainingJob:
                     0.12,
                 )
                 if not prepared.features:
-                    raise ValueError(
+                    raise HauteValidationError(
                         "GLM: no valid features remaining after matching terms to "
                         "data columns. Check that factor names match the training "
                         "data."
@@ -863,7 +863,9 @@ class TrainingJob:
     ) -> EvaluationFitResult:
         """Fit one selection partition without publishing model or diagnostics."""
         if self.evaluation_plan is None or self.evaluation_fit_index is None:
-            raise ValueError("run_evaluation_fit requires an internal evaluation selection job")
+            raise HauteValidationError(
+                "run_evaluation_fit requires an internal evaluation selection job"
+            )
         prepared: _PreparedData | None = None
         split_result: _SplitResult | None = None
 
@@ -969,7 +971,7 @@ class TrainingJob:
         trials_path = output / names["trials"]
         tuning_report_path = output / names["report"]
         if any(path.exists() for path in (plan_path, trials_path, tuning_report_path)):
-            raise ValueError("tuning artifact paths already exist")
+            raise HauteValidationError("tuning artifact paths already exist")
 
         tuning_plan = TuningPlanArtifact.create(
             config=config,
@@ -1144,11 +1146,13 @@ class TrainingJob:
             or not isinstance(iteration_ceiling, int)
             or iteration_ceiling <= 0
         ):
-            raise ValueError(
+            raise HauteValidationError(
                 "Fixed CatBoost iterations must be a positive exact integer when tuning is enabled"
             )
         if any(fit.best_iteration is None for fit in winner.fits):
-            raise ValueError("Winning tuning validation fits did not report best_iteration")
+            raise HauteValidationError(
+                "Winning tuning validation fits did not report best_iteration"
+            )
         final_tree_count = validation_weighted_tree_count(
             best_iterations=[
                 fit.best_iteration for fit in winner.fits if fit.best_iteration is not None
@@ -1260,13 +1264,13 @@ class TrainingJob:
                 output / names[key] for key in ("plan", "results", "report")
             )
             if any(path.exists() for path in (plan_path, results_path, report_path)):
-                raise ValueError("evaluation artifact paths already exist")
+                raise HauteValidationError("evaluation artifact paths already exist")
             save_evaluation_plan(generated_plan, plan_path)
             created.append(plan_path)
             source_digest = evaluation_file_sha256(prepared.data_path)
             plan = load_evaluation_plan(plan_path, source_sha256=source_digest)
             if plan.to_plain_data() != generated_plan.to_plain_data():
-                raise ValueError("reloaded evaluation plan differs from generated plan")
+                raise HauteValidationError("reloaded evaluation plan differs from generated plan")
             plan_digest = evaluation_file_sha256(plan_path)
             selection_fit_count = len(plan.validation_fits)
             tuning_response: dict[str, Any] | None = None
@@ -1329,7 +1333,7 @@ class TrainingJob:
             aggregate = load_evaluation_report(report_path)
             final_source_digest = evaluation_file_sha256(prepared.data_path)
             if final_source_digest != plan.source_sha256:
-                raise ValueError("evaluation source changed before final fit")
+                raise HauteValidationError("evaluation source changed before final fit")
             report("Evaluation: final fit", completed_before_final / total)
             if self.tuning is not None and on_tuning_progress is not None:
                 on_tuning_progress(
@@ -1494,7 +1498,7 @@ class TrainingJob:
 
             pq_meta = read_parquet_metadata(Path(data_path))
             if pq_meta["row_count"] == 0:
-                raise ValueError("DataFrame is empty — cannot train on zero rows")
+                raise HauteValidationError("DataFrame is empty — cannot train on zero rows")
             schema_lf = pl.scan_parquet(data_path)
             schema_df = _training_streaming_collect(
                 schema_lf.head(0),
@@ -1528,7 +1532,7 @@ class TrainingJob:
                     ),
                 )
                 if target_task_issue is not None:
-                    raise ValueError(target_task_issue)
+                    raise HauteValidationError(target_task_issue)
 
             # Null targets cannot be passed to trainers.  External parquet inputs
             # keep the filter fused into the split sink to avoid an extra wide
@@ -1546,7 +1550,7 @@ class TrainingJob:
                     f"target has {target_null_count:,} null rows (will be filtered during split)"
                 )
                 if filtered_row_count == 0:
-                    raise ValueError(
+                    raise HauteValidationError(
                         f"Target column '{self.target}' contains only null values; "
                         "cannot train on zero non-null target rows"
                     )
@@ -1655,9 +1659,13 @@ class TrainingJob:
             # that digest instead of re-hashing a multi-GB parquet per fit.
             source_digest = self._plan_source_sha256 or evaluation_file_sha256(data_path)
             if self.evaluation_plan.source_sha256 != source_digest:
-                raise ValueError("evaluation plan source digest does not match prepared source")
+                raise HauteValidationError(
+                    "evaluation plan source digest does not match prepared source"
+                )
             if total_rows != self.evaluation_plan.row_count:
-                raise ValueError("evaluation plan row count does not match prepared source")
+                raise HauteValidationError(
+                    "evaluation plan row count does not match prepared source"
+                )
             if self.evaluation_fit_index is None:
                 mask = pl.Series("_partition", self.evaluation_plan.final_mask())
             else:
@@ -1748,7 +1756,7 @@ class TrainingJob:
         # Look up algorithm
         algo_cls = ALGORITHM_REGISTRY.get(self.algorithm)
         if algo_cls is None:
-            raise ValueError(
+            raise HauteValidationError(
                 f"Unknown algorithm: {self.algorithm}. Available: {list(ALGORITHM_REGISTRY.keys())}"
             )
         algo = algo_cls()
@@ -2317,11 +2325,17 @@ class TrainingJob:
     def _validate_columns(self, df: pl.DataFrame) -> None:
         """Validate that required columns exist in the DataFrame."""
         if self.target not in df.columns:
-            raise ValueError(f"Target column '{self.target}' not found. Available: {df.columns}")
+            raise HauteValidationError(
+                f"Target column '{self.target}' not found. Available: {df.columns}"
+            )
         if self.weight and self.weight not in df.columns:
-            raise ValueError(f"Weight column '{self.weight}' not found. Available: {df.columns}")
+            raise HauteValidationError(
+                f"Weight column '{self.weight}' not found. Available: {df.columns}"
+            )
         if self.offset and self.offset not in df.columns:
-            raise ValueError(f"Offset column '{self.offset}' not found. Available: {df.columns}")
+            raise HauteValidationError(
+                f"Offset column '{self.offset}' not found. Available: {df.columns}"
+            )
         # Excluded columns may already have been projected out during
         # pipeline execution — only flag genuinely unknown columns.
         available = set(df.columns)
@@ -2344,7 +2358,7 @@ class TrainingJob:
         if self.feature_columns:
             missing = [column for column in self.feature_columns if column not in df.columns]
             if missing:
-                raise ValueError(
+                raise HauteValidationError(
                     "Configured feature column(s) not found in training data: "
                     f"{missing}. Available columns: {df.columns}"
                 )
@@ -2372,7 +2386,7 @@ class TrainingJob:
 
         features = [c for c in df.columns if c not in non_features]
         if not features:
-            raise ValueError(
+            raise HauteValidationError(
                 "No feature columns remaining after excluding "
                 f"{non_features}. Check your target/weight/exclude settings."
             )
@@ -2392,14 +2406,16 @@ class TrainingJob:
         if constraints is None or constraints == {}:
             return
         if type(constraints) is not dict:
-            raise ValueError("monotone_constraints must be a dict mapping feature names to -1 or 1")
+            raise HauteValidationError(
+                "monotone_constraints must be a dict mapping feature names to -1 or 1"
+            )
 
         invalid_names = sorted(
             (key for key in constraints if not isinstance(key, str) or not key.strip()),
             key=lambda key: (type(key).__name__, repr(key)),
         )
         if invalid_names:
-            raise ValueError(
+            raise HauteValidationError(
                 "monotone_constraints keys must be non-empty strings; invalid keys: "
                 f"{invalid_names}"
             )
@@ -2410,7 +2426,7 @@ class TrainingJob:
             if type(direction) is not int or direction not in (-1, 1)
         )
         if invalid_directions:
-            raise ValueError(
+            raise HauteValidationError(
                 "monotone_constraints values must be exact Python ints -1 or 1; "
                 f"invalid features: {invalid_directions}"
             )
@@ -2418,7 +2434,7 @@ class TrainingJob:
         feature_set = set(prepared.features)
         unknown_features = sorted(key for key in constraints if key not in feature_set)
         if unknown_features:
-            raise ValueError(
+            raise HauteValidationError(
                 "monotone_constraints may only reference final selected features; "
                 f"unknown features: {unknown_features}"
             )
@@ -2430,7 +2446,7 @@ class TrainingJob:
         )
         if nonnumeric_features:
             dtypes = {key: prepared.feature_dtypes.get(key) for key in nonnumeric_features}
-            raise ValueError(
+            raise HauteValidationError(
                 "monotone_constraints require numeric Int64 or Float64 features; "
                 f"non-numeric features: {dtypes}"
             )

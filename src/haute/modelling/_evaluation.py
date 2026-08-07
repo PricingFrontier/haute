@@ -15,13 +15,15 @@ from typing import Any
 
 import numpy as np
 
+from haute.errors import HauteValidationError
+
 EVALUATION_SCHEMA_VERSION = 1
 MAX_VALIDATION_FITS = 10
 
 
 def _exact_mapping(value: object, keys: set[str], name: str) -> Mapping[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
-        raise ValueError(f"{name} must contain exactly {sorted(keys)}")
+        raise HauteValidationError(f"{name} must contain exactly {sorted(keys)}")
     return value
 
 
@@ -29,7 +31,7 @@ def _integer(value: object, name: str, *, low: int | None = None, high: int | No
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} must be an integer")
     if (low is not None and value < low) or (high is not None and value > high):
-        raise ValueError(f"{name} is outside its permitted range")
+        raise HauteValidationError(f"{name} is outside its permitted range")
     return value
 
 
@@ -38,7 +40,7 @@ def _fraction(value: object, name: str) -> float:
         raise TypeError(f"{name} must be a finite number")
     value = float(value)
     if not 0 <= value < 1:
-        raise ValueError(f"{name} must be in [0, 1)")
+        raise HauteValidationError(f"{name} must be in [0, 1)")
     return value
 
 
@@ -48,7 +50,7 @@ def _boundary(value: object, name: str) -> str:
     try:
         datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
-        raise ValueError(f"{name} must be an ISO date or datetime") from error
+        raise HauteValidationError(f"{name} must be an ISO date or datetime") from error
     return value
 
 
@@ -58,7 +60,7 @@ def _sha256(value: object, name: str) -> str:
         or len(value) != 64
         or any(c not in "0123456789abcdef" for c in value)
     ):
-        raise ValueError(f"invalid {name}")
+        raise HauteValidationError(f"invalid {name}")
     return value
 
 
@@ -91,7 +93,7 @@ def _parsed_dates(values: Sequence[object]) -> list[datetime]:
         if aware is None:
             aware = this_aware
         elif aware != this_aware:
-            raise ValueError("date values must not mix timezone awareness")
+            raise HauteValidationError("date values must not mix timezone awareness")
         parsed.append(parsed_value)
     return parsed
 
@@ -112,26 +114,26 @@ class EvaluationConfig:
             "group",
             "temporal",
         }:
-            raise ValueError("invalid evaluation configuration")
+            raise HauteValidationError("invalid evaluation configuration")
         if self.strategy == "temporal":
             if (
                 self.seed is not None
                 or not isinstance(self.date_column, str)
                 or not self.date_column
             ):
-                raise ValueError("temporal evaluation requires date_column and no seed")
+                raise HauteValidationError("temporal evaluation requires date_column and no seed")
         else:
             _integer(self.seed, "seed")
         if self.strategy == "group" and (
             not isinstance(self.group_column, str) or not self.group_column
         ):
-            raise ValueError("group evaluation requires group_column")
+            raise HauteValidationError("group evaluation requires group_column")
         if not isinstance(self.validation, Mapping) or self.validation.get("method") not in {
             "none",
             "single",
             "cross_validation",
         }:
-            raise ValueError("invalid validation configuration")
+            raise HauteValidationError("invalid validation configuration")
         method = self.validation["method"]
         expected_validation = (
             {"method"}
@@ -151,7 +153,7 @@ class EvaluationConfig:
             )
         )
         if set(self.validation) != expected_validation:
-            raise ValueError("invalid validation configuration")
+            raise HauteValidationError("invalid validation configuration")
         if method == "single":
             if self.strategy == "temporal":
                 _boundary(self.validation["start"], "validation.start")
@@ -160,12 +162,12 @@ class EvaluationConfig:
         elif method == "cross_validation":
             _integer(self.validation["fold_count"], "fold_count", low=2, high=MAX_VALIDATION_FITS)
             if self.strategy == "temporal" and self.validation["window"] != "expanding":
-                raise ValueError("invalid temporal validation window")
+                raise HauteValidationError("invalid temporal validation window")
         if self.test is not None:
             if not isinstance(self.test, Mapping) or set(self.test) != (
                 {"start"} if self.strategy == "temporal" else {"size"}
             ):
-                raise ValueError("invalid test configuration")
+                raise HauteValidationError("invalid test configuration")
             if self.strategy == "temporal":
                 _boundary(self.test["start"], "test.start")
             else:
@@ -175,7 +177,7 @@ class EvaluationConfig:
                 [self.validation["start"], self.test["start"]]
             )
             if validation_start >= test_start:
-                raise ValueError("validation.start must precede test.start")
+                raise HauteValidationError("validation.start must precede test.start")
 
     @classmethod
     def from_plain_data(cls, raw: object) -> EvaluationConfig:
@@ -183,7 +185,7 @@ class EvaluationConfig:
             raise TypeError("evaluation must be an object")
         strategy = raw.get("strategy")
         if strategy not in {"random", "group", "temporal"}:
-            raise ValueError("evaluation strategy must be random, group, or temporal")
+            raise HauteValidationError("evaluation strategy must be random, group, or temporal")
         required = {"schema_version", "strategy", "validation"}
         if strategy != "temporal":
             required.add("seed")
@@ -193,16 +195,16 @@ class EvaluationConfig:
             required.add("date_column")
         allowed = required | {"test"}
         if set(raw) - allowed or not required <= set(raw):
-            raise ValueError("evaluation has unknown or missing fields")
+            raise HauteValidationError("evaluation has unknown or missing fields")
         if _integer(raw["schema_version"], "schema_version") != EVALUATION_SCHEMA_VERSION:
-            raise ValueError("unsupported evaluation schema_version")
+            raise HauteValidationError("unsupported evaluation schema_version")
         seed = None if strategy == "temporal" else _integer(raw["seed"], "seed")
         group_column = raw.get("group_column")
         date_column = raw.get("date_column")
         if group_column is not None and (not isinstance(group_column, str) or not group_column):
-            raise ValueError("group_column must be a non-empty string")
+            raise HauteValidationError("group_column must be a non-empty string")
         if date_column is not None and (not isinstance(date_column, str) or not date_column):
-            raise ValueError("date_column must be a non-empty string")
+            raise HauteValidationError("date_column must be a non-empty string")
         test = raw.get("test")
         if test is not None:
             if strategy == "temporal":
@@ -215,7 +217,7 @@ class EvaluationConfig:
         if not isinstance(validation_raw, dict) or not isinstance(
             validation_raw.get("method"), str
         ):
-            raise ValueError("validation must be an object with method")
+            raise HauteValidationError("validation must be an object with method")
         method = validation_raw["method"]
         if method == "none":
             validation = _exact_mapping(validation_raw, {"method"}, "validation")
@@ -239,14 +241,16 @@ class EvaluationConfig:
             }
             if strategy == "temporal":
                 if validation_raw["window"] != "expanding":
-                    raise ValueError("temporal cross_validation window must be expanding")
+                    raise HauteValidationError("temporal cross_validation window must be expanding")
                 validation["window"] = "expanding"
         else:
-            raise ValueError("validation method must be none, single, or cross_validation")
+            raise HauteValidationError(
+                "validation method must be none, single, or cross_validation"
+            )
         if strategy == "temporal" and method == "single" and test is not None:
             validation_boundary, test_boundary = _parsed_dates([validation["start"], test["start"]])
             if validation_boundary >= test_boundary:
-                raise ValueError("validation.start must precede test.start")
+                raise HauteValidationError("validation.start must precede test.start")
         return cls(1, strategy, seed, validation, test, group_column, date_column)
 
     @property
@@ -350,7 +354,7 @@ class EvaluationPlan:
         }
         data = _exact_mapping(raw, required, "evaluation plan")
         if _integer(data["schema_version"], "schema_version") != 1:
-            raise ValueError("unsupported plan schema_version")
+            raise HauteValidationError("unsupported plan schema_version")
         source = _sha256(data["source_sha256"], "source_sha256")
         count = _integer(data["row_count"], "row_count", low=1)
         config = EvaluationConfig.from_plain_data(data["config"])
@@ -360,9 +364,9 @@ class EvaluationPlan:
                 raise TypeError(f"{name} must be a list")
             values = tuple(_integer(x, name, low=0, high=count - 1) for x in value)
             if len(set(values)) != len(values):
-                raise ValueError(f"duplicate {name}")
+                raise HauteValidationError(f"duplicate {name}")
             if values != tuple(sorted(values)):
-                raise ValueError(f"{name} must be in canonical ascending order")
+                raise HauteValidationError(f"{name} must be in canonical ascending order")
             return values
 
         dev, test = (
@@ -370,14 +374,14 @@ class EvaluationPlan:
             positions(data["test_positions"], "test_positions"),
         )
         if not dev or set(dev) & set(test) or set(dev) | set(test) != set(range(count)):
-            raise ValueError("development/test positions overlap or are empty")
+            raise HauteValidationError("development/test positions overlap or are empty")
         if bool(test) != (config.test is not None):
-            raise ValueError("test membership disagrees with evaluation config")
+            raise HauteValidationError("test membership disagrees with evaluation config")
         if (
             not isinstance(data["validation_fits"], list)
             or len(data["validation_fits"]) != config.validation_fit_count
         ):
-            raise ValueError("validation fit count disagrees")
+            raise HauteValidationError("validation fit count disagrees")
         fits = []
         for item in data["validation_fits"]:
             item = _exact_mapping(
@@ -393,7 +397,7 @@ class EvaluationPlan:
                 or set(fit.train_positions) & set(fit.validation_positions)
                 or not (set(fit.train_positions) | set(fit.validation_positions)).issubset(dev)
             ):
-                raise ValueError("invalid validation fit membership")
+                raise HauteValidationError("invalid validation fit membership")
             fits.append(fit)
         if config.validation["method"] == "cross_validation":
             validation_sets = [set(fit.validation_positions) for fit in fits]
@@ -402,31 +406,31 @@ class EvaluationPlan:
                 for index, left in enumerate(validation_sets)
                 for right in validation_sets[index + 1 :]
             ):
-                raise ValueError("cross-validation validation memberships overlap")
+                raise HauteValidationError("cross-validation validation memberships overlap")
             if config.strategy == "temporal":
                 for previous, current in zip(fits, fits[1:], strict=False):
                     if set(current.train_positions) != (
                         set(previous.train_positions) | set(previous.validation_positions)
                     ):
-                        raise ValueError(
+                        raise HauteValidationError(
                             "temporal cross-validation training membership is not expanding"
                         )
                 if set(fits[-1].train_positions) | set(fits[-1].validation_positions) != set(dev):
-                    raise ValueError(
+                    raise HauteValidationError(
                         "temporal cross-validation does not end with all development rows"
                     )
             elif set().union(*validation_sets) != set(dev):
-                raise ValueError(
+                raise HauteValidationError(
                     "cross-validation validation memberships do not partition development"
                 )
             if config.strategy != "temporal" and any(
                 set(fit.train_positions) | set(fit.validation_positions) != set(dev) for fit in fits
             ):
-                raise ValueError("cross-validation fit does not cover development")
+                raise HauteValidationError("cross-validation fit does not cover development")
         elif fits and (
             set(fits[0].train_positions) | set(fits[0].validation_positions) != set(dev)
         ):
-            raise ValueError("single validation fit does not cover development")
+            raise HauteValidationError("single validation fit does not cover development")
         if not isinstance(data["summary"], dict):
             raise TypeError("summary must be an object")
         summary = data["summary"]
@@ -436,37 +440,37 @@ class EvaluationPlan:
             "validation_fit_count": len(fits),
         }
         if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in summary.values()):
-            raise ValueError("summary values must be non-negative integers")
+            raise HauteValidationError("summary values must be non-negative integers")
         if any(summary.get(key) != value for key, value in expected_summary.items()):
-            raise ValueError("summary disagrees with plan membership")
+            raise HauteValidationError("summary disagrees with plan membership")
         required_summary = set(expected_summary)
         if config.strategy == "group":
             required_summary |= {"development_group_count", "test_group_count"}
         if config.strategy == "temporal":
             required_summary |= {"development_date_count", "test_date_count"}
         if set(summary) != required_summary:
-            raise ValueError("summary fields do not match the evaluation strategy")
+            raise HauteValidationError("summary fields do not match the evaluation strategy")
         if config.strategy == "group":
             if summary["development_group_count"] < 1:
-                raise ValueError("summary must contain a development group")
+                raise HauteValidationError("summary must contain a development group")
             if bool(test) != bool(summary["test_group_count"]):
-                raise ValueError("summary test group count disagrees with membership")
+                raise HauteValidationError("summary test group count disagrees with membership")
             if summary["development_group_count"] + summary["test_group_count"] > count:
-                raise ValueError("summary group counts exceed source rows")
+                raise HauteValidationError("summary group counts exceed source rows")
         if config.strategy == "temporal":
             if summary["development_date_count"] < 1:
-                raise ValueError("summary must contain a development date")
+                raise HauteValidationError("summary must contain a development date")
             if bool(test) != bool(summary["test_date_count"]):
-                raise ValueError("summary test date count disagrees with membership")
+                raise HauteValidationError("summary test date count disagrees with membership")
             if summary["development_date_count"] + summary["test_date_count"] > count:
-                raise ValueError("summary date counts exceed source rows")
+                raise HauteValidationError("summary date counts exceed source rows")
         return cls(1, source, count, config, dev, test, tuple(fits), summary)
 
 
 def _count(size: float, total: int) -> int:
     value = int(round(size * total))
     if value < 1 or value >= total:
-        raise ValueError("requested partition must leave non-empty partitions")
+        raise HauteValidationError("requested partition must leave non-empty partitions")
     return value
 
 
@@ -478,7 +482,7 @@ def _stratified_parts(
         classes.setdefault(values[p], []).append(p)
     counts = {str(k): len(v) for k, v in classes.items()}
     if min(map(len, classes.values())) < parts:
-        raise ValueError(f"class counts {counts}; required minimum {parts}")
+        raise HauteValidationError(f"class counts {counts}; required minimum {parts}")
     rng = np.random.default_rng(seed)
     output: list[list[int]] = [[] for _ in range(parts)]
     for rows in classes.values():
@@ -502,7 +506,7 @@ def _stratified_sample(
     counts = {str(key): len(rows) for key, rows in classes.items()}
     required = required_remaining + 1
     if size < len(classes) or any(len(rows) < required for rows in classes.values()):
-        raise ValueError(f"class counts {counts}; required minimum {required}")
+        raise HauteValidationError(f"class counts {counts}; required minimum {required}")
     raw = {key: size * len(rows) / len(positions) for key, rows in classes.items()}
     allocations = {key: max(1, int(math.floor(value))) for key, value in raw.items()}
     while sum(allocations.values()) < size:
@@ -512,7 +516,7 @@ def _stratified_sample(
             if allocations[key] < len(rows) - required_remaining
         ]
         if not eligible:
-            raise ValueError(f"class counts {counts}; required minimum {required}")
+            raise HauteValidationError(f"class counts {counts}; required minimum {required}")
         key = max(eligible, key=lambda item: (raw[item] - allocations[item], str(item)))
         allocations[key] += 1
     rng = np.random.default_rng(seed)
@@ -537,7 +541,7 @@ def _balanced_groups(groups: Mapping[str, list[int]], buckets: int, seed: int) -
         result[index].extend(groups[key])
         sizes[index] += len(groups[key])
     if any(not item for item in result):
-        raise ValueError("requested group partition would be empty")
+        raise HauteValidationError("requested group partition would be empty")
     return result
 
 
@@ -566,7 +570,7 @@ def _groups_near_target(groups: Mapping[str, list[int]], target: int, seed: int)
             selected_rows = candidate
     selected = [position for key in keys if key in selected_keys for position in groups[key]]
     if not selected or len(selected) == sum(map(len, groups.values())):
-        raise ValueError("requested group partition would be empty")
+        raise HauteValidationError("requested group partition would be empty")
     return selected
 
 
@@ -581,16 +585,16 @@ def generate_evaluation_plan(
     date_values: Sequence[object] | None = None,
 ) -> EvaluationPlan:
     if row_count < 1:
-        raise ValueError("invalid source or row count")
+        raise HauteValidationError("invalid source or row count")
     _sha256(source_sha256, "source_sha256")
     all_positions = tuple(range(row_count))
     method = config.validation["method"]
     summary: dict[str, Any] = {}
     if task not in {"regression", "classification"}:
-        raise ValueError("evaluation task must be regression or classification")
+        raise HauteValidationError("evaluation task must be regression or classification")
     if config.strategy == "temporal":
         if date_values is None or len(date_values) != row_count:
-            raise ValueError("temporal evaluation requires date values")
+            raise HauteValidationError("temporal evaluation requires date values")
         boundary_values = list(date_values)
         if config.test:
             boundary_values.append(config.test["start"])
@@ -606,7 +610,7 @@ def generate_evaluation_plan(
         test_membership = set(test)
         dev = tuple(p for p in all_positions if p not in test_membership)
         if config.test and (not test or not dev):
-            raise ValueError("temporal test partition is empty")
+            raise HauteValidationError("temporal test partition is empty")
         ordered = sorted(set(dates[p] for p in dev))
         summary.update(
             {
@@ -622,12 +626,12 @@ def generate_evaluation_plan(
             train = tuple(p for p in dev if dates[p] < boundary)
             valid = tuple(p for p in dev if dates[p] >= boundary)
             if not train or not valid:
-                raise ValueError("temporal validation partition is empty")
+                raise HauteValidationError("temporal validation partition is empty")
             fits = [EvaluationValidationFit(train, valid)]
         else:
             k = config.validation["fold_count"]
             if len(ordered) < k + 1:
-                raise ValueError("temporal cross_validation needs enough distinct dates")
+                raise HauteValidationError("temporal cross_validation needs enough distinct dates")
             blocks = np.array_split(np.asarray(ordered, dtype=object), k + 1)
             fits = []
             for i in range(k):
@@ -642,7 +646,7 @@ def generate_evaluation_plan(
     else:
         if config.strategy == "group":
             if group_values is None or len(group_values) != row_count:
-                raise ValueError("group evaluation requires group values")
+                raise HauteValidationError("group evaluation requires group values")
             groups: dict[str, list[int]] = {}
             for p, value in enumerate(group_values):
                 groups.setdefault(_json_key(value), []).append(p)
@@ -680,7 +684,7 @@ def generate_evaluation_plan(
             rng.shuffle(positions)
             if task == "classification":
                 if target_values is None or len(target_values) != row_count:
-                    raise ValueError("classification evaluation requires target values")
+                    raise HauteValidationError("classification evaluation requires target values")
                 classes: dict[str, int] = {}
                 for value in target_values:
                     key = _json_key(value)
@@ -691,7 +695,9 @@ def generate_evaluation_plan(
                     else (2 if method == "single" else 1)
                 )
                 if min(classes.values()) < required_minimum:
-                    raise ValueError(f"class counts {classes}; required minimum {required_minimum}")
+                    raise HauteValidationError(
+                        f"class counts {classes}; required minimum {required_minimum}"
+                    )
             if config.test:
                 n = _count(config.test["size"], row_count)
                 if task == "classification":
@@ -752,7 +758,7 @@ def generate_evaluation_plan(
                 )
             )
         if any(not x.train_positions or not x.validation_positions for x in fits):
-            raise ValueError("requested validation partition is empty")
+            raise HauteValidationError("requested validation partition is empty")
     summary.update(
         {"development_rows": len(dev), "test_rows": len(test), "validation_fit_count": len(fits)}
     )
@@ -771,7 +777,7 @@ def generate_evaluation_plan(
 def canonical_json_bytes(value: object) -> bytes:
     def reject(item: object) -> None:
         if isinstance(item, float) and not math.isfinite(item):
-            raise ValueError("canonical JSON cannot contain non-finite numbers")
+            raise HauteValidationError("canonical JSON cannot contain non-finite numbers")
         if isinstance(item, Mapping):
             for k, v in item.items():
                 if not isinstance(k, str):
@@ -822,7 +828,7 @@ def save_evaluation_plan(plan: EvaluationPlan, path: str | Path) -> None:
 def load_evaluation_plan(path: str | Path, *, source_sha256: str) -> EvaluationPlan:
     plan = EvaluationPlan.from_plain_data(json.loads(Path(path).read_bytes()))
     if plan.source_sha256 != source_sha256:
-        raise ValueError("evaluation plan source digest does not match")
+        raise HauteValidationError("evaluation plan source digest does not match")
     return plan
 
 
@@ -833,7 +839,7 @@ def save_evaluation_results(results: EvaluationResultsArtifact, path: str | Path
 def load_evaluation_results(path: str | Path, *, plan_sha256: str) -> EvaluationResultsArtifact:
     results = EvaluationResultsArtifact.from_plain_data(json.loads(Path(path).read_bytes()))
     if results.plan_sha256 != _sha256(plan_sha256, "plan_sha256"):
-        raise ValueError("evaluation results plan digest does not match")
+        raise HauteValidationError("evaluation results plan digest does not match")
     return results
 
 
@@ -975,7 +981,7 @@ class EvaluationAggregateReport:
 
 def _metric_mapping(value: object, name: str) -> Mapping[str, float]:
     if not isinstance(value, Mapping) or not value:
-        raise ValueError(f"{name} must be a non-empty object")
+        raise HauteValidationError(f"{name} must be a non-empty object")
     for key, metric in value.items():
         if (
             not isinstance(key, str)
@@ -984,7 +990,7 @@ def _metric_mapping(value: object, name: str) -> Mapping[str, float]:
             or not isinstance(metric, (int, float))
             or not math.isfinite(metric)
         ):
-            raise ValueError(f"invalid {name}")
+            raise HauteValidationError(f"invalid {name}")
     return value
 
 
@@ -1001,12 +1007,12 @@ def aggregate_evaluation_results(
         or results.plan_sha256 != expected
         or len(results.fits) != len(plan.validation_fits)
     ):
-        raise ValueError("evaluation results do not match plan")
+        raise HauteValidationError("evaluation results do not match plan")
     configured_metrics = tuple(metrics)
     if len(set(configured_metrics)) != len(configured_metrics) or any(
         not isinstance(name, str) or not name for name in configured_metrics
     ):
-        raise ValueError("metrics must be distinct non-empty names")
+        raise HauteValidationError("metrics must be distinct non-empty names")
     report = {}
     total = 0
     for metric in configured_metrics:
@@ -1019,16 +1025,18 @@ def aggregate_evaluation_results(
                 or result.train_rows != fit.train_rows
                 or result.validation_rows != fit.validation_rows
             ):
-                raise ValueError("fit result does not match plan")
+                raise HauteValidationError("fit result does not match plan")
             if set(result.metrics) != set(configured_metrics):
-                raise ValueError("fit result metric names do not match configured metrics")
+                raise HauteValidationError(
+                    "fit result metric names do not match configured metrics"
+                )
             value = result.metrics.get(metric)
             if (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
                 or not math.isfinite(value)
             ):
-                raise ValueError(f"invalid metric {metric}")
+                raise HauteValidationError(f"invalid metric {metric}")
             values.append(float(value))
             weights.append(fit.validation_rows)
         if values:

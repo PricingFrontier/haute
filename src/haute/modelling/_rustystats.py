@@ -15,6 +15,7 @@ import numpy as np
 import polars as pl
 
 from haute._logging import get_logger
+from haute.errors import HauteValidationError
 from haute.modelling._algorithms import (
     BaseAlgorithm,
     FitResult,
@@ -240,12 +241,12 @@ def estimate_glm_dispersion(
 
     expected_family = {"theta": "negbinomial", "var_power": "tweedie"}
     if param not in expected_family:
-        raise ValueError(
+        raise HauteValidationError(
             f"Unknown dispersion parameter {param!r}. "
             f"Estimable parameters: {', '.join(expected_family)}."
         )
     if family != expected_family[param]:
-        raise ValueError(
+        raise HauteValidationError(
             f"Dispersion parameter {param!r} belongs to the "
             f"{expected_family[param]} family, not {family!r}."
         )
@@ -299,7 +300,7 @@ def estimate_glm_dispersion(
 
     llf = float(-result.fun)
     if not math.isfinite(llf):
-        raise ValueError(
+        raise HauteValidationError(
             f"Profile-likelihood estimation of {param!r} failed: no candidate "
             f"value produced a converged fit"
             + (f" (last error: {last_error})" if last_error else ".")
@@ -337,7 +338,7 @@ class GLMAlgorithm(BaseAlgorithm):
         _mem_checkpoint("glm fit() START")
 
         if train_df is None:
-            raise ValueError("GLMAlgorithm.fit() requires train_df (pool bypass)")
+            raise HauteValidationError("GLMAlgorithm.fit() requires train_df (pool bypass)")
 
         # Extract GLM-specific config from params
         family = params.get("family", "gaussian")
@@ -449,7 +450,7 @@ class GLMAlgorithm(BaseAlgorithm):
         columns = list(features)
         if offset:
             if offset not in df.columns:
-                raise ValueError(
+                raise HauteValidationError(
                     f"GLM predict: offset column {offset!r} is missing from "
                     f"the input data. The model was trained with this offset "
                     f"and predictions without it would be mis-scaled. "

@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from haute.errors import HauteValidationError
+
 # Reserved key added to the ``compute_metrics`` payload whenever non-finite
 # rows were filtered out before computing metrics (CODE_REVIEW 4b.11).  It
 # rides alongside the metric values so the count reaches every surface the
@@ -18,7 +20,7 @@ def _as_float_array(values: np.ndarray, *, name: str) -> np.ndarray:
     """Return a numeric array suitable for metrics and diagnostics."""
     arr = np.asarray(values)
     if arr.ndim != 1:
-        raise ValueError(f"{name} must be a one-dimensional array; got shape {arr.shape}")
+        raise HauteValidationError(f"{name} must be a one-dimensional array; got shape {arr.shape}")
 
     if np.issubdtype(arr.dtype, np.number) or np.issubdtype(arr.dtype, np.bool_):
         return arr.astype(float, copy=False)
@@ -26,7 +28,7 @@ def _as_float_array(values: np.ndarray, *, name: str) -> np.ndarray:
     try:
         return arr.astype(float, copy=False)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
+        raise HauteValidationError(
             f"{name} must contain numeric values for metrics and diagnostics; got dtype {arr.dtype}"
         ) from exc
 
@@ -48,7 +50,7 @@ def _prepare_metric_arrays(
     y_true_arr = _as_float_array(y_true, name="y_true")
     y_pred_arr = _as_float_array(y_pred, name="y_pred")
     if len(y_true_arr) != len(y_pred_arr):
-        raise ValueError(
+        raise HauteValidationError(
             "y_true and y_pred must have the same length; "
             f"got {len(y_true_arr)} and {len(y_pred_arr)}"
         )
@@ -57,7 +59,7 @@ def _prepare_metric_arrays(
     if weight is not None:
         weight_arr = _as_float_array(weight, name="weight")
         if len(weight_arr) != len(y_true_arr):
-            raise ValueError(
+            raise HauteValidationError(
                 "weight must have the same length as y_true/y_pred; "
                 f"got {len(weight_arr)} and {len(y_true_arr)}"
             )
@@ -80,11 +82,11 @@ def _prepare_metric_arrays(
         if n_filtered == total:
             logger.error("all_values_non_finite", original_count=total, **log_fields)
             if diagnostic is not None:
-                raise ValueError(
+                raise HauteValidationError(
                     f"All {total} rows for diagnostic {diagnostic!r} have non-finite "
                     "actuals, predictions, or weights; diagnostic cannot be computed."
                 )
-            raise ValueError(
+            raise HauteValidationError(
                 f"All {total} rows have non-finite actuals, predictions, or weights; "
                 "metrics cannot be computed. Check the model output and the "
                 "target, prediction, and weight columns for NaN/Inf values."
@@ -135,7 +137,9 @@ def compute_metrics(
     for name in metric_names:
         fn = _METRIC_REGISTRY.get(name.lower())
         if fn is None:
-            raise ValueError(f"Unknown metric: {name}. Available: {list(_METRIC_REGISTRY.keys())}")
+            raise HauteValidationError(
+                f"Unknown metric: {name}. Available: {list(_METRIC_REGISTRY.keys())}"
+            )
         if name.lower() == "tweedie_deviance" and variance_power is not None:
             results[name] = fn(y_true, y_pred, weight, variance_power=variance_power)
         else:

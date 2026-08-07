@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from haute.errors import HauteValidationError
 from haute.modelling._evaluation import (
     EvaluationConfig,
     EvaluationFitResult,
@@ -84,21 +85,23 @@ def _exact_keys(raw: Mapping[str, Any], expected: set[str], name: str) -> None:
     if actual != expected:
         missing = sorted(expected - actual)
         unknown = sorted(actual - expected)
-        raise ValueError(f"{name} fields must be exact; missing={missing}, unknown={unknown}")
+        raise HauteValidationError(
+            f"{name} fields must be exact; missing={missing}, unknown={unknown}"
+        )
 
 
 def _exact_int(value: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{name} must be an exact integer")
+        raise HauteValidationError(f"{name} must be an exact integer")
     return int(value)
 
 
 def _finite_number(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{name} must be a finite number")
+        raise HauteValidationError(f"{name} must be a finite number")
     result = float(value)
     if not math.isfinite(result):
-        raise ValueError(f"{name} must be a finite number")
+        raise HauteValidationError(f"{name} must be a finite number")
     return result
 
 
@@ -117,17 +120,17 @@ def _canonical_key(value: Any) -> bytes:
 
 def _assert_finite_json(value: Any, name: str) -> None:
     if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError(f"{name} contains a non-finite number")
+        raise HauteValidationError(f"{name} contains a non-finite number")
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
-            raise ValueError(f"{name} object keys must be strings")
+            raise HauteValidationError(f"{name} object keys must be strings")
         for key, item in value.items():
             _assert_finite_json(item, f"{name}.{key}")
     elif isinstance(value, (list, tuple)):
         for index, item in enumerate(value):
             _assert_finite_json(item, f"{name}[{index}]")
     elif not isinstance(value, (str, int, float, bool, type(None))):
-        raise ValueError(f"{name} contains unsupported JSON value {type(value).__name__}")
+        raise HauteValidationError(f"{name} contains unsupported JSON value {type(value).__name__}")
 
 
 def _canonical_metric_name(value: str) -> str:
@@ -137,13 +140,13 @@ def _canonical_metric_name(value: str) -> str:
 def metric_direction(metric: str) -> MetricDirection:
     """Return the server-owned optimisation direction for a supported metric."""
     if not isinstance(metric, str) or not metric.strip():
-        raise ValueError("tuning metric must be a non-empty string")
+        raise HauteValidationError("tuning metric must be a non-empty string")
     canonical = _canonical_metric_name(metric)
     if canonical in _MAXIMIZE_METRICS:
         return "maximize"
     if canonical in _MINIMIZE_METRICS:
         return "minimize"
-    raise ValueError(
+    raise HauteValidationError(
         f"metric {metric!r} is not a supported tuning objective; "
         f"supported={sorted(_MAXIMIZE_METRICS | _MINIMIZE_METRICS)}"
     )
@@ -155,15 +158,17 @@ def _parse_when(
     entry_name: str,
 ) -> dict[str, tuple[Any, ...]]:
     if not isinstance(raw, Mapping) or not raw:
-        raise ValueError(f"search_space.{entry_name}.when must be a non-empty object")
+        raise HauteValidationError(f"search_space.{entry_name}.when must be a non-empty object")
     parsed: dict[str, tuple[Any, ...]] = {}
     for parent, choices in raw.items():
         if not isinstance(parent, str) or not parent:
-            raise ValueError(
+            raise HauteValidationError(
                 f"search_space.{entry_name}.when parent names must be non-empty strings"
             )
         if not isinstance(choices, list) or not choices:
-            raise ValueError(f"search_space.{entry_name}.when.{parent} must be a non-empty list")
+            raise HauteValidationError(
+                f"search_space.{entry_name}.when.{parent} must be a non-empty list"
+            )
         for index, choice in enumerate(choices):
             _assert_finite_json(
                 choice,
@@ -171,7 +176,7 @@ def _parse_when(
             )
         canonical = [_canonical_key(choice) for choice in choices]
         if len(set(canonical)) != len(canonical):
-            raise ValueError(
+            raise HauteValidationError(
                 f"search_space.{entry_name}.when.{parent} choices must be canonically distinct"
             )
         parsed[parent] = tuple(copy.deepcopy(choices))
@@ -187,19 +192,19 @@ def _parse_search_entry(name: str, raw: Any) -> dict[str, Any]:
         choices = raw["choices"]
         when = _parse_when(raw["when"], entry_name=name)
     else:
-        raise ValueError(
+        raise HauteValidationError(
             f"search_space.{name} must be a choices list or an object with choices and when"
         )
 
     if not isinstance(choices, list) or not 2 <= len(choices) <= MAX_PARAMETER_CHOICES:
-        raise ValueError(
+        raise HauteValidationError(
             f"search_space.{name}.choices must contain 2 through {MAX_PARAMETER_CHOICES} values"
         )
     for index, choice in enumerate(choices):
         _assert_finite_json(choice, f"search_space.{name}.choices[{index}]")
     canonical = [_canonical_key(choice) for choice in choices]
     if len(set(canonical)) != len(canonical):
-        raise ValueError(f"search_space.{name}.choices must be canonically distinct")
+        raise HauteValidationError(f"search_space.{name}.choices must be canonically distinct")
     return {
         "choices": tuple(copy.deepcopy(choices)),
         "when": when,
@@ -218,11 +223,11 @@ def _validate_conditions(
                 parent_choices = {_canonical_key(value) for value in parent_entry["choices"]}
                 allowed_choices = {_canonical_key(value) for value in allowed}
                 if not parent_choices.intersection(allowed_choices):
-                    raise ValueError(
+                    raise HauteValidationError(
                         f"search_space.{name}.when condition on {parent!r} is impossible"
                     )
                 if not allowed_choices <= parent_choices:
-                    raise ValueError(
+                    raise HauteValidationError(
                         f"search_space.{name}.when condition on {parent!r} "
                         "must use only the parent's declared choices"
                     )
@@ -230,11 +235,13 @@ def _validate_conditions(
             elif parent in base_params:
                 fixed = _canonical_key(base_params[parent])
                 if fixed not in {_canonical_key(value) for value in allowed}:
-                    raise ValueError(
+                    raise HauteValidationError(
                         f"search_space.{name}.when fixed condition on {parent!r} is impossible"
                     )
             else:
-                raise ValueError(f"search_space.{name}.when references unknown parent {parent!r}")
+                raise HauteValidationError(
+                    f"search_space.{name}.when references unknown parent {parent!r}"
+                )
 
     ordered: list[str] = []
     pending = {name: set(parents) for name, parents in dependencies.items()}
@@ -242,7 +249,7 @@ def _validate_conditions(
         ready = sorted(name for name, parents in pending.items() if not parents)
         if not ready:
             cycle = sorted(pending)
-            raise ValueError(f"search_space conditions contain a cycle: {cycle}")
+            raise HauteValidationError(f"search_space conditions contain a cycle: {cycle}")
         for name in ready:
             ordered.append(name)
             pending.pop(name)
@@ -275,34 +282,34 @@ class TuningConfig:
         configured_metrics: Sequence[str],
     ) -> TuningConfig:
         if not isinstance(raw, Mapping):
-            raise ValueError("tuning config must be an object")
+            raise HauteValidationError("tuning config must be an object")
         expected = {"schema_version", "seed", "metric", "search_space"} | (
             {"trial_count"} if "trial_count" in raw else set()
         )
         _exact_keys(raw, expected, "tuning")
         schema_version = _exact_int(raw.get("schema_version"), "tuning.schema_version")
         if schema_version != TUNING_SCHEMA_VERSION:
-            raise ValueError(f"tuning.schema_version must be {TUNING_SCHEMA_VERSION}")
+            raise HauteValidationError(f"tuning.schema_version must be {TUNING_SCHEMA_VERSION}")
         if str(algorithm).lower() != "catboost":
-            raise ValueError("tuning version 1 supports CatBoost only")
+            raise HauteValidationError("tuning version 1 supports CatBoost only")
         if evaluation.validation_fit_count == 0:
-            raise ValueError("tuning requires single or cross-validation")
+            raise HauteValidationError("tuning requires single or cross-validation")
 
         trial_count = _exact_int(raw.get("trial_count", 20), "tuning.trial_count")
         if not MIN_TRIAL_COUNT <= trial_count <= MAX_TRIAL_COUNT:
-            raise ValueError(
+            raise HauteValidationError(
                 f"tuning.trial_count must be from {MIN_TRIAL_COUNT} through {MAX_TRIAL_COUNT}"
             )
         seed = _exact_int(raw.get("seed"), "tuning.seed")
         metric_raw = raw.get("metric")
         if not isinstance(metric_raw, str) or not metric_raw.strip():
-            raise ValueError("tuning.metric must be a non-empty string")
+            raise HauteValidationError("tuning.metric must be a non-empty string")
         configured_by_canonical = {
             _canonical_metric_name(name): name for name in configured_metrics
         }
         metric_key = _canonical_metric_name(metric_raw)
         if metric_key not in configured_by_canonical:
-            raise ValueError(
+            raise HauteValidationError(
                 f"tuning.metric {metric_raw!r} must be one of configured metrics "
                 f"{list(configured_metrics)!r}"
             )
@@ -311,18 +318,18 @@ class TuningConfig:
 
         raw_space = raw.get("search_space")
         if not isinstance(raw_space, Mapping):
-            raise ValueError("tuning.search_space must be an object")
+            raise HauteValidationError("tuning.search_space must be an object")
         if not MIN_SEARCH_ENTRIES <= len(raw_space) <= MAX_SEARCH_ENTRIES:
-            raise ValueError(
+            raise HauteValidationError(
                 f"tuning.search_space must contain {MIN_SEARCH_ENTRIES} through "
                 f"{MAX_SEARCH_ENTRIES} entries"
             )
         parsed_space: dict[str, Mapping[str, Any]] = {}
         for name, entry in raw_space.items():
             if not isinstance(name, str) or not name:
-                raise ValueError("tuning.search_space names must be non-empty strings")
+                raise HauteValidationError("tuning.search_space names must be non-empty strings")
             if name in _ORCHESTRATION_OWNED_KEYS:
-                raise ValueError(
+                raise HauteValidationError(
                     f"tuning.search_space cannot search orchestration-owned key {name!r}"
                 )
             parsed_space[name] = _parse_search_entry(name, entry)
@@ -331,7 +338,7 @@ class TuningConfig:
         validation_fit_count = evaluation.validation_fit_count
         trial_fit_count = trial_count * validation_fit_count
         if trial_fit_count > MAX_TRIAL_FITS:
-            raise ValueError(
+            raise HauteValidationError(
                 f"tuning requires {trial_fit_count} trial fits; the maximum is {MAX_TRIAL_FITS}"
             )
         return cls(
@@ -426,32 +433,32 @@ class TuningTrialResult:
 
     def __post_init__(self) -> None:
         if _exact_int(self.schema_version, "trial schema_version") != TUNING_SCHEMA_VERSION:
-            raise ValueError(f"trial schema_version must be {TUNING_SCHEMA_VERSION}")
+            raise HauteValidationError(f"trial schema_version must be {TUNING_SCHEMA_VERSION}")
         trial_index = _exact_int(self.trial_index, "trial_index")
         if trial_index < 0:
-            raise ValueError("trial_index must be a non-negative integer")
+            raise HauteValidationError("trial_index must be a non-negative integer")
         if self.label not in {"baseline", "sampled"}:
-            raise ValueError("trial label must be baseline or sampled")
+            raise HauteValidationError("trial label must be baseline or sampled")
         if self.trial_index == 0 and self.label != "baseline":
-            raise ValueError("trial zero must be labelled baseline")
+            raise HauteValidationError("trial zero must be labelled baseline")
         if self.trial_index > 0 and self.label != "sampled":
-            raise ValueError("non-zero trials must be labelled sampled")
+            raise HauteValidationError("non-zero trials must be labelled sampled")
         _assert_finite_json(self.sampled_params, "sampled_params")
         _assert_finite_json(self.resolved_params, "resolved_params")
         if not self.aggregate_metrics:
-            raise ValueError("aggregate_metrics must not be empty")
+            raise HauteValidationError("aggregate_metrics must not be empty")
         for name, value in self.aggregate_metrics.items():
             if not isinstance(name, str) or not name:
-                raise ValueError("aggregate metric names must be non-empty strings")
+                raise HauteValidationError("aggregate metric names must be non-empty strings")
             _finite_number(value, f"aggregate_metrics.{name}")
         _finite_number(self.objective, "objective")
         elapsed = _finite_number(self.elapsed_seconds, "elapsed_seconds")
         if elapsed < 0:
-            raise ValueError("elapsed_seconds must be non-negative")
+            raise HauteValidationError("elapsed_seconds must be non-negative")
         if not isinstance(self.fits, tuple) or any(
             not isinstance(fit, EvaluationFitResult) for fit in self.fits
         ):
-            raise ValueError("trial fits must be evaluation fit results")
+            raise HauteValidationError("trial fits must be evaluation fit results")
 
     def to_plain_data(self) -> dict[str, Any]:
         return {
@@ -469,7 +476,7 @@ class TuningTrialResult:
     @classmethod
     def from_plain_data(cls, raw: Any) -> TuningTrialResult:
         if not isinstance(raw, Mapping):
-            raise ValueError("tuning trial must be an object")
+            raise HauteValidationError("tuning trial must be an object")
         _exact_keys(
             raw,
             {
@@ -486,7 +493,7 @@ class TuningTrialResult:
             "tuning trial",
         )
         if not isinstance(raw["fits"], list):
-            raise ValueError("tuning trial fits must be a list")
+            raise HauteValidationError("tuning trial fits must be a list")
         return cls(
             schema_version=raw["schema_version"],
             trial_index=raw["trial_index"],
@@ -507,14 +514,14 @@ def choose_winner(
 ) -> TuningTrialResult:
     """Choose by objective, with stable lower-index tie breaking."""
     if not trials:
-        raise ValueError("at least one tuning trial is required")
+        raise HauteValidationError("at least one tuning trial is required")
     if direction not in {"maximize", "minimize"}:
-        raise ValueError("direction must be maximize or minimize")
+        raise HauteValidationError("direction must be maximize or minimize")
     ordered = sorted(trials, key=lambda item: item.trial_index)
     if ordered[0].trial_index != 0 or ordered[0].label != "baseline":
-        raise ValueError("ordered tuning trials must start with baseline trial zero")
+        raise HauteValidationError("ordered tuning trials must start with baseline trial zero")
     if [item.trial_index for item in ordered] != list(range(len(ordered))):
-        raise ValueError("tuning trial indices must be contiguous")
+        raise HauteValidationError("tuning trial indices must be contiguous")
     if direction == "maximize":
         return max(ordered, key=lambda item: (item.objective, -item.trial_index))
     return min(ordered, key=lambda item: (item.objective, item.trial_index))
@@ -534,7 +541,9 @@ def validation_weighted_tree_count(
         or not isinstance(iteration_ceiling, int)
         or iteration_ceiling <= 0
     ):
-        raise ValueError("best iterations, validation rows, and a positive ceiling are required")
+        raise HauteValidationError(
+            "best iterations, validation rows, and a positive ceiling are required"
+        )
     weighted: list[tuple[int, int]] = []
     for best_iteration, rows in zip(best_iterations, validation_rows, strict=True):
         if (
@@ -542,9 +551,9 @@ def validation_weighted_tree_count(
             or not isinstance(best_iteration, int)
             or best_iteration < 0
         ):
-            raise ValueError("best_iterations must be non-negative integers")
+            raise HauteValidationError("best_iterations must be non-negative integers")
         if isinstance(rows, bool) or not isinstance(rows, int) or rows <= 0:
-            raise ValueError("validation_rows must be positive integers")
+            raise HauteValidationError("validation_rows must be positive integers")
         weighted.append((best_iteration + 1, rows))
     weighted.sort(key=lambda item: item[0])
     threshold = sum(rows for _, rows in weighted) / 2
@@ -576,9 +585,11 @@ class TuningPlanArtifact:
 
     def __post_init__(self) -> None:
         if _exact_int(self.schema_version, "tuning plan schema_version") != TUNING_SCHEMA_VERSION:
-            raise ValueError(f"tuning plan schema_version must be {TUNING_SCHEMA_VERSION}")
+            raise HauteValidationError(
+                f"tuning plan schema_version must be {TUNING_SCHEMA_VERSION}"
+            )
         if not isinstance(self.config, Mapping):
-            raise ValueError("tuning plan config must be an object")
+            raise HauteValidationError("tuning plan config must be an object")
         _assert_finite_json(self.config, "tuning plan config")
         _exact_keys(
             self.config,
@@ -594,13 +605,13 @@ class TuningPlanArtifact:
         _require_sha256(self.base_params_sha256, "base_params_sha256")
         _require_sha256(self.evaluation_plan_sha256, "evaluation_plan_sha256")
         if not isinstance(self.metric, str) or not self.metric:
-            raise ValueError("tuning plan metric must be a non-empty string")
+            raise HauteValidationError("tuning plan metric must be a non-empty string")
         if self.direction != metric_direction(self.metric):
-            raise ValueError("tuning plan metric direction is inconsistent")
+            raise HauteValidationError("tuning plan metric direction is inconsistent")
         if self.sampler != "TPESampler":
-            raise ValueError("tuning plan sampler must be TPESampler")
+            raise HauteValidationError("tuning plan sampler must be TPESampler")
         if not isinstance(self.sampler_version, str) or not self.sampler_version.startswith("4."):
-            raise ValueError("tuning plan sampler_version must identify Optuna 4.x")
+            raise HauteValidationError("tuning plan sampler_version must identify Optuna 4.x")
         _exact_int(self.seed, "tuning plan seed")
         validation_fit_count = _exact_int(
             self.validation_fit_count,
@@ -616,15 +627,15 @@ class TuningPlanArtifact:
             "tuning plan total_fit_count",
         )
         if not 1 <= validation_fit_count <= 10:
-            raise ValueError("tuning plan validation_fit_count is outside bounds")
+            raise HauteValidationError("tuning plan validation_fit_count is outside bounds")
         if not MIN_TRIAL_COUNT <= trial_count <= MAX_TRIAL_COUNT:
-            raise ValueError("tuning plan trial_count is outside bounds")
+            raise HauteValidationError("tuning plan trial_count is outside bounds")
         if (
             trial_fit_count != trial_count * validation_fit_count
             or trial_fit_count > MAX_TRIAL_FITS
             or total_fit_count != trial_fit_count + 1
         ):
-            raise ValueError("tuning plan fit counts are inconsistent")
+            raise HauteValidationError("tuning plan fit counts are inconsistent")
         config_schema_version = _exact_int(
             self.config["schema_version"],
             "tuning plan config schema_version",
@@ -648,7 +659,7 @@ class TuningPlanArtifact:
             or not isinstance(config_search_space, Mapping)
             or not config_search_space
         ):
-            raise ValueError("tuning plan config disagrees with its derived fields")
+            raise HauteValidationError("tuning plan config disagrees with its derived fields")
 
     @classmethod
     def create(
@@ -697,7 +708,7 @@ class TuningPlanArtifact:
     @classmethod
     def from_plain_data(cls, raw: Any) -> TuningPlanArtifact:
         if not isinstance(raw, Mapping):
-            raise ValueError("tuning plan must be an object")
+            raise HauteValidationError("tuning plan must be an object")
         fields = {
             "schema_version",
             "config",
@@ -726,7 +737,9 @@ class TuningTrialsArtifact:
 
     def __post_init__(self) -> None:
         if _exact_int(self.schema_version, "tuning trials schema_version") != TUNING_SCHEMA_VERSION:
-            raise ValueError(f"tuning trials schema_version must be {TUNING_SCHEMA_VERSION}")
+            raise HauteValidationError(
+                f"tuning trials schema_version must be {TUNING_SCHEMA_VERSION}"
+            )
         _require_sha256(self.plan_sha256, "plan_sha256")
         _require_sha256(self.evaluation_plan_sha256, "evaluation_plan_sha256")
         if (
@@ -734,27 +747,33 @@ class TuningTrialsArtifact:
             or not MIN_TRIAL_COUNT <= len(self.trials) <= MAX_TRIAL_COUNT
             or any(not isinstance(trial, TuningTrialResult) for trial in self.trials)
         ):
-            raise ValueError(
+            raise HauteValidationError(
                 f"tuning trials must contain {MIN_TRIAL_COUNT} through {MAX_TRIAL_COUNT} trials"
             )
         indices = [trial.trial_index for trial in self.trials]
         if indices != list(range(len(self.trials))):
-            raise ValueError("tuning trial indices must be contiguous")
+            raise HauteValidationError("tuning trial indices must be contiguous")
         if self.trials[0].label != "baseline" or self.trials[0].sampled_params:
-            raise ValueError("tuning trials must start with an unsampled baseline trial zero")
+            raise HauteValidationError(
+                "tuning trials must start with an unsampled baseline trial zero"
+            )
         if any(trial.label != "sampled" or not trial.sampled_params for trial in self.trials[1:]):
-            raise ValueError("tuning trials after baseline must be sampled")
+            raise HauteValidationError("tuning trials after baseline must be sampled")
         metric_names = set(self.trials[0].aggregate_metrics)
         fit_count = len(self.trials[0].fits)
         if not 1 <= fit_count <= 10 or len(self.trials) * fit_count > MAX_TRIAL_FITS:
-            raise ValueError("tuning trials must contain a bounded validation fit set")
+            raise HauteValidationError("tuning trials must contain a bounded validation fit set")
         for trial in self.trials:
             if set(trial.aggregate_metrics) != metric_names or len(trial.fits) != fit_count:
-                raise ValueError("tuning trials must retain identical metric and fit contracts")
+                raise HauteValidationError(
+                    "tuning trials must retain identical metric and fit contracts"
+                )
             if [fit.fit_index for fit in trial.fits] != list(range(fit_count)):
-                raise ValueError("tuning trial fit indices must be contiguous")
+                raise HauteValidationError("tuning trial fit indices must be contiguous")
             if any(set(fit.metrics) != metric_names for fit in trial.fits):
-                raise ValueError("tuning trial fit metric names must match aggregate metrics")
+                raise HauteValidationError(
+                    "tuning trial fit metric names must match aggregate metrics"
+                )
             total_validation_rows = sum(fit.validation_rows for fit in trial.fits)
             for metric, aggregate in trial.aggregate_metrics.items():
                 weighted_mean = (
@@ -767,7 +786,7 @@ class TuningTrialsArtifact:
                     rel_tol=1e-12,
                     abs_tol=1e-12,
                 ):
-                    raise ValueError(
+                    raise HauteValidationError(
                         f"tuning trial aggregate metric {metric!r} "
                         "does not match its validation fits"
                     )
@@ -783,7 +802,7 @@ class TuningTrialsArtifact:
     @classmethod
     def from_plain_data(cls, raw: Any) -> TuningTrialsArtifact:
         if not isinstance(raw, Mapping):
-            raise ValueError("tuning trials must be an object")
+            raise HauteValidationError("tuning trials must be an object")
         _exact_keys(
             raw,
             {
@@ -795,7 +814,7 @@ class TuningTrialsArtifact:
             "tuning trials",
         )
         if not isinstance(raw["trials"], list):
-            raise ValueError("tuning trials list is required")
+            raise HauteValidationError("tuning trials list is required")
         return cls(
             schema_version=raw["schema_version"],
             plan_sha256=raw["plan_sha256"],
@@ -825,12 +844,14 @@ class TuningReportArtifact:
 
     def __post_init__(self) -> None:
         if _exact_int(self.schema_version, "tuning report schema_version") != TUNING_SCHEMA_VERSION:
-            raise ValueError(f"tuning report schema_version must be {TUNING_SCHEMA_VERSION}")
+            raise HauteValidationError(
+                f"tuning report schema_version must be {TUNING_SCHEMA_VERSION}"
+            )
         _require_sha256(self.plan_sha256, "plan_sha256")
         _require_sha256(self.trials_sha256, "trials_sha256")
         _require_sha256(self.evaluation_plan_sha256, "evaluation_plan_sha256")
         if self.direction != metric_direction(self.metric):
-            raise ValueError("tuning report metric direction is inconsistent")
+            raise HauteValidationError("tuning report metric direction is inconsistent")
         baseline = _finite_number(
             self.baseline_objective,
             "tuning report baseline_objective",
@@ -844,13 +865,13 @@ class TuningReportArtifact:
             "tuning report improvement",
         )
         if improvement < 0:
-            raise ValueError("tuning report improvement must be non-negative")
+            raise HauteValidationError("tuning report improvement must be non-negative")
         winner_index = _exact_int(
             self.winner_trial_index,
             "tuning report winner_trial_index",
         )
         if winner_index < 0:
-            raise ValueError("tuning report winner_trial_index must be non-negative")
+            raise HauteValidationError("tuning report winner_trial_index must be non-negative")
         _assert_finite_json(self.best_sampled_params, "best_sampled_params")
         _assert_finite_json(self.final_params, "final_params")
         final_tree_count = _exact_int(
@@ -877,7 +898,7 @@ class TuningReportArtifact:
             or trial_fit_count > MAX_TRIAL_FITS
             or total_fit_count != trial_fit_count + 1
         ):
-            raise ValueError("tuning report counts are inconsistent")
+            raise HauteValidationError("tuning report counts are inconsistent")
         if self.final_params.get("iterations") != final_tree_count or any(
             key in self.final_params
             for key in (
@@ -888,9 +909,11 @@ class TuningReportArtifact:
                 "use_best_model",
             )
         ):
-            raise ValueError("tuning report final parameter projection is inconsistent")
+            raise HauteValidationError("tuning report final parameter projection is inconsistent")
         if bool(winner_index) != bool(self.best_sampled_params):
-            raise ValueError("tuning report best sampled parameters disagree with the winner")
+            raise HauteValidationError(
+                "tuning report best sampled parameters disagree with the winner"
+            )
         expected_improvement = (
             winner - baseline if self.direction == "maximize" else baseline - winner
         )
@@ -900,7 +923,7 @@ class TuningReportArtifact:
             rel_tol=0.0,
             abs_tol=1e-15,
         ):
-            raise ValueError("tuning report improvement is inconsistent")
+            raise HauteValidationError("tuning report improvement is inconsistent")
 
     def to_plain_data(self) -> dict[str, Any]:
         return {
@@ -925,7 +948,7 @@ class TuningReportArtifact:
     @classmethod
     def from_plain_data(cls, raw: Any) -> TuningReportArtifact:
         if not isinstance(raw, Mapping):
-            raise ValueError("tuning report must be an object")
+            raise HauteValidationError("tuning report must be an object")
         fields = {
             "schema_version",
             "plan_sha256",
@@ -954,7 +977,7 @@ def _require_sha256(value: Any, name: str) -> str:
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        raise HauteValidationError(f"{name} must be a lowercase SHA-256 digest")
     return value
 
 
@@ -983,7 +1006,7 @@ def load_tuning_trials(
         plan_sha256,
         "plan_sha256",
     ):
-        raise ValueError("tuning trials plan digest does not match")
+        raise HauteValidationError("tuning trials plan digest does not match")
     return trials
 
 
@@ -1012,11 +1035,11 @@ def build_tuning_report(
         or trials.evaluation_plan_sha256 != plan.evaluation_plan_sha256
         or len(trials.trials) != plan.trial_count
     ):
-        raise ValueError("tuning trials do not match the tuning plan")
+        raise HauteValidationError("tuning trials do not match the tuning plan")
     baseline = trials.trials[0]
     baseline_digest = hashlib.sha256(canonical_json_bytes(baseline.resolved_params)).hexdigest()
     if baseline_digest != plan.base_params_sha256:
-        raise ValueError("tuning baseline parameters do not match the tuning plan")
+        raise HauteValidationError("tuning baseline parameters do not match the tuning plan")
     for trial in trials.trials:
         expected_resolved = resolve_trial_parameters(
             baseline.resolved_params,
@@ -1034,7 +1057,7 @@ def build_tuning_report(
                 abs_tol=0.0,
             )
         ):
-            raise ValueError("tuning trial does not match plan fit/metric contract")
+            raise HauteValidationError("tuning trial does not match plan fit/metric contract")
     winner = choose_winner(trials.trials, direction=plan.direction)
     iteration_ceiling = winner.resolved_params.get("iterations", 1000)
     if (
@@ -1043,7 +1066,7 @@ def build_tuning_report(
         or iteration_ceiling <= 0
         or any(fit.best_iteration is None for fit in winner.fits)
     ):
-        raise ValueError(
+        raise HauteValidationError(
             "winning tuning trial must retain a positive iteration ceiling "
             "and best_iteration for every validation fit"
         )
@@ -1069,7 +1092,7 @@ def build_tuning_report(
     ) != expected_tree_count or canonical_json_bytes(final_params) != canonical_json_bytes(
         expected_final_params
     ):
-        raise ValueError(
+        raise HauteValidationError(
             "tuning report final parameter projection must be derived from "
             "the winning validation fits"
         )

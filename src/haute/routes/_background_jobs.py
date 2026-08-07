@@ -509,6 +509,12 @@ def _worker_terminal_message(exc: IsolatedWorkerError) -> str:
 def _isolated_worker_failure_fields(exc: IsolatedWorkerError) -> dict[str, Any]:
     worker_fields = getattr(exc, "fields", None)
     fields: dict[str, Any] = dict(worker_fields) if isinstance(worker_fields, Mapping) else {}
+    # The supervisor claims the "error" field for the typed wrapper text, but
+    # the child's own diagnostic text (typically the raw exception message)
+    # must survive the overwrite — it moves to "worker_error".
+    child_error = fields.get("error")
+    if isinstance(child_error, str) and child_error and child_error != str(exc):
+        fields.setdefault("worker_error", child_error)
     fields.update(
         {
             "error": str(exc),

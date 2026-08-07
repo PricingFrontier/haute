@@ -521,6 +521,28 @@ def test_memory_limit_helpers_cover_unstructured_and_absent_values() -> None:
     assert _memory_limit_message({}) == "Auto-range exceeded its memory budget."
 
 
+def test_memory_limit_message_prefers_the_curated_http_payload_wording() -> None:
+    """_memory_limit_http_exception stamps the shared curated message; the
+    job's terminal message must reuse it rather than the generic fallback."""
+    from haute._execution_context import ExecutionMemoryLimitExceededError
+    from haute.routes._optimiser_service import _memory_limit_http_exception
+
+    exc = ExecutionMemoryLimitExceededError(
+        "frontier_auto_range",
+        rss_bytes=2048,
+        limit_bytes=1024,
+        reason="process_rss_limit_exceeded",
+        rss_limit_bytes=1024,
+    )
+    detail = _memory_limit_http_exception(exc).detail
+    assert isinstance(detail, dict)
+    message = _memory_limit_message(_normalise_memory_limit_payload(detail))
+    assert message == detail["message"]
+    assert message.startswith("Auto-range needs more memory than this server allows")
+    assert "2.0 KiB used, 1.0 KiB allowed" in message
+    assert "frontier_auto_range" not in message
+
+
 # ---------------------------------------------------------------------------
 # 3b.4 [M] — single-quote solve must not crash after solving
 # ---------------------------------------------------------------------------

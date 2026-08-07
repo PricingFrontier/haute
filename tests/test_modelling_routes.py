@@ -14,6 +14,7 @@ import pytest
 from fastapi import HTTPException
 
 from haute._execution_context import ExecutionContext, ExecutionProfile
+from haute.errors import HauteValidationError
 from haute.routes._train_service import (
     TrainService,
     _clamp_row_limit,
@@ -592,7 +593,13 @@ class TestTrainBackgroundLaunchFailures:
         assert not tmp_parquet.exists()
 
     def test_non_finite_training_result_marks_job_error(self, tmp_path: Path) -> None:
-        """Worker completion must fail loudly before storing invalid JSON."""
+        """Worker completion must fail loudly before storing invalid JSON.
+
+        The response-model rejection is a pydantic ``ValidationError`` — a
+        dependency ``ValueError``, not a ``HauteValidationError`` — so it takes
+        the type-only fallback as a plain ``error``; the pydantic dump (which
+        names the non-finite field) stays in the diagnostic ``error`` field.
+        """
         from haute.modelling._training_job import TrainResult
         from haute.routes._job_store import JobStore
 
@@ -680,10 +687,14 @@ class TestTrainBackgroundLaunchFailures:
             thread.join_and_raise(timeout=10)
 
         job = store.require_job(job_id)
-        assert job["status"] == "contract_error"
-        assert job["terminal_reason"] == "contract_error"
-        assert "must be a finite number" in job["message"]
-        assert "final_test_metrics.auc" in job["message"]
+        assert job["status"] == "error"
+        assert job["terminal_reason"] == "error"
+        assert "unexpected internal error" in job["message"]
+        assert "ValidationError" in job["message"]
+        assert "must be a finite number" not in job["message"]
+        # The wrapper text claims the "error" field; the child's raw pydantic
+        # dump survives under "worker_error" (naming the non-finite field).
+        assert "final_test_metrics.auc" in job["worker_error"]
         assert job.get("result") is None
         assert not tmp_parquet.exists()
 
@@ -978,9 +989,18 @@ class TestMlflowLogEndpoint:
 class TestFriendlyError:
     """Unit tests for _friendly_error — translates exceptions into user messages."""
 
-    def test_value_error_passthrough(self):
-        exc = ValueError("Target column 'z' not found")
+    def test_haute_validation_error_passthrough(self):
+        exc = HauteValidationError("Target column 'z' not found")
         assert _friendly_error(exc) == "Target column 'z' not found"
+
+    def test_plain_value_error_takes_the_type_only_fallback(self):
+        """Provenance is enforced by the marker type: a dependency's bare
+        ``ValueError`` body is never promoted verbatim."""
+        exc = ValueError("could not parse '/private/tmp/leaky' as float")
+        result = _friendly_error(exc)
+        assert "leaky" not in result
+        assert "ValueError" in result
+        assert "unexpected internal error" in result
 
     def test_file_not_found_does_not_quote_the_path(self):
         """A fit-stage missing file is typically an internal staged asset —
@@ -1522,8 +1542,8 @@ class TestMlflowCheckImportError:
 class TestBackgroundThreadErrors:
     """Test error handling in the background training thread."""
 
-    def test_background_value_error(self, client, training_data, monkeypatch):
-        """ValueError in TrainingJob.run() sets status to error with message."""
+    def test_background_validation_error(self, client, training_data, monkeypatch):
+        """HauteValidationError in TrainingJob.run() surfaces verbatim as contract_error."""
         graph = _make_modelling_graph(training_data)
 
         class FailingJob:
@@ -1531,7 +1551,7 @@ class TestBackgroundThreadErrors:
                 pass
 
             def run(self, *_args, **_kwargs):
-                raise ValueError("Invalid target column: not found")
+                raise HauteValidationError("Invalid target column: not found")
 
         service, launched = _inline_route_service(monkeypatch)
         with patch("haute.modelling.TrainingJob", FailingJob):
@@ -1544,6 +1564,35 @@ class TestBackgroundThreadErrors:
             assert status["status"] == "contract_error"
             assert status["terminal_reason"] == "contract_error"
             assert "Invalid target column" in status["message"]
+
+    def test_background_plain_value_error_takes_the_fallback(
+        self, client, training_data, monkeypatch
+    ):
+        """A dependency's bare ValueError never rides the validation channel:
+        it takes the type-only fallback as a plain error, with the raw text
+        kept diagnostic."""
+        graph = _make_modelling_graph(training_data)
+
+        class FailingJob:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run(self, *_args, **_kwargs):
+                raise ValueError("could not convert string to float: '/tmp/leaky'")
+
+        service, launched = _inline_route_service(monkeypatch)
+        with patch("haute.modelling.TrainingJob", FailingJob):
+            resp = client.post("/api/modelling/train", json={"graph": graph, "node_id": "train"})
+            data = resp.json()
+            assert data["status"] == "started"
+            service._join_preparation(data["job_id"])
+            launched[0].join_and_raise(timeout=10)
+            status = client.get(f"/api/modelling/train/status/{data['job_id']}").json()
+            assert status["status"] == "error"
+            assert status["terminal_reason"] == "error"
+            assert "unexpected internal error" in status["message"]
+            assert "ValueError" in status["message"]
+            assert "leaky" not in status["message"]
 
     def test_background_runtime_error(self, client, training_data, monkeypatch):
         """RuntimeError in TrainingJob.run() surfaces the curated fallback.
