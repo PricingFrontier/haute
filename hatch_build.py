@@ -30,6 +30,9 @@ _INPUT_MANIFEST_NAME = "haute-build-inputs.json"
 _OUTPUT_MANIFEST_NAME = "manifest.json"
 _INPUT_MANIFEST_VERSION = 1
 _SOURCE_TEST_ONLY_DIRS = frozenset({"__tests__", "test-utils", "testSupport"})
+# Vitest setup files are verification-system support, not production inputs;
+# mirrored in tests/test_docs_accuracy.py's frontend-source classification.
+_SOURCE_VITEST_SETUP_FILES = frozenset({"setupTests.ts", "setupStorageCanary.ts"})
 _SOURCE_TEST_FILE = re.compile(r"[.](?:test|spec)[.][^.]+$")
 
 
@@ -369,7 +372,7 @@ class FrontendBuildHook(BuildHookInterface):
         relative = path.relative_to(source_root)
         if any(part in _SOURCE_TEST_ONLY_DIRS for part in relative.parts):
             return False
-        if path.name == "setupTests.ts":
+        if path.name in _SOURCE_VITEST_SETUP_FILES:
             return False
         return _SOURCE_TEST_FILE.search(path.name) is None
 

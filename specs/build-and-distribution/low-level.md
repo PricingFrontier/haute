@@ -50,7 +50,8 @@ package input validated by `hatch_build.py`, not hand-edited source.
   `frontend/.npmrc`, `index.html`, package/lock metadata and Vite config; every
   recursively referenced TypeScript config; all regular files below
   `frontend/public/`; and production files below `frontend/src/`. Test files,
-  test-only directories, test support, and `setupTests.ts` are excluded.
+  test-only directories, test support, and the vitest setup files
+  (`setupTests.ts`, `setupStorageCanary.ts`) are excluded.
 - **Static output graph** is the Vite output rooted at
   `src/haute/static/`: regular `index.html`, non-empty
   `src/haute/static/manifest.json` with at
