@@ -9,6 +9,16 @@ on:
 permissions:
   contents: read
 
+# Push twice to a branch and, without this, both runs go to completion — the first
+# validating a commit nobody will merge. Measured over a 300-run sample: 17 CI runs
+# were superseded before finishing, at roughly 53 runner-minutes each.
+#
+# `main` is deliberately excluded from cancellation: a push-to-main run is the record
+# of whether main is green, so it must finish even when the next merge lands on top.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # Early-feedback canary: the cheapest checks that historically red CI
   # (ruff format/lint), then the core test subset. Runs standalone — nothing
@@ -32,8 +42,14 @@ jobs:
       - name: Ruff lint (annotated)
         run: uv run ruff check . --output-format=github
 
-      - name: Ruff format check
-        run: uv run ruff format --check .
+      # The remedy goes in the step name so it is readable in the checks list without
+      # expanding the log, and in an annotation so it also surfaces on the run summary.
+      - name: Ruff format check (fix with `uv run ruff format .`)
+        run: |
+          if ! uv run ruff format --check .; then
+            echo "::error title=Ruff format::Formatting differs from ruff's output in the files listed above. Fix with: uv run ruff format ."
+            exit 1
+          fi
 
       - name: Canary test subset (core subset — historically most regression-prone files)
         run: >
@@ -123,8 +139,14 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check .
 
-      - name: Ruff format check
-        run: uv run ruff format --check .
+      # The remedy goes in the step name so it is readable in the checks list without
+      # expanding the log, and in an annotation so it also surfaces on the run summary.
+      - name: Ruff format check (fix with `uv run ruff format .`)
+        run: |
+          if ! uv run ruff format --check .; then
+            echo "::error title=Ruff format::Formatting differs from ruff's output in the files listed above. Fix with: uv run ruff format ."
+            exit 1
+          fi
 
       - name: Mypy
         run: uv run mypy src/haute/
@@ -183,13 +205,24 @@ jobs:
           pattern: backend-coverage-*
           merge-multiple: true
 
-      - name: Combine coverage + enforce global 90% + per-file critical gates
+      # The global floor and the per-file critical gates are independent invariants,
+      # so they get their own steps: the step name in the GitHub UI then tells you
+      # which one broke without opening the log. The critical gate runs even when the
+      # global floor fails (`always()`), because a run that breaches both should say
+      # so — a masked critical-coverage regression has bitten this repo before.
+      - name: Combine coverage shards
+        id: combine
         run: |
           mkdir -p .cache/coverage
           uv run coverage combine .coverage.shard1 .coverage.shard2
-          uv run coverage report --fail-under=90 --show-missing
           uv run coverage json -o .cache/coverage/backend.json
-          uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
+
+      - name: Enforce global coverage floor (90%)
+        run: uv run coverage report --fail-under=90 --show-missing
+
+      - name: Enforce per-file critical coverage gates
+        if: always() && steps.combine.outcome == 'success'
+        run: uv run python scripts/check_critical_coverage.py --coverage-json .cache/coverage/backend.json
 
   # Compatibility: the full suite (no coverage) on the supported version edges.
   backend-compat:
