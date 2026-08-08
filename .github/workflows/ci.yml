@@ -48,7 +48,7 @@ jobs:
       - name: Ruff format check (fix with `uv run ruff format .`)
         run: |
           if ! uv run ruff format --check .; then
-            echo "::error title=Ruff format::Formatting differs from ruff's output in the files listed above. Fix with: uv run ruff format ."
+            echo "::error title=Ruff format::Formatting differs from ruff's output. Fix with: uv run ruff format . (affected files are named in this step's log)"
             exit 1
           fi
 
@@ -137,15 +137,18 @@ jobs:
 
       - run: uv sync --group dev --locked
 
-      - name: Ruff lint
-        run: uv run ruff check .
+      # --output-format=github so a violation becomes a file-and-line annotation on
+      # the run summary, matching the canary lane. Without it the same violation is
+      # only readable by opening the log.
+      - name: Ruff lint (annotated)
+        run: uv run ruff check . --output-format=github
 
       # The remedy goes in the step name so it is readable in the checks list without
       # expanding the log, and in an annotation so it also surfaces on the run summary.
       - name: Ruff format check (fix with `uv run ruff format .`)
         run: |
           if ! uv run ruff format --check .; then
-            echo "::error title=Ruff format::Formatting differs from ruff's output in the files listed above. Fix with: uv run ruff format ."
+            echo "::error title=Ruff format::Formatting differs from ruff's output. Fix with: uv run ruff format . (affected files are named in this step's log)"
             exit 1
           fi
 
