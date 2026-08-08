@@ -485,11 +485,16 @@ describe("useSettingsStore", () => {
       // Advance past the 5s timeout
       vi.advanceTimersByTime(5_001)
 
-      // Allow microtasks (Promise.race rejection, .catch, .finally) to flush
+      // Wait for BOTH the error status (.catch) and the fetching flag
+      // clear (.finally) — .finally runs as a separate microtask after
+      // .catch, so checking _mlflowFetching outside waitFor can race
+      // the microtask queue (observed flake: run 30874054542, Frontend
+      // Shuffle — waitFor saw status="error" and returned before
+      // .finally flushed, leaving _mlflowFetching=true).
       await vi.waitFor(() => {
         expect(useSettingsStore.getState().mlflow.status).toBe("error")
+        expect(useSettingsStore.getState()._mlflowFetching).toBe(false)
       })
-      expect(useSettingsStore.getState()._mlflowFetching).toBe(false)
     })
 
     it("succeeds before the timeout if checkMlflow resolves quickly", async () => {
