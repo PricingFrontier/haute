@@ -580,7 +580,7 @@ class TestStalePipelineIndex:
             # but raise a useful error
             from haute.routes._helpers import parse_pipeline_to_graph
 
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing that some error is raised for missing file
                 parse_pipeline_to_graph(result)
         finally:
             helpers._pipeline_index = None

@@ -659,7 +659,7 @@ def test_materialize_lazy_frame_with_cache_does_not_store_failed_collect(
         input_fingerprint="input:v1",
     )
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing cache behavior on error, not exception type
         materialize_lazy_frame_with_cache(
             pl.DataFrame({"x": [1]}).lazy().select("missing"),
             cache=cache,

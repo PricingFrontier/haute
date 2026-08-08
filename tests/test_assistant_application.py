@@ -92,7 +92,7 @@ class TestDryRun:
     def test_real_save_validation_runs_before_a_plan_is_recorded(self, project_root: Path):
         service = _service(project_root)
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing validation rejection, not specific type
             service.dry_run(
                 "main.py",
                 [
@@ -534,7 +534,7 @@ def test_save_service_exposes_the_same_no_write_validation_used_by_save(project_
     )
     service = SavePipelineService(project_root, project_root)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing validation rejection, not specific type
         service.validate_graph(graph, source_file="main.py")
 
 

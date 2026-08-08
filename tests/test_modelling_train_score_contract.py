@@ -685,5 +685,5 @@ class TestDiagnosticsFailLoudlySplit:
                 params={"iterations": 1, "depth": 1, "verbose": 0},
                 output_dir=str(tmp_path),
             )
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing error propagation from patched failure
                 job.run()

@@ -307,7 +307,7 @@ class TestGetColumnContract:
         propagate — previously the contract-detection silently swallowed
         it and returned opaque columns, masking config/infra problems."""
         with patch("haute._mlflow_io.load_mlflow_model", side_effect=Exception("fail")):
-            with pytest.raises(Exception):
+            with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: patches with generic Exception to test propagation
                 get_column_contract(
                     NodeType.MODEL_SCORE,
                     {"sourceType": "run", "run_id": "abc123", "task": "regression"},

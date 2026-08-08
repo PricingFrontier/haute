@@ -722,7 +722,7 @@ class TestBatchScoreToParquet:
 
         monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing cleanup behavior, not exception type
             _batch_score_to_parquet(
                 sm,
                 str(input_path),

@@ -1037,7 +1037,7 @@ class TestEvaluateExpressionPaths:
         displayed the engine's output as if the evaluator had computed it and
         masked evaluator bugs as self-consistent. The enrichment caller wraps
         this in its own error handler."""
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: ast.parse exception type may vary
             evaluate_expression(None, "target", {"target": 42})  # type: ignore[arg-type]
 
     def test_evaluate_conditional_branches(self):
@@ -1754,7 +1754,7 @@ class TestParseExpressionChainEdges:
         """A malformed (non-str) code argument fails loud instead of degrading
         to a laundered single-element chain; the enrichment caller records a
         visible error on the chain field."""
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: ast.parse exception type may vary
             parse_expression_chain(None, "target")  # type: ignore[arg-type]
 
     def test_chain_dot_syntax_wrapping(self):
@@ -2915,7 +2915,7 @@ class TestChainImplException:
 
     def test_chain_fallback_with_result(self):
         """A non-str code argument raises rather than laundering into a chain."""
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: ast.parse exception type may vary
             parse_expression_chain(123, "target")  # type: ignore[arg-type]
 
 

@@ -1582,7 +1582,7 @@ class TestParquetMetadataEdgeCases:
     def test_nonexistent_file_raises(self, tmp_path) -> None:
         import pytest
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing cleanup behavior, not exception type
             _parquet_metadata(str(tmp_path / "does_not_exist.parquet"))
 
 

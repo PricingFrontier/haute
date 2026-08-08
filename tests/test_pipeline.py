@@ -667,7 +667,7 @@ class TestNodeProperties:
             return a.hstack(b)
 
         n = Node(name="join", description="", fn=join, is_source=False)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing arity mismatch raises, not specific type
             n(pl.DataFrame({"x": [1]}))
 
 

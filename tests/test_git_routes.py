@@ -348,11 +348,12 @@ class TestHandleGitErrorLogging:
         from haute.routes.git import _handle_git_error
 
         with patch("haute.routes.git.logger") as mock_logger:
-            with pytest.raises(Exception):  # HTTPException
+            with pytest.raises(HTTPException) as exc_info:
                 _handle_git_error(GitError("something broke"))
             mock_logger.warning.assert_called_once()
             call_args = mock_logger.warning.call_args
             assert call_args[0][0] == "git_error"
+        assert exc_info.value.status_code == 400
 
     def test_logs_guardrail_error(self) -> None:
         from unittest.mock import patch
@@ -361,11 +362,12 @@ class TestHandleGitErrorLogging:
         from haute.routes.git import _handle_git_error
 
         with patch("haute.routes.git.logger") as mock_logger:
-            with pytest.raises(Exception):  # HTTPException
+            with pytest.raises(HTTPException) as exc_info:
                 _handle_git_error(GitGuardrailError("not allowed"))
             mock_logger.warning.assert_called_once()
             call_args = mock_logger.warning.call_args
             assert call_args[0][0] == "git_guardrail_error"
+        assert exc_info.value.status_code == 403
 
 
 # ---------------------------------------------------------------------------

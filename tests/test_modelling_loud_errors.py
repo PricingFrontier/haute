@@ -83,7 +83,7 @@ class TestModelScoreColumnDetectionLoud:
             "haute._mlflow_io.load_mlflow_model",
             side_effect=FileNotFoundError("run not found on tracking server"),
         ):
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(Exception) as exc_info:  # noqa: PT011 - intentionally broad: testing error propagation from patched failure
                 _model_score_columns(config)
             # Must NOT be swallowed — the caller needs to see something
             # mentioning the configuration or the failure origin.

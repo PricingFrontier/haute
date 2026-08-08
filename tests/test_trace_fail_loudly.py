@@ -551,7 +551,7 @@ class TestItem4SwallowErrorsRegexHeuristic:
             }
         )
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(Exception) as exc_info:  # noqa: PT011 - intentionally broad: fail-loud propagation check, asserts on message content not type
             execute_trace(graph, row_index=0, target_node_id="b")
 
         # Make sure the raised exception references the actual missing
@@ -606,7 +606,7 @@ class TestItem4SwallowErrorsRegexHeuristic:
             }
         )
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: retry-not-triggered check, asserts on call count not type
             execute_trace(graph, row_index=0, target_node_id="b")
 
         assert call_count["n"] == 1, (
