@@ -213,6 +213,7 @@ markers = [
     "slow: marks tests as slow but still part of the default suite",
     "perf: marks benchmark-style tests excluded from default pytest runs",
     "sandbox_strict: opts a test into the strict write-sandbox (see tests/_write_sandbox.py)",
+    "meta: repo-health checks that read files rather than exercise behaviour, so their result cannot vary by interpreter; deselected from the compatibility lanes (see .github/workflows/ci.yml)",
 ]
 filterwarnings = [
     "error::RuntimeWarning",

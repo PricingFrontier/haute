@@ -44,6 +44,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same ref supersedes an in-flight advisory audit, but a
+# scheduled unlocked-resolve (which tests the index, not the diff) is kept
+# distinct from push/PR runs by including the event name in the group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
 jobs:
   unlocked-resolve:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

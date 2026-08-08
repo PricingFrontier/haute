@@ -29,6 +29,13 @@ from haute.cli import cli
 from haute.cli._init_cmd import InitConfig, handle_init
 from haute.parser import parse_pipeline_file
 
+# Every check here reads repository files — specs, docs, source listings — and
+# compares them to each other. Nothing it asserts can come out differently on a
+# different interpreter, so running it on the compatibility legs adds no signal
+# and multiplies one failure into several red jobs. The coverage shards on the
+# reference interpreter still run it.
+pytestmark = pytest.mark.meta
+
 ROOT = Path(__file__).resolve().parents[1]
 MKDOCS_CONFIG = ROOT / "mkdocs.yml"
 EXECUTION_STRATEGY_DOC = ROOT / "docs" / "building-models" / "execution-strategy.md"
