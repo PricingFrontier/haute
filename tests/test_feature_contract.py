@@ -329,7 +329,7 @@ class TestLoadRejectsMalformed:
         path = tmp_path / "c.json"
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(FeatureMismatchError) as exc_info:
             load_contract(path)
         # The error must name the missing field — otherwise the failure
         # is cryptic and the operator can't fix it.
@@ -342,7 +342,7 @@ class TestLoadRejectsMalformed:
         path = tmp_path / "c.json"
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(FeatureMismatchError) as exc_info:
             load_contract(path)
         assert "wibble" in str(exc_info.value)
 
@@ -353,13 +353,13 @@ class TestLoadRejectsMalformed:
         path = tmp_path / "c.json"
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(FeatureMismatchError) as exc_info:
             load_contract(path)
         assert "features" in str(exc_info.value)
 
     def test_load_rejects_missing_file(self, tmp_path: Path) -> None:
         """A path that doesn't exist raises — no silent empty contract."""
-        with pytest.raises(Exception):
+        with pytest.raises(FileNotFoundError):
             load_contract(tmp_path / "does_not_exist.json")
 
 

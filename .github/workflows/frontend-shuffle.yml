@@ -32,6 +32,12 @@ on:
 permissions:
   contents: read
 
+# A manual seed-reproduction dispatch should not cancel a scheduled nightly
+# run (or vice versa); the event name in the group keeps them distinct.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
 jobs:
   frontend-shuffle:
     runs-on: ubuntu-latest

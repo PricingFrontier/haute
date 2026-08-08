@@ -272,7 +272,7 @@ class TestBuildOutputEdgeCases:
     def test_nonexistent_field_raises(self) -> None:
         _, fn, _ = _build("output", make_output_config(["a", "missing"]), source_names=["up"])
         lf = pl.DataFrame({"a": [1], "b": [2]}).lazy()
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: polars exception type may vary
             fn(lf).collect()
 
 

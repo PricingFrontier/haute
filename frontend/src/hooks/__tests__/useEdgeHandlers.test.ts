@@ -72,6 +72,7 @@ const mouseUpEvent = { clientX: 200, clientY: 150 } as MouseEvent
 describe("useEdgeHandlers", () => {
   afterEach(() => {
     cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -1481,6 +1482,7 @@ describe("useEdgeHandlers", () => {
 describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
   afterEach(() => {
     cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     vi.restoreAllMocks()
   })
 
@@ -1973,6 +1975,7 @@ describe("useEdgeHandlers edge-join failures and multi-port handles", () => {
 describe("useEdgeHandlers edge-join insertion candidates", () => {
   afterEach(() => {
     cleanup()
+    useToastStore.setState({ toasts: [], _toastCounter: 0 })
     vi.restoreAllMocks()
   })
 

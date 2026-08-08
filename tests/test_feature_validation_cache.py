@@ -715,158 +715,94 @@ class TestValidationCacheBenchmark:
             f"1000 cached validations should complete in <200ms, took {elapsed * 1e3:.2f}ms"
         )
 
-    def test_bulk_hit_path_with_fresh_schema_per_call(self) -> None:
-        """Realistic production scenario: fresh ``pl.Schema`` every call.
 
-        Mirrors the prod call site where ``lf.collect_schema()`` returns
-        a brand-new ``pl.Schema`` object on every ``score_frame`` call.
-        The ``id(schema)``-keyed side-table (deleted in Phase 3 audit
-        item A) never helped this path; what helps is the LRU keyed by
-        the content hash, which lets repeat schemas collapse to the same
-        cache slot regardless of object identity.
+# ---------------------------------------------------------------------------
+# Cache wiring at production scale — structural, not timed.
+# ---------------------------------------------------------------------------
 
-        Measured reality on a 50-column schema (developer box, CPython
-        3.11):
 
-        * cached path: ~40-70 µs/call
-          (xxh64 over 50 ``(name, dtype)`` pairs + LRU dict lookup)
-        * uncached path: ~50-95 µs/call
-          (validator walks expected / available lists, builds sets,
-          checks dtypes, re-checks order)
+class TestValidationCacheWiringAtScale:
+    """The bulk production path must hit the cache — proven by counting calls.
 
-        Typical speedup: 1.1-1.3x.  We assert ``>=1.05`` — a floor that
-        catches "the cache was removed" (speedup → 1.0x) without
-        policing microbenchmark jitter.  The two paths are close enough
-        in absolute time that a few microseconds of OS scheduling
-        jitter can swing the ratio by ±10%, so the threshold stays
-        modest and the docstring documents what the test is really
-        guarding against.
+    Two tests here previously asserted this by comparing wall-clock timings
+    (``uncached_min / cached_min >= 1.05`` and ``>= 1.10``).  Both were
+    measuring the right property with the wrong instrument.  On 7 August 2026
+    the fresh-schema ratio measured 1.03x on a loaded shared runner and
+    reddened ``main`` (run 31134003641) with both sides around 9 ms apart —
+    the timings were never far enough apart to survive CI jitter.
 
-        This is deliberately lower than the original plan's ``>=3.0``
-        target.  At 50 columns the xxh64 hashing cost roughly equals the
-        validator's list-walking cost, so the LRU only wins on the
-        validator half of the work — a ~1.3x ceiling by construction.
-        Chasing bigger numbers would require either (a) larger schemas,
-        where the walks dominate more, or (b) caching the schema hash
-        itself, which the side-table attempted but which cost more in
-        weakref bookkeeping than it saved (see Phase 3 audit item A).
+    The regression those tests existed to catch is "the cache is no longer
+    wired into ``_validate_features``".  Counting how often the uncached
+    worker runs detects exactly that, deterministically, on any hardware.
 
-        The regression to guard against is NOT "cache too slow" — it's
-        "cache silently disabled", which produces a ~1.0x ratio.
+    These are deliberately *not* marked ``perf``.  The benchmark class above
+    is, and ``addopts = -m 'not perf'`` means it is skipped in every default
+    run — so before this class existed, the cache-wiring invariant was only
+    checked in the dedicated perf lane.  Structural assertions cost
+    microseconds, so they can and should run in the ordinary suite.
+    """
 
-        Uses min-of-many measurements so a single noisy run (OS
-        scheduler interrupt, background process) does not flake the
-        test — only a sustained regression on every trial can lower
-        the minimum.
+    def test_bulk_fresh_schema_batch_validates_exactly_once(self) -> None:
+        """200 production-shaped calls must run the uncached validator once.
+
+        ``_score_eager`` rebuilds the schema via ``lf.collect_schema()`` on
+        every ``score_frame`` call, handing ``_validate_features`` a brand-new
+        ``pl.Schema`` object with identical content each time.  The cache key
+        is content-addressed, so every call after the first is a hit.  If the
+        cache were unwired, the count would be 200 rather than 1.
         """
         import haute._model_scorer as ms
 
         features = [f"f{i:02d}" for i in range(50)]
         sm = _make_scoring_model(features)
-
-        # Build a template frame and rebuild the schema via
-        # ``.lazy().collect_schema()`` on every call — the exact pattern
-        # ``_score_eager`` uses in production.
         df = pl.DataFrame({c: [1.0] for c in features})
 
-        # Warm the LRU and any lazy polars state before timing.
-        for _ in range(10):
-            _validate_features(sm, df.lazy().collect_schema())
-
-        uncached = ms._validate_features_uncached
-
-        def time_cached() -> float:
-            t0 = time.perf_counter()
+        with patch.object(
+            ms, "_validate_features_uncached", wraps=ms._validate_features_uncached
+        ) as spy:
             for _ in range(200):
-                _validate_features(sm, df.lazy().collect_schema())
-            return time.perf_counter() - t0
+                usable, missing = _validate_features(sm, df.lazy().collect_schema())
 
-        def time_uncached() -> float:
-            t0 = time.perf_counter()
-            for _ in range(200):
-                uncached(sm, df.lazy().collect_schema())
-            return time.perf_counter() - t0
-
-        # Min-of-many: take the best of 10 runs of each side.  The
-        # minimum is robust against scheduling interrupts and GC
-        # pauses; only a systematic regression on every trial can push
-        # the minimum upward.
-        cached_min = min(time_cached() for _ in range(10))
-        uncached_min = min(time_uncached() for _ in range(10))
-
-        speedup = uncached_min / max(cached_min, 1e-9)
-        assert speedup >= 1.05, (
-            f"LRU cache must provide a measurable (>=1.05x) speedup over the "
-            f"uncached validator on the fresh-schema-per-call production path. "
-            f"Got {speedup:.2f}x "
-            f"(cached_min={cached_min * 1e3:.2f}ms, "
-            f"uncached_min={uncached_min * 1e3:.2f}ms).  A ratio near 1.0x "
-            f"indicates the cache is no longer wired into _validate_features."
+        assert spy.call_count == 1, (
+            f"the uncached validator ran {spy.call_count} times across 200 calls that "
+            f"all carry identical schema content; it must run once. A count near 200 "
+            f"means the content-addressed cache is no longer wired into "
+            f"_validate_features."
         )
+        assert usable == features
+        assert missing == []
 
-    def test_same_object_cache_hit_path_is_faster_than_uncached(self) -> None:
-        """Supplementary "cold-path" check: same ``pl.Schema`` object repeatedly.
+    def test_alternating_schema_contents_validate_once_each(self) -> None:
+        """Interleaving two schema contents must validate each exactly once.
 
-        This is NOT production — production always hands us a fresh
-        ``pl.Schema`` (see ``test_bulk_hit_path_with_fresh_schema_per_call``
-        above for the realistic benchmark).  This test exists as a floor
-        measurement in the unrealistic best case where the same Python
-        object is reused, because even that best case should still beat
-        the uncached path by a measurable margin.
-
-        Historical context: before the Phase 3 audit, this test asserted
-        a 5x speedup because an ``id(schema)``-keyed side-table cached
-        the xxh64 digest per schema object.  That side-table was deleted
-        (Phase 3 audit item A, "removed"): it was permanent cold cache
-        against production's fresh-schema pattern, and its weakref +
-        lock bookkeeping cost more than it saved.  Post-deletion the
-        same-object path pays the full xxh64 on every call, same as the
-        fresh-schema path, so the 5x claim collapsed to a measured
-        1.25-1.75x range across runs.
-
-        We keep this test as a supplementary check; the fresh-schema
-        benchmark is the load-bearing perf claim.  Threshold is ``>=1.10``
-        to survive CI timing jitter while still catching a regression
-        that silently disabled the cache (ratio would collapse to ~1.0x).
-        Uses min-of-many measurements so a single noisy trial does not
-        flake the test.
+        This is the assertion the single-content test cannot make. A cache
+        that ignored content entirely — returning the first result for every
+        schema — would pass the test above with a count of 1 while silently
+        returning wrong answers for the second schema. Alternating two
+        contents pins both properties at once: the count must be exactly two,
+        one per distinct content, no matter how many times we alternate.
         """
         import haute._model_scorer as ms
 
         features = [f"f{i:02d}" for i in range(50)]
         sm = _make_scoring_model(features)
-        schema = _schema_for(features)
+        wide = pl.DataFrame({c: [1.0] for c in features})
+        # Same columns in the same order, different dtypes — distinct cache
+        # content, and both shapes validate against the same model.
+        narrow = pl.DataFrame({c: pl.Series([1], dtype=pl.Int64) for c in features})
 
-        # Warm imports + initial load before we time anything.
-        for _ in range(5):
-            _validate_features(sm, schema)
+        with patch.object(
+            ms, "_validate_features_uncached", wraps=ms._validate_features_uncached
+        ) as spy:
+            for _ in range(50):
+                _validate_features(sm, wide.lazy().collect_schema())
+                _validate_features(sm, narrow.lazy().collect_schema())
 
-        uncached = ms._validate_features_uncached
-
-        def time_cached() -> float:
-            ms._clear_feature_validation_cache()
-            _validate_features(sm, schema)  # prime
-            t0 = time.perf_counter()
-            for _ in range(200):
-                _validate_features(sm, schema)
-            return time.perf_counter() - t0
-
-        def time_uncached() -> float:
-            t0 = time.perf_counter()
-            for _ in range(200):
-                uncached(sm, schema)
-            return time.perf_counter() - t0
-
-        cached_min = min(time_cached() for _ in range(10))
-        uncached_min = min(time_uncached() for _ in range(10))
-
-        speedup = uncached_min / max(cached_min, 1e-9)
-        assert speedup >= 1.10, (
-            f"Same-object cache path must be >=1.10x faster than uncached "
-            f"validation; got {speedup:.2f}x "
-            f"(cached_min={cached_min * 1e3:.2f}ms, "
-            f"uncached_min={uncached_min * 1e3:.2f}ms).  A ratio near 1.0x "
-            f"indicates the cache is no longer wired into _validate_features."
+        assert spy.call_count == 2, (
+            f"the uncached validator ran {spy.call_count} times while alternating two "
+            f"distinct schema contents 50 times each; it must run exactly twice — once "
+            f"per content. A count of 1 means the cache is ignoring schema content and "
+            f"returning a stale result; a count near 100 means it is not caching at all."
         )
 
 

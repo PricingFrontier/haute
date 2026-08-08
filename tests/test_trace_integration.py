@@ -2099,7 +2099,7 @@ class TestErrorNodeCodeThrows:
         _trace_cache.clear()
         _preview_cache.clear()
 
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: testing that some exception propagates from trace execution
             execute_trace(graph, row_index=0, target_node_id="bad")
 
 

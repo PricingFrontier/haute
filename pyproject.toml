@@ -160,6 +160,14 @@ select = [
     "B009",
     "B010",
     "B012",
+    # pytest.raises(Exception) accepts any failure — a test written to
+    # prove "malformed input is rejected" stays green if the code crashes
+    # on an unrelated typo.  PT011 flags that; existing sites that are broad
+    # by design carry `# noqa: PT011` with a reason, so the rule ratchets:
+    # new broad catches are blocked while the baseline stays tightenable.
+    # Scoped below to Exception/BaseException only — see
+    # [tool.ruff.lint.flake8-pytest-style].
+    "PT011",
     "PT013",
     "S506",
     # Require an explicit encoding on every text open/read/write. Without one,
@@ -184,6 +192,15 @@ select = [
     "PTH201",  # Path(".") / Path("") -> Path()
 ]
 
+[tool.ruff.lint.flake8-pytest-style]
+# PT011 defaults to flagging ValueError and OSError as well, which would demand a
+# `match=` on ~54 existing assertions that already name a specific exception. The
+# defect we are ratcheting against is the *bare* catch — `pytest.raises(Exception)`
+# passes when the code fails for a completely unrelated reason — so the rule is
+# narrowed to that. Tightening a ValueError assertion with `match=` is still a good
+# thing to do; it is just not something CI should demand.
+raises-require-match-for = ["BaseException", "Exception"]
+
 [tool.ruff.lint.per-file-ignores]
 "src/haute/schemas.py" = ["N815"]  # camelCase fields match frontend JSON API
 
@@ -196,6 +213,7 @@ markers = [
     "slow: marks tests as slow but still part of the default suite",
     "perf: marks benchmark-style tests excluded from default pytest runs",
     "sandbox_strict: opts a test into the strict write-sandbox (see tests/_write_sandbox.py)",
+    "meta: repo-health checks that read files rather than exercise behaviour, so their result cannot vary by interpreter; deselected from the compatibility lanes (see .github/workflows/ci.yml)",
 ]
 filterwarnings = [
     "error::RuntimeWarning",

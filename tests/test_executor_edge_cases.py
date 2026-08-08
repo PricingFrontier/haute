@@ -255,7 +255,7 @@ class TestApplyColumnRenamesEdgeCases:
     def test_rename_collision_with_existing_column(self):
         df = pl.DataFrame({"a": [1], "b": [2], "c": [3]})
         config = {"column_renames": {"a": "b"}}
-        with pytest.raises(Exception):
+        with pytest.raises(pl.exceptions.DuplicateError):
             result = _apply_column_renames(df, config)
             if isinstance(result, pl.LazyFrame):
                 result.collect()

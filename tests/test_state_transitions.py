@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from fastapi import HTTPException
 
 from haute.routes._job_store import JobStore
 
@@ -349,17 +350,16 @@ class TestCompletedJobImmutability:
     def test_require_completed_on_running_raises_400(self) -> None:
         store = JobStore()
         job_id = _inject_job(store, "running")
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(HTTPException) as exc_info:
             store.require_completed_job(job_id)
-        # HTTPException with status 400
-        assert exc_info.value.status_code == 400  # type: ignore[attr-defined]
+        assert exc_info.value.status_code == 400
 
     def test_require_completed_on_error_raises_400(self) -> None:
         store = JobStore()
         job_id = _inject_job(store, "error")
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(HTTPException) as exc_info:
             store.require_completed_job(job_id)
-        assert exc_info.value.status_code == 400  # type: ignore[attr-defined]
+        assert exc_info.value.status_code == 400
 
 
 # ============================================================================
@@ -438,9 +438,9 @@ class TestJobStoreEdgeCases:
 
     def test_require_job_404_for_missing_id(self) -> None:
         store = JobStore()
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(HTTPException) as exc_info:
             store.require_job("nonexistent")
-        assert exc_info.value.status_code == 404  # type: ignore[attr-defined]
+        assert exc_info.value.status_code == 404
 
     def test_atomic_update_preserves_existing_fields(self) -> None:
         store = JobStore()
@@ -463,9 +463,9 @@ class TestJobStoreEdgeCases:
         store.atomic_update(job_id, {"status": "error", "message": "boom"})
         job = store.require_job(job_id)
         assert job["status"] == "error"
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(HTTPException) as exc_info:
             store.require_completed_job(job_id)
-        assert exc_info.value.status_code == 400  # type: ignore[attr-defined]
+        assert exc_info.value.status_code == 400
 
     def test_error_job_stays_error_after_repeated_access(self) -> None:
         store = JobStore()

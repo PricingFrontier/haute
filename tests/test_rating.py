@@ -925,7 +925,7 @@ class TestCombineNonNumericColumns:
     def test_multiply_string_columns_raises(self) -> None:
         """Multiplying string columns should raise, not silently succeed."""
         lf = pl.DataFrame({"a": ["hello"], "b": ["world"]}).lazy()
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: polars version-dependent exception type for string arithmetic
             _combine_rating_columns(lf, ["a", "b"], "multiply", "out").collect()
 
     def test_add_string_columns_concatenates_or_raises(self) -> None:
@@ -1745,7 +1745,7 @@ class TestCombineRatingColumnsEdgeCases:
 
     def test_non_existent_column_raises(self) -> None:
         lf = pl.DataFrame({"a": [1.0]}).lazy()
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: polars exception type may vary by version
             _combine_rating_columns(lf, ["a", "nonexistent"], "multiply", "out").collect()
 
     def test_single_column_alias_only(self) -> None:

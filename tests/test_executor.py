@@ -100,7 +100,7 @@ class TestExecUserCode:
 
     def test_syntax_error_reported(self):
         lf = pl.DataFrame({"x": [1]}).lazy()
-        with pytest.raises(Exception):
+        with pytest.raises(SyntaxError):
             _exec_user_code("df = invalid syntax here !!!", ["df"], (lf,))
 
     def test_eager_result_converted_to_lazy(self):
@@ -128,7 +128,7 @@ class TestExecUserCode:
     def test_runtime_error_preserves_message(self):
         """Runtime errors in user code should propagate with useful messages."""
         lf = pl.DataFrame({"x": [1]}).lazy()
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(ZeroDivisionError) as exc_info:
             _exec_user_code("df = 1 / 0", ["df"], (lf,))
         assert "division" in str(exc_info.value).lower()
 

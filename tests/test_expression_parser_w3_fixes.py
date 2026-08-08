@@ -420,7 +420,7 @@ def test_non_strict_replace_leaves_unmapped_unchanged() -> None:
 
 
 def test_malformed_code_argument_raises() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: PT011 - intentionally broad: ast.parse exception type may vary
         evaluate_expression(None, "r", {"r": 42})  # type: ignore[arg-type]
 
 

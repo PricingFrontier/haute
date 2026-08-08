@@ -10,6 +10,7 @@ mutations in the single-sourced core are caught.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
@@ -137,7 +138,7 @@ def test_parsed_path_is_frozen() -> None:
     # pins the frozen=True contract (a mutable parse result would let a consumer
     # silently corrupt a cached/shared path).
     p = parse_path("$[:].a", _reject)
-    with pytest.raises(Exception):  # dataclasses.FrozenInstanceError
+    with pytest.raises(dataclasses.FrozenInstanceError):
         p.raw = "tampered"  # type: ignore[misc]
 
 
