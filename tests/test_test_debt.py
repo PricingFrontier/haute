@@ -1118,7 +1118,13 @@ def test_playwright_ci_retry_budget_is_pinned() -> None:
 
 
 def test_test_health_summary_matches_regeneration() -> None:
-    assert _TEST_HEALTH_SUMMARY_PATH.read_text(encoding="utf-8") == _test_health_summary()
+    checked_in = _TEST_HEALTH_SUMMARY_PATH.read_text(encoding="utf-8")
+    regenerated = _test_health_summary()
+    assert checked_in == regenerated, (
+        "tests/test-health-summary.md is stale: it must match a fresh scan of the "
+        "checked-in skip/xfail/flaky debt sites. Regenerate and commit it with "
+        "`uv run python tests/test_test_debt.py --write-summary`."
+    )
 
 
 def test_scanner_requires_explicit_marker_reasons() -> None:

@@ -1531,8 +1531,9 @@ def test_low_level_specs_reference_every_backend_source_file() -> None:
     sources = _backend_production_sources()
     uncovered = _unreferenced_sources(sources)
     assert not uncovered, (
-        "Every behavioral backend source must be explicitly named in a specs "
-        "low-level.md Module map inline-code entry. Uncovered sources:\n- " + "\n- ".join(uncovered)
+        f"{len(uncovered)} backend source(s) are named in no specs low-level.md Module "
+        f"map — add each as an inline-code entry in the owning component's "
+        f"specs/<component>/low-level.md. Uncovered:\n- " + "\n- ".join(uncovered)
     )
 
 
@@ -1545,8 +1546,9 @@ def test_low_level_specs_reference_every_frontend_source_file() -> None:
     )
     uncovered = _unreferenced_sources(sources)
     assert not uncovered, (
-        "Every production frontend source must be explicitly named in a specs "
-        "low-level.md Module map inline-code entry. Uncovered sources:\n- " + "\n- ".join(uncovered)
+        f"{len(uncovered)} frontend source(s) are named in no specs low-level.md Module "
+        f"map — add each as an inline-code entry in the owning component's "
+        f"specs/<component>/low-level.md. Uncovered:\n- " + "\n- ".join(uncovered)
     )
 
 
@@ -1558,9 +1560,10 @@ def test_low_level_specs_reference_every_repository_operational_source() -> None
         if path.relative_to(ROOT).as_posix() not in references
     ]
     assert not uncovered, (
-        "Every maintained build, CI, tooling, browser-E2E, mutation, and reference-pipeline "
-        "artifact must be explicitly named by its exact repo path in a specs low-level.md "
-        "Module map entry. Uncovered sources:\n- " + "\n- ".join(uncovered)
+        f"{len(uncovered)} operational artefact(s) (build, CI, tooling, browser-E2E, "
+        f"mutation, reference-pipeline) are named in no specs low-level.md Module map — "
+        f"add each by its exact repo path to the owning component's low-level.md. "
+        f"Uncovered:\n- " + "\n- ".join(uncovered)
     )
 
 
