@@ -8,8 +8,22 @@ name: Dependencies
 # The unlocked-resolve job deliberately never runs on push/PR: it tests the
 # index's state, not the diff's, so a red run must not block unrelated
 # landings. Non-blocking but loud: a failure finds-or-creates a
-# `dependency-watch` issue with the run URL. The locked audit below does run
-# when its policy or lock inputs change.
+# `dependency-watch` issue with the run URL.
+#
+# The two jobs here run on deliberately different cadences, because they answer
+# questions that move at different speeds:
+#
+#   unlocked-resolve      weekly (Mon 04:41) + dispatch
+#   locked-advisory-audit daily (06:29) + dispatch + lock/policy changes
+#
+# The advisory audit is the only check in this repository that is NOT a pure
+# function of the tree: it reads live advisory feeds, so an unchanged lockfile
+# can pass one day and block the next. It did exactly that on 8 August 2026,
+# when a nanoid advisory was published against a lockfile that had been green
+# the day before. A weekly-only sweep left up to seven days between publication
+# and anyone hearing about it; the job takes about 40 seconds, so daily is
+# nearly free. unlocked-resolve stays weekly — it builds a wheel and does a
+# full fresh resolve, and the signal it watches moves slowly.
 
 on:
   pull_request:
@@ -38,8 +52,12 @@ on:
         type: boolean
         default: false
   schedule:
-    # Monday 04:41 UTC — offset from performance.yml's Monday 03:17 cron.
+    # Monday 04:41 UTC — offset from performance.yml's Monday 03:17 cron. Runs
+    # both jobs; unlocked-resolve keys on this exact expression.
     - cron: "41 4 * * 1"
+    # 06:29 UTC daily — the advisory audit alone, clear of the 02:07, 03:17,
+    # 04:41 and 05:00 lanes.
+    - cron: "29 6 * * *"
 
 permissions:
   contents: read
@@ -53,7 +71,12 @@ concurrency:
 
 jobs:
   unlocked-resolve:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # The weekly cron only, never the daily advisory sweep: this job builds a
+    # wheel and performs a full fresh resolve, which is far too heavy to repeat
+    # daily for a signal that moves this slowly.
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '41 4 * * 1')
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -147,6 +170,15 @@ jobs:
         with:
           node-version: 22.14.0
 
+      # The alarm below can only be exercised deliberately — a real advisory
+      # arrives on its own schedule. Without this, changing when the alarm fires
+      # is an unverifiable change.
+      - name: Forced failure (alarm-path test)
+        if: inputs.force_fail
+        run: |
+          echo "force_fail input set — failing deliberately to exercise the alarm step"
+          exit 1
+
       - name: Audit locked dependency advisories
         run: python scripts/check_dependency_audit.py --reports-dir dependency-audit-reports
 
@@ -160,10 +192,14 @@ jobs:
 
   locked-advisory-alarm:
     needs: locked-advisory-audit
+    # Everything except a pull request. On a PR the author is already watching
+    # the checks, so an issue would be noise — but a scheduled sweep or a push
+    # to main is precisely when nobody is looking, and a red advisory gate there
+    # previously raised nothing at all.
     if: >-
       always() &&
       needs.locked-advisory-audit.result == 'failure' &&
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
