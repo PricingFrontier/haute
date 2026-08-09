@@ -50,6 +50,67 @@ def test_clean_reports_pass(tmp_path):
     )
 
 
+def test_block_explains_itself_on_its_first_line(tmp_path, capsys):
+    """A block must be actionable from the first line alone.
+
+    GitHub's ``##[error]`` annotation and a quick scan of the log both show only
+    the first line of what a failing step says. Before this, a blocked run
+    reported ``BLOCK npm nanoid GHSA-...`` and then ``exit code 1`` — the finding
+    without the remedy.
+
+    Test seam: ``report_blocked`` emits the GitHub annotation only when
+    ``GITHUB_ACTIONS`` is set, so local runs stay readable.
+    """
+    assert (
+        audit.evaluate(
+            python_report([{"id": "PYSEC-1"}]),
+            npm_report(),
+            registry(tmp_path),
+            today=dt.date(2026, 7, 1),
+        )
+        == 1
+    )
+    out = capsys.readouterr().out
+    headline = next(line for line in out.splitlines() if line.startswith("1 dependency advisory"))
+    # Everything needed to act, before the first newline.
+    assert "PYSEC-1" in headline
+    assert "security/accepted-risks.toml" in headline
+    assert "Upgrade past the advisory" in headline
+    # The detail block names the concrete command and the advisory record.
+    assert "uv lock --upgrade-package" in out
+    assert "https://osv.dev/vulnerability/PYSEC-1" in out
+
+
+def test_npm_block_names_the_frontend_upgrade_command(tmp_path, capsys):
+    report = npm_report({"nanoid": {"severity": "high", "via": [{"source": 1, "url": "GHSA-x"}]}})
+    assert (
+        audit.evaluate(python_report(), report, registry(tmp_path), today=dt.date(2026, 7, 1)) == 1
+    )
+    out = capsys.readouterr().out
+    assert "npm --prefix frontend update nanoid" in out
+    assert "https://github.com/advisories/" in out
+
+
+def test_annotation_only_emitted_under_github_actions(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    audit.evaluate(
+        python_report([{"id": "PYSEC-1"}]),
+        npm_report(),
+        registry(tmp_path),
+        today=dt.date(2026, 7, 1),
+    )
+    assert "::error" not in capsys.readouterr().out
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    audit.evaluate(
+        python_report([{"id": "PYSEC-1"}]),
+        npm_report(),
+        registry(tmp_path),
+        today=dt.date(2026, 7, 1),
+    )
+    assert "::error title=Dependency advisory::" in capsys.readouterr().out
+
+
 def test_python_finding_blocks(tmp_path):
     assert (
         audit.evaluate(
