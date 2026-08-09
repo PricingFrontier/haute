@@ -194,9 +194,28 @@ checkpoint failure. Neither helper has an eager or non-streaming fallback.
   the committed schema has would otherwise stay on offer while resting on whatever
   deprecation shim still accepts it. Rejection names the version boundary when
   `haute._polars_io_schema.retired_argument_names()` explains the miss.
-- The registry supplies each node's source/target fields positionally, so a Polars release
-  inside the specifier may add or rename keyword arguments but must not move a callable's
-  positional parameters or remove a callable the registry dispatches to.
+- The registry supplies each node's source/target fields positionally — one leading argument
+  for a path or inline source and for every output target, two (query, uri) for a database
+  input — so a Polars release inside the specifier may append or rename later parameters but
+  must not move those leading positions or remove a callable the registry dispatches to.
+- `haute._polars_io_registry.registry_capabilities()` publishes only the modes whose Polars
+  callable the installed Polars still provides introspectably, tested by
+  `haute._polars_io_schema.installed_provides_callable()`. A Polars that has dropped one
+  callable therefore costs the editor that one mode rather than the whole format catalogue;
+  configuring or executing such a format raises `PolarsIoConfigError` from
+  `haute._polars_io_registry.allowed_arguments()` rather than a bare `AttributeError`, and
+  the interface contract test fails on the same condition in CI.
+- The intersection governs node-config arguments only. Keyword names haute itself writes as
+  literals — `haute.executor._output_row_count_scan_kwargs()` for exact artifact row counts,
+  `haute._io.read_source()` for declared-dtype CSV scans, and the compression argument in
+  `src/haute/_polars_utils.py` — carry no such protection and are held instead by
+  `tests/test_polars_io_interface_contracts.py`'s `_LITERAL_KEYWORDS` inventory.
+- Argument *defaults* are Polars'. haute forwards what a node config sets and takes the
+  installed Polars' behaviour for everything else, so a default that moves inside the
+  specifier moves haute's results with it. That is reported by
+  `scripts/extract_polars_io.py --diff` rather than gated: pinning every default haute does
+  not set would be a promise of result-stability across the specifier that haute has never
+  made.
 
 ## Error handling
 

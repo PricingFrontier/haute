@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from functools import cache, lru_cache
+from functools import lru_cache
 from importlib.resources import files
 from typing import Any
 
@@ -66,23 +66,54 @@ def argument_names(owner: str, name: str) -> tuple[str, ...]:
     return tuple(arg["name"] for arg in io_function(owner, name)["arguments"])
 
 
-@cache
+def _installed_callable(owner: str, name: str) -> Any:
+    import polars
+
+    holder: Any = polars if owner == "polars" else getattr(polars, owner, None)
+    return getattr(holder, name, None) if holder is not None else None
+
+
+def installed_provides_callable(owner: str, name: str) -> bool:
+    """Whether the installed polars offers this I/O callable, introspectably.
+
+    Asked before publishing a format's capabilities, so a polars that has
+    dropped or obscured one callable costs the editor that one format rather
+    than the whole catalogue. Configuring or executing such a format still
+    fails loudly.
+    """
+    func = _installed_callable(owner, name)
+    if func is None:
+        return False
+    try:
+        inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def installed_argument_names(owner: str, name: str) -> frozenset[str]:
     """Argument names of one I/O callable on the *installed* polars.
 
     Read from the interpreter's own polars rather than the committed schema,
     because a fresh install resolves anything inside the ``polars`` specifier
     and only the installed signature says what the call will accept.
+
+    Deliberately uncached, unlike the committed schema above: the value comes
+    from a mutable module attribute, so a cache entry taken while a test had a
+    polars method patched would outlive the patch and silently narrow the
+    argument surface for the rest of the process. A full 37-callable catalogue
+    build costs about 0.3 ms of ``inspect.signature``, which buys nothing worth
+    that risk.
     """
     import polars
 
-    holder: Any = polars if owner == "polars" else getattr(polars, owner, None)
-    func = getattr(holder, name, None) if holder is not None else None
+    func = _installed_callable(owner, name)
     if func is None:
         raise AttributeError(
             f"The installed polars {polars.__version__} has no I/O callable "
-            f"{owner}.{name}, which haute's data-input/data-output registry requires. "
-            "This polars is outside the range this haute release supports."
+            f"{owner}.{name}, which haute's data-input/data-output registry dispatches "
+            "to. Either the registry or the polars specifier in pyproject.toml is wrong "
+            "for this release."
         )
     return frozenset(pname for pname in inspect.signature(func).parameters if pname != "self")
 

@@ -41,7 +41,11 @@ import polars as pl
 
 from haute._execution_context import ExecutionProfile
 from haute._polars_dtypes import parse_schema_mapping
-from haute._polars_io_schema import retired_argument_names, supported_argument_names
+from haute._polars_io_schema import (
+    installed_provides_callable,
+    retired_argument_names,
+    supported_argument_names,
+)
 from haute._polars_utils import is_bounded_execution_profile
 from haute.errors import BoundedMemoryUnsupportedError
 
@@ -591,6 +595,17 @@ def allowed_arguments(fmt: IoFormat, owner: str, callable_name: str) -> frozense
     from the signature would otherwise stay on offer, resting on whatever
     deprecation shim happens to still accept it.
     """
+    if not installed_provides_callable(owner, callable_name):
+        # Keeps the curated config-error surface in front of the raw
+        # AttributeError the schema layer raises. The capabilities catalogue
+        # never reaches here — it stops offering the mode — so this is the
+        # execution and validation path for a format configured before the
+        # polars underneath it changed.
+        raise PolarsIoConfigError(
+            f"Format {fmt.name!r} needs polars.{callable_name}, which the installed "
+            f"polars {pl.__version__} does not provide. This haute release cannot use "
+            "that format on this polars."
+        )
     names = set(supported_argument_names(owner, callable_name))
     names -= {n for n in names if n.startswith("_")}
     names -= REMOTE_IO_ARGUMENTS
@@ -617,11 +632,15 @@ def validate_arguments(
     allowed = allowed_arguments(fmt, owner, callable_name)
     unknown = sorted(set(arguments) - allowed)
     if unknown:
-        # Name the version boundary when that is what removed the argument;
-        # "unknown argument" alone sends the reader hunting for a typo.
+        # Name the version boundary when that is what withdrew the argument;
+        # "unknown argument" alone sends the reader hunting for a typo. Say
+        # "signature", not "polars": a withdrawn name may still be accepted by
+        # a deprecation shim, and haute declines to build on one.
         retired = sorted(retired_argument_names(owner, callable_name).intersection(unknown))
         because = (
-            f" Argument(s) {retired} are absent from the installed polars {pl.__version__}."
+            f" Argument(s) {retired} are no longer in the installed polars "
+            f"{pl.__version__} signature for {owner}.{callable_name}; check the polars "
+            "changelog for a replacement."
             if retired
             else ""
         )
@@ -939,6 +958,22 @@ def registry_capabilities() -> dict[str, Any]:
         if fmt.source_kind == "database":
             input_modes = []
             output_modes = ["write"] if fmt.writer is not None else []
+        # An in-cap polars that has dropped or obscured one callable costs the
+        # editor that one mode, not the whole catalogue. The condition is a CI
+        # failure in its own right (the interface contract test asserts every
+        # registry callable survives the installed polars), and configuring or
+        # executing the format still fails loudly — this only keeps a broken
+        # format from taking the other thirteen down with it.
+        input_modes = [
+            mode
+            for mode in input_modes
+            if installed_provides_callable(*input_callable_key(fmt, cast(InputMode, mode)))
+        ]
+        output_modes = [
+            mode
+            for mode in output_modes
+            if installed_provides_callable(*output_callable_key(fmt, cast(OutputMode, mode)))
+        ]
         input_arguments = {
             mode: sorted(allowed_arguments(fmt, *input_callable_key(fmt, cast(InputMode, mode))))
             for mode in input_modes

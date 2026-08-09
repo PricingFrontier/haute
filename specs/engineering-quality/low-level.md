@@ -221,10 +221,15 @@
   equality with the single version `src/haute/_polars_io_arguments.json`
   records. Without the declaration a Polars whose version differs from the
   recorded one is an un-regenerated lockfile bump and fails, so the
-  regenerate-on-bump gate still binds on every pinned lane. The unlocked lane
-  additionally prints `scripts/extract_polars_io.py --diff` to the run summary:
-  a stale schema is a regeneration prompt, not a lane failure, because the
-  registry intersects the committed schema with the installed signature.
+  regenerate-on-bump gate still binds on every pinned lane; the skip is gated
+  on the versions actually differing, so a declared lane that resolves the
+  recorded version still runs the full comparison. The unlocked lane
+  additionally prints `scripts/extract_polars_io.py --diff` to the run summary
+  as a `continue-on-error` step: a stale schema is a regeneration prompt, not a
+  lane failure, because the registry intersects the committed schema with the
+  installed signature. That report names changed defaults individually, since a
+  default is what an argument does when nobody sets it, and counts differences
+  of kind, position or annotation, which no caller can observe.
 - Mutation shards partition a shared initial work order and run mutants one at
   a time per runner. Separate CI runners provide the shard parallelism while
   serial execution avoids concurrent in-place mutation races; merge expects

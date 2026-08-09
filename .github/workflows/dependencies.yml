@@ -15,13 +15,16 @@ name: Dependencies
 # equality with the single version `src/haute/_polars_io_arguments.json`
 # records, so any in-cap polars release that renumbered an argument or widened
 # an annotation rang the alarm. Issue #111 was opened by exactly that — five
-# cosmetic differences, none reachable by a user — and the lane then stayed red
-# for a fortnight, so the material drift that arrived later landed as another
-# "Still red" comment on an issue nobody was reading. The contract now
-# separates the two: the registry intersects the committed schema with the
-# installed signature (so a version difference cannot produce a wrong argument
-# surface), the test asserts only what must hold across the whole cap, and
-# staleness is reported to the run summary instead of paging anyone.
+# differences, not one of which stopped a fresh install working, and 25 of the
+# 33 by the time anyone looked were keyword-only position renumbering. The lane
+# stayed red for a fortnight, so the drift that arrived later landed as another
+# "Still red" comment on an issue nobody was reading. The contract now sorts
+# the classes rather than treating them alike: the registry intersects the
+# committed schema with the installed signature (so a version difference cannot
+# produce an argument surface the installed polars would reject), the test
+# asserts only what a version difference cannot absorb, and everything else —
+# including changed defaults, which alter results without breaking a call — is
+# reported to the run summary instead of paging anyone.
 #
 # The two jobs here run on deliberately different cadences, because they answer
 # questions that move at different speeds:
@@ -146,10 +149,13 @@ jobs:
       # committed schema with the installed signature, so an unclassified
       # argument is simply not offered. Reported to the run summary rather than
       # asserted; the health question is the core subset's job below.
-      # pipefail so a broken extractor still fails the step: "report only"
-      # means a drifted schema is not a failure, not that the report may
-      # silently go missing.
+      # continue-on-error so this can never abort the job before the health
+      # check below, nor page anyone: a drifted schema is not a failure, and a
+      # broken extractor is a red step here but is already a hard failure of
+      # the interface contract test on every pull request. pipefail so the
+      # step's own status is honest rather than tee's.
       - name: Polars I/O interface freshness (report only)
+        continue-on-error: true
         run: |
           set -o pipefail
           .unlocked/bin/python scripts/extract_polars_io.py --diff | tee -a "$GITHUB_STEP_SUMMARY"
@@ -176,7 +182,7 @@ jobs:
           title="Scheduled unlocked-resolve lane is red"
           body="A fresh latest-within-caps resolve of the built wheel failed. Run: ${RUN_URL}
 
-          A new release of a dependency inside our caps has broken the install, the smoke, or the core subset. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved. Note that a merely *stale* polars I/O schema does not reach here — that is reported without failing, in the run summary's 'Polars I/O interface freshness' section."
+          A new release of a dependency inside our caps has broken the wheel build, the fresh-install smoke, or the core subset. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved. A merely *stale* polars I/O schema never reaches here — that is reported without failing, in the run summary's 'Polars I/O interface freshness' section, which is worth reading on the way past."
           gh label create dependency-watch --color D93F0B --force \
             --description "Automated: scheduled dependency lane failures"
           existing="$(gh issue list --state open --label dependency-watch \

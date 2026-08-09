@@ -22,10 +22,11 @@
 # re-extracts the polars I/O surface from the installed polars and checks it
 # against the committed schema JSON, so the dependency-floors and
 # unlocked-resolve lanes prove that a polars resolved away from the lockfile
-# still gives users a usable I/O surface. Those two lanes set
-# HAUTE_POLARS_UNPINNED=1, which selects the cap-range half of that contract
-# (callables present, positional parameters unmoved) over exact equality with
-# the one polars version the committed schema records.
+# can still be called the way haute calls it. Those two lanes set
+# HAUTE_POLARS_UNPINNED=1, which selects the cap-range half of that contract —
+# every registry callable present and introspectable, the leading positionals
+# haute supplies unmoved, and the keyword names haute hardcodes still accepted
+# — over exact equality with the one polars version the schema records.
 tests/test_git_engine.py
 tests/test_model_scorer.py
 tests/test_optimiser_routes.py
