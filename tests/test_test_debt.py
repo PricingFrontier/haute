@@ -267,6 +267,19 @@ _EXPECTED_DEBT_IDS = {
     # tests/test_host_memory.py::TestAvailableRamMacOS
     # ::test_real_darwin_kernel_reports_available_memory.
     "23fb0fa7068e4340",
+    # Polars snapshot contract on a deliberately unpinned resolve — the
+    # committed I/O schema records one polars version, so exact snapshot
+    # equality is unsatisfiable in the two lanes that resolve polars away from
+    # the lockfile (unlocked-resolve, dependency-floors) and those lanes
+    # declare themselves with HAUTE_POLARS_UNPINNED=1. Not a suppressed
+    # failure: TestNoBreakingDriftAcrossTheCap asserts the contract that does
+    # hold across the whole specifier in the same run, and the skip is gated on
+    # the versions actually differing, so a declared lane that lands on the
+    # recorded version still runs the full comparison. See
+    # tests/test_polars_io_interface_contracts.py
+    # ::TestCommittedSnapshotMatchesPinnedPolars
+    # ::test_no_interface_drift_against_installed_polars.
+    "ba1f02fb9964cdf3",
 }
 
 _EXPECTED_NON_STRICT_XFAIL_IDS = {

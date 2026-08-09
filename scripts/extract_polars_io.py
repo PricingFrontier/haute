@@ -14,8 +14,17 @@ drift, with instructions to re-run this script and review the diff.
 
 Usage:
     uv run python scripts/extract_polars_io.py [output.json]
+    uv run python scripts/extract_polars_io.py --diff
 
 Run from the repo root; the default output path is the committed schema.
+
+``--diff`` writes nothing: it reports how the installed polars differs from
+the committed schema, as Markdown. That report is the scheduled
+unlocked-resolve lane's freshness signal — a newer in-cap polars having moved
+the I/O surface is worth seeing, but it is not a failure, because
+``haute._polars_io_schema.supported_argument_names`` intersects the two sides
+before anything reaches a node config. A drifted schema exits 0; only a
+failure of the extraction itself is a non-zero exit.
 """
 
 from __future__ import annotations
@@ -254,7 +263,95 @@ def extract_schema() -> dict[str, Any]:
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "src" / "haute" / "_polars_io_arguments.json"
 
 
+# ---------------------------------------------------------------------------
+# Freshness report (--diff).
+# ---------------------------------------------------------------------------
+
+
+def _by_key(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {f"{fn['owner']}.{fn['name']}": fn for fn in schema["functions"]}
+
+
+def diff_report() -> list[str]:
+    """Markdown lines describing installed-polars drift from the committed schema."""
+    committed = json.loads(DEFAULT_OUTPUT.read_text(encoding="utf-8"))
+    fresh = extract_schema()
+    recorded, installed = committed["polars_version"], fresh["polars_version"]
+
+    lines = ["## Polars I/O interface freshness", ""]
+    if recorded == installed:
+        lines.append(f"Installed polars {installed} is the version the committed schema records.")
+        return lines
+    lines.append(
+        f"Committed schema records polars {recorded}; this resolve installed {installed}. "
+        "Argument names present on only one side are not config-expressible — the registry "
+        "intersects the two — so the list below is a regeneration prompt, not a failure."
+    )
+    lines.append("")
+
+    old, new = _by_key(committed), _by_key(fresh)
+    findings: list[str] = []
+    for label, keys in (
+        ("Callables only in the installed polars", sorted(set(new) - set(old))),
+        ("Callables only in the committed schema", sorted(set(old) - set(new))),
+    ):
+        if keys:
+            findings.append(f"- **{label}:** {', '.join(keys)}")
+
+    defaults: list[str] = []
+    shape_only = 0
+    for key in sorted(set(old) & set(new)):
+        # An introspection failure yields an empty argument list, which would
+        # otherwise read as "polars removed every argument".
+        if "introspection_error" in new[key]:
+            findings.append(
+                f"- `{key}` could not be introspected on the installed polars: "
+                f"{new[key]['introspection_error']}"
+            )
+            continue
+        old_args = {a["name"]: a for a in old[key]["arguments"]}
+        new_args = {a["name"]: a for a in new[key]["arguments"]}
+        gained, lost = sorted(set(new_args) - set(old_args)), sorted(set(old_args) - set(new_args))
+        if gained:
+            findings.append(f"- `{key}` gained: {', '.join(gained)}")
+        if lost:
+            findings.append(f"- `{key}` no longer declares: {', '.join(lost)}")
+        for shared in sorted(set(old_args) & set(new_args)):
+            was, now = old_args[shared], new_args[shared]
+            if was["default"] != now["default"] or was["has_default"] != now["has_default"]:
+                defaults.append(f"- `{key}.{shared}` default {was['default']} → {now['default']}")
+            elif any(was[field] != now[field] for field in ("kind", "position", "annotation")):
+                shape_only += 1
+
+    if not findings:
+        findings.append("- No argument-name differences.")
+    if defaults:
+        # Listed, not counted, and listed apart: a default is what an argument
+        # does when nobody sets it, so this is the class that quietly changes
+        # results. polars 1.43 renaming read_lines' produced column from
+        # `lines` to `line` is the shape of it.
+        findings.append("")
+        findings.append("**Changed defaults** — behaviour on this polars for arguments left unset:")
+        findings.extend(defaults)
+    if shape_only:
+        # Counted, not listed: keyword-only position renumbering alone produced
+        # 25 of the 33 drift lines that kept issue #111 red, and a position is
+        # invisible to a caller that passes the argument by name.
+        findings.append("")
+        findings.append(
+            f"- A further {shape_only} argument(s) differ only in kind, position or "
+            "annotation. Run `uv run python scripts/extract_polars_io.py` and diff the "
+            "JSON to see them."
+        )
+    lines.extend(findings)
+    return lines
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--diff":
+        print("\n".join(diff_report()))
+        return
+
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUTPUT
 
     payload = extract_schema()

@@ -10,6 +10,22 @@ name: Dependencies
 # landings. Non-blocking but loud: a failure finds-or-creates a
 # `dependency-watch` issue with the run URL.
 #
+# Because it is loud, it only fails on a broken install. It used to also fail
+# on a *stale* one: the polars I/O interface contract asserted snapshot
+# equality with the single version `src/haute/_polars_io_arguments.json`
+# records, so any in-cap polars release that renumbered an argument or widened
+# an annotation rang the alarm. Issue #111 was opened by exactly that — five
+# differences, not one of which stopped a fresh install working, and 25 of the
+# 33 by the time anyone looked were keyword-only position renumbering. The lane
+# stayed red for a fortnight, so the drift that arrived later landed as another
+# "Still red" comment on an issue nobody was reading. The contract now sorts
+# the classes rather than treating them alike: the registry intersects the
+# committed schema with the installed signature (so a version difference cannot
+# produce an argument surface the installed polars would reject), the test
+# asserts only what a version difference cannot absorb, and everything else —
+# including changed defaults, which alter results without breaking a call — is
+# reported to the run summary instead of paging anyone.
+#
 # The two jobs here run on deliberately different cadences, because they answer
 # questions that move at different speeds:
 #
@@ -127,9 +143,32 @@ jobs:
       - name: Show the unlocked resolution
         run: uv pip list --python .unlocked/bin/python
 
+      # Freshness, not health: a newer in-cap polars that moved the I/O surface
+      # leaves arguments this schema has not classified yet, which is worth
+      # reading but is not a broken install — the registry intersects the
+      # committed schema with the installed signature, so an unclassified
+      # argument is simply not offered. Reported to the run summary rather than
+      # asserted; the health question is the core subset's job below.
+      # continue-on-error so this can never abort the job before the health
+      # check below, nor page anyone: a drifted schema is not a failure, and a
+      # broken extractor is a red step here but is already a hard failure of
+      # the interface contract test on every pull request. pipefail so the
+      # step's own status is honest rather than tee's.
+      - name: Polars I/O interface freshness (report only)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          .unlocked/bin/python scripts/extract_polars_io.py --diff | tee -a "$GITHUB_STEP_SUMMARY"
+
       # The core subset runs from the checkout but imports the wheel-installed
       # haute (src layout keeps the checkout's sources off sys.path).
+      # HAUTE_POLARS_UNPINNED declares what this lane is: polars resolved away
+      # from uv.lock on purpose. The interface contract test applies its
+      # cap-range assertions there instead of snapshot equality with the one
+      # version the committed schema records.
       - name: Core subset against the unlocked install
+        env:
+          HAUTE_POLARS_UNPINNED: "1"
         run: >
           .unlocked/bin/python -m pytest $(grep -v '^#' scripts/core_test_files.txt)
           -q -n 4 --timeout=60 --timeout-method=signal
@@ -143,7 +182,7 @@ jobs:
           title="Scheduled unlocked-resolve lane is red"
           body="A fresh latest-within-caps resolve of the built wheel failed. Run: ${RUN_URL}
 
-          Likely cause: a new release of a dependency inside our caps. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved."
+          A new release of a dependency inside our caps has broken the wheel build, the fresh-install smoke, or the core subset. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved. A merely *stale* polars I/O schema never reaches here — that is reported without failing, in the run summary's 'Polars I/O interface freshness' section, which is worth reading on the way past."
           gh label create dependency-watch --color D93F0B --force \
             --description "Automated: scheduled dependency lane failures"
           existing="$(gh issue list --state open --label dependency-watch \

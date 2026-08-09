@@ -44,7 +44,7 @@
 | `security/accepted-risks.toml` | Versioned exact advisory acceptance registry. Entries require ecosystem/package/advisory identity, owner, exposure, compensating control, approval date, and non-expired review date; stale, duplicate, malformed, mismatched, or unused entries fail the audit. |
 | `scripts/core_test_files.txt` | Curated core test-subset manifest and its selection/refresh rationale for canary/dependency lanes. |
 | `scripts/e2e_git_topologies.py` | Exercises Git topology scenarios used by repository-level verification. |
-| `scripts/extract_polars_io.py` | Extracts/checks Polars I/O information used by related verification and maintenance workflows. |
+| `scripts/extract_polars_io.py` | Extracts the Polars I/O argument schema by introspection, and with `--diff` reports installed-versus-committed drift as a non-failing Markdown freshness summary. |
 | `scripts/init_smoke.py` | Builds/installs or consumes a wheel in a fresh environment, initialises a project, serves it headlessly, exercises an authenticated endpoint, and shuts it down. |
 | `scripts/memory_smoke.py` | Runs the maintained memory-safety smoke path. |
 | `scripts/package_smoke_check.py` | Validates an installed distribution's package/runtime expectations. |
@@ -214,6 +214,22 @@
   `--frozen` thereafter; it must not silently re-lock at the normal highest
   resolution. The scheduled dependency job instead tests a fresh
   latest-within-caps wheel installation.
+- Both of those lanes run the core subset with `HAUTE_POLARS_UNPINNED=1`,
+  declaring that they resolved Polars away from the lockfile on purpose. That
+  selects the cap-range half of the Polars I/O interface contract — every
+  registry callable still present, positional parameters unmoved — over exact
+  equality with the single version `src/haute/_polars_io_arguments.json`
+  records. Without the declaration a Polars whose version differs from the
+  recorded one is an un-regenerated lockfile bump and fails, so the
+  regenerate-on-bump gate still binds on every pinned lane; the skip is gated
+  on the versions actually differing, so a declared lane that resolves the
+  recorded version still runs the full comparison. The unlocked lane
+  additionally prints `scripts/extract_polars_io.py --diff` to the run summary
+  as a `continue-on-error` step: a stale schema is a regeneration prompt, not a
+  lane failure, because the registry intersects the committed schema with the
+  installed signature. That report names changed defaults individually, since a
+  default is what an argument does when nobody sets it, and counts differences
+  of kind, position or annotation, which no caller can observe.
 - Mutation shards partition a shared initial work order and run mutants one at
   a time per runner. Separate CI runners provide the shard parallelism while
   serial execution avoids concurrent in-place mutation races; merge expects
