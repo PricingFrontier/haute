@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
@@ -137,6 +138,56 @@ def load_acceptances(path: Path, today: dt.date) -> set[Finding]:
     return accepted
 
 
+def advisory_url(finding: Finding) -> str:
+    if finding.ecosystem == "npm":
+        return f"https://github.com/advisories/{finding.advisory}"
+    return f"https://osv.dev/vulnerability/{finding.advisory}"
+
+
+def upgrade_hint(finding: Finding) -> str:
+    if finding.ecosystem == "npm":
+        return f"npm --prefix frontend update {finding.package}"
+    return f"uv lock --upgrade-package {finding.package}"
+
+
+def report_blocked(blocked: list[Finding]) -> None:
+    """Say what is vulnerable and how to clear it.
+
+    A bare ``BLOCK npm nanoid GHSA-...`` line above ``exit code 1`` names the
+    finding but not the remedy, and GitHub's error annotation shows only the
+    first line of what a failing step reports — so the headline below has to
+    carry the whole story on its own. Everything after it is detail for someone
+    who has already decided to act.
+    """
+    names = ", ".join(f"{f.package} ({f.advisory})" for f in blocked)
+    headline = (
+        f"{len(blocked)} dependency advisory finding(s) not covered by an accepted "
+        f"risk: {names}. Upgrade past the advisory, or record a reviewed acceptance "
+        f"in security/accepted-risks.toml."
+    )
+
+    print()
+    print(headline)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::error title=Dependency advisory::{headline}")
+
+    print()
+    print("Each finding, and the upgrade that would clear it:")
+    for finding in blocked:
+        print(f"  {finding.ecosystem} {finding.package} — {finding.advisory}")
+        print(f"    {advisory_url(finding)}")
+        print(f"    {upgrade_hint(finding)}")
+
+    print()
+    print(
+        "If no fixed release exists, add an [[acceptance]] block to "
+        "security/accepted-risks.toml recording ecosystem, package, advisory, owner, "
+        "exposure, compensating_control, approved_on and review_by. An acceptance that "
+        "no longer matches a live finding fails this audit too, so entries cannot go "
+        "stale unnoticed."
+    )
+
+
 def evaluate(
     python_report: Any, npm_report: Any, registry: Path, *, today: dt.date | None = None
 ) -> int:
@@ -156,6 +207,7 @@ def evaluate(
     if not blocked:
         print("Dependency advisory policy passed.")
         return 0
+    report_blocked(sorted(blocked))
     return 1
 
 
@@ -236,7 +288,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return evaluate(*reports, args.registry)
     except PolicyError as exc:
-        print(f"Dependency advisory policy failure: {exc}", file=sys.stderr)
+        # The other way this gate fails: the policy file itself is wrong — a stale
+        # acceptance that no longer matches any finding, an expired review date, a
+        # malformed entry. It needs the same treatment as a blocked advisory, or it
+        # reaches GitHub as a bare "exit code 2" with the reason on stderr only.
+        message = f"Dependency advisory policy failure: {exc}"
+        print(message, file=sys.stderr)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Dependency advisory policy::{message}")
         return 2
 
 
