@@ -117,7 +117,15 @@ jobs:
 
       # --frozen again: a bare `uv run` re-locks at the default resolution and
       # would silently swap the floor env back to highest before testing.
+      # HAUTE_POLARS_UNPINNED declares the same thing the re-resolve above
+      # does: polars is deliberately not at the lockfile's version, so the
+      # interface contract test asserts its cap-range half rather than
+      # snapshot equality with the version the committed schema records. The
+      # floor and the lock happen to name the same polars today; that is a
+      # coincidence of this lane, not a property it should depend on.
       - name: Core subset at floors
+        env:
+          HAUTE_POLARS_UNPINNED: "1"
         run: >
           uv run --frozen pytest $(grep -v '^#' scripts/core_test_files.txt)
           -q -n 4 --timeout=60 --timeout-method=signal

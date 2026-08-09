@@ -19,10 +19,13 @@
 #   ~2.5 min at -n 4. The known load-sensitive wall-clock benchmark in
 #   test_column_contracts_adoption is deliberately excluded.
 # test_polars_io_interface_contracts is here by design, not fix-frequency: it
-# re-extracts the polars I/O surface from the installed polars and diffs it
-# against the committed schema JSON, so the dependency-floors lane proves the
-# floor's interface matches and the unlocked-resolve lane catches an in-cap
-# polars release drifting the I/O surface (argument-level) before users do.
+# re-extracts the polars I/O surface from the installed polars and checks it
+# against the committed schema JSON, so the dependency-floors and
+# unlocked-resolve lanes prove that a polars resolved away from the lockfile
+# still gives users a usable I/O surface. Those two lanes set
+# HAUTE_POLARS_UNPINNED=1, which selects the cap-range half of that contract
+# (callables present, positional parameters unmoved) over exact equality with
+# the one polars version the committed schema records.
 tests/test_git_engine.py
 tests/test_model_scorer.py
 tests/test_optimiser_routes.py

@@ -10,6 +10,19 @@ name: Dependencies
 # landings. Non-blocking but loud: a failure finds-or-creates a
 # `dependency-watch` issue with the run URL.
 #
+# Because it is loud, it only fails on a broken install. It used to also fail
+# on a *stale* one: the polars I/O interface contract asserted snapshot
+# equality with the single version `src/haute/_polars_io_arguments.json`
+# records, so any in-cap polars release that renumbered an argument or widened
+# an annotation rang the alarm. Issue #111 was opened by exactly that — five
+# cosmetic differences, none reachable by a user — and the lane then stayed red
+# for a fortnight, so the material drift that arrived later landed as another
+# "Still red" comment on an issue nobody was reading. The contract now
+# separates the two: the registry intersects the committed schema with the
+# installed signature (so a version difference cannot produce a wrong argument
+# surface), the test asserts only what must hold across the whole cap, and
+# staleness is reported to the run summary instead of paging anyone.
+#
 # The two jobs here run on deliberately different cadences, because they answer
 # questions that move at different speeds:
 #
@@ -127,9 +140,29 @@ jobs:
       - name: Show the unlocked resolution
         run: uv pip list --python .unlocked/bin/python
 
+      # Freshness, not health: a newer in-cap polars that moved the I/O surface
+      # leaves arguments this schema has not classified yet, which is worth
+      # reading but is not a broken install — the registry intersects the
+      # committed schema with the installed signature, so an unclassified
+      # argument is simply not offered. Reported to the run summary rather than
+      # asserted; the health question is the core subset's job below.
+      # pipefail so a broken extractor still fails the step: "report only"
+      # means a drifted schema is not a failure, not that the report may
+      # silently go missing.
+      - name: Polars I/O interface freshness (report only)
+        run: |
+          set -o pipefail
+          .unlocked/bin/python scripts/extract_polars_io.py --diff | tee -a "$GITHUB_STEP_SUMMARY"
+
       # The core subset runs from the checkout but imports the wheel-installed
       # haute (src layout keeps the checkout's sources off sys.path).
+      # HAUTE_POLARS_UNPINNED declares what this lane is: polars resolved away
+      # from uv.lock on purpose. The interface contract test applies its
+      # cap-range assertions there instead of snapshot equality with the one
+      # version the committed schema records.
       - name: Core subset against the unlocked install
+        env:
+          HAUTE_POLARS_UNPINNED: "1"
         run: >
           .unlocked/bin/python -m pytest $(grep -v '^#' scripts/core_test_files.txt)
           -q -n 4 --timeout=60 --timeout-method=signal
@@ -143,7 +176,7 @@ jobs:
           title="Scheduled unlocked-resolve lane is red"
           body="A fresh latest-within-caps resolve of the built wheel failed. Run: ${RUN_URL}
 
-          Likely cause: a new release of a dependency inside our caps. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved."
+          A new release of a dependency inside our caps has broken the install, the smoke, or the core subset. Triage: compare the run's 'Show the unlocked resolution' step against uv.lock to spot what moved. Note that a merely *stale* polars I/O schema does not reach here — that is reported without failing, in the run summary's 'Polars I/O interface freshness' section."
           gh label create dependency-watch --color D93F0B --force \
             --description "Automated: scheduled dependency lane failures"
           existing="$(gh issue list --state open --label dependency-watch \

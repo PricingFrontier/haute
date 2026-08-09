@@ -10,7 +10,7 @@
 | `src/haute/_database_io.py` | Credential-free database locator/query validation and bounded read-only SQLite snapshot batches. |
 | `src/haute/_credential_security.py` | Shared URI credential detection and provider-diagnostic redaction. |
 | `src/haute/_source_cache.py` | Primary owner of source-cache identities, generations, metadata, publication, leases, quota, status, and cleanup. |
-| `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema. |
+| `src/haute/_polars_io_schema.py` | Cached index over the committed Polars callable schema, live introspection of the installed Polars, and the intersection of the two. |
 | `src/haute/_polars_io_arguments.json` | Generated Polars callable signature data checked against the pinned Polars version. |
 | `src/haute/_polars_dtypes.py` | Struct-capable dtype JSON codec used by registry schema arguments. |
 | `src/haute/_polars_utils.py` | Streaming and cancellable streaming collect, bounded/atomic sink, Parquet metadata, chunk-size scope, and allocator trim helpers. |
@@ -184,6 +184,19 @@ checkpoint failure. Neither helper has an eager or non-streaming fallback.
 - Partitioned Parquet sinks validate the final layout and preserve the previous published
   target if publication fails.
 - Bounded profiles require declared CSV dtypes and reject eager-only plain JSON.
+- An argument is config-expressible only when both the committed interface schema and the
+  installed Polars declare it. `haute._polars_io_schema.supported_argument_names()` is that
+  intersection and `haute._polars_io_registry.allowed_arguments()` subtracts the excluded
+  classes from it. The committed schema records one Polars version while the `polars`
+  specifier admits a range, so the two sides disagree in both directions: an argument only
+  the installed Polars has would otherwise become expressible without ever being classified
+  against the remote-IO, object-valued, and execution-owned exclusions, and an argument only
+  the committed schema has would otherwise stay on offer while resting on whatever
+  deprecation shim still accepts it. Rejection names the version boundary when
+  `haute._polars_io_schema.retired_argument_names()` explains the miss.
+- The registry supplies each node's source/target fields positionally, so a Polars release
+  inside the specifier may add or rename keyword arguments but must not move a callable's
+  positional parameters or remove a callable the registry dispatches to.
 
 ## Error handling
 

@@ -8,21 +8,27 @@ docstring-documentation flags — for the polars version haute pins.
 It serves two purposes:
 
 1. **Interface contract.** ``tests/test_polars_io_interface_contracts.py``
-   re-extracts the schema from the installed polars and fails on any
-   argument-level drift, so an in-cap polars release that changes the I/O
-   surface is caught by CI (including the scheduled unlocked-resolve lane)
+   re-extracts the schema from the installed polars and fails on drift that
+   would break a fresh install, so an in-cap polars release that changes the
+   I/O surface is caught by CI (including the scheduled unlocked-resolve lane)
    rather than by a user.
-2. **Config validation source.** The data-input/data-output node machinery
-   validates node-config argument names against this schema instead of
-   hand-maintaining per-function argument lists.
+2. **Reviewed half of the config validation surface.** The committed schema
+   records one polars version, while the ``polars`` specifier admits a range,
+   so the schema and a user's installed polars can disagree in both
+   directions. :func:`supported_argument_names` intersects the two: an
+   argument is config-expressible only when it has been through schema
+   regeneration *and* the installed polars declares it.
 
-The JSON is loaded lazily and cached; importing this module does no I/O.
+The JSON is loaded lazily and cached; importing this module does no I/O and
+does not import polars (:func:`installed_argument_names` imports it on first
+use).
 """
 
 from __future__ import annotations
 
+import inspect
 import json
-from functools import lru_cache
+from functools import cache, lru_cache
 from importlib.resources import files
 from typing import Any
 
@@ -58,3 +64,41 @@ def io_function(owner: str, name: str) -> dict[str, Any]:
 def argument_names(owner: str, name: str) -> tuple[str, ...]:
     """Argument names of one I/O callable, in signature order."""
     return tuple(arg["name"] for arg in io_function(owner, name)["arguments"])
+
+
+@cache
+def installed_argument_names(owner: str, name: str) -> frozenset[str]:
+    """Argument names of one I/O callable on the *installed* polars.
+
+    Read from the interpreter's own polars rather than the committed schema,
+    because a fresh install resolves anything inside the ``polars`` specifier
+    and only the installed signature says what the call will accept.
+    """
+    import polars
+
+    holder: Any = polars if owner == "polars" else getattr(polars, owner, None)
+    func = getattr(holder, name, None) if holder is not None else None
+    if func is None:
+        raise AttributeError(
+            f"The installed polars {polars.__version__} has no I/O callable "
+            f"{owner}.{name}, which haute's data-input/data-output registry requires. "
+            "This polars is outside the range this haute release supports."
+        )
+    return frozenset(pname for pname in inspect.signature(func).parameters if pname != "self")
+
+
+def supported_argument_names(owner: str, name: str) -> frozenset[str]:
+    """Argument names haute honours for one I/O callable.
+
+    The committed schema intersected with the installed polars. Both halves
+    are load-bearing: the schema half keeps an argument out of node configs
+    until a regeneration has classified it, and the installed half keeps haute
+    from offering an argument the caller's polars no longer declares — whether
+    that name is gone outright or survives only as a deprecation shim.
+    """
+    return frozenset(argument_names(owner, name)) & installed_argument_names(owner, name)
+
+
+def retired_argument_names(owner: str, name: str) -> frozenset[str]:
+    """Committed argument names the installed polars no longer declares."""
+    return frozenset(argument_names(owner, name)) - installed_argument_names(owner, name)

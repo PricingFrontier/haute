@@ -14,8 +14,16 @@ drift, with instructions to re-run this script and review the diff.
 
 Usage:
     uv run python scripts/extract_polars_io.py [output.json]
+    uv run python scripts/extract_polars_io.py --diff
 
 Run from the repo root; the default output path is the committed schema.
+
+``--diff`` writes nothing: it reports how the installed polars differs from
+the committed schema, as Markdown, and always exits 0. That report is the
+scheduled unlocked-resolve lane's freshness signal — a newer in-cap polars
+having moved the I/O surface is worth seeing, but it is not a failure, because
+``haute._polars_io_schema.supported_argument_names`` intersects the two sides
+before anything reaches a node config.
 """
 
 from __future__ import annotations
@@ -254,7 +262,62 @@ def extract_schema() -> dict[str, Any]:
 DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "src" / "haute" / "_polars_io_arguments.json"
 
 
+# ---------------------------------------------------------------------------
+# Freshness report (--diff).
+# ---------------------------------------------------------------------------
+
+
+def _by_key(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {f"{fn['owner']}.{fn['name']}": fn for fn in schema["functions"]}
+
+
+def diff_report() -> list[str]:
+    """Markdown lines describing installed-polars drift from the committed schema."""
+    committed = json.loads(DEFAULT_OUTPUT.read_text(encoding="utf-8"))
+    fresh = extract_schema()
+    recorded, installed = committed["polars_version"], fresh["polars_version"]
+
+    lines = ["## Polars I/O interface freshness", ""]
+    if recorded == installed:
+        lines.append(f"Installed polars {installed} is the version the committed schema records.")
+        return lines
+    lines.append(
+        f"Committed schema records polars {recorded}; this resolve installed {installed}. "
+        "Argument names present on only one side are not config-expressible — the registry "
+        "intersects the two — so the list below is a regeneration prompt, not a failure."
+    )
+    lines.append("")
+
+    old, new = _by_key(committed), _by_key(fresh)
+    findings: list[str] = []
+    for label, keys in (
+        ("Callables only in the installed polars", sorted(set(new) - set(old))),
+        ("Callables only in the committed schema", sorted(set(old) - set(new))),
+    ):
+        if keys:
+            findings.append(f"- **{label}:** {', '.join(keys)}")
+
+    for key in sorted(set(old) & set(new)):
+        old_names = {a["name"] for a in old[key]["arguments"]}
+        new_names = {a["name"] for a in new[key]["arguments"]}
+        gained, lost = sorted(new_names - old_names), sorted(old_names - new_names)
+        if gained:
+            findings.append(f"- `{key}` gained: {', '.join(gained)}")
+        if lost:
+            findings.append(f"- `{key}` no longer declares: {', '.join(lost)}")
+
+    lines.extend(
+        findings
+        or ["- No argument-name differences; only metadata such as defaults or positions moved."]
+    )
+    return lines
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--diff":
+        print("\n".join(diff_report()))
+        return
+
     out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUTPUT
 
     payload = extract_schema()

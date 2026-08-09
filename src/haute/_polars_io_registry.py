@@ -4,9 +4,10 @@ One frozen dataclass + one tuple: everything else derives. A fully-configured
 ``dataInput`` node is equivalent to exactly one invocation of a polars input
 callable (``read_*``/``scan_*``/``from_*``); ``dataOutput`` covers the
 ``write_*``/``sink_*`` surface for single tables. The argument surface is not
-hand-typed — it derives from the committed interface schema
-(:mod:`haute._polars_io_schema`), so a polars bump that changes a signature is
-caught by the drift contract test, not by users.
+hand-typed — it derives from the committed interface schema intersected with
+the installed polars (:mod:`haute._polars_io_schema`), so any polars inside
+the specifier gets an argument surface that version actually accepts, and a
+signature change is caught by the drift contract test rather than by users.
 
 Design rules carried over from the io-nodes review (IO12):
 
@@ -40,7 +41,7 @@ import polars as pl
 
 from haute._execution_context import ExecutionProfile
 from haute._polars_dtypes import parse_schema_mapping
-from haute._polars_io_schema import argument_names
+from haute._polars_io_schema import retired_argument_names, supported_argument_names
 from haute._polars_utils import is_bounded_execution_profile
 from haute.errors import BoundedMemoryUnsupportedError
 
@@ -577,12 +578,20 @@ def resolve_output_mode(fmt: IoFormat, config: Mapping[str, Any]) -> OutputMode:
 def allowed_arguments(fmt: IoFormat, owner: str, callable_name: str) -> frozenset[str]:
     """Config-expressible argument names for one polars callable.
 
-    Derived from the committed interface schema minus the excluded classes:
-    underscore-private plumbing, remote-IO arguments, object-valued arguments,
-    execution-owned sink arguments, and the source/target arguments owned by
-    the node's own fields.
+    Derived from the committed interface schema intersected with the installed
+    polars' signature, minus the excluded classes: underscore-private
+    plumbing, remote-IO arguments, object-valued arguments, execution-owned
+    sink arguments, and the source/target arguments owned by the node's own
+    fields.
+
+    The intersection is what lets one committed schema serve the whole
+    ``polars`` specifier. The exclusions below are subtractive, so an argument
+    a newer polars introduces would otherwise be config-expressible without
+    ever having been classified; and an argument a newer polars has dropped
+    from the signature would otherwise stay on offer, resting on whatever
+    deprecation shim happens to still accept it.
     """
-    names = set(argument_names(owner, callable_name))
+    names = set(supported_argument_names(owner, callable_name))
     names -= {n for n in names if n.startswith("_")}
     names -= REMOTE_IO_ARGUMENTS
     names -= _OBJECT_VALUED_ARGUMENTS
@@ -608,9 +617,17 @@ def validate_arguments(
     allowed = allowed_arguments(fmt, owner, callable_name)
     unknown = sorted(set(arguments) - allowed)
     if unknown:
+        # Name the version boundary when that is what removed the argument;
+        # "unknown argument" alone sends the reader hunting for a typo.
+        retired = sorted(retired_argument_names(owner, callable_name).intersection(unknown))
+        because = (
+            f" Argument(s) {retired} are absent from the installed polars {pl.__version__}."
+            if retired
+            else ""
+        )
         raise PolarsIoConfigError(
             f"Unknown or unsupported argument(s) {unknown} for polars.{callable_name} "
-            f"(format {fmt.name!r}). Config-expressible arguments: {sorted(allowed)}."
+            f"(format {fmt.name!r}). Config-expressible arguments: {sorted(allowed)}.{because}"
         )
     decoded: dict[str, Any] = {}
     for name, value in arguments.items():
