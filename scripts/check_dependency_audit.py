@@ -288,7 +288,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return evaluate(*reports, args.registry)
     except PolicyError as exc:
-        print(f"Dependency advisory policy failure: {exc}", file=sys.stderr)
+        # The other way this gate fails: the policy file itself is wrong — a stale
+        # acceptance that no longer matches any finding, an expired review date, a
+        # malformed entry. It needs the same treatment as a blocked advisory, or it
+        # reaches GitHub as a bare "exit code 2" with the reason on stderr only.
+        message = f"Dependency advisory policy failure: {exc}"
+        print(message, file=sys.stderr)
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Dependency advisory policy::{message}")
         return 2
 
 

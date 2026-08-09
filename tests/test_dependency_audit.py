@@ -288,3 +288,30 @@ def test_live_npm_scanner_bad_return_code_fails(monkeypatch, tmp_path, returncod
 
     with pytest.raises(audit.PolicyError, match="npm audit scanner failed"):
         audit.live_reports(tmp_path)
+
+
+def test_policy_file_errors_annotate_too(tmp_path, capsys, monkeypatch):
+    """A broken policy file must explain itself like a blocked advisory does.
+
+    An unused acceptance or a malformed entry exits 2 with the reason on stderr,
+    which never reaches GitHub's annotation. Both failure paths now annotate.
+    """
+    registry(tmp_path, acceptance()).rename(tmp_path / "risks.toml")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    code = audit.main(
+        [
+            "--python-report",
+            str(_write(tmp_path / "py.json", python_report())),
+            "--npm-report",
+            str(_write(tmp_path / "npm.json", npm_report())),
+            "--registry",
+            str(tmp_path / "risks.toml"),
+        ]
+    )
+    assert code == 2
+    assert "::error title=Dependency advisory policy::" in capsys.readouterr().out
+
+
+def _write(path: Path, payload) -> Path:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
