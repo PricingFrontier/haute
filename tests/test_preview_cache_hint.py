@@ -329,7 +329,7 @@ def _build_branching_graph(src_path: str, n_branches: int) -> PipelineGraph:
         nodes.append(
             _transform_node(
                 f"b{i}",
-                f"df = df.select(['id', (pl.col('value') * {i + 1}).alias('col{i}')])",
+                f"df = src.select(['id', (pl.col('value') * {i + 1}).alias('col{i}')])",
             )
         )
         edges.append(_edge("src", f"b{i}"))
