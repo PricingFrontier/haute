@@ -767,9 +767,16 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   Bindings inside a further nested scope do not shadow
   `df` in the enclosing function. A comprehension's first iterable is evaluated before
   its target is bound, so a bare `df` read there still reads the unbound module `df`.
-  A statement's loads are judged before its stores, since
+  A binding must dominate a later read: for an `if`, every fall-through branch must bind
+  `df`; a loop body's binding does not establish `df` afterwards because the loop can run
+  zero times. Falling off the end also reads the generated output, so a conditional-only
+  assignment is rejected even when the submitted snippet has no later explicit read.
+  Complex exception/context-manager/match flow is conservative rather than assuming a
+  hidden store definitely ran. A statement's loads are judged before its stores, since
   an assignment evaluates its value first: `df = df.head()` reads the unbound name,
-  `df = left` does not. This is an authoring-time rule for assistant edits only, like
+  `df = left` does not, and augmented assignment reads its target before storing it.
+  The derived input name `df` is itself rejected as a reserved output-name collision.
+  This is an authoring-time rule for assistant edits only, like
   the unknown-config-key strictness above; existing human-authored code is untouched
   (it fails loudly at execution instead).
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's

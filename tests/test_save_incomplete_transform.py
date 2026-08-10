@@ -265,3 +265,37 @@ def test_save_warning_includes_an_incomplete_transform_inside_a_submodel(
     SavePipelineService(isolated_cwd)._validate_transforms_are_runnable(graph, warnings)
 
     assert any("child todo" in warning for warning in warnings), warnings
+
+
+def test_save_does_not_warn_for_an_instance_with_inherited_transform_code(
+    isolated_cwd: Path,
+) -> None:
+    """Instances inherit their original's executable transform configuration."""
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                {
+                    **_transform_node("original", "original transform"),
+                    "data": {
+                        "label": "original transform",
+                        "nodeType": "polars",
+                        "config": {"code": "df = pl.LazyFrame({'quote_id': [1]})"},
+                    },
+                },
+                {
+                    **_transform_node("instance", "instance transform"),
+                    "data": {
+                        "label": "instance transform",
+                        "nodeType": "polars",
+                        "config": {"instanceOf": "original"},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    warnings: list[str] = []
+
+    SavePipelineService(isolated_cwd)._validate_transforms_are_runnable(graph, warnings)
+
+    assert not any("instance transform" in warning for warning in warnings), warnings

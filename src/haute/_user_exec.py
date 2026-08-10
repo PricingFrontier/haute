@@ -32,9 +32,9 @@ def _exec_user_code(
 
     Inputs are bound only under their names in *src_names*; ``df`` is the
     output variable the code must assign.  Hook-style nodes whose code box
-    operates on a single implicit frame called ``df`` (explore, model-score
-    post-code) pass ``alias_first_input_as_df=True`` to keep that contract;
-    polars transforms and external files never do.
+    operates on a single implicit frame called ``df`` (external files,
+    explore, and post-code hooks) pass ``alias_first_input_as_df=True`` to
+    keep that contract. Polars transforms never do.
     """
     local_ns: dict[str, Any] = {"pl": pl}
     for i, d in enumerate(dfs):
@@ -45,10 +45,14 @@ def _exec_user_code(
         for orig, inst in mapping.items():
             if orig not in local_ns and inst in local_ns:
                 local_ns[orig] = local_ns[inst]
+    if not alias_first_input_as_df and "df" in local_ns:
+        raise ExecutionError(
+            "The input name 'df' conflicts with the reserved output name for polars node "
+            "code. Rename the upstream node or frame so the transform can assign its result "
+            "to 'df'."
+        )
     if alias_first_input_as_df and dfs:
         local_ns["df"] = dfs[0]
-    if extra_ns:
-        local_ns.update(extra_ns)
 
     try:
         validate_user_code(code)
@@ -57,8 +61,18 @@ def _exec_user_code(
             raise uce.__cause__ from None
         raise
 
+    # Start from the restricted globals/preamble, then overlay dataframe
+    # bindings so inputs have ordinary function-parameter precedence. One
+    # shared namespace also makes those inputs visible to comprehensions and
+    # nested helpers, matching generated function execution. ``df`` is the
+    # transform's reserved output slot (or an explicitly seeded implicit input
+    # above), so a preamble binding must never supply it.
+    global_ns = {name: value for name, value in (extra_ns or {}).items() if name != "df"}
+    execution_ns = safe_globals(pl=pl, **global_ns)
+    execution_ns.update(local_ns)
+
     try:
-        exec(code, safe_globals(pl=pl, **(extra_ns or {})), local_ns)
+        exec(code, execution_ns, execution_ns)
     except Exception as exc:
         if exc.__traceback__:
             import traceback as _tb
@@ -69,8 +83,8 @@ def _exec_user_code(
                     break
         raise
 
-    if "df" not in local_ns:
-        inputs = [name for name in src_names if name in local_ns]
+    if "df" not in execution_ns:
+        inputs = [name for name in src_names if name in execution_ns]
         detail = (
             "Inputs are available by name: " + ", ".join(inputs)
             if inputs
@@ -79,7 +93,7 @@ def _exec_user_code(
         raise ExecutionError(
             f"Node code must assign its result to 'df'; nothing was assigned. {detail}"
         )
-    result = local_ns["df"]
+    result = execution_ns["df"]
     if isinstance(result, pl.DataFrame):
         result = result.lazy()
     return result  # type: ignore[no-any-return]

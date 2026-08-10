@@ -157,11 +157,13 @@ Out of scope (owned by neighbouring components):
 - **Polars transforms bind inputs by name only.** A `polars` node's function
   parameters are its inputs, one per incoming edge in edge order; `df` is
   purely the output variable and is never pre-bound to an input. Generated
-  bodies are the user's code plus the appended `return df` — the user starts
-  from the input they mean by name and assigns the result to `df`. `explore`
-  and the post-code hooks (`data_input`, `rating_step`, `scenario_expander`,
-  `model_score`) keep their single implicit `df` frame; only `polars`
-  transforms carry the named-input contract.
+  bodies declare `df` as an unbound local, then emit the user's code and the
+  appended `return df`; a same-named preamble global therefore cannot satisfy
+  a missing output assignment. The user starts from the input they mean by
+  name and assigns the result to `df`. `explore`,
+  `external_file`, and the post-code hooks (`data_input`, `rating_step`,
+  `scenario_expander`, `model_score`) keep their single implicit `df` frame;
+  only `polars` transforms carry the named-input contract.
 - **User code round-trips.** Text typed into a node's code editor is
   embedded into the generated function body, wrapped with generated
   boilerplate (imports, config-driven loads, a trailing `return df`). On the

@@ -799,6 +799,23 @@ class TestSemanticPlans:
             # Naming the input, or binding it before reusing `df`, is explicit.
             ("df = left.group_by('quote_id').agg(pl.len())", False),
             ("df = left\ndf = df.group_by('quote_id').agg(pl.len())", False),
+            # A store only establishes `df` when it definitely runs.  A
+            # conditional or zero-iteration loop body cannot bind it for the
+            # following statement, whereas complete conditional branches can.
+            ("if False:\n    df = left\ndf = df.head()", True),
+            ("for _ in ():\n    df = left\ndf = df.head()", True),
+            ("if condition:\n    df = left", True),
+            ("for _ in ():\n    df = left", True),
+            (
+                "try:\n    df = left\nexcept Exception:\n    pass\ndf = df.head()",
+                True,
+            ),
+            ("df: pl.LazyFrame\ndf = df.head()", True),
+            ("df += left", True),
+            (
+                "if condition:\n    df = left\nelse:\n    df = right\ndf = df.head()",
+                False,
+            ),
             # `df` bound by a nested scope is that scope's own name and never
             # resolves to the module-level output variable, so it is not a
             # bare read.
@@ -875,6 +892,33 @@ class TestSemanticPlans:
             )
         assert "reads 'df' before assigning it" in str(excinfo.value)
         assert "left" in str(excinfo.value)
+
+    def test_polars_input_cannot_use_the_reserved_df_output_name(self, tmp_path: Path):
+        from haute.assistant._ops import (
+            OpValidationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
+
+        source = tmp_path / "main.py"
+        source.write_text("pipeline", encoding="utf-8")
+        graph = _graph(
+            [_node("df"), _node("combined")],
+            [_edge("df", "combined")],
+        )
+        snapshot = build_project_snapshot(tmp_path, source, graph)
+
+        with pytest.raises(OpValidationError, match="reserved output name"):
+            build_graph_edit_plan(
+                snapshot,
+                [
+                    {
+                        "op": "update_node",
+                        "node": "combined",
+                        "config": {"code": "df = pl.LazyFrame({'x': [1]})"},
+                    }
+                ],
+            )
 
     def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
         from haute.assistant._ops import semantic_diff

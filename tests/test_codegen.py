@@ -6,6 +6,7 @@ import ast
 import re
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from haute._codegen_builders import (
@@ -23,7 +24,7 @@ from haute.codegen import (
     graph_to_code,
     graph_to_code_multi,
 )
-from haute.errors import ParseError
+from haute.errors import ConfigError, ParseError
 from tests.conftest import (
     compile_node_code as _compile_node_code,
 )
@@ -276,6 +277,7 @@ class TestNodeToCode:
         )
         code = _node_to_code(node, source_names=["load_data"])
         assert "def Clean(load_data: pl.LazyFrame)" in code
+        assert "df: pl.LazyFrame" in code
         assert "filter" in code
         assert "return df" in code
         _compile_node_code(code)
@@ -308,6 +310,85 @@ class TestNodeToCode:
         code = _node_to_code(node, source_names=[])
         assert "raise NotImplementedError" in code
         assert "return df" not in code
+        _compile_node_code(code)
+
+    def test_transform_with_code_and_no_sources_has_no_phantom_df_parameter(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Construct",
+                    "nodeType": "polars",
+                    "config": {"code": "df = pl.LazyFrame({'x': [1]})"},
+                },
+            }
+        )
+
+        code = _node_to_code(node, source_names=[])
+
+        assert "def Construct() -> pl.LazyFrame:" in code
+        _compile_node_code(code)
+
+    def test_transform_rejects_df_as_a_named_input(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Transform",
+                    "nodeType": "polars",
+                    "config": {"code": "df = df.with_columns(x=pl.lit(1))"},
+                },
+            }
+        )
+
+        with pytest.raises(ConfigError, match="reserved output name"):
+            _node_to_code(node, source_names=["df"])
+
+    def test_transform_missing_output_cannot_fall_back_to_a_global_df(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "MissingOutput",
+                    "nodeType": "polars",
+                    "config": {"code": "_ = source"},
+                },
+            }
+        )
+        code = _node_to_code(node, source_names=["source"])
+
+        class PipelineStub:
+            @staticmethod
+            def polars(*args, **kwargs):
+                if args and callable(args[0]):
+                    return args[0]
+                return lambda function: function
+
+        namespace = {
+            "pipeline": PipelineStub(),
+            "pl": pl,
+            "df": pl.LazyFrame({"wrong": [9]}),
+        }
+        exec(code, namespace)
+
+        with pytest.raises(UnboundLocalError):
+            namespace["MissingOutput"](pl.LazyFrame({"source": [1]}))
+
+    def test_no_code_transform_with_df_input_still_saves_as_incomplete(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Transform",
+                    "nodeType": "polars",
+                    "config": {"code": ""},
+                },
+            }
+        )
+
+        code = _node_to_code(node, source_names=["df"])
+
+        assert "raise NotImplementedError" in code
         _compile_node_code(code)
 
     def test_output_references_sidecar_and_passes_through(self):
@@ -1278,7 +1359,29 @@ class TestCodegenEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["features"])
+        assert "df = features" in code
         assert "return df" in code
+        _compile_node_code(code)
+
+    def test_external_file_binds_its_documented_df_input(self):
+        node = _n(
+            {
+                "id": "ext",
+                "data": {
+                    "label": "Model",
+                    "nodeType": "externalFile",
+                    "config": {
+                        "path": "model.pkl",
+                        "fileType": "pickle",
+                        "code": "df = df.with_columns(prediction=pl.lit(obj))",
+                    },
+                },
+            }
+        )
+
+        code = _node_to_code(node, source_names=["features"])
+
+        assert code.index("df = features") < code.index("df = df.with_columns")
         _compile_node_code(code)
 
     def test_constant_with_empty_values(self):

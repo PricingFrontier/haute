@@ -1326,6 +1326,7 @@ class TestUserCodeErrorSanitization:
                 code="df = df.filter(pl.col('x') > threshold)",
                 src_names=["df"],
                 dfs=(pl.DataFrame({"x": [1, 2, 3]}).lazy(),),
+                alias_first_input_as_df=True,
             )
         error_msg = str(exc_info.value)
         assert "threshold" in error_msg
@@ -1341,6 +1342,7 @@ class TestUserCodeErrorSanitization:
                 code="df + 'string'",
                 src_names=["df"],
                 dfs=(pl.DataFrame({"x": [1, 2, 3]}).lazy(),),
+                alias_first_input_as_df=True,
             )
         error_msg = str(exc_info.value)
         assert "_sandbox" not in error_msg

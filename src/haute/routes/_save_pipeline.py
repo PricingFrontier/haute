@@ -1185,16 +1185,20 @@ class SavePipelineService:
         raises if the pipeline is actually run, and this warning points at the
         node so the user is not surprised by that later.
         """
+        from haute._builders import resolve_instance_node
+
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
+            node_map = {node.id: node for node in scoped_graph.nodes}
             upstream_counts: dict[str, int] = {}
             for edge in scoped_graph.edges:
                 upstream_counts[edge.target] = upstream_counts.get(edge.target, 0) + 1
 
             for node in scoped_graph.nodes:
-                if node.data.nodeType != NodeType.POLARS:
+                resolved_node = resolve_instance_node(node, node_map)
+                if resolved_node.data.nodeType != NodeType.POLARS:
                     continue
-                if str(node.data.config.get("code") or "").strip():
+                if str(resolved_node.data.config.get("code") or "").strip():
                     continue
                 count = upstream_counts.get(node.id, 0)
                 label = node.data.label or node.id

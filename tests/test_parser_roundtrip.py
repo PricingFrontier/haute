@@ -1148,6 +1148,10 @@ class TestEdgeCases:
         parsed_types = {n.data.nodeType for n in parsed.nodes}
         assert NodeType.DATA_INPUT in parsed_types
         assert NodeType.POLARS in parsed_types
+        parsed_transform = next(
+            node for node in parsed.nodes if node.data.nodeType == NodeType.POLARS
+        )
+        assert parsed_transform.data.config.get("code", "") == ""
         # Edge: at least the original edge is present
         orig_edges = _edge_pairs(graph.edges)
         parsed_edges = _edge_pairs(parsed.edges)

@@ -1589,6 +1589,21 @@ def test_single_parent_polars_helper_assignment_keeps_union_narrowing():
     assert projection.needed_by_node["source"] == frozenset({"x", "keep"})
 
 
+def test_single_parent_polars_named_root_derive_select_narrows_parent_demand():
+    """A first chain rooted at the named input is as projectable as ``df``."""
+    projection = _single_parent_polars_plan(
+        "df = source.with_columns("
+        "(pl.col('raw_premium') * 2).alias('premium')"
+        ").select('premium', 'quote_id')",
+        ["premium", "quote_id"],
+    )
+
+    assert projection.needed_by_node["source"] == frozenset({"raw_premium", "quote_id"})
+    assert projection.edge_demands[("source", "transform")] == frozenset(
+        {"raw_premium", "quote_id"}
+    )
+
+
 def test_single_parent_polars_select_subset_demands_inputs_of_every_select_output():
     """A select executes all of its output expressions, so all inputs are demanded.
 

@@ -1072,6 +1072,7 @@ def iter_chunked_frames(request: ChunkRunnerRequest) -> Iterator[ChunkBatch]:
                     ["df"],
                     (source_lf,),
                     extra_ns=request.preamble_ns,
+                    alias_first_input_as_df=True,
                 )
             )
         source_lf = _normalise_lazy_frame(

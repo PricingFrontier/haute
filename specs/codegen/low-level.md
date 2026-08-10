@@ -15,7 +15,7 @@
 - **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine. The fourth argument carries the per-edge source *function* names, kept alongside the edge-derived input names so edge-join role kwargs (`base_input`/`join_input`) can reference the connected source functions for parser reconstruction while the signature uses the input names.
 - **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the bare `connect("a", "b")` form used by ordinary single-output sources. Every `apiInput` edge — including one from a sole-frame source — carries its frame label as `source_port`, so the generated file always names the frame each connection delivers; a bare connect from an `apiInput` is not emitted.
 - **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], str]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
-- **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means a generated setup line (a `df = <helper>(...)` call, or the explore kind's `df = <param>` binding) already produced `df`, so the finaliser runs with no param names and later references to the input parameters stay intentional user code.
+- **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means generated setup (a `df = <helper>(...)` call or the explore kind's `df = <param>` binding) already produced `df`, so the finaliser runs with no param names and later references to the input parameters stay intentional user code.
 - **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per internal kind (`polars`, `explore`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS`.
 - **`_FINALISERS`** (`_code_extraction.py`) — `dict[str, Callable[[str, tuple[str, ...]], str]]`, the post-processing step per kind that runs after the shared strip-docstring → dedent → skip-boilerplate → strip-trailing-return pass (e.g. `_finalise_polars` unwraps redundant `df = (...)` parens and rewrites bare `return expr` to `df = expr`).
 - **`_UserCodeParseError`** (`_code_extraction.py`) — multiple-inherits `ParseError` (Haute's error hierarchy) and `ValueError`; raised by `_parse_user_code` when extractable text isn't valid Python, chaining the original `SyntaxError`.
@@ -175,16 +175,25 @@ text between the parens is non-whitespace).
 
 A `polars` transform's function parameters ARE its inputs: each incoming edge
 binds one parameter (`edge_input_name`, in edge order), and `df` is only the
-node's OUTPUT variable. `_gen_transform` emits the user code verbatim followed
-by the appended `return df`; it never pre-binds `df` to an input, so user code
-must start from the input it means by name (`df = quotes.join(regions, ...)`)
-and reading `df` before assigning it is a `NameError` at run time, in the
-generated module and canvas execution alike. A node with NO code cannot run at
+node's OUTPUT variable. A transform with no incoming edges therefore has an
+empty parameter list — never a phantom default `df` input — and an incoming
+edge whose derived name is literally `df` is rejected as a reserved-name
+collision once executable code is present, rather than weakening the
+output-only contract. A no-code half-built node still saves with its ordinary
+raising placeholder. For executable code, `_gen_transform` emits the unbound
+local declaration `df: pl.LazyFrame`, the user code verbatim, and the appended
+`return df`. The declaration creates a function-local output slot without
+binding a value, so a preamble global named `df` cannot mask a missing user
+assignment. User code must start from the input it means by name
+(`df = quotes.join(regions, ...)`), and reading `df` before assigning it is a
+`NameError` at run time, in the generated module and canvas execution alike.
+A node with NO code cannot run at
 all — there is no implicit single-input passthrough; codegen emits the
 `NotImplementedError` placeholder and the executor installs the matching
 raising callable. Extraction is symmetric: the
-`polars` finaliser treats a leading `df = <param>` line as authored code, never
-as strippable scaffold, and no longer collapses a lone `return <param>` body to
+`polars` matcher strips only the exact unbound output declaration, while its
+finaliser treats a leading `df = <param>` line as authored code, never as
+strippable scaffold, and no longer collapses a lone `return <param>` body to
 empty code. Modules generated before this contract carry a codegen-prepended
 `df = <first input>` alias line (or a passthrough `return <input>` body); on
 reload these round-trip into the code box as visible, explicit user code
@@ -196,6 +205,12 @@ implicit frame named `df` (like the `data_input` / `rating_step` /
 `scenario_expander` post-code hooks), so `_gen_explore` still emits the
 `df = <param>` binding line and the dedicated `explore` extraction kind strips
 exactly that line back out as generated scaffold (`generated_scaffold=True`).
+External-file code has the same documented implicit-frame contract:
+`_gen_external_file` emits `df = <first param>` immediately after loading
+`obj`, canvas/deploy execution opts into the matching alias, and
+`_match_external` strips that exact generated binding on reload. The loaded
+`obj` binding is caller-owned scaffold and takes precedence over a same-named
+preamble global, matching the generated function's local assignment.
 
 ## Edge cases and invariants
 
@@ -204,8 +219,9 @@ exactly that line back out as generated scaffold (`generated_scaffold=True`).
   parameter name, so the parameters are distinct by the api-input schema's
   label-uniqueness rule; no suffixing exists. A derived duplicate across
   *different* sources (frame label colliding with another input's name) is a
-  `ParseError`, never a rename. Zero sources still yields the single default
-  parameter name `"df"`.
+  `ParseError`, never a rename. Builders for implicit-frame node kinds retain
+  their default `df` parameter when disconnected; a zero-source `polars`
+  transform alone emits an empty parameter list.
 - **User-controlled text inside decorator arg lists** (a column literally
   named `"price (gbp)"`, or containing `":)"`) — `_matching_close_paren`
   tokenizes rather than character-scans, so parens inside string literals
@@ -289,7 +305,9 @@ exactly that line back out as generated scaffold (`generated_scaffold=True`).
   `_match_external` is position-aware: imports BEFORE the generated
   `load_external_object_from_config(...)` call are stripped as
   boilerplate, imports AFTER it (or all imports, if there was no load at
-  all) are preserved as user code.
+  all) are preserved as user code. The generated `df = <first param>` binding
+  immediately after the load is also stripped; a later alias remains authored
+  user code.
 - **One current generated scaffold per node type.** Extraction recognises
   the current scaffold plus ordinary user code; it does not carry aliases for
   retired generated chains or variable names. Rating-step codegen emits only
