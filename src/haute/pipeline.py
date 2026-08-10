@@ -83,14 +83,10 @@ class Node:
         return self._input_arity
 
     def _raise_if_unresolved_instance(self) -> None:
-        if (
-            self.config.get("_instance")
-            or self.config.get("instanceOf")
-            or self.config.get("inputMapping")
-        ):
+        if self.config.get("_instance") or self.config.get("instanceOf"):
             raise ExecutionError(
                 "Standalone run()/score() cannot resolve an @pipeline.instance "
-                "node's 'instanceOf'/'inputMapping' references. Run the pipeline through "
+                "node's 'instanceOf' reference. Run the pipeline through "
                 "the graph executor, or inline the referenced logic into this node.",
                 node=self.name,
             )

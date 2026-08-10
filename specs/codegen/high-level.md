@@ -92,7 +92,13 @@ Out of scope (owned by neighbouring components):
   identifiers by the api-input schema), every other edge the sanitised
   source-node label. A frame emitted as `quotes` is therefore callable as
   `quotes` in every downstream body — the same string the editor lists as the
-  input. Two incoming edges of one node deriving the same parameter name are a
+  input. When a canvas topology rewrite replaces a Polars node's parent while
+  preserving the authored input's meaning, `inputMapping` records
+  `{logical_name: current_edge_name}`. Codegen then keeps the logical name in
+  the function signature and emits the mapping on `@pipeline.polars(...)`,
+  while the `connect(...)` call continues to name the current parent. The
+  parser must retain that mapping so repeated save/reload cycles are stable.
+  Two incoming edges of one node deriving the same effective parameter name are a
   hard `ParseError` at codegen time; parameters are never disambiguated with
   hidden numeric suffixes. Every `apiInput` edge emits an explicit
   `source_port` in its connect call — including a sole-frame source — so the
@@ -154,13 +160,22 @@ Out of scope (owned by neighbouring components):
   kwarg because it inherits the original node's contract; an instance carrying a declaration has
   that declaration emitted. Injection rewrites already-generated source text in place (see Design
   rationale), rather than templating the kwarg in from the start.
+- **Instance mappings are persisted, not merely baked into one function body.** An
+  instance emits both `of=...` and its explicit `inputMapping=...` on the
+  decorator, as well as the resolved keyword call to the original function.
+  Parsing therefore restores the mapping metadata needed for a later graph
+  edit or save instead of relying on name heuristics after the first reload.
 - **Polars transforms bind inputs by name only.** A `polars` node's function
-  parameters are its inputs, one per incoming edge in edge order; `df` is
+  parameters are its logical inputs, one per incoming edge in edge order; `df` is
   purely the output variable and is never pre-bound to an input. Generated
   bodies declare `df` as an unbound local, then emit the user's code and the
   appended `return df`; a same-named preamble global therefore cannot satisfy
-  a missing output assignment. The user starts from the input they mean by
-  name and assigns the result to `df`. `explore`,
+  a missing output assignment. Normally the logical name is the edge-derived
+  name; a non-instance Polars `inputMapping` may preserve an earlier logical
+  name across a structural rewrite. Mapping values must match distinct current
+  edge names and the resulting logical names must remain distinct valid Haute
+  identifiers, otherwise generation and execution fail loudly. The user starts
+  from the input they mean by name and assigns the result to `df`. `explore`,
   `external_file`, and the post-code hooks (`data_input`, `rating_step`,
   `scenario_expander`, `model_score`) keep their single implicit `df` frame;
   only `polars` transforms carry the named-input contract.

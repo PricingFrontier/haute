@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
+from haute._graph_builders import _edge_param_names_for_node
 from haute._types import GraphEdge, GraphNode, PipelineGraph
 from haute.errors import ParseError
 
@@ -72,7 +73,7 @@ def assert_parser_structure_conserved(
     seen_implicit: set[tuple[str, str]] = set()
     for node in raw_nodes:
         target = str(node["func_name"])
-        for parameter in node.get("edge_param_names", node.get("param_names", ())):
+        for parameter in _edge_param_names_for_node(node):
             pair = (str(parameter), target)
             if (
                 pair[0] in root_ids

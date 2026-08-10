@@ -175,7 +175,21 @@ text between the parens is non-whitespace).
 
 A `polars` transform's function parameters ARE its inputs: each incoming edge
 binds one parameter (`edge_input_name`, in edge order), and `df` is only the
-node's OUTPUT variable. A transform with no incoming edges therefore has an
+node's OUTPUT variable. For a non-instance transform carrying
+`inputMapping={logical_name: current_edge_name}`, `_gen_transform` validates a
+one-to-one mapping against the current edge-derived names, emits the logical
+names in the same edge order, and persists the mapping as a decorator kwarg.
+The parser copies that kwarg back into node config and uses each mapped current
+name when reconstructing implicit edges from the logical function parameters.
+It must not also infer an edge from a same-named node that happens to match the
+logical parameter. This makes graph → source → graph a fixpoint after an Edge
+Join (or another topology rewrite) replaces a parent: authored code keeps
+reading the original logical input while both the canvas executor and generated
+positional call receive the replacement parent's frame. Stale values,
+duplicate current values, invalid logical identifiers, or logical-name
+collisions are `ConfigError`s rather than guessed bindings.
+
+A transform with no incoming edges therefore has an
 empty parameter list — never a phantom default `df` input — and an incoming
 edge whose derived name is literally `df` is rejected as a reserved-name
 collision once executable code is present, rather than weakening the

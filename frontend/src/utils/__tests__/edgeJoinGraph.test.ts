@@ -119,6 +119,9 @@ describe("insertEdgeJoinNode", () => {
     ])
     expect(nodes).toHaveLength(3)
     expect(edges).toHaveLength(1)
+    expect(result.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
+      inputMapping: { a: "Edge_Join_1" },
+    })
   })
 
   it("supports repeated joins on already split segments", () => {
@@ -158,6 +161,183 @@ describe("insertEdgeJoinNode", () => {
         expect.objectContaining({ source: "d", target: "edgeJoin_2", targetHandle: "join" }),
       ]),
     )
+    expect(second.nodes.find((n) => n.id === "b")?.data.config).toMatchObject({
+      inputMapping: { a: "Edge_Join_2" },
+    })
+  })
+
+  it("preserves an apiInput frame handle as the downstream logical input", () => {
+    const request: Node = {
+      ...node("request"),
+      type: NODE_TYPES.API_INPUT,
+      data: {
+        label: "Request",
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {},
+      },
+    }
+    const result = insertEdgeJoinNode({
+      nodes: [request, node("enriched"), node("lookup")],
+      edges: [edge("e-request-enriched", "request", "enriched", {
+        sourceHandle: "raw_rows",
+      })],
+      targetEdgeId: "e-request-enriched",
+      connection: { source: "lookup" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
+      inputMapping: { raw_rows: "Edge_Join_1" },
+    })
+  })
+
+  it("preserves a collapsed submodel alias and output port as the logical input", () => {
+    const child = node("child_output")
+    const occurrence: Node = {
+      ...node("pricing_instance"),
+      type: NODE_TYPES.SUBMODEL,
+      data: {
+        label: "Pricing instance",
+        nodeType: NODE_TYPES.SUBMODEL,
+        config: {
+          definitionId: "definition_pricing",
+          alias: "pricing_secondary",
+        },
+      },
+    }
+    const result = insertEdgeJoinNode({
+      nodes: [occurrence, node("enriched"), node("lookup")],
+      edges: [edge("e-pricing-enriched", occurrence.id, "enriched", {
+        sourceHandle: "out__written_premium",
+      })],
+      submodels: {
+        definition_pricing: {
+          definitionId: "definition_pricing",
+          file: "modules/pricing.py",
+          graph: { nodes: [child], edges: [] },
+          inputPorts: [],
+          outputPorts: [
+            {
+              portId: "written_premium",
+              label: "Written premium",
+              source: { nodeId: child.id, handleId: null },
+            },
+          ],
+        },
+      },
+      targetEdgeId: "e-pricing-enriched",
+      connection: { source: "lookup" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.nodes.find((n) => n.id === "enriched")?.data.config).toMatchObject({
+      inputMapping: { pricing_secondary__written_premium: "Edge_Join_1" },
+    })
+  })
+
+  it("rewrites an existing instance mapping value without inventing keys", () => {
+    const target = {
+      ...node("instance"),
+      data: {
+        ...node("instance").data,
+        config: {
+          instanceOf: "original",
+          inputMapping: { original_input: "a", other_input: "other" },
+        },
+      },
+    }
+    const result = insertEdgeJoinNode({
+      nodes: [node("a"), target, node("lookup")],
+      edges: [edge("e-a-instance", "a", "instance")],
+      targetEdgeId: "e-a-instance",
+      connection: { source: "lookup" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.nodes.find((n) => n.id === "instance")?.data.config).toMatchObject({
+      inputMapping: {
+        original_input: "Edge_Join_1",
+        other_input: "other",
+      },
+    })
+  })
+
+  it("does not add inputMapping to a non-Polars downstream node", () => {
+    const target: Node = {
+      ...node("output"),
+      type: NODE_TYPES.OUTPUT,
+      data: {
+        label: "Output",
+        nodeType: NODE_TYPES.OUTPUT,
+        config: {},
+      },
+    }
+    const result = insertEdgeJoinNode({
+      nodes: [node("a"), target, node("lookup")],
+      edges: [edge("e-a-output", "a", "output")],
+      targetEdgeId: "e-a-output",
+      connection: { source: "lookup" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.nodes.find((n) => n.id === "output")?.data.config).toEqual({})
+  })
+
+  it("fails before allocating an id when an apiInput frame identity is unresolved", () => {
+    const request: Node = {
+      ...node("request"),
+      type: NODE_TYPES.API_INPUT,
+      data: {
+        label: "Request",
+        nodeType: NODE_TYPES.API_INPUT,
+        config: {},
+      },
+    }
+    const idFactory = vi.fn(() => "edgeJoin_1")
+
+    expect(() => insertEdgeJoinNode({
+      nodes: [request, node("enriched"), node("lookup")],
+      edges: [edge("e-request-enriched", "request", "enriched")],
+      targetEdgeId: "e-request-enriched",
+      connection: { source: "lookup" },
+      position: { x: 0, y: 0 },
+      idFactory,
+    })).toThrow(/unresolved source frame/)
+    expect(idFactory).not.toHaveBeenCalled()
+  })
+
+  it("fails loudly instead of overwriting a colliding logical mapping key", () => {
+    const target = {
+      ...node("target"),
+      data: {
+        ...node("target").data,
+        config: { inputMapping: { a: "other" } },
+      },
+    }
+
+    expect(() => insertEdgeJoinNode({
+      nodes: [node("a"), node("other"), target, node("lookup")],
+      edges: [
+        edge("e-a-target", "a", "target"),
+        edge("e-other-target", "other", "target"),
+      ],
+      targetEdgeId: "e-a-target",
+      connection: { source: "lookup" },
+      position: { x: 0, y: 0 },
+      idFactory: () => "edgeJoin_1",
+    })).toThrow(/already uses it/)
   })
 
   it("updates a downstream edgeJoin baseInput when splitting its base edge", () => {

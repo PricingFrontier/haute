@@ -61,7 +61,7 @@ and check total survival.
 Sharding preserves survival exactly. Each mutant runs the identical
 `test-command` with the identical `timeout` exactly once, and a shard executes
 its mutants **one at a time** on a fresh, unloaded runner — so per-mutant timing
-keeps the full 30s-timeout headroom and every outcome is deterministic. The
+keeps the configured timeout headroom and every outcome is deterministic. The
 merged survival therefore equals an unsharded single-run survival, and the
 per-target budgets in [`targets.json`](targets.json) stay valid unchanged. This
 equivalence is covered by `tests/test_mutation_sharding.py` (database level) and
@@ -84,6 +84,13 @@ uv run python scripts/run_mutation_suite.py \
 > in per-worker copied trees breaks them (missing project → every mutant
 > "killed" → 0%). Both were measured. In-job parallelism was therefore removed;
 > a shard is always sequential.
+
+Timeouts are target-specific upper bounds for one witness-suite invocation.
+Most targets use 30 seconds. `json-shred` uses 45 seconds because its maintained
+563-test baseline runs immediately below 30 seconds on an unloaded local worker
+and can cross that boundary under normal hosted-runner variance; the extra
+headroom prevents the plan-stage baseline from being classified as a mutant
+timeout before sharding begins.
 
 Current CI ratchet:
 

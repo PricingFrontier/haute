@@ -317,3 +317,54 @@ def test_trace_result_schema_requires_omissions_and_typed_waterfall_errors() -> 
                 ],
             }
         )
+
+
+def test_trace_result_schema_accepts_multiple_matching_omission_diagnostics() -> None:
+    payload = {
+        "target_node_id": "target",
+        "row_index": 0,
+        "steps": [],
+        "omissions": [
+            {
+                "node_id": "source-a",
+                "node_name": "Source A",
+                "node_type": "dataInput",
+                "topological_rank": 0,
+                "reason": "duplicate_exact_match",
+                "diagnostic_index": 0,
+            },
+            {
+                "node_id": "source-b",
+                "node_name": "Source B",
+                "node_type": "dataInput",
+                "topological_rank": 1,
+                "reason": "relaxed_match_ambiguous",
+                "diagnostic_index": 1,
+            },
+        ],
+        "correlation_diagnostics": [
+            {
+                "code": "ambiguous_match",
+                "severity": "warning",
+                "reason": "duplicate_exact_match",
+                "message": "multiple rows matched",
+                "node_id": "source-a",
+            },
+            {
+                "code": "ambiguous_match",
+                "severity": "warning",
+                "reason": "relaxed_match_ambiguous",
+                "message": "multiple relaxed rows matched",
+                "node_id": "source-b",
+            },
+        ],
+        "generated_at": "2026-07-23T12:00:00+00:00",
+        "execution_origin": "fresh_execution",
+    }
+
+    result = TraceResultResponse.model_validate(payload)
+
+    assert [omission.node_id for omission in result.omissions] == [
+        "source-a",
+        "source-b",
+    ]

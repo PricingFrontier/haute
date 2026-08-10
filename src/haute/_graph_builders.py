@@ -18,14 +18,15 @@ from haute._ast_helpers import (
     _get_docstring,
 )
 from haute._config_builder import _resolve_node_config
-from haute._graph_utils import _edge_id
-from haute._types import GraphEdge, GraphNode, NodeData
-from haute.errors import ParseError
+from haute._graph_utils import _edge_id, resolve_input_mapping_names
+from haute._types import GraphEdge, GraphNode, NodeData, NodeType
+from haute.errors import ConfigError, ParseError
 
 __all__ = [
     "_extract_decorated_nodes",
     "_build_edges",
     "_build_rf_nodes",
+    "_edge_param_names_for_node",
 ]
 
 
@@ -135,6 +136,44 @@ def _extract_decorated_nodes(
     return raw_nodes
 
 
+def _edge_param_names_for_node(node_info: dict[str, Any]) -> list[str]:
+    """Return physical names used to infer a parsed node's incoming edges.
+
+    A mapped Polars signature intentionally keeps logical parameter names in
+    authored code.  Its decorator records the current physical edge names, so
+    implicit edge reconstruction must apply that mapping before matching node
+    identifiers.  Instances keep their existing semantics: their signature is
+    already physical and ``inputMapping`` describes the referenced original.
+    """
+    logical_params = list(node_info.get("edge_param_names", node_info["param_names"]))
+    config = node_info.get("config", {})
+    input_mapping = config.get("inputMapping") if isinstance(config, dict) else None
+    if (
+        node_info.get("node_type") != NodeType.POLARS
+        or not isinstance(config, dict)
+        or "instanceOf" in config
+        or input_mapping is None
+    ):
+        return logical_params
+    if not isinstance(input_mapping, dict):
+        raise ConfigError(
+            "inputMapping must be an object mapping logical input names to "
+            "current edge input names.",
+            input_mapping=input_mapping,
+        )
+
+    edge_params = [input_mapping.get(name, name) for name in logical_params]
+    resolved_logical_params = resolve_input_mapping_names(edge_params, input_mapping)
+    if resolved_logical_params != logical_params:
+        raise ConfigError(
+            "inputMapping logical names must match the Polars function's "
+            "positional input parameters.",
+            logical_params=logical_params,
+            resolved_logical_params=resolved_logical_params,
+        )
+    return edge_params
+
+
 def _build_edges(
     raw_nodes: list[dict],
     explicit_connect_pairs: list[tuple[str, str, str | None, str | None]],
@@ -164,7 +203,9 @@ def _build_edges(
     # Implicit edges from parameter names matching node names
     seen_implicit: set[tuple[str, str]] = set()
     for node_info in raw_nodes:
-        for param in node_info.get("edge_param_names", node_info["param_names"]):
+        edge_params = _edge_param_names_for_node(node_info)
+
+        for param in edge_params:
             if param in node_names and param != node_info["func_name"]:
                 pair = (param, node_info["func_name"])
                 # A duplicated parameter name (reachable via the regex

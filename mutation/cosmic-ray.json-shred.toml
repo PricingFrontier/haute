@@ -1,6 +1,6 @@
 [cosmic-ray]
 module-path = "src/haute/_json_shred.py"
-timeout = 30.0
+timeout = 45.0
 excluded-modules = []
 test-command = "__HAUTE_PYTHON__ -m pytest tests/test_json_shred_mutation_witnesses.py tests/test_json_shred_mut_validity.py tests/test_json_shred_mut_parser.py tests/test_json_shred_mut_records.py tests/test_json_shred_mut_shred.py tests/test_json_shred_mut_infer.py tests/test_inference_identifier_labels.py tests/test_json_shred_mut_lifecycle.py tests/test_json_shred_mut_rename_retry.py tests/test_json_shred_mut_stragglers.py tests/test_json_shred_properties.py tests/test_json_shred_parallel.py tests/test_v2_codec_and_shred.py tests/test_v2_object_nesting_inference.py tests/test_json_cache_coverage_uplift.py tests/test_scalar_array_and_inference.py tests/test_output_nested_roundtrip.py tests/test_output_nest_example_contract.py tests/test_load_v2_api_source.py tests/test_xml_api_input.py tests/test_error_detail_sanitization.py -q -x"
 

@@ -430,7 +430,19 @@ newer overlapping transform.
     selects the new node, clears trace, and cancels any in-flight preview.
     Splitting preserves the original edge's `sourceHandle` on the new base
     edge and `targetHandle` on the new downstream edge, and preserves the
-    dragged source's handle on the join-role edge. Failure leaves graph,
+    dragged source's handle on the join-role edge. When the downstream target
+    is an ordinary Polars transform, the rewrite also records its former
+    executable input name as a stable logical name in
+    `inputMapping={logical_name: new_edge_name}`. A repeated split updates the
+    existing mapping value instead of nesting or renaming the logical key;
+    existing unrelated entries are preserved. Existing instance mappings have
+    matching values rewritten to the new edge name but are not synthesized
+    when absent. Input names are derived through the same `edgeInputName`
+    contract as connection validation, including API-frame and collapsed
+    submodel alias/port identities; callers supply the current submodel
+    definitions needed to resolve those boundaries. An unresolved or malformed
+    identity fails before any graph rewrite or id allocation.
+    Failure leaves graph,
     selection, and history untouched; an edge-targeted failure uses the
     exhaustive reason-to-toast map, while a non-edge cancellation is silent.
 14. **Palette drop (`useEdgeHandlers.onDrop`).** Parses the drag event's

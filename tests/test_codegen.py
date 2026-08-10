@@ -2554,6 +2554,10 @@ class TestInstanceAmbiguousMapping:
     def test_explicit_mapping_unblocks_codegen(self):
         code = graph_to_code(self._ambiguous_graph({"Rate": "X_Rate", "Base_Rate": "X_Base_Rate"}))
         compile(code, "<test>", "exec")
+        assert (
+            '@pipeline.instance(of="Blend", '
+            "inputMapping={'Rate': 'X_Rate', 'Base_Rate': 'X_Base_Rate'})"
+        ) in code
         assert "Rate=X_Rate" in code
         assert "Base_Rate=X_Base_Rate" in code
 
@@ -3345,6 +3349,92 @@ class TestGenTransformEdgeCases:
         assert first_line.startswith("@pipeline.polars"), first_line
         assert "selected_columns" not in first_line
         _compile_node_code(code)
+
+    def test_stable_input_mapping_round_trips_and_runs_standalone(self):
+        from haute.parser import parse_pipeline_source
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "raw_rows",
+                        "data": {
+                            "label": "raw_rows",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = pl.LazyFrame({'value': [99]})",
+                            },
+                        },
+                    },
+                    {
+                        "id": "replacement",
+                        "data": {
+                            "label": "Replacement Parent",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = pl.LazyFrame({'value': [2]})",
+                            },
+                        },
+                    },
+                    {
+                        "id": "enriched",
+                        "data": {
+                            "label": "enriched",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = raw_rows.with_columns(value_doubled=pl.col('value') * 2)"
+                                ),
+                                "inputMapping": {
+                                    "raw_rows": "Replacement_Parent",
+                                },
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e-raw-replacement",
+                        "source": "raw_rows",
+                        "target": "replacement",
+                    },
+                    {
+                        "id": "e-replacement-enriched",
+                        "source": "replacement",
+                        "target": "enriched",
+                    },
+                ],
+            }
+        )
+
+        code = graph_to_code(graph, pipeline_name="stable_mapping")
+        assert "inputMapping={'raw_rows': 'Replacement_Parent'}" in code
+        assert "def enriched(raw_rows: pl.LazyFrame)" in code
+
+        parsed = parse_pipeline_source(code)
+        parsed_enriched = next(node for node in parsed.nodes if node.id == "enriched")
+        assert parsed_enriched.data.config["inputMapping"] == {"raw_rows": "Replacement_Parent"}
+        assert [
+            (edge.source, edge.target) for edge in parsed.edges if edge.target == "enriched"
+        ] == [
+            ("Replacement_Parent", "enriched"),
+        ]
+        assert graph_to_code(parsed, pipeline_name="stable_mapping") == code
+
+        namespace: dict[str, object] = {}
+        exec(compile(code, "<stable_mapping>", "exec"), namespace)
+        runtime_pipeline = namespace["pipeline"]
+        runtime_graph = runtime_pipeline.to_graph()  # type: ignore[union-attr]
+        assert [
+            (edge["source"], edge["target"])
+            for edge in runtime_graph["edges"]
+            if edge["target"] == "enriched"
+        ] == [("Replacement_Parent", "enriched")]
+
+        result = runtime_pipeline.run()  # type: ignore[union-attr]
+        if isinstance(result, pl.LazyFrame):
+            result = result.collect()
+        assert result["value_doubled"].to_list() == [4]  # type: ignore[index]
 
 
 class TestGenLiveSwitchRoundTrip:

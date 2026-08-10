@@ -194,6 +194,11 @@ def _build_node_config(
     # Instance reference (works for any node type)
     if "of" in decorator_kwargs:
         config["instanceOf"] = decorator_kwargs["of"]
+    # ``inputMapping`` is also used by ordinary Polars transforms to retain a
+    # stable logical input name across topology rewrites.  Keep the decorator
+    # metadata on parse so graph -> source -> graph remains a fixpoint.
+    if "inputMapping" in decorator_kwargs:
+        config["inputMapping"] = decorator_kwargs["inputMapping"]
     return config
 
 

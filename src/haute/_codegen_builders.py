@@ -37,6 +37,7 @@ from haute._explore_overview import validate_explore_overview
 from haute._graph_utils import (
     _sanitize_func_name,
     duplicate_input_names,
+    resolve_input_mapping_names,
 )
 from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
@@ -871,20 +872,32 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
 def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     code = str(config.get("code") or "").strip()
-    if code and "df" in source_names:
+    input_mapping = config.get("inputMapping")
+    logical_source_names = (
+        resolve_input_mapping_names(source_names, input_mapping)
+        if input_mapping is not None
+        else source_names
+    )
+    if code and ("df" in source_names or "df" in logical_source_names):
         raise ConfigError(
             "Polars input name 'df' conflicts with the reserved output name; rename the "
             "upstream node or frame.",
             node_id=node.id,
             node_label=node.data.label,
         )
-    params = _build_params(source_names, default_df=False)
+    params = _build_params(logical_source_names, default_df=False)
     sel = config.get("selected_columns", [])
 
+    decorator_args: list[str] = []
     if sel:
-        decorator = f"@pipeline.polars(selected_columns={sel!r})"
-    else:
-        decorator = "@pipeline.polars"
+        decorator_args.append(f"selected_columns={sel!r}")
+    if input_mapping is not None:
+        # ``resolve_input_mapping_names`` validated the persisted value before
+        # it reaches source interpolation.
+        decorator_args.append(f"inputMapping={input_mapping!r}")
+    decorator = (
+        f"@pipeline.polars({', '.join(decorator_args)})" if decorator_args else "@pipeline.polars"
+    )
 
     if not code:
         # Not written yet. A polars node's output is whatever its code assigns

@@ -646,6 +646,22 @@ class TestBuildNodeFn:
         df = fn(lf).collect()
         assert df["y"].to_list() == [11]
 
+    def test_transform_input_mapping_exposes_stable_logical_name(self):
+        node = _transform_node(
+            "t",
+            code="df = raw_rows.with_columns(y=pl.col('x') + 1)",
+        )
+        node.data.config["inputMapping"] = {"raw_rows": "Edge_Join_1"}
+        _, fn, is_source = _build_node_fn(
+            node,
+            source_names=["Edge_Join_1"],
+            orig_source_names=["raw_rows"],
+        )
+
+        assert is_source is False
+        result = fn(pl.DataFrame({"x": [10]}).lazy()).collect()
+        assert result["y"].to_list() == [11]
+
     def test_transform_without_code_raises(self):
         node = _transform_node("t", code="")
         _, fn, is_source = _build_node_fn(node, source_names=["source"])
