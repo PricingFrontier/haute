@@ -179,9 +179,9 @@ def right() -> pl.LazyFrame:
 @pipeline.polars
 def combined(left: pl.LazyFrame, right: pl.LazyFrame) -> pl.LazyFrame:
     """"""
-    df = left
-    df = left
-    return df
+    raise NotImplementedError(
+        "This transform has no code yet. Add code that defines what it returns.",
+    )
 '''
 
 

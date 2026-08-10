@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from haute._code_extraction import (
+    _extract_explore_user_code,
     _extract_external_user_code,
     _extract_model_score_user_code,
     _extract_rating_step_user_code,
@@ -173,7 +174,7 @@ def _build_node_config(
         # branch and pick up a `code` config.
         pass
     elif node_type == NodeType.EXPLORE:
-        code = _extract_user_code(body, param_names) if body else ""
+        code = _extract_explore_user_code(body, param_names) if body else ""
         if code:
             config["code"] = code
         if "overview" in decorator_kwargs:
@@ -193,6 +194,11 @@ def _build_node_config(
     # Instance reference (works for any node type)
     if "of" in decorator_kwargs:
         config["instanceOf"] = decorator_kwargs["of"]
+    # ``inputMapping`` is also used by ordinary Polars transforms to retain a
+    # stable logical input name across topology rewrites.  Keep the decorator
+    # metadata on parse so graph -> source -> graph remains a fixpoint.
+    if "inputMapping" in decorator_kwargs:
+        config["inputMapping"] = decorator_kwargs["inputMapping"]
     return config
 
 

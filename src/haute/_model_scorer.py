@@ -1168,11 +1168,15 @@ def _run_score_pipeline(
         from haute._user_exec import _exec_user_code
 
         all_dfs = (result_lf,) + extra_dfs
+        # Model-score post-code operates on the scored frame as ``df`` (the
+        # generated module binds it via the score_from_config scaffold), so
+        # keep that alias alongside the named input bindings.
         result_lf = _exec_user_code(
             code,
             source_names or [],
             all_dfs,
             extra_ns={"model": scoring_model},
+            alias_first_input_as_df=True,
         )
     return result_lf
 

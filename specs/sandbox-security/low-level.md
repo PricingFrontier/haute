@@ -79,26 +79,35 @@
 ## Control flow
 
 **Pipeline code execution (`_user_exec._exec_user_code`)**
-1. Build `local_ns` — seeds `pl` (polars), positional source dataframes under
-   `src_names`, an `orig`→`inst` name-mapping fallback via
-   `build_instance_mapping` (execution-engine helper), a `df` alias for the first
-   source, then any `extra_ns` overrides.
+1. Build the local dataframe bindings — seeds `pl` (polars), positional source
+   dataframes under `src_names`, and an `orig`→`inst` name-mapping fallback via
+   `build_instance_mapping` (execution-engine helper). `df` is NOT pre-bound
+   for polars transforms: inputs are only
+   their named bindings and `df` is the output the code must assign. The name
+   `df` is therefore reserved and rejected as a polars input, while a preamble
+   binding named `df` is hidden from node code. Callers whose code box operates
+   on one implicit frame named `df` — external files, explore, and post-code
+   hooks — opt in explicitly with `alias_first_input_as_df=True`.
 2. Call `validate_user_code(code)` (imports disabled by default). On
    `UnsafeCodeError` whose `__cause__` is a `SyntaxError`, re-raise the bare
    `SyntaxError` instead — this normalizes the error type callers see for a plain
    typo versus a genuine security rejection.
-3. `exec(code, safe_globals(pl=pl, **extra_ns), local_ns)` — globals and locals
-   are deliberately separate dicts (globals restricted, locals seeded with the
-   dataframes) so name resolution inside `exec`'d code still sees the source
-   variables.
+3. Build one fresh execution namespace from `safe_globals(pl=pl, **extra_ns)`
+   and then overlay the local dataframe bindings before calling `exec`. Input
+   names therefore take precedence over same-named preamble globals and remain
+   visible inside comprehensions and nested helpers, matching normal generated
+   function semantics. The reserved `df` key is omitted from `extra_ns` so it
+   cannot masquerade as a transform output.
 4. On any exception, walk `exc.__traceback__` in reverse for the last frame whose
    `filename == "<string>"` and stash its `lineno` on `exc._user_code_line` before
    re-raising unchanged.
-5. Read `local_ns.get("df", ...)` as the result and coerce an eager
-   `pl.DataFrame` to `.lazy()`. Other values are returned unchanged despite the
-   `_Frame` annotation (`# type: ignore` at the return); the execution engine's
-   node-output check then raises `TypeError` if user code assigned `df` to a
-   non-Polars value.
+5. Read `execution_ns["df"]` as the result and coerce an eager
+   `pl.DataFrame` to `.lazy()`. If the executed code never assigned `df`,
+   raise `ExecutionError` naming the node's available inputs — never silently
+   pass an input through as the result. Other values are returned unchanged
+   despite the `_Frame` annotation (`# type: ignore` at the return); the
+   execution engine's node-output check then raises `TypeError` if user code
+   assigned `df` to a non-Polars value.
 
 **Preamble and training-script distinction.** `executor._compile_preamble` calls
 `validate_user_code(..., allow_imports=True)` and then `exec()`s the preamble with

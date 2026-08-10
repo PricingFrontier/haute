@@ -78,7 +78,7 @@ def _preview_trace_graph(tmp_path: Path) -> PipelineGraph:
                 NodeType.POLARS,
                 {
                     "code": """
-df = df.with_columns(
+df = source.with_columns(
     age_factor=(pl.col("age") / 100.0 + 1.0),
     base_exposure=pl.col("base") * pl.col("exposure"),
     territory_key=pl.col("territory"),
@@ -91,7 +91,7 @@ df = df.with_columns(
                 NodeType.POLARS,
                 {
                     "code": """
-df = df.with_columns(
+df = features.with_columns(
     freq=(pl.col("claim_count") + 1) * pl.col("age_factor"),
 ).select(["policy_id", "territory_key", "freq"])
 """,
@@ -102,7 +102,7 @@ df = df.with_columns(
                 NodeType.POLARS,
                 {
                     "code": """
-df = df.with_columns(
+df = features.with_columns(
     severity=pl.col("base_exposure") * ((pl.col("policy_id") % 17) + 1),
 ).select(["policy_id", "territory_key", "severity"])
 """,
@@ -122,7 +122,7 @@ df = freq.join(sev, on=["policy_id", "territory_key"], how="inner")
                 NodeType.POLARS,
                 {
                     "code": """
-df = df.with_columns(
+df = join.with_columns(
     premium=(pl.col("freq") * pl.col("severity")).round(4),
     risk_bucket=pl.when(pl.col("severity") > 1000.0)
         .then(pl.lit("high"))
@@ -165,7 +165,7 @@ def _linear_trace_graph(tmp_path: Path) -> tuple[PipelineGraph, str, str]:
                 NodeType.POLARS,
                 {
                     "code": (
-                        "df = df.with_columns("
+                        f"df = {parent}.with_columns("
                         f'{output_column}=pl.col("{input_column}") * 1.01 + {index}'
                         ")"
                     )

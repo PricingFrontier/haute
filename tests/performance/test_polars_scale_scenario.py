@@ -193,7 +193,7 @@ def _budget_rejection(graph: PipelineGraph) -> GroupByExecutionUnsupportedError:
                 NodeType.POLARS,
                 {
                     "code": (
-                        "df = df.group_by('region_factor').agg("
+                        "df = training_input.group_by('region_factor').agg("
                         "pl.col('target').mean().alias('target'))"
                     )
                 },

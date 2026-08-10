@@ -24,6 +24,7 @@ from haute._execute_lazy import (
 from haute._flatten import flatten_graph as flatten_graph
 from haute._graph_utils import _sanitize_func_name as _sanitize_func_name
 from haute._graph_utils import build_instance_mapping as build_instance_mapping
+from haute._graph_utils import resolve_input_mapping_names as resolve_input_mapping_names
 from haute._graph_utils import resolve_orig_source_names as resolve_orig_source_names
 from haute._input_providers import (
     resolve_data_input_from_config as resolve_data_input_from_config,

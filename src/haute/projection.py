@@ -1639,16 +1639,35 @@ def _frame_chain_calls(expr: ast.AST, frame_name: str) -> list[ast.Call] | None:
     return calls
 
 
+def _chain_root_name(expr: ast.AST) -> str | None:
+    """Return the bare name a method chain is rooted at, or ``None``."""
+    current = expr
+    while isinstance(current, ast.Call) and isinstance(current.func, ast.Attribute):
+        current = current.func.value
+    if isinstance(current, ast.Name):
+        return current.id
+    return None
+
+
 def _ordered_frame_operations(tree: ast.Module) -> list[ast.Call] | None:
-    """Extract the linear ``df`` operation sequence in execution order.
+    """Extract the linear frame operation sequence in execution order.
 
     Rename namespace tracking is only sound when the operation order is
-    provable, so anything other than a plain sequence of ``df = df.<m>(...)``
+    provable, so anything other than a plain sequence of ``df = <chain>``
     statements (plus inert imports/docstrings/literal helper assignments)
     returns ``None`` and the caller keeps the safe full-width boundary.
+
+    ``df`` is the node's output variable, not an input: the FIRST frame
+    assignment starts the chain from the node's named input parameter
+    (``df = quotes.rename(...)``), and every later one continues from
+    ``df`` itself. A first chain rooted at ``df`` is also accepted for
+    analysis purposes — such legacy code now fails at execution, which
+    makes the demand this walk derives for it moot.
     """
     operations: list[ast.Call] = []
     saw_frame_assignment = False
+    frame_names = {"df"}
+    helper_names: set[str] = set()
     for stmt in tree.body:
         if isinstance(stmt, (ast.Import, ast.ImportFrom, ast.Pass)):
             continue
@@ -1662,17 +1681,23 @@ def _ordered_frame_operations(tree: ast.Module) -> list[ast.Call] | None:
         if target.id != "df":
             # Helper assignments must not capture the frame or hide column
             # references behind calls the column walkers cannot see through.
-            if _expr_references_name(stmt.value, "df"):
+            if any(_expr_references_name(stmt.value, name) for name in frame_names):
                 return None
             if any(isinstance(child, ast.Call) for child in ast.walk(stmt.value)):
                 return None
+            helper_names.add(target.id)
             continue
         chain = _frame_chain_calls(stmt.value, "df")
+        if chain is None and not saw_frame_assignment:
+            root = _chain_root_name(stmt.value)
+            if root is not None and root not in helper_names:
+                frame_names.add(root)
+                chain = _frame_chain_calls(stmt.value, root)
         if chain is None:
             return None
         for call in chain:
             for argument in [*call.args, *(kw.value for kw in call.keywords)]:
-                if _expr_references_name(argument, "df"):
+                if any(_expr_references_name(argument, name) for name in frame_names):
                     return None
         operations.extend(chain)
         saw_frame_assignment = True

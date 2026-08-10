@@ -162,7 +162,7 @@ def _lineage_graph() -> PipelineGraph:
             data=NodeData(
                 label=f"n{index}",
                 nodeType=NodeType.POLARS,
-                config={"code": f"df = df.with_columns(c{index}=pl.lit({index}))"},
+                config={"code": (f"df = n{index - 1}.with_columns(c{index}=pl.lit({index}))")},
             ),
         )
         for index in range(1, 100)
@@ -207,7 +207,7 @@ def test_canonical_lineage_identity_evidence(
     changed_nodes[50] = changed_nodes[50].model_copy(
         update={
             "data": changed_nodes[50].data.model_copy(
-                update={"config": {"code": "df = df.with_columns(c50=pl.lit(500))"}}
+                update={"config": {"code": "df = n49.with_columns(c50=pl.lit(500))"}}
             )
         }
     )

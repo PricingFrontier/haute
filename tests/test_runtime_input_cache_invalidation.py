@@ -230,7 +230,7 @@ class TestPreviewRuntimeFileInvalidation:
                                 "config": {
                                     "path": str(factor),
                                     "fileType": "json",
-                                    "code": "df = df.with_columns(y=pl.lit(obj['factor']))",
+                                    "code": "df = src.with_columns(y=pl.lit(obj['factor']))",
                                 },
                             },
                         }
@@ -383,7 +383,7 @@ class TestTraceRuntimeInputInvalidation:
             {
                 "nodes": [
                     _parquet_input_node("src", p),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -483,7 +483,7 @@ class TestTraceRuntimeInputInvalidation:
             {
                 "nodes": [
                     _parquet_input_node("src", p),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }

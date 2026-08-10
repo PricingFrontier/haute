@@ -677,6 +677,10 @@ def _node_descriptor(node_type: NodeType) -> NodeCapabilityDescriptor:
         anti_patterns.append(
             "Do not discard immutable Polars results; assign them to df or return them."
         )
+        anti_patterns.append(
+            "Do not read df before assigning it; df is the output variable, not an "
+            "input - start from the node's named input parameters."
+        )
     if node_type == NodeType.EDGE_JOIN:
         anti_patterns.append("Do not omit or duplicate edgeJoin target_handle roles.")
     return NodeCapabilityDescriptor(

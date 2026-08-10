@@ -6,6 +6,7 @@ import ast
 import re
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 from haute._codegen_builders import (
@@ -23,7 +24,7 @@ from haute.codegen import (
     graph_to_code,
     graph_to_code_multi,
 )
-from haute.errors import ParseError
+from haute.errors import ConfigError, ParseError
 from tests.conftest import (
     compile_node_code as _compile_node_code,
 )
@@ -276,11 +277,14 @@ class TestNodeToCode:
         )
         code = _node_to_code(node, source_names=["load_data"])
         assert "def Clean(load_data: pl.LazyFrame)" in code
+        assert "df: pl.LazyFrame" in code
         assert "filter" in code
         assert "return df" in code
         _compile_node_code(code)
 
-    def test_transform_without_code_uses_first_source(self):
+    def test_transform_without_code_emits_a_raising_placeholder(self):
+        """A no-code transform has no implicit passthrough, even with one
+        input: the body raises if run, while the file still saves/compiles."""
         node = _n(
             {
                 "id": "t",
@@ -289,7 +293,8 @@ class TestNodeToCode:
         )
         code = _node_to_code(node, source_names=["upstream"])
         assert "def Pass(upstream: pl.LazyFrame)" in code
-        assert "return upstream" in code
+        assert "raise NotImplementedError" in code
+        assert "return upstream" not in code
         _compile_node_code(code)
 
     def test_transform_without_code_no_sources_emits_a_raising_placeholder(self):
@@ -305,6 +310,85 @@ class TestNodeToCode:
         code = _node_to_code(node, source_names=[])
         assert "raise NotImplementedError" in code
         assert "return df" not in code
+        _compile_node_code(code)
+
+    def test_transform_with_code_and_no_sources_has_no_phantom_df_parameter(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Construct",
+                    "nodeType": "polars",
+                    "config": {"code": "df = pl.LazyFrame({'x': [1]})"},
+                },
+            }
+        )
+
+        code = _node_to_code(node, source_names=[])
+
+        assert "def Construct() -> pl.LazyFrame:" in code
+        _compile_node_code(code)
+
+    def test_transform_rejects_df_as_a_named_input(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Transform",
+                    "nodeType": "polars",
+                    "config": {"code": "df = df.with_columns(x=pl.lit(1))"},
+                },
+            }
+        )
+
+        with pytest.raises(ConfigError, match="reserved output name"):
+            _node_to_code(node, source_names=["df"])
+
+    def test_transform_missing_output_cannot_fall_back_to_a_global_df(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "MissingOutput",
+                    "nodeType": "polars",
+                    "config": {"code": "_ = source"},
+                },
+            }
+        )
+        code = _node_to_code(node, source_names=["source"])
+
+        class PipelineStub:
+            @staticmethod
+            def polars(*args, **kwargs):
+                if args and callable(args[0]):
+                    return args[0]
+                return lambda function: function
+
+        namespace = {
+            "pipeline": PipelineStub(),
+            "pl": pl,
+            "df": pl.LazyFrame({"wrong": [9]}),
+        }
+        exec(code, namespace)
+
+        with pytest.raises(UnboundLocalError):
+            namespace["MissingOutput"](pl.LazyFrame({"source": [1]}))
+
+    def test_no_code_transform_with_df_input_still_saves_as_incomplete(self):
+        node = _n(
+            {
+                "id": "t",
+                "data": {
+                    "label": "Transform",
+                    "nodeType": "polars",
+                    "config": {"code": ""},
+                },
+            }
+        )
+
+        code = _node_to_code(node, source_names=["df"])
+
+        assert "raise NotImplementedError" in code
         _compile_node_code(code)
 
     def test_output_references_sidecar_and_passes_through(self):
@@ -1154,7 +1238,7 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_node_with_empty_string_config(self):
-        """Transform with empty string code should generate passthrough."""
+        """Transform with empty string code emits the raising placeholder."""
         node = _n(
             {
                 "id": "empty",
@@ -1166,7 +1250,8 @@ class TestCodegenEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["upstream"])
-        assert "return upstream" in code
+        assert "raise NotImplementedError" in code
+        assert "return upstream" not in code
         _compile_node_code(code)
 
     def test_graph_with_edge_referencing_nonexistent_node(self):
@@ -1274,7 +1359,29 @@ class TestCodegenEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["features"])
+        assert "df = features" in code
         assert "return df" in code
+        _compile_node_code(code)
+
+    def test_external_file_binds_its_documented_df_input(self):
+        node = _n(
+            {
+                "id": "ext",
+                "data": {
+                    "label": "Model",
+                    "nodeType": "externalFile",
+                    "config": {
+                        "path": "model.pkl",
+                        "fileType": "pickle",
+                        "code": "df = df.with_columns(prediction=pl.lit(obj))",
+                    },
+                },
+            }
+        )
+
+        code = _node_to_code(node, source_names=["features"])
+
+        assert code.index("df = features") < code.index("df = df.with_columns")
         _compile_node_code(code)
 
     def test_constant_with_empty_values(self):
@@ -2447,6 +2554,10 @@ class TestInstanceAmbiguousMapping:
     def test_explicit_mapping_unblocks_codegen(self):
         code = graph_to_code(self._ambiguous_graph({"Rate": "X_Rate", "Base_Rate": "X_Base_Rate"}))
         compile(code, "<test>", "exec")
+        assert (
+            '@pipeline.instance(of="Blend", '
+            "inputMapping={'Rate': 'X_Rate', 'Base_Rate': 'X_Base_Rate'})"
+        ) in code
         assert "Rate=X_Rate" in code
         assert "Base_Rate=X_Base_Rate" in code
 
@@ -3182,7 +3293,7 @@ class TestGenOutputEdgeCases:
 
 
 class TestGenTransformEdgeCases:
-    def test_empty_code_passthrough(self):
+    def test_empty_code_emits_raising_placeholder(self):
         node = _n(
             {
                 "id": "t",
@@ -3194,7 +3305,8 @@ class TestGenTransformEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["upstream"])
-        assert "return upstream" in code
+        assert "raise NotImplementedError" in code
+        assert "return upstream" not in code
         _compile_node_code(code)
 
     def test_selected_columns_decorator_kwarg(self):
@@ -3237,6 +3349,92 @@ class TestGenTransformEdgeCases:
         assert first_line.startswith("@pipeline.polars"), first_line
         assert "selected_columns" not in first_line
         _compile_node_code(code)
+
+    def test_stable_input_mapping_round_trips_and_runs_standalone(self):
+        from haute.parser import parse_pipeline_source
+
+        graph = _g(
+            {
+                "nodes": [
+                    {
+                        "id": "raw_rows",
+                        "data": {
+                            "label": "raw_rows",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = pl.LazyFrame({'value': [99]})",
+                            },
+                        },
+                    },
+                    {
+                        "id": "replacement",
+                        "data": {
+                            "label": "Replacement Parent",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": "df = pl.LazyFrame({'value': [2]})",
+                            },
+                        },
+                    },
+                    {
+                        "id": "enriched",
+                        "data": {
+                            "label": "enriched",
+                            "nodeType": "polars",
+                            "config": {
+                                "code": (
+                                    "df = raw_rows.with_columns(value_doubled=pl.col('value') * 2)"
+                                ),
+                                "inputMapping": {
+                                    "raw_rows": "Replacement_Parent",
+                                },
+                            },
+                        },
+                    },
+                ],
+                "edges": [
+                    {
+                        "id": "e-raw-replacement",
+                        "source": "raw_rows",
+                        "target": "replacement",
+                    },
+                    {
+                        "id": "e-replacement-enriched",
+                        "source": "replacement",
+                        "target": "enriched",
+                    },
+                ],
+            }
+        )
+
+        code = graph_to_code(graph, pipeline_name="stable_mapping")
+        assert "inputMapping={'raw_rows': 'Replacement_Parent'}" in code
+        assert "def enriched(raw_rows: pl.LazyFrame)" in code
+
+        parsed = parse_pipeline_source(code)
+        parsed_enriched = next(node for node in parsed.nodes if node.id == "enriched")
+        assert parsed_enriched.data.config["inputMapping"] == {"raw_rows": "Replacement_Parent"}
+        assert [
+            (edge.source, edge.target) for edge in parsed.edges if edge.target == "enriched"
+        ] == [
+            ("Replacement_Parent", "enriched"),
+        ]
+        assert graph_to_code(parsed, pipeline_name="stable_mapping") == code
+
+        namespace: dict[str, object] = {}
+        exec(compile(code, "<stable_mapping>", "exec"), namespace)
+        runtime_pipeline = namespace["pipeline"]
+        runtime_graph = runtime_pipeline.to_graph()  # type: ignore[union-attr]
+        assert [
+            (edge["source"], edge["target"])
+            for edge in runtime_graph["edges"]
+            if edge["target"] == "enriched"
+        ] == [("Replacement_Parent", "enriched")]
+
+        result = runtime_pipeline.run()  # type: ignore[union-attr]
+        if isinstance(result, pl.LazyFrame):
+            result = result.collect()
+        assert result["value_doubled"].to_list() == [4]  # type: ignore[index]
 
 
 class TestGenLiveSwitchRoundTrip:

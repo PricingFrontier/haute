@@ -330,7 +330,7 @@ def test_ratebook_solve_preserves_non_source_banding_input_after_target_checkpoi
                     "data": {
                         "label": "banding transform",
                         "nodeType": "polars",
-                        "config": {"code": ""},
+                        "config": {"code": "df = banding_source"},
                     },
                 },
                 {

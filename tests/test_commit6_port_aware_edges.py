@@ -205,7 +205,7 @@ def test_generated_multiport_file_executes_as_plain_python(tmp_path) -> None:
                 data=NodeData(
                     label="processing",
                     nodeType=NodeType.POLARS,
-                    config={"code": "df"},
+                    config={"code": "df = quotes"},
                 ),
             ),
         ],

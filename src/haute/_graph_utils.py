@@ -276,23 +276,100 @@ def build_instance_mapping(
     return mapping
 
 
+def resolve_input_mapping_names(
+    source_names: list[str],
+    input_mapping: object,
+) -> list[str]:
+    """Return stable logical names aligned with current incoming edges.
+
+    Ordinary Polars transforms normally address each input by its current
+    edge-derived name.  A structural rewrite can replace a parent without
+    changing what that input means to the authored code; ``inputMapping``
+    records that relationship as ``logical_name -> current_edge_name``.
+
+    The relation is deliberately one-to-one.  Accepting stale values,
+    duplicate values, or colliding logical names would either leave a name
+    unbound or make two positional frames indistinguishable, so those states
+    fail loudly instead of falling back to a guessed ordering.
+    """
+    from haute.errors import ConfigError
+
+    if not isinstance(input_mapping, dict):
+        raise ConfigError(
+            "inputMapping must be an object mapping logical input names to "
+            "current edge input names.",
+            input_mapping=input_mapping,
+        )
+
+    invalid_entries = [
+        (logical, current)
+        for logical, current in input_mapping.items()
+        if not isinstance(logical, str)
+        or not logical
+        or _sanitize_func_name(logical) != logical
+        or not isinstance(current, str)
+        or not current
+    ]
+    if invalid_entries:
+        raise ConfigError(
+            "inputMapping entries must use non-empty canonical Haute input "
+            "identifiers for both logical names and current edge names.",
+            invalid_entries=invalid_entries,
+        )
+
+    mapping: dict[str, str] = input_mapping
+    source_set = set(source_names)
+    stale_values = [
+        (logical, current) for logical, current in mapping.items() if current not in source_set
+    ]
+    duplicate_values = duplicate_input_names(list(mapping.values()))
+    if stale_values or duplicate_values:
+        raise ConfigError(
+            "inputMapping must map each logical input to one distinct current edge input name.",
+            stale_values=stale_values,
+            duplicate_values=duplicate_values,
+            source_names=list(source_names),
+        )
+
+    logical_by_current = {current: logical for logical, current in mapping.items()}
+    resolved = [logical_by_current.get(current, current) for current in source_names]
+    duplicate_logical_names = duplicate_input_names(resolved)
+    if duplicate_logical_names:
+        raise ConfigError(
+            "inputMapping produces duplicate logical input names.",
+            duplicate_logical_names=duplicate_logical_names,
+            source_names=list(source_names),
+        )
+    return resolved
+
+
 def resolve_orig_source_names(
     node: GraphNode,
     node_map: dict[str, GraphNode],
     incoming_edges_by_target: Mapping[str, list[GraphEdge]],
 ) -> list[str] | None:
-    """For an instance node, return the names of the original's input edges.
+    """Return logical input names that differ from the current edge names.
 
-    Each name is derived from the original's incoming edge with
-    :func:`edge_input_name`, preserving the same frame-label semantics as the
-    executable original node.
+    For an instance, each name comes from the referenced original's incoming
+    edge.  For an ordinary Polars transform with ``inputMapping``, the mapping
+    preserves stable authored names across a parent-replacement rewrite.
 
-    Returns ``None`` for non-instance nodes.
+    Returns ``None`` when no aliasing is required.
     """
     ref = node.data.config.get("instanceOf")
-    if not ref or ref not in node_map:
+    if ref:
+        if ref not in node_map:
+            return None
+        return [
+            edge_input_name(edge, node_map[edge.source])
+            for edge in incoming_edges_by_target.get(ref, [])
+        ]
+
+    input_mapping = node.data.config.get("inputMapping")
+    if node.data.nodeType != "polars" or input_mapping is None:
         return None
-    return [
+    source_names = [
         edge_input_name(edge, node_map[edge.source])
-        for edge in incoming_edges_by_target.get(ref, [])
+        for edge in incoming_edges_by_target.get(node.id, [])
     ]
+    return resolve_input_mapping_names(source_names, input_mapping)

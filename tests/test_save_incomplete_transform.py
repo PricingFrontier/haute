@@ -187,11 +187,11 @@ def test_reopening_shows_the_unfinished_transform_still_empty(
     assert str(transform.data.config.get("code") or "").strip() == ""
 
 
-def test_a_single_input_transform_with_no_code_still_passes_through(
+def test_a_single_input_transform_with_no_code_saves_a_raising_placeholder(
     client: TestClient, isolated_cwd: Path, two_sources: list[dict[str, Any]]
 ) -> None:
-    """Unchanged behaviour, pinned so the new branch can't swallow it: exactly
-    one upstream and no code is a well-defined passthrough, not a placeholder."""
+    """A polars node has no implicit passthrough: exactly one upstream and no
+    code still saves, but the generated body raises and the save warns."""
     graph = {
         "nodes": [two_sources[0], _transform_node("polars_3", "passthrough")],
         "edges": [{"id": "e1", "source": "src_a", "target": "polars_3"}],
@@ -201,10 +201,10 @@ def test_a_single_input_transform_with_no_code_still_passes_through(
 
     assert response.status_code == 200, response.text
     source = (isolated_cwd / "passthrough_pipe.py").read_text(encoding="utf-8")
-    assert "return left" in source
-    assert "raise NotImplementedError" not in source
+    assert "return left" not in source
+    assert "raise NotImplementedError" in source
     warnings = response.json().get("warnings") or []
-    assert not any("passthrough" in w for w in warnings), warnings
+    assert any("passthrough" in w for w in warnings), warnings
 
 
 def test_live_executor_rejects_a_transform_with_several_inputs_and_no_code() -> None:
@@ -265,3 +265,37 @@ def test_save_warning_includes_an_incomplete_transform_inside_a_submodel(
     SavePipelineService(isolated_cwd)._validate_transforms_are_runnable(graph, warnings)
 
     assert any("child todo" in warning for warning in warnings), warnings
+
+
+def test_save_does_not_warn_for_an_instance_with_inherited_transform_code(
+    isolated_cwd: Path,
+) -> None:
+    """Instances inherit their original's executable transform configuration."""
+    graph = PipelineGraph.model_validate(
+        {
+            "nodes": [
+                {
+                    **_transform_node("original", "original transform"),
+                    "data": {
+                        "label": "original transform",
+                        "nodeType": "polars",
+                        "config": {"code": "df = pl.LazyFrame({'quote_id': [1]})"},
+                    },
+                },
+                {
+                    **_transform_node("instance", "instance transform"),
+                    "data": {
+                        "label": "instance transform",
+                        "nodeType": "polars",
+                        "config": {"instanceOf": "original"},
+                    },
+                },
+            ],
+            "edges": [],
+        }
+    )
+    warnings: list[str] = []
+
+    SavePipelineService(isolated_cwd)._validate_transforms_are_runnable(graph, warnings)
+
+    assert not any("instance transform" in warning for warning in warnings), warnings

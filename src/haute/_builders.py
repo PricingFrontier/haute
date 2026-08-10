@@ -458,7 +458,13 @@ def _build_data_input(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             validate_columns=tuple(projected.validate_columns),
         )
         if code:
-            return _exec_user_code(code, ["df"], (frame,), extra_ns=preamble)
+            return _exec_user_code(
+                code,
+                ["df"],
+                (frame,),
+                extra_ns=preamble,
+                alias_first_input_as_df=True,
+            )
         return frame
 
     return ctx.func_name, data_input_fn, True
@@ -540,6 +546,9 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def explore_with_code(df: _Frame) -> _Frame:
+        # Explore's code box operates on the single implicit frame ``df``;
+        # keep that binding explicitly now that _exec_user_code no longer
+        # seeds it for named-input node kinds.
         return _exec_user_code(
             code,
             _src_names,
@@ -547,6 +556,7 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             extra_ns=_preamble,
             orig_source_names=_orig_src,
             input_mapping=_in_map,
+            alias_first_input_as_df=True,
         )
 
     return ctx.func_name, explore_with_code, False
@@ -570,10 +580,11 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             # ``validate_project_path``, so a nested-pipeline relative ``path``
             # served from the project root would otherwise hash/open the wrong
             # (or a missing) file. Resolved at call time, mirroring codegen.
-            ens = {
-                "obj": load_external_object_from_config(config, base_dir=_configured_pipeline_dir())
-            }
-            ens.update(_preamble_ext)
+            ens = dict(_preamble_ext)
+            ens["obj"] = load_external_object_from_config(
+                config,
+                base_dir=_configured_pipeline_dir(),
+            )
             if dfs_by_name:
                 dfs = tuple(dfs_by_name[name] for name in _src_names if name in dfs_by_name)
             else:
@@ -585,6 +596,7 @@ def _build_external_file(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
                 extra_ns=ens,
                 orig_source_names=_orig_src,
                 input_mapping=_in_map,
+                alias_first_input_as_df=True,
             )
 
         return ctx.func_name, external_fn, False
@@ -704,7 +716,13 @@ def _build_rating_step(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             lf = dfs_positional[0] if dfs_positional else pl.LazyFrame()
         lf = _apply_rating_step_outputs(lf, _tables_captured, _combined_outputs_captured)
         if _code_captured:
-            lf = _exec_user_code(_code_captured, ["df"], (lf,), extra_ns=_preamble)
+            lf = _exec_user_code(
+                _code_captured,
+                ["df"],
+                (lf,),
+                extra_ns=_preamble,
+                alias_first_input_as_df=True,
+            )
         return lf
 
     return ctx.func_name, rating_fn, False
@@ -754,7 +772,13 @@ def _build_scenario_expander(ctx: NodeBuildContext) -> tuple[str, Callable, bool
             expanded = scenario_expand_fn(**dfs_by_name)
         else:
             expanded = scenario_expand_fn(*dfs_positional)
-        return _exec_user_code(code, ["df"], (expanded,), extra_ns=_preamble)
+        return _exec_user_code(
+            code,
+            ["df"],
+            (expanded,),
+            extra_ns=_preamble,
+            alias_first_input_as_df=True,
+        )
 
     return ctx.func_name, scenario_expand_with_code, False
 
@@ -1099,8 +1123,6 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # snippets.
         is_source = incoming_count == 0
         return ctx.func_name, transform_fn, is_source
-    if incoming_count == 1:
-        return ctx.func_name, _passthrough_fn, False
 
     def incomplete_transform_fn(
         *_dfs_positional: _Frame,

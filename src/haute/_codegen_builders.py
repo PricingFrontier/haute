@@ -30,13 +30,14 @@ import math
 from collections.abc import Callable
 from typing import Any
 
-from haute._code_extraction import INCOMPLETE_TRANSFORM_BODY
+from haute._code_extraction import INCOMPLETE_TRANSFORM_BODY, POLARS_OUTPUT_DECLARATION
 from haute._config_io import config_path_for_node
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
 from haute._explore_overview import validate_explore_overview
 from haute._graph_utils import (
     _sanitize_func_name,
     duplicate_input_names,
+    resolve_input_mapping_names,
 )
 from haute._rating import _normalise_combined_outputs
 from haute._rating_step_config import normalise_rating_tables
@@ -104,7 +105,7 @@ def _build_extra_kwargs(config: dict, keys: tuple[str, ...]) -> list[str]:
     return parts
 
 
-def _build_params(source_names: list[str]) -> str:
+def _build_params(source_names: list[str], *, default_df: bool = True) -> str:
     """Build the function parameter string from supplied per-edge names.
 
     The graph orchestrator validates duplicate names before reaching a
@@ -112,7 +113,7 @@ def _build_params(source_names: list[str]) -> str:
     inventing suffixes here would make generated signatures disagree with the
     executor's edge-derived bindings.
     """
-    names = source_names or ["df"]
+    names = source_names or (["df"] if default_df else [])
     duplicates = duplicate_input_names(names)
     assert not duplicates, f"duplicate codegen input name(s): {duplicates!r}"
     return ", ".join(f"{name}: pl.LazyFrame" for name in names)
@@ -338,17 +339,18 @@ def {func_name}({params}) -> pl.LazyFrame:
 '''
 
 
-def _wrap_external_code(code: str) -> str:
-    """Wrap external file user code: indent each line and append ``return df``.
+def _wrap_external_code(code: str, *, input_name: str | None = None) -> str:
+    """Wrap external-file code around its documented implicit ``df`` frame.
 
-    Unlike transforms, external file code is multi-statement - the user
-    is responsible for assigning a Polars DataFrame to ``df``.
+    Generated external functions bind their first input to ``df`` before the
+    user-authored multi-statement body, then append ``return df``.
     """
     code = code.strip()
-    if not code:
-        return "    return df"
-    indented = "\n".join(f"    {line}" for line in code.splitlines())
-    return f"{indented}\n    return df"
+    lines = [f"    df = {input_name}"] if input_name else []
+    if code:
+        lines.extend(f"    {line}" for line in code.splitlines())
+    lines.append("    return df")
+    return "\n".join(lines)
 
 
 def _wrap_user_code(code: str, source_names: list[str]) -> str:
@@ -789,7 +791,7 @@ def _gen_external_file(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
     code = str(config.get("code") or "").strip()
     params = _build_params(source_names)
-    body = _wrap_external_code(code)
+    body = _wrap_external_code(code, input_name=_first_source(source_names))
     cfg_path = config_path_for_node(node.data.nodeType, func_name).as_posix()
     return _RETAINED_EXTERNAL.format(
         func_name=func_name,
@@ -869,44 +871,58 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.POLARS)
 def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    first = source_names[0] if source_names else "df"
     code = str(config.get("code") or "").strip()
-    params = _build_params(source_names)
+    input_mapping = config.get("inputMapping")
+    logical_source_names = (
+        resolve_input_mapping_names(source_names, input_mapping)
+        if input_mapping is not None
+        else source_names
+    )
+    if code and ("df" in source_names or "df" in logical_source_names):
+        raise ConfigError(
+            "Polars input name 'df' conflicts with the reserved output name; rename the "
+            "upstream node or frame.",
+            node_id=node.id,
+            node_label=node.data.label,
+        )
+    params = _build_params(logical_source_names, default_df=False)
     sel = config.get("selected_columns", [])
 
+    decorator_args: list[str] = []
     if sel:
-        decorator = f"@pipeline.polars(selected_columns={sel!r})"
-    else:
-        decorator = "@pipeline.polars"
+        decorator_args.append(f"selected_columns={sel!r}")
+    if input_mapping is not None:
+        # ``resolve_input_mapping_names`` validated the persisted value before
+        # it reaches source interpolation.
+        decorator_args.append(f"inputMapping={input_mapping!r}")
+    decorator = (
+        f"@pipeline.polars({', '.join(decorator_args)})" if decorator_args else "@pipeline.polars"
+    )
 
     if not code:
-        if len(source_names) != 1:
-            # Not written yet: with no upstream there is nothing to return, and
-            # with several there is no defined way to combine them. Neither is a
-            # reason to block a SAVE — a half-built graph is a normal state to
-            # leave the editor in — so emit a body that is valid Python, keeps
-            # the node's inputs bound, and fails loudly if the pipeline is run.
-            # Save surfaces this as a warning (see `_validate_transforms_are_runnable`),
-            # and the placeholder round-trips back to "no code" in the editor.
-            return (
-                f"{decorator}\n"
-                f"def {func_name}({params}) -> pl.LazyFrame:\n"
-                f'    """{description}"""\n'
-                f"{INCOMPLETE_TRANSFORM_BODY}"
-            )
+        # Not written yet. A polars node's output is whatever its code assigns
+        # to ``df``; with no code there is nothing to return — there is no
+        # implicit passthrough, whatever the input count. Not a reason to block
+        # a SAVE — a half-built graph is a normal state to leave the editor in
+        # — so emit a body that is valid Python, keeps the node's inputs bound,
+        # and fails loudly if the pipeline is run. Save surfaces this as a
+        # warning (see `_validate_transforms_are_runnable`), and the
+        # placeholder round-trips back to "no code" in the editor.
         return (
             f"{decorator}\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
-            f"    return {source_names[0]}\n"
+            f"{INCOMPLETE_TRANSFORM_BODY}"
         )
 
+    # Inputs are the named parameters; ``df`` is only the output variable, so
+    # no binding is prepended — the code starts from the input it names.
     body = _wrap_user_code(code, ["df"])
     return (
         f"{decorator}\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    df = {first}\n"
+        f"{POLARS_OUTPUT_DECLARATION}"
         f"{body}\n"
     )
 

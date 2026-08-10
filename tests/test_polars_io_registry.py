@@ -74,7 +74,7 @@ def test_partitioned_parquet_prunes_partition_and_columns_before_execution(
                         "label": "target",
                         "nodeType": "polars",
                         "config": {
-                            "code": "df = df.select('value')",
+                            "code": "df = source.select('value')",
                             "contract": {
                                 "inputs": ["value"],
                                 "outputs": ["value"],

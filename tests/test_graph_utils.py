@@ -450,3 +450,58 @@ class TestResolveOrigSourceNames:
 
         result = resolve_orig_source_names(node_map["inst"], node_map, incoming_edges)
         assert result == ["policies", "claims_agg"]
+
+    def test_resolves_non_instance_polars_logical_names_in_edge_order(self):
+        from haute.graph_utils import resolve_orig_source_names
+
+        node_map = {
+            "joined": GraphNode(id="joined", data=NodeData(label="Edge Join 1")),
+            "other": GraphNode(id="other", data=NodeData(label="other")),
+            "target": GraphNode(
+                id="target",
+                data=NodeData(
+                    label="target",
+                    nodeType="polars",
+                    config={"inputMapping": {"raw_rows": "Edge_Join_1"}},
+                ),
+            ),
+        }
+        incoming_edges = {
+            "target": [_e("joined", "target"), _e("other", "target")],
+        }
+
+        assert resolve_orig_source_names(node_map["target"], node_map, incoming_edges) == [
+            "raw_rows",
+            "other",
+        ]
+
+    @pytest.mark.parametrize(
+        "mapping",
+        [
+            {"raw_rows": "missing"},
+            {"raw_rows": "Edge_Join_1", "also_raw": "Edge_Join_1"},
+            {"not valid": "Edge_Join_1"},
+        ],
+    )
+    def test_rejects_invalid_non_instance_polars_mapping(self, mapping):
+        from haute.errors import ConfigError
+        from haute.graph_utils import resolve_orig_source_names
+
+        node_map = {
+            "joined": GraphNode(id="joined", data=NodeData(label="Edge Join 1")),
+            "target": GraphNode(
+                id="target",
+                data=NodeData(
+                    label="target",
+                    nodeType="polars",
+                    config={"inputMapping": mapping},
+                ),
+            ),
+        }
+
+        with pytest.raises(ConfigError, match="inputMapping"):
+            resolve_orig_source_names(
+                node_map["target"],
+                node_map,
+                {"target": [_e("joined", "target")]},
+            )

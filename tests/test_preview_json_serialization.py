@@ -226,7 +226,7 @@ def test_first_click_target_preview_does_not_collect_columns_beyond_initial_cap(
                     nodeType="polars",
                     config={
                         "code": """
-df = df.with_columns(
+df = source.with_columns(
     unused_bomb=pl.col("feature").map_elements(
         lambda _value: (_ for _ in ()).throw(RuntimeError("unused column evaluated")),
         return_dtype=pl.Int64,

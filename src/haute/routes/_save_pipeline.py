@@ -1177,34 +1177,37 @@ class SavePipelineService:
     def _validate_transforms_are_runnable(self, graph: PipelineGraph, warnings: list[str]) -> None:
         """Emit a non-blocking warning per transform that has no code yet.
 
-        A transform with no code needs exactly one upstream to mean anything:
-        with none there is nothing to return, and with several there is no
-        defined way to combine them. Both are ordinary states for a graph the
+        A transform's output is whatever its code assigns to ``df``; with no
+        code there is nothing to return, whatever the input count — there is
+        no implicit passthrough. That is an ordinary state for a graph the
         user is still building, so — as with an API Input that has no tables
-        yet — they do not block the save. Codegen emits a placeholder body that
+        yet — it does not block the save. Codegen emits a placeholder body that
         raises if the pipeline is actually run, and this warning points at the
         node so the user is not surprised by that later.
         """
+        from haute._builders import resolve_instance_node
+
         scoped_graphs = [graph, *self._iter_embedded_submodel_graphs(graph)]
         for scoped_graph in scoped_graphs:
+            node_map = {node.id: node for node in scoped_graph.nodes}
             upstream_counts: dict[str, int] = {}
             for edge in scoped_graph.edges:
                 upstream_counts[edge.target] = upstream_counts.get(edge.target, 0) + 1
 
             for node in scoped_graph.nodes:
-                if node.data.nodeType != NodeType.POLARS:
+                resolved_node = resolve_instance_node(node, node_map)
+                if resolved_node.data.nodeType != NodeType.POLARS:
                     continue
-                if str(node.data.config.get("code") or "").strip():
+                if str(resolved_node.data.config.get("code") or "").strip():
                     continue
                 count = upstream_counts.get(node.id, 0)
-                if count == 1:
-                    continue
                 label = node.data.label or node.id
-                detail = (
-                    "has no inputs connected"
-                    if count == 0
-                    else f"combines {count} inputs but has no code to combine them"
-                )
+                if count == 0:
+                    detail = "has no inputs connected and no code"
+                elif count == 1:
+                    detail = "has no code to transform its input"
+                else:
+                    detail = f"combines {count} inputs but has no code to combine them"
                 warnings.append(
                     f"Transform node {label!r} {detail}. It will save, but running "
                     "the pipeline will fail until you add code to the node."

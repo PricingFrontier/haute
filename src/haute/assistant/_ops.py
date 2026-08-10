@@ -1307,45 +1307,155 @@ def _names_in_owning_scope(node: ast.AST, name: str) -> Iterator[ast.AST]:
         yield from _names_in_owning_scope(child, name)
 
 
-def _reads_df_before_binding_it(tree: ast.Module) -> bool:
-    """Report whether the code reads `df` before assigning it.
+def _can_reach_output_with_df_unbound(tree: ast.Module) -> bool:
+    """Report whether the code can reach its output with `df` unbound.
 
-    Such a read resolves to the node's *first input by edge order*, which the
-    generated module makes explicit as `df = <first input>`. On a single-input
-    node that is the idiom. On a multi-input node it is a silent dependency on
-    wiring order: adding or reordering an edge changes which frame the code
-    operates on, with no error and no visible diff in the code itself.
+    `df` is the node's output variable and is never bound to an input — a
+    polars node's inputs are its named parameters. A read before the code's
+    own assignment is therefore a guaranteed `NameError` at execution time,
+    in the generated module and canvas execution alike.
 
-    Only reads that resolve to that injected binding count, so the walk skips
+    Only reads that resolve to the module-level `df` count, so the walk skips
     any nested scope holding a `df` of its own. A statement's loads are
     considered before its stores because an assignment evaluates its value
-    first: `df = df.head()` reads the injected frame, `df = left` does not.
+    first: `df = df.head()` reads the unbound name, `df = left` does not. The
+    generated trailing output read is implicit, so a conditional/loop-only
+    assignment that may fall through without binding also returns ``True``.
     """
 
-    for statement in tree.body:
-        names = list(_names_in_owning_scope(statement, _BARE_INPUT_NAME))
-        if any(_is_name(node, _BARE_INPUT_NAME, ast.Load) for node in names):
-            return True
-        if any(_is_name(node, _BARE_INPUT_NAME, ast.Store) for node in names):
-            return False
-    return False
+    def reads_unbound(node: ast.AST, bound: bool) -> bool:
+        return not bound and any(
+            _is_name(candidate, _BARE_INPUT_NAME, ast.Load)
+            for candidate in _names_in_owning_scope(node, _BARE_INPUT_NAME)
+        )
+
+    def binds_df(node: ast.AST) -> bool:
+        return any(
+            _is_name(candidate, _BARE_INPUT_NAME, ast.Store)
+            for candidate in _names_in_owning_scope(node, _BARE_INPUT_NAME)
+        )
+
+    def definitely_binds_df(statement: ast.stmt) -> bool:
+        """Recognise straight-line statements whose assignment always runs."""
+
+        if isinstance(statement, ast.Assign):
+            return any(binds_df(target) for target in statement.targets)
+        if isinstance(statement, ast.AnnAssign):
+            return statement.value is not None and binds_df(statement.target)
+        if isinstance(statement, ast.AugAssign):
+            return binds_df(statement.target)
+        return False
+
+    def deletes_df(statement: ast.Delete) -> bool:
+        return any(
+            _is_name(candidate, _BARE_INPUT_NAME, ast.Del)
+            for target in statement.targets
+            for candidate in ast.walk(target)
+        )
+
+    def examine_block(statements: Sequence[ast.stmt], bound: bool) -> tuple[bool, bool, bool]:
+        """Return (has_unbound_read, falls_through, definitely_bound)."""
+
+        for statement in statements:
+            has_unbound_read, falls_through, bound = examine_statement(statement, bound)
+            if has_unbound_read or not falls_through:
+                return has_unbound_read, falls_through, bound
+        return False, True, bound
+
+    def examine_statement(statement: ast.stmt, bound: bool) -> tuple[bool, bool, bool]:
+        if isinstance(statement, ast.If):
+            if reads_unbound(statement.test, bound):
+                return True, True, bound
+            branches = (
+                examine_block(statement.body, bound),
+                examine_block(statement.orelse, bound),
+            )
+            if any(has_unbound_read for has_unbound_read, _, _ in branches):
+                return True, True, bound
+            fallthrough_bindings = [
+                branch_bound for _, falls_through, branch_bound in branches if falls_through
+            ]
+            if not fallthrough_bindings:
+                return False, False, bound
+            return False, True, all(fallthrough_bindings)
+
+        if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            if isinstance(statement, (ast.For, ast.AsyncFor)):
+                entry = statement.iter
+            else:
+                entry = statement.test
+            if reads_unbound(entry, bound):
+                return True, True, bound
+            body_bound = bound or (
+                binds_df(statement.target)
+                if isinstance(statement, (ast.For, ast.AsyncFor))
+                else False
+            )
+            body_result = examine_block(statement.body, body_bound)
+            else_result = examine_block(statement.orelse, bound)
+            if body_result[0] or else_result[0]:
+                return True, True, bound
+            # A loop can execute zero times, so body bindings never dominate a
+            # later read.  Keep other loop flow conservative too.
+            return False, True, bound
+
+        # These constructs require exception/suppression/pattern exhaustiveness
+        # modelling to prove a binding. Reject a read found anywhere in them,
+        # and never let a store hidden inside establish the later output.
+        if isinstance(statement, (ast.Try, ast.TryStar, ast.With, ast.AsyncWith, ast.Match)):
+            if reads_unbound(statement, bound):
+                return True, True, bound
+            return False, True, bound
+
+        if isinstance(statement, ast.AugAssign) and binds_df(statement.target) and not bound:
+            # The AST marks an augmented-assignment target as Store, but Python
+            # reads its previous value before applying the operator.
+            return True, True, bound
+
+        if isinstance(statement, ast.Delete) and deletes_df(statement):
+            if not bound:
+                return True, True, bound
+            return False, True, False
+
+        if reads_unbound(statement, bound):
+            return True, True, bound
+        falls_through = not isinstance(
+            statement,
+            (ast.Break, ast.Continue, ast.Raise, ast.Return),
+        )
+        return False, falls_through, bound or definitely_binds_df(statement)
+
+    has_unbound_read, falls_through, definitely_bound = examine_block(tree.body, False)
+    return has_unbound_read or (falls_through and not definitely_bound)
 
 
 def _validate_polars_named_inputs(code: object, node_id: str, input_names: Sequence[str]) -> None:
-    """Require assistant-authored multi-input code to name the input it uses."""
+    """Require assistant-authored code to bind `df` before reading it."""
 
-    if len(input_names) < 2 or not isinstance(code, str) or not code.strip():
+    if not isinstance(code, str) or not code.strip():
         return
+    if _BARE_INPUT_NAME in input_names:
+        _invalid(
+            f"Node {node_id!r} receives an input named 'df', which conflicts with the "
+            "reserved output name for Polars code. Rename the upstream node or frame."
+        )
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return  # _validate_polars_result_retained owns the syntax verdict
-    if not _reads_df_before_binding_it(tree):
+    if not _can_reach_output_with_df_unbound(tree):
         return
+    if input_names:
+        _invalid(
+            f"Node {node_id!r} reads 'df' before assigning it, but 'df' is not bound to "
+            "any input — it is the node's output variable. Start from the input you "
+            "mean by name (" + ", ".join(sorted(input_names)) + ") and assign the "
+            "result to 'df'."
+        )
     _invalid(
-        f"Node {node_id!r} has {len(input_names)} inputs, so a bare 'df' means whichever "
-        f"input happens to be wired first and silently changes meaning if the wiring "
-        f"changes. Start from the input you mean by name: " + ", ".join(sorted(input_names))
+        f"Node {node_id!r} reads 'df' before assigning it, but this node has no inputs "
+        f"and 'df' is unbound until the code assigns it. Construct a frame and assign "
+        f"it to 'df'."
     )
 
 

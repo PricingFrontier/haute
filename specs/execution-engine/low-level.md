@@ -476,6 +476,15 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
   raises `ConfigError` instead of falling back to greedy first-fit — the code
   docstring notes a prior greedy implementation could silently swap two inputs and
   produce a clean-looking but wrong run.
+- **A non-instance Polars `inputMapping` preserves authored input identity across
+  parent replacement.** `resolve_orig_source_names` derives the current input names
+  from the node's incoming edges, validates the mapping as a one-to-one
+  `{logical_name: current_edge_name}` relation, and returns logical names in current
+  edge order. `_exec_user_code` therefore exposes both the current binding and the
+  stable logical alias during canvas execution. Stale, malformed, or colliding
+  mappings raise `ConfigError`; they never fall back positionally. Instance nodes
+  retain the existing original-node mapping path and take precedence over this
+  ordinary-transform behaviour.
 - **`topo_sort_ids`** is insertion-order deterministic (via `graphlib.TopologicalSorter`,
   not the previous heap-based sort), so callers must pass `node_ids` as an
   insertion-ordered sequence, never a `set`, or tie-break order becomes

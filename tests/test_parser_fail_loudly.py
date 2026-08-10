@@ -604,8 +604,8 @@ class TestItem21ExtendPathNoStaleData:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = mid.with_columns(z=pl.col('y') * 10)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -631,7 +631,7 @@ class TestItem21ExtendPathNoStaleData:
                 "nodes": [
                     _source_node("src", str(p)),
                     # v1 code: y = x
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x'))"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x'))"),
                 ],
                 "edges": [_edge("src", "mid")],
             }
@@ -648,7 +648,7 @@ class TestItem21ExtendPathNoStaleData:
                 "nodes": [
                     _source_node("src", str(p)),
                     # v2 code: y = x * 100 — entirely different output
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') * 100)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') * 100)"),
                 ],
                 "edges": [_edge("src", "mid")],
             }
@@ -676,7 +676,7 @@ class TestItem21ExtendPathNoStaleData:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') + 1)"),
                 ],
                 "edges": [_edge("src", "mid")],
             }
@@ -690,8 +690,10 @@ class TestItem21ExtendPathNoStaleData:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') * 1000)"),  # altered
-                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y'))"),
+                    _transform_node(
+                        "mid", "df = src.with_columns(y=pl.col('x') * 1000)"
+                    ),  # altered
+                    _transform_node("leaf", "df = mid.with_columns(z=pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -726,8 +728,8 @@ class TestItem21ExtendPathNoStaleData:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = mid.with_columns(z=pl.col('y') * 10)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -807,7 +809,8 @@ class TestItem22EmptyPolarsCodeExplicit:
     safe for all source-count scenarios."""
 
     def test_happy_path_single_source_returns_input(self) -> None:
-        """One upstream + empty code → passthrough of that upstream."""
+        """One upstream + empty code → the incomplete-transform placeholder,
+        not a silent passthrough."""
         node = _n(
             {
                 "id": "t",
@@ -815,7 +818,7 @@ class TestItem22EmptyPolarsCodeExplicit:
             }
         )
         code = _gen_transform(node, ["upstream"])
-        assert "return upstream" in code
+        assert "raise NotImplementedError" in code
         assert "def Pass(upstream: pl.LazyFrame)" in code
 
     def test_zero_sources_emits_a_placeholder_that_fails_at_run_time(self) -> None:
@@ -920,13 +923,13 @@ class TestItem22EmptyPolarsCodeExplicit:
                 "data": {
                     "label": "Filt",
                     "nodeType": "polars",
-                    "config": {"code": "df = df.filter(pl.col('x') > 0)"},
+                    "config": {"code": "df = upstream.filter(pl.col('x') > 0)"},
                 },
             }
         )
         code = _gen_transform(node, ["upstream"])
         assert "df = upstream" in code  # aliasing line
-        assert "df.filter" in code
+        assert "upstream.filter" in code
         assert "return df" in code
 
     def test_empty_code_branch_is_distinguishable_from_nonempty(self) -> None:
@@ -944,7 +947,7 @@ class TestItem22EmptyPolarsCodeExplicit:
                 "data": {
                     "label": "X",
                     "nodeType": "polars",
-                    "config": {"code": "df = df"},
+                    "config": {"code": "df = up"},
                 },
             }
         )

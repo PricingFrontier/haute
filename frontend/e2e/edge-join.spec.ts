@@ -302,6 +302,10 @@ test.describe("Edge Join insertion workflow", () => {
     await expect(page.getByTestId(`rf__node-${reloadedFirstJoin.id}`)).toBeVisible()
     await expect(page.getByTestId(`rf__node-${reloadedFirstJoin.id}`).getByTestId("edge-join-base-handle")).toBeVisible()
 
+    const layoutButton = page.getByRole("button", { name: "Layout", exact: true })
+    await layoutButton.click()
+    await expect(layoutButton).toBeEnabled()
+
     const firstJoinToEnriched = findEdge(afterFirstReload, reloadedFirstJoin.id, "enriched")
     await dragSourceToEdge(page, await sourceHandle(page, "quotes", "api_lookup"), firstJoinToEnriched.id)
     const renderedEdgeJoins = page.locator(".react-flow__node-edgeJoin")

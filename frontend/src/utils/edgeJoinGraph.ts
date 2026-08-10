@@ -1,4 +1,5 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react"
+import type { SimpleEdge, SimpleNode } from "../panels/editors/_shared"
 import { NODE_TYPES } from "./nodeTypes"
 import { appEdge, appNode, selectOnlyNode } from "./flowElements"
 import {
@@ -8,6 +9,7 @@ import {
   EDGE_JOIN_JOIN_HANDLE,
   edgeJoinRoleConfigKey,
 } from "./edgeJoinRoles"
+import { edgeInputName, UNRESOLVED_INPUT_NAME } from "./apiInputPorts"
 
 export type EdgeJoinFailureReason =
   | "target-edge-not-found"
@@ -35,6 +37,7 @@ export type EdgeJoinSwapInputsResult =
 type InsertEdgeJoinNodeParams = {
   nodes: Node[]
   edges: Edge[]
+  submodels?: Record<string, unknown>
   targetEdgeId: string
   connection: {
     source: string | null | undefined
@@ -113,6 +116,7 @@ export function validateEdgeJoinInsertionCandidate(
 export function insertEdgeJoinNode({
   nodes,
   edges,
+  submodels,
   targetEdgeId,
   connection,
   position,
@@ -127,6 +131,19 @@ export function insertEdgeJoinNode({
     throw new Error("Validated Edge Join candidate was unavailable")
   }
 
+  const sourceNode = nodes.find((node) => node.id === targetEdge.source)
+  if (!sourceNode) {
+    throw new Error("Validated Edge Join target edge source was unavailable")
+  }
+  const oldCurrentInputName = edgeInputName(
+    targetEdge as unknown as SimpleEdge,
+    sourceNode as unknown as SimpleNode,
+    submodels,
+  )
+  if (oldCurrentInputName === UNRESOLVED_INPUT_NAME) {
+    throw new Error("Cannot preserve the downstream input name for an unresolved source frame")
+  }
+
   const newNodeId = idFactory()
   const newNode = buildEdgeJoinNode({
     id: newNodeId,
@@ -136,6 +153,10 @@ export function insertEdgeJoinNode({
   })
 
   const replacementEdges = edgeJoinReplacementEdges(targetEdge, newNodeId, { ...connection, source })
+  const newCurrentInputName = edgeInputName(
+    replacementEdges[1] as unknown as SimpleEdge,
+    newNode as unknown as SimpleNode,
+  )
 
   const nextEdges = [
     ...edges.filter((edge) => edge.id !== targetEdgeId),
@@ -144,7 +165,13 @@ export function insertEdgeJoinNode({
   return {
     ok: true,
     nodes: selectOnlyNode([
-      ...nodes.map((node) => rewriteDownstreamSplitTargetNode(node, targetEdge, newNodeId)),
+      ...nodes.map((node) => rewriteDownstreamSplitTargetNode(
+        node,
+        targetEdge,
+        newNodeId,
+        oldCurrentInputName,
+        newCurrentInputName,
+      )),
       newNode,
     ], newNodeId),
     edges: nextEdges,
@@ -304,9 +331,69 @@ function rewriteDownstreamSplitTargetNode(
   node: Node,
   targetEdge: Edge,
   newNodeId: string,
+  oldCurrentInputName: string,
+  newCurrentInputName: string,
 ): Node {
   const roleRewritten = rewriteDownstreamEdgeJoinNode(node, targetEdge, newNodeId)
-  return rewriteDownstreamInputsByParentContract(roleRewritten, targetEdge, newNodeId)
+  const inputMappingRewritten = rewriteDownstreamInputMapping(
+    roleRewritten,
+    targetEdge,
+    oldCurrentInputName,
+    newCurrentInputName,
+  )
+  return rewriteDownstreamInputsByParentContract(inputMappingRewritten, targetEdge, newNodeId)
+}
+
+function rewriteDownstreamInputMapping(
+  node: Node,
+  targetEdge: Edge,
+  oldCurrentInputName: string,
+  newCurrentInputName: string,
+): Node {
+  if (node.id !== targetEdge.target) return node
+
+  const config = { ...(node.data.config as Record<string, unknown> | undefined) }
+  const rawInputMapping = config.inputMapping
+  if (rawInputMapping !== undefined && !isRecord(rawInputMapping)) {
+    throw new Error("Cannot rewrite a malformed inputMapping; expected an object")
+  }
+  const hasInputMapping = isRecord(rawInputMapping)
+  const shouldCreateMapping = node.data.nodeType === NODE_TYPES.POLARS && !config.instanceOf
+  if (!hasInputMapping && !shouldCreateMapping) return node
+
+  const inputMapping = hasInputMapping ? rawInputMapping : {}
+  let matchedOldCurrentInput = false
+  const nextInputMapping: Record<string, unknown> = {}
+  for (const [inputName, currentName] of Object.entries(inputMapping)) {
+    if (typeof currentName !== "string") {
+      throw new Error("Cannot rewrite a malformed inputMapping; values must be strings")
+    }
+    if (currentName === oldCurrentInputName) {
+      nextInputMapping[inputName] = newCurrentInputName
+      matchedOldCurrentInput = true
+    } else {
+      nextInputMapping[inputName] = currentName
+    }
+  }
+  if (shouldCreateMapping && !matchedOldCurrentInput) {
+    if (Object.prototype.hasOwnProperty.call(nextInputMapping, oldCurrentInputName)) {
+      throw new Error(
+        `Cannot preserve input name "${oldCurrentInputName}" because inputMapping already uses it`,
+      )
+    }
+    nextInputMapping[oldCurrentInputName] = newCurrentInputName
+  }
+
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      config: {
+        ...config,
+        inputMapping: nextInputMapping,
+      },
+    },
+  }
 }
 
 function rewriteDownstreamEdgeJoinNode(

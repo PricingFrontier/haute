@@ -82,7 +82,7 @@ class TestPreviewMatchSimple:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
+                    _transform_node("t", "df = src.with_columns(z=pl.col('x') + pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -121,7 +121,7 @@ class TestPreviewMatchSort:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("sorted", "df = df.sort('id')"),
+                    _transform_node("sorted", "df = src.sort('id')"),
                 ],
                 "edges": [_edge("src", "sorted")],
             }
@@ -153,7 +153,7 @@ class TestPreviewMatchSort:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("sorted", "df = df.sort('id')"),
+                    _transform_node("sorted", "df = src.sort('id')"),
                 ],
                 "edges": [_edge("src", "sorted")],
             }
@@ -191,7 +191,7 @@ class TestPreviewMatchFilter:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("filt", "df = df.filter(pl.col('value') > 25)"),
+                    _transform_node("filt", "df = src.filter(pl.col('value') > 25)"),
                 ],
                 "edges": [_edge("src", "filt")],
             }
@@ -223,7 +223,7 @@ class TestPreviewMatchFilter:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("filt", "df = df.filter(pl.col('value') > 25)"),
+                    _transform_node("filt", "df = src.filter(pl.col('value') > 25)"),
                 ],
                 "edges": [_edge("src", "filt")],
             }
@@ -384,8 +384,8 @@ class TestPreviewMatchMultiStep:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("filt", "df = df.filter(pl.col('value') >= 30)"),
-                    _transform_node("sorted", "df = df.sort('id')"),
+                    _transform_node("filt", "df = src.filter(pl.col('value') >= 30)"),
+                    _transform_node("sorted", "df = filt.sort('id')"),
                 ],
                 "edges": [_edge("src", "filt"), _edge("filt", "sorted")],
             }
@@ -434,7 +434,7 @@ class TestPreviewMatchMultiStep:
                     _source_node("a", str(p_a)),
                     _source_node("b", str(p_b)),
                     _transform_node("join", "df = a.join(b, on='key')"),
-                    _transform_node("filt", "df = df.filter(pl.col('amount') > 150)"),
+                    _transform_node("filt", "df = join.filter(pl.col('amount') > 150)"),
                 ],
                 "edges": [
                     _edge("a", "join"),
@@ -574,7 +574,7 @@ class TestPreviewMatchAggregation:
                     _source_node("src", str(p)),
                     _transform_node(
                         "agg",
-                        "df = df.group_by('region').agg(pl.col('premium').sum()).sort('region')",
+                        "df = src.group_by('region').agg(pl.col('premium').sum()).sort('region')",
                     ),
                 ],
                 "edges": [_edge("src", "agg")],
@@ -615,7 +615,7 @@ class TestPreviewMatchRowLimit:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("sorted", "df = df.sort('id', descending=True)"),
+                    _transform_node("sorted", "df = src.sort('id', descending=True)"),
                 ],
                 "edges": [_edge("src", "sorted")],
             }

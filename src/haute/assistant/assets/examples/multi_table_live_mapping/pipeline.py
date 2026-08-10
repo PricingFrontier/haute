@@ -19,13 +19,13 @@ def request() -> pl.LazyFrame | dict[str, pl.LazyFrame]:
 
 
 @pipeline.polars
-def quote_rows(request: pl.LazyFrame) -> pl.LazyFrame:
-    return request
+def quote_rows(quotes: pl.LazyFrame) -> pl.LazyFrame:
+    return quotes
 
 
 @pipeline.polars
-def driver_rows(request: pl.LazyFrame) -> pl.LazyFrame:
-    return request
+def driver_rows(drivers: pl.LazyFrame) -> pl.LazyFrame:
+    return drivers
 
 
 @pipeline.edge_join(

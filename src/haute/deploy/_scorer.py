@@ -725,6 +725,7 @@ def _score_graph_lazy(
                         ["df"],
                         (frame,),
                         extra_ns=_preamble_ns,
+                        alias_first_input_as_df=True,
                     )
                 return frame
 
@@ -753,7 +754,13 @@ def _score_graph_lazy(
                         from haute._user_exec import _exec_user_code
 
                         obj = load_external_object(_p, _ft, _mc)
-                        return _exec_user_code(_code, _sn, dfs, extra_ns={"obj": obj})
+                        return _exec_user_code(
+                            _code,
+                            _sn,
+                            dfs,
+                            extra_ns={"obj": obj},
+                            alias_first_input_as_df=True,
+                        )
 
                     return func_name, external_fn, False
                 else:

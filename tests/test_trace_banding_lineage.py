@@ -137,7 +137,7 @@ def test_banding_trace_continues_lineage_through_computed_input(tmp_path):
                 _source_node("data", str(p)),
                 _transform_node(
                     "prepare",
-                    "df = df.with_columns(driver_age=pl.col('raw_age') + 1)",
+                    "df = data.with_columns(driver_age=pl.col('raw_age') + 1)",
                 ),
                 _banding_node(
                     {
@@ -186,7 +186,7 @@ def test_banding_trace_uses_latest_upstream_modifier_for_input_value(tmp_path):
                 _source_node("data", str(p)),
                 _transform_node(
                     "prepare",
-                    "df = df.with_columns(driver_age=pl.col('driver_age') + 1)",
+                    "df = data.with_columns(driver_age=pl.col('driver_age') + 1)",
                 ),
                 _banding_node(
                     {

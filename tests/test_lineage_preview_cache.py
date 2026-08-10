@@ -52,7 +52,7 @@ def _graph():
                     "data": {
                         "label": "mid",
                         "nodeType": "polars",
-                        "config": {"code": "df = df.with_columns(y=pl.col('x') + 1)"},
+                        "config": {"code": "df = source.with_columns(y=pl.col('x') + 1)"},
                     },
                 },
                 {
@@ -60,7 +60,7 @@ def _graph():
                     "data": {
                         "label": "target",
                         "nodeType": "polars",
-                        "config": {"code": "df = df.select('y')"},
+                        "config": {"code": "df = mid.select('y')"},
                     },
                 },
                 {
@@ -68,7 +68,7 @@ def _graph():
                     "data": {
                         "label": "downstream",
                         "nodeType": "polars",
-                        "config": {"code": "df = df.with_columns(z=pl.lit(1))"},
+                        "config": {"code": "df = target.with_columns(z=pl.lit(1))"},
                     },
                 },
                 {

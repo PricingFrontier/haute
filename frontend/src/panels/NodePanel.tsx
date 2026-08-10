@@ -549,12 +549,6 @@ function upstreamColumnsSignature(edges: SimpleEdge[], nodeMap: Record<string, S
     .join("\u0004")
 }
 
-function upstreamNodeTypeSignature(edges: SimpleEdge[], nodeMap: Record<string, SimpleNode>): string {
-  return edges
-    .map((edge) => `${edge.source}\u0002${nodeMap[edge.source]?.data?.nodeType ?? ""}`)
-    .join("\u0001")
-}
-
 function inputSourceForEdge(
   edge: SimpleEdge,
   nodeMap: Record<string, SimpleNode>,
@@ -785,13 +779,6 @@ export default function NodePanel({
     // upstream schema, so they should preserve this array identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, upstreamSchemaSignature])
-  const upstreamTypesSignature = upstreamNodeTypeSignature(upstreamEdges, nodeMap)
-  const hasApiInputUpstream = useMemo(
-    () => upstreamEdges.some((edge) => nodeMap[edge.source]?.data?.nodeType === NODE_TYPES.API_INPUT),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedNodeId, upstreamTypesSignature],
-  )
-
   if (!node) return null
 
   const isInstance = !!config.instanceOf
@@ -996,7 +983,6 @@ export default function NodePanel({
             onDeleteInput={onDeleteEdge}
             errorLine={errorLine}
             upstreamColumns={upstreamColumns}
-            hasApiInputUpstream={hasApiInputUpstream}
           />
         )
 

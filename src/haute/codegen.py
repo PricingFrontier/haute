@@ -505,18 +505,27 @@ def _instance_to_code(
 
     params = _build_params(source_names)
 
-    # Prefer explicit inputMapping from config (set via the UI)
+    # Prefer explicit inputMapping from config (set via the UI).
     explicit_map = data.config.get("inputMapping")
+    if explicit_map is not None and not isinstance(explicit_map, dict):
+        raise ConfigError(
+            "inputMapping must be an object mapping original input names to instance input names.",
+            node_id=node.id,
+            input_mapping=explicit_map,
+        )
 
     if orig_source_names and source_names:
-        explicit = dict(explicit_map) if explicit_map and isinstance(explicit_map, dict) else None
+        explicit = dict(explicit_map) if explicit_map else None
         mapping = build_instance_mapping(orig_source_names, source_names, explicit)
         args = ", ".join(f"{orig}={mapping[orig]}" for orig in orig_source_names if orig in mapping)
     else:
         args = ", ".join(source_names) if source_names else "df"
 
+    decorator_args = [f'of="{original_func_name}"']
+    if explicit_map is not None:
+        decorator_args.append(f"inputMapping={explicit_map!r}")
     code = (
-        f'@pipeline.instance(of="{original_func_name}")\n'
+        f"@pipeline.instance({', '.join(decorator_args)})\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
         f"    return {original_func_name}({args})\n"

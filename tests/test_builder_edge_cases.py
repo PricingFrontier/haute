@@ -481,7 +481,8 @@ class TestBuildBandingEdgeCases:
 
 
 class TestBuildNodeFnDispatcher:
-    def test_unknown_node_type_falls_back_to_passthrough(self) -> None:
+    def test_polars_without_code_installs_raising_placeholder(self) -> None:
+        """A no-code polars node has no implicit passthrough — it raises."""
         node = GraphNode(
             id="n1",
             data=NodeData(label="Mystery", nodeType="polars", config={"code": ""}),
@@ -489,8 +490,8 @@ class TestBuildNodeFnDispatcher:
         func_name, fn, is_source = _build_node_fn(node, source_names=["up"])
         assert is_source is False
         lf = pl.DataFrame({"x": [42]}).lazy()
-        result = fn(lf).collect()
-        assert result["x"].to_list() == [42]
+        with pytest.raises(NotImplementedError):
+            fn(lf)
 
     def test_instance_resolution_before_building(self) -> None:
         original = _n(

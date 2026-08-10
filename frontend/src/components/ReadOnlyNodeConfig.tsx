@@ -156,7 +156,6 @@ export default function ReadOnlyNodeConfig({ nodeType, config, nodeId }: ReadOnl
             onDeleteInput={noop}
             errorLine={null}
             upstreamColumns={EMPTY}
-            hasApiInputUpstream={false}
           />
         )
       case NODE_TYPES.SUBMODEL:

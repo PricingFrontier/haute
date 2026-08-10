@@ -97,6 +97,7 @@ type ContextMenuData = {
 type UseEdgeHandlersParams = {
   selectedNode: Node | null
   graphRef: MutableRefObject<{ nodes: Node[]; edges: Edge[] }>
+  submodels?: Record<string, unknown>
   nodeIdCounter: MutableRefObject<number>
   lastSelectedNodeRef: MutableRefObject<Node | null>
   setNodes: (updater: (nds: Node[]) => Node[]) => void
@@ -131,6 +132,7 @@ const edgeJoinFailureMessages: Record<EdgeJoinFailureReason, string> = {
 export default function useEdgeHandlers({
   selectedNode,
   graphRef,
+  submodels,
   nodeIdCounter: nodeIdCounterRef,
   lastSelectedNodeRef,
   setNodes,
@@ -322,6 +324,7 @@ export default function useEdgeHandlers({
         commitEdgeJoinResult(insertEdgeJoinNode({
           nodes: graphRef.current.nodes,
           edges: graphRef.current.edges,
+          submodels,
           targetEdgeId: edgeJoinCandidateId,
           connection: {
             source: sourceNodeId,
@@ -397,6 +400,7 @@ export default function useEdgeHandlers({
       commitEdgeJoinResult(insertEdgeJoinNode({
         nodes: graphRef.current.nodes,
         edges: graphRef.current.edges,
+        submodels,
         targetEdgeId,
         connection: {
           source: sourceNodeId,
@@ -423,6 +427,7 @@ export default function useEdgeHandlers({
       setLastSelectedId,
       setNodesRaw,
       setSelectedNode,
+      submodels,
       validateConnection,
     ],
   )

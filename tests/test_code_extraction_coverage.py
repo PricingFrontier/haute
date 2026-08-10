@@ -268,9 +268,24 @@ class TestFinaliseExternal:
 
 
 class TestFinalisers:
-    def test_polars_alias_only_collapses_to_empty(self) -> None:
-        """A body that is just ``df = <param>`` alias yields empty user code."""
-        assert _finalise_polars("df = source", ("source",)) == ""
+    def test_polars_alias_line_is_authored_code(self) -> None:
+        """A ``df = <param>`` line is user code, never strippable scaffold —
+        polars codegen no longer prepends an input alias, and legacy modules'
+        alias line must round-trip into visible code to keep working."""
+        assert _finalise_polars("df = source", ("source",)) == "df = source"
+
+    def test_explore_kind_strips_alias_scaffold(self) -> None:
+        """The explore kind still treats a leading ``df = <param>`` as its
+        generated binding scaffold and strips exactly that line."""
+        body = "    df = source\n    df = df.filter(x)\n    return df"
+        assert (
+            extract_user_code(body, kind="explore", param_names=("source",)) == "df = df.filter(x)"
+        )
+
+    def test_explore_kind_keeps_non_param_first_line(self) -> None:
+        """A first line binding df from a non-parameter name is user code."""
+        body = "    df = other\n    return df"
+        assert extract_user_code(body, kind="explore", param_names=("source",)) == "df = other"
 
     def test_polars_empty_chain_collapses_to_empty(self) -> None:
         """An empty chain ``df = (\\n)`` unwraps to the empty string."""
@@ -291,7 +306,7 @@ class TestExtractUserCode:
     def test_leading_and_trailing_blank_lines_trimmed(self) -> None:
         """The engine pops leading/trailing blank lines before extraction."""
         body = "\n\n    df = source\n    df = df.filter(x)\n\n\n"
-        assert _extract_user_code(body, ["source"]) == "df = df.filter(x)"
+        assert _extract_user_code(body, ["source"]) == "df = source\ndf = df.filter(x)"
 
 
 # ---------------------------------------------------------------------------

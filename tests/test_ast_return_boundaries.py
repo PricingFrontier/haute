@@ -506,7 +506,7 @@ class TestASTInvariants:
 
         result = _extract_user_code(body, ["source"])
 
-        assert result == ""
+        assert result == "df = source"
 
     def test_deeply_nested_function_return_preserved(self) -> None:
         """Triple-nested ``def`` inside ``if`` inside ``def`` — still scope-correct.

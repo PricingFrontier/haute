@@ -55,7 +55,7 @@ def _trace_shaped_cache(max_bytes: int, max_entries: int = 8) -> LRUCache[str, d
     )
 
 
-def _simple_graph(tmp_path, code: str = "df = df.with_columns(z=pl.col('x') + pl.col('y'))"):
+def _simple_graph(tmp_path, code: str = "df = src.with_columns(z=pl.col('x') + pl.col('y'))"):
     p = tmp_path / "data.parquet"
     pl.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]}).write_parquet(p)
     return make_graph(

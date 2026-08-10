@@ -13,7 +13,8 @@ type PolarsCodePanelProps = {
   errorLine?: number | null
   upstreamColumns?: { name: string; dtype: string }[]
   hint: ReactNode
-  placeholder?: string
+  /** Selectable, non-persisted initial text used only when config has no code field. */
+  starterCode?: string
 }
 
 export default function PolarsCodePanel({
@@ -24,9 +25,11 @@ export default function PolarsCodePanel({
   errorLine,
   upstreamColumns,
   hint,
-  placeholder = "",
+  starterCode,
 }: PolarsCodePanelProps) {
-  const defaultCode = configField(config, "code", "")
+  const defaultCode = Object.hasOwn(config, "code")
+    ? configField(config, "code", "")
+    : starterCode ?? ""
   const columnNames = useMemo(() => (upstreamColumns ?? []).map((c) => c.name), [upstreamColumns])
 
   return (
@@ -44,7 +47,6 @@ export default function PolarsCodePanel({
         defaultValue={defaultCode}
         onChange={(val) => onUpdate("code", val)}
         errorLine={errorLine}
-        placeholder={placeholder}
         availableColumns={columnNames}
       />
       <div className="text-[11px] font-mono shrink-0" style={{ color: "var(--text-muted)", opacity: 0.6 }}>

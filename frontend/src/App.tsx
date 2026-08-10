@@ -963,7 +963,7 @@ function FlowEditor() {
     onConnectStart, onConnectEnd, onConnectionPointerMove, clearEdgeJoinCandidate,
     edgeJoinCandidateEdgeId, onNodeContextMenu, onDragOver, onDrop,
   } = useEdgeHandlers({
-    selectedNode, graphRef, nodeIdCounter, lastSelectedNodeRef,
+    selectedNode, graphRef, submodels, nodeIdCounter, lastSelectedNodeRef,
     setNodes, setEdges, setNodesRaw, setEdgesRaw, pushSnapshot,
     setSelectedNode, setPreviewData, setContextMenu,
     setLastSelectedId,

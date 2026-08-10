@@ -36,6 +36,8 @@ from pathlib import Path
 import pytest
 
 from haute._code_extraction import (
+    INCOMPLETE_TRANSFORM_BODY,
+    POLARS_OUTPUT_DECLARATION,
     _extract_external_user_code,
     _extract_user_code,
     _unwrap_chain_assignment,
@@ -339,6 +341,18 @@ class TestExtractionFailsLoudOnUnparseableBodies:
             )
 
 
+def test_generated_polars_output_declaration_is_not_user_code() -> None:
+    body = "df: pl.LazyFrame\n_ = source\nreturn df"
+
+    assert _extract_user_code(body, ["source"]) == "_ = source"
+
+
+def test_generated_output_declaration_and_empty_placeholder_are_both_scaffold() -> None:
+    body = POLARS_OUTPUT_DECLARATION + INCOMPLETE_TRANSFORM_BODY
+
+    assert _extract_user_code(body, ["source"]) == ""
+
+
 # ---------------------------------------------------------------------------
 # 5.6 — external-file imports survive extraction wherever they appear
 # ---------------------------------------------------------------------------
@@ -373,6 +387,31 @@ class TestExternalImportPreservation:
         assert result == (
             "import numpy as np\ndf = df.with_columns(pred=pl.lit(float(np.float64(0.5))))"
         )
+
+    def test_generated_df_input_binding_after_obj_load_is_stripped(self) -> None:
+        body = "\n".join(
+            [
+                *_GENERATED_LOAD_PREFIX,
+                "df = features",
+                "df = df.with_columns(prediction=pl.lit(obj))",
+                "return df",
+            ]
+        )
+
+        assert _extract_external_user_code(body, ["features"]) == (
+            "df = df.with_columns(prediction=pl.lit(obj))"
+        )
+
+    def test_assignment_from_a_non_first_input_after_obj_load_is_user_code(self) -> None:
+        body = "\n".join(
+            [
+                *_GENERATED_LOAD_PREFIX,
+                "df = regions",
+                "return df",
+            ]
+        )
+
+        assert _extract_external_user_code(body, ["features", "regions"]) == "df = regions"
 
     def test_from_import_after_obj_load_is_preserved(self) -> None:
         body = "\n".join(

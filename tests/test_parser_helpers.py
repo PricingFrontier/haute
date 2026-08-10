@@ -1009,7 +1009,7 @@ class TestBuildNodeConfigExtended:
             body,
             ["source"],
         )
-        assert config.get("code", "") == ""
+        assert config.get("code", "") == "df = source"
 
     def test_optimiser_config(self):
         config = _build_node_config(

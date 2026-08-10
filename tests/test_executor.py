@@ -10,7 +10,7 @@ import pytest
 
 from haute._execution_context import ExecutionProfile
 from haute._user_exec import _exec_user_code
-from haute.errors import LiveSwitchScenarioError
+from haute.errors import ExecutionError, LiveSwitchScenarioError
 from haute.executor import (
     PreambleError,
     _build_node_fn,
@@ -93,7 +93,12 @@ def _file_output_config(path: str, format_name: str) -> dict[str, object]:
 class TestExecUserCode:
     def test_explicit_assignment(self):
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
-        result = _exec_user_code("df = df.with_columns(y=pl.col('x') * 2)", ["df"], (lf,))
+        result = _exec_user_code(
+            "df = df.with_columns(y=pl.col('x') * 2)",
+            ["df"],
+            (lf,),
+            alias_first_input_as_df=True,
+        )
         df = result.collect()
         assert "y" in df.columns
         assert df["y"].to_list() == [2, 4, 6]
@@ -101,11 +106,21 @@ class TestExecUserCode:
     def test_syntax_error_reported(self):
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(SyntaxError):
-            _exec_user_code("df = invalid syntax here !!!", ["df"], (lf,))
+            _exec_user_code(
+                "df = invalid syntax here !!!",
+                ["df"],
+                (lf,),
+                alias_first_input_as_df=True,
+            )
 
     def test_eager_result_converted_to_lazy(self):
         lf = pl.DataFrame({"x": [1]}).lazy()
-        result = _exec_user_code("df = df.collect()", ["df"], (lf,))
+        result = _exec_user_code(
+            "df = df.collect()",
+            ["df"],
+            (lf,),
+            alias_first_input_as_df=True,
+        )
         assert isinstance(result, pl.LazyFrame)
 
     def test_multiple_named_sources(self):
@@ -121,7 +136,13 @@ class TestExecUserCode:
         """extra_ns should inject additional variables (e.g. external model obj)."""
         lf = pl.DataFrame({"x": [10]}).lazy()
         code = "df = df.with_columns(y=pl.lit(val))"
-        result = _exec_user_code(code, ["df"], (lf,), extra_ns={"val": 42})
+        result = _exec_user_code(
+            code,
+            ["df"],
+            (lf,),
+            extra_ns={"val": 42},
+            alias_first_input_as_df=True,
+        )
         df = result.collect()
         assert df["y"].to_list() == [42]
 
@@ -129,29 +150,94 @@ class TestExecUserCode:
         """Runtime errors in user code should propagate with useful messages."""
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(ZeroDivisionError) as exc_info:
-            _exec_user_code("df = 1 / 0", ["df"], (lf,))
+            _exec_user_code(
+                "df = 1 / 0",
+                ["df"],
+                (lf,),
+                alias_first_input_as_df=True,
+            )
         assert "division" in str(exc_info.value).lower()
 
     def test_multiline_code(self):
         """Multi-line user code with intermediate variables works."""
         lf = pl.DataFrame({"x": [1, 2]}).lazy()
         code = "tmp = df.with_columns(y=pl.lit(7))\ndf = tmp.with_columns(z=pl.lit(8))"
-        result = _exec_user_code(code, ["df"], (lf,))
+        result = _exec_user_code(code, ["df"], (lf,), alias_first_input_as_df=True)
         df = result.collect()
         assert "y" in df.columns
         assert "z" in df.columns
 
     def test_df_passthrough_when_no_assignment(self):
-        """When user code doesn't assign to df, the original df is returned."""
+        """An implicit-frame caller may intentionally retain its input."""
         lf = pl.DataFrame({"x": [1]}).lazy()
-        result = _exec_user_code("_ = 1 + 1", ["df"], (lf,))
+        result = _exec_user_code(
+            "_ = 1 + 1",
+            ["df"],
+            (lf,),
+            alias_first_input_as_df=True,
+        )
         df = result.collect()
         assert df["x"].to_list() == [1]
+
+    def test_preamble_df_cannot_masquerade_as_transform_output(self):
+        source = pl.LazyFrame({"source": [1]})
+        preamble_df = pl.LazyFrame({"wrong": [9]})
+
+        with pytest.raises(ExecutionError, match="nothing was assigned"):
+            _exec_user_code(
+                "_ = 1",
+                ["source"],
+                (source,),
+                extra_ns={"df": preamble_df},
+            )
+
+        with pytest.raises(NameError, match="name 'df' is not defined"):
+            _exec_user_code(
+                "df = df.head()",
+                ["source"],
+                (source,),
+                extra_ns={"df": preamble_df},
+            )
+
+    def test_named_input_takes_precedence_over_same_named_preamble_binding(self):
+        source = pl.LazyFrame({"source": [1]})
+        preamble_source = pl.LazyFrame({"wrong": [9]})
+
+        result = _exec_user_code(
+            "df = source",
+            ["source"],
+            (source,),
+            extra_ns={"source": preamble_source},
+        )
+
+        assert result.collect().to_dict(as_series=False) == {"source": [1]}
+
+    def test_named_input_is_visible_inside_a_nested_user_helper(self):
+        source = pl.LazyFrame({"source": [1]})
+
+        result = _exec_user_code(
+            "def choose_source():\n    return source\ndf = choose_source()",
+            ["source"],
+            (source,),
+        )
+
+        assert result.collect().to_dict(as_series=False) == {"source": [1]}
+
+    def test_df_is_rejected_as_a_named_transform_input(self):
+        source = pl.LazyFrame({"source": [1]})
+
+        with pytest.raises(ExecutionError, match="reserved output name"):
+            _exec_user_code("_ = 1", ["df"], (source,))
 
     def test_empty_dataframe_passthrough(self):
         """Empty DataFrame (0 rows) passes through correctly."""
         lf = pl.DataFrame({"x": pl.Series([], dtype=pl.Int64)}).lazy()
-        result = _exec_user_code("df = df.with_columns(y=pl.col('x') * 2)", ["df"], (lf,))
+        result = _exec_user_code(
+            "df = df.with_columns(y=pl.col('x') * 2)",
+            ["df"],
+            (lf,),
+            alias_first_input_as_df=True,
+        )
         df = result.collect()
         assert len(df) == 0
         assert set(df.columns) == {"x", "y"}
@@ -263,16 +349,16 @@ class TestCompilePreamble:
 class TestBuildNodeFnWithPreamble:
     def test_transform_can_call_preamble_function(self):
         preamble_ns = _compile_preamble("def add_ten(col):\n    return pl.col(col) + 10\n")
-        node = _transform_node("t", code="df = df.with_columns(y=add_ten('x'))")
-        _, fn, _ = _build_node_fn(node, source_names=["df"], preamble_ns=preamble_ns)
+        node = _transform_node("t", code="df = source.with_columns(y=add_ten('x'))")
+        _, fn, _ = _build_node_fn(node, source_names=["source"], preamble_ns=preamble_ns)
         lf = pl.DataFrame({"x": [1, 2]}).lazy()
         df = fn(lf).collect()
         assert df["y"].to_list() == [11, 12]
 
     def test_transform_can_use_preamble_constant(self):
         preamble_ns = _compile_preamble("FACTOR = 3\n")
-        node = _transform_node("t", code="df = df.with_columns(y=pl.col('x') * FACTOR)")
-        _, fn, _ = _build_node_fn(node, source_names=["df"], preamble_ns=preamble_ns)
+        node = _transform_node("t", code="df = source.with_columns(y=pl.col('x') * FACTOR)")
+        _, fn, _ = _build_node_fn(node, source_names=["source"], preamble_ns=preamble_ns)
         lf = pl.DataFrame({"x": [5]}).lazy()
         df = fn(lf).collect()
         assert df["y"].to_list() == [15]
@@ -553,20 +639,47 @@ class TestBuildNodeFn:
             fn()
 
     def test_transform_with_code(self):
-        node = _transform_node("t", code="df = df.with_columns(y=pl.col('x') + 1)")
-        _, fn, is_source = _build_node_fn(node, source_names=["df"])
+        node = _transform_node("t", code="df = source.with_columns(y=pl.col('x') + 1)")
+        _, fn, is_source = _build_node_fn(node, source_names=["source"])
         assert is_source is False
         lf = pl.DataFrame({"x": [10]}).lazy()
         df = fn(lf).collect()
         assert df["y"].to_list() == [11]
 
-    def test_transform_passthrough_without_code(self):
+    def test_transform_input_mapping_exposes_stable_logical_name(self):
+        node = _transform_node(
+            "t",
+            code="df = raw_rows.with_columns(y=pl.col('x') + 1)",
+        )
+        node.data.config["inputMapping"] = {"raw_rows": "Edge_Join_1"}
+        _, fn, is_source = _build_node_fn(
+            node,
+            source_names=["Edge_Join_1"],
+            orig_source_names=["raw_rows"],
+        )
+
+        assert is_source is False
+        result = fn(pl.DataFrame({"x": [10]}).lazy()).collect()
+        assert result["y"].to_list() == [11]
+
+    def test_transform_without_code_raises(self):
         node = _transform_node("t", code="")
-        _, fn, is_source = _build_node_fn(node, source_names=["df"])
+        _, fn, is_source = _build_node_fn(node, source_names=["source"])
         assert is_source is False
         lf = pl.DataFrame({"x": [5]}).lazy()
-        df = fn(lf).collect()
-        assert df["x"].to_list() == [5]
+        with pytest.raises(
+            NotImplementedError,
+            match="This transform has no code yet",
+        ):
+            fn(lf).collect()
+
+    def test_transform_with_code_and_no_inputs_constructs_its_output(self):
+        node = _transform_node("t", code="df = pl.LazyFrame({'x': [1]})")
+
+        _, fn, is_source = _build_node_fn(node, source_names=[])
+
+        assert is_source is True
+        assert fn().collect().to_dict(as_series=False) == {"x": [1]}
 
     def test_output_selects_fields(self):
         node = _output_node("out", fields=["a"])
@@ -619,7 +732,11 @@ class TestBuildNodeFn:
                 },
             }
         )
-        _, fn, is_source = _build_node_fn(node, source_names=["df"])
+        _, fn, is_source = _build_node_fn(
+            node,
+            source_names=["features"],
+            preamble_ns={"obj": {"multiplier": 999}},
+        )
         assert is_source is False
         lf = pl.DataFrame({"x": [1]}).lazy()
         df = fn(lf).collect()
@@ -647,7 +764,7 @@ class TestBuildNodeFn:
                 },
             }
         )
-        _, fn, _ = _build_node_fn(node, source_names=["df"])
+        _, fn, _ = _build_node_fn(node, source_names=["features"])
         lf = pl.DataFrame({"x": [1]}).lazy()
         df = fn(lf).collect()
         assert df["y"].to_list() == [5]
@@ -856,7 +973,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -893,7 +1010,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(z=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(z=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -957,8 +1074,8 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("a", str(p)),
-                    _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("b", "df = a.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("c", "df = b.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("a", "b"), _edge("b", "c")],
             }
@@ -985,8 +1102,8 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("a", str(p)),
-                    _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("b", "df = a.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("c", "df = b.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("a", "b"), _edge("b", "c")],
             }
@@ -1015,7 +1132,7 @@ class TestExecuteGraph:
                 "nodes": [
                     _ready_source_node("src", str(p)),
                     # Select a column that doesn't exist - triggers ColumnNotFoundError at collect
-                    _transform_node("bad", code="df = df.select('nonexistent_col')"),
+                    _transform_node("bad", code="df = src.select('nonexistent_col')"),
                 ],
                 "edges": [_edge("src", "bad")],
             }
@@ -1077,7 +1194,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", code="df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", code="df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1763,40 +1880,68 @@ class TestExecUserCodeErrors:
         """Syntax error in chain-style code should raise SyntaxError."""
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(SyntaxError):
-            _exec_user_code("df = df.filter(pl.col('x') > )", ["df"], (lf,))
+            _exec_user_code(
+                "df = df.filter(pl.col('x') > )",
+                ["df"],
+                (lf,),
+                alias_first_input_as_df=True,
+            )
 
     def test_syntax_error_in_assignment_code(self):
         """Syntax error in assignment-style code should raise SyntaxError."""
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(SyntaxError):
-            _exec_user_code("df = df.with_columns(", ["df"], (lf,))
+            _exec_user_code(
+                "df = df.with_columns(",
+                ["df"],
+                (lf,),
+                alias_first_input_as_df=True,
+            )
 
     def test_division_by_zero_in_user_code(self):
         """Runtime ZeroDivisionError should propagate from user code."""
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(ZeroDivisionError):
-            _exec_user_code("df = 1 / 0", ["df"], (lf,))
+            _exec_user_code(
+                "df = 1 / 0",
+                ["df"],
+                (lf,),
+                alias_first_input_as_df=True,
+            )
 
     def test_name_error_referencing_undefined_variable(self):
         """Referencing an undefined variable should raise NameError."""
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(NameError, match="nonexistent_var"):
-            _exec_user_code("df = nonexistent_var", ["df"], (lf,))
+            _exec_user_code(
+                "df = nonexistent_var",
+                ["df"],
+                (lf,),
+                alias_first_input_as_df=True,
+            )
 
     def test_attribute_error_on_wrong_method(self):
         """Calling a non-existent method on the DataFrame raises at exec/collect."""
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(AttributeError):
-            _exec_user_code("df = df.totally_fake_method()", ["df"], (lf,))
+            _exec_user_code(
+                "df = df.totally_fake_method()",
+                ["df"],
+                (lf,),
+                alias_first_input_as_df=True,
+            )
 
-    def test_empty_code_returns_input_unchanged(self):
-        """Empty code with exactly one configured input remains a passthrough."""
+    def test_empty_code_raises_not_implemented(self):
+        """Empty code no longer passes the input through; it raises at collect."""
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
         node = _transform_node("t", code="")
         _, fn, is_source = _build_node_fn(node, source_names=["df"])
         assert is_source is False
-        result = fn(lf).collect()
-        assert result["x"].to_list() == [1, 2, 3]
+        with pytest.raises(
+            NotImplementedError,
+            match="This transform has no code yet",
+        ):
+            fn(lf).collect()
 
 
 class TestBuildNodeFnErrorPaths:
@@ -1820,8 +1965,8 @@ class TestBuildNodeFnErrorPaths:
 
     def test_transform_with_syntax_error_in_code(self):
         """Transform node whose code has a syntax error should raise when invoked."""
-        node = _transform_node("bad", code="df = df.filter(pl.col('x') >")
-        _, fn, _ = _build_node_fn(node, source_names=["df"])
+        node = _transform_node("bad", code="df = source.filter(pl.col('x') >")
+        _, fn, _ = _build_node_fn(node, source_names=["source"])
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(SyntaxError):
             fn(lf)
@@ -1829,7 +1974,7 @@ class TestBuildNodeFnErrorPaths:
     def test_transform_with_runtime_error(self):
         """Transform node whose code divides by zero should raise at execution."""
         node = _transform_node("bad", code="df = 1 / 0")
-        _, fn, _ = _build_node_fn(node, source_names=["df"])
+        _, fn, _ = _build_node_fn(node, source_names=["source"])
         lf = pl.DataFrame({"x": [1]}).lazy()
         with pytest.raises(ZeroDivisionError):
             fn(lf)
@@ -1875,7 +2020,7 @@ class TestSelectedColumns:
                                 "label": "t",
                                 "nodeType": "polars",
                                 "config": {
-                                    "code": "df = df.with_columns(d=pl.col('a') + pl.col('b'))",
+                                    "code": "df = src.with_columns(d=pl.col('a') + pl.col('b'))",
                                     "selected_columns": ["a", "d"],
                                 },
                             },
@@ -1908,7 +2053,7 @@ class TestSelectedColumns:
                             "data": {
                                 "label": "t",
                                 "nodeType": "polars",
-                                "config": {"code": "", "selected_columns": []},
+                                "config": {"code": "df = src", "selected_columns": []},
                             },
                         }
                     ),
@@ -1947,7 +2092,7 @@ class TestSelectedColumns:
             {
                 "nodes": [
                     src,
-                    _transform_node("t", "df = df.with_columns(x=pl.col('a') * 10)"),
+                    _transform_node("t", "df = src.with_columns(x=pl.col('a') * 10)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2109,7 +2254,7 @@ class TestExecuteGraphErrorPaths:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t"),
+                    _transform_node("t", code="df = src"),
                 ],
                 "edges": [
                     _edge("src", "t"),
@@ -2140,7 +2285,7 @@ class TestExecuteGraphErrorPaths:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t"),
+                    _transform_node("t", code="df = src"),
                 ],
                 "edges": [_edge("src", "t")],
                 "preamble": "from utility.bad import *\n",
@@ -2303,8 +2448,8 @@ class TestPreviewCachePartialHit:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = mid.with_columns(z=pl.col('y') * 10)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -2423,8 +2568,8 @@ class TestRequestedPreviewProjection:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = mid.with_columns(z=pl.col('y') * 10)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -2476,7 +2621,7 @@ class TestRequestedPreviewProjection:
 def _boom(value):
     raise RuntimeError("unused preview column was collected")
 
-df = df.with_columns(
+df = src.with_columns(
     pl.col("feature").map_elements(_boom, return_dtype=pl.Int64).alias("unused_bomb")
 )
 """
@@ -3205,7 +3350,7 @@ class TestPreviewCacheInvalidation:
         """Changing only graph.preamble must not serve stale preview rows."""
         p = tmp_path / "d.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(p)
-        code = "df = df.with_columns(y=pl.col('x') * FACTOR)"
+        code = "df = src.with_columns(y=pl.col('x') * FACTOR)"
 
         graph1 = _g(
             {
@@ -3248,7 +3393,7 @@ class TestPreviewCacheInvalidation:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * FACTOR)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * FACTOR)"),
                 ],
                 "edges": [_edge("src", "t")],
                 "preamble": "from utility.helpers import FACTOR\n",
@@ -3544,7 +3689,7 @@ class TestPreambleLockConcurrency:
             {
                 "nodes": [
                     _ready_source_node("src", str(data_path)),
-                    _transform_node("t", "df = df.with_columns(y=add_one('x'))"),
+                    _transform_node("t", "df = src.with_columns(y=add_one('x'))"),
                 ],
                 "edges": [_edge("src", "t")],
                 "preamble": "import polars as pl\nfrom utility.helpers import add_one\n",
@@ -3685,7 +3830,7 @@ class TestMaxPreviewRowsTruncation:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -3760,8 +3905,8 @@ class TestEmptyDataFrameFullPipeline:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t1", "df = df.with_columns(z=pl.col('x') + 1)"),
-                    _transform_node("t2", "df = df.with_columns(w=pl.col('z') * pl.col('y'))"),
+                    _transform_node("t1", "df = src.with_columns(z=pl.col('x') + 1)"),
+                    _transform_node("t2", "df = t1.with_columns(w=pl.col('z') * pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }

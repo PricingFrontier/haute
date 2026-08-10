@@ -908,8 +908,8 @@ class TestBuildNodeFnFallback:
         assert func_name == "Unknown"
         assert is_source is False
         input_df = pl.DataFrame({"x": [1]}).lazy()
-        result = fn(input_df).collect()
-        assert result["x"].to_list() == [1]
+        with pytest.raises(NotImplementedError):
+            fn(input_df).collect()
 
 
 # ---------------------------------------------------------------------------
