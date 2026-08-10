@@ -1,10 +1,10 @@
 /**
  * Render tests for TransformEditor.
  *
- * Tests: label, hint text for empty/present input sources, input sources bar.
+ * Tests: label, hints, input sources, and editable starter-code semantics.
  */
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { render, screen, cleanup } from "@testing-library/react"
+import { render, screen, cleanup, fireEvent } from "@testing-library/react"
 import TransformEditor from "../../panels/editors/TransformEditor"
 
 vi.mock("../../panels/editors/_shared", async () => {
@@ -67,8 +67,15 @@ describe("TransformEditor", () => {
   })
 
   it("passes config.code as default value to code editor", () => {
+    const inputs = [
+      { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+    ]
     render(
-      <TransformEditor config={{ code: "df = claims.filter(pl.col('amount') > 0)" }} onUpdate={vi.fn()} inputSources={[]} />,
+      <TransformEditor
+        config={{ code: "df = claims.filter(pl.col('amount') > 0)" }}
+        onUpdate={vi.fn()}
+        inputSources={inputs}
+      />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("df = claims.filter(pl.col('amount') > 0)")
@@ -87,18 +94,79 @@ describe("TransformEditor", () => {
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("")
+    expect(editor.placeholder).toBe("")
   })
 
-  it("does not synthesize input alias scaffold when inputs are connected", () => {
+  it("suggests a commented pass-through from the first connected input", () => {
+    const onUpdate = vi.fn()
     const inputs = [
       { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+      { sourceNodeId: "other-source", name: "policies", sourceLabel: "Policy Data", edgeId: "e2" },
+    ]
+    render(
+      <TransformEditor config={{}} onUpdate={onUpdate} inputSources={inputs} />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("# df = claims")
+    expect(editor.placeholder).toBe("")
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+
+  it("commits the runnable pass-through when the user removes the comment prefix", () => {
+    const onUpdate = vi.fn()
+    const inputs = [
+      { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+    ]
+    render(
+      <TransformEditor config={{}} onUpdate={onUpdate} inputSources={inputs} />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+
+    fireEvent.change(editor, { target: { value: "df = claims" } })
+
+    expect(onUpdate).toHaveBeenCalledOnce()
+    expect(onUpdate).toHaveBeenCalledWith("code", "df = claims")
+  })
+
+  it("does not reinsert the starter after an explicit empty code commit", () => {
+    const inputs = [
+      { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
+    ]
+    render(
+      <TransformEditor config={{ code: "" }} onUpdate={vi.fn()} inputSources={inputs} />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("")
+    expect(editor.placeholder).toBe("")
+  })
+
+  it("does not suggest code while any connected input is unresolved", () => {
+    const inputs = [
+      {
+        sourceNodeId: "api-source",
+        name: "<unresolved>",
+        sourceLabel: "Quote Input",
+        edgeId: "e1",
+        frameUnresolved: true,
+      },
+      { sourceNodeId: "other-source", name: "policies", sourceLabel: "Policy Data", edgeId: "e2" },
     ]
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
     )
     const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
     expect(editor.defaultValue).toBe("")
-    expect(editor.defaultValue).not.toContain("df = claims")
+  })
+
+  it("does not suggest code when an input uses the reserved df name", () => {
+    const inputs = [
+      { sourceNodeId: "df-source", name: "df", sourceLabel: "df", edgeId: "e1" },
+    ]
+    render(
+      <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
+    )
+    const editor = screen.getByTestId("code-editor") as HTMLTextAreaElement
+    expect(editor.defaultValue).toBe("")
   })
 
   it("shows single input source name with 'Input' singular label", () => {

@@ -183,6 +183,19 @@ and switching nodes returns to Config. The panel retains the node's code, error
 line, input sources and upstream columns, while its hint is node-specific React
 content so code-formatted variable names remain semantic.
 
+An ordinary Polars transform whose `code` field is absent derives one advisory,
+editor-local starter line from the canonical `InputSource` order:
+`# df = <first input name>`. This is real selectable editor text, not a
+CodeMirror placeholder, but it is not persisted until the user edits it. Leaving
+it untouched therefore preserves the fail-loud empty-transform contract;
+deleting `# ` commits a minimal executable pass-through for preview. Once a
+`code` value has been committed, including the explicit empty string, that value
+wins so clearing the editor does not reinsert the starter. No starter is shown
+when there are no inputs, any input is unresolved, or any input is named the
+reserved output `df`, because those states cannot produce a valid runnable
+suggestion. API inputs follow this same rule rather than receiving a hard-coded
+example.
+
 **Column-selection draft semantics.** `selected_columns: []` remains the
 committed sentinel for all columns. The Columns tab's None action instead
 holds an editor-local zero-selection draft, unticks every row, shows a

@@ -1,15 +1,6 @@
 import PolarsCodePanel from "./shared/PolarsCodePanel"
 import type { InputSource, OnUpdateConfig } from "./_shared"
 
-const API_INPUT_PLACEHOLDER = `# Clean up dot-notation columns:
-#
-# df = clean_columns(quotes)
-#
-# Then add derived columns with Polars:
-# df = df.with_columns(
-#     years_between(to_date("date_of_birth"), to_date("cover_start_date")).alias("age"),
-# )`
-
 export default function TransformEditor({
   config,
   onUpdate,
@@ -17,7 +8,6 @@ export default function TransformEditor({
   onDeleteInput,
   errorLine,
   upstreamColumns,
-  hasApiInputUpstream,
 }: {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
@@ -25,10 +15,14 @@ export default function TransformEditor({
   onDeleteInput?: (edgeId: string) => void
   errorLine?: number | null
   upstreamColumns?: { name: string; dtype: string }[]
-  /** Whether any upstream node is an api_input type (for contextual placeholder) */
-  hasApiInputUpstream?: boolean
 }) {
   const hasInput = inputSources.length > 0
+  const inputsCanFormStarter =
+    hasInput
+    && inputSources.every((input) => !input.frameUnresolved && input.name !== "df")
+  const starterCode =
+    inputsCanFormStarter ? `# df = ${inputSources[0].name}` : undefined
+
   return (
     <PolarsCodePanel
       config={config}
@@ -38,7 +32,7 @@ export default function TransformEditor({
       errorLine={errorLine}
       upstreamColumns={upstreamColumns}
       hint={hasInput ? "use input names, assign to df" : "assign to df"}
-      placeholder={hasApiInputUpstream ? API_INPUT_PLACEHOLDER : ""}
+      starterCode={starterCode}
     />
   )
 }
