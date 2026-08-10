@@ -52,6 +52,8 @@ vi.mock("../LazyNodeEditors", async () => {
     return <div data-testid="ExploreCodeEditor" />
   },
   ExploreOverviewConfig: () => <div data-testid="explore-overview-config" />,
+  ExplorePivotsConfig: () => <div data-testid="explore-pivots-config" />,
+  ExploreChartsConfig: () => <div data-testid="explore-charts-config" />,
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => {
     bandingEditorProps.push(props)
@@ -755,13 +757,20 @@ describe("NodePanel", () => {
 
     const code = screen.getByRole("tab", { name: "Polars Code" })
     const overview = screen.getByRole("tab", { name: "Overview" })
-    const relationships = screen.getByRole("tab", { name: "Relationships" })
+    const pivots = screen.getByRole("tab", { name: "Pivots" })
     const charts = screen.getByRole("tab", { name: "Charts" })
     const exportPane = screen.getByRole("tab", { name: "Export" })
 
+    expect(
+      within(screen.getByRole("tablist", { name: "Explore panes" }))
+        .getAllByRole("tab")
+        .map((tab) => tab.textContent),
+    ).toEqual(["Polars Code", "Overview", "Pivots", "Charts", "Export"])
+    expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
+
     expect(code).toHaveAttribute("aria-selected", "true")
     expect(overview).toHaveAttribute("aria-selected", "false")
-    expect(relationships).toHaveAttribute("aria-selected", "false")
+    expect(pivots).toHaveAttribute("aria-selected", "false")
     expect(charts).toHaveAttribute("aria-selected", "false")
     expect(exportPane).toHaveAttribute("aria-selected", "false")
     expect(screen.getByTestId("ExploreCodeEditor")).toBeInTheDocument()
@@ -778,10 +787,20 @@ describe("NodePanel", () => {
       upstreamColumns: [{ name: "premium", dtype: "Int64" }],
     })
 
+    fireEvent.click(pivots)
+
+    expect(pivots).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-pivots-pane")).toContainElement(
+      screen.getByTestId("explore-pivots-config"),
+    )
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
+
     fireEvent.click(charts)
 
     expect(charts).toHaveAttribute("aria-selected", "true")
-    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+    expect(screen.getByTestId("explore-charts-pane")).toContainElement(
+      screen.getByTestId("explore-charts-config"),
+    )
     expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
 
     rerender(
@@ -798,7 +817,7 @@ describe("NodePanel", () => {
     )
 
     expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
-    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+    expect(screen.getByTestId("explore-charts-config")).toBeInTheDocument()
   })
 
   it("renders the dataset-header toggle when the Explore Overview pane is selected", () => {
@@ -846,8 +865,8 @@ describe("NodePanel", () => {
 
     expect(screen.getByRole("tab", { name: "Polars Code" })).toHaveAttribute("aria-selected", "true")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Relationships" }))
-    expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "true")
+    fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
+    expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")
 
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
@@ -858,7 +877,7 @@ describe("NodePanel", () => {
     expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
     expect(useUIStore.getState().explorePanes).toEqual({
       explore_1: "export",
-      explore_2: "relationships",
+      explore_2: "pivots",
     })
   })
 

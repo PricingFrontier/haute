@@ -22,7 +22,9 @@
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, JSON/JSONL/NDJSON/XML preview selection and cache action, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
-| `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx` | Explore-code and overview-card configuration. |
+| `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
+| `frontend/src/panels/explore/chartConfig.ts` | Validates the persisted ordered `charts` array, preserves future round-trippable fields on valid cards, allocates the first unused `chart_N` id, and supplies order-derived labels. |
+| `frontend/src/panels/explore/pivotConfig.ts` | Validates the persisted ordered `pivots` array, preserves future round-trippable fields on valid cards, allocates the first unused `pivot_N` id, and supplies order-derived labels. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
 | `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned active-job state and per-node pane memory consumed by node-panel modelling chrome. |
@@ -221,11 +223,44 @@ only complete `outputMapping` rows; API Input builds only `tables`.
 `NODE_TYPE_META` supplies those canonical defaults, and Optimiser Apply derives
 mode only from persisted `params.mode`.
 
+**Explore chart-card workflow.** The Explore node's `charts` config is an ordered array of
+objects with a unique non-empty `id` and Boolean `enabled` field. `ExploreChartsConfig` renders
+one visual card per entry. Its primary native button has checkbox semantics and flips only that
+entry's `enabled` value; its sibling `Configure` button cannot also toggle the card. `Add Chart`
+chooses the first unused `chart_N` id, appends `{id, enabled: true}`, and therefore makes the new
+placeholder immediately visible in the Explore Charts preview. Configuration navigation is
+editor-local by chart id: `Configure` replaces the list with the deferred-settings subview and
+`Back to charts` restores the list. It does not create an additional persisted mode flag.
+Malformed containers, card shapes, duplicate ids, or wrong-typed known fields render an explicit
+diagnostic and expose no mutating controls; valid unknown card fields are retained by toggle
+writes so later chart settings can round-trip through an older UI.
+
+**Explore pivot-card workflow.** The Explore node's `pivots` config is an ordered array of
+objects with a unique non-empty `id`. `ExplorePivotsConfig` renders one neutral card per entry;
+`Add Pivot` chooses the first unused `pivot_N` id and appends `{id}`. Each card's `Configure`
+button opens an editor-local deferred-settings subview by pivot id, and `Back to pivots` restores
+the list without persisting navigation state or mutating the pivot. There is no primary toggle or
+`enabled` field until a pivot visualisation/activation contract exists. Malformed containers,
+card shapes, duplicate ids, or non-literal future fields render an explicit diagnostic and expose
+no mutating controls; valid unknown fields survive round trips for future pivot settings.
+
+**Explore pane ordering.** `NodePanel` declares exactly five Explore panes in this order:
+`code`, `overview`, `pivots`, `charts`, `export`; `relationships` is not a valid `ExplorePane`.
+The Pivots tab sits between Overview and Charts and renders `ExplorePivotsConfig` in its labelled
+tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
+`useUIStore.explorePanes` so switching to another node and back restores the same selection.
+
 ## Edge cases and invariants
 
 - Column selectors accept unavailable/empty preview schema through their editor-specific text or
   persisted-value route; a known value is not silently erased just because upstream preview data
   changed.
+- Explore chart ids are stable persistence identities, while the visible `Chart N` label follows
+  array order. Adding or toggling a chart is display-only and must not invalidate the Explore
+  dataframe/report cache or increment the graph's execution-structural version.
+- Explore pivot ids are stable persistence identities, while the visible `Pivot N` label follows
+  array order. Adding a pivot is display-only and must not invalidate the Explore dataframe/report
+  cache or increment the graph's execution-structural version.
 - Schema/output rows that are persisted but incomplete stay editable. Fresh inferred rows can be
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
@@ -304,6 +339,13 @@ React/Vitest tests cover editor interaction under `frontend/src/__tests__/editor
 schema paths, output paths, banding and rating editing, clipboard-related grid behaviour,
 Databricks/MLflow selection, panel dispatch/lazy loading and accessibility. There is no dedicated
 test file for every small barrel/style/helper module; those are covered through their consumers.
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx` pins add/configure/back/toggle,
+independent multi-card state, stable id allocation, future-field preservation, and malformed-state
+diagnostics; `frontend/src/panels/__tests__/NodePanel.test.tsx` pins the lazy Charts-pane dispatch.
+`frontend/src/__tests__/editors/ExplorePivotsConfig.test.tsx` pins add/configure/back, multiple
+cards, stable id allocation, future-field preservation, malformed-state diagnostics, and the
+absence of a speculative toggle. The same NodePanel suite pins the five-pane ordering, absence of
+Relationships, Pivots-pane dispatch, and per-node Pivots selection memory.
 `frontend/src/__tests__/editors/EdgeJoinEditor.test.tsx` pins fixed role displays and swap
 availability, all seven join options, same-name/asymmetric mode transitions, automatic key
 clearing for `cross`, advanced Polars options, and visible diagnostics for conflicting role/key

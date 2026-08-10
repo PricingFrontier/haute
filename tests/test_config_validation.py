@@ -17,8 +17,10 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    ExploreChartConfig,
     ExploreConfig,
     ExploreOverviewConfig,
+    ExplorePivotConfig,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,
@@ -542,7 +544,11 @@ class TestSelectedColumnsUniversal:
         assert get_type_hints(ExploreConfig) == {
             "code": str,
             "overview": ExploreOverviewConfig,
+            "pivots": list[ExplorePivotConfig],
+            "charts": list[ExploreChartConfig],
         }
+        assert get_type_hints(ExploreChartConfig) == {"id": str, "enabled": bool}
+        assert get_type_hints(ExplorePivotConfig) == {"id": str}
         overview_hints = get_type_hints(ExploreOverviewConfig)
         assert overview_hints == {
             "dataset_snapshot": bool,
@@ -557,6 +563,15 @@ class TestSelectedColumnsUniversal:
         assert (
             warn_unrecognized_config_keys(
                 NodeType.EXPLORE, {"overview": {"dataset_snapshot": True}}
+            )
+            == []
+        )
+        assert (
+            warn_unrecognized_config_keys(NodeType.EXPLORE, {"pivots": [{"id": "pivot_1"}]}) == []
+        )
+        assert (
+            warn_unrecognized_config_keys(
+                NodeType.EXPLORE, {"charts": [{"id": "chart_1", "enabled": True}]}
             )
             == []
         )

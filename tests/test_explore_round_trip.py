@@ -1,12 +1,11 @@
-"""Round-trip tests for the Explore node's ``overview`` config block.
+"""Round-trip tests for the Explore node's display-config blocks.
 
-Builds a minimal graph containing a ``dataInput`` and an ``explore`` node
-carrying ``config={"overview": {"dataset_snapshot": True}}``, runs it through
+Builds minimal ``dataInput`` -> ``explore`` graphs, runs them through
 ``graph_to_code`` and back through the real ``parse_pipeline_source``, and
-asserts the overview config survives end-to-end.
+asserts their display config survives end-to-end.
 
 This is the contract the UI relies on: codegen must emit the kwarg, and the
-parser must read it back into ``config["overview"]``.
+parser must read it back into the Explore node config.
 """
 
 from __future__ import annotations
@@ -27,8 +26,8 @@ def _write_configs(graph: PipelineGraph, base_dir: Path) -> None:
         abs_path.write_text(content)
 
 
-def _explore_graph(overview: dict) -> PipelineGraph:
-    """Build a minimal source -> explore graph with the given overview block."""
+def _explore_graph_with_config(config: dict) -> PipelineGraph:
+    """Build a minimal source -> explore graph with the given config."""
     return PipelineGraph(
         nodes=[
             GraphNode(
@@ -50,12 +49,17 @@ def _explore_graph(overview: dict) -> PipelineGraph:
                 data=NodeData(
                     label="inspect_claims",
                     nodeType="explore",
-                    config={"overview": overview},
+                    config=config,
                 ),
             ),
         ],
         edges=[GraphEdge(id="e1", source="source", target="inspect_claims")],
     )
+
+
+def _explore_graph(overview: dict) -> PipelineGraph:
+    """Build a minimal source -> explore graph with the given overview block."""
+    return _explore_graph_with_config({"overview": overview})
 
 
 def test_overview_config_round_trips_through_codegen_and_parse(tmp_path: Path) -> None:
@@ -202,3 +206,72 @@ def test_empty_overview_does_not_round_trip_into_config(tmp_path: Path) -> None:
     explore_node = node_map["inspect_claims"]
     assert explore_node.data.nodeType == "explore"
     assert "overview" not in explore_node.data.config
+
+
+def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> None:
+    pivots = [
+        {"id": "pivot_1", "future_setting": {"rows": ["region"]}},
+        {"id": "pivot_2"},
+    ]
+    charts = [
+        {
+            "id": "chart_1",
+            "enabled": True,
+            "future_setting": {"palette": "warm", "columns": ["premium"]},
+        },
+        {"id": "chart_2", "enabled": False},
+    ]
+    graph = _explore_graph_with_config(
+        {"overview": {"schema": True}, "pivots": pivots, "charts": charts}
+    )
+
+    code = graph_to_code(graph, pipeline_name="round_trip_display_cards")
+    _write_configs(graph, tmp_path)
+
+    assert "pivots=" in code
+    assert "charts=" in code
+    assert code.index("overview=") < code.index("pivots=") < code.index("charts=")
+    parsed = parse_pipeline_source(
+        code,
+        source_file=str(tmp_path / "pipeline.py"),
+        _base_dir=tmp_path,
+    )
+
+    node_map = {n.id: n for n in parsed.nodes}
+    assert node_map["inspect_claims"].data.config.get("overview") == {"schema": True}
+    assert node_map["inspect_claims"].data.config.get("pivots") == pivots
+    assert node_map["inspect_claims"].data.config.get("charts") == charts
+
+
+def test_empty_charts_do_not_round_trip_into_config(tmp_path: Path) -> None:
+    graph = _explore_graph_with_config({"charts": []})
+
+    code = graph_to_code(graph, pipeline_name="round_trip_charts_empty")
+    _write_configs(graph, tmp_path)
+
+    assert "charts=" not in code
+    parsed = parse_pipeline_source(
+        code,
+        source_file=str(tmp_path / "pipeline.py"),
+        _base_dir=tmp_path,
+    )
+
+    node_map = {n.id: n for n in parsed.nodes}
+    assert "charts" not in node_map["inspect_claims"].data.config
+
+
+def test_empty_pivots_do_not_round_trip_into_config(tmp_path: Path) -> None:
+    graph = _explore_graph_with_config({"pivots": []})
+
+    code = graph_to_code(graph, pipeline_name="round_trip_pivots_empty")
+    _write_configs(graph, tmp_path)
+
+    assert "pivots=" not in code
+    parsed = parse_pipeline_source(
+        code,
+        source_file=str(tmp_path / "pipeline.py"),
+        _base_dir=tmp_path,
+    )
+
+    node_map = {n.id: n for n in parsed.nodes}
+    assert "pivots" not in node_map["inspect_claims"].data.config

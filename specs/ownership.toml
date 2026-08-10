@@ -159,7 +159,7 @@ reason = "Execution owns runtime builders; optimiser consumes OPTIMISER_APPLY ar
 path = "src/haute/_cache.py"
 primary = "caching"
 consumers = ["explore-eda"]
-reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview-field exclusion that keeps dataframe and report caching independent."
+reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview/pivots/charts display-field exclusions that keep dataframe and report caching independent."
 
 [[shared_file]]
 path = "src/haute/_column_summary.py"

@@ -299,7 +299,7 @@ def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
     )
 
 
-def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
+def test_explore_display_config_does_not_invalidate_analysis_dataframe_cache(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -320,6 +320,8 @@ def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
             explore_config={
                 **data_config,
                 "overview": {"dataset_snapshot": True, "schema": True},
+                "pivots": [{"id": "pivot_1"}],
+                "charts": [{"id": "chart_1", "enabled": True}],
             },
         ),
         "node_id": "explore",

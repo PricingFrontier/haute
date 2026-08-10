@@ -9,6 +9,8 @@ import {
   EdgeJoinEditor,
   ExploreCodeEditor,
   ExploreOverviewConfig,
+  ExplorePivotsConfig,
+  ExploreChartsConfig,
   ModelScoreEditor,
   BandingEditor,
   RatingStepEditor,
@@ -99,11 +101,11 @@ const NO_REFRESH_PREVIEW = new Set<string>([
 ])
 
 // Right-panel panes for Explore nodes. Code prepares the analysis dataset;
-// the remaining panes are empty scaffolding for upcoming EDA work.
+// Overview, Pivots, and Charts configure display, while Export remains scaffolding.
 const EXPLORE_PANES = [
   { key: "code", label: "Polars Code" },
   { key: "overview", label: "Overview" },
-  { key: "relationships", label: "Relationships" },
+  { key: "pivots", label: "Pivots" },
   { key: "charts", label: "Charts" },
   { key: "export", label: "Export" },
 ] as const satisfies readonly { key: ExplorePane; label: string }[]
@@ -878,6 +880,12 @@ export default function NodePanel({
           >
             {activeExplorePane === "overview" && (
               <ExploreOverviewConfig config={config} onUpdate={handleConfigUpdate} />
+            )}
+            {activeExplorePane === "pivots" && (
+              <ExplorePivotsConfig config={config} onUpdate={handleConfigUpdate} />
+            )}
+            {activeExplorePane === "charts" && (
+              <ExploreChartsConfig config={config} onUpdate={handleConfigUpdate} />
             )}
           </div>
         )

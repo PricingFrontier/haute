@@ -33,7 +33,9 @@ from typing import Any
 from haute._code_extraction import INCOMPLETE_TRANSFORM_BODY, POLARS_OUTPUT_DECLARATION
 from haute._config_io import config_path_for_node
 from haute._edge_join import build_edge_join_kwargs, edge_join_config_to_decorator_kwargs
+from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
+from haute._explore_pivots import validate_explore_pivots
 from haute._graph_utils import (
     _sanitize_func_name,
     duplicate_input_names,
@@ -733,23 +735,28 @@ def _gen_optimiser_apply(node: GraphNode, source_names: list[str]) -> str:
     )
 
 
-# Explore uses a single nested-dict decorator kwarg (``overview={...}``)
-# instead of flat snake_case kwargs (the pattern modelling/optimiser/scenario
-# expander use via ``*_CONFIG_KEYS`` tuples).  The UI evolves Overview-card
-# toggles independently of backend keys, so an opaque dict insulates the
-# codegen from churn.
-def _explore_decorator_args(overview: Any) -> str:
+# Explore uses nested decorator kwargs for presentation configuration, rather
+# than flat snake_case kwargs. These opaque values let the UI evolve without
+# coupling code generation to every presentation-specific field.
+def _explore_decorator_args(overview: Any, pivots: Any, charts: Any) -> str:
     """Build the decorator argument string for ``@pipeline.explore(...)``.
 
-    Returns ``""`` when *overview* is empty (so the decorator stays bare),
-    and ``"overview={...}"`` otherwise — using :func:`repr` on a plain
-    ``dict`` so the emitted form is a valid Python literal that round-trips
-    through :mod:`ast`.
+    Returns ``""`` when all values are empty (so the decorator stays bare).
+    Non-empty values are emitted in stable overview-then-pivots-then-charts order using
+    :func:`repr`, making valid Python literals which round-trip through
+    :mod:`ast`.
     """
     overview = validate_explore_overview(overview, context="explore node config")
-    if not overview:
-        return ""
-    return f"overview={overview!r}"
+    pivots = validate_explore_pivots(pivots, context="explore node config")
+    charts = validate_explore_charts(charts, context="explore node config")
+    args: list[str] = []
+    if overview:
+        args.append(f"overview={overview!r}")
+    if pivots:
+        args.append(f"pivots={pivots!r}")
+    if charts:
+        args.append(f"charts={charts!r}")
+    return ", ".join(args)
 
 
 @_register_codegen(NodeType.EXPLORE)
@@ -767,7 +774,9 @@ def _gen_explore(node: GraphNode, source_names: list[str]) -> str:
     first = source_names[0]
     code = str(config.get("code") or "").strip()
     overview = config["overview"] if "overview" in config else {}
-    decorator_args = _explore_decorator_args(overview)
+    pivots = config["pivots"] if "pivots" in config else []
+    charts = config["charts"] if "charts" in config else []
+    decorator_args = _explore_decorator_args(overview, pivots, charts)
     if code:
         user_body = _wrap_user_code(code, ["df"])
         return (

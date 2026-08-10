@@ -9,11 +9,12 @@
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
-| `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview tab composition. |
+| `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview/Charts tab composition. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
+| `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Strict chart-card config parsing/shared identities and enabled-placeholder visualisation dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
@@ -45,7 +46,8 @@
 ### Explore and overview
 
 1. `frontend/src/panels/explore/cacheIdentity.ts` finds all upstream nodes, removes Explore
-   overview display settings from data-affecting config, and includes submodels/preamble.
+   overview, pivot, and chart display settings from data-affecting config, and includes
+   submodels/preamble.
 2. `frontend/src/panels/ExplorePreview.tsx` canonicalises that identity together with the active
    source. It ignores cached results with a different identity, but keeps the node's active job
    visible and cancellable using the source that job actually started with. It records immediate
@@ -53,13 +55,16 @@
 3. Start failures, and cancellation responses without a completed report, call the result-store
    failure path; thrown start/cancel errors also toast. `useBackgroundJobs` in frontend-shared
    polls background Explore jobs and moves terminal responses into the result store. A visible
-   report is touched to update cache recency. Preview and Overview are the only tabs and mount
-   only for their active tab; a remembered value from a removed pane normalises to Preview.
+   report is touched to update cache recency. Preview, Overview, and Charts mount only for their
+   active tab; a remembered value from a still-unsupported pane normalises to Preview.
    `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
    of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
    tabpanel until that module is ready.
 4. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
+   `frontend/src/panels/explore/chartConfig.ts` instead returns an explicit parse failure for a
+   malformed `charts` block. The Charts pane renders that diagnostic, or renders enabled chart
+   placeholders in persisted order without requiring an Explore cache report.
 5. Schema, numeric-summary, and categorical-summary cards derive a `TableGrid` from the exact
    display fields they render and pass it to `ExploreTableActions`. Copy serialises the header
    and every exported row as TSV; download uses the shared CSV escaping helper. Schema supplies
@@ -103,6 +108,9 @@ and remediation without exposing raw bounded-collection JSON.
 - Explore refuses run while there is no input or a job is active. An instant completed response
   without a report, or a started response without `job_id`, is an explicit failure rather than a
   false success.
+- A valid empty/missing chart array prompts the user to add a chart. A non-empty array with every
+  card disabled reports that no charts are shown. Duplicate/blank ids and wrong-typed fields are
+  invalid configuration, not empty state.
 - Explore progress is a determinate ARIA progressbar only while the run is busy. Its value is
   the displayed fraction clamped to 0-100; native buttons give export actions keyboard semantics,
   and both are disabled when their grid has no body rows.
@@ -133,9 +141,11 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx`,
 `frontend/src/panels/__tests__/ExplorePreview.test.tsx` and
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
-`frontend/src/panels/explore/__tests__/`. They cover virtualisation, frames, search, trace click
+`frontend/src/panels/explore/__tests__/` and
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation, frames, search, trace click
 delegation, boundary/rejected execution diagnostics, cache identity/result/job lifecycle,
-card ordering/config, roving-tab accessibility, utility save-flush/stale-response behaviour and
+overview/chart card ordering and config, chart list/configure/back/toggle behavior, chart
+visualisation empty/error states, roving-tab accessibility, utility save-flush/stale-response behaviour and
 syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
 contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
 pagination, disabled empty-table actions, and native-button accessibility.

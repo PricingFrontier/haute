@@ -760,7 +760,11 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
             excluded={
                 "overview": (
                     "Overview-card visibility affects presentation, not the explored frame."
-                )
+                ),
+                "pivots": (
+                    "Pivot-card configuration affects presentation, not the explored frame."
+                ),
+                "charts": ("Chart-card visibility affects presentation, not the explored frame."),
             },
         ),
         NodeType.EXTERNAL_FILE: _classify_config_fields(

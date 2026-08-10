@@ -10,6 +10,8 @@
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
+| `src/haute/_explore_charts.py` | Standalone validator for the ordered Explore `charts` config list. It requires unique card ids and Boolean enabled state while preserving simple-literal future fields through codegen/parser round trips. |
+| `src/haute/_explore_pivots.py` | Standalone validator for the ordered Explore `pivots` config list. It requires unique card ids while preserving simple-literal future fields through codegen/parser round trips. |
 | `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
 
 ## Key types and data structures
@@ -44,6 +46,10 @@
   "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
   `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
   `str`).
+- **`ExploreChartConfig`** (`_types.py`) — one persisted chart-card identity with required
+  `id: str` and `enabled: bool`; the enclosing `ExploreConfig.charts` list is ordered.
+- **`ExplorePivotConfig`** (`_types.py`) — one persisted pivot-card identity with required
+  `id: str`; the enclosing `ExploreConfig.pivots` list is ordered.
 - **`EXPLORE_CACHE_VERSION = 4`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
   constants in `_explore_service.py`. The version is folded into `report_cache_key` so an
   incompatible report schema never collides with old cached payloads; the LRU is capped at 16
@@ -310,15 +316,16 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   invocations, and by
   inspecting the query plan for absence of `UNION`/`CACHE` nodes (ruling out an unpivot-based
   implementation).
-- **`overview` config round-trip**: an explicit `False` toggle value must be preserved through
-  codegen → parse (not treated the same as an absent key); an empty `overview: {}` dict must
-  *not* be emitted as `overview={}` in generated source at all (codegen only emits the kwarg when
-  the validated dict is non-empty).
+- **Explore display-config round-trip**: an explicit `False` overview toggle or disabled chart
+  must be preserved through codegen → parse (not treated the same as an absent key); pivot cards
+  retain ordered ids and future fields. Empty `overview: {}`, `pivots: []`, and `charts: []`
+  values must not be emitted as decorator kwargs. Non-empty kwargs are emitted in stable
+  overview-then-pivots-then-charts order.
 - **Downstream-edit cache stability**: `dataframe_cache_key` is unchanged by edits to nodes
   downstream of the Explore node (verified by comparing `_prepare_spec(...).dataframe_cache_key`
-  across two graphs differing only in a downstream node's label) and by adding an `overview`
-  block to the Explore node's own config (the overview payload is not part of either cache key's
-  input). It *is* changed by editing the Explore node's own analysis `code`.
+  across two graphs differing only in a downstream node's label) and by adding an `overview`,
+  `pivots`, or `charts` block to the Explore node's own config (the display payload is not part of either
+  cache key's input). It *is* changed by editing the Explore node's own analysis `code`.
 
 ## Error handling
 
@@ -326,10 +333,9 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   from `_prepare_spec` when the target node has zero or multiple upstream parents, and from
   `find_typed_node` when the node is not Explore-typed. A missing node id returns HTTP 404. These
   surface directly as the HTTP response; no job is created.
-- `ConfigError` (from `haute.errors`) — raised by `validate_explore_overview` for structurally
-  invalid `overview` dicts (non-dict value, non-string key, wrong-typed known toggle, or
-  non-round-trippable unknown value). Raised during codegen/parse, not during the run/status/
-  cancel routes.
+- `ConfigError` (from `haute.errors`) — raised by the Explore display-config validators for
+  structurally invalid overview/pivot/chart values, including malformed cards and duplicate ids.
+  Raised during codegen/parse, not during the run/status/cancel routes.
 - `ExecutionCancelledError`, `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`,
   `PUBLIC_CONTRACT_ERROR_TYPES` (mapped with `contract_error_job_fields` to `contract_error`),
   `ContractMismatchError`, `SchemaMismatchError`, `BoundedMemoryUnsupportedError` — all caught
@@ -359,7 +365,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     return synchronously and skip `_materialise_and_summarise` entirely (asserted by
     monkeypatching it to raise on any call).
   - `test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache` /
-    `test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache` /
+    `test_explore_display_config_does_not_invalidate_analysis_dataframe_cache` /
     `test_explore_code_config_change_invalidates_analysis_dataframe_cache` — pin the cache-key
     invalidation invariants directly via `_prepare_spec(...).dataframe_cache_key` comparisons.
   - `test_explore_rejects_non_explore_node_before_execution` — 400 with a message containing
@@ -399,10 +405,11 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   - `_clean_explore_state` autouse fixture snapshots/restores `_store.jobs` and clears
     `_explore_service._report_cache` around each test so report-cache and job-store state never
     leaks between tests.
-- `tests/test_explore_round_trip.py` — exercises `validate_explore_overview` indirectly through
-  `graph_to_code` → `parse_pipeline_source`: known-toggle round trip (`dataset_snapshot`,
-  `schema`, both together), explicit `False` toggle preservation, unknown-key round trip with
-  simple literal values (including nested dict/list and `None`), and that an empty `overview`
-  dict is dropped from generated source rather than emitted as `overview={}`. This is the
-  authoritative round-trip suite for `_explore_overview.py`; its validation behaviour is also
-  covered by the focused overview-validation tests.
+- `tests/test_explore_round_trip.py` — exercises the Explore display validators indirectly
+  through `graph_to_code` → `parse_pipeline_source`: overview toggle/unknown-key round trips,
+  ordered pivot and enabled/disabled chart cards with future settings, and omission of empty
+  `overview={}`/`pivots=[]`/`charts=[]` kwargs.
+- `tests/test_explore_charts.py` — pins chart-container/card shape validation, required state,
+  duplicate-id rejection, future simple-literal fields, order preservation, and detached output.
+- `tests/test_explore_pivots.py` — pins pivot-container/card shape validation, duplicate-id
+  rejection, future simple-literal fields, order preservation, and detached output.

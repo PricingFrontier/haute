@@ -18,9 +18,9 @@ Modelling and optimiser result presentation belongs to
 - Data previews render loading, error and successful data, support column search, selected-frame
   switching, trace-cell clicks, and virtualise large row/column grids.
 - Explore computes a source- and lineage-sensitive cache identity, starts/cancels an Explore run,
-  exposes Preview and Overview tabs, and uses a completed report only when its stored canonical
-  identity matches the current graph identity. An active job remains visible and cancellable if
-  the graph or active source changes while it runs.
+  exposes Preview, Overview, and Charts tabs, and uses a completed report only when its stored
+  canonical identity matches the current graph identity. An active job remains visible and
+  cancellable if the graph or active source changes while it runs.
 - Overview cards have a fixed order and are individually enabled from config. They display
   dataset, quality, numeric, categorical and schema information with accessible empty states.
   Schema, numeric-summary, and categorical-summary tables expose native-button actions to copy
@@ -32,6 +32,10 @@ Modelling and optimiser result presentation belongs to
 - Schema rows and their exports include concise profile cues supplied by the report: identifier
   candidate, high cardinality, text length range/mean, and temporal span. Exact duplicate-row
   findings appear through the existing Data Quality issue list.
+- Charts renders one ordered placeholder visualisation for every enabled chart card in the
+  Explore node config. Disabled cards are absent. A node with no cards and a node whose cards are
+  all disabled have distinct accessible empty states; chart settings and data-driven chart
+  drawing are deferred.
 - The Explore run indicator exposes determinate `progressbar` semantics while a run is active,
   including a stable accessible name and a clamped percentage value from 0 through 100.
 - Utility manages reusable utility Python modules, including parsed syntax failure locations.
@@ -47,9 +51,9 @@ Modelling and optimiser result presentation belongs to
 ## Design rationale
 
 Virtualisation and delegated cell events make tabular inspection remain responsive at large
-dimensions. Cache identity excludes view-only Explore overview toggles so changing displayed
-cards does not invalidate an otherwise reusable report. Cached reports are identity-gated, while
-running jobs are node-owned so a changed editor cannot strand their Cancel action. Utility-module
+dimensions. Cache identity excludes view-only Explore overview, pivot-card, and chart-card settings so changing
+displayed cards does not invalidate an otherwise reusable report. Cached reports are identity-gated,
+while running jobs are node-owned so a changed editor cannot strand their Cancel action. Utility-module
 saves separately guard stale responses after an awaited request. Explore table actions reuse the
 shared clipboard and RFC-4180 CSV serializers so quoting behaviour cannot drift from editor
 exports; exports contain the same display strings and headers as the corresponding card rather
@@ -68,6 +72,7 @@ advances Explore jobs to terminal result-store state.
 Preview errors are normal rendered states. Explore start failures and cancellation responses that
 do not include a completed report are recorded as terminal errors and surfaced to the user; a
 cached report with a stale identity is not rendered, but an active node job is never hidden by an
-identity change. Invalid optional overview configuration is discarded while parsing, while
+identity change. Invalid optional overview configuration is discarded while parsing. Invalid
+chart-card configuration is surfaced in the Charts pane rather than silently replaced, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
 fabricated.

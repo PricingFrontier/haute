@@ -192,11 +192,11 @@ function resetStores() {
   useUIStore.setState({ explorePreviewPanes: {} })
 }
 
-function renderExplore(previewData?: PreviewData | null) {
+function renderExplore(previewData?: PreviewData | null, node: SimpleNode = exploreNode) {
   return render(
     <ExplorePreview
-      node={exploreNode}
-      allNodes={[sourceNode, exploreNode]}
+      node={node}
+      allNodes={[sourceNode, node]}
       edges={edges}
       submodels={{}}
       preamble="import polars as pl"
@@ -277,7 +277,7 @@ describe("ExplorePreview", () => {
     expect(screen.getByText(/Showing 2 of 3 rows/)).toBeInTheDocument()
   })
 
-  it("offers only implemented Explore panes and hides preview rows on Overview", () => {
+  it("offers the implemented Explore panes and hides preview rows on Overview", () => {
     renderExplore(makePreview())
 
     const preview = screen.getByRole("tab", { name: "Preview" })
@@ -286,7 +286,7 @@ describe("ExplorePreview", () => {
     expect(preview).toHaveAttribute("aria-selected", "true")
     expect(overview).toHaveAttribute("aria-selected", "false")
     expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("tab", { name: "Charts" })).not.toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "false")
 
     fireEvent.click(overview)
 
@@ -297,14 +297,67 @@ describe("ExplorePreview", () => {
     expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("overview")
   })
 
-  it("falls back to Preview when a removed pane was remembered", () => {
-    useUIStore.setState({ explorePreviewPanes: { explore_1: "charts" } })
+  it("falls back to Preview when an unsupported pane was remembered", () => {
+    useUIStore.setState({ explorePreviewPanes: { explore_1: "relationships" } })
 
     renderExplore(makePreview())
 
     expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true")
     expect(screen.getByTestId("explore-preview-preview-pane")).toBeInTheDocument()
     expect(screen.getByTestId("data-preview-embedded")).toBeInTheDocument()
+  })
+
+  it("renders enabled chart placeholders in config order and remembers the Charts pane", async () => {
+    const node = exploreNodeWithConfig({
+      charts: [
+        { id: "chart_1", enabled: true },
+        { id: "chart_2", enabled: false },
+        { id: "chart_3", enabled: true },
+      ],
+    })
+    renderExplore(makePreview(), node)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
+
+    expect(await screen.findByTestId("explore-charts-pane")).toBeInTheDocument()
+    const visibleCharts = screen.getAllByTestId("explore-chart-visualisation")
+    expect(visibleCharts).toHaveLength(2)
+    expect(visibleCharts[0]).toHaveAccessibleName("Chart 1")
+    expect(visibleCharts[1]).toHaveAccessibleName("Chart 3")
+    expect(screen.queryByLabelText("Chart 2")).not.toBeInTheDocument()
+    expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("charts")
+  })
+
+  it("distinguishes no chart cards from cards that are all hidden", async () => {
+    const { rerender } = renderExplore(makePreview())
+
+    fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
+    expect(await screen.findByText(/Add a chart from the Charts settings pane/i)).toBeInTheDocument()
+
+    const hiddenNode = exploreNodeWithConfig({ charts: [{ id: "chart_1", enabled: false }] })
+    rerender(
+      <ExplorePreview
+        node={hiddenNode}
+        allNodes={[sourceNode, hiddenNode]}
+        edges={edges}
+        submodels={{}}
+        preamble="import polars as pl"
+        previewData={makePreview()}
+      />,
+    )
+
+    expect(await screen.findByText(/No charts are currently shown/i)).toBeInTheDocument()
+  })
+
+  it("surfaces malformed chart config in the visualisation pane", async () => {
+    const node = exploreNodeWithConfig({
+      charts: [{ id: "chart_1", enabled: true }, { id: "chart_1", enabled: false }],
+    })
+    renderExplore(makePreview(), node)
+
+    fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/duplicate chart id/i)
   })
 
   it("registers a started Explore job for background polling", async () => {
@@ -404,7 +457,7 @@ describe("ExplorePreview", () => {
     expect(screen.getByText("Data Quality")).toBeInTheDocument()
   })
 
-  it("reuses cached report when only overview toggles change", async () => {
+  it("reuses cached report when only Explore display cards change", async () => {
     const dataConfig = { code: "df = df.select(pl.all())" }
     const report = makeReport({ row_count: 9876, column_count: 7 })
     seedCachedExplore({ config: dataConfig, report })
@@ -413,7 +466,12 @@ describe("ExplorePreview", () => {
       ...exploreNode,
       data: {
         ...exploreNode.data,
-        config: { ...dataConfig, overview: { dataset_snapshot: true } },
+        config: {
+          ...dataConfig,
+          overview: { dataset_snapshot: true },
+          pivots: [{ id: "pivot_1" }],
+          charts: [{ id: "chart_1", enabled: true }],
+        },
       },
     }
 

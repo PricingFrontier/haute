@@ -188,7 +188,7 @@ describe("shallowNodeDataHash — input-key sensitivity", () => {
     expect(shallowNodeDataHash(changed)).not.toBe(shallowNodeDataHash(base))
   })
 
-  it("explore overview config is ignored but explore code config still flips the hash", () => {
+  it("explore display config is ignored but explore code config still flips the hash", () => {
     const exploreBase = {
       label: "Explore",
       nodeType: "explore",
@@ -205,8 +205,24 @@ describe("shallowNodeDataHash — input-key sensitivity", () => {
       ...exploreBase,
       config: { code: "df = df.filter(pl.col('premium') > 0)" },
     }
+    const chartsChanged = {
+      ...exploreBase,
+      config: {
+        code: "df = df.select(pl.all())",
+        charts: [{ id: "chart_1", enabled: true }],
+      },
+    }
+    const pivotsChanged = {
+      ...exploreBase,
+      config: {
+        code: "df = df.select(pl.all())",
+        pivots: [{ id: "pivot_1" }],
+      },
+    }
 
     expect(shallowNodeDataHash(overviewChanged)).toBe(shallowNodeDataHash(exploreBase))
+    expect(shallowNodeDataHash(pivotsChanged)).toBe(shallowNodeDataHash(exploreBase))
+    expect(shallowNodeDataHash(chartsChanged)).toBe(shallowNodeDataHash(exploreBase))
     expect(shallowNodeDataHash(codeChanged)).not.toBe(shallowNodeDataHash(exploreBase))
   })
 

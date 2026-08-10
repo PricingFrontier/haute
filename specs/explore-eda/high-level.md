@@ -7,8 +7,8 @@ intermediate step in a Haute graph to inspect the full dataframe at that point. 
 analysts can materialise and profile a dataset — row/column counts, per-column schema stats,
 data-quality issues, and bounded categorical value counts — without that inspection work
 becoming part of the production scoring path. This component owns the backend half of that
-workflow: validating the node's own `overview` config block, running the materialisation job,
-and computing the summary statistics returned to the UI.
+workflow: validating the node's own `overview`, `pivots`, and `charts` display-config blocks, running the
+materialisation job, and computing the summary statistics returned to the UI.
 
 ## Scope
 
@@ -27,6 +27,12 @@ In scope:
 - Validating the `overview` config dict attached to an Explore node — the set of toggle cards
   (`dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary`, `schema`) a user
   has enabled, plus round-trip-safe storage of any unrecognised keys.
+- Validating the ordered `charts` config list attached to an Explore node. Every card has a
+  unique non-empty string `id` and Boolean `enabled` state; unknown simple-literal fields are
+  retained for forwards-compatible chart settings.
+- Validating the ordered `pivots` config list attached to an Explore node. Every card has a
+  unique non-empty string `id`; unknown simple-literal fields are retained for forwards-compatible
+  pivot settings, without requiring a visibility state that has no consumer yet.
 
 Out of scope (owned elsewhere):
 
@@ -37,12 +43,13 @@ Out of scope (owned elsewhere):
 - Generic job-store, job-lifecycle, and cancellation-registry mechanics shared with other
   long-running routes (modelling, optimiser) — see
   [background-jobs](../background-jobs/high-level.md).
-- Parsing and code-generation of the `@pipeline.explore()` decorator and its `overview=` kwarg
-  into/out of pipeline source files — see [codegen](../codegen/high-level.md) and
+- Parsing and code-generation of the `@pipeline.explore()` decorator and its
+  `overview=`/`pivots=`/`charts=` kwargs into/out of pipeline source files — see
+  [codegen](../codegen/high-level.md) and
   [expression-parsing](../expression-parsing/high-level.md) (the parser/codegen call sites live
-  in `_codegen_builders.py` and `_config_builder.py`, which import
-  `haute._explore_overview.validate_explore_overview`).
-- Rendering the report in the UI (Overview/Relationships/Charts/Export panes) — see
+  in `_codegen_builders.py` and `_config_builder.py`, which import the validators from
+  `haute._explore_overview`, `haute._explore_pivots`, and `haute._explore_charts`).
+- Rendering Explore views in the UI — see
   [frontend-preview-explore](../frontend-preview-explore/high-level.md).
 
 ## Behaviour
@@ -107,15 +114,24 @@ Out of scope (owned elsewhere):
 - Downstream graph edits (nodes/edges added after the Explore node) never invalidate the cached
   dataframe or report for that Explore node. Changes to the Explore node's own analysis code,
   its upstream lineage, the pipeline preamble, the source file, or the input source do invalidate
-  it. Changes to only the Explore node's `overview` config block do **not** invalidate the
-  dataframe cache (it is not part of the dataframe cache key), and the equal report is served
-  from cache.
+  it. Changes to only the Explore node's `overview`, `pivots`, or `charts` config blocks do **not**
+  invalidate the dataframe cache (they are not part of the dataframe cache key), and the equal
+  report is served from cache.
 - `validate_explore_overview` accepts only a dict at the top level with string keys. The five
   known toggle keys must be booleans; any other key's value must be JSON-round-trippable through
   codegen (`None`, `str`, `bool`, `int`, a finite `float`, or nested lists/dicts of the same) so
   a newer UI's overview cards remain readable by, and rewritable through, an older parser/codegen
   pair. An empty `overview` dict is preserved as empty (not defaulted) so callers can choose to
   omit the config entirely rather than emit `overview={}`.
+- `validate_explore_charts` accepts only a list of dicts. Each item requires a non-empty string
+  `id` identity and a Boolean `enabled` state; ids must be unique within the list. Unknown
+  string-keyed fields are preserved when their values use the same finite, recursively
+  simple-literal grammar as unknown overview values. An empty list remains empty so parser/codegen
+  callers can omit `charts=[]`.
+- `validate_explore_pivots` accepts only a list of dicts. Each item requires a unique non-empty
+  string `id`; unknown string-keyed fields are preserved when their values use the same finite,
+  recursively simple-literal grammar. An empty list remains empty so parser/codegen callers can
+  omit `pivots=[]`.
 
 ## Design rationale
 
@@ -132,7 +148,7 @@ Out of scope (owned elsewhere):
 - **Report/dataframe cache separation.** The dataframe cache (parquet on disk, keyed by
   execution lineage) and the lightweight `ExploreCacheReport` cache (in-process LRU, keyed by
   dataframe cache key + node id + source + report schema version) are deliberately independent.
-  This lets an `overview` config change reuse the same materialised dataframe while still
+  This lets an `overview`, `pivots`, or `charts` config change reuse the same materialised dataframe while still
   invalidating only the report if the report schema itself changes (`EXPLORE_CACHE_VERSION`).
 - **One batched cancellable streaming collect.** All column stats (min/max, quartiles,
   null/zero/negative counts, bounded categorical value counts, display-label group counts,
@@ -149,7 +165,7 @@ Out of scope (owned elsewhere):
   either would abort the single batched collect and take down the whole report, not just that
   column. Both are formatted element-wise instead so one problematic column cannot break the
   report for every other column.
-- **Round-trippable unknown overview keys.** `validate_explore_overview` preserves unrecognised
+- **Round-trippable unknown display keys.** The Explore display validators preserve unrecognised
   keys (rather than stripping them) so that a pipeline `.py` file edited by a newer UI version
   still parses and re-serialises correctly under an older backend, at the cost of restricting
   unknown values to simple literals that are guaranteed to survive a `repr()`/codegen round trip.
@@ -172,11 +188,11 @@ Out of scope (owned elsewhere):
   `_ensure_source_file`, `_validate_runtime_input_paths`, `flatten_graph`) and mounts the Explore
   router in the application shell.
 - [codegen](../codegen/high-level.md) / [expression-parsing](../expression-parsing/high-level.md):
-  call `validate_explore_overview` when emitting or parsing the `overview=` kwarg on
-  `@pipeline.explore()`.
+  call the Explore display-config validators when emitting or parsing the `overview=`, `pivots=`,
+  and `charts=` kwargs on `@pipeline.explore()`.
 - [frontend-preview-explore](../frontend-preview-explore/high-level.md): the consumer of
-  `ExploreCacheReport` — renders the Overview/Relationships/Charts panes from the fields this
-  component computes.
+  `ExploreCacheReport` — renders the current Explore result panes from the fields this component
+  computes.
 
 ## Failure model
 
@@ -193,9 +209,10 @@ Out of scope (owned elsewhere):
 - Any other exception raised while materialising or summarising is logged
   (`explore_cache_failed`, with traceback) and the job transitions to `error` with `str(exc)` as
   the message — no fallback report is synthesised.
-- `validate_explore_overview` raises `ConfigError` (not a generic exception) for a non-dict
-  top-level value, a non-string key, a known toggle key holding a non-boolean, or an unknown key
-  holding a value that is not round-trippable; callers do not catch and paper over these.
+- The Explore display validators raise `ConfigError` (not a generic exception) for invalid
+  top-level containers, non-string keys, wrong-typed known fields, or unknown values that are not
+  round-trippable. Chart validation also rejects malformed entries and blank or duplicate ids;
+  callers do not catch and paper over these failures.
 
 **Statistics-shape caveat.** `ExploreFrameStats`/`_build_frame_stats`
 unconditionally include zero/negative counts and quartile fields only for numeric columns,

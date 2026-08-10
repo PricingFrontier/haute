@@ -25,7 +25,9 @@ from haute._config_io import NODE_TYPE_TO_FOLDER, has_config_folder, load_node_c
 from haute._config_validation import validate_node_config, warn_unrecognized_config_keys
 from haute._contracts import Contract, get_column_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs
+from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
+from haute._explore_pivots import validate_explore_pivots
 from haute._logging import get_logger
 from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
@@ -184,6 +186,20 @@ def _build_node_config(
             )
             if overview:
                 config["overview"] = dict(overview)
+        if "pivots" in decorator_kwargs:
+            pivots = validate_explore_pivots(
+                decorator_kwargs["pivots"],
+                context="explore decorator",
+            )
+            if pivots:
+                config["pivots"] = pivots
+        if "charts" in decorator_kwargs:
+            charts = validate_explore_charts(
+                decorator_kwargs["charts"],
+                context="explore decorator",
+            )
+            if charts:
+                config["charts"] = charts
     else:
         # transform
         config["code"] = _extract_user_code(body, param_names) if body else ""

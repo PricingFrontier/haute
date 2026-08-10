@@ -19,6 +19,7 @@ import PreviewPanelTabs from "./PreviewPanelTabs"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "./previewPanelLayout"
 
 const ExploreOverviewPane = lazy(() => import("./explore/ExploreOverviewPane"))
+const ExploreChartsPane = lazy(() => import("./explore/ExploreChartsPane"))
 
 type ExplorePreviewProps = {
   node: SimpleNode
@@ -34,6 +35,7 @@ type ExplorePreviewProps = {
 const EXPLORE_PREVIEW_PANES = [
   { key: "preview", label: "Preview" },
   { key: "overview", label: "Overview" },
+  { key: "charts", label: "Charts" },
 ] as const satisfies readonly { key: ExplorePreviewPane; label: string }[]
 
 function statusMessage(status: ExploreStatusResponse | null, submitting: boolean): string {
@@ -94,7 +96,10 @@ export default function ExplorePreview({
   const isBusy = submitting || !!currentExploreJob
   const progress = status?.status === "completed" ? 1 : (status?.progress ?? (submitting ? 0.03 : 0))
   const progressPercent = Math.min(Math.max(progress * 100, 0), 100)
-  const activePane = rememberedPane === "overview" ? "overview" : "preview"
+  const activePane =
+    rememberedPane === "overview" || rememberedPane === "charts"
+      ? rememberedPane
+      : "preview"
   const activePaneMeta = EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
   const statusSource = currentExploreJob?.source ?? activeSource
 
@@ -271,11 +276,15 @@ export default function ExplorePreview({
                   className="flex flex-1 items-center justify-center text-xs"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  Loading overview…
+                  Loading {activePane}…
                 </div>
               }
             >
-              <ExploreOverviewPane node={node} report={report} />
+              {activePane === "overview" ? (
+                <ExploreOverviewPane node={node} report={report} />
+              ) : (
+                <ExploreChartsPane node={node} />
+              )}
             </Suspense>
           )}
         </div>

@@ -347,11 +347,26 @@ class ExploreOverviewConfig(TypedDict, total=False):
     schema: bool
 
 
+class ExploreChartConfig(TypedDict):
+    """Persisted state for one Explore chart card."""
+
+    id: str
+    enabled: bool
+
+
+class ExplorePivotConfig(TypedDict):
+    """Persisted state for one Explore pivot card."""
+
+    id: str
+
+
 class ExploreConfig(TypedDict, total=False):
     """Config for explore nodes."""
 
     code: str
     overview: ExploreOverviewConfig
+    pivots: list[ExplorePivotConfig]
+    charts: list[ExploreChartConfig]
 
 
 class ExternalFileConfig(TypedDict, total=False):

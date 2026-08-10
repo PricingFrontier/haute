@@ -45,6 +45,20 @@ backend API modules own validation and persistence.
 - IO editors obtain supported formats and their arguments from the server. API/data input,
   output, external-file, transform, explore, live-switch, scenario, submodel,
   model-score and optimiser-apply editors render only their own configuration contract.
+- The Explore Charts pane owns an ordered set of persisted chart cards. `Add Chart` appends a
+  new enabled card, the card's primary action toggles whether it is shown in the Explore Charts
+  visualisation, and a separate `Configure` action opens that card's configuration subview.
+  Configuration controls are intentionally deferred: the subview currently identifies the card,
+  explains that settings are not yet available, and provides `Back to charts` without mutating
+  the card. Multiple cards remain independently toggleable and retain insertion order.
+- The Explore Pivots pane owns an ordered set of persisted pivot cards. `Add Pivot` appends a
+  neutral card and each card exposes a separate `Configure` action. Configuration controls are
+  intentionally deferred: the subview identifies the selected pivot and provides `Back to
+  pivots` without mutating it. Pivot cards do not invent chart-style visibility state while no
+  pivot visualisation consumer exists.
+- The Explore node pane strip is ordered Polars Code, Overview, Pivots, Charts, Export.
+  Relationships is not exposed as an Explore pane. Pivots hosts its card workflow in that
+  position, and its selection is remembered independently per Explore node like the other panes.
 - The Edge Join editor presents the canvas-bound dominant/base and joining roles as fixed
   connections with one atomic swap action. Swapping updates the incoming role handles and
   `baseInput`/`joinInput` config together. Join type choices are exactly `inner`, `left`,

@@ -902,7 +902,7 @@ again through the editor and save paths.
     `structuralVersion`; preview-only changes bump `panelContextVersion`
     but not `structuralVersion`; underscore-prefixed metadata stays out of
     persisted fingerprints; visual-only raw changes reuse cached node
-    hashes; Explore overview-card config is ignored while Explore
+    hashes; Explore overview-card, pivot-card, and chart-card display config is ignored while Explore
     data-prep code still flips the hash; add/remove/rewire/reconfigure and
     preamble edits do bump `structuralVersion`.
   - `frontend/src/stores/__tests__/useGraphStore.undoAtomicity.test.ts` — single- and multi-node delete
