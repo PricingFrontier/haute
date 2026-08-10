@@ -5218,7 +5218,7 @@ def _make_expander_graph(data_path: str) -> dict:
                         "nodeType": "polars",
                         "config": {
                             "code": (
-                                "df = df.with_columns([\n"
+                                "df = expander.with_columns([\n"
                                 "    (pl.col('base_income') * "
                                 "pl.col('scenario_value'))"
                                 ".alias('expected_income'),\n"

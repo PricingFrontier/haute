@@ -435,7 +435,7 @@ class TestExploreGraphShape:
                             "data": {
                                 "label": "Calc",
                                 "nodeType": "polars",
-                                "config": {"code": "df = df.with_columns(y=pl.col('x') * 2)"},
+                                "config": {"code": "df = Source.with_columns(y=pl.col('x') * 2)"},
                             },
                         }
                     ),

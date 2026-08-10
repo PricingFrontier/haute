@@ -97,10 +97,15 @@ path.  Preserve that convention when adding or changing a node.  Do not put
 secrets, credentials, or machine-specific absolute paths in pipeline source.
 
 Prefer lazy Polars expressions (`pl.col`, `with_columns`, `select`, `join`, and
-`drop`) over collecting a frame in a node.  Polars frames are immutable:
-explicit node code must assign the transformed result back to `df` or return
-the transformed frame.  A bare `df.filter(...)` or `df.with_columns(...)`
-expression is discarded by the generated wrapper and is therefore invalid.
+`drop`) over collecting a frame in a node.  A polars node's inputs are its
+named parameters (one per incoming edge) and `df` is only its output variable —
+`df` is never pre-bound to an input, so start from the input you mean by name
+(`df = quotes.filter(...)`) and never read `df` before assigning it.  Polars
+frames are immutable: explicit node code must assign the transformed result to
+`df` or return the transformed frame.  A bare `quotes.filter(...)` expression
+is discarded by the generated wrapper and is therefore invalid, and a polars
+node with no code at all raises if the pipeline is run — there is no implicit
+passthrough.
 Make joins explicit about their keys and join type, and name derived columns so
 downstream steps can refer to them without guessing.
 

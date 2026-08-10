@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from haute._cache import canonical_json
+from haute._graph_utils import _sanitize_func_name
 from haute.assistant._wire_ops import OpValidationError, parse_ops
 
 
@@ -948,8 +949,12 @@ def plan_recipe(recipe_id: str, args: object) -> dict[str, object]:
                 argument="join_key",
             )
         key_text = f"{join_key}_text"
+        # The transform's single input is the join node; its edge-derived
+        # parameter name is the sanitised join label. `df` is only the output
+        # variable, so the code must start from that named input.
+        join_input = _sanitize_func_name(join_name)
         transform_code = (
-            "df = df.with_columns(\n"
+            f"df = {join_input}.with_columns(\n"
             f"    pl.col({json.dumps(join_key)}).cast(pl.String).alias({json.dumps(key_text)}),\n"
             '    pl.lit("haute_showcase").alias("showcase_stage"),\n'
             ")"

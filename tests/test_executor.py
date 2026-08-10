@@ -560,13 +560,16 @@ class TestBuildNodeFn:
         df = fn(lf).collect()
         assert df["y"].to_list() == [11]
 
-    def test_transform_passthrough_without_code(self):
+    def test_transform_without_code_raises(self):
         node = _transform_node("t", code="")
         _, fn, is_source = _build_node_fn(node, source_names=["df"])
         assert is_source is False
         lf = pl.DataFrame({"x": [5]}).lazy()
-        df = fn(lf).collect()
-        assert df["x"].to_list() == [5]
+        with pytest.raises(
+            NotImplementedError,
+            match="This transform has no code yet",
+        ):
+            fn(lf).collect()
 
     def test_output_selects_fields(self):
         node = _output_node("out", fields=["a"])
@@ -856,7 +859,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -893,7 +896,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(z=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(z=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -957,8 +960,8 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("a", str(p)),
-                    _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("b", "df = a.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("c", "df = b.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("a", "b"), _edge("b", "c")],
             }
@@ -985,8 +988,8 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("a", str(p)),
-                    _transform_node("b", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("c", "df = df.with_columns(z=pl.col('y') + 1)"),
+                    _transform_node("b", "df = a.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("c", "df = b.with_columns(z=pl.col('y') + 1)"),
                 ],
                 "edges": [_edge("a", "b"), _edge("b", "c")],
             }
@@ -1015,7 +1018,7 @@ class TestExecuteGraph:
                 "nodes": [
                     _ready_source_node("src", str(p)),
                     # Select a column that doesn't exist - triggers ColumnNotFoundError at collect
-                    _transform_node("bad", code="df = df.select('nonexistent_col')"),
+                    _transform_node("bad", code="df = src.select('nonexistent_col')"),
                 ],
                 "edges": [_edge("src", "bad")],
             }
@@ -1077,7 +1080,7 @@ class TestExecuteGraph:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", code="df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", code="df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -1789,14 +1792,17 @@ class TestExecUserCodeErrors:
         with pytest.raises(AttributeError):
             _exec_user_code("df = df.totally_fake_method()", ["df"], (lf,))
 
-    def test_empty_code_returns_input_unchanged(self):
-        """Empty code with exactly one configured input remains a passthrough."""
+    def test_empty_code_raises_not_implemented(self):
+        """Empty code no longer passes the input through; it raises at collect."""
         lf = pl.DataFrame({"x": [1, 2, 3]}).lazy()
         node = _transform_node("t", code="")
         _, fn, is_source = _build_node_fn(node, source_names=["df"])
         assert is_source is False
-        result = fn(lf).collect()
-        assert result["x"].to_list() == [1, 2, 3]
+        with pytest.raises(
+            NotImplementedError,
+            match="This transform has no code yet",
+        ):
+            fn(lf).collect()
 
 
 class TestBuildNodeFnErrorPaths:
@@ -1875,7 +1881,7 @@ class TestSelectedColumns:
                                 "label": "t",
                                 "nodeType": "polars",
                                 "config": {
-                                    "code": "df = df.with_columns(d=pl.col('a') + pl.col('b'))",
+                                    "code": "df = src.with_columns(d=pl.col('a') + pl.col('b'))",
                                     "selected_columns": ["a", "d"],
                                 },
                             },
@@ -1908,7 +1914,7 @@ class TestSelectedColumns:
                             "data": {
                                 "label": "t",
                                 "nodeType": "polars",
-                                "config": {"code": "", "selected_columns": []},
+                                "config": {"code": "df = src", "selected_columns": []},
                             },
                         }
                     ),
@@ -1947,7 +1953,7 @@ class TestSelectedColumns:
             {
                 "nodes": [
                     src,
-                    _transform_node("t", "df = df.with_columns(x=pl.col('a') * 10)"),
+                    _transform_node("t", "df = src.with_columns(x=pl.col('a') * 10)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -2109,7 +2115,7 @@ class TestExecuteGraphErrorPaths:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t"),
+                    _transform_node("t", code="df = src"),
                 ],
                 "edges": [
                     _edge("src", "t"),
@@ -2140,7 +2146,7 @@ class TestExecuteGraphErrorPaths:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t"),
+                    _transform_node("t", code="df = src"),
                 ],
                 "edges": [_edge("src", "t")],
                 "preamble": "from utility.bad import *\n",
@@ -2303,8 +2309,8 @@ class TestPreviewCachePartialHit:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = mid.with_columns(z=pl.col('y') * 10)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -2423,8 +2429,8 @@ class TestRequestedPreviewProjection:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("mid", "df = df.with_columns(y=pl.col('x') + 1)"),
-                    _transform_node("leaf", "df = df.with_columns(z=pl.col('y') * 10)"),
+                    _transform_node("mid", "df = src.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("leaf", "df = mid.with_columns(z=pl.col('y') * 10)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "leaf")],
             }
@@ -2476,7 +2482,7 @@ class TestRequestedPreviewProjection:
 def _boom(value):
     raise RuntimeError("unused preview column was collected")
 
-df = df.with_columns(
+df = src.with_columns(
     pl.col("feature").map_elements(_boom, return_dtype=pl.Int64).alias("unused_bomb")
 )
 """
@@ -3205,7 +3211,7 @@ class TestPreviewCacheInvalidation:
         """Changing only graph.preamble must not serve stale preview rows."""
         p = tmp_path / "d.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(p)
-        code = "df = df.with_columns(y=pl.col('x') * FACTOR)"
+        code = "df = src.with_columns(y=pl.col('x') * FACTOR)"
 
         graph1 = _g(
             {
@@ -3248,7 +3254,7 @@ class TestPreviewCacheInvalidation:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * FACTOR)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * FACTOR)"),
                 ],
                 "edges": [_edge("src", "t")],
                 "preamble": "from utility.helpers import FACTOR\n",
@@ -3544,7 +3550,7 @@ class TestPreambleLockConcurrency:
             {
                 "nodes": [
                     _ready_source_node("src", str(data_path)),
-                    _transform_node("t", "df = df.with_columns(y=add_one('x'))"),
+                    _transform_node("t", "df = src.with_columns(y=add_one('x'))"),
                 ],
                 "edges": [_edge("src", "t")],
                 "preamble": "import polars as pl\nfrom utility.helpers import add_one\n",
@@ -3685,7 +3691,7 @@ class TestMaxPreviewRowsTruncation:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -3760,8 +3766,8 @@ class TestEmptyDataFrameFullPipeline:
             {
                 "nodes": [
                     _ready_source_node("src", str(p)),
-                    _transform_node("t1", "df = df.with_columns(z=pl.col('x') + 1)"),
-                    _transform_node("t2", "df = df.with_columns(w=pl.col('z') * pl.col('y'))"),
+                    _transform_node("t1", "df = src.with_columns(z=pl.col('x') + 1)"),
+                    _transform_node("t2", "df = t1.with_columns(w=pl.col('z') * pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }

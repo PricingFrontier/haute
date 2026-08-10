@@ -540,6 +540,9 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
     _preamble = dict(ctx.preamble_ns) if ctx.preamble_ns else None
 
     def explore_with_code(df: _Frame) -> _Frame:
+        # Explore's code box operates on the single implicit frame ``df``;
+        # keep that binding explicitly now that _exec_user_code no longer
+        # seeds it for named-input node kinds.
         return _exec_user_code(
             code,
             _src_names,
@@ -547,6 +550,7 @@ def _build_explore(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
             extra_ns=_preamble,
             orig_source_names=_orig_src,
             input_mapping=_in_map,
+            alias_first_input_as_df=True,
         )
 
     return ctx.func_name, explore_with_code, False
@@ -1099,8 +1103,6 @@ def _build_transform(ctx: NodeBuildContext) -> tuple[str, Callable, bool]:
         # snippets.
         is_source = incoming_count == 0
         return ctx.func_name, transform_fn, is_source
-    if incoming_count == 1:
-        return ctx.func_name, _passthrough_fn, False
 
     def incomplete_transform_fn(
         *_dfs_positional: _Frame,

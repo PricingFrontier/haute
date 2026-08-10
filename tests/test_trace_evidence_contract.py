@@ -37,7 +37,7 @@ def test_ambiguous_relevant_parent_is_preserved_as_an_omission(tmp_path) -> None
                 make_source_node("source", str(source_path)),
                 make_transform_node(
                     "aggregate",
-                    "df = df.group_by('region').agg(pl.col('premium').sum())",
+                    "df = source.group_by('region').agg(pl.col('premium').sum())",
                 ),
             ],
             "edges": [make_edge("source", "aggregate")],

@@ -752,25 +752,26 @@ returns a fresh session with empty `history`; resume is an offer, never an error
   node must parse as Python and contain a non-trivial assignment to `df` or an
   explicit non-trivial return. Bare immutable expressions and `df = df` are
   rejected because generated node code would otherwise discard their result.
-  Empty code remains the canonical pass-through.
-- **Assistant-authored multi-input code names the input it starts from.** Both the
-  executor and the generated module bind a bare `df` to the node's *first input by
-  edge order*. On a single-input node that is the idiom and stays unambiguous. On a
-  node with two or more inputs it is a silent dependency on wiring: adding or
-  reordering an edge changes which frame the code operates on, with no error and no
-  visible change to the code. Assistant-authored code that reads `df` before assigning
-  it, on a node with two or more inputs, is therefore an op error naming that node's
-  actual input names. Binding first (`df = proposer_claims`) and then reusing `df` is
-  explicit and accepted. Only reads that resolve to the injected binding count, so the
+  Empty code still saves (with a warning), but the node raises if the pipeline
+  is run — a polars node has no implicit passthrough.
+- **Assistant-authored polars code names the input it starts from.** Neither the
+  executor nor the generated module binds `df` to an input: a polars node's inputs are
+  its named parameters (one per incoming edge) and `df` is only the output variable,
+  unbound until the code assigns it. Reading `df` before assigning it is therefore a
+  guaranteed `NameError` at run time, so assistant-authored code that does so is an op
+  error naming that node's actual input names, on ANY input count. Binding first
+  (`df = proposer_claims`) and then reusing `df` is explicit and accepted. Only reads
+  that resolve to the module-level `df` count, so the
   check skips any nested scope holding a `df` of its own — a `def helper(df)` parameter,
-  a `lambda df:`, a comprehension target — because those name that scope's variable and
-  say nothing about wiring order. Bindings inside a further nested scope do not shadow
+  a `lambda df:`, a comprehension target — because those name that scope's variable.
+  Bindings inside a further nested scope do not shadow
   `df` in the enclosing function. A comprehension's first iterable is evaluated before
-  its target is bound, so a bare `df` read there still resolves to the injected input.
+  its target is bound, so a bare `df` read there still reads the unbound module `df`.
   A statement's loads are judged before its stores, since
-  an assignment evaluates its value first: `df = df.head()` reads the injected frame,
+  an assignment evaluates its value first: `df = df.head()` reads the unbound name,
   `df = left` does not. This is an authoring-time rule for assistant edits only, like
-  the unknown-config-key strictness above; existing human-authored code is untouched.
+  the unknown-config-key strictness above; existing human-authored code is untouched
+  (it fails loudly at execution instead).
 - **Unknown config keys are op errors, not warn-and-drop.** The sidecar writer's
   warn-and-drop exists to tolerate stale keys already on disk; an authoring-time unknown key
   is an LLM mistake that must bounce back as a tool error so the model corrects it. Same
@@ -923,10 +924,10 @@ fixture for route tests). The implemented coverage is:
   ref shadowing an existing id); all-or-nothing on mid-batch validation failure;
   shallow-merge/null-removes semantics; unknown-config-key rejection; submodel-target and
   submodel-type rejection; ambiguous edge match; deterministic positions evaluated
-  post-batch (property: same batch, same graph → same positions); and the multi-input
+  post-batch (property: same batch, same graph → same positions); and the
   bare-`df` rule, parameterised over a bare read, a named input, a bind-then-reuse, and
   the nested scopes (`def`, `lambda`, comprehension) whose own `df` must not be mistaken
-  for the injected one.
+  for the module-level output variable.
   ASSIST-A05 adds canonical revision/plan hashing, semantic diff boundaries,
   closed postconditions, single-use plan transitions,
   stale/altered-plan rejection before save,

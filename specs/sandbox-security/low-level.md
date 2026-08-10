@@ -81,8 +81,14 @@
 **Pipeline code execution (`_user_exec._exec_user_code`)**
 1. Build `local_ns` — seeds `pl` (polars), positional source dataframes under
    `src_names`, an `orig`→`inst` name-mapping fallback via
-   `build_instance_mapping` (execution-engine helper), a `df` alias for the first
-   source, then any `extra_ns` overrides.
+   `build_instance_mapping` (execution-engine helper), then any `extra_ns`
+   overrides. `df` is NOT pre-bound for polars transforms and external files —
+   inputs are only their named bindings and `df` is the output the code must
+   assign. Hook-style callers whose code box operates on one implicit frame
+   named `df` opt back in: kinds whose `src_names` is literally `["df"]`
+   (data-input post-code, rating step, scenario expander, model-score deploy
+   snapshot) bind it as the input name, and explore / model-score pass
+   `alias_first_input_as_df=True` to keep their documented `df` contract.
 2. Call `validate_user_code(code)` (imports disabled by default). On
    `UnsafeCodeError` whose `__cause__` is a `SyntaxError`, re-raise the bare
    `SyntaxError` instead — this normalizes the error type callers see for a plain
@@ -94,11 +100,13 @@
 4. On any exception, walk `exc.__traceback__` in reverse for the last frame whose
    `filename == "<string>"` and stash its `lineno` on `exc._user_code_line` before
    re-raising unchanged.
-5. Read `local_ns.get("df", ...)` as the result and coerce an eager
-   `pl.DataFrame` to `.lazy()`. Other values are returned unchanged despite the
-   `_Frame` annotation (`# type: ignore` at the return); the execution engine's
-   node-output check then raises `TypeError` if user code assigned `df` to a
-   non-Polars value.
+5. Read `local_ns["df"]` as the result and coerce an eager
+   `pl.DataFrame` to `.lazy()`. If the executed code never assigned `df`,
+   raise `ExecutionError` naming the node's available inputs — never silently
+   pass an input through as the result. Other values are returned unchanged
+   despite the `_Frame` annotation (`# type: ignore` at the return); the
+   execution engine's node-output check then raises `TypeError` if user code
+   assigned `df` to a non-Polars value.
 
 **Preamble and training-script distinction.** `executor._compile_preamble` calls
 `validate_user_code(..., allow_imports=True)` and then `exec()`s the preamble with

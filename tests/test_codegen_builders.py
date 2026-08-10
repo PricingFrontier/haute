@@ -1474,7 +1474,7 @@ class TestCodegenExecValidation:
 
         node = _make_codegen_node(
             "polars",
-            {"code": 'df = df.with_columns(doubled=pl.col("x") * 2)'},
+            {"code": 'df = src.with_columns(doubled=pl.col("x") * 2)'},
             label="double_it",
         )
         code = _node_to_code(node, source_names=["src"])

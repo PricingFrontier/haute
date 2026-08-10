@@ -448,7 +448,7 @@ class TestExecuteTraceColumnTracing:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(z=pl.col('x') + pl.col('y'))"),
+                    _transform_node("t", "df = src.with_columns(z=pl.col('x') + pl.col('y'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -470,8 +470,8 @@ class TestExecuteTraceColumnTracing:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid"),  # passes x through
-                    _transform_node("end"),  # also passes x through
+                    _transform_node("mid", "df = src"),  # passes x through
+                    _transform_node("end", "df = mid"),  # also passes x through
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "end")],
             }
@@ -489,8 +489,8 @@ class TestExecuteTraceColumnTracing:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid"),
-                    _transform_node("end"),
+                    _transform_node("mid", "df = src"),
+                    _transform_node("end", "df = mid"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "end")],
             }
@@ -539,7 +539,7 @@ class TestExecuteTraceCaching:
 
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "nodes": [_source_node("src", str(p)), _transform_node("t", "df = src")],
                 "edges": [_edge("src", "t")],
             }
         )
@@ -556,7 +556,7 @@ class TestExecuteTraceCaching:
 
         g1 = _g(
             {
-                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "nodes": [_source_node("src", str(p)), _transform_node("t", "df = src")],
                 "edges": [_edge("src", "t")],
             }
         )
@@ -567,7 +567,7 @@ class TestExecuteTraceCaching:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 3)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 3)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -603,7 +603,7 @@ class TestExecuteTraceEdgeCases:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("target", "df = df.with_columns(y=pl.col('x') + 1)"),
+                    _transform_node("target", "df = src.with_columns(y=pl.col('x') + 1)"),
                 ],
                 "edges": [_edge("src", "target")],
             }
@@ -660,8 +660,8 @@ class TestExecuteTraceEdgeCases:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", "df = df.with_columns(c=pl.col('a') + pl.col('b'))"),
-                    _transform_node("t2", "df = df.with_columns(d=pl.col('c') * 2)"),
+                    _transform_node("t1", "df = src.with_columns(c=pl.col('a') + pl.col('b'))"),
+                    _transform_node("t2", "df = t1.with_columns(d=pl.col('c') * 2)"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -713,11 +713,11 @@ class TestWaterfallIntegration:
                     _source_node("src", str(p)),
                     _transform_node(
                         "step1",
-                        "df = df.with_columns(premium=pl.col('premium') * pl.col('factor1'))",
+                        "df = src.with_columns(premium=pl.col('premium') * pl.col('factor1'))",
                     ),
                     _transform_node(
                         "step2",
-                        "df = df.with_columns(premium=pl.col('premium') + pl.col('loading'))",
+                        "df = step1.with_columns(premium=pl.col('premium') + pl.col('loading'))",
                     ),
                 ],
                 "edges": [_edge("src", "step1"), _edge("step1", "step2")],
@@ -765,7 +765,7 @@ class TestWaterfallIntegration:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(x=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(x=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }

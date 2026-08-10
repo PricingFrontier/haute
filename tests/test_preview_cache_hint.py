@@ -86,8 +86,8 @@ def _diamond_graph(src_path: str) -> PipelineGraph:
     return PipelineGraph(
         nodes=[
             _source_node("src", src_path),
-            _transform_node("left", "df = df.with_columns(doubled=pl.col('value') * 2)"),
-            _transform_node("right", "df = df.with_columns(tripled=pl.col('value') * 3)"),
+            _transform_node("left", "df = src.with_columns(doubled=pl.col('value') * 2)"),
+            _transform_node("right", "df = src.with_columns(tripled=pl.col('value') * 3)"),
             _transform_node(
                 "sink",
                 "df = left.join(right, on='id', how='inner')",
@@ -216,7 +216,7 @@ class TestDiamondSourceReadOnce:
             nodes.append(
                 _transform_node(
                     f"b{i}",
-                    f"df = df.with_columns(v{i}=pl.col('value') + {i})",
+                    f"df = src.with_columns(v{i}=pl.col('value') + {i})",
                 )
             )
             edges.append(_edge("src", f"b{i}"))

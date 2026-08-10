@@ -256,9 +256,11 @@ commit reports the committed state and ledger evidence without replaying the
 mutation.
 
 Assistant-authored batches must leave every newly added node connected in the
-resulting graph. Explicit Polars code must assign the transformed frame back to
-`df` or return a transformed frame; immutable expressions whose results would
-be discarded are rejected during dry-run.
+resulting graph. Explicit Polars code must start from the node's named input
+parameters (`df` is only the output variable, never pre-bound to an input) and
+assign the transformed frame to `df` or return a transformed frame; immutable
+expressions whose results would be discarded, and code that reads `df` before
+assigning it, are rejected during dry-run.
 
 **Tools operate on saved state.** Read tools describe the pipeline as saved on disk, and
 mutations rebase on the saved graph at call time. The frontend keeps this coherent by

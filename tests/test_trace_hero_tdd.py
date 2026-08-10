@@ -166,7 +166,7 @@ class TestConditionalBranchIndication:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns("
+                        "df = src.with_columns("
                         "factor=pl.when(pl.col('age') < 25).then(1.5).otherwise(1.0))",
                     ),
                 ],
@@ -246,7 +246,7 @@ class TestPreambleConstantResolution:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(adjusted=pl.col('premium') * pl.lit(LOADING))",
+                        "df = src.with_columns(adjusted=pl.col('premium') * pl.lit(LOADING))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -327,7 +327,8 @@ class TestWindowFunctionFallback:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(region_total=pl.col('premium').sum().over('region'))",
+                        "df = src.with_columns("
+                        "region_total=pl.col('premium').sum().over('region'))",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -426,7 +427,7 @@ class TestIntraNodeDependencyChain:
         ).write_parquet(p)
 
         code = (
-            "df = df.with_columns(\n"
+            "df = src.with_columns(\n"
             "    exposure=pl.col('months') / 12,\n"
             ").with_columns(\n"
             "    earned_premium=pl.col('written_premium') * pl.col('exposure'),\n"
@@ -478,7 +479,7 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(new_name=pl.col('old_name'))"),
+                    _transform_node("t", "df = src.with_columns(new_name=pl.col('old_name'))"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -502,8 +503,8 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t1", "df = df.with_columns(mid=pl.col('old'))"),
-                    _transform_node("t2", "df = df.with_columns(new=pl.col('mid'))"),
+                    _transform_node("t1", "df = src.with_columns(mid=pl.col('old'))"),
+                    _transform_node("t2", "df = t1.with_columns(new=pl.col('mid'))"),
                 ],
                 "edges": [_edge("src", "t1"), _edge("t1", "t2")],
             }
@@ -528,7 +529,7 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.rename({'source_col': 'target_col'})"),
+                    _transform_node("t", "df = src.rename({'source_col': 'target_col'})"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -551,7 +552,7 @@ class TestColumnRenameTracking:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.rename({'premium': 'written_premium'})"),
+                    _transform_node("t", "df = src.rename({'premium': 'written_premium'})"),
                 ],
                 "edges": [_edge("src", "t")],
             }

@@ -42,14 +42,14 @@ describe("TransformEditor", () => {
     expect(screen.getByText("assign to df")).toBeTruthy()
   })
 
-  it('shows "use input names" hint when input sources present', () => {
+  it('shows "use input names, assign to df" hint when input sources present', () => {
     const inputs = [
       { sourceNodeId: "test-source", name: "claims", sourceLabel: "Claims Data", edgeId: "e1" },
     ]
     render(
       <TransformEditor config={{}} onUpdate={vi.fn()} inputSources={inputs} />,
     )
-    expect(screen.getByText("use input names")).toBeTruthy()
+    expect(screen.getByText("use input names, assign to df")).toBeTruthy()
   })
 
   it("renders input sources bar showing connected variable names", () => {

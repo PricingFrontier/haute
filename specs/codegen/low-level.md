@@ -15,8 +15,8 @@
 - **`_NodeCodeFn`** (`codegen.py`) — `Callable[[GraphNode, list[str] | None, list[str] | None, list[str] | None], str]`; the injected per-node code generator (`_node_to_code` for pipelines, `_submodel_node_to_code` for submodel files), parameterizing `_generate_pipeline_lines` so both file kinds share one assembly routine. The fourth argument carries the per-edge source *function* names, kept alongside the edge-derived input names so edge-join role kwargs (`base_input`/`join_input`) can reference the connected source functions for parser reconstruction while the signature uses the input names.
 - **`_ConnectPair`** (`codegen.py`) — `tuple[str, str, str | None, str | None]`: `(src_func, tgt_func, source_port, target_port)`. `source_port`/`target_port` are `None` for the bare `connect("a", "b")` form used by ordinary single-output sources. Every `apiInput` edge — including one from a sole-frame source — carries its frame label as `source_port`, so the generated file always names the frame each connection delivers; a bare connect from an `apiInput` is not emitted.
 - **`CodegenBuilder`** (`_codegen_builders.py`) — `Callable[[GraphNode, list[str]], str]`; the signature every `_gen_*` function implements. Registered per `NodeType` into `NODE_REGISTRY[node_type].codegen` (see `haute._registry`); `NODE_REGISTRY` pairs each type's codegen builder with its exec-side runtime builder from `haute._builders`, and `validate_registry_complete` enforces both are present for every type.
-- **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means a generated `df = <helper>(...)` line already produced `df`, so the polars finaliser must not treat the node's first parameter as a strippable alias.
-- **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per internal kind (`polars`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS`.
+- **`MatcherResult`** (`_code_extraction.py`) — `NamedTuple(start_idx: int, return_vars: tuple[str, ...], generated_scaffold: bool = False)`. Output of a `BoilerplateMatcher`: `start_idx` is the first line of `cleaned_lines` considered user code; `return_vars` are variable names whose trailing `return <var>` should be stripped; `generated_scaffold=True` means a generated setup line (a `df = <helper>(...)` call, or the explore kind's `df = <param>` binding) already produced `df`, so the finaliser runs with no param names and later references to the input parameters stay intentional user code.
+- **`BoilerplateMatcher`** (`_code_extraction.py`) — `Callable[[list[str], tuple[str, ...]], MatcherResult]`. One matcher per internal kind (`polars`, `explore`, `source`, `scenario_expander`, `model_score`, `rating_step`, `external`), registered in `BOILERPLATE_MATCHERS`.
 - **`_FINALISERS`** (`_code_extraction.py`) — `dict[str, Callable[[str, tuple[str, ...]], str]]`, the post-processing step per kind that runs after the shared strip-docstring → dedent → skip-boilerplate → strip-trailing-return pass (e.g. `_finalise_polars` unwraps redundant `df = (...)` parens and rewrites bare `return expr` to `df = expr`).
 - **`_UserCodeParseError`** (`_code_extraction.py`) — multiple-inherits `ParseError` (Haute's error hierarchy) and `ValueError`; raised by `_parse_user_code` when extractable text isn't valid Python, chaining the original `SyntaxError`.
 
@@ -171,6 +171,32 @@ text between the parens is non-whitespace).
    `_finalise_polars` with no param names (the scaffold already bound `df`);
    otherwise run the kind's registered finaliser with the real param names.
 
+### The polars named-input contract
+
+A `polars` transform's function parameters ARE its inputs: each incoming edge
+binds one parameter (`edge_input_name`, in edge order), and `df` is only the
+node's OUTPUT variable. `_gen_transform` emits the user code verbatim followed
+by the appended `return df`; it never pre-binds `df` to an input, so user code
+must start from the input it means by name (`df = quotes.join(regions, ...)`)
+and reading `df` before assigning it is a `NameError` at run time, in the
+generated module and canvas execution alike. A node with NO code cannot run at
+all — there is no implicit single-input passthrough; codegen emits the
+`NotImplementedError` placeholder and the executor installs the matching
+raising callable. Extraction is symmetric: the
+`polars` finaliser treats a leading `df = <param>` line as authored code, never
+as strippable scaffold, and no longer collapses a lone `return <param>` body to
+empty code. Modules generated before this contract carry a codegen-prepended
+`df = <first input>` alias line (or a passthrough `return <input>` body); on
+reload these round-trip into the code box as visible, explicit user code
+(`df = <input>`) — which preserves the old behaviour exactly, since the code
+now performs the binding the runtime no longer injects.
+
+`explore` is NOT part of this contract: its code box operates on the single
+implicit frame named `df` (like the `data_input` / `rating_step` /
+`scenario_expander` post-code hooks), so `_gen_explore` still emits the
+`df = <param>` binding line and the dedicated `explore` extraction kind strips
+exactly that line back out as generated scaffold (`generated_scaffold=True`).
+
 ## Edge cases and invariants
 
 - **Multi-edge into one node** (the same upstream `apiInput` feeding a node
@@ -201,10 +227,10 @@ text between the parens is non-whitespace).
 - **Two `inputs_by_parent` keys collapsing to the same emitted parent name
   with different column sets** — genuine ambiguity, raises `ParseError`
   rather than picking a "last writer."
-- **`polars` transform with no code and no upstream sources, or no code with
-  multiple upstream sources** — neither can RUN (nothing to return; no
-  well-defined implicit multi-source passthrough), but both are ordinary states
-  for a graph still being built, so neither blocks a SAVE. `_gen_transform`
+- **`polars` transform with no code** — cannot RUN, whatever its input count:
+  the node's output is whatever its code assigns to `df`, and there is no
+  implicit passthrough (not even for a single input). Still an ordinary state
+  for a graph still being built, so it never blocks a SAVE. `_gen_transform`
   emits `_code_extraction.INCOMPLETE_TRANSFORM_BODY`: a valid body that raises
   `NotImplementedError` if executed. It never silently passes one input through
   and drops the rest, and never emits `return df` where `df` is unbound. Save
@@ -224,14 +250,14 @@ text between the parens is non-whitespace).
   A textual comparison silently stops matching after any such reformat, and the
   placeholder then returns as the user's own code — writing a `raise` into a
   node they deliberately left empty. Anything the user adds AFTER the
-  placeholder is preserved (`generated_scaffold=True`): the placeholder binds no
-  `df` alias, so a following `df = <param>` is authored code, not scaffold.
-  The live executor keeps the same invariant: exactly one upstream remains the
-  intentional passthrough, while zero or multiple upstreams install a callable
-  that raises the same `NotImplementedError` instead of routing through the
-  shared first-input passthrough. Save validation scans both the root graph and
-  every embedded submodel definition, so every generated placeholder is named
-  in a non-blocking warning.
+  placeholder is preserved (`generated_scaffold=True`); a `df = <param>` line
+  anywhere in a polars body is authored code, never scaffold (see "The polars
+  named-input contract" above).
+  The live executor keeps the same invariant: a no-code polars node installs a
+  callable that raises the same `NotImplementedError`, whatever its upstream
+  count — there is no first-input passthrough. Save validation scans both the
+  root graph and every embedded submodel definition, so every generated
+  placeholder is named in a non-blocking warning.
 - **Empty/cleared code box producing a degenerate `df = (\n)`** — parses as
   `df = ()` (an empty tuple), recognized by `_is_empty_chain_assignment` as
   leftover scaffolding and collapsed to empty user code, not left as
@@ -299,7 +325,7 @@ text between the parens is non-whitespace).
 | Parent edge endpoint is neither a root node nor a registered occurrence (e.g. a definition-owned child id used as a parent endpoint) | `ParseError` naming the edge, endpoint side, and node id | `codegen.graph_to_code_multi` canonical preflight; no source is emitted. |
 | `graph_to_code` called on a graph that actually produces >1 file | `ConfigError` | `codegen.graph_to_code` |
 | Any emitted file fails `ast.parse` | `ConfigError` | `codegen._assert_emitted_files_parse` |
-| `polars` transform has no code and no/multiple sources | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
+| `polars` transform has no code (any source count) | No error — emits a `NotImplementedError`-raising placeholder so the graph still saves; fails at run time, warned at save time | `_codegen_builders._gen_transform`, `_save_pipeline._validate_transforms_are_runnable` |
 | `edgeJoin` codegen called with `!= 2` sources, or missing `baseInput`/`joinInput` | `ConfigError` | `_codegen_builders._gen_edge_join` |
 | `Explore` node with `!= 1` incoming edge | `ParseError` | `_codegen_builders._gen_explore` |
 | Codegen dispatched on a `SUBMODEL`/`SUBMODEL_PORT` occurrence | `RuntimeError` | `_codegen_builders._gen_submodel_placeholder_unreachable` |
@@ -335,12 +361,12 @@ than one file per module:
   (`test_codegen_roundtrip_property.py`) regenerated under frame-named
   parameters.
 - **`test_save_incomplete_transform.py`** — a transform the user has not written
-  yet (no code, and either no upstream or several) must SAVE with a warning
+  yet (no code, any upstream count) must SAVE with a warning
   rather than block the whole pipeline. Pins that the generated body fails
-  loudly if run instead of silently passing one input through, that it
-  round-trips back to an empty node rather than being adopted as user code, and
-  that the well-defined single-upstream passthrough is untouched. Executor-level
-  cases pin the same zero/multiple-input failure in the live canvas, and a
+  loudly if run instead of silently passing one input through, and that it
+  round-trips back to an empty node rather than being adopted as user code.
+  Executor-level
+  cases pin the same failure in the live canvas, and a
   submodel case proves save warnings cover embedded definitions.
 - **`test_codegen_builders.py`** — per-builder unit tests (`_gen_api_input`,
   `_gen_banding`, `_gen_scenario_expander`, `_gen_optimiser`, `_gen_explore`,
@@ -381,8 +407,8 @@ than one file per module:
   registered-source decorator kwargs.
 - **`test_code_extraction_coverage.py`** — internal-helper unit coverage for
   `_code_extraction.py`: user-code parsing, bare-return rewriting, trailing-
-  return stripping, df-alias detection, matcher edge cases, identifier
-  rewriting, finalisers, and the redundant-RHS-wrapper proof.
+  return stripping, the explore alias-scaffold matcher, matcher edge cases,
+  identifier rewriting, finalisers, and the redundant-RHS-wrapper proof.
 - **`test_code_extraction_roundtrip.py`** — "remediation 5.1 (C5) + 5.6":
   the chain-assignment unwrap proof, a chain-assignment save→load→save
   cycle, extraction failing loud on unparseable bodies, and external-file

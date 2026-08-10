@@ -164,7 +164,8 @@ def test_single_port_dict_routes_through_labelled_edge(isolated_root) -> None:
     config = _single_port_config(data_path)
     _build_cache_for(isolated_root, data_path, config)
 
-    # apiInput → polars (passthrough, code-free → uses _passthrough_fn).
+    # apiInput → polars; the frame arrives under its edge label "policies"
+    # and the code passes it through explicitly (df is never pre-bound).
     graph = PipelineGraph(
         nodes=[
             _api_input_node("api", config),
@@ -173,7 +174,7 @@ def test_single_port_dict_routes_through_labelled_edge(isolated_root) -> None:
                 data=NodeData(
                     label="downstream",
                     nodeType=NodeType.POLARS,
-                    config={},  # no code → _passthrough_fn
+                    config={"code": "df = policies"},
                 ),
             ),
         ],
@@ -226,11 +227,19 @@ def test_multi_port_routes_per_edge_via_source_handle(isolated_root) -> None:
             _api_input_node("api", config),
             GraphNode(
                 id="d_policies",
-                data=NodeData(label="d_policies", nodeType=NodeType.POLARS, config={}),
+                data=NodeData(
+                    label="d_policies",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = policies"},
+                ),
             ),
             GraphNode(
                 id="d_drivers",
-                data=NodeData(label="d_drivers", nodeType=NodeType.POLARS, config={}),
+                data=NodeData(
+                    label="d_drivers",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = drivers"},
+                ),
             ),
         ],
         edges=[
@@ -275,7 +284,11 @@ def test_multi_port_row_limit_caps_each_port(isolated_root) -> None:
             _api_input_node("api", config),
             GraphNode(
                 id="d_drivers",
-                data=NodeData(label="d_drivers", nodeType=NodeType.POLARS, config={}),
+                data=NodeData(
+                    label="d_drivers",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = drivers"},
+                ),
             ),
         ],
         edges=[
@@ -486,11 +499,19 @@ def test_two_consumers_different_ports_dont_collide_on_column_cache(isolated_roo
             _api_input_node("api", config),
             GraphNode(
                 id="c_policies",
-                data=NodeData(label="c_policies", nodeType=NodeType.POLARS, config={}),
+                data=NodeData(
+                    label="c_policies",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = policies"},
+                ),
             ),
             GraphNode(
                 id="c_drivers",
-                data=NodeData(label="c_drivers", nodeType=NodeType.POLARS, config={}),
+                data=NodeData(
+                    label="c_drivers",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = drivers"},
+                ),
             ),
         ],
         edges=[
@@ -631,7 +652,11 @@ def _graph_apiinput_upstream_of_target(config: dict[str, Any]) -> PipelineGraph:
             _api_input_node("api", config),
             GraphNode(
                 id="d_policies",
-                data=NodeData(label="d_policies", nodeType=NodeType.POLARS, config={}),
+                data=NodeData(
+                    label="d_policies",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = policies"},
+                ),
             ),
         ],
         edges=[
@@ -787,7 +812,11 @@ def test_multi_port_ancestor_row_limit_caps_collected_target(isolated_root) -> N
             _api_input_node("api", config),
             GraphNode(
                 id="d_drivers",
-                data=NodeData(label="d_drivers", nodeType=NodeType.POLARS, config={}),
+                data=NodeData(
+                    label="d_drivers",
+                    nodeType=NodeType.POLARS,
+                    config={"code": "df = drivers"},
+                ),
             ),
         ],
         edges=[

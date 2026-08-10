@@ -37,7 +37,7 @@ export default function TransformEditor({
       onDeleteInput={onDeleteInput}
       errorLine={errorLine}
       upstreamColumns={upstreamColumns}
-      hint={hasInput ? "use input names" : "assign to df"}
+      hint={hasInput ? "use input names, assign to df" : "assign to df"}
       placeholder={hasApiInputUpstream ? API_INPUT_PLACEHOLDER : ""}
     />
   )

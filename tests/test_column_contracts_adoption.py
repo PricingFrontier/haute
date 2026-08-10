@@ -762,7 +762,7 @@ class TestExecutorAssertsContractsAtBoundaries:
                 _node(
                     "t",
                     NodeType.POLARS,
-                    code="df = df.select(pl.col('a'))",
+                    code="df = src.select(pl.col('a'))",
                     # Explicit user-declared contract on a polars node.
                     contract={"inputs": ["a"], "outputs": ["new_col"]},
                 ),

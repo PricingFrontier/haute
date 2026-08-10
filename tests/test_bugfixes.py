@@ -657,7 +657,7 @@ class TestPreviewRouteSourceFile:
                     data=NodeData(
                         label="Calc",
                         nodeType=NodeType.POLARS,
-                        config={"code": "df = df.with_columns(y=pl.col('x') * 2)"},
+                        config={"code": "df = src.with_columns(y=pl.col('x') * 2)"},
                     ),
                 ),
                 GraphNode(

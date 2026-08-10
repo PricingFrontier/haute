@@ -552,7 +552,7 @@ def test_dry_run_binds_schema_evidence_into_executable_plan(
                 "name": "derive_x",
                 "ref": "derive",
                 "config": {
-                    "code": "df = df.with_columns(pl.col('x').alias('x_copy'))",
+                    "code": "df = quotes.with_columns(pl.col('x').alias('x_copy'))",
                 },
             },
             {"op": "add_edge", "source": "quotes", "target": "$derive"},
@@ -584,7 +584,8 @@ def test_dry_run_rejects_trace_regression_polars_plan_before_storing(
                     "ref": "bad",
                     "config": {
                         "code": (
-                            "df = df.with_columns(pl.lit(True).alias('flag')).fill_null({'x': 0})"
+                            "df = quotes.with_columns(pl.lit(True).alias('flag'))"
+                            ".fill_null({'x': 0})"
                         ),
                     },
                 },

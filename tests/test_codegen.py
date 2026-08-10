@@ -280,7 +280,9 @@ class TestNodeToCode:
         assert "return df" in code
         _compile_node_code(code)
 
-    def test_transform_without_code_uses_first_source(self):
+    def test_transform_without_code_emits_a_raising_placeholder(self):
+        """A no-code transform has no implicit passthrough, even with one
+        input: the body raises if run, while the file still saves/compiles."""
         node = _n(
             {
                 "id": "t",
@@ -289,7 +291,8 @@ class TestNodeToCode:
         )
         code = _node_to_code(node, source_names=["upstream"])
         assert "def Pass(upstream: pl.LazyFrame)" in code
-        assert "return upstream" in code
+        assert "raise NotImplementedError" in code
+        assert "return upstream" not in code
         _compile_node_code(code)
 
     def test_transform_without_code_no_sources_emits_a_raising_placeholder(self):
@@ -1154,7 +1157,7 @@ class TestCodegenEdgeCases:
         _compile_node_code(code)
 
     def test_node_with_empty_string_config(self):
-        """Transform with empty string code should generate passthrough."""
+        """Transform with empty string code emits the raising placeholder."""
         node = _n(
             {
                 "id": "empty",
@@ -1166,7 +1169,8 @@ class TestCodegenEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["upstream"])
-        assert "return upstream" in code
+        assert "raise NotImplementedError" in code
+        assert "return upstream" not in code
         _compile_node_code(code)
 
     def test_graph_with_edge_referencing_nonexistent_node(self):
@@ -3182,7 +3186,7 @@ class TestGenOutputEdgeCases:
 
 
 class TestGenTransformEdgeCases:
-    def test_empty_code_passthrough(self):
+    def test_empty_code_emits_raising_placeholder(self):
         node = _n(
             {
                 "id": "t",
@@ -3194,7 +3198,8 @@ class TestGenTransformEdgeCases:
             }
         )
         code = _node_to_code(node, source_names=["upstream"])
-        assert "return upstream" in code
+        assert "raise NotImplementedError" in code
+        assert "return upstream" not in code
         _compile_node_code(code)
 
     def test_selected_columns_decorator_kwarg(self):

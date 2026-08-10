@@ -155,7 +155,7 @@ class TestCapabilityManifest:
             material,
             sort_keys=True,
             separators=(",", ":"),
-            ensure_ascii=False,
+            ensure_ascii=True,
         ).encode()
 
         assert hashlib.sha256(canonical).hexdigest() == reported

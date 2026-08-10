@@ -869,7 +869,6 @@ def _gen_output(node: GraphNode, source_names: list[str]) -> str:
 @_register_codegen(NodeType.POLARS)
 def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
     func_name, description, config = _common_node_fields(node)
-    first = source_names[0] if source_names else "df"
     code = str(config.get("code") or "").strip()
     params = _build_params(source_names)
     sel = config.get("selected_columns", [])
@@ -880,33 +879,28 @@ def _gen_transform(node: GraphNode, source_names: list[str]) -> str:
         decorator = "@pipeline.polars"
 
     if not code:
-        if len(source_names) != 1:
-            # Not written yet: with no upstream there is nothing to return, and
-            # with several there is no defined way to combine them. Neither is a
-            # reason to block a SAVE — a half-built graph is a normal state to
-            # leave the editor in — so emit a body that is valid Python, keeps
-            # the node's inputs bound, and fails loudly if the pipeline is run.
-            # Save surfaces this as a warning (see `_validate_transforms_are_runnable`),
-            # and the placeholder round-trips back to "no code" in the editor.
-            return (
-                f"{decorator}\n"
-                f"def {func_name}({params}) -> pl.LazyFrame:\n"
-                f'    """{description}"""\n'
-                f"{INCOMPLETE_TRANSFORM_BODY}"
-            )
+        # Not written yet. A polars node's output is whatever its code assigns
+        # to ``df``; with no code there is nothing to return — there is no
+        # implicit passthrough, whatever the input count. Not a reason to block
+        # a SAVE — a half-built graph is a normal state to leave the editor in
+        # — so emit a body that is valid Python, keeps the node's inputs bound,
+        # and fails loudly if the pipeline is run. Save surfaces this as a
+        # warning (see `_validate_transforms_are_runnable`), and the
+        # placeholder round-trips back to "no code" in the editor.
         return (
             f"{decorator}\n"
             f"def {func_name}({params}) -> pl.LazyFrame:\n"
             f'    """{description}"""\n'
-            f"    return {source_names[0]}\n"
+            f"{INCOMPLETE_TRANSFORM_BODY}"
         )
 
+    # Inputs are the named parameters; ``df`` is only the output variable, so
+    # no binding is prepended — the code starts from the input it names.
     body = _wrap_user_code(code, ["df"])
     return (
         f"{decorator}\n"
         f"def {func_name}({params}) -> pl.LazyFrame:\n"
         f'    """{description}"""\n'
-        f"    df = {first}\n"
         f"{body}\n"
     )
 

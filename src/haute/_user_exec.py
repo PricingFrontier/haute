@@ -15,6 +15,7 @@ import polars as pl
 from haute._graph_utils import build_instance_mapping
 from haute._sandbox import UnsafeCodeError, safe_globals, validate_user_code
 from haute._types import _Frame
+from haute.errors import ExecutionError
 
 
 def _exec_user_code(
@@ -24,8 +25,17 @@ def _exec_user_code(
     extra_ns: dict[str, Any] | None = None,
     orig_source_names: list[str] | None = None,
     input_mapping: dict[str, str] | None = None,
+    *,
+    alias_first_input_as_df: bool = False,
 ) -> _Frame:
-    """Execute user-provided code and return the ``df`` variable."""
+    """Execute user-provided code and return the ``df`` variable.
+
+    Inputs are bound only under their names in *src_names*; ``df`` is the
+    output variable the code must assign.  Hook-style nodes whose code box
+    operates on a single implicit frame called ``df`` (explore, model-score
+    post-code) pass ``alias_first_input_as_df=True`` to keep that contract;
+    polars transforms and external files never do.
+    """
     local_ns: dict[str, Any] = {"pl": pl}
     for i, d in enumerate(dfs):
         if i < len(src_names):
@@ -35,7 +45,7 @@ def _exec_user_code(
         for orig, inst in mapping.items():
             if orig not in local_ns and inst in local_ns:
                 local_ns[orig] = local_ns[inst]
-    if dfs:
+    if alias_first_input_as_df and dfs:
         local_ns["df"] = dfs[0]
     if extra_ns:
         local_ns.update(extra_ns)
@@ -59,7 +69,17 @@ def _exec_user_code(
                     break
         raise
 
-    result = local_ns.get("df", dfs[0] if dfs else pl.LazyFrame())
+    if "df" not in local_ns:
+        inputs = [name for name in src_names if name in local_ns]
+        detail = (
+            "Inputs are available by name: " + ", ".join(inputs)
+            if inputs
+            else "This node has no inputs, so the code must construct a frame itself."
+        )
+        raise ExecutionError(
+            f"Node code must assign its result to 'df'; nothing was assigned. {detail}"
+        )
+    result = local_ns["df"]
     if isinstance(result, pl.DataFrame):
         result = result.lazy()
     return result  # type: ignore[no-any-return]

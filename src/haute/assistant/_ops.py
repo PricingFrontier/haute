@@ -1310,16 +1310,15 @@ def _names_in_owning_scope(node: ast.AST, name: str) -> Iterator[ast.AST]:
 def _reads_df_before_binding_it(tree: ast.Module) -> bool:
     """Report whether the code reads `df` before assigning it.
 
-    Such a read resolves to the node's *first input by edge order*, which the
-    generated module makes explicit as `df = <first input>`. On a single-input
-    node that is the idiom. On a multi-input node it is a silent dependency on
-    wiring order: adding or reordering an edge changes which frame the code
-    operates on, with no error and no visible diff in the code itself.
+    `df` is the node's output variable and is never bound to an input — a
+    polars node's inputs are its named parameters. A read before the code's
+    own assignment is therefore a guaranteed `NameError` at execution time,
+    in the generated module and canvas execution alike.
 
-    Only reads that resolve to that injected binding count, so the walk skips
+    Only reads that resolve to the module-level `df` count, so the walk skips
     any nested scope holding a `df` of its own. A statement's loads are
     considered before its stores because an assignment evaluates its value
-    first: `df = df.head()` reads the injected frame, `df = left` does not.
+    first: `df = df.head()` reads the unbound name, `df = left` does not.
     """
 
     for statement in tree.body:
@@ -1332,9 +1331,9 @@ def _reads_df_before_binding_it(tree: ast.Module) -> bool:
 
 
 def _validate_polars_named_inputs(code: object, node_id: str, input_names: Sequence[str]) -> None:
-    """Require assistant-authored multi-input code to name the input it uses."""
+    """Require assistant-authored code to bind `df` before reading it."""
 
-    if len(input_names) < 2 or not isinstance(code, str) or not code.strip():
+    if not isinstance(code, str) or not code.strip():
         return
     try:
         tree = ast.parse(code)
@@ -1342,10 +1341,17 @@ def _validate_polars_named_inputs(code: object, node_id: str, input_names: Seque
         return  # _validate_polars_result_retained owns the syntax verdict
     if not _reads_df_before_binding_it(tree):
         return
+    if input_names:
+        _invalid(
+            f"Node {node_id!r} reads 'df' before assigning it, but 'df' is not bound to "
+            "any input — it is the node's output variable. Start from the input you "
+            "mean by name (" + ", ".join(sorted(input_names)) + ") and assign the "
+            "result to 'df'."
+        )
     _invalid(
-        f"Node {node_id!r} has {len(input_names)} inputs, so a bare 'df' means whichever "
-        f"input happens to be wired first and silently changes meaning if the wiring "
-        f"changes. Start from the input you mean by name: " + ", ".join(sorted(input_names))
+        f"Node {node_id!r} reads 'df' before assigning it, but this node has no inputs "
+        f"and 'df' is unbound until the code assigns it. Construct a frame and assign "
+        f"it to 'df'."
     )
 
 

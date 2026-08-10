@@ -143,7 +143,7 @@ def test_trace_through_multi_frame_source_succeeds(project: Path) -> None:
     graph = make_graph(
         _multi_frame_graph(
             _api_input_config(project),
-            "df = df.with_columns(pid2=pl.col('policy_id') * 2)",
+            "df = policies.with_columns(pid2=pl.col('policy_id') * 2)",
         )
     )
 
@@ -165,7 +165,7 @@ def test_trace_target_on_multi_frame_source_is_clear_error(project: Path) -> Non
     graph = make_graph(
         _multi_frame_graph(
             _api_input_config(project),
-            "df = df.with_columns(pid2=pl.col('policy_id') * 2)",
+            "df = policies.with_columns(pid2=pl.col('policy_id') * 2)",
         )
     )
 
@@ -180,7 +180,7 @@ def test_trace_route_multi_frame_not_opaque_500(project: Path) -> None:
     client = TestClient(app)
     graph = _multi_frame_graph(
         _api_input_config(project),
-        "df = df.with_columns(pid2=pl.col('policy_id') * 2)",
+        "df = policies.with_columns(pid2=pl.col('policy_id') * 2)",
     )
 
     resp = client.post(

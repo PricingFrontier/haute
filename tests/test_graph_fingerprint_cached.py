@@ -574,7 +574,7 @@ class TestFingerprintRecomputeSpy:
                     data=NodeData(
                         label="t",
                         nodeType=NodeType.POLARS,
-                        config={"code": "df = df.with_columns(z=pl.col('x') + 1)"},
+                        config={"code": "df = src.with_columns(z=pl.col('x') + 1)"},
                     ),
                 ),
             ],

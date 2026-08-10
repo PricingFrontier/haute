@@ -21,7 +21,7 @@ If you're coming from Excel or a drag-and-drop pricing tool, the code on this pa
 
 | Polars syntax | What it means | Excel equivalent |
 |---|---|---|
-| `df` | A **dataframe**  - a table of data. When your node has one input, it's called `df`. With multiple inputs, each is available by the name of the upstream node. | A spreadsheet tab |
+| `df` | A **dataframe**  - a table of data. `df` is the node's **output**: assign your result to it. Each input is available by the name of the upstream node it came from. | A spreadsheet tab |
 | `pl.col("column_name")` | Refers to a column by name. | Clicking a column header |
 | `.alias("new_name")` | Gives the result a new column name. | Naming a cell or column |
 | `.with_columns(...)` | Adds or replaces columns in the table. | Adding a new formula column |
@@ -30,7 +30,7 @@ If you're coming from Excel or a drag-and-drop pricing tool, the code on this pa
 | `pl.lit("value")` | A fixed/literal value. | Typing a constant into a formula |
 | `return df` | Passes the result to the next node. Always the last line. |  - |
 
-Each input table is available by the name of the node it came from. For example, if you connect a node called `policies`, you reference it as `policies` in your code. If there's a single input, you can also use `df`. The last line should be `return df`, which passes the resulting table to the next node.
+Each input table is available by the name of the node it came from. For example, if you connect a node called `policies`, you reference it as `policies` in your code. `df` is not an input  - it's the variable your code must assign its result to (reading `df` before assigning it is an error). The last line should be `return df`, which passes the resulting table to the next node. A polars node must have code: with none, running the pipeline fails at this node.
 
 ```python
 df = policies.join(claims, on="policy_id", how="left")
@@ -66,10 +66,13 @@ details.
 
 ## Common patterns
 
+The examples below assume one upstream node called `policies`; start from the
+input's name and assign the result to `df`.
+
 **Calculate a derived column:**
 
 ```python
-df = df.with_columns(
+df = policies.with_columns(
     (pl.col("premium") * pl.col("expense_loading")).alias("loaded_premium")
 )
 return df
@@ -78,14 +81,14 @@ return df
 **Filter rows:**
 
 ```python
-df = df.filter(pl.col("cover_type") == "comprehensive")
+df = policies.filter(pl.col("cover_type") == "comprehensive")
 return df
 ```
 
 **Conditional logic** (like IF in a spreadsheet):
 
 ```python
-df = df.with_columns(
+df = policies.with_columns(
     pl.when(pl.col("driver_age") < 25)
       .then(pl.lit("young"))
       .otherwise(pl.lit("standard"))

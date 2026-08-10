@@ -769,8 +769,8 @@ class TestSemanticPlans:
     @pytest.mark.parametrize(
         "code",
         [
-            "df = df.filter(pl.col('age') > 18)",
-            "return df.with_columns(pl.lit(1).alias('one'))",
+            "df = pl.LazyFrame({'age': [21]}).filter(pl.col('age') > 18)",
+            "return pl.LazyFrame({'age': [21]}).with_columns(pl.lit(1).alias('one'))",
             "df = prepared_frame",
         ],
     )
@@ -791,8 +791,8 @@ class TestSemanticPlans:
     @pytest.mark.parametrize(
         ("code", "rejected"),
         [
-            # A bare `df` read is the first input by edge order. On two inputs
-            # that is a silent dependency on wiring, not a choice of frame.
+            # `df` is the output variable, never bound to an input; reading it
+            # before assigning it is a guaranteed NameError at execution.
             ("df = df.group_by('quote_id').agg(pl.len())", True),
             ("df = df.filter(pl.col('age') > 18)", True),
             ("return df.with_columns(pl.lit(1).alias('one'))", True),
@@ -800,7 +800,8 @@ class TestSemanticPlans:
             ("df = left.group_by('quote_id').agg(pl.len())", False),
             ("df = left\ndf = df.group_by('quote_id').agg(pl.len())", False),
             # `df` bound by a nested scope is that scope's own name and never
-            # resolves to the injected first input, so it is not a bare read.
+            # resolves to the module-level output variable, so it is not a
+            # bare read.
             ("def widen(df):\n    return df\ndf = widen(left)", False),
             ("widen = lambda df: df\ndf = widen(left)", False),
             ("df = [df.head() for df in (left, right)][0]", False),
@@ -840,13 +841,18 @@ class TestSemanticPlans:
             return
         with pytest.raises(OpValidationError) as excinfo:
             build_graph_edit_plan(snapshot, operations)
-        assert "has 2 inputs" in str(excinfo.value)
+        assert "reads 'df' before assigning it" in str(excinfo.value)
         assert "left, right" in str(excinfo.value)
 
-    def test_single_input_polars_code_may_still_use_the_bare_frame(self, tmp_path: Path):
-        """`df` is the idiom for a single-input node and stays unambiguous."""
+    def test_single_input_polars_code_must_also_name_its_input(self, tmp_path: Path):
+        """`df` is unbound on any input count; a single-input bare read is
+        rejected with the node's actual input name."""
 
-        from haute.assistant._ops import build_graph_edit_plan, build_project_snapshot
+        from haute.assistant._ops import (
+            OpValidationError,
+            build_graph_edit_plan,
+            build_project_snapshot,
+        )
 
         source = tmp_path / "main.py"
         source.write_text("pipeline", encoding="utf-8")
@@ -856,18 +862,19 @@ class TestSemanticPlans:
         )
         snapshot = build_project_snapshot(tmp_path, source, graph)
 
-        plan = build_graph_edit_plan(
-            snapshot,
-            [
-                {
-                    "op": "update_node",
-                    "node": "combined",
-                    "config": {"code": "df = df.filter(pl.col('age') > 18)"},
-                }
-            ],
-        )
-
-        assert plan.diff.config_changes == ("combined:code",)
+        with pytest.raises(OpValidationError) as excinfo:
+            build_graph_edit_plan(
+                snapshot,
+                [
+                    {
+                        "op": "update_node",
+                        "node": "combined",
+                        "config": {"code": "df = df.filter(pl.col('age') > 18)"},
+                    }
+                ],
+            )
+        assert "reads 'df' before assigning it" in str(excinfo.value)
+        assert "left" in str(excinfo.value)
 
     def test_bounded_diff_retains_complete_identity_for_exact_verification(self):
         from haute.assistant._ops import semantic_diff

@@ -46,6 +46,7 @@ from haute.errors import ParseError
 
 __all__ = [
     "_extract_user_code",
+    "_extract_explore_user_code",
     "_extract_source_user_code",
     "_extract_scenario_expander_user_code",
     "_extract_model_score_user_code",
@@ -479,19 +480,32 @@ def _match_polars(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherRe
     :func:`_is_incomplete_transform_placeholder`), so a body that merely begins
     with some other ``raise NotImplementedError`` stays user code.
 
-    Post-processing (strip ``df = <param>`` alias, unwrap chain, convert
-    ``return <expr>``) is applied by ``_finalise_polars``.
+    Post-processing (unwrap chain, convert ``return <expr>``) is applied by
+    ``_finalise_polars``; a ``df = <param>`` line is authored code, never
+    scaffold.
     """
     if cleaned:
         end_idx = _statement_end_index(cleaned, 0)
         statement = _dedent("\n".join(cleaned[:end_idx])).strip()
         if _is_incomplete_transform_placeholder(statement):
             # ``generated_scaffold`` so anything the user added AFTER the
-            # placeholder (by hand-editing the file) keeps its references to the
-            # input parameters. Unlike the single-upstream body, the placeholder
-            # binds no ``df`` alias, so a following ``df = <param>`` is the
-            # user's own line and must not be stripped as scaffold.
+            # placeholder (by hand-editing the file) keeps its references to
+            # the input parameters.
             return MatcherResult(start_idx=end_idx, return_vars=("df",), generated_scaffold=True)
+    return MatcherResult(start_idx=0, return_vars=("df",))
+
+
+def _match_explore(cleaned: list[str], param_names: tuple[str, ...]) -> MatcherResult:
+    """Explore nodes: skip the generated ``df = <param>`` binding line.
+
+    Explore's code box operates on the single implicit frame ``df`` (unlike
+    polars transforms, whose inputs are their named parameters), so
+    ``_gen_explore`` still prepends ``df = <first input>``. That one line is
+    scaffold; everything after it is user code. ``generated_scaffold=True``
+    keeps a later reference to the input parameter as intentional user code.
+    """
+    if cleaned and _df_alias_target(cleaned[0].strip()) in param_names:
+        return MatcherResult(start_idx=1, return_vars=("df",), generated_scaffold=True)
     return MatcherResult(start_idx=0, return_vars=("df",))
 
 
@@ -725,6 +739,7 @@ def _match_external(cleaned: list[str], param_names: tuple[str, ...]) -> Matcher
 # each extractor.
 BOILERPLATE_MATCHERS: dict[str, BoilerplateMatcher] = {
     "polars": _match_polars,
+    "explore": _match_explore,
     "source": _match_source,
     "scenario_expander": _match_scenario_expander,
     "model_score": _match_model_score,
@@ -762,28 +777,22 @@ def _strip_trailing_return(code_lines: list[str], return_vars: tuple[str, ...]) 
 
 
 def _finalise_polars(code: str, param_names: tuple[str, ...]) -> str:
-    """Apply polars-specific post-processing: strip df=<param>, unwrap chain, convert return.
+    """Apply polars-specific post-processing: unwrap chain, convert return.
+
+    A leading ``df = <param>`` line is authored code, never scaffold —
+    polars codegen no longer prepends an input alias, so nothing is
+    stripped here. Modules generated under the old contract round-trip
+    their alias line into the code box as explicit user code, which
+    preserves their behaviour under the named-input contract.
 
     Pattern 2 (``return <expr>`` → ``df = <expr>``) is performed via an
     AST walk that only picks up ``Return`` nodes at the OUTERMOST scope.
     Returns inside nested ``def`` / ``class`` / ``lambda`` bodies are
     left untouched.
     """
-    code = _strip_generated_passthrough_from_code(code, param_names)
-    if not code.strip():
+    code = code.strip()
+    if not code:
         return ""
-
-    # Strip codegen-prepended "df = <param_name>" alias to prevent
-    # accumulation on save/reload roundtrips.
-    first_line = code.splitlines()[0].strip() if code else ""
-    if first_line.startswith("df = ") or first_line.startswith("df="):
-        alias_target = first_line.split("=", 1)[1].strip()
-        if alias_target in param_names:
-            remaining = "\n".join(code.splitlines()[1:]).strip()
-            if remaining:
-                code = remaining
-            else:
-                return ""
 
     # A degenerate empty chain "df = (\n)" (parsed as the empty tuple
     # "df = ()") is cleared-code-box scaffolding, not a runnable chain;
@@ -803,6 +812,17 @@ def _finalise_polars(code: str, param_names: tuple[str, ...]) -> str:
     # Pattern 2: hand-written "return <expr>" at the OUTER scope only.
     rewritten = _rewrite_outer_returns_as_assignment(code, target="df")
     return _dedent(rewritten).strip()
+
+
+def _finalise_explore(code: str, param_names: tuple[str, ...]) -> str:
+    """Explore post-processing: strip the generated passthrough, then polars rules.
+
+    A no-code explore emits ``return <input>``; that is scaffold and must
+    round-trip back to an empty code box. (Polars transforms deliberately do
+    NOT strip it — their legacy passthrough must surface as explicit code.)
+    """
+    code = _strip_generated_passthrough_from_code(code, param_names)
+    return _finalise_polars(code, ())
 
 
 def _finalise_source(code: str, param_names: tuple[str, ...]) -> str:
@@ -903,6 +923,7 @@ def _finalise_external(code: str, param_names: tuple[str, ...]) -> str:
 # engine pass.
 _FINALISERS: dict[str, Callable[[str, tuple[str, ...]], str]] = {
     "polars": _finalise_polars,
+    "explore": _finalise_explore,
     "source": _finalise_source,
     "scenario_expander": _finalise_polars,
     "model_score": _finalise_model_score,
@@ -994,6 +1015,16 @@ def _extract_user_code(body_source: str, param_names: list[str]) -> str:
     For multi-statement bodies (assignments, comments) it returns as-is.
     """
     return extract_user_code(body_source, kind="polars", param_names=tuple(param_names))
+
+
+def _extract_explore_user_code(body_source: str, param_names: list[str]) -> str:
+    """Extract user code from an Explore body.
+
+    Skips the generated ``df = <param>`` binding line (explore's code box
+    operates on the implicit frame ``df``) and the codegen-appended
+    ``return df``.
+    """
+    return extract_user_code(body_source, kind="explore", param_names=tuple(param_names))
 
 
 def _extract_source_user_code(body_source: str) -> str:

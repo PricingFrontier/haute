@@ -155,8 +155,8 @@ def _branch_join_graph(
                 },
             }
         ),
-        "m1": make_transform_node("m1", "df = df.with_columns(premium=pl.col('premium') * 1.2)"),
-        "m2": make_transform_node("m2", "df = df.with_columns(premium=pl.col('premium') * 1.1)"),
+        "m1": make_transform_node("m1", "df = join.with_columns(premium=pl.col('premium') * 1.2)"),
+        "m2": make_transform_node("m2", "df = m1.with_columns(premium=pl.col('premium') * 1.1)"),
     }
     return make_graph(
         {
@@ -180,8 +180,8 @@ def _same_origin_branch_join_graph(tmp_path):
         {
             "nodes": [
                 make_source_node("src", str(path)),
-                make_transform_node("base", "df = df.with_columns(base_marker=pl.lit(True))"),
-                make_transform_node("side", "df = df.with_columns(premium=pl.col('premium') * 5)"),
+                make_transform_node("base", "df = src.with_columns(base_marker=pl.lit(True))"),
+                make_transform_node("side", "df = src.with_columns(premium=pl.col('premium') * 5)"),
                 make_node(
                     {
                         "id": "join",
@@ -199,11 +199,11 @@ def _same_origin_branch_join_graph(tmp_path):
                 ),
                 make_transform_node(
                     "m1",
-                    "df = df.with_columns(premium=pl.col('premium') * 1.2)",
+                    "df = join.with_columns(premium=pl.col('premium') * 1.2)",
                 ),
                 make_transform_node(
                     "m2",
-                    "df = df.with_columns(premium=pl.col('premium') * 1.1)",
+                    "df = m1.with_columns(premium=pl.col('premium') * 1.1)",
                 ),
             ],
             "edges": [
@@ -239,11 +239,11 @@ class TestFlagshipMultiplicativeChain:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('base_rate') * 1.0)"),
-                ("age", "df = df.with_columns(premium=pl.col('premium') * pl.col('age_factor'))"),
+                ("base", "df = src.with_columns(premium=pl.col('base_rate') * 1.0)"),
+                ("age", "df = base.with_columns(premium=pl.col('premium') * pl.col('age_factor'))"),
                 (
                     "region",
-                    "df = df.with_columns(premium=pl.col('premium') * pl.col('region_factor'))",
+                    "df = age.with_columns(premium=pl.col('premium') * pl.col('region_factor'))",
                 ),
             ],
         )
@@ -333,9 +333,15 @@ class TestAdditiveChain:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('base_rate') * 1.0)"),
-                ("load_a", "df = df.with_columns(premium=pl.col('premium') + pl.col('loading_a'))"),
-                ("load_b", "df = df.with_columns(premium=pl.col('premium') + pl.col('loading_b'))"),
+                ("base", "df = src.with_columns(premium=pl.col('base_rate') * 1.0)"),
+                (
+                    "load_a",
+                    "df = base.with_columns(premium=pl.col('premium') + pl.col('loading_a'))",
+                ),
+                (
+                    "load_b",
+                    "df = load_a.with_columns(premium=pl.col('premium') + pl.col('loading_b'))",
+                ),
             ],
         )
         result = execute_trace(graph, row_index=0, target_node_id=target, column="premium")
@@ -362,9 +368,9 @@ class TestAdditiveChain:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('base_rate') * 1.0)"),
-                ("fees", "df = df.with_columns(premium=pl.col('premium') - pl.col('fee'))"),
-                ("more", "df = df.with_columns(premium=pl.col('premium') - 5.0)"),
+                ("base", "df = src.with_columns(premium=pl.col('base_rate') * 1.0)"),
+                ("fees", "df = base.with_columns(premium=pl.col('premium') - pl.col('fee'))"),
+                ("more", "df = fees.with_columns(premium=pl.col('premium') - 5.0)"),
             ],
         )
         result = execute_trace(graph, row_index=0, target_node_id=target, column="premium")
@@ -400,12 +406,12 @@ class TestMixedChainDiscountExpression:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('base_rate') * 1.0)"),
-                ("age", "df = df.with_columns(premium=pl.col('premium') * pl.col('age_factor'))"),
-                ("load", "df = df.with_columns(premium=pl.col('premium') + pl.col('loading'))"),
+                ("base", "df = src.with_columns(premium=pl.col('base_rate') * 1.0)"),
+                ("age", "df = base.with_columns(premium=pl.col('premium') * pl.col('age_factor'))"),
+                ("load", "df = age.with_columns(premium=pl.col('premium') + pl.col('loading'))"),
                 (
                     "disc",
-                    "df = df.with_columns(premium=pl.col('premium') * (1 - pl.col('discount')))",
+                    "df = load.with_columns(premium=pl.col('premium') * (1 - pl.col('discount')))",
                 ),
             ],
         )
@@ -454,12 +460,12 @@ class TestZeroBaselineGuard:
             tmp_path,
             df,
             [
-                ("seed", "df = df.with_columns(premium=pl.col('zero') * 1.0)"),
+                ("seed", "df = src.with_columns(premium=pl.col('zero') * 1.0)"),
                 (
                     "rated",
-                    "df = df.with_columns(premium=pl.col('base_rate') * pl.col('age_factor'))",
+                    "df = seed.with_columns(premium=pl.col('base_rate') * pl.col('age_factor'))",
                 ),
-                ("uplift", "df = df.with_columns(premium=pl.col('premium') * 1.1)"),
+                ("uplift", "df = rated.with_columns(premium=pl.col('premium') * 1.1)"),
             ],
         )
 
@@ -517,12 +523,15 @@ class TestPassthroughSteps:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('base_rate') * 1.0)"),
-                ("untouched", "df = df.with_columns(other_2=pl.col('other') + 1.0)"),
-                ("age", "df = df.with_columns(premium=pl.col('premium') * pl.col('age_factor'))"),
+                ("base", "df = src.with_columns(premium=pl.col('base_rate') * 1.0)"),
+                ("untouched", "df = base.with_columns(other_2=pl.col('other') + 1.0)"),
+                (
+                    "age",
+                    "df = untouched.with_columns(premium=pl.col('premium') * pl.col('age_factor'))",
+                ),
                 (
                     "region",
-                    "df = df.with_columns(premium=pl.col('premium') * pl.col('region_factor'))",
+                    "df = age.with_columns(premium=pl.col('premium') * pl.col('region_factor'))",
                 ),
             ],
         )
@@ -547,13 +556,13 @@ class TestPassthroughSteps:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('base_rate') * 1.0)"),
-                ("age", "df = df.with_columns(premium=pl.col('premium') * pl.col('age_factor'))"),
+                ("base", "df = src.with_columns(premium=pl.col('base_rate') * 1.0)"),
+                ("age", "df = base.with_columns(premium=pl.col('premium') * pl.col('age_factor'))"),
                 (
                     "region",
-                    "df = df.with_columns(premium=pl.col('premium') * pl.col('region_factor'))",
+                    "df = age.with_columns(premium=pl.col('premium') * pl.col('region_factor'))",
                 ),
-                ("tail", "df = df.with_columns(flag=pl.col('premium') > 0)"),
+                ("tail", "df = region.with_columns(flag=pl.col('premium') > 0)"),
             ],
         )
         result = execute_trace(graph, row_index=0, target_node_id=target, column="premium")
@@ -613,8 +622,8 @@ class TestBranchAwareWaterfall:
             tmp_path,
             pl.DataFrame({"policy_id": ["9007199254740992"], "rating": [1.0]}),
             [
-                ("mark", "df = df.with_columns(marker=pl.lit(1))"),
-                ("score", "df = df.with_columns(score=pl.col('rating') * 2)"),
+                ("mark", "df = src.with_columns(marker=pl.lit(1))"),
+                ("score", "df = mark.with_columns(score=pl.col('rating') * 2)"),
             ],
         )
 
@@ -629,9 +638,9 @@ class TestBranchAwareWaterfall:
             tmp_path,
             pl.DataFrame({"seed": [unsafe]}),
             [
-                ("base", "df = df.with_columns(premium=pl.col('seed'))"),
-                ("load_a", "df = df.with_columns(premium=pl.col('premium') + 1)"),
-                ("load_b", "df = df.with_columns(premium=pl.col('premium') + 2)"),
+                ("base", "df = src.with_columns(premium=pl.col('seed'))"),
+                ("load_a", "df = base.with_columns(premium=pl.col('premium') + 1)"),
+                ("load_b", "df = load_a.with_columns(premium=pl.col('premium') + 2)"),
             ],
         )
 
@@ -657,9 +666,9 @@ class TestExactReconciliation:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('seed') * 1.0)"),
-                ("m1", "df = df.with_columns(premium=pl.col('premium') * pl.col('f1'))"),
-                ("m2", "df = df.with_columns(premium=pl.col('premium') * pl.col('f2'))"),
+                ("base", "df = src.with_columns(premium=pl.col('seed') * 1.0)"),
+                ("m1", "df = base.with_columns(premium=pl.col('premium') * pl.col('f1'))"),
+                ("m2", "df = m1.with_columns(premium=pl.col('premium') * pl.col('f2'))"),
             ],
         )
         result = execute_trace(graph, row_index=0, target_node_id=target, column="premium")
@@ -819,9 +828,9 @@ class TestInvariantSurfacesThroughExecuteTrace:
             tmp_path,
             df,
             [
-                ("base", "df = df.with_columns(premium=pl.col('base_rate') * 1.0)"),
-                ("m1", "df = df.with_columns(premium=pl.col('premium') * pl.col('f1'))"),
-                ("m2", "df = df.with_columns(premium=pl.col('premium') * pl.col('f2'))"),
+                ("base", "df = src.with_columns(premium=pl.col('base_rate') * 1.0)"),
+                ("m1", "df = base.with_columns(premium=pl.col('premium') * pl.col('f1'))"),
+                ("m2", "df = m1.with_columns(premium=pl.col('premium') * pl.col('f2'))"),
             ],
         )
 

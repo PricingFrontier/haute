@@ -365,7 +365,7 @@ class TestTraceJsonSafeRowMatching:
                     _source_node("source", str(p)),
                     _transform_node(
                         "aggregate",
-                        "df = df.group_by('region').agg(pl.col('premium').sum())",
+                        "df = source.group_by('region').agg(pl.col('premium').sum())",
                     ),
                 ],
                 "edges": [_edge("source", "aggregate")],
@@ -462,7 +462,7 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 10)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 10)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -490,7 +490,7 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t"),
+                    _transform_node("t", "df = src"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -508,9 +508,9 @@ class TestExecuteTrace:
                 "nodes": [
                     _source_node("src", str(p)),
                     # passthrough - doesn't have 'y' but feeds into t
-                    _transform_node("mid"),
+                    _transform_node("mid", "df = src"),
                     # adds 'y' - column_relevant, ancestors kept for calc path
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = mid.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "t")],
             }
@@ -560,15 +560,15 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("base", str(base_path)),
-                    _transform_node("calc", "df = df.with_columns(premium=pl.col('base') * 10)"),
+                    _transform_node("calc", "df = base.with_columns(premium=pl.col('base') * 10)"),
                     _source_node("factor", str(factor_path)),
                     _transform_node("join", "df = calc.join(factor, on='quote_id', how='left')"),
                     _transform_node(
                         "final",
-                        "df = df.with_columns("
+                        "df = join.with_columns("
                         "(pl.col('premium') * pl.col('factor')).alias('premium'))",
                     ),
-                    _transform_node("sink"),
+                    _transform_node("sink", "df = final"),
                 ],
                 "edges": [
                     _edge("base", "calc"),
@@ -663,8 +663,8 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("mid"),  # passes x through
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("mid", "df = src"),  # passes x through
+                    _transform_node("t", "df = mid.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "mid"), _edge("mid", "t")],
             }
@@ -698,9 +698,9 @@ class TestExecuteTrace:
                             },
                         }
                     ),
-                    _transform_node("t"),
+                    _transform_node("t", "df = src"),
                 ],
-                "edges": [_edge("src", "t")],
+                "edges": [_edge("src", "t", source_handle="src")],
             }
         )
         result = execute_trace(graph, row_index=1)
@@ -729,7 +729,7 @@ class TestExecuteTrace:
 
         graph = _g(
             {
-                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "nodes": [_source_node("src", str(p)), _transform_node("t", "df = src")],
                 "edges": [_edge("src", "t")],
             }
         )
@@ -748,7 +748,7 @@ class TestExecuteTrace:
 
         graph1 = _g(
             {
-                "nodes": [_source_node("src", str(p)), _transform_node("t")],
+                "nodes": [_source_node("src", str(p)), _transform_node("t", "df = src")],
                 "edges": [_edge("src", "t")],
             }
         )
@@ -759,7 +759,7 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * 2)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * 2)"),
                 ],
                 "edges": [_edge("src", "t")],
             }
@@ -771,7 +771,7 @@ class TestExecuteTrace:
         """Changing only graph.preamble must not serve stale trace rows."""
         p = tmp_path / "data.parquet"
         pl.DataFrame({"x": [1, 2]}).write_parquet(p)
-        code = "df = df.with_columns(y=pl.col('x') * FACTOR)"
+        code = "df = src.with_columns(y=pl.col('x') * FACTOR)"
 
         graph1 = _g(
             {
@@ -814,7 +814,7 @@ class TestExecuteTrace:
             {
                 "nodes": [
                     _source_node("src", str(p)),
-                    _transform_node("t", "df = df.with_columns(y=pl.col('x') * FACTOR)"),
+                    _transform_node("t", "df = src.with_columns(y=pl.col('x') * FACTOR)"),
                 ],
                 "edges": [_edge("src", "t")],
                 "preamble": "from utility.helpers import FACTOR\n",

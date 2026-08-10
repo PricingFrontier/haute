@@ -186,7 +186,7 @@ class TestItem3SilentEnrichmentExcepts:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)",
+                        "df = src.with_columns(burn_cost=pl.col('premium') * 0.7)",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -285,7 +285,7 @@ class TestItem3SilentEnrichmentExcepts:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(\n"
+                        "df = src.with_columns(\n"
                         "    burn_cost=pl.col('premium') * 0.7,\n"
                         "    margin=pl.col('premium') - pl.col('premium') * 0.7,\n"
                         ")",
@@ -460,7 +460,7 @@ class TestItem3SilentEnrichmentExcepts:
                     _source_node("src", str(p)),
                     _transform_node(
                         "t",
-                        "df = df.with_columns(burn_cost=pl.col('premium') * 0.7)",
+                        "df = src.with_columns(burn_cost=pl.col('premium') * 0.7)",
                     ),
                 ],
                 "edges": [_edge("src", "t")],
@@ -537,14 +537,14 @@ class TestItem4SwallowErrorsRegexHeuristic:
                     # genuine typo.  After fix: must raise.
                     _transform_node(
                         "a",
-                        "df = df.with_columns(foo=pl.col('bar') * 2)",
+                        "df = src.with_columns(foo=pl.col('bar') * 2)",
                     ),
                     # Node 'b' defines 'bar' via with_columns — this is
                     # what misleads the regex heuristic into treating
                     # a's error as an intra-node dependency.
                     _transform_node(
                         "b",
-                        "df = df.with_columns(bar=pl.col('x') * 3)",
+                        "df = a.with_columns(bar=pl.col('x') * 3)",
                     ),
                 ],
                 "edges": [_edge("src", "a"), _edge("a", "b")],
@@ -595,11 +595,11 @@ class TestItem4SwallowErrorsRegexHeuristic:
                     _source_node("src", str(p)),
                     _transform_node(
                         "a",
-                        "df = df.with_columns(foo=pl.col('bar') * 2)",
+                        "df = src.with_columns(foo=pl.col('bar') * 2)",
                     ),
                     _transform_node(
                         "b",
-                        "df = df.with_columns(bar=pl.col('x') * 3)",
+                        "df = a.with_columns(bar=pl.col('x') * 3)",
                     ),
                 ],
                 "edges": [_edge("src", "a"), _edge("a", "b")],
@@ -644,19 +644,19 @@ class TestItem5WaterfallBuildFailsLoudly:
                     _source_node("src", str(p)),
                     _transform_node(
                         "step1",
-                        "df = df.with_columns(premium=pl.col('base') * 1.0)",
+                        "df = src.with_columns(premium=pl.col('base') * 1.0)",
                     ),
                     _transform_node(
                         "step2",
-                        "df = df.with_columns(premium=pl.col('premium') * 1.1)",
+                        "df = step1.with_columns(premium=pl.col('premium') * 1.1)",
                     ),
                     _transform_node(
                         "step3",
-                        "df = df.with_columns(premium=pl.col('premium') * 1.2)",
+                        "df = step2.with_columns(premium=pl.col('premium') * 1.2)",
                     ),
                     _transform_node(
                         "step4",
-                        "df = df.with_columns(premium=pl.col('premium') * 0.9)",
+                        "df = step3.with_columns(premium=pl.col('premium') * 0.9)",
                     ),
                 ],
                 "edges": [

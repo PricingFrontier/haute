@@ -194,8 +194,8 @@ def test_instance_schema_warning_reports_missing_original_inputs(tmp_path: Path)
     pl.DataFrame({"x": [1]}).write_parquet(original_path)
     pl.DataFrame({"y": [2]}).write_parquet(instance_path)
 
-    original = _transform_node("original", "df = df")
-    instance = _transform_node("instance", "df = df")
+    original = _transform_node("original", "df = src_original")
+    instance = _transform_node("instance", "df = src_instance")
     instance.data.config["instanceOf"] = "original"
     graph = _g(
         {

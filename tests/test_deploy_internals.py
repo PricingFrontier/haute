@@ -1982,7 +1982,7 @@ class TestScoreGraphExternalFileRemap:
                                 "path": "original/lookup.pkl",
                                 "fileType": "pickle",
                                 "modelClass": "classifier",
-                                "code": "df = df.with_columns(pl.lit(99).alias('ext_val'))",
+                                "code": "df = src.with_columns(pl.lit(99).alias('ext_val'))",
                             },
                         },
                     },
