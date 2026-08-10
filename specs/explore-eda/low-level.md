@@ -131,7 +131,10 @@ Error handling section): `ExecutionCancelledError` → `token.terminal_reason or
    preamble_ns=preamble_ns or None, source=body.source, enforce_contracts=True,
    execution_context=execution_context, dataframe_cache_request=spec.dataframe_cache_request)` —
    executes the graph lazily up to (and including) the Explore node's own analysis code, reusing
-   the dataframe cache when the request's cache key already has a hit.
+   the dataframe cache when the request's cache key already has a hit. If that lineage contains a
+   group-by, the lazy executor invokes graph-aware strategy planning before node execution so the
+   boundary is admitted only when its source-derived estimate fits this job's
+   `EXPLORE_ANALYSIS` admission headroom.
 4. `lazy_outputs.get(spec.node_id)` must not be `None`; if it is,
    `ValueError(f"No data arrived at Explore node '{spec.node_id}'.")` is raised (caught by the
    generic `except Exception` branch in `_run_job`, i.e. surfaces as job status `error`).

@@ -58,6 +58,11 @@ Out of scope (owned elsewhere):
   `GET /api/explore/status/{job_id}` until the job reaches a terminal status
   (`completed`, `error`, `cancelled`, `superseded`, `memory_limited`,
   `contract_error`).
+- A group-by in the lineage feeding the Explore node is admitted as part of this explicit
+  full-frame cache materialisation only when its source-derived peak-memory estimate fits the
+  admitted `EXPLORE_ANALYSIS` headroom. Missing estimates or insufficient headroom fail with the
+  existing typed execution-strategy error; Explore never substitutes a partial aggregation or a
+  generic chunked execution.
 - Starting a new run for the same Explore node/source while a previous run is still in flight
   supersedes the older job; the older job's status transitions to `superseded`.
 - `POST /api/explore/cancel/{job_id}` interrupts an in-flight materialisation (not just a status

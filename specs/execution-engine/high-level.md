@@ -157,11 +157,12 @@ running heavy work in a child process the parent can kill on timeout or memory l
   detail state. Diagnostics are JSON-safe, deterministically capped, and never carry
   plans, frames, source values, or other user data.
 - **Group-by is never smuggled through chunking or streaming.** Only
-  `PREVIEW_EAGER` and `DEPLOY_LIVE` may use an admitted materialisation boundary,
+  `PREVIEW_EAGER`, `EXPLORE_ANALYSIS` (the explicit Explore dataframe-cache
+  materialisation), and `DEPLOY_LIVE` may use an admitted materialisation boundary,
   and only when a present positive admission plus an available estimate fits both
-  memory limit and headroom. Every batch/bounded profile rejects before execution;
-  missing admission, unavailable estimate, and excess headroom have distinct typed
-  reason codes.
+  memory limit and headroom. Every other batch/bounded profile rejects before
+  execution; missing admission, unavailable estimate, and excess headroom have
+  distinct typed reason codes.
 - Route/service long-running operations create an admitted `ExecutionContext` bound
   to an `ExecutionProfile` (preview, lazy sink, training prep, optimiser setup, deploy
   live/batch, chunked map-reduce, ...). An admitted context enforces a resident-memory

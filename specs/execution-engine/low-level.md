@@ -541,11 +541,15 @@ timeout terminates, escalates to kill, joins, and verifies death; a surviving ch
 
   | Profile | Version-1 result |
   | --- | --- |
-  | `PREVIEW_EAGER`, `DEPLOY_LIVE` | `materialisation-boundary` only when admission and estimate fit |
-  | `LAZY_SINK`, `TRAINING_PREP`, `OPTIMISER_SETUP`, `EXPLORE_ANALYSIS`, `AUTO_RANGE`, `DEPLOY_BATCH`, `CHUNKED_MAP_REDUCE` | reject with `profile_requires_bounded_execution` |
+  | `PREVIEW_EAGER`, `EXPLORE_ANALYSIS`, `DEPLOY_LIVE` | `materialisation-boundary` only when admission and estimate fit |
+  | `LAZY_SINK`, `TRAINING_PREP`, `OPTIMISER_SETUP`, `AUTO_RANGE`, `DEPLOY_BATCH`, `CHUNKED_MAP_REDUCE` | reject with `profile_requires_bounded_execution` |
 
-  Eligible profiles require a context with admission, positive memory/headroom, and
-  `MaterialisationEstimate(state=available)` satisfying
+  `EXPLORE_ANALYSIS` is eligible because the profile denotes the explicit, full-frame
+  dataframe-cache materialisation performed by an Explore job; it is not a generic
+  streaming exemption. The lazy executor runs the graph-aware request planner for a
+  materialising group-by so the estimate is derived from the same prepared target lineage
+  before any node executes. Eligible profiles require a context with admission, positive
+  memory/headroom, and `MaterialisationEstimate(state=available)` satisfying
   `estimated_peak_bytes <= min(memory_limit_bytes, headroom_bytes)` (equality is
   admitted). Missing/non-positive admission yields
   `execution_admission_unavailable`; unavailable estimate yields

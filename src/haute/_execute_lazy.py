@@ -891,19 +891,34 @@ def _execute_lazy(
     # nodes also consume this demand locally so their internal temp
     # parquet write can avoid unused passthrough columns even when the
     # outer checkpoint layer skips model-score nodes.
-    public_strategy_result = execution_facade.plan_prepared_execution_strategy(
-        order,
-        children_of,
-        node_map,
-        profile=(
-            execution_context.profile
-            if execution_context is not None
-            else ExecutionProfile.LAZY_SINK
-        ),
-        required_columns_by_node=normalised_required_columns,
-        execution_context=execution_context,
-        schema_only=schema_only,
+    strategy_profile = (
+        execution_context.profile if execution_context is not None else ExecutionProfile.LAZY_SINK
     )
+    group_by_operators = projection_planner.group_by_operators_by_node(order, node_map)
+    if group_by_operators and not schema_only:
+        # A materialising group-by needs the request planner's source-aware RAM
+        # estimate. The prepared-only planner deliberately cannot derive one
+        # because it no longer owns the complete graph/input metadata.
+        public_strategy_result = execution_facade.plan_execution_strategy(
+            execution_facade.ProjectionRequest(
+                graph=graph,
+                target_node_id=target_node_id,
+                profile=strategy_profile,
+                required_columns_by_node=normalised_required_columns,
+                source=source,
+            ),
+            execution_context=execution_context,
+        )
+    else:
+        public_strategy_result = execution_facade.plan_prepared_execution_strategy(
+            order,
+            children_of,
+            node_map,
+            profile=strategy_profile,
+            required_columns_by_node=normalised_required_columns,
+            execution_context=execution_context,
+            schema_only=schema_only,
+        )
     public_projection_plan = public_strategy_result.projection_plan
     projection_plan = public_projection_plan
     needed_cols = projection_plan.needed_by_node

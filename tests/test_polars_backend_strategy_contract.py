@@ -571,7 +571,6 @@ def _context(
         ExecutionProfile.LAZY_SINK,
         ExecutionProfile.TRAINING_PREP,
         ExecutionProfile.OPTIMISER_SETUP,
-        ExecutionProfile.EXPLORE_ANALYSIS,
         ExecutionProfile.AUTO_RANGE,
         ExecutionProfile.DEPLOY_BATCH,
         ExecutionProfile.CHUNKED_MAP_REDUCE,
@@ -641,7 +640,14 @@ def test_automatic_group_by_estimate_targets_the_boundary_node(
     assert estimated_nodes == ["agg"]
 
 
-@pytest.mark.parametrize("profile", [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE])
+@pytest.mark.parametrize(
+    "profile",
+    [
+        ExecutionProfile.PREVIEW_EAGER,
+        ExecutionProfile.EXPLORE_ANALYSIS,
+        ExecutionProfile.DEPLOY_LIVE,
+    ],
+)
 @pytest.mark.parametrize(
     ("context", "estimate", "reason"),
     [
@@ -688,7 +694,14 @@ def test_group_by_eligible_profiles_use_stable_rejection_precedence(
 
 
 @pytest.mark.parametrize("estimated", [0, 99, 100])
-@pytest.mark.parametrize("profile", [ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE])
+@pytest.mark.parametrize(
+    "profile",
+    [
+        ExecutionProfile.PREVIEW_EAGER,
+        ExecutionProfile.EXPLORE_ANALYSIS,
+        ExecutionProfile.DEPLOY_LIVE,
+    ],
+)
 def test_group_by_admits_only_an_estimated_materialisation_boundary(
     profile: ExecutionProfile,
     estimated: int,

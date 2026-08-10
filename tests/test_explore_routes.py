@@ -192,6 +192,49 @@ def test_explore_run_applies_node_polars_code_before_caching(
     assert report["column_count"] == 4
 
 
+def test_explore_cache_materialises_admitted_upstream_group_by(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["a", "a", "b"],
+            "premium": [10, 20, 40],
+        }
+    ).write_parquet(path)
+
+    response = client.post(
+        "/api/explore/run",
+        json={
+            "graph": _explore_graph(
+                str(path),
+                prep_code=(
+                    "df = source.group_by('quote_id').agg(pl.col('premium').sum().alias('premium'))"
+                ),
+            ),
+            "node_id": "explore",
+            "source": "live",
+        },
+    )
+
+    assert response.status_code == 200
+    started = response.json()
+    final = _poll_explore(client, started["job_id"])
+
+    assert final["status"] == "completed", final
+    report = final["result"]
+    assert report["row_count"] == 2
+    assert report["column_count"] == 2
+    premium = next(column for column in report["columns"] if column["name"] == "premium")
+    assert premium["min_value"] == "30"
+    assert premium["max_value"] == "40"
+    strategy = final["execution_metrics"]["execution_strategy"]
+    assert strategy["profile"] == "explore_analysis"
+    assert strategy["reason_code"] == "group_by_materialisation_admitted"
+    assert strategy["estimated_peak_bytes"] <= strategy["headroom_bytes"]
+
+
 def test_explore_reuses_completed_report_for_same_analysis_key(
     client: TestClient,
     tmp_path: Path,

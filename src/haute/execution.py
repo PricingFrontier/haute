@@ -143,6 +143,13 @@ _DEFAULT_DATAFRAME_EXECUTION_CACHE: DataFrameExecutionCache | None = None
 _DEFAULT_DATAFRAME_EXECUTION_CACHE_LOCK = threading.Lock()
 _AUTO_MATERIALISATION_ESTIMATE = object()
 _DATAFRAME_ROW_HASH_ENCODING = "polars-u64-le:v1"
+_GROUP_BY_MATERIALISATION_PROFILES = frozenset(
+    {
+        ExecutionProfile.PREVIEW_EAGER,
+        ExecutionProfile.EXPLORE_ANALYSIS,
+        ExecutionProfile.DEPLOY_LIVE,
+    }
+)
 
 _SOURCE_PATH_CONFIG_BY_NODE_TYPE: dict[NodeType, str] = {
     NodeType.API_INPUT: "path",
@@ -260,10 +267,7 @@ def plan_execution_strategy(
     )
     group_by_operators = group_by_operators_by_node(prepared.order, prepared.node_map)
     resolved_estimate: MaterialisationEstimate | None
-    if group_by_operators and request.profile in {
-        ExecutionProfile.PREVIEW_EAGER,
-        ExecutionProfile.DEPLOY_LIVE,
-    }:
+    if group_by_operators and request.profile in _GROUP_BY_MATERIALISATION_PROFILES:
         if materialisation_estimate is _AUTO_MATERIALISATION_ESTIMATE:
             resolved_estimate = _estimate_group_by_boundaries(
                 request.graph,
@@ -391,7 +395,7 @@ def _group_by_rejection(
     remediation = {
         "profile_requires_bounded_execution": (
             "Remove the group-by, pre-aggregate the source, or run it through an "
-            "admitted preview/deploy-live materialisation boundary."
+            "admitted preview, Explore-cache, or deploy-live materialisation boundary."
         ),
         "execution_admission_unavailable": (
             "Create an admitted execution context with positive memory-limit and "
@@ -446,7 +450,7 @@ def _finalise_execution_strategy(
 
     if group_by_operators and not schema_only:
         node_id, operator = next(iter(group_by_operators.items()))
-        if profile not in {ExecutionProfile.PREVIEW_EAGER, ExecutionProfile.DEPLOY_LIVE}:
+        if profile not in _GROUP_BY_MATERIALISATION_PROFILES:
             raise _group_by_rejection(
                 node_id=node_id,
                 operator=operator,
