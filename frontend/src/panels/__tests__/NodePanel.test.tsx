@@ -265,6 +265,13 @@ describe("NodePanel", () => {
       ok: false,
       error: "This submodel instance is read-only.",
     })
+    const onReplaceConfig = dataInputEditorProps.at(-1)?.onReplaceConfig as (
+      config: Record<string, unknown>,
+    ) => { ok: boolean; error?: string }
+    expect(onReplaceConfig({ format: "csv" })).toEqual({
+      ok: false,
+      error: "This submodel instance is read-only.",
+    })
     expect(onUpdateNode).not.toHaveBeenCalled()
   })
 
