@@ -1,0 +1,123 @@
+name: pyarrow probe (temporary)
+
+# TEMPORARY diagnostic workflow. Delete with its branch once issue #192's cap
+# boundary is settled — nothing should depend on this file.
+#
+# Question it answers: pyarrow 25.0.0 segfaults in `pq.read_metadata` on the
+# `unlocked-resolve` lane (issue #192). The bisect on that issue covered 23.0.1
+# (clean) and 25.0.0 (crashing) only, so nobody knows whether 24.0.0 is
+# affected — which is exactly what decides whether a cap reads `<25` or `<24`.
+#
+# Why this runs in CI rather than locally: the crash does not reproduce on
+# macOS/arm64. A ten-run control arm at 25.0.0 there produced zero crashes
+# against CI's seven-in-ten, so the answer has to come from the platform that
+# actually fails, Linux x86-64.
+#
+# Shape: build the wheel once, then two matrix arms differing in exactly one
+# package. The 25.0.0 arm is the control — if it does not crash, the 24.0.0
+# arm's result means nothing and the probe should be read as inconclusive.
+
+on:
+  push:
+    branches:
+      - "claude/pyarrow24-probe"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+
+      # Mirrors dependencies.yml so the venv under test matches the failing
+      # lane's, rather than a lighter-weight approximation of it.
+      - name: Build wheel (frontend embedded, never editable)
+        run: HAUTE_BUILD_FRONTEND=1 uv build --wheel --out-dir dist-unlocked
+
+      - name: Export the dev-group test pins
+        run: |
+          uv export --only-group dev --no-hashes --no-emit-project --no-annotate \
+            | grep -E '^(pytest|pytest-asyncio|pytest-timeout|pytest-xdist|httpx)==' \
+            > dist-unlocked/testdeps.txt
+          cat dist-unlocked/testdeps.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-wheel
+          path: dist-unlocked/
+          if-no-files-found: error
+
+  probe:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # 25.0.0 is the control arm, not a second question.
+        pyarrow: ["24.0.0", "25.0.0"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: probe-wheel
+          path: dist-unlocked
+
+      # Everything except pyarrow resolves fresh from the index, exactly as the
+      # unlocked lane does, so pyarrow is the single variable across the arms.
+      - name: Fresh venv with extras (unlocked resolve)
+        run: |
+          uv venv .probe --python 3.12
+          WHEEL="$(ls dist-unlocked/haute-*.whl)"
+          uv pip install --python .probe/bin/python \
+            "haute[databricks] @ file://${PWD}/${WHEEL}" \
+            -r dist-unlocked/testdeps.txt
+
+      - name: Pin the arm's pyarrow
+        run: uv pip install --python .probe/bin/python "pyarrow==${{ matrix.pyarrow }}"
+
+      # Printed so the write-up can show that numpy and polars held constant
+      # across the arms; a pyarrow pin that dragged numpy with it would
+      # invalidate the comparison.
+      - name: Show the resolution under test
+        run: uv pip list --python .probe/bin/python | grep -iE "pyarrow|polars|numpy|mlflow|catboost"
+
+      # Ten repeats because the failure is probabilistic — seven in ten at
+      # 25.0.0 on the original bisect. A crash is counted by its faulthandler
+      # signature rather than by exit status, since this file also carries
+      # ordinary failures that must not be mistaken for worker deaths.
+      - name: Repeat the crashing test file
+        env:
+          HAUTE_POLARS_UNPINNED: "1"
+        run: |
+          crashes=0
+          for i in $(seq 1 10); do
+            out="$(.probe/bin/python -m pytest tests/test_optimiser_routes.py \
+              -q -n 4 --timeout=60 --timeout-method=signal 2>&1 || true)"
+            if grep -qE "crashed while running|Fatal Python error|node down" <<<"${out}"; then
+              crashes=$((crashes + 1))
+              echo "::group::run ${i}: CRASH"
+              grep -E "Fatal Python error|read_metadata|crashed while running" <<<"${out}" | head -20
+              echo "::endgroup::"
+            else
+              echo "run ${i}: no crash — $(tail -1 <<<"${out}")"
+            fi
+          done
+          echo "## pyarrow ${{ matrix.pyarrow }}: ${crashes}/10 runs crashed" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
