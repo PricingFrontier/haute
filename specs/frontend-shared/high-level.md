@@ -36,6 +36,9 @@ In scope:
   (`useNodeResultsStore`), app-wide settings/caches (`useSettingsStore`),
   toast notifications (`useToastStore`), and layout/modal chrome
   (`useUIStore`).
+  Explore pivot jobs and results use composite Explore-node/pivot identities,
+  share terminal polling semantics with other jobs, and retain successful
+  matrices across pane unmounts and visibility toggles.
 - The design-token layer, which lives in `index.css`: the CSS
   custom-property colour primitives (surface/text/accent hues and the
   success/warning/danger intensity ladders, chart and syntax colours),

@@ -771,7 +771,7 @@ class ExploreService:
         self._report_cache = report_cache or LRUCache(max_size=EXPLORE_REPORT_CACHE_MAX_ENTRIES)
 
     def start(self, body: ExploreRunRequest) -> ExploreRunResponse:
-        spec = self._prepare_spec(body)
+        spec = self.prepare_spec(body)
         cached = self._report_cache.get(spec.report_cache_key)
         if cached is not None:
             return ExploreRunResponse(
@@ -838,7 +838,8 @@ class ExploreService:
             self._jobs.release(job_id)
         return self.status(job_id)
 
-    def _prepare_spec(self, body: ExploreRunRequest) -> ExploreCacheSpec:
+    def prepare_spec(self, body: ExploreRunRequest) -> ExploreCacheSpec:
+        """Resolve the canonical Explore dataframe/report cache identities."""
         graph = body.graph
         node = find_typed_node(graph, body.node_id, NodeType.EXPLORE, "explore")
         parents = graph.parents_of.get(node.id, [])
@@ -888,6 +889,11 @@ class ExploreService:
             report_cache_key=report_cache_key,
             family_key=("explore", graph.source_file or "", body.node_id, body.source),
         )
+
+    def _prepare_spec(self, body: ExploreRunRequest) -> ExploreCacheSpec:
+        """Compatibility alias for existing callers; new collaborators use ``prepare_spec``."""
+
+        return self.prepare_spec(body)
 
     def _run_job(
         self,

@@ -19,14 +19,15 @@ vi.mock("../../api/client.ts", () => ({
   getOptimiserStatus: vi.fn(),
   getTrainStatus: vi.fn(),
   getExploreStatus: vi.fn(),
+  getExplorePivotStatus: vi.fn(),
 }))
 
-import { getExploreStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
+import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../../api/client.ts"
 import useNodeResultsStore from "../../stores/useNodeResultsStore.ts"
 import useToastStore from "../../stores/useToastStore.ts"
 import useBackgroundJobs from "../../hooks/useBackgroundJobs.ts"
-import type { ExploreProgress, SolveProgress, TrainProgress } from "../../stores/useNodeResultsStore.ts"
-import type { ExploreCacheReport } from "../../api/types.ts"
+import { explorePivotResultKey, type ExplorePivotProgress, type ExploreProgress, type SolveProgress, type TrainProgress } from "../../stores/useNodeResultsStore.ts"
+import type { ExploreCacheReport, ExplorePivotResult } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import { makeTrainResult } from "../../test-utils/factories.ts"
 
@@ -42,6 +43,8 @@ function resetStores() {
     trainJobs: {},
     exploreResults: {},
     exploreJobs: {},
+    pivotResults: {},
+    pivotJobs: {},
   })
 }
 
@@ -95,6 +98,14 @@ function makeExploreProgress(overrides: Partial<ExploreProgress> = {}): ExploreP
     result: null,
     ...overrides,
   }
+}
+
+function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
+  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", dataframe_cache_key: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+}
+
+function makePivotProgress(overrides: Partial<ExplorePivotProgress> = {}): ExplorePivotProgress {
+  return { status: "running", progress: 0.5, message: "Working", result: null, failure: null, terminal_reason: null, execution_metrics: null, ...overrides }
 }
 
 /**
@@ -502,6 +513,40 @@ describe("useBackgroundJobs", () => {
 
       await advance(20_000)
       expect(mockGetStatus).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe("explore pivot job polling", () => {
+    const startPivot = (nodeId: string, pivotId: string, jobId: string) => {
+      const key = explorePivotResultKey(nodeId, pivotId)
+      act(() => {
+        useNodeResultsStore.getState().startExplorePivotJob(key, jobId, nodeId, pivotId, `Node ${nodeId}`, `Pivot ${pivotId}`, "identity", "pricing", 0)
+      })
+      return key
+    }
+
+    it("completes one pivot job without touching another", async () => {
+      const first = startPivot("e1", "p1", "pivot-job-1")
+      const second = startPivot("e1", "p2", "pivot-job-2")
+      vi.mocked(getExplorePivotStatus).mockResolvedValueOnce(makePivotProgress({ status: "completed", progress: 1, result: makePivotResult() }))
+      renderHook(() => useBackgroundJobs())
+      await advance(500)
+      const state = useNodeResultsStore.getState()
+      expect(state.pivotJobs[first]).toBeUndefined()
+      expect(state.pivotResults[first]?.result?.pivot_id).toBe("p1")
+      expect(state.pivotJobs[second]).toBeDefined()
+    })
+
+    it("persists terminal missing-job failure without touching another pivot", async () => {
+      const first = startPivot("e1", "p1", "pivot-missing")
+      const second = startPivot("e1", "p2", "pivot-other")
+      vi.mocked(getExplorePivotStatus).mockRejectedValueOnce({ name: "ApiError", status: 404, detail: "Job 'pivot-missing' not found", message: "HTTP 404" })
+      renderHook(() => useBackgroundJobs())
+      await advance(500)
+      const state = useNodeResultsStore.getState()
+      expect(state.pivotJobs[first]).toBeUndefined()
+      expect(state.pivotResults[first]?.error).toBe("Job 'pivot-missing' not found")
+      expect(state.pivotJobs[second]).toBeDefined()
     })
   })
 

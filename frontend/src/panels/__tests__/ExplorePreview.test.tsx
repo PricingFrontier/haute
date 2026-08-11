@@ -286,6 +286,7 @@ describe("ExplorePreview", () => {
     expect(preview).toHaveAttribute("aria-selected", "true")
     expect(overview).toHaveAttribute("aria-selected", "false")
     expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "false")
     expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "false")
 
     fireEvent.click(overview)
@@ -297,14 +298,50 @@ describe("ExplorePreview", () => {
     expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("overview")
   })
 
-  it("falls back to Preview when an unsupported pane was remembered", () => {
-    useUIStore.setState({ explorePreviewPanes: { explore_1: "relationships" } })
+  it("falls back to Preview when an unsupported runtime pane was remembered", () => {
+    useUIStore.setState({ explorePreviewPanes: { explore_1: "legacy" as never } })
 
     renderExplore(makePreview())
 
     expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute("aria-selected", "true")
     expect(screen.getByTestId("explore-preview-preview-pane")).toBeInTheDocument()
     expect(screen.getByTestId("data-preview-embedded")).toBeInTheDocument()
+  })
+
+  it("lazy-loads the Pivots pane and distinguishes no cards from all hidden", async () => {
+    const { rerender } = renderExplore(makePreview())
+
+    fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
+    expect(await screen.findByTestId("explore-pivots-pane")).toBeInTheDocument()
+    expect(screen.getByText(/Add a pivot from the Pivots settings pane/i)).toBeInTheDocument()
+    expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("pivots")
+
+    const hiddenNode = exploreNodeWithConfig({
+      pivots: [
+        {
+          version: 1,
+          id: "pivot_1",
+          name: "Hidden pivot",
+          enabled: false,
+          filters: [],
+          columns: [],
+          rows: [],
+          values: [],
+          options: { row_grand_totals: true, column_grand_totals: true },
+        },
+      ],
+    })
+    rerender(
+      <ExplorePreview
+        node={hiddenNode}
+        allNodes={[sourceNode, hiddenNode]}
+        edges={edges}
+        submodels={{}}
+        preamble="import polars as pl"
+        previewData={makePreview()}
+      />,
+    )
+    expect(await screen.findByText(/No pivots are currently shown/i)).toBeInTheDocument()
   })
 
   it("renders enabled chart placeholders in config order and remembers the Charts pane", async () => {

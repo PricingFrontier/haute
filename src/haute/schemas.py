@@ -1087,6 +1087,120 @@ class ExploreStatusResponse(BaseModel):
     execution_metrics: ExecutionMetricsPayload | None = None
 
 
+ExplorePivotMemberKind = Literal[
+    "null",
+    "string",
+    "boolean",
+    "integer",
+    "float",
+    "nan",
+    "date",
+    "datetime",
+    "time",
+    "decimal",
+]
+ExplorePivotAggregation = Literal[
+    "sum", "count", "average", "min", "max", "median", "distinct_count"
+]
+
+
+class ExplorePivotFailure(BaseModel):
+    reason_code: str
+    message: str
+    remediation: str
+    dimensions: dict[str, str | int] = Field(default_factory=dict)
+
+
+class ExplorePivotMemberKey(BaseModel):
+    kind: ExplorePivotMemberKind
+    value: str | float | int | bool | None
+
+
+class ExplorePivotMemberOption(BaseModel):
+    key: ExplorePivotMemberKey
+    label: str
+    count: int = Field(ge=0)
+
+
+class ExplorePivotValueIdentity(BaseModel):
+    id: str
+    field: str
+    aggregation: ExplorePivotAggregation
+
+
+class ExplorePivotPath(BaseModel):
+    members: list[ExplorePivotMemberKey] = Field(default_factory=list)
+    is_grand_total: bool = False
+
+
+class ExplorePivotCell(BaseModel):
+    row_index: int = Field(ge=0)
+    column_index: int = Field(ge=0)
+    value_id: str
+    value: str | float | int | bool | None = None
+
+
+class ExplorePivotResult(BaseModel):
+    version: Literal[1] = 1
+    node_id: str
+    pivot_id: str
+    source: str = "live"
+    dataframe_cache_key: str
+    calculation_key: str
+    row_fields: list[str] = Field(default_factory=list)
+    column_fields: list[str] = Field(default_factory=list)
+    values: list[ExplorePivotValueIdentity] = Field(default_factory=list)
+    row_paths: list[ExplorePivotPath] = Field(default_factory=list)
+    column_paths: list[ExplorePivotPath] = Field(default_factory=list)
+    cells: list[ExplorePivotCell] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    generated_at: float = 0.0
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
+class ExplorePivotRunRequest(BaseModel):
+    graph: Graph
+    node_id: str
+    pivot: dict[str, Any]
+    source: str = "live"
+    streaming_chunk_size: StreamingChunkSize = None
+
+
+class ExplorePivotRunResponse(BaseModel):
+    status: Literal["started", "completed", "cache_required"]
+    job_id: str | None = None
+    cached: bool = False
+    message: str = ""
+    result: ExplorePivotResult | None = None
+    failure: ExplorePivotFailure | None = None
+
+
+class ExplorePivotStatusResponse(BaseModel):
+    status: JobStatus
+    progress: float = 0.0
+    message: str = ""
+    result: ExplorePivotResult | None = None
+    failure: ExplorePivotFailure | None = None
+    terminal_reason: str | None = None
+    execution_metrics: ExecutionMetricsPayload | None = None
+
+
+class ExplorePivotMembersRequest(BaseModel):
+    graph: Graph
+    node_id: str
+    field: str
+    source: str = "live"
+    search: str | None = None
+    streaming_chunk_size: StreamingChunkSize = None
+
+
+class ExplorePivotMembersResponse(BaseModel):
+    status: Literal["ok", "cache_required", "error"]
+    field: str | None = None
+    members: list[ExplorePivotMemberOption] = Field(default_factory=list)
+    failure: ExplorePivotFailure | None = None
+
+
 # ---------------------------------------------------------------------------
 # /api/files
 # ---------------------------------------------------------------------------

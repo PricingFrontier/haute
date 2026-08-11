@@ -6,6 +6,9 @@ import {
   parseDissolveSubmodelResponse,
   parseExploreRunResponse,
   parseExploreStatusResponse,
+  parseExplorePivotMembersResponse,
+  parseExplorePivotRunResponse,
+  parseExplorePivotStatusResponse,
   parseFrontierAutoRangeResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
@@ -1101,6 +1104,38 @@ describe("API response guards", () => {
     expect(run.result?.dataframe_cache_key).toContain("explore_dataset")
     expect(run.result?.overview_summary.data_quality.issue_count).toBe(0)
     expect(status.result?.dataframe_cache_key).toBe(run.result?.dataframe_cache_key)
+  })
+
+  it("parses typed pivot matrices, job status, and exact members", () => {
+    const run = parseExplorePivotRunResponse(loadUiContractFixture("explore_pivot_run_response"))
+    const status = parseExplorePivotStatusResponse(loadUiContractFixture("explore_pivot_status_response"))
+    const members = parseExplorePivotMembersResponse(loadUiContractFixture("explore_pivot_members_response"))
+
+    expect(run.cached).toBe(true)
+    expect(run.result?.row_paths[0].members[0]).toEqual({ kind: "string", value: "North" })
+    expect(run.result?.cells[0].value).toBe(12.5)
+    expect(status.result?.calculation_key).toBe(run.result?.calculation_key)
+    expect(members.members[1].key).toEqual({ kind: "null", value: null })
+  })
+
+  it("rejects malformed pivot path/cell/member payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_pivot_run_response")
+    const result = fixture.result as Record<string, unknown>
+    expect(() =>
+      parseExplorePivotRunResponse({
+        ...fixture,
+        result: { ...result, cells: [{ row_index: -1, column_index: 0, value_id: "v", value: 1 }] },
+      }),
+    ).toThrow(/parseExplorePivot/i)
+
+    expect(() =>
+      parseExplorePivotMembersResponse({
+        status: "ok",
+        field: "region",
+        members: [{ key: { kind: "wat", value: null }, label: "bad", count: 1 }],
+        failure: null,
+      }),
+    ).toThrow(/parseExplorePivot/i)
   })
 
   it("rejects malformed explore result payloads", () => {

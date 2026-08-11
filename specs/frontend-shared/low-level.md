@@ -95,6 +95,12 @@
   from) falls back to `source: ""` and `structuralVersion: -1` — sentinels
   that can never equal a real value, so the record reads as stale rather
   than silently matching whatever the caller happens to be viewing.
+- **`CachedPivotResult` / `ActivePivotJob`** (`stores/useNodeResultsStore.ts`): records keyed by
+  `${exploreNodeId}:${pivotId}`. A cached matrix stores its backend calculation identity and
+  dataframe-cache key; an active job stores the same composite ownership plus job id/source.
+  Completion replaces only that pivot's result, failure stays local, and disabling a card does
+  not delete either record. `useBackgroundJobs` polls every active pivot job through the guarded
+  pivot status parser and applies the standard completed/failed terminal split.
 - **`AddSourceResult`** (`stores/useSettingsStore.ts`): `addSource`'s
   return type — `{ok: true, key: string}` on success, or
   `{ok: false, reason: "empty"}` / `{ok: false, reason: "duplicate", key}`

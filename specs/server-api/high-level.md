@@ -29,6 +29,9 @@ In scope:
 - The shared Pydantic contract layer: `haute.schemas` (the cross-route request/response models;
   OUTPUT dry-run keeps two route-local models). JSON-cache and output routes consume the
   v2 input/output schema modules owned by [json-shredding](../json-shredding/high-level.md).
+  Explore's shared models include dedicated pivot run/status/cancel and exact-member contracts.
+  They distinguish a typed `cache_required` response from started/completed work and expose only
+  a closed, versioned typed matrix rather than unvalidated result dictionaries.
 - The typed exception hierarchy (`haute.errors`), structured logging setup
   (`haute._logging`), and the in-process pub/sub event bus (`haute._event_bus`) that
   decouples the file watcher from the WebSocket broadcaster.

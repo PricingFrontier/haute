@@ -18,6 +18,9 @@ import type {
   DissolveSubmodelResponse,
   ExploreRunResponse,
   ExploreStatusResponse,
+  ExplorePivotMembersResponse,
+  ExplorePivotRunResponse,
+  ExplorePivotStatusResponse,
   FileListItem,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
@@ -95,6 +98,9 @@ import {
   parseDissolveSubmodelResponse,
   parseExploreRunResponse,
   parseExploreStatusResponse,
+  parseExplorePivotMembersResponse,
+  parseExplorePivotRunResponse,
+  parseExplorePivotStatusResponse,
   parseFrontierAutoRangeStartResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierStatusResponse,
@@ -932,6 +938,63 @@ export function cancelExplore<T extends ExploreStatusResponse = ExploreStatusRes
 ): Promise<T> {
   return post<unknown>(`/api/explore/cancel/${encodeURIComponent(jobId)}`, {}, options)
     .then((data) => parseExploreStatusResponse(data) as T)
+}
+
+export interface RunExplorePivotArgs {
+  graph: GraphPayload
+  node_id: string
+  pivot: Record<string, unknown>
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function runExplorePivot(args: RunExplorePivotArgs): Promise<ExplorePivotRunResponse> {
+  const { streamingChunkSize, signal, timeout = 300_000, ...payload } = args
+  return post<unknown>("/api/explore/pivots/run", {
+    ...payload,
+    source: payload.source ?? "live",
+    ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+  }, { signal, timeout }).then(parseExplorePivotRunResponse)
+}
+
+export function getExplorePivotStatus(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<ExplorePivotStatusResponse> {
+  return request<unknown>(`/api/explore/pivots/status/${encodeURIComponent(jobId)}`, options)
+    .then(parseExplorePivotStatusResponse)
+}
+
+export function cancelExplorePivot(
+  jobId: string,
+  options?: { signal?: AbortSignal },
+): Promise<ExplorePivotStatusResponse> {
+  return post<unknown>(`/api/explore/pivots/cancel/${encodeURIComponent(jobId)}`, {}, options)
+    .then(parseExplorePivotStatusResponse)
+}
+
+export interface FetchExplorePivotMembersArgs {
+  graph: GraphPayload
+  node_id: string
+  field: string
+  source?: string
+  search?: string | null
+  streamingChunkSize?: number
+  signal?: AbortSignal
+  timeout?: number
+}
+
+export function fetchExplorePivotMembers(
+  args: FetchExplorePivotMembersArgs,
+): Promise<ExplorePivotMembersResponse> {
+  const { streamingChunkSize, signal, timeout, ...payload } = args
+  return post<unknown>("/api/explore/pivots/members", {
+    ...payload,
+    source: payload.source ?? "live",
+    ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+  }, { signal, timeout }).then(parseExplorePivotMembersResponse)
 }
 
 // ---------------------------------------------------------------------------

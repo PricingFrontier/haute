@@ -9,11 +9,12 @@
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
-| `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview/Charts tab composition. |
+| `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview/Pivots/Charts tab composition. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
+| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot v0/v1 parsing and calculation identity; enabled-section lifecycle; virtualised semantic matrix rendering. |
 | `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Strict chart-card config parsing/shared identities and enabled-placeholder visualisation dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
@@ -54,8 +55,8 @@
    cache hits as completed results and background starts as jobs.
 3. Start failures, and cancellation responses without a completed report, call the result-store
    failure path; thrown start/cancel errors also toast. `useBackgroundJobs` in frontend-shared
-   polls background Explore jobs and moves terminal responses into the result store. A visible
-   report is touched to update cache recency. Preview, Overview, and Charts mount only for their
+   polls background Explore and pivot jobs and moves terminal responses into the result store. A visible
+   report is touched to update cache recency. Preview, Overview, Pivots, and Charts mount only for their
    active tab; a remembered value from a still-unsupported pane normalises to Preview.
    `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
    of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
@@ -76,6 +77,24 @@
    quality fields: ID candidate, high cardinality, text length min/mean/max, and temporal span.
    The same text participates in schema search and full filtered TSV/CSV export; an unflagged
    column renders an em dash.
+
+### Pivot results
+
+1. The Pivots pane parses current node config once and renders enabled pivots as full-width
+   sections in persisted order. It keys `pivotResults` and `pivotJobs` by `${nodeId}:${pivotId}`.
+   Update sends the current graph/source/card to the dedicated endpoint. A synchronous cache hit
+   is stored immediately; a started job enters shared polling; cache/cardinality/config errors
+   stay on that section. Cancel addresses only that section's job.
+2. Freshness requires both the result's matching `dataframe_cache_key` and the stored frontend
+   calculation identity matching the current card. Layout changes therefore stale one result,
+   while an upstream/cache change stales all. Disabling changes no result-store entry, so
+   re-enabling an unchanged card immediately reuses its retained result.
+3. `PivotTableGrid` receives an already guarded version-1 matrix and current Value presentation
+   labels. It renders one semantic table, a header row for every configured Column level plus the
+   Value level, sticky Row headers, explicit `Grand total` path labels, and null as an em dash.
+   The scroll container row-window renders viewport rows plus overscan and uses spacer rows to
+   preserve the complete scroll height. Horizontal overflow remains native so keyboard and
+   assistive technology semantics are not replaced by a div grid.
 
 `DataPreview` consumes guarded version-1 execution metrics through
 `ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states stay

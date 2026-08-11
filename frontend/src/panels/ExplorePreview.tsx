@@ -19,6 +19,7 @@ import PreviewPanelTabs from "./PreviewPanelTabs"
 import { PREVIEW_PANEL_ACTION_BUTTON_CLASS } from "./previewPanelLayout"
 
 const ExploreOverviewPane = lazy(() => import("./explore/ExploreOverviewPane"))
+const ExplorePivotsPane = lazy(() => import("./explore/ExplorePivotsPane"))
 const ExploreChartsPane = lazy(() => import("./explore/ExploreChartsPane"))
 
 type ExplorePreviewProps = {
@@ -35,6 +36,7 @@ type ExplorePreviewProps = {
 const EXPLORE_PREVIEW_PANES = [
   { key: "preview", label: "Preview" },
   { key: "overview", label: "Overview" },
+  { key: "pivots", label: "Pivots" },
   { key: "charts", label: "Charts" },
 ] as const satisfies readonly { key: ExplorePreviewPane; label: string }[]
 
@@ -97,7 +99,7 @@ export default function ExplorePreview({
   const progress = status?.status === "completed" ? 1 : (status?.progress ?? (submitting ? 0.03 : 0))
   const progressPercent = Math.min(Math.max(progress * 100, 0), 100)
   const activePane =
-    rememberedPane === "overview" || rememberedPane === "charts"
+    rememberedPane === "overview" || rememberedPane === "pivots" || rememberedPane === "charts"
       ? rememberedPane
       : "preview"
   const activePaneMeta = EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
@@ -282,6 +284,15 @@ export default function ExplorePreview({
             >
               {activePane === "overview" ? (
                 <ExploreOverviewPane node={node} report={report} />
+              ) : activePane === "pivots" ? (
+                <ExplorePivotsPane
+                  node={node}
+                  allNodes={allNodes}
+                  edges={edges}
+                  submodels={submodels}
+                  preamble={preamble}
+                  report={report}
+                />
               ) : (
                 <ExploreChartsPane node={node} />
               )}

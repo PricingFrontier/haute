@@ -354,10 +354,57 @@ class ExploreChartConfig(TypedDict):
     enabled: bool
 
 
-class ExplorePivotConfig(TypedDict):
-    """Persisted state for one Explore pivot card."""
+class ExplorePivotMember(TypedDict):
+    kind: Literal[
+        "null",
+        "string",
+        "boolean",
+        "integer",
+        "float",
+        "nan",
+        "date",
+        "datetime",
+        "time",
+        "decimal",
+    ]
+    value: str | float | int | bool | None
 
+
+class ExplorePivotFilterPlacement(TypedDict):
     id: str
+    field: str
+    members: list[ExplorePivotMember]
+
+
+class ExplorePivotAxisPlacement(TypedDict):
+    id: str
+    field: str
+
+
+class ExplorePivotValuePlacement(TypedDict):
+    id: str
+    field: str
+    aggregation: Literal["sum", "count", "average", "min", "max", "median", "distinct_count"]
+    display_name: str
+
+
+class ExplorePivotOptions(TypedDict):
+    row_grand_totals: bool
+    column_grand_totals: bool
+
+
+class ExplorePivotConfig(TypedDict):
+    """Persisted version-1 state for one Explore pivot card."""
+
+    version: Literal[1]
+    id: str
+    name: str
+    enabled: bool
+    filters: list[ExplorePivotFilterPlacement]
+    columns: list[ExplorePivotAxisPlacement]
+    rows: list[ExplorePivotAxisPlacement]
+    values: list[ExplorePivotValuePlacement]
+    options: ExplorePivotOptions
 
 
 class ExploreConfig(TypedDict, total=False):

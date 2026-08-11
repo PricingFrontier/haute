@@ -35,6 +35,16 @@ import type {
   ExploreOverviewSummary,
   ExploreRunResponse,
   ExploreStatusResponse,
+  ExplorePivotCell,
+  ExplorePivotFailure,
+  ExplorePivotMemberKey,
+  ExplorePivotMemberOption,
+  ExplorePivotMembersResponse,
+  ExplorePivotPath,
+  ExplorePivotResult,
+  ExplorePivotRunResponse,
+  ExplorePivotStatusResponse,
+  ExplorePivotValueIdentity,
   FrontierAutoRangeResponse,
   FrontierAutoRangeStartResponse,
   FrontierAutoRangeStatusResponse,
@@ -1672,6 +1682,398 @@ export function parseExploreStatusResponse(value: unknown): ExploreStatusRespons
     result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
     terminal_reason: optionalNullableString("parseExploreStatusResponse", obj, "terminal_reason"),
     execution_metrics: optionalExecutionMetrics("parseExploreStatusResponse", obj, "execution_metrics"),
+  }
+}
+
+const EXPLORE_PIVOT_RUN_STATUSES = ["started", "completed", "cache_required"] as const
+const EXPLORE_PIVOT_MEMBER_STATUSES = ["ok", "cache_required", "error"] as const
+const EXPLORE_PIVOT_MEMBER_KINDS = [
+  "null",
+  "string",
+  "boolean",
+  "integer",
+  "float",
+  "nan",
+  "date",
+  "datetime",
+  "time",
+  "decimal",
+] as const
+const EXPLORE_PIVOT_AGGREGATIONS = [
+  "sum",
+  "count",
+  "average",
+  "min",
+  "max",
+  "median",
+  "distinct_count",
+] as const
+const PIVOT_INTEGER_PATTERN = /^-?(?:0|[1-9][0-9]*)$/
+const PIVOT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
+const PIVOT_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
+const PIVOT_TIME_PATTERN = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/
+
+function expectFiniteNumber(parser: string, value: unknown, field: string): number {
+  const parsed = expectNumber(parser, value, field)
+  if (!Number.isFinite(parsed)) throw new Error(`${parser}: expected ${field} to be finite`)
+  return parsed
+}
+
+function expectSafeInteger(parser: string, value: unknown, field: string): number {
+  const parsed = expectFiniteNumber(parser, value, field)
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`${parser}: expected ${field} to be a safe integer`)
+  }
+  return parsed
+}
+
+function expectNonNegativeInteger(parser: string, value: unknown, field: string): number {
+  const parsed = expectSafeInteger(parser, value, field)
+  if (parsed < 0) {
+    throw new Error(`${parser}: expected ${field} to be a non-negative integer`)
+  }
+  return parsed
+}
+
+function isValidPivotDate(value: string): boolean {
+  const match = PIVOT_DATE_PATTERN.exec(value)
+  if (match === null) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (year < 1) return false
+  const candidate = new Date(0)
+  candidate.setUTCFullYear(year, month - 1, day)
+  candidate.setUTCHours(0, 0, 0, 0)
+  return (
+    candidate.getUTCFullYear() === year &&
+    candidate.getUTCMonth() === month - 1 &&
+    candidate.getUTCDate() === day
+  )
+}
+
+function isValidPivotTime(value: string): boolean {
+  const match = PIVOT_TIME_PATTERN.exec(value)
+  if (match === null) return false
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  const second = Number(match[3])
+  if (hour > 23 || minute > 59 || second > 59) return false
+  const offset = /([+-])(\d{2}):(\d{2})$/.exec(value)
+  return offset === null || (Number(offset[2]) <= 23 && Number(offset[3]) <= 59)
+}
+
+function isValidPivotDateTime(value: string): boolean {
+  const separator = value.indexOf("T")
+  return (
+    separator > 0 &&
+    isValidPivotDate(value.slice(0, separator)) &&
+    isValidPivotTime(value.slice(separator + 1))
+  )
+}
+
+function expectPivotStringFormat(
+  parser: string,
+  value: unknown,
+  field: string,
+  description: string,
+  predicate: (candidate: string) => boolean,
+): string {
+  const parsed = expectString(parser, value, field)
+  if (!predicate(parsed)) throw new Error(`${parser}: expected ${field} to be ${description}`)
+  return parsed
+}
+
+function parseExplorePivotMemberKey(value: unknown, field: string): ExplorePivotMemberKey {
+  const parser = "parseExplorePivotMemberKey"
+  const obj = expectPlainObject(parser, value, field)
+  const kind = expectStringLiteral(
+    parser,
+    obj.kind,
+    `${field}.kind`,
+    EXPLORE_PIVOT_MEMBER_KINDS,
+  )
+  const memberValue = obj.value
+  switch (kind) {
+    case "null":
+    case "nan":
+      if (memberValue !== null) {
+        throw new Error(`${parser}: expected ${field}.value to be null for ${kind}`)
+      }
+      return { kind, value: null }
+    case "string":
+      return { kind, value: expectString(parser, memberValue, `${field}.value`) }
+    case "integer":
+      return {
+        kind,
+        value: expectPivotStringFormat(
+          parser,
+          memberValue,
+          `${field}.value`,
+          "a canonical integer",
+          (candidate) => PIVOT_INTEGER_PATTERN.test(candidate),
+        ),
+      }
+    case "decimal":
+      return {
+        kind,
+        value: expectPivotStringFormat(
+          parser,
+          memberValue,
+          `${field}.value`,
+          "a canonical finite decimal",
+          (candidate) => PIVOT_DECIMAL_PATTERN.test(candidate),
+        ),
+      }
+    case "date":
+      return {
+        kind,
+        value: expectPivotStringFormat(
+          parser,
+          memberValue,
+          `${field}.value`,
+          "an ISO date",
+          isValidPivotDate,
+        ),
+      }
+    case "datetime":
+      return {
+        kind,
+        value: expectPivotStringFormat(
+          parser,
+          memberValue,
+          `${field}.value`,
+          "an ISO datetime",
+          isValidPivotDateTime,
+        ),
+      }
+    case "time":
+      return {
+        kind,
+        value: expectPivotStringFormat(
+          parser,
+          memberValue,
+          `${field}.value`,
+          "an ISO time",
+          isValidPivotTime,
+        ),
+      }
+    case "boolean":
+      return { kind, value: expectBoolean(parser, memberValue, `${field}.value`) }
+    case "float":
+      return { kind, value: expectFiniteNumber(parser, memberValue, `${field}.value`) }
+  }
+}
+
+function parseExplorePivotFailure(value: unknown, field: string): ExplorePivotFailure {
+  const parser = "parseExplorePivotFailure"
+  const obj = expectPlainObject(parser, value, field)
+  const rawDimensions = expectPlainObject(parser, obj.dimensions, `${field}.dimensions`)
+  const dimensions = Object.fromEntries(
+    Object.entries(rawDimensions).map(([key, dimension]) => {
+      if (typeof dimension === "string") return [key, dimension]
+      return [key, expectSafeInteger(parser, dimension, `${field}.dimensions.${key}`)]
+    }),
+  )
+  return {
+    reason_code: expectString(parser, obj.reason_code, `${field}.reason_code`),
+    message: expectString(parser, obj.message, `${field}.message`),
+    remediation: expectString(parser, obj.remediation, `${field}.remediation`),
+    dimensions,
+  }
+}
+
+function parseNullablePivotFailure(
+  value: unknown,
+  field: string,
+): ExplorePivotFailure | null {
+  return value === null ? null : parseExplorePivotFailure(value, field)
+}
+
+function parseExplorePivotPath(value: unknown, field: string): ExplorePivotPath {
+  const parser = "parseExplorePivotResult"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    members: parseArray(parser, obj.members, `${field}.members`, parseExplorePivotMemberKey),
+    is_grand_total: expectBoolean(parser, obj.is_grand_total, `${field}.is_grand_total`),
+  }
+}
+
+function parseExplorePivotValueIdentity(
+  value: unknown,
+  field: string,
+): ExplorePivotValueIdentity {
+  const parser = "parseExplorePivotResult"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    id: expectString(parser, obj.id, `${field}.id`),
+    field: expectString(parser, obj.field, `${field}.field`),
+    aggregation: expectStringLiteral(
+      parser,
+      obj.aggregation,
+      `${field}.aggregation`,
+      EXPLORE_PIVOT_AGGREGATIONS,
+    ),
+  }
+}
+
+function parseExplorePivotCell(value: unknown, field: string): ExplorePivotCell {
+  const parser = "parseExplorePivotResult"
+  const obj = expectPlainObject(parser, value, field)
+  const rawValue = obj.value
+  if (
+    rawValue !== null &&
+    typeof rawValue !== "string" &&
+    typeof rawValue !== "boolean" &&
+    typeof rawValue !== "number"
+  ) {
+    throw new Error(`${parser}: expected ${field}.value to be a scalar or null`)
+  }
+  return {
+    row_index: expectNonNegativeInteger(parser, obj.row_index, `${field}.row_index`),
+    column_index: expectNonNegativeInteger(parser, obj.column_index, `${field}.column_index`),
+    value_id: expectString(parser, obj.value_id, `${field}.value_id`),
+    value:
+      typeof rawValue === "number"
+        ? expectFiniteNumber(parser, rawValue, `${field}.value`)
+        : rawValue,
+  }
+}
+
+function parseExplorePivotResult(value: unknown, field: string): ExplorePivotResult {
+  const parser = "parseExplorePivotResult"
+  const obj = expectPlainObject(parser, value, field)
+  const rowPaths = parseArray(
+    parser,
+    obj.row_paths,
+    `${field}.row_paths`,
+    parseExplorePivotPath,
+  )
+  const columnPaths = parseArray(
+    parser,
+    obj.column_paths,
+    `${field}.column_paths`,
+    parseExplorePivotPath,
+  )
+  const values = parseArray(
+    parser,
+    obj.values,
+    `${field}.values`,
+    parseExplorePivotValueIdentity,
+  )
+  const cells = parseArray(parser, obj.cells, `${field}.cells`, parseExplorePivotCell)
+  const valueIds = new Set(values.map((identity) => identity.id))
+  for (const cell of cells) {
+    if (cell.row_index >= rowPaths.length || cell.column_index >= columnPaths.length) {
+      throw new Error(`${parser}: pivot cell index is outside the declared matrix`)
+    }
+    if (!valueIds.has(cell.value_id)) {
+      throw new Error(`${parser}: pivot cell references an unknown value id`)
+    }
+  }
+  return {
+    version: expectSchemaVersionOne(parser, obj.version, `${field}.version`),
+    node_id: expectString(parser, obj.node_id, `${field}.node_id`),
+    pivot_id: expectString(parser, obj.pivot_id, `${field}.pivot_id`),
+    source: expectString(parser, obj.source, `${field}.source`),
+    dataframe_cache_key: expectString(
+      parser,
+      obj.dataframe_cache_key,
+      `${field}.dataframe_cache_key`,
+    ),
+    calculation_key: expectString(parser, obj.calculation_key, `${field}.calculation_key`),
+    row_fields: parseArray(parser, obj.row_fields, `${field}.row_fields`, (item, itemField) =>
+      expectString(parser, item, itemField),
+    ),
+    column_fields: parseArray(
+      parser,
+      obj.column_fields,
+      `${field}.column_fields`,
+      (item, itemField) => expectString(parser, item, itemField),
+    ),
+    values,
+    row_paths: rowPaths,
+    column_paths: columnPaths,
+    cells,
+    warnings: parseArray(parser, obj.warnings, `${field}.warnings`, (item, itemField) =>
+      expectString(parser, item, itemField),
+    ),
+    generated_at: expectFiniteNumber(parser, obj.generated_at, `${field}.generated_at`),
+    execution_metrics:
+      obj.execution_metrics === null
+        ? null
+        : parseExecutionMetrics(parser, obj.execution_metrics, `${field}.execution_metrics`),
+  }
+}
+
+export function parseExplorePivotRunResponse(value: unknown): ExplorePivotRunResponse {
+  const parser = "parseExplorePivotRunResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(
+      parser,
+      obj.status,
+      "field `status`",
+      EXPLORE_PIVOT_RUN_STATUSES,
+    ),
+    job_id: expectNullableString(parser, obj.job_id, "field `job_id`"),
+    cached: expectBoolean(parser, obj.cached, "field `cached`"),
+    message: expectString(parser, obj.message, "field `message`"),
+    result:
+      obj.result === null ? null : parseExplorePivotResult(obj.result, "field `result`"),
+    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
+  }
+}
+
+export function parseExplorePivotStatusResponse(value: unknown): ExplorePivotStatusResponse {
+  const parser = "parseExplorePivotStatusResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(parser, obj.status, "field `status`", JOB_STATUS_VALUES),
+    progress: expectFiniteNumber(parser, obj.progress, "field `progress`"),
+    message: expectString(parser, obj.message, "field `message`"),
+    result:
+      obj.result === null ? null : parseExplorePivotResult(obj.result, "field `result`"),
+    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
+    terminal_reason: expectNullableString(parser, obj.terminal_reason, "field `terminal_reason`"),
+    execution_metrics:
+      obj.execution_metrics === null
+        ? null
+        : parseExecutionMetrics(parser, obj.execution_metrics, "field `execution_metrics`"),
+  }
+}
+
+function parseExplorePivotMemberOption(
+  value: unknown,
+  field: string,
+): ExplorePivotMemberOption {
+  const parser = "parseExplorePivotMembersResponse"
+  const obj = expectPlainObject(parser, value, field)
+  return {
+    key: parseExplorePivotMemberKey(obj.key, `${field}.key`),
+    label: expectString(parser, obj.label, `${field}.label`),
+    count: expectNonNegativeInteger(parser, obj.count, `${field}.count`),
+  }
+}
+
+export function parseExplorePivotMembersResponse(value: unknown): ExplorePivotMembersResponse {
+  const parser = "parseExplorePivotMembersResponse"
+  const obj = expectPlainObject(parser, value)
+  return {
+    status: expectStringLiteral(
+      parser,
+      obj.status,
+      "field `status`",
+      EXPLORE_PIVOT_MEMBER_STATUSES,
+    ),
+    field: expectNullableString(parser, obj.field, "field `field`"),
+    members: parseArray(
+      parser,
+      obj.members,
+      "field `members`",
+      parseExplorePivotMemberOption,
+    ),
+    failure: parseNullablePivotFailure(obj.failure, "field `failure`"),
   }
 }
 

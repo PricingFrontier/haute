@@ -1,0 +1,25 @@
+{
+  "status": "completed",
+  "progress": 1,
+  "message": "Pivot calculation complete",
+  "result": {
+    "version": 1,
+    "node_id": "explore_1",
+    "pivot_id": "pivot_1",
+    "source": "pricing",
+    "dataframe_cache_key": "explore_dataset:abc123",
+    "calculation_key": "pivot-calc:def456",
+    "row_fields": ["region"],
+    "column_fields": ["year"],
+    "values": [{"id": "value_1", "field": "claims", "aggregation": "sum"}],
+    "row_paths": [{"members": [{"kind": "string", "value": "North"}], "is_grand_total": false}],
+    "column_paths": [{"members": [{"kind": "integer", "value": "2025"}], "is_grand_total": false}],
+    "cells": [{"row_index": 0, "column_index": 0, "value_id": "value_1", "value": 12.5}],
+    "warnings": [],
+    "generated_at": 1710000000,
+    "execution_metrics": null
+  },
+  "failure": null,
+  "terminal_reason": "completed",
+  "execution_metrics": null
+}

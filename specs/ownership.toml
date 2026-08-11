@@ -26,7 +26,7 @@ reason = "The application shell hosts the canvas and wires in the assistant pane
 [[shared_file]]
 path = "frontend/src/api/types.ts"
 primary = "frontend-shared"
-consumers = ["frontend-modelling-optimiser-ui", "optimiser"]
+consumers = ["frontend-modelling-optimiser-ui", "frontend-preview-explore", "optimiser"]
 reason = "Shared UI owns the canonical API contracts extended by modelling and optimiser responses."
 
 [[shared_file]]
@@ -92,7 +92,7 @@ reason = "Git readiness state carries the storage binding and sync fields the st
 [[shared_file]]
 path = "frontend/src/stores/useNodeResultsStore.ts"
 primary = "frontend-shared"
-consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
+consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors", "frontend-preview-explore"]
 reason = "Shared UI owns result/job state; modelling consumes training history/ETA and node chrome consumes active-job state."
 
 [[shared_file]]
@@ -104,7 +104,7 @@ reason = "Global UI state is consumed by the assistant and by modelling pane sel
 [[shared_file]]
 path = "frontend/src/types/guards.ts"
 primary = "frontend-shared"
-consumers = ["hosted-project-storage"]
+consumers = ["frontend-preview-explore", "hosted-project-storage"]
 reason = "Shared response guards parse the storage and sync fields added to git readiness."
 
 [[shared_file]]

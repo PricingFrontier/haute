@@ -18,7 +18,7 @@ Modelling and optimiser result presentation belongs to
 - Data previews render loading, error and successful data, support column search, selected-frame
   switching, trace-cell clicks, and virtualise large row/column grids.
 - Explore computes a source- and lineage-sensitive cache identity, starts/cancels an Explore run,
-  exposes Preview, Overview, and Charts tabs, and uses a completed report only when its stored
+  exposes Preview, Overview, Pivots, and Charts tabs in that order, and uses a completed report only when its stored
   canonical identity matches the current graph identity. An active job remains visible and
   cancellable if the graph or active source changes while it runs.
 - Overview cards have a fixed order and are individually enabled from config. They display
@@ -36,6 +36,17 @@ Modelling and optimiser result presentation belongs to
   Explore node config. Disabled cards are absent. A node with no cards and a node whose cards are
   all disabled have distinct accessible empty states; chart settings and data-driven chart
   drawing are deferred.
+- Pivots is lazy-loaded. Enabled cards render in persisted order as independent full-width
+  sections; disabled cards are hidden without deleting retained results. Distinct empty,
+  all-disabled, malformed, unconfigured, cache-required, loading, stale, error, and fresh states
+  tell the analyst what to do next.
+- Each configured pivot has its own Update/Cancel lifecycle keyed by Explore node plus pivot id.
+  A calculation-config edit makes only that pivot stale; a changed/absent Explore dataframe-cache
+  identity makes every dependent result stale/cache-required. A re-enabled unchanged pivot can
+  immediately reuse its retained matching result.
+- A fresh result renders in a horizontally scrollable, row-virtualised semantic table with
+  multi-level column headers, sticky row headers, explicit grand-total labels, and typed cell
+  display. One pivot's error never suppresses a successful sibling.
 - The Explore run indicator exposes determinate `progressbar` semantics while a run is active,
   including a stable accessible name and a clamped percentage value from 0 through 100.
 - Utility manages reusable utility Python modules, including parsed syntax failure locations.
@@ -73,6 +84,6 @@ Preview errors are normal rendered states. Explore start failures and cancellati
 do not include a completed report are recorded as terminal errors and surfaced to the user; a
 cached report with a stale identity is not rendered, but an active node job is never hidden by an
 identity change. Invalid optional overview configuration is discarded while parsing. Invalid
-chart-card configuration is surfaced in the Charts pane rather than silently replaced, while
+chart- or pivot-card configuration is surfaced in its pane rather than silently replaced, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
 fabricated.

@@ -235,14 +235,26 @@ Malformed containers, card shapes, duplicate ids, or wrong-typed known fields re
 diagnostic and expose no mutating controls; valid unknown card fields are retained by toggle
 writes so later chart settings can round-trip through an older UI.
 
-**Explore pivot-card workflow.** The Explore node's `pivots` config is an ordered array of
-objects with a unique non-empty `id`. `ExplorePivotsConfig` renders one neutral card per entry;
-`Add Pivot` chooses the first unused `pivot_N` id and appends `{id}`. Each card's `Configure`
-button opens an editor-local deferred-settings subview by pivot id, and `Back to pivots` restores
-the list without persisting navigation state or mutating the pivot. There is no primary toggle or
-`enabled` field until a pivot visualisation/activation contract exists. Malformed containers,
-card shapes, duplicate ids, or non-literal future fields render an explicit diagnostic and expose
-no mutating controls; valid unknown fields survive round trips for future pivot settings.
+**Explore pivot-card workflow.** `parseExplorePivots` is the frontend trust boundary matching
+`validate_explore_pivots`: it migrates versionless `{id}` entries to complete v1 cards, validates
+known nested fields, preserves unknown simple-literal fields, and rejects duplicate ids,
+case-insensitive names, or placement ids. `Add Pivot` writes the first unused `pivot_N`, first
+unused `Pivot N` name, `enabled: true`, four empty zones, and both grand totals enabled. A card's
+label is its configured name. Its labelled checkbox updates only `enabled`; `Configure` and
+`Back to pivots` only change editor-local navigation.
+
+The Configure subview receives `upstreamColumns: {name, dtype}[]` from `NodePanel`. It has a
+committed name input (blur/Enter), a case-insensitive field search, and four ordered zones.
+Each palette field has explicit Add-to-Filter/Columns/Rows/Values actions. Placement controls
+move between compatible zones, move up/down, and remove; all are native buttons with descriptive
+accessible names. A field may occur in different zones. Filter/Columns/Rows additions that would
+duplicate that field in the target zone are disabled/rejected, while every Value addition gets a
+new first-unused placement id and repeated Values are allowed. Numeric dtypes default to `sum`;
+all other dtypes default to `count`. Value aggregation changes are committed selects and expose
+only compatible operations. Missing upstream fields remain in place with `aria-invalid` and an
+explicit unavailable-field message. An `Update preview` callback is separate from `onUpdate` and
+does not create graph history; it selects the lower Pivots pane, whose per-card `Update` button
+owns the explicit calculation request.
 
 **Explore pane ordering.** `NodePanel` declares exactly five Explore panes in this order:
 `code`, `overview`, `pivots`, `charts`, `export`; `relationships` is not a valid `ExplorePane`.
@@ -258,9 +270,9 @@ tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
 - Explore chart ids are stable persistence identities, while the visible `Chart N` label follows
   array order. Adding or toggling a chart is display-only and must not invalidate the Explore
   dataframe/report cache or increment the graph's execution-structural version.
-- Explore pivot ids are stable persistence identities, while the visible `Pivot N` label follows
-  array order. Adding a pivot is display-only and must not invalidate the Explore dataframe/report
-  cache or increment the graph's execution-structural version.
+- Explore pivot ids are stable persistence identities and names are persisted display identities.
+  Adding, naming, toggling, or configuring a pivot is display-only and must not invalidate the
+  Explore dataframe/report cache or increment the graph's execution-structural version.
 - Schema/output rows that are persisted but incomplete stay editable. Fresh inferred rows can be
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table

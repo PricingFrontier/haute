@@ -4,15 +4,16 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin `run`/`status`/`cancel` endpoints. Wires `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before delegating to a module-level `ExploreService` singleton. |
+| `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin Explore materialisation and `/pivots` run/status/cancel/member endpoints. Graph-bearing requests share `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before service delegation. |
 | `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/routes/_pivot_service.py` | Pivot service: requires the derived Explore dataframe-cache entry, validates fields/aggregations, applies typed exact-member filters, enforces cardinality before aggregation, runs latest-wins admitted jobs, and caches typed matrices by calculation identity. |
 | `src/haute/_cache.py` | Dataframe execution-cache invariant owned by [caching](../caching/low-level.md) and used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
 | `src/haute/_explore_charts.py` | Standalone validator for the ordered Explore `charts` config list. It requires unique card ids and Boolean enabled state while preserving simple-literal future fields through codegen/parser round trips. |
-| `src/haute/_explore_pivots.py` | Standalone validator for the ordered Explore `pivots` config list. It requires unique card ids while preserving simple-literal future fields through codegen/parser round trips. |
-| `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
+| `src/haute/_explore_pivots.py` | Standalone v0-to-v1 migration and strict validator for ordered Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. |
+| `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): existing cache-report contracts plus pivot run/status/member requests, typed failures, member/path/value/cell structures, and result matrices. |
 
 ## Key types and data structures
 
@@ -48,9 +49,19 @@
   `str`).
 - **`ExploreChartConfig`** (`_types.py`) — one persisted chart-card identity with required
   `id: str` and `enabled: bool`; the enclosing `ExploreConfig.charts` list is ordered.
-- **`ExplorePivotConfig`** (`_types.py`) — one persisted pivot-card identity with required
-  `id: str`; the enclosing `ExploreConfig.pivots` list is ordered.
-- **`EXPLORE_CACHE_VERSION = 4`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
+- **`ExplorePivotConfig`** (`_types.py`) — version-1 persisted card with `id`, `name`,
+  `enabled`, ordered Filter/Columns/Rows/Values placements, and grand-total options. Each
+  placement owns a stable id. Filter members are typed scalars and Value placements add one of
+  the seven supported aggregations plus a presentation-only display name.
+- **`PivotCalculationSpec`** (`_pivot_service.py`, frozen dataclass) — resolved Explore cache
+  request/key, validated v1 pivot, calculation hash, result-cache key, and latest-wins family key
+  `("explore_pivot", source_file, node_id, source, pivot_id)`.
+- **`ExplorePivotResult`** (`schemas.py`) — result schema version, Explore/pivot/source/cache and
+  calculation identities, ordered row/column field names, stable value identities, typed row and
+  column paths with total markers, typed cells, warnings, generation time, and execution metrics.
+  Result values never carry card/value display names; the UI joins those from current persisted
+  presentation config so rename-only reuse cannot surface stale labels.
+- **`EXPLORE_CACHE_VERSION = 5`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
   constants in `_explore_service.py`. The version is folded into `report_cache_key` so an
   incompatible report schema never collides with old cached payloads; the LRU is capped at 16
   entries (`LRUCache`, from `caching`). Bumped from 3 to 4 when categorical truncation began
@@ -58,6 +69,32 @@
   `distinct_count` was changed to count valid values only — both change what a cached report
   computes for an *unchanged* underlying dataframe, so a v2 report would otherwise be served with
   stale distinct counts and no NaN data under an identical dataframe cache key.
+
+## Pivot calculation invariants
+
+- `EXPLORE_PIVOT_RESULT_VERSION = 1`; limits are `MAX_ROW_GROUPS = 500`,
+  `MAX_COLUMN_GROUPS = 100`, `MAX_DISPLAY_CELLS = 50_000`, and
+  `MAX_FILTER_MEMBERS = 500`. Cardinalities are collected first under the admitted context. The
+  displayed-cell check includes each requested total path and uses `max(len(values), 1)` so even
+  an unconfigured layout has a bounded shape.
+- `ExploreService.prepare_spec()` is the sole derivation of the Explore dataframe cache identity.
+  `PivotService` consumes its request/key and calls `request.cache.get/scan`; it does not invoke
+  graph execution. Cache eviction between admission and scan becomes a typed local
+  `cache_required` failure, never fresh execution.
+- Calculation canonicalisation includes only ordered filter field/member keys, ordered row and
+  column fields, Value placement ids/fields/aggregations, total options, dataframe key, and result
+  schema version. It excludes card name/enabled, Value display names, and all unknown
+  presentation fields. The in-process result LRU stores at most 32 matrices.
+- Aggregation aliases are derived from stable Value placement ids rather than field names.
+  Numeric operations first map floating NaN to null. `sum`/`average`/`min`/`max`/`median` return
+  null when a group contains no valid numeric values; `count` and `distinct_count` return integer
+  zero. Row and column grand totals are explicit paths assembled from the same filtered frame.
+- A typed member key uses closed kinds `null|string|boolean|integer|float|nan|date|datetime|time|decimal`.
+  Integer and decimal payloads are canonical decimal strings, temporal payloads are ISO strings,
+  finite floats are JSON numbers, and null/NaN carry `value: null`. The members endpoint returns
+  a display label and count beside the key, sorted by count descending then typed canonical key.
+- Every job record carries `kind: "pivot"`; pivot status/cancel reject a non-pivot job id even
+  though Explore materialisation and pivot calculation share the Explore job-store namespace.
 
 ## Control flow
 

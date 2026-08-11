@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { X, Link2, AlertTriangle, RefreshCw, Lock } from "lucide-react"
+import { fetchExplorePivotMembers } from "../api/client"
 import { NODE_TYPES, NODE_TYPE_META } from "../utils/nodeTypes"
 import type { NodeTypeValue } from "../utils/nodeTypes"
 import { sanitizeName } from "../utils/sanitizeName"
@@ -39,9 +40,11 @@ import {
 } from "../types/node"
 import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useSettingsStore from "../stores/useSettingsStore"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
+import { buildGraph } from "../utils/buildGraph"
 import { CommittedTextField } from "../components/form"
 
 type NodePanelProps = {
@@ -689,15 +692,18 @@ export default function NodePanel({
   selectedPreviewLoading = false,
   readOnly = false,
 }: NodePanelProps) {
-  const { allNodes, edges, submodels } = useGraph()
+  const { allNodes, edges, submodels, preamble } = useGraph()
   const config = useMemo(() => (node?.data.config || {}) as Record<string, unknown>, [node?.data.config])
   const [activeTab, setActiveTab] = useState<NodePanelTab>("config")
   const [labelUpdateError, setLabelUpdateError] = useState<string | null>(null)
   const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
   const setExplorePane = useUIStore((s) => s.setExplorePane)
+  const setExplorePreviewPane = useUIStore((s) => s.setExplorePreviewPane)
   const rememberedModellingPane = useUIStore((s) => node?.id ? s.modellingPanes[node.id] : undefined)
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => node?.id ? Boolean(s.trainJobs[node.id]) : false)
+  const activeSource = useSettingsStore((s) => s.activeSource)
+  const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
 
   // Keep config and node in refs so handleConfigUpdate never captures stale values
   const configRef = useRef(config)
@@ -706,6 +712,23 @@ export default function NodePanel({
   useEffect(() => { nodeRef.current = node }, [node])
   useEffect(() => { setLabelUpdateError(null) }, [node?.id, node?.data.label])
   useEffect(() => { setActiveTab("config") }, [node?.id])
+
+  const loadPivotFilterMembers = useCallback(
+    (field: string, search: string, signal: AbortSignal) => {
+      const currentNode = nodeRef.current
+      if (!currentNode) throw new Error("Explore node is unavailable.")
+      return fetchExplorePivotMembers({
+        graph: buildGraph(allNodes, edges, submodels, preamble),
+        node_id: currentNode.id,
+        field,
+        source: activeSource,
+        search: search || undefined,
+        streamingChunkSize,
+        signal,
+      })
+    },
+    [activeSource, allNodes, edges, preamble, streamingChunkSize, submodels],
+  )
 
   // Bundle 3b — dismissal state for the stale-columns banner.
   // Stored as the warning-signature the user dismissed, so the banner
@@ -882,7 +905,13 @@ export default function NodePanel({
               <ExploreOverviewConfig config={config} onUpdate={handleConfigUpdate} />
             )}
             {activeExplorePane === "pivots" && (
-              <ExplorePivotsConfig config={config} onUpdate={handleConfigUpdate} />
+              <ExplorePivotsConfig
+                config={config}
+                onUpdate={handleConfigUpdate}
+                upstreamColumns={upstreamColumns}
+                onUpdatePreview={() => setExplorePreviewPane(node.id, "pivots")}
+                loadFilterMembers={loadPivotFilterMembers}
+              />
             )}
             {activeExplorePane === "charts" && (
               <ExploreChartsConfig config={config} onUpdate={handleConfigUpdate} />

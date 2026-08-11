@@ -51,11 +51,19 @@ backend API modules own validation and persistence.
   Configuration controls are intentionally deferred: the subview currently identifies the card,
   explains that settings are not yet available, and provides `Back to charts` without mutating
   the card. Multiple cards remain independently toggleable and retain insertion order.
-- The Explore Pivots pane owns an ordered set of persisted pivot cards. `Add Pivot` appends a
-  neutral card and each card exposes a separate `Configure` action. Configuration controls are
-  intentionally deferred: the subview identifies the selected pivot and provides `Back to
-  pivots` without mutating it. Pivot cards do not invent chart-style visibility state while no
-  pivot visualisation consumer exists.
+- The Explore Pivots pane owns ordered version-1 cards. `Add Pivot` appends a fully populated,
+  uniquely named, enabled card with the first-unused `pivot_N` identity. Each card exposes an
+  accessible visibility checkbox and a separate `Configure` button; configuring never toggles
+  visibility, and Back returns to the card list without persisting navigation state.
+- Pivot Configure provides a committed unique name, searchable dtype-labelled upstream-field
+  palette, and ordered Filters, Columns, Rows, and Values zones. Pointer and keyboard buttons add,
+  move, reorder, and remove placements. One field may appear across zones; Filters/Columns/Rows
+  reject same-zone duplicates; Values permit repeated fields with stable ids. Numeric Values
+  default to Sum and other dtypes to Count, with Sum/Count/Average/Min/Max/Median/Distinct count
+  available subject to dtype compatibility. Missing source fields remain visible as invalid chips.
+- Configuration edits commit immediately as ordinary graph changes. `Update preview` is a
+  separate action that opens the lower Pivots result pane, where the explicit `Update` control
+  starts calculation; neither action mutates persisted graph configuration.
 - The Explore node pane strip is ordered Polars Code, Overview, Pivots, Charts, Export.
   Relationships is not exposed as an Explore pane. Pivots hosts its card workflow in that
   position, and its selection is remembered independently per Explore node like the other panes.

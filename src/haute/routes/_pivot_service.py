@@ -1,0 +1,1064 @@
+"""Bounded pivot calculations over an existing Explore dataframe cache."""
+
+from __future__ import annotations
+
+import math
+import threading
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime
+from datetime import time as datetime_time
+from decimal import Decimal
+from functools import reduce
+from operator import or_
+from typing import Any, cast
+
+import polars as pl
+from fastapi import HTTPException
+
+from haute._cache import canonical_json
+from haute._column_summary import is_unhashable_dtype
+from haute._execution_admission import ExecutionAdmissionError, create_admitted_execution_context
+from haute._execution_context import (
+    ExecutionCancelledError,
+    ExecutionContext,
+    ExecutionMemoryLimitExceededError,
+    ExecutionProfile,
+)
+from haute._explore_pivots import validate_explore_pivots
+from haute._hashing import content_hash_bytes
+from haute._lru_cache import LRUCache
+from haute._polars_utils import cancellable_streaming_collect
+from haute._types import ExplorePivotConfig, ExplorePivotMember, ExplorePivotValuePlacement
+from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
+from haute.routes._explore_service import ExploreCacheSpec, ExploreService
+from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
+from haute.routes._job_store import JobStore
+from haute.schemas import (
+    ExecutionMetricsPayload,
+    ExplorePivotCell,
+    ExplorePivotFailure,
+    ExplorePivotMemberKey,
+    ExplorePivotMemberKind,
+    ExplorePivotMemberOption,
+    ExplorePivotMembersRequest,
+    ExplorePivotMembersResponse,
+    ExplorePivotPath,
+    ExplorePivotResult,
+    ExplorePivotRunRequest,
+    ExplorePivotRunResponse,
+    ExplorePivotStatusResponse,
+    ExplorePivotValueIdentity,
+    ExploreRunRequest,
+)
+
+EXPLORE_PIVOT_RESULT_VERSION = 1
+MAX_ROW_GROUPS = 500
+MAX_COLUMN_GROUPS = 100
+MAX_DISPLAY_CELLS = 50_000
+MAX_FILTER_MEMBERS = 500
+
+_COUNT_AGGREGATIONS = frozenset({"count", "distinct_count"})
+_FLOAT_BASE_TYPES = (pl.Float32, pl.Float64)
+_TEXT_BASE_TYPES = (pl.String, pl.Categorical, pl.Enum)
+_MEMBER_KIND_ORDER = {
+    "boolean": 0,
+    "integer": 1,
+    "float": 2,
+    "decimal": 3,
+    "string": 4,
+    "date": 5,
+    "datetime": 6,
+    "time": 7,
+    "null": 8,
+    "nan": 9,
+}
+_NON_FINITE_WARNING = "Non-finite aggregate results were rendered as blank."
+
+
+class PivotContractError(Exception):
+    """A typed, user-remediable pivot calculation failure."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        remediation: str,
+        **dimensions: str | int,
+    ) -> None:
+        super().__init__(message)
+        self.failure = ExplorePivotFailure(
+            reason_code=code,
+            message=message,
+            remediation=remediation,
+            dimensions=dimensions,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PivotCalculationSpec:
+    """Resolved identities for one pivot run."""
+
+    explore: ExploreCacheSpec
+    pivot: ExplorePivotConfig
+    calculation_key: str
+    result_cache_key: str
+    family_key: tuple[str, str, str, str, str]
+
+
+TypedMemberTuple = tuple[ExplorePivotMemberKind, str | float | int | bool | None]
+TypedPathTuple = tuple[TypedMemberTuple, ...]
+
+
+def _member_key(value: Any) -> ExplorePivotMemberKey:
+    """Encode one Polars scalar without collapsing typed missing values."""
+
+    if value is None:
+        return ExplorePivotMemberKey(kind="null", value=None)
+    if isinstance(value, float):
+        if math.isnan(value):
+            return ExplorePivotMemberKey(kind="nan", value=None)
+        if not math.isfinite(value):
+            raise PivotContractError(
+                "invalid_pivot_member",
+                "Pivot dimensions contain a non-finite value.",
+                "Clean infinite dimension values before building the pivot.",
+            )
+        return ExplorePivotMemberKey(kind="float", value=value)
+    if isinstance(value, bool):
+        return ExplorePivotMemberKey(kind="boolean", value=value)
+    if isinstance(value, int):
+        return ExplorePivotMemberKey(kind="integer", value=str(value))
+    if isinstance(value, Decimal):
+        return ExplorePivotMemberKey(kind="decimal", value=str(value))
+    if isinstance(value, datetime):
+        return ExplorePivotMemberKey(kind="datetime", value=value.isoformat())
+    if isinstance(value, date):
+        return ExplorePivotMemberKey(kind="date", value=value.isoformat())
+    if isinstance(value, datetime_time):
+        return ExplorePivotMemberKey(kind="time", value=value.isoformat())
+    if isinstance(value, str):
+        return ExplorePivotMemberKey(kind="string", value=value)
+    raise PivotContractError(
+        "invalid_pivot_field",
+        "Pivot dimensions must contain supported scalar values.",
+        "Choose a boolean, numeric, text, date, datetime, or time field.",
+        actual_type=type(value).__name__,
+    )
+
+
+def _member_tuple(value: Any) -> TypedMemberTuple:
+    key = _member_key(value)
+    return key.kind, key.value
+
+
+def _path_tuple(row: Mapping[str, Any], fields: Sequence[str]) -> TypedPathTuple:
+    return tuple(_member_tuple(row[field]) for field in fields)
+
+
+def _path_model(path: TypedPathTuple) -> ExplorePivotPath:
+    return ExplorePivotPath(
+        members=[ExplorePivotMemberKey(kind=kind, value=value) for kind, value in path]
+    )
+
+
+def _member_label(key: ExplorePivotMemberKey) -> str:
+    if key.kind == "null":
+        return "(blank)"
+    if key.kind == "nan":
+        return "(NaN)"
+    if key.kind == "boolean":
+        return str(key.value).lower()
+    return str(key.value)
+
+
+def _member_sort_key(member: TypedMemberTuple) -> tuple[int, Any]:
+    kind, value = member
+    if kind == "boolean":
+        comparable: Any = int(cast(bool, value))
+    elif kind in {"integer", "decimal"}:
+        comparable = Decimal(cast(str, value))
+    elif kind == "float":
+        comparable = cast(float, value)
+    else:
+        comparable = "" if value is None else str(value)
+    return _MEMBER_KIND_ORDER[kind], comparable
+
+
+def _path_sort_key(path: TypedPathTuple) -> tuple[tuple[int, Any], ...]:
+    return tuple(_member_sort_key(member) for member in path)
+
+
+def _combined_path(
+    row_fields: Sequence[str],
+    row_path: TypedPathTuple,
+    column_fields: Sequence[str],
+    column_path: TypedPathTuple,
+) -> TypedPathTuple | None:
+    """Return the union path, or ``None`` for an impossible shared-field cell."""
+
+    members_by_field = dict(zip(row_fields, row_path))
+    for field, member in zip(column_fields, column_path):
+        existing = members_by_field.get(field)
+        if existing is not None and existing != member:
+            return None
+        members_by_field[field] = member
+    return tuple(members_by_field[field] for field in dict.fromkeys([*row_fields, *column_fields]))
+
+
+def _is_supported_dimension_dtype(dtype: pl.DataType) -> bool:
+    base = dtype.base_type()
+    return (
+        base in (*_TEXT_BASE_TYPES, pl.Boolean, pl.Decimal, pl.Date, pl.Datetime, pl.Time, pl.Null)
+        or dtype.is_integer()
+        or base in _FLOAT_BASE_TYPES
+    )
+
+
+def _member_kind_matches_dtype(kind: str, dtype: pl.DataType) -> bool:
+    if kind == "null":
+        return True
+    base = dtype.base_type()
+    if kind == "string":
+        return base in _TEXT_BASE_TYPES
+    if kind == "boolean":
+        return base == pl.Boolean
+    if kind == "integer":
+        return dtype.is_integer()
+    if kind in {"float", "nan"}:
+        return base in _FLOAT_BASE_TYPES
+    if kind == "decimal":
+        return base == pl.Decimal
+    if kind == "date":
+        return base == pl.Date
+    if kind == "datetime":
+        return base == pl.Datetime
+    if kind == "time":
+        return base == pl.Time
+    return False
+
+
+def _member_literal(member: ExplorePivotMember) -> Any:
+    kind = member["kind"]
+    value = member["value"]
+    if kind == "integer":
+        return int(cast(str, value))
+    if kind == "float":
+        return float(cast(float | int, value))
+    if kind == "decimal":
+        return Decimal(cast(str, value))
+    if kind == "date":
+        return date.fromisoformat(cast(str, value))
+    if kind == "datetime":
+        return datetime.fromisoformat(cast(str, value))
+    if kind == "time":
+        return datetime_time.fromisoformat(cast(str, value))
+    return value
+
+
+def _filter_member_expression(
+    field: str,
+    dtype: pl.DataType,
+    member: ExplorePivotMember,
+) -> pl.Expr:
+    kind = member["kind"]
+    if not _member_kind_matches_dtype(kind, dtype):
+        raise PivotContractError(
+            "invalid_pivot_filter_member",
+            f"Filter member kind '{kind}' does not match field '{field}'.",
+            "Refresh the filter members and choose a value for this field.",
+            field=field,
+            member_kind=kind,
+        )
+    column = pl.col(field)
+    if kind == "null":
+        return column.is_null()
+    if kind == "nan":
+        return column.is_nan()
+    return column.eq(pl.lit(_member_literal(member)))
+
+
+def _unique_filter_members(members: Sequence[ExplorePivotMember]) -> list[ExplorePivotMember]:
+    by_key = {
+        canonical_json({"kind": member["kind"], "value": member["value"]}): member
+        for member in members
+    }
+    return [by_key[key] for key in sorted(by_key)]
+
+
+def _value_alias(value_id: str) -> str:
+    digest = content_hash_bytes(value_id.encode())[:20]
+    return f"__haute_pivot_value_{digest}"
+
+
+def _valid_value_expression(field: str, dtype: pl.DataType) -> pl.Expr:
+    expression = pl.col(field)
+    if dtype.base_type() in _FLOAT_BASE_TYPES:
+        expression = expression.fill_nan(None)
+    return expression
+
+
+def _aggregation_expression(
+    value: ExplorePivotValuePlacement,
+    dtype: pl.DataType,
+) -> pl.Expr:
+    valid = _valid_value_expression(value["field"], dtype)
+    aggregation = value["aggregation"]
+    alias = _value_alias(value["id"])
+    if aggregation == "count":
+        return valid.count().alias(alias)
+    if aggregation == "distinct_count":
+        return valid.drop_nulls().n_unique().alias(alias)
+    if aggregation == "sum":
+        return pl.when(valid.count() > 0).then(valid.sum()).otherwise(None).alias(alias)
+    if aggregation == "average":
+        return valid.mean().alias(alias)
+    if aggregation == "min":
+        return valid.min().alias(alias)
+    if aggregation == "max":
+        return valid.max().alias(alias)
+    if aggregation == "median":
+        return valid.median().alias(alias)
+    raise AssertionError(f"Unsupported validated pivot aggregation: {aggregation}")
+
+
+def _normalise_cell(value: Any, warnings: set[str]) -> str | float | int | bool | None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            warnings.add(_NON_FINITE_WARNING)
+            return None
+        return value
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (datetime, date, datetime_time)):
+        return value.isoformat()
+    raise PivotContractError(
+        "invalid_pivot_result",
+        "A pivot aggregation produced an unsupported value.",
+        "Choose a scalar value field and supported aggregation.",
+        actual_type=type(value).__name__,
+    )
+
+
+class PivotService:
+    """Calculate pivots from cached Explore data without executing the graph."""
+
+    def __init__(self, store: JobStore, explore_service: ExploreService) -> None:
+        self._store = store
+        self._explore_service = explore_service
+        self._lifecycle = JobLifecycle(store)
+        self._jobs = CancellableJobRegistry()
+        self._result_cache: LRUCache[str, ExplorePivotResult] = LRUCache(max_size=32)
+        self._completion_lock = threading.RLock()
+        self._completion_events: dict[str, threading.Event] = {}
+
+    def _explore_spec(
+        self,
+        body: ExplorePivotRunRequest | ExplorePivotMembersRequest,
+    ) -> ExploreCacheSpec:
+        values: dict[str, Any] = {
+            "graph": body.graph,
+            "node_id": body.node_id,
+            "source": body.source,
+        }
+        if body.streaming_chunk_size is not None:
+            values["streaming_chunk_size"] = body.streaming_chunk_size
+        return self._explore_service.prepare_spec(ExploreRunRequest(**values))
+
+    @staticmethod
+    def _cache_required_failure() -> ExplorePivotFailure:
+        return ExplorePivotFailure(
+            reason_code="cache_required",
+            message="The full Explore dataset is not materialised.",
+            remediation="Process and cache full data, then update the pivot.",
+        )
+
+    @classmethod
+    def _cache_required_response(cls) -> ExplorePivotRunResponse:
+        return ExplorePivotRunResponse(
+            status="cache_required",
+            message="Cache the Explore dataset before updating this pivot.",
+            failure=cls._cache_required_failure(),
+        )
+
+    @staticmethod
+    def _calculation_key(pivot: ExplorePivotConfig) -> str:
+        payload = {
+            "filters": [
+                {
+                    "field": placement["field"],
+                    "members": [
+                        {"kind": member["kind"], "value": member["value"]}
+                        for member in _unique_filter_members(placement["members"])
+                    ],
+                }
+                for placement in pivot["filters"]
+            ],
+            "columns": [placement["field"] for placement in pivot["columns"]],
+            "rows": [placement["field"] for placement in pivot["rows"]],
+            "values": [
+                {
+                    "id": placement["id"],
+                    "field": placement["field"],
+                    "aggregation": placement["aggregation"],
+                }
+                for placement in pivot["values"]
+            ],
+            "options": {
+                "row_grand_totals": pivot["options"]["row_grand_totals"],
+                "column_grand_totals": pivot["options"]["column_grand_totals"],
+            },
+            "version": EXPLORE_PIVOT_RESULT_VERSION,
+        }
+        return content_hash_bytes(canonical_json(payload).encode())
+
+    def _calculation_spec(
+        self,
+        body: ExplorePivotRunRequest,
+        explore: ExploreCacheSpec,
+        pivot: ExplorePivotConfig,
+    ) -> PivotCalculationSpec:
+        calculation_key = self._calculation_key(pivot)
+        result_identity = content_hash_bytes(
+            canonical_json(
+                {
+                    "pivot_id": pivot["id"],
+                    "calculation_key": calculation_key,
+                    "version": EXPLORE_PIVOT_RESULT_VERSION,
+                }
+            ).encode()
+        )
+        result_cache_key = (
+            f"explore-pivot:v{EXPLORE_PIVOT_RESULT_VERSION}:"
+            f"{explore.dataframe_cache_key}:{result_identity}"
+        )
+        return PivotCalculationSpec(
+            explore=explore,
+            pivot=pivot,
+            calculation_key=calculation_key,
+            result_cache_key=result_cache_key,
+            family_key=(
+                "explore_pivot",
+                body.graph.source_file or "",
+                body.node_id,
+                body.source,
+                pivot["id"],
+            ),
+        )
+
+    def start(self, body: ExplorePivotRunRequest) -> ExplorePivotRunResponse:
+        explore = self._explore_spec(body)
+        cache_key = explore.dataframe_cache_request.keys_by_node[explore.node_id]
+        if explore.dataframe_cache_request.cache.get(cache_key) is None:
+            return self._cache_required_response()
+        pivot = cast(
+            ExplorePivotConfig,
+            validate_explore_pivots([body.pivot], context="Explore pivot request")[0],
+        )
+        spec = self._calculation_spec(body, explore, pivot)
+        cached = self._result_cache.get(spec.result_cache_key)
+        if cached is not None:
+            return ExplorePivotRunResponse(
+                status="completed",
+                cached=True,
+                message="Pivot cache hit",
+                result=cached,
+            )
+
+        job_id = self._store.create_job(
+            {
+                "kind": "pivot",
+                "status": "running",
+                "progress": 0.0,
+                "message": "Starting pivot calculation",
+                "analysis_key": spec.result_cache_key,
+            }
+        )
+        completion_event = threading.Event()
+        with self._completion_lock:
+            self._completion_events[job_id] = completion_event
+        token, previous = self._jobs.register_latest(spec.family_key, job_id)
+        with self._completion_lock:
+            predecessor_finished = (
+                self._completion_events.get(previous) if previous is not None else None
+            )
+        if previous is not None:
+            self._lifecycle.transition(
+                previous,
+                to="superseded",
+                message="Superseded by a newer pivot request.",
+                expected_status="running",
+            )
+        threading.Thread(
+            target=self._run,
+            args=(job_id, spec, token, predecessor_finished, completion_event),
+            daemon=True,
+        ).start()
+        return ExplorePivotRunResponse(
+            status="started",
+            job_id=job_id,
+            message="Pivot calculation started",
+        )
+
+    def status(self, job_id: str) -> ExplorePivotStatusResponse:
+        job = self._store.require_job(job_id)
+        if job.get("kind") != "pivot":
+            raise HTTPException(status_code=404, detail="Pivot job not found")
+        return ExplorePivotStatusResponse(
+            status=job["status"],
+            progress=job.get("progress", 0),
+            message=job.get("message", ""),
+            result=job.get("result"),
+            failure=job.get("failure"),
+            terminal_reason=job.get("terminal_reason"),
+            execution_metrics=job.get("execution_metrics"),
+        )
+
+    def cancel(self, job_id: str) -> ExplorePivotStatusResponse:
+        current = self.status(job_id)
+        cancelled = self._jobs.cancel(job_id)
+        if cancelled or current.status == "running":
+            self._lifecycle.transition(
+                job_id,
+                to="cancelled",
+                message="Pivot calculation cancelled",
+                expected_status="running",
+            )
+            self._jobs.release(job_id)
+        return self.status(job_id)
+
+    def _run(
+        self,
+        job_id: str,
+        spec: PivotCalculationSpec,
+        token: JobCancellation,
+        predecessor_finished: threading.Event | None,
+        completion_event: threading.Event,
+    ) -> None:
+        started = time.monotonic()
+        context: ExecutionContext | None = None
+        try:
+            while predecessor_finished is not None and not predecessor_finished.wait(0.01):
+                token.execution_token.throw_if_cancelled("explore_pivot", job_id=job_id)
+            context = create_admitted_execution_context(
+                operation="explore_pivot",
+                profile=ExecutionProfile.EXPLORE_ANALYSIS,
+                job_id=job_id,
+                cancellation_token=token.execution_token,
+            )
+            bind_running_execution_metrics_publisher(self._store, job_id, context)
+            result = self._calculate(spec, context)
+            context.checkpoint(label="pivot_before_publish")
+            metrics = context.metrics_payload(status="completed")
+            metrics["execution_strategy"] = {
+                "schema_version": 1,
+                "status": "not_planned",
+                "strategy": "not-planned",
+                "profile": "explore_analysis",
+                "boundedness": "bounded",
+                "reason_code": "cached_explore_dataframe",
+                "detail_state": "available",
+                "boundaries": {"state": "available", "total_count": 0, "items": []},
+                "reasons": {"state": "available", "total_count": 0, "items": []},
+                "provenance": {"state": "available", "total_count": 0, "items": []},
+            }
+            result = result.model_copy(
+                update={"execution_metrics": ExecutionMetricsPayload.model_validate(metrics)}
+            )
+            transitioned = self._lifecycle.transition(
+                job_id,
+                to="completed",
+                message="Pivot calculation complete",
+                fields={
+                    "progress": 1.0,
+                    "result": result,
+                    "execution_metrics": result.execution_metrics,
+                },
+                elapsed_seconds=time.monotonic() - started,
+            )
+            if transitioned is not None:
+                self._result_cache.put(spec.result_cache_key, result)
+        except PivotContractError as exc:
+            self._lifecycle.transition(
+                job_id,
+                to="contract_error",
+                message=exc.failure.message,
+                fields={"failure": exc.failure},
+                elapsed_seconds=time.monotonic() - started,
+            )
+        except ExecutionCancelledError:
+            self._lifecycle.transition(
+                job_id,
+                to=token.terminal_reason or "cancelled",
+                message="Pivot calculation cancelled",
+                elapsed_seconds=time.monotonic() - started,
+            )
+        except (ExecutionAdmissionError, ExecutionMemoryLimitExceededError) as exc:
+            self._lifecycle.transition(
+                job_id,
+                to="memory_limited",
+                message=str(exc),
+                fields={"error": str(exc)},
+                elapsed_seconds=time.monotonic() - started,
+            )
+        except Exception as exc:
+            self._lifecycle.transition(
+                job_id,
+                to="error",
+                message=str(exc),
+                fields={"error": str(exc)},
+                elapsed_seconds=time.monotonic() - started,
+            )
+        finally:
+            if context is not None:
+                context.release_admission()
+            self._jobs.release(job_id)
+            completion_event.set()
+            with self._completion_lock:
+                if self._completion_events.get(job_id) is completion_event:
+                    del self._completion_events[job_id]
+
+    def _cached_lazy_frame(self, explore: ExploreCacheSpec) -> pl.LazyFrame:
+        key = explore.dataframe_cache_request.keys_by_node[explore.node_id]
+        lazy = explore.dataframe_cache_request.cache.scan(key)
+        if lazy is None:
+            raise PivotContractError(
+                "cache_required",
+                "The full Explore dataset is not materialised.",
+                "Process and cache full data, then update the pivot.",
+            )
+        return lazy
+
+    def _validate_schema(
+        self,
+        schema: Mapping[str, pl.DataType],
+        pivot: ExplorePivotConfig,
+    ) -> None:
+        dimensions = [*pivot["filters"], *pivot["rows"], *pivot["columns"]]
+        for placement in [*dimensions, *pivot["values"]]:
+            field = placement["field"]
+            if field not in schema:
+                raise PivotContractError(
+                    "invalid_pivot_field",
+                    f"Pivot field '{field}' does not exist.",
+                    "Choose a field from the Explore dataset.",
+                    field=field,
+                )
+        for placement in dimensions:
+            field = placement["field"]
+            dtype = schema[field]
+            if is_unhashable_dtype(dtype) or not _is_supported_dimension_dtype(dtype):
+                raise PivotContractError(
+                    "invalid_pivot_field",
+                    f"Pivot field '{field}' is not groupable.",
+                    "Choose a supported scalar field.",
+                    field=field,
+                )
+        if not pivot["values"]:
+            raise PivotContractError(
+                "pivot_unconfigured",
+                "Configure at least one pivot value.",
+                "Add a value and aggregation to the pivot.",
+            )
+        for value in pivot["values"]:
+            dtype = schema[value["field"]]
+            aggregation = value["aggregation"]
+            if aggregation in {"sum", "average", "median"} and not dtype.is_numeric():
+                raise PivotContractError(
+                    "invalid_pivot_field",
+                    "Aggregation requires a numeric field.",
+                    "Choose a numeric value field.",
+                    field=value["field"],
+                )
+            if aggregation in {"min", "max"} and (
+                dtype.is_nested() or dtype.base_type() == pl.Object
+            ):
+                raise PivotContractError(
+                    "invalid_pivot_field",
+                    "Aggregation does not support nested fields.",
+                    "Choose a scalar value field.",
+                    field=value["field"],
+                )
+            if aggregation == "distinct_count" and is_unhashable_dtype(dtype):
+                raise PivotContractError(
+                    "invalid_pivot_field",
+                    "Distinct count requires a hashable field.",
+                    "Choose a scalar value field.",
+                    field=value["field"],
+                )
+
+    def _apply_filters(
+        self,
+        lazy: pl.LazyFrame,
+        schema: Mapping[str, pl.DataType],
+        pivot: ExplorePivotConfig,
+    ) -> pl.LazyFrame:
+        filtered = lazy
+        for placement in pivot["filters"]:
+            members = _unique_filter_members(placement["members"])
+            self._limit("filter_members", len(members), MAX_FILTER_MEMBERS)
+            if not members:
+                continue
+            expressions = [
+                _filter_member_expression(placement["field"], schema[placement["field"]], member)
+                for member in members
+            ]
+            filtered = filtered.filter(reduce(or_, expressions))
+        return filtered
+
+    @staticmethod
+    def _cardinality_expression(fields: Sequence[str], alias: str) -> pl.Expr:
+        if not fields:
+            return (pl.len() > 0).cast(pl.Int64).alias(alias)
+        return pl.struct([pl.col(field) for field in fields]).n_unique().alias(alias)
+
+    def _cardinalities(
+        self,
+        filtered: pl.LazyFrame,
+        row_fields: Sequence[str],
+        column_fields: Sequence[str],
+        context: ExecutionContext,
+    ) -> tuple[int, int]:
+        query = filtered.select(
+            self._cardinality_expression(row_fields, "__haute_row_groups"),
+            self._cardinality_expression(column_fields, "__haute_column_groups"),
+        )
+        frame = cancellable_streaming_collect(query, execution_context=context)
+        return int(frame.item(0, 0)), int(frame.item(0, 1))
+
+    @staticmethod
+    def _unique_fields(fields: Sequence[str]) -> list[str]:
+        return list(dict.fromkeys(fields))
+
+    def _aggregate_frame(
+        self,
+        filtered: pl.LazyFrame,
+        group_fields: Sequence[str],
+        values: Sequence[ExplorePivotValuePlacement],
+        schema: Mapping[str, pl.DataType],
+        context: ExecutionContext,
+    ) -> pl.DataFrame:
+        unique_group_fields = self._unique_fields(group_fields)
+        expressions = [_aggregation_expression(value, schema[value["field"]]) for value in values]
+        if unique_group_fields:
+            query = filtered.group_by(unique_group_fields).agg(expressions)
+        else:
+            query = filtered.select(expressions)
+        return cancellable_streaming_collect(query, execution_context=context)
+
+    @staticmethod
+    def _aggregate_map(
+        frame: pl.DataFrame,
+        group_fields: Sequence[str],
+        values: Sequence[ExplorePivotValuePlacement],
+        warnings: set[str],
+    ) -> dict[TypedPathTuple, tuple[str | float | int | bool | None, ...]]:
+        result: dict[TypedPathTuple, tuple[str | float | int | bool | None, ...]] = {}
+        for row in frame.iter_rows(named=True):
+            path = _path_tuple(row, group_fields)
+            result[path] = tuple(
+                _normalise_cell(row[_value_alias(value["id"])], warnings) for value in values
+            )
+        return result
+
+    def _calculate(
+        self,
+        spec: PivotCalculationSpec,
+        context: ExecutionContext,
+    ) -> ExplorePivotResult:
+        lazy = self._cached_lazy_frame(spec.explore)
+        schema = lazy.collect_schema()
+        self._validate_schema(schema, spec.pivot)
+        filtered = self._apply_filters(lazy, schema, spec.pivot)
+        row_fields = [placement["field"] for placement in spec.pivot["rows"]]
+        column_fields = [placement["field"] for placement in spec.pivot["columns"]]
+        values = spec.pivot["values"]
+
+        row_count, column_count = self._cardinalities(
+            filtered,
+            row_fields,
+            column_fields,
+            context,
+        )
+        self._limit("row_groups", row_count, MAX_ROW_GROUPS)
+        self._limit("column_groups", column_count, MAX_COLUMN_GROUPS)
+        add_row_total = bool(row_fields and row_count and spec.pivot["options"]["row_grand_totals"])
+        add_column_total = bool(
+            column_fields and column_count and spec.pivot["options"]["column_grand_totals"]
+        )
+        display_rows = row_count + int(add_row_total)
+        display_columns = column_count + int(add_column_total)
+        self._limit(
+            "display_cells",
+            display_rows * display_columns * max(len(values), 1),
+            MAX_DISPLAY_CELLS,
+        )
+
+        warnings: set[str] = set()
+        base: dict[
+            TypedPathTuple,
+            tuple[str | float | int | bool | None, ...],
+        ] = {}
+        if row_count and column_count:
+            base_frame = self._aggregate_frame(
+                filtered,
+                [*row_fields, *column_fields],
+                values,
+                schema,
+                context,
+            )
+            base = self._aggregate_map(
+                base_frame,
+                self._unique_fields([*row_fields, *column_fields]),
+                values,
+                warnings,
+            )
+
+        row_paths = sorted(
+            {_path_tuple(row, row_fields) for row in base_frame.iter_rows(named=True)}
+            if row_count and column_count
+            else set(),
+            key=_path_sort_key,
+        )
+        column_paths = sorted(
+            {_path_tuple(row, column_fields) for row in base_frame.iter_rows(named=True)}
+            if row_count and column_count
+            else set(),
+            key=_path_sort_key,
+        )
+
+        row_total_values: dict[
+            TypedPathTuple,
+            tuple[str | float | int | bool | None, ...],
+        ] = {}
+        if add_row_total:
+            frame = self._aggregate_frame(filtered, column_fields, values, schema, context)
+            row_total_values = self._aggregate_map(
+                frame,
+                self._unique_fields(column_fields),
+                values,
+                warnings,
+            )
+
+        column_total_values: dict[
+            TypedPathTuple,
+            tuple[str | float | int | bool | None, ...],
+        ] = {}
+        if add_column_total:
+            frame = self._aggregate_frame(filtered, row_fields, values, schema, context)
+            column_total_values = self._aggregate_map(
+                frame,
+                self._unique_fields(row_fields),
+                values,
+                warnings,
+            )
+
+        grand_total_values: tuple[str | float | int | bool | None, ...] | None = None
+        if add_row_total and add_column_total:
+            frame = self._aggregate_frame(filtered, [], values, schema, context)
+            grand_total_values = self._aggregate_map(frame, [], values, warnings)[()]
+
+        result_row_paths = [_path_model(path) for path in row_paths]
+        result_column_paths = [_path_model(path) for path in column_paths]
+        if add_row_total:
+            result_row_paths.append(ExplorePivotPath(is_grand_total=True))
+        if add_column_total:
+            result_column_paths.append(ExplorePivotPath(is_grand_total=True))
+
+        cells: list[ExplorePivotCell] = []
+        for row_index, row_path in enumerate(row_paths):
+            for column_index, column_path in enumerate(column_paths):
+                combined = _combined_path(
+                    row_fields,
+                    row_path,
+                    column_fields,
+                    column_path,
+                )
+                aggregated = None if combined is None else base.get(combined)
+                self._append_cells(
+                    cells,
+                    row_index,
+                    column_index,
+                    values,
+                    aggregated,
+                )
+
+        if add_row_total:
+            row_index = len(row_paths)
+            for column_index, column_path in enumerate(column_paths):
+                self._append_cells(
+                    cells,
+                    row_index,
+                    column_index,
+                    values,
+                    row_total_values.get(column_path),
+                )
+        if add_column_total:
+            column_index = len(column_paths)
+            for row_index, row_path in enumerate(row_paths):
+                self._append_cells(
+                    cells,
+                    row_index,
+                    column_index,
+                    values,
+                    column_total_values.get(row_path),
+                )
+        if add_row_total and add_column_total:
+            self._append_cells(
+                cells,
+                len(row_paths),
+                len(column_paths),
+                values,
+                grand_total_values,
+            )
+
+        return ExplorePivotResult(
+            node_id=spec.explore.node_id,
+            pivot_id=spec.pivot["id"],
+            source=spec.explore.source,
+            dataframe_cache_key=spec.explore.dataframe_cache_key,
+            calculation_key=spec.calculation_key,
+            row_fields=row_fields,
+            column_fields=column_fields,
+            values=[
+                ExplorePivotValueIdentity(
+                    id=value["id"],
+                    field=value["field"],
+                    aggregation=value["aggregation"],
+                )
+                for value in values
+            ],
+            row_paths=result_row_paths,
+            column_paths=result_column_paths,
+            cells=cells,
+            warnings=sorted(warnings),
+            generated_at=time.time(),
+        )
+
+    @staticmethod
+    def _append_cells(
+        cells: list[ExplorePivotCell],
+        row_index: int,
+        column_index: int,
+        values: Sequence[ExplorePivotValuePlacement],
+        aggregated: tuple[str | float | int | bool | None, ...] | None,
+    ) -> None:
+        for value_index, value in enumerate(values):
+            cell_value = (
+                aggregated[value_index]
+                if aggregated is not None
+                else (0 if value["aggregation"] in _COUNT_AGGREGATIONS else None)
+            )
+            cells.append(
+                ExplorePivotCell(
+                    row_index=row_index,
+                    column_index=column_index,
+                    value_id=value["id"],
+                    value=cell_value,
+                )
+            )
+
+    @staticmethod
+    def _limit(dimension: str, actual: int, limit: int) -> None:
+        if actual > limit:
+            raise PivotContractError(
+                "pivot_cardinality_limit",
+                "Pivot cardinality exceeds the display limit.",
+                "Reduce pivot dimensions or filter the dataset.",
+                dimension=dimension,
+                actual=actual,
+                limit=limit,
+            )
+
+    @staticmethod
+    def _member_search_expression(field: str, dtype: pl.DataType, search: str) -> pl.Expr:
+        column = pl.col(field)
+        if dtype.base_type() in _FLOAT_BASE_TYPES:
+            label = (
+                pl.when(column.is_null())
+                .then(pl.lit("(blank)"))
+                .when(column.is_nan())
+                .then(pl.lit("(NaN)"))
+                .otherwise(column.cast(pl.String))
+            )
+        else:
+            label = (
+                pl.when(column.is_null()).then(pl.lit("(blank)")).otherwise(column.cast(pl.String))
+            )
+        return label.str.to_lowercase().str.contains(search.casefold(), literal=True)
+
+    def members(self, body: ExplorePivotMembersRequest) -> ExplorePivotMembersResponse:
+        explore = self._explore_spec(body)
+        key = explore.dataframe_cache_request.keys_by_node[explore.node_id]
+        if explore.dataframe_cache_request.cache.get(key) is None:
+            return ExplorePivotMembersResponse(
+                status="cache_required",
+                failure=self._cache_required_failure(),
+            )
+        context: ExecutionContext | None = None
+        try:
+            context = create_admitted_execution_context(
+                operation="explore_pivot_members",
+                profile=ExecutionProfile.EXPLORE_ANALYSIS,
+                job_id=None,
+            )
+            lazy = self._cached_lazy_frame(explore)
+            schema = lazy.collect_schema()
+            if (
+                body.field not in schema
+                or is_unhashable_dtype(schema[body.field])
+                or not _is_supported_dimension_dtype(schema[body.field])
+            ):
+                raise PivotContractError(
+                    "invalid_pivot_field",
+                    "Pivot member field is not groupable.",
+                    "Choose a supported scalar field.",
+                    field=body.field,
+                )
+            filtered = lazy
+            if body.search:
+                filtered = filtered.filter(
+                    self._member_search_expression(body.field, schema[body.field], body.search)
+                )
+            cardinality = cancellable_streaming_collect(
+                filtered.select(pl.col(body.field).n_unique().alias("__haute_member_count")),
+                execution_context=context,
+            ).item(0, 0)
+            self._limit("filter_members", int(cardinality), MAX_FILTER_MEMBERS)
+            grouped = cancellable_streaming_collect(
+                filtered.group_by(body.field).agg(pl.len().alias("__haute_count")),
+                execution_context=context,
+            )
+            options = []
+            for value, count in grouped.iter_rows():
+                member_key = _member_key(value)
+                options.append(
+                    ExplorePivotMemberOption(
+                        key=member_key,
+                        label=_member_label(member_key),
+                        count=int(count),
+                    )
+                )
+            options.sort(
+                key=lambda option: (
+                    -option.count,
+                    _member_sort_key((option.key.kind, option.key.value)),
+                )
+            )
+            return ExplorePivotMembersResponse(
+                status="ok",
+                field=body.field,
+                members=options,
+            )
+        except PivotContractError as exc:
+            return ExplorePivotMembersResponse(
+                status="error",
+                field=body.field,
+                failure=exc.failure,
+            )
+        finally:
+            if context is not None:
+                context.release_admission()

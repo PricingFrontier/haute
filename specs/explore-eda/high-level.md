@@ -30,9 +30,17 @@ In scope:
 - Validating the ordered `charts` config list attached to an Explore node. Every card has a
   unique non-empty string `id` and Boolean `enabled` state; unknown simple-literal fields are
   retained for forwards-compatible chart settings.
-- Validating the ordered `pivots` config list attached to an Explore node. Every card has a
-  unique non-empty string `id`; unknown simple-literal fields are retained for forwards-compatible
-  pivot settings, without requiring a visibility state that has no consumer yet.
+- Validating the ordered, versioned `pivots` config list attached to an Explore node. Version-0
+  `{id}` cards migrate once at this trust boundary to version 1. Every v1 card has a unique id,
+  case-insensitively unique name, visibility state, typed Filter/Columns/Rows/Values placements,
+  and row/column grand-total options; unknown simple-literal fields remain round-trippable.
+- Starting, polling, and cancelling pivot calculations over an existing Explore dataframe cache
+  (`POST /api/explore/pivots/run`, `GET /api/explore/pivots/status/{job_id}`,
+  `POST /api/explore/pivots/cancel/{job_id}`), and listing exact filter members from that cache
+  (`POST /api/explore/pivots/members`).
+- Producing a versioned, typed pivot matrix whose stable row paths, column paths, value identities,
+  cells, grand-total markers, warnings, and execution metrics can feed both pivot tables and
+  PivotCharts without another aggregation path.
 
 Out of scope (owned elsewhere):
 
@@ -117,6 +125,28 @@ Out of scope (owned elsewhere):
   it. Changes to only the Explore node's `overview`, `pivots`, or `charts` config blocks do **not**
   invalidate the dataframe cache (they are not part of the dataframe cache key), and the equal
   report is served from cache.
+- A pivot calculation never executes the graph and never falls back to preview rows. The run and
+  member endpoints derive the same Explore dataframe-cache identity as materialisation and return
+  the typed `cache_required` outcome when that exact full-data entry is absent.
+- Pivot filters are conjunctions of exact member sets. A member is persisted as a typed
+  `{kind, value}` scalar so null, NaN, booleans, integers, finite floats, strings, dates,
+  datetimes, times, and decimals do not collapse into display text. Empty member sets mean that
+  the placed filter is not restricting the field. Float NaN is treated as missing by numeric
+  aggregations but remains independently selectable as a filter/group member.
+- Rows and Columns retain configured field order. Group paths are ordered deterministically by
+  their typed values with null/NaN after ordinary values. Values support `sum`, `count`,
+  `average`, `min`, `max`, `median`, and `distinct_count`; numeric-only aggregations reject
+  incompatible dtypes, Count counts non-null/non-NaN values, and Distinct count excludes
+  null/NaN. Repeated Values are legal because placement ids, not field names, identify measures.
+- The v1 result limit is 500 ordinary row groups, 100 ordinary column groups, 50,000 displayed
+  cells (including enabled grand-total row/column cells), and 500 filter-member rows. A request
+  that exceeds a limit returns the measured dimensions, the limit, and remediation; it is never
+  truncated, sampled, downsampled, or partially published.
+- A completed result is cached by the exact Explore dataframe-cache key, pivot result schema
+  version, ordered calculation placements, exact filters, aggregations, and total options.
+  Card `name`/`enabled`, Value display names, and presentation-only/future formatting fields are
+  excluded, so those edits reuse the calculation. Starting a newer calculation supersedes only
+  an older job for the same source, Explore node, and pivot id.
 - `validate_explore_overview` accepts only a dict at the top level with string keys. The five
   known toggle keys must be booleans; any other key's value must be JSON-round-trippable through
   codegen (`None`, `str`, `bool`, `int`, a finite `float`, or nested lists/dicts of the same) so
@@ -128,10 +158,16 @@ Out of scope (owned elsewhere):
   string-keyed fields are preserved when their values use the same finite, recursively
   simple-literal grammar as unknown overview values. An empty list remains empty so parser/codegen
   callers can omit `charts=[]`.
-- `validate_explore_pivots` accepts only a list of dicts. Each item requires a unique non-empty
-  string `id`; unknown string-keyed fields are preserved when their values use the same finite,
-  recursively simple-literal grammar. An empty list remains empty so parser/codegen callers can
-  omit `pivots=[]`.
+- `validate_explore_pivots` accepts only a list of dicts. An item without `version` is the sole
+  v0 shape and migrates to a complete v1 card using its list position for the default `Pivot N`
+  name. A v1 card requires exactly supported `version: 1`, non-empty `id` and `name`, Boolean
+  `enabled`, list-valued `filters`/`columns`/`rows`/`values`, and Boolean
+  `options.row_grand_totals`/`options.column_grand_totals`. Card ids and lower-cased trimmed names
+  are unique. Placement ids are non-empty and unique across the card; Filter/Rows/Columns reject
+  a repeated field within the same zone, while Values may repeat fields. Every known nested field
+  is type checked and unknown string-keyed fields are retained only when they use the finite,
+  recursively simple-literal grammar. An empty list remains empty so callers may omit
+  `pivots=[]`.
 
 ## Design rationale
 

@@ -224,12 +224,12 @@ describe("useUIStore", () => {
 
     it("replaces only the selected node entry", () => {
       useUIStore.getState().setExplorePreviewPane("explore_1", "overview")
-      useUIStore.getState().setExplorePreviewPane("explore_2", "relationships")
+      useUIStore.getState().setExplorePreviewPane("explore_2", "pivots")
       useUIStore.getState().setExplorePreviewPane("explore_1", "charts")
 
       expect(useUIStore.getState().explorePreviewPanes).toEqual({
         explore_1: "charts",
-        explore_2: "relationships",
+        explore_2: "pivots",
       })
     })
   })

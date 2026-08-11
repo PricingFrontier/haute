@@ -210,8 +210,50 @@ def test_empty_overview_does_not_round_trip_into_config(tmp_path: Path) -> None:
 
 def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> None:
     pivots = [
-        {"id": "pivot_1", "future_setting": {"rows": ["region"]}},
-        {"id": "pivot_2"},
+        {
+            "version": 1,
+            "id": "pivot_1",
+            "name": "Claims by region",
+            "enabled": True,
+            "filters": [
+                {
+                    "id": "filter_1",
+                    "field": "status",
+                    "members": [{"kind": "string", "value": "Open"}],
+                }
+            ],
+            "columns": [{"id": "column_1", "field": "year"}],
+            "rows": [{"id": "row_1", "field": "region"}],
+            "values": [
+                {
+                    "id": "value_1",
+                    "field": "paid",
+                    "aggregation": "sum",
+                    "display_name": "Paid claims",
+                    "future_value_setting": {"precision": 2},
+                }
+            ],
+            "options": {
+                "row_grand_totals": True,
+                "column_grand_totals": False,
+                "future_option": "compact",
+            },
+            "future_setting": {"palette": "warm"},
+        },
+        {
+            "version": 1,
+            "id": "pivot_2",
+            "name": "Pivot 2",
+            "enabled": False,
+            "filters": [],
+            "columns": [],
+            "rows": [],
+            "values": [],
+            "options": {
+                "row_grand_totals": True,
+                "column_grand_totals": True,
+            },
+        },
     ]
     charts = [
         {
