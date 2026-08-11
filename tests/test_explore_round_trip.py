@@ -257,11 +257,49 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
     ]
     charts = [
         {
+            "version": 1,
             "id": "chart_1",
+            "name": "Claims chart",
             "enabled": True,
+            "pivot_id": "pivot_1",
+            "kind": "combo",
+            "category": {
+                "source": "rows",
+                "include_subtotals": False,
+                "include_grand_total": False,
+                "label_rotation": 0,
+                "future": {"nested": ["literal"]},
+            },
+            "value_encodings": [
+                {
+                    "id": "encoding_1",
+                    "value_id": "value_1",
+                    "mark": "column",
+                    "axis": "primary",
+                    "stack_group": None,
+                    "color": "#AABBCC",
+                    "data_labels": False,
+                    "markers": False,
+                }
+            ],
+            "series_overrides": [],
+            "axes": {
+                "primary": {
+                    "title": "Claims",
+                    "minimum": None,
+                    "maximum": None,
+                    "number_format": "number",
+                },
+                "secondary": {
+                    "title": "",
+                    "minimum": None,
+                    "maximum": None,
+                    "number_format": "inherit",
+                },
+            },
+            "legend": {"visible": True, "position": "bottom"},
             "future_setting": {"palette": "warm", "columns": ["premium"]},
-        },
-        {"id": "chart_2", "enabled": False},
+        }
     ]
     graph = _explore_graph_with_config(
         {"overview": {"schema": True}, "pivots": pivots, "charts": charts}

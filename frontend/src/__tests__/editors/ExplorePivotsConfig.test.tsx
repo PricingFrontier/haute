@@ -4,6 +4,10 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import ExplorePivotsConfig from "../../panels/editors/ExplorePivotsConfig"
 import type { OnUpdateConfig } from "../../panels/editors/_shared"
+import {
+  createExploreChart,
+  seedValueEncodings,
+} from "../../panels/explore/chartConfig"
 import type { ExplorePivotConfig } from "../../panels/explore/pivotConfig"
 
 afterEach(cleanup)
@@ -242,6 +246,47 @@ describe("ExplorePivotsConfig", () => {
     fireEvent.change(name, { target: { value: " other PIVOT " } })
     fireEvent.blur(name)
     expect(screen.getByRole("alert")).toHaveTextContent(/name must be unique/i)
+  })
+
+  it("blocks deletion while charts depend on a Pivot and lists those charts", () => {
+    const used = fullPivot({
+      values: [
+        {
+          id: "value_1",
+          field: "claims",
+          aggregation: "sum",
+          display_name: "Claims",
+        },
+      ],
+    })
+    const free = fullPivot({ id: "pivot_2", name: "Pivot 2" })
+    const dependent = {
+      ...createExploreChart([]),
+      name: "Claims chart",
+      pivot_id: used.id,
+      value_encodings: seedValueEncodings(used),
+    }
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
+    render(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [used, free], charts: [dependent] }}
+      />,
+    )
+
+    expect(screen.getByRole("button", { name: "Delete Pivot 1" })).toBeDisabled()
+    expect(screen.getByRole("group", { name: "Pivot 1" })).toHaveTextContent(
+      "Used by Claims chart",
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Pivot 2" }))
+    expect(confirm).toHaveBeenCalledTimes(1)
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.pivots.map((item: ExplorePivotConfig) => item.id)).toEqual([
+      "pivot_1",
+    ])
+    confirm.mockRestore()
   })
 
   it("surfaces malformed persisted pivots without destructive controls", () => {

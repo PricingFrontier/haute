@@ -11,7 +11,7 @@
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
-| `src/haute/_explore_charts.py` | Standalone validator for the ordered Explore `charts` config list. It requires unique card ids and Boolean enabled state while preserving simple-literal future fields through codegen/parser round trips. |
+| `src/haute/_explore_charts.py` | Standalone v0-to-v1 migration and strict validator for ordered PivotChart cards, nested mappings/styles/axes/legend, ids/names, finite bounds, and simple-literal future fields. |
 | `src/haute/_explore_pivots.py` | Standalone v0-to-v1 migration and strict validator for ordered Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. |
 | `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): existing cache-report contracts plus pivot run/status/member requests, typed failures, member/path/value/cell structures, and result matrices. |
 
@@ -47,8 +47,10 @@
   "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
   `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
   `str`).
-- **`ExploreChartConfig`** (`_types.py`) — one persisted chart-card identity with required
-  `id: str` and `enabled: bool`; the enclosing `ExploreConfig.charts` list is ordered.
+- **`ExploreChartConfig`** (`_types.py`) — one persisted version-1 ComboChart with stable
+  id/name/enabled/source-pivot linkage, Rows category settings, ordered Value encodings and exact
+  series overrides, primary/secondary axes, and legend. Style mappings contain only closed mark,
+  axis, number-format, colour, stack, marker, and label values.
 - **`ExplorePivotConfig`** (`_types.py`) — version-1 persisted card with `id`, `name`,
   `enabled`, ordered Filter/Columns/Rows/Values placements, and grand-total options. Each
   placement owns a stable id. Filter members are typed scalars and Value placements add one of
@@ -95,6 +97,29 @@
   a display label and count beside the key, sorted by count descending then typed canonical key.
 - Every job record carries `kind: "pivot"`; pivot status/cancel reject a non-pivot job id even
   though Explore materialisation and pivot calculation share the Explore job-store namespace.
+
+## PivotChart adapter invariants
+
+- `frontend/src/panels/explore/chartConfig.ts` mirrors the backend v0/v1 validator and exposes
+  deterministic chart creation, source resolution, dependent-chart lookup, presets, and canonical
+  typed series-key helpers. Source resolution never falls back from null/missing ids.
+- `chartData.ts` is a pure adapter over a guarded pivot result plus parsed pivot/chart config. It
+  checks source/result identities, explicit Value encodings, total inclusion, numeric cells,
+  hierarchy/label/cardinality limits, and applies matching exact overrides. Its output retains
+  raw `number | null` points separately from formatted text and reports dormant overrides.
+- `chartOptions.ts` is the only renderer-option builder. It maps the adapter's closed data to
+  ECharts Bar/Line series, primary/secondary axes, explicit column stacks, safe text tooltips,
+  deterministic token colours, axis bounds, legend, reduced motion, and zero-inclusive automatic
+  column axes. Legends use a bounded scrolling layout instead of wrapping across the plot. The
+  plot grid reserves space for every legend position and the title, and the secondary axis is
+  hidden until at least one series uses it. It accepts no opaque persisted renderer objects or
+  callbacks.
+- `ComboChart.tsx` owns runtime initialisation, theme redraw, ResizeObserver sizing, deterministic
+  disposal, a renderer-independent labelled summary region, and a toggleable semantic source-data
+  table. The stable Haute summary remains available even when ECharts annotates its own nested SVG
+  host. The ECharts runtime is imported only beneath the already-lazy Charts pane.
+- `useExplorePivotActions.ts` owns the one Pivot run/status/cancel write lifecycle shared by the
+  Pivots and Charts result panes; a chart never creates a parallel execution path.
 
 ## Control flow
 

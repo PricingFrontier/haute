@@ -344,7 +344,7 @@ describe("ExplorePreview", () => {
     expect(await screen.findByText(/No pivots are currently shown/i)).toBeInTheDocument()
   })
 
-  it("renders enabled chart placeholders in config order and remembers the Charts pane", async () => {
+  it("renders enabled draft chart cards in config order and remembers the Charts pane", async () => {
     const node = exploreNodeWithConfig({
       charts: [
         { id: "chart_1", enabled: true },

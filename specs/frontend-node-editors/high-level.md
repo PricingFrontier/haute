@@ -45,12 +45,19 @@ backend API modules own validation and persistence.
 - IO editors obtain supported formats and their arguments from the server. API/data input,
   output, external-file, transform, explore, live-switch, scenario, submodel,
   model-score and optimiser-apply editors render only their own configuration contract.
-- The Explore Charts pane owns an ordered set of persisted chart cards. `Add Chart` appends a
-  new enabled card, the card's primary action toggles whether it is shown in the Explore Charts
-  visualisation, and a separate `Configure` action opens that card's configuration subview.
-  Configuration controls are intentionally deferred: the subview currently identifies the card,
-  explains that settings are not yet available, and provides `Back to charts` without mutating
-  the card. Multiple cards remain independently toggleable and retain insertion order.
+- The Explore Charts pane owns ordered version-1 PivotChart cards. `Add Chart` appends a complete
+  enabled draft with a unique id/name; each card's checkbox changes only visibility, `Configure`
+  never toggles it, and a separately confirmed Delete removes only that card. Back changes only
+  editor-local navigation.
+- Chart Configure selects any pivot on the same Explore node, including a hidden one, by stable id.
+  It exposes the chart name, inherited Pivot Filters/Rows/Columns/Values summary, six ComboChart
+  presets, per-Value defaults, discovered exact-series overrides, two numeric axes, legend, and
+  category-label controls. Changing an already mapped source requires confirmation and commits
+  the reset in one graph edit. Draft, missing, unconfigured, loading, stale, errored, hidden, and
+  ready source states remain explicit.
+- A pivot cannot be deleted while charts reference it; the Pivots pane identifies dependent chart
+  names so the analyst can reassign them. Chart appearance edits are presentation-only and never
+  change dataframe/pivot calculation identities or structural execution version.
 - The Explore Pivots pane owns ordered version-1 cards. `Add Pivot` appends a fully populated,
   uniquely named, enabled card with the first-unused `pivot_N` identity. Each card exposes an
   accessible visibility checkbox and a separate `Configure` button; configuring never toggles

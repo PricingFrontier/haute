@@ -2,54 +2,217 @@
 
 from __future__ import annotations
 
+import copy
+import math
+
 import pytest
 
 from haute._explore_charts import validate_explore_charts
 from haute.errors import ConfigError
 
 
-def test_validate_explore_charts_preserves_order_state_and_future_fields() -> None:
-    charts = [
-        {
-            "id": "chart_1",
-            "enabled": True,
-            "future_setting": {"palette": "warm", "columns": ["premium"], "limit": None},
+def _chart() -> dict[str, object]:
+    return {
+        "version": 1,
+        "id": "chart_1",
+        "name": "Claims",
+        "enabled": True,
+        "pivot_id": None,
+        "kind": "combo",
+        "category": {
+            "source": "rows",
+            "include_subtotals": False,
+            "include_grand_total": False,
+            "label_rotation": 0,
         },
-        {"id": "chart_2", "enabled": False},
+        "value_encodings": [
+            {
+                "id": "encoding_1",
+                "value_id": "value_1",
+                "mark": "column",
+                "axis": "primary",
+                "stack_group": None,
+                "color": "#AABBCC",
+                "data_labels": False,
+                "markers": False,
+            }
+        ],
+        "series_overrides": [
+            {
+                "id": "override_1",
+                "series_key": "Open",
+                "mark": "line",
+                "axis": "secondary",
+                "stack_group": None,
+                "color": None,
+                "data_labels": True,
+                "markers": True,
+            }
+        ],
+        "axes": {
+            "primary": {
+                "title": "Count",
+                "minimum": None,
+                "maximum": None,
+                "number_format": "integer",
+            },
+            "secondary": {"title": "", "minimum": 0, "maximum": 1, "number_format": "percent"},
+        },
+        "legend": {"visible": True, "position": "bottom"},
+    }
+
+
+def test_migrates_v0_with_defaults_order_and_future_fields() -> None:
+    raw = [{"id": "old", "enabled": False, "future": {"nested": [1, {"x": 2.0}]}}]
+    assert validate_explore_charts(raw, context="test") == [
+        {
+            "id": "old",
+            "enabled": False,
+            "future": {"nested": [1, {"x": 2.0}]},
+            "version": 1,
+            "name": "Chart 1",
+            "pivot_id": None,
+            "kind": "combo",
+            "category": {
+                "source": "rows",
+                "include_subtotals": False,
+                "include_grand_total": False,
+                "label_rotation": 0,
+            },
+            "value_encodings": [],
+            "series_overrides": [],
+            "axes": {
+                "primary": {
+                    "title": "",
+                    "minimum": None,
+                    "maximum": None,
+                    "number_format": "inherit",
+                },
+                "secondary": {
+                    "title": "",
+                    "minimum": None,
+                    "maximum": None,
+                    "number_format": "inherit",
+                },
+            },
+            "legend": {"visible": True, "position": "bottom"},
+        }
     ]
 
-    assert validate_explore_charts(charts, context="test") == charts
+
+def test_v0_migration_allocates_names_around_existing_v1_cards() -> None:
+    existing = _chart()
+    existing.update(id="configured", name="Chart 1")
+
+    charts = validate_explore_charts(
+        [
+            {"id": "legacy_a", "enabled": True},
+            existing,
+            {"id": "legacy_b", "enabled": False},
+        ],
+        context="test",
+    )
+
+    assert [chart["name"] for chart in charts] == ["Chart 2", "Chart 1", "Chart 3"]
+
+
+def test_full_v1_is_deeply_detached_including_nested_future_fields() -> None:
+    raw = _chart()
+    raw["future"] = {"nested": [{"answer": 42}]}
+    raw["category"]["future"] = ["ok"]  # type: ignore[index]
+    raw["value_encodings"][0]["future"] = {"style": ["ok"]}  # type: ignore[index]
+    raw["axes"]["primary"]["future"] = {"axis": ["ok"]}  # type: ignore[index]
+    validated = validate_explore_charts([raw], context="test")
+    assert validated == [raw]
+    assert validated[0] is not raw
+    assert validated[0]["future"] is not raw["future"]
+    assert validated[0]["category"] is not raw["category"]
+    assert validated[0]["value_encodings"][0] is not raw["value_encodings"][0]
+    assert validated[0]["axes"]["primary"] is not raw["axes"]["primary"]
 
 
 @pytest.mark.parametrize(
-    ("value", "message"),
+    ("mutate", "message"),
     [
-        ({}, "must be a list"),
-        (["chart_1"], "entries must be dicts"),
-        ([{"enabled": True}], "requires an id"),
-        ([{"id": "   ", "enabled": True}], "id must be a non-empty string"),
-        ([{"id": "chart_1"}], "requires an enabled state"),
-        ([{"id": "chart_1", "enabled": 1}], "enabled state must be a boolean"),
-        (
-            [
-                {"id": "chart_1", "enabled": True},
-                {"id": "chart_1", "enabled": False},
-            ],
-            "duplicate chart id",
-        ),
-        ([{"id": "chart_1", "enabled": True, "future": object()}], "simple literals"),
+        (lambda c: c.update(version=2), "version must be 1"),
+        (lambda c: c.update(id=" "), "id must be a non-empty string"),
+        (lambda c: c.update(name=" "), "name must be a non-empty string"),
+        (lambda c: c.update(enabled=1), "enabled state must be a boolean"),
+        (lambda c: c.pop("pivot_id"), "requires a pivot_id"),
+        (lambda c: c.update(pivot_id=" "), "pivot id must be null or a non-empty string"),
+        (lambda c: c.update(kind="bar"), "unsupported kind"),
+        (lambda c: c["category"].update(source="columns"), "unsupported category source"),  # type: ignore[index]
+        (lambda c: c["category"].update(include_subtotals=1), "must be a boolean"),  # type: ignore[index]
+        (lambda c: c["category"].update(label_rotation=91), "label rotation"),  # type: ignore[index]
+        (lambda c: c["category"].update(label_rotation=True), "label rotation"),  # type: ignore[index]
+        (lambda c: c["value_encodings"][0].update(mark="pie"), "unsupported mark"),  # type: ignore[index]
+        (lambda c: c["value_encodings"][0].update(axis="tertiary"), "unsupported axis"),  # type: ignore[index]
+        (lambda c: c["value_encodings"][0].update(color="#abc"), "strict #RRGGBB"),  # type: ignore[index]
+        (lambda c: c["value_encodings"][0].update(color="#AABBCG"), "strict #RRGGBB"),  # type: ignore[index]
+        (lambda c: c["value_encodings"][0].update(stack_group="s", mark="line"), "stack group"),  # type: ignore[index]
+        (lambda c: c["value_encodings"][0].update(series_key="wrong"), "identity field"),  # type: ignore[index]
+        (lambda c: c["series_overrides"][0].update(value_id="wrong"), "identity field"),  # type: ignore[index]
+        (lambda c: c["axes"]["primary"].update(number_format="date"), "unsupported number format"),  # type: ignore[index]
+        (lambda c: c["axes"]["primary"].pop("minimum"), "requires minimum"),  # type: ignore[index]
+        (lambda c: c["axes"]["primary"].pop("maximum"), "requires maximum"),  # type: ignore[index]
+        (lambda c: c["axes"]["primary"].update(minimum=True), "finite number"),  # type: ignore[index]
+        (lambda c: c["axes"]["primary"].update(maximum=math.inf), "finite number"),  # type: ignore[index]
+        (lambda c: c["axes"]["primary"].update(minimum=2, maximum=1), "minimum must be less"),  # type: ignore[index]
+        (lambda c: c["legend"].update(visible=1), "must be a boolean"),  # type: ignore[index]
+        (lambda c: c["legend"].update(position="center"), "unsupported legend position"),  # type: ignore[index]
     ],
 )
-def test_validate_explore_charts_rejects_malformed_values(value: object, message: str) -> None:
+def test_rejects_invalid_v1_known_fields(mutate: object, message: str) -> None:
+    chart = _chart()
+    mutate(chart)  # type: ignore[operator]
     with pytest.raises(ConfigError, match=message):
-        validate_explore_charts(value, context="test")
+        validate_explore_charts([chart], context="test")
 
 
-def test_validate_explore_charts_returns_a_detached_copy() -> None:
-    raw = [{"id": "chart_1", "enabled": True, "future": {"nested": [1, 2]}}]
+@pytest.mark.parametrize(
+    ("charts", "message"),
+    [
+        ({}, "must be a list"),
+        (["chart"], "entries must be dicts"),
+        ([{"enabled": True}], "requires an id"),
+        ([{"id": "old", "enabled": True, "name": "no"}], "Versionless Explore chart"),
+        ([{"id": "old", "enabled": True, "future": object()}], "simple literals"),
+        (
+            [{**_chart(), "category": {**_chart()["category"], "future": object()}}],
+            "simple literals",
+        ),
+        ([_chart(), _chart()], "duplicate chart id"),
+        ([_chart(), {**_chart(), "id": "other", "name": " claims "}], "duplicate chart name"),
+    ],
+)
+def test_rejects_malformed_top_card_and_v0_fields(charts: object, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_charts(charts, context="test")
 
-    validated = validate_explore_charts(raw, context="test")
 
-    assert validated == raw
-    assert validated is not raw
-    assert validated[0] is not raw[0]
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda c: c["value_encodings"].append(copy.deepcopy(c["value_encodings"][0])),
+            "duplicate encoding id",
+        ),  # type: ignore[index]
+        (
+            lambda c: c["value_encodings"].append({**c["value_encodings"][0], "id": "other"}),
+            "duplicate value id",
+        ),  # type: ignore[index]
+        (
+            lambda c: c["series_overrides"].append(copy.deepcopy(c["series_overrides"][0])),
+            "duplicate encoding id",
+        ),  # type: ignore[index]
+        (
+            lambda c: c["series_overrides"].append({**c["series_overrides"][0], "id": "other"}),
+            "duplicate series key",
+        ),  # type: ignore[index]
+    ],
+)
+def test_rejects_duplicate_nested_ids_and_keys(mutate: object, message: str) -> None:
+    chart = _chart()
+    mutate(chart)  # type: ignore[operator]
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_charts([chart], context="test")

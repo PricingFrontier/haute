@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useState } from "react"
-import { ArrowLeft, Loader2, Plus, SlidersHorizontal, Table2 } from "lucide-react"
+import {
+  ArrowLeft,
+  Loader2,
+  Plus,
+  SlidersHorizontal,
+  Table2,
+  Trash2,
+} from "lucide-react"
 
 import type { ExplorePivotMembersResponse } from "../../api/types"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import { withAlpha } from "../../utils/color"
+import {
+  dependentChartsForPivot,
+  parseExploreCharts,
+  type ExploreChartConfig,
+} from "../explore/chartConfig"
 import {
   PIVOT_AGGREGATION_LABELS,
   createExplorePivot,
@@ -735,12 +747,16 @@ function PivotEditor({
 
 function PivotCardList({
   pivots,
+  charts,
   onUpdate,
   onConfigure,
+  onDelete,
 }: {
   pivots: ExplorePivotConfig[]
+  charts: ExploreChartConfig[]
   onUpdate: (pivot: ExplorePivotConfig) => void
   onConfigure: (pivotId: string) => void
+  onDelete: (pivot: ExplorePivotConfig) => void
 }) {
   return (
     <div data-testid="explore-pivots-config" className="flex flex-col gap-3 px-4 py-3">
@@ -780,15 +796,20 @@ function PivotCardList({
         </div>
       ) : (
         <div className="flex flex-col gap-2">
-          {pivots.map((pivot) => (
-            <div
-              key={pivot.id}
-              role="group"
-              aria-label={pivot.name}
-              className="flex items-center overflow-hidden rounded-lg"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
-            >
-              <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2">
+          {pivots.map((pivot) => {
+            const dependents = dependentChartsForPivot(charts, pivot.id)
+            return (
+              <div
+                key={pivot.id}
+                role="group"
+                aria-label={pivot.name}
+                className="flex items-center overflow-hidden rounded-lg"
+                style={{
+                  background: "var(--bg-input)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2">
                 <span
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
                   style={{
@@ -798,28 +819,59 @@ function PivotCardList({
                 >
                   <Table2 size={15} aria-hidden="true" />
                 </span>
-                <label className="min-w-0 flex-1 text-xs font-semibold">
-                  <input
-                    type="checkbox"
-                    aria-label={`Show ${pivot.name}`}
-                    checked={pivot.enabled}
-                    onChange={(event) => onUpdate({ ...pivot, enabled: event.target.checked })}
-                  />{" "}
-                  {pivot.name}
-                </label>
+                  <span className="min-w-0 flex-1">
+                    <label className="block text-xs font-semibold">
+                      <input
+                        type="checkbox"
+                        aria-label={`Show ${pivot.name}`}
+                        checked={pivot.enabled}
+                        onChange={(event) =>
+                          onUpdate({ ...pivot, enabled: event.target.checked })
+                        }
+                      />{" "}
+                      {pivot.name}
+                    </label>
+                    {dependents.length > 0 && (
+                      <span
+                        className="mt-0.5 block truncate text-[10px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        Used by {dependents.map(({ name }) => name).join(", ")}
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  aria-label={`Delete ${pivot.name}`}
+                  title={
+                    dependents.length > 0
+                      ? `Reassign or remove ${dependents.map(({ name }) => name).join(", ")} first.`
+                      : `Delete ${pivot.name}`
+                  }
+                  disabled={dependents.length > 0}
+                  onClick={() => onDelete(pivot)}
+                  className="inline-flex shrink-0 items-center rounded p-1.5 disabled:cursor-not-allowed disabled:opacity-35"
+                  style={{ color: "var(--danger)" }}
+                >
+                  <Trash2 size={12} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Configure ${pivot.name}`}
+                  onClick={() => onConfigure(pivot.id)}
+                  className="m-1.5 inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold"
+                  style={{
+                    color: "var(--text-secondary)",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  <SlidersHorizontal size={11} aria-hidden="true" />
+                  Configure
+                </button>
               </div>
-              <button
-                type="button"
-                aria-label={`Configure ${pivot.name}`}
-                onClick={() => onConfigure(pivot.id)}
-                className="m-1.5 inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold"
-                style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-              >
-                <SlidersHorizontal size={11} aria-hidden="true" />
-                Configure
-              </button>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
@@ -835,8 +887,10 @@ export default function ExplorePivotsConfig({
 }: ExplorePivotsConfigProps) {
   const [configuredPivotId, setConfiguredPivotId] = useState<string | null>(null)
   const parsed = parseExplorePivots(config)
+  const parsedCharts = parseExploreCharts(config)
 
   if (!parsed.ok) return <ConfigError error={parsed.error} />
+  if (!parsedCharts.ok) return <ConfigError error={parsedCharts.error} />
   const { pivots } = parsed
   const configuredPivot = configuredPivotId
     ? pivots.find((candidate) => candidate.id === configuredPivotId)
@@ -872,8 +926,16 @@ export default function ExplorePivotsConfig({
   return (
     <PivotCardList
       pivots={pivots}
+      charts={parsedCharts.charts}
       onUpdate={persistPivot}
       onConfigure={setConfiguredPivotId}
+      onDelete={(pivot) => {
+        if (!window.confirm(`Delete ${pivot.name}?`)) return
+        onUpdate(
+          "pivots",
+          pivots.filter((candidate) => candidate.id !== pivot.id),
+        )
+      }}
     />
   )
 }

@@ -8,8 +8,12 @@ const staticDir = path.resolve(__dirname, "../../src/haute/static")
 const assetsDir = path.join(staticDir, "assets")
 const indexHtmlPath = path.join(staticDir, "index.html")
 
-const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1100
+// PivotCharts deliberately add a 195.6 KiB gzip ECharts core chunk beneath the
+// lazy Charts pane. The 1,300 KiB aggregate cap keeps ~19 KiB headroom while a
+// separate chart-vendor cap below prevents that dependency consuming it.
+const DEFAULT_MAX_TOTAL_JS_GZIP_KIB = 1300
 const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
+const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Initial JS is ~240 KiB gzip after the version-control feature merged in. All
 // on-demand VC surfaces (comparison view, git panel, the VC modals) are
 // React.lazy code-split, so the remaining weight is genuine non-splittable
@@ -45,7 +49,10 @@ const DEFAULT_MAX_SINGLE_JS_GZIP_KIB = 650
 // appeared late would leave the user believing unsaved work was safe. Its
 // dialogs (bind, upstream sync, identity) are all lazy. The merged initial
 // bundle is 253.1 KiB; 255 KiB restores about 1.9 KiB of headroom.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 255
+// Explore Pivot/PivotChart contracts, retained-result state, and pane dispatch
+// bring the merged startup bundle to 256.4 KiB without importing the chart
+// runtime. 258 KiB preserves a narrow ~1.6 KiB regression tripwire.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 258
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely
@@ -55,6 +62,9 @@ export const LAZY_ONLY_MODULEPRELOAD_CHUNK_PREFIXES = [
   "UtilityPanel",
   "vendor-codemirror",
   "vendor-layout",
+  "vendor-charts",
+  "chartRuntime",
+  "ExploreChartsPane",
   "TransformEditor",
   "ModelScoreEditor",
   "BandingEditor",
@@ -214,6 +224,18 @@ export function collectJsAssets(directory) {
     .sort((a, b) => b.gzipBytes - a.gzipBytes)
 }
 
+/**
+ * @param {{
+ *   html: string,
+ *   jsAssets: Array<{ name: string, rawBytes: number, gzipBytes: number }>,
+ *   budgetsKiB: {
+ *     maxInitialJsGzipKiB: number,
+ *     maxTotalJsGzipKiB: number,
+ *     maxSingleJsGzipKiB: number,
+ *     maxChartVendorJsGzipKiB?: number,
+ *   },
+ * }} input
+ */
 export function evaluateBundleBudgets({
   html,
   jsAssets,
@@ -240,6 +262,9 @@ export function evaluateBundleBudgets({
   const totalGzipBytes = jsAssets.reduce((sum, asset) => sum + asset.gzipBytes, 0)
   const initialGzipBytes = initialAssets.reduce((sum, asset) => sum + asset.gzipBytes, 0)
   const largest = jsAssets[0]
+  const chartVendorAsset = jsAssets.find(
+    (asset) => asset.name === "vendor-charts.js" || asset.name.startsWith("vendor-charts-"),
+  )
   const failures = []
 
   for (const assetName of parseModulepreloadJsAssetNames(html)) {
@@ -271,10 +296,22 @@ export function evaluateBundleBudgets({
     )
   }
 
+  if (
+    chartVendorAsset &&
+    budgetsKiB.maxChartVendorJsGzipKiB != null &&
+    chartVendorAsset.gzipBytes > budgetsKiB.maxChartVendorJsGzipKiB * 1024
+  ) {
+    failures.push(
+      `Chart vendor JS chunk ${chartVendorAsset.name} is ${formatKiB(chartVendorAsset.gzipBytes)}, ` +
+        `above budget ${budgetsKiB.maxChartVendorJsGzipKiB} KiB.`,
+    )
+  }
+
   return {
     failures,
     initialAssets,
     initialGzipBytes,
+    chartVendorAsset,
     jsAssets,
     largest,
     totalGzipBytes,
@@ -294,6 +331,10 @@ function run() {
     maxSingleJsGzipKiB: parseBudgetKiB(
       "HAUTE_BUNDLE_MAX_SINGLE_GZIP_KIB",
       DEFAULT_MAX_SINGLE_JS_GZIP_KIB,
+    ),
+    maxChartVendorJsGzipKiB: parseBudgetKiB(
+      "HAUTE_BUNDLE_MAX_CHART_VENDOR_GZIP_KIB",
+      DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB,
     ),
   }
 
@@ -320,6 +361,12 @@ function run() {
     console.log(`  ${asset.name}: ${formatKiB(asset.gzipBytes)} gzip (${formatKiB(asset.rawBytes)} raw)`)
   }
   console.log(`  total: ${formatKiB(result.totalGzipBytes)} gzip`)
+  if (result.chartVendorAsset) {
+    console.log(
+      `  chart vendor: ${formatKiB(result.chartVendorAsset.gzipBytes)} gzip ` +
+        `(budget ${budgetsKiB.maxChartVendorJsGzipKiB} KiB)`,
+    )
+  }
   console.log("")
   console.log("Initial JavaScript gzip sizes:")
   for (const asset of result.initialAssets) {

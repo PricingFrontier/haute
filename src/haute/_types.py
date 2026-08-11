@@ -347,11 +347,65 @@ class ExploreOverviewConfig(TypedDict, total=False):
     schema: bool
 
 
-class ExploreChartConfig(TypedDict):
-    """Persisted state for one Explore chart card."""
+class ExploreChartStyle(TypedDict):
+    mark: Literal["column", "line", "area"]
+    axis: Literal["primary", "secondary"]
+    stack_group: str | None
+    color: str | None
+    data_labels: bool
+    markers: bool
 
+
+class ExploreChartValueEncoding(ExploreChartStyle):
     id: str
+    value_id: str
+
+
+class ExploreChartSeriesOverride(ExploreChartStyle):
+    id: str
+    series_key: str
+
+
+class ExploreChartCategory(TypedDict):
+    source: Literal["rows"]
+    include_subtotals: bool
+    include_grand_total: bool
+    label_rotation: int
+
+
+class ExploreChartAxis(TypedDict):
+    title: str
+    minimum: int | float | None
+    maximum: int | float | None
+    number_format: Literal[
+        "inherit", "number", "integer", "percent", "currency_gbp", "currency_usd", "currency_eur"
+    ]
+
+
+class ExploreChartAxes(TypedDict):
+    primary: ExploreChartAxis
+    secondary: ExploreChartAxis
+
+
+class ExploreChartLegend(TypedDict):
+    visible: bool
+    position: Literal["top", "right", "bottom", "left"]
+
+
+class ExploreChartConfig(TypedDict):
+    """Persisted version-1 state for one Explore chart card."""
+
+    version: Literal[1]
+    id: str
+    name: str
     enabled: bool
+    pivot_id: str | None
+    kind: Literal["combo"]
+    category: ExploreChartCategory
+    value_encodings: list[ExploreChartValueEncoding]
+    series_overrides: list[ExploreChartSeriesOverride]
+    axes: ExploreChartAxes
+    legend: ExploreChartLegend
 
 
 class ExplorePivotMember(TypedDict):

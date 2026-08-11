@@ -14,8 +14,8 @@
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
-| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot v0/v1 parsing and calculation identity; enabled-section lifecycle; virtualised semantic matrix rendering. |
-| `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Strict chart-card config parsing/shared identities and enabled-placeholder visualisation dispatch. |
+| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot v0/v1 parsing and calculation identity; shared table/chart run and cancel lifecycle; enabled-section lifecycle; virtualised semantic matrix rendering. |
+| `frontend/src/panels/explore/chartConfig.ts`, `chartData.ts`, `chartOptions.ts`, `chartRuntime.ts`, `ComboChart.tsx`, `ExploreChartsPane.tsx` | Versioned chart parsing/linkage/presets; pure typed pivot adapter; safe renderer options; narrow ECharts registration/lifecycle/accessibility; enabled-card state dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
@@ -64,8 +64,8 @@
 4. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
    `frontend/src/panels/explore/chartConfig.ts` instead returns an explicit parse failure for a
-   malformed `charts` block. The Charts pane renders that diagnostic, or renders enabled chart
-   placeholders in persisted order without requiring an Explore cache report.
+   malformed `charts` block. The Charts pane renders that diagnostic or resolves enabled charts
+   against current pivots and retained pivot result state in persisted order.
 5. Schema, numeric-summary, and categorical-summary cards derive a `TableGrid` from the exact
    display fields they render and pass it to `ExploreTableActions`. Copy serialises the header
    and every exported row as TSV; download uses the shared CSV escaping helper. Schema supplies
@@ -95,6 +95,27 @@
    The scroll container row-window renders viewport rows plus overscan and uses spacer rows to
    preserve the complete scroll height. Horizontal overflow remains native so keyboard and
    assistive technology semantics are not replaced by a div grid.
+
+### PivotChart results
+
+1. The Charts pane parses current v1 charts and pivots, reads existing composite pivot job/result
+   entries, and resolves each enabled card independently. It never starts work on mount. Update/
+   Cancel use the selected pivot's existing run/status/cancel lifecycle; chart appearance, name,
+   ordering, and visibility do not touch that lifecycle.
+2. A source is fresh only when its retained result dataframe key matches the current Explore
+   report and its stored frontend calculation identity matches the current pivot. A fresh source
+   is adapted separately for each chart, allowing presentation differences without copying or
+   recalculating the matrix. Draft and missing ids are distinct and never use the first pivot.
+3. `ComboChart` lazy-loads the registered ECharts core runtime, builds options solely from the
+   closed adapter dataset/config, observes its container, resizes on geometry changes, and
+   disposes on data replacement/unmount. The chart-card grid auto-fits against the available pane
+   width with a 28 rem target minimum rather than using a viewport breakpoint, so an open side
+   panel cannot force unreadably narrow cards. The accessible summary and semantic table derive
+   from the same dataset as the visual chart.
+4. The production bundle gate rejects any startup preload of the chart pane/runtime/vendor,
+   caps the narrowly imported `vendor-charts` chunk at 205 KiB gzip, and keeps the measured
+   application limits at 258 KiB initial and 1,300 KiB total gzip. Chart capability therefore
+   pays its cost only after Charts is opened and cannot quietly grow inside the aggregate budget.
 
 `DataPreview` consumes guarded version-1 execution metrics through
 `ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states stay

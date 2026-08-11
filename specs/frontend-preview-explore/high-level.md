@@ -32,10 +32,14 @@ Modelling and optimiser result presentation belongs to
 - Schema rows and their exports include concise profile cues supplied by the report: identifier
   candidate, high cardinality, text length range/mean, and temporal span. Exact duplicate-row
   findings appear through the existing Data Quality issue list.
-- Charts renders one ordered placeholder visualisation for every enabled chart card in the
-  Explore node config. Disabled cards are absent. A node with no cards and a node whose cards are
-  all disabled have distinct accessible empty states; chart settings and data-driven chart
-  drawing are deferred.
+- Charts is lazy-loaded and renders enabled PivotCharts in persisted order. Each independently
+  resolves its selected pivot's retained result and renders explicit draft, missing-source,
+  unconfigured, cache-required, loading, stale, pivot-error, adapter-error, render-error, or ready
+  state. Several charts can share one pivot result without another calculation.
+- Ready ComboCharts support column/line/area series, clustered and explicit stacks, primary and
+  secondary axes, safe tooltips, deterministic colours, markers/labels, legend, bounds, theme and
+  reduced-motion changes. Every card includes a textual summary and toggleable semantic data table;
+  one card's error never hides successful siblings.
 - Pivots is lazy-loaded. Enabled cards render in persisted order as independent full-width
   sections; disabled cards are hidden without deleting retained results. Distinct empty,
   all-disabled, malformed, unconfigured, cache-required, loading, stale, error, and fresh states

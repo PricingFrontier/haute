@@ -14,15 +14,15 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 |---|---|---:|---|
 | EDA-E09 | Planned | P2 | Add bounded server-binned distributions. |
 | EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
-| EDA-E14 | Planned | P2 | Establish the versioned pivot-card contract, toggles, and lower preview shell. |
-| EDA-E15 | Planned | P2 | Add Excel-style Filter/Columns/Rows/Values authoring. |
-| EDA-E16 | Planned | P2 | Add bounded, cached, cancellable pivot calculation. |
-| EDA-E17 | Planned | P2 | Render every enabled pivot as a full-width result table. |
+| EDA-E14 | Delivered | P2 | Establish the versioned pivot-card contract, toggles, and lower preview shell. |
+| EDA-E15 | Delivered | P2 | Add Excel-style Filter/Columns/Rows/Values authoring. |
+| EDA-E16 | Delivered | P2 | Add bounded, cached, cancellable pivot calculation. |
+| EDA-E17 | Delivered | P2 | Render every enabled pivot as a full-width result table. |
 | EDA-E18 | Deferred | P3 | Add advanced Excel-parity pivot operations after the MVP is proven. |
-| EDA-E19 | Planned | P2 | Establish versioned PivotChart cards linked to stable pivot identities. |
-| EDA-E20 | Planned | P2 | Adapt typed pivot results into deterministic, bounded chart datasets. |
-| EDA-E21 | Planned | P2 | Add PivotChart source selection and Excel-style ComboChart configuration. |
-| EDA-E22 | Planned | P2 | Render accessible, responsive, independently stateful ComboCharts. |
+| EDA-E19 | Delivered | P2 | Establish versioned PivotChart cards linked to stable pivot identities. |
+| EDA-E20 | Delivered | P2 | Adapt typed pivot results into deterministic, bounded chart datasets. |
+| EDA-E21 | Delivered | P2 | Add PivotChart source selection and Excel-style ComboChart configuration. |
+| EDA-E22 | Delivered | P2 | Render accessible, responsive, independently stateful ComboCharts. |
 | EDA-E23 | Deferred | P3 | Add shared PivotChart filtering and hierarchy interactions. |
 | EDA-E24 | Deferred | P3 | Add broader PivotChart types, export, and advanced presentation features. |
 
@@ -307,7 +307,8 @@ The version-1 persisted chart shape is:
   "category": {
     "source": "rows",
     "include_subtotals": false,
-    "include_grand_total": false
+    "include_grand_total": false,
+    "label_rotation": 0
   },
   "value_encodings": [
     {
@@ -317,7 +318,8 @@ The version-1 persisted chart shape is:
       "axis": "primary",
       "stack_group": null,
       "color": null,
-      "data_labels": false
+      "data_labels": false,
+      "markers": false
     },
     {
       "id": "encoding_2",
@@ -496,7 +498,7 @@ general PivotChart engine.
 
 **Plan:** Replace each enabled placeholder with an independently stateful
 ComboChart fed only by the EDA-E20 adapter. Use a narrowly imported Apache
-ECharts runtime (`echarts/core`) with Bar/Line, Grid, Dataset, Tooltip, Legend,
+ECharts runtime (`echarts/core`) with Bar/Line, Grid, Tooltip, Legend,
 Title, DataZoom, ARIA, and SVG renderer modules. Load the runtime only through
 the already lazy Charts pane, isolate it in a chart vendor chunk, and keep it
 out of initial module preloads. Build options through a pure typed function;

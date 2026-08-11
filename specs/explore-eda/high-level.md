@@ -27,9 +27,12 @@ In scope:
 - Validating the `overview` config dict attached to an Explore node — the set of toggle cards
   (`dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary`, `schema`) a user
   has enabled, plus round-trip-safe storage of any unrecognised keys.
-- Validating the ordered `charts` config list attached to an Explore node. Every card has a
-  unique non-empty string `id` and Boolean `enabled` state; unknown simple-literal fields are
-  retained for forwards-compatible chart settings.
+- Validating the ordered, versioned `charts` config list attached to an Explore node. Version-0
+  `{id, enabled}` cards migrate once to version 1 using the first available `Chart N` name across
+  both legacy and version-1 cards. Every v1 ComboChart has a unique id and
+  case-insensitively unique name, a nullable stable pivot id, typed category/Value/series
+  mappings, two typed numeric axes, and a typed legend; unknown simple-literal fields remain
+  round-trippable at every supported nesting level.
 - Validating the ordered, versioned `pivots` config list attached to an Explore node. Version-0
   `{id}` cards migrate once at this trust boundary to version 1. Every v1 card has a unique id,
   case-insensitively unique name, visibility state, typed Filter/Columns/Rows/Values placements,
@@ -41,6 +44,10 @@ In scope:
 - Producing a versioned, typed pivot matrix whose stable row paths, column paths, value identities,
   cells, grand-total markers, warnings, and execution metrics can feed both pivot tables and
   PivotCharts without another aggregation path.
+- Resolving PivotChart references only against pivots on the same Explore node. A null source is
+  an editable draft and an unknown id is a broken reference; neither silently selects another
+  pivot. Pivot visibility does not affect source eligibility, while deletion is refused when a
+  chart still references that pivot.
 
 Out of scope (owned elsewhere):
 
@@ -153,11 +160,18 @@ Out of scope (owned elsewhere):
   a newer UI's overview cards remain readable by, and rewritable through, an older parser/codegen
   pair. An empty `overview` dict is preserved as empty (not defaulted) so callers can choose to
   omit the config entirely rather than emit `overview={}`.
-- `validate_explore_charts` accepts only a list of dicts. Each item requires a non-empty string
-  `id` identity and a Boolean `enabled` state; ids must be unique within the list. Unknown
-  string-keyed fields are preserved when their values use the same finite, recursively
-  simple-literal grammar as unknown overview values. An empty list remains empty so parser/codegen
-  callers can omit `charts=[]`.
+- `validate_explore_charts` accepts only a list of dicts. A versionless item is the sole v0 shape
+  and requires `id` plus Boolean `enabled`; it migrates to a complete v1 draft with the first
+  available `Chart N` name. A v1 chart requires
+  supported `version: 1`, unique non-empty id/name, Boolean enabled, `pivot_id` null or non-empty,
+  `kind: "combo"`, one Rows category mapping, ordered Value encodings and exact-series overrides,
+  complete primary/secondary axes, and a complete legend. Nested mapping ids, Value ids, and exact
+  series keys are unique in their scopes; `value_id` belongs only to Value encodings and
+  `series_key` only to exact-series overrides, so either identity is rejected in the other shape.
+  Marks, axes, colours, stack groups, label/marker flags,
+  number formats, legend positions, category rotation, and finite ordered manual bounds are
+  strictly typed. Unknown string-keyed fields survive only under the finite recursively
+  simple-literal grammar. An empty list remains empty so callers may omit `charts=[]`.
 - `validate_explore_pivots` accepts only a list of dicts. An item without `version` is the sole
   v0 shape and migrates to a complete v1 card using its list position for the default `Pivot N`
   name. A v1 card requires exactly supported `version: 1`, non-empty `id` and `name`, Boolean
@@ -168,6 +182,29 @@ Out of scope (owned elsewhere):
   is type checked and unknown string-keyed fields are retained only when they use the finite,
   recursively simple-literal grammar. An empty list remains empty so callers may omit
   `pivots=[]`.
+
+## PivotChart invariants
+
+- A chart consumes only one successful guarded `ExplorePivotResult`; it never reads a dataframe,
+  executes a graph, aggregates, samples, or owns a backend route/job/cache. Any chart-level Update
+  and Cancel action delegates to the selected pivot's existing lifecycle.
+- Rows form ordered hierarchical categories. The ordered product of ordinary Column paths and
+  pivot Values forms series. Each series key is the canonical versioned JSON identity of the
+  Value placement id plus the complete typed Column-member path, so typed members cannot collide.
+  Row/Column grand totals are included only when requested.
+- Every pivot Value has one explicit Value encoding. Exact series overrides replace that
+  Value-level style only for a matching generated series; unmatched overrides remain dormant and
+  visible rather than being discarded. Newly observed Column members inherit the explicit Value
+  encoding. Null cells are gaps. Boolean, malformed, or non-finite numeric cells fail with
+  remediation rather than becoming zero.
+- The renderer-neutral adapter limit is 500 categories, 100 series, 20,000 rendered points,
+  hierarchy depth 6, and 200 characters per rendered category/series label. Exceeding a limit
+  reports its measured dimension and directs the analyst to reduce Pivot Rows, Columns, Values,
+  or Filters. No chart is truncated or downsampled.
+- Supported marks are clustered/stacked `column`, `line`, and `area` on primary or secondary
+  numeric axes. Safe number formats are `inherit`, `number`, `integer`, `percent`,
+  `currency_gbp`, `currency_usd`, and `currency_eur`; persisted configuration cannot inject raw
+  renderer options, callbacks, HTML, URLs, or executable formatters.
 
 ## Design rationale
 

@@ -23,7 +23,7 @@
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
-| `frontend/src/panels/explore/chartConfig.ts` | Validates the persisted ordered `charts` array, preserves future round-trippable fields on valid cards, allocates the first unused `chart_N` id, and supplies order-derived labels. |
+| `frontend/src/panels/explore/chartConfig.ts` | Mirrors chart v0/v1 validation, preserves future round-trippable fields, allocates ids/names, resolves pivot links/dependants, and applies typed ComboChart presets. |
 | `frontend/src/panels/explore/pivotConfig.ts` | Validates the persisted ordered `pivots` array, preserves future round-trippable fields on valid cards, allocates the first unused `pivot_N` id, and supplies order-derived labels. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
 | `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
@@ -223,17 +223,32 @@ only complete `outputMapping` rows; API Input builds only `tables`.
 `NODE_TYPE_META` supplies those canonical defaults, and Optimiser Apply derives
 mode only from persisted `params.mode`.
 
-**Explore chart-card workflow.** The Explore node's `charts` config is an ordered array of
-objects with a unique non-empty `id` and Boolean `enabled` field. `ExploreChartsConfig` renders
-one visual card per entry. Its primary native button has checkbox semantics and flips only that
-entry's `enabled` value; its sibling `Configure` button cannot also toggle the card. `Add Chart`
-chooses the first unused `chart_N` id, appends `{id, enabled: true}`, and therefore makes the new
-placeholder immediately visible in the Explore Charts preview. Configuration navigation is
-editor-local by chart id: `Configure` replaces the list with the deferred-settings subview and
-`Back to charts` restores the list. It does not create an additional persisted mode flag.
-Malformed containers, card shapes, duplicate ids, or wrong-typed known fields render an explicit
-diagnostic and expose no mutating controls; valid unknown card fields are retained by toggle
-writes so later chart settings can round-trip through an older UI.
+**Explore chart-card workflow.** `parseExploreCharts` mirrors the backend chart trust boundary:
+versionless `{id, enabled}` cards migrate to complete v1 drafts, all known nested fields are
+validated, and unknown simple-literal fields are retained. `Add Chart` writes the first unused
+`chart_N`, first unused `Chart N` name, `enabled: true`, `pivot_id: null`, `kind: "combo"`, empty
+encodings/overrides, Rows category defaults, automatic primary/secondary axes, and bottom legend.
+The card label is its persisted name. A labelled native checkbox updates only enabled; Configure
+and Back change only local navigation. Delete asks for confirmation and removes only the selected
+card, allowing a no-longer-needed PivotChart dependency to be released deliberately.
+
+Configure parses the same node's ordered pivots and lists every pivot, irrespective of pivot
+visibility. Each option includes its current unconfigured/loading/error/stale/ready state and a
+hidden suffix where applicable. Selecting an initial source atomically seeds one default encoding
+per Pivot Value. Changing a populated source uses a confirmation dialog; cancel changes nothing,
+confirm replaces `pivot_id`, encodings, and overrides in one `onUpdate` call. With no pivots, an
+explicit action selects the Pivots editor pane without modifying config.
+
+Preset application atomically rewrites Value styles for clustered columns, stacked columns,
+lines, column plus line, column plus secondary-axis line, or stacked columns plus line. Native
+controls edit mark, axis, stack group, colour, markers, and labels per Value; when a result exists,
+the generated-series table can create/edit an exact override or reset it to the Value default.
+New exact overrides allocate the first unused `override_N` id across both Value encodings and
+existing overrides, preserving the card-wide nested-id uniqueness invariant.
+Axis inputs commit valid finite
+bounds with minimum less than maximum, closed number formats, and titles. Legend visibility/
+position and category rotation are committed controls. Missing pivot Values and dormant overrides
+are explicit; no editor action silently selects a source or invents a replacement mapping.
 
 **Explore pivot-card workflow.** `parseExplorePivots` is the frontend trust boundary matching
 `validate_explore_pivots`: it migrates versionless `{id}` entries to complete v1 cards, validates

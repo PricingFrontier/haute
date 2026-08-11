@@ -914,7 +914,12 @@ export default function NodePanel({
               />
             )}
             {activeExplorePane === "charts" && (
-              <ExploreChartsConfig config={config} onUpdate={handleConfigUpdate} />
+              <ExploreChartsConfig
+                config={config}
+                onUpdate={handleConfigUpdate}
+                nodeId={node.id}
+                onShowPivots={() => setExplorePane(node.id, "pivots")}
+              />
             )}
           </div>
         )

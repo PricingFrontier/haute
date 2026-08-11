@@ -294,7 +294,14 @@ export default function ExplorePreview({
                   report={report}
                 />
               ) : (
-                <ExploreChartsPane node={node} />
+                <ExploreChartsPane
+                  node={node}
+                  allNodes={allNodes}
+                  edges={edges}
+                  submodels={submodels}
+                  preamble={preamble}
+                  report={report}
+                />
               )}
             </Suspense>
           )}

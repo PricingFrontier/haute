@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import get_type_hints
+from typing import Literal, get_type_hints
 
 import pytest
 
@@ -17,10 +17,19 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    ExploreChartAxes,
+    ExploreChartCategory,
     ExploreChartConfig,
+    ExploreChartLegend,
+    ExploreChartSeriesOverride,
+    ExploreChartValueEncoding,
     ExploreConfig,
     ExploreOverviewConfig,
+    ExplorePivotAxisPlacement,
     ExplorePivotConfig,
+    ExplorePivotFilterPlacement,
+    ExplorePivotOptions,
+    ExplorePivotValuePlacement,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,
@@ -547,8 +556,30 @@ class TestSelectedColumnsUniversal:
             "pivots": list[ExplorePivotConfig],
             "charts": list[ExploreChartConfig],
         }
-        assert get_type_hints(ExploreChartConfig) == {"id": str, "enabled": bool}
-        assert get_type_hints(ExplorePivotConfig) == {"id": str}
+        assert get_type_hints(ExploreChartConfig) == {
+            "version": Literal[1],
+            "id": str,
+            "name": str,
+            "enabled": bool,
+            "pivot_id": str | None,
+            "kind": Literal["combo"],
+            "category": ExploreChartCategory,
+            "value_encodings": list[ExploreChartValueEncoding],
+            "series_overrides": list[ExploreChartSeriesOverride],
+            "axes": ExploreChartAxes,
+            "legend": ExploreChartLegend,
+        }
+        assert get_type_hints(ExplorePivotConfig) == {
+            "version": Literal[1],
+            "id": str,
+            "name": str,
+            "enabled": bool,
+            "filters": list[ExplorePivotFilterPlacement],
+            "columns": list[ExplorePivotAxisPlacement],
+            "rows": list[ExplorePivotAxisPlacement],
+            "values": list[ExplorePivotValuePlacement],
+            "options": ExplorePivotOptions,
+        }
         overview_hints = get_type_hints(ExploreOverviewConfig)
         assert overview_hints == {
             "dataset_snapshot": bool,

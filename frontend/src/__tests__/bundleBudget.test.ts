@@ -68,12 +68,14 @@ describe("bundle size checker initial JS budget", () => {
         <link rel="modulepreload" href="/assets/vendor-react.js">
         <link rel="modulepreload" href="/assets/CodeMirrorEditor-abc.js">
         <link rel="modulepreload" href="/assets/vendor-layout-def.js">
+        <link rel="modulepreload" href="/assets/vendor-charts-ghi.js">
       `,
       jsAssets: [
         { name: "index.js", rawBytes: 100, gzipBytes: 50 * 1024 },
         { name: "vendor-react.js", rawBytes: 100, gzipBytes: 100 * 1024 },
         { name: "CodeMirrorEditor-abc.js", rawBytes: 100, gzipBytes: 10 * 1024 },
         { name: "vendor-layout-def.js", rawBytes: 100, gzipBytes: 20 * 1024 },
+        { name: "vendor-charts-ghi.js", rawBytes: 100, gzipBytes: 30 * 1024 },
       ],
       budgetsKiB: {
         maxInitialJsGzipKiB: 240,
@@ -87,6 +89,9 @@ describe("bundle size checker initial JS budget", () => {
     )
     expect(result.failures).toContain(
       'Lazy-only JS chunk "vendor-layout-def.js" must not be modulepreloaded by index.html.',
+    )
+    expect(result.failures).toContain(
+      'Lazy-only JS chunk "vendor-charts-ghi.js" must not be modulepreloaded by index.html.',
     )
   })
 
@@ -110,6 +115,30 @@ describe("bundle size checker initial JS budget", () => {
 
     expect(result.initialAssets.map((asset) => asset.name)).toEqual(["index.js", "vendor-react.js"])
     expect(result.failures).toEqual([])
+  })
+
+  it("caps the lazy chart vendor independently of the aggregate bundle", () => {
+    const result = checker.evaluateBundleBudgets({
+      html: '<script type="module" src="/assets/index.js"></script>',
+      jsAssets: [
+        { name: "index.js", rawBytes: 100, gzipBytes: 10 * 1024 },
+        {
+          name: "vendor-charts-abc.js",
+          rawBytes: 100,
+          gzipBytes: 206 * 1024,
+        },
+      ],
+      budgetsKiB: {
+        maxInitialJsGzipKiB: 100,
+        maxTotalJsGzipKiB: 500,
+        maxSingleJsGzipKiB: 300,
+        maxChartVendorJsGzipKiB: 205,
+      },
+    })
+
+    expect(result.failures).toContain(
+      "Chart vendor JS chunk vendor-charts-abc.js is 206.0 KiB, above budget 205 KiB.",
+    )
   })
 
   it("fails loudly when startup HTML references a missing initial JavaScript asset", () => {
