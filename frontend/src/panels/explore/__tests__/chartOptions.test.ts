@@ -53,7 +53,6 @@ function configuredChart(overrides: Partial<ExploreChartConfig> = {}): ExploreCh
     pivot_id: "pivot_1",
     category: {
       source: "rows",
-      include_subtotals: false,
       include_grand_total: false,
       label_rotation: 45,
     },

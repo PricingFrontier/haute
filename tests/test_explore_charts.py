@@ -21,7 +21,6 @@ def _chart() -> dict[str, object]:
         "kind": "combo",
         "category": {
             "source": "rows",
-            "include_subtotals": False,
             "include_grand_total": False,
             "label_rotation": 0,
         },
@@ -75,7 +74,6 @@ def test_migrates_v0_with_defaults_order_and_future_fields() -> None:
             "kind": "combo",
             "category": {
                 "source": "rows",
-                "include_subtotals": False,
                 "include_grand_total": False,
                 "label_rotation": 0,
             },
@@ -142,7 +140,7 @@ def test_full_v1_is_deeply_detached_including_nested_future_fields() -> None:
         (lambda c: c.update(pivot_id=" "), "pivot id must be null or a non-empty string"),
         (lambda c: c.update(kind="bar"), "unsupported kind"),
         (lambda c: c["category"].update(source="columns"), "unsupported category source"),  # type: ignore[index]
-        (lambda c: c["category"].update(include_subtotals=1), "must be a boolean"),  # type: ignore[index]
+        (lambda c: c["category"].update(include_grand_total=1), "must be a boolean"),  # type: ignore[index]
         (lambda c: c["category"].update(label_rotation=91), "label rotation"),  # type: ignore[index]
         (lambda c: c["category"].update(label_rotation=True), "label rotation"),  # type: ignore[index]
         (lambda c: c["value_encodings"][0].update(mark="pie"), "unsupported mark"),  # type: ignore[index]

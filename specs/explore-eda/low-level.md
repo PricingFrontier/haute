@@ -121,8 +121,11 @@
   Integer and decimal payloads are canonical decimal strings, temporal payloads are ISO strings,
   finite floats are JSON numbers, and null/NaN carry `value: null`. The members endpoint returns
   a display label and count beside the key, sorted by count descending then typed canonical key.
-- Every job record carries `kind: "pivot"`; pivot status/cancel reject a non-pivot job id even
-  though Explore materialisation and pivot calculation share the Explore job-store namespace.
+- Explore materialisation and pivot calculation share the Explore job-store namespace, and every
+  job record carries its owning kind: `kind: "explore"` for materialisation jobs and
+  `kind: "pivot"` for pivot jobs. Each service's status and cancel reject a job id whose kind it
+  does not own with a 404, so an Explore cancel can never mark a pivot job cancelled without
+  signalling its pivot cancellation token, and vice versa.
 
 ## PivotChart adapter invariants
 
@@ -180,8 +183,9 @@
       `ExploreRunResponse(status="completed", cached=True, result=report)`.
    c. For `refresh: true`, bypass those hits, evict the exact process report/dataframe entries, and
       leave the selected durable generation untouched until a replacement succeeds.
-   d. Otherwise create a job via `JobStore.create_job` with initial fields (`status="running"`,
-      `progress=0.0`, `node_id`, `upstream_node_id`, `source`, `analysis_key`).
+   d. Otherwise create a job via `JobStore.create_job` with initial fields (`kind="explore"`,
+      `status="running"`, `progress=0.0`, `node_id`, `upstream_node_id`, `source`,
+      `analysis_key`).
    e. `CancellableJobRegistry.register_latest(spec.family_key, job_id)` returns a cancellation
       token and the previous job id (if any) for the same family. If a previous job existed, it
       is transitioned to `superseded` via `JobLifecycle.transition` (guarded by

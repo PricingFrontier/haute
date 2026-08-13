@@ -122,6 +122,24 @@ def _materialise(client: TestClient, graph: dict[str, Any]) -> dict[str, Any]:
     return final["result"]
 
 
+def _wait_for_pivot_worker(job_id: str, timeout: float = 5.0) -> None:
+    """Wait for a pivot job's worker thread to finish its terminal handling.
+
+    A blocked worker observes cancellation or supersession asynchronously;
+    returning before it completes would let test teardown remove the job
+    record while the worker is still mid-transition.
+    """
+    from haute.routes.explore import _pivot_service
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _pivot_service._completion_lock:
+            if job_id not in _pivot_service._completion_events:
+                return
+        time.sleep(0.01)
+    raise TimeoutError(job_id)
+
+
 def _run_pivot(
     client: TestClient,
     graph: dict[str, Any],
@@ -766,12 +784,37 @@ def test_newer_pivot_job_supersedes_only_the_same_card_family(
         return original(spec, context)
 
     monkeypatch.setattr(_pivot_service, "_calculate", first_call_blocks)
+
     first = client.post(
         "/api/explore/pivots/run",
         json={"graph": graph, "node_id": "explore", "source": "live", "pivot": _pivot()},
     ).json()
     assert first["status"] == "started"
     assert first_started.wait(3)
+
+    # Starting a sibling pivot (a different card, therefore a different
+    # family) registers it synchronously before its worker runs. If the
+    # family key wrongly ignored the pivot id, this registration would
+    # supersede the running first job right here — so this is the assertion
+    # that fails against that regression.
+    sibling = client.post(
+        "/api/explore/pivots/run",
+        json={
+            "graph": graph,
+            "node_id": "explore",
+            "source": "live",
+            "pivot": _pivot(id="pivot_2", name="Sibling pivot"),
+        },
+    ).json()
+    assert sibling["status"] == "started"
+    first_after_sibling = client.get(f"/api/explore/pivots/status/{first['job_id']}").json()
+    assert first_after_sibling["status"] == "running"
+
+    # The sibling reaches its own terminal state: completed if execution
+    # admission had headroom beside the blocked first job, memory_limited if
+    # not — never superseded or cancelled by the other family.
+    sibling_final = _poll(client, "/api/explore/pivots/status", sibling["job_id"])
+    assert sibling_final["status"] in {"completed", "memory_limited"}, sibling_final
 
     updated = _pivot(
         values=[
@@ -795,6 +838,76 @@ def test_newer_pivot_job_supersedes_only_the_same_card_family(
     assert first_status["status"] == "superseded"
     assert first_status["result"] is None
     assert first_finished.wait(3)
+    _wait_for_pivot_worker(first["job_id"])
+
+    # The same-family supersession above must not have touched the sibling's
+    # terminal state or its published result.
+    sibling_status = client.get(f"/api/explore/pivots/status/{sibling['job_id']}").json()
+    assert sibling_status["status"] == sibling_final["status"]
+    assert sibling_status["result"] == sibling_final["result"]
+
+
+def test_explore_and_pivot_endpoints_reject_each_others_job_ids(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes.explore import _pivot_service
+
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    # Force a fresh Explore materialisation job so its id exists in the store.
+    explore_run = client.post(
+        "/api/explore/run",
+        json={"graph": graph, "node_id": "explore", "source": "live", "refresh": True},
+    ).json()
+    assert explore_run["status"] == "started"
+    explore_job_id = explore_run["job_id"]
+    assert _poll(client, "/api/explore/status", explore_job_id)["status"] == "completed"
+
+    assert client.get(f"/api/explore/pivots/status/{explore_job_id}").status_code == 404
+    assert client.post(f"/api/explore/pivots/cancel/{explore_job_id}").status_code == 404
+
+    original = _pivot_service._calculate
+    pivot_started = threading.Event()
+    call_lock = threading.Lock()
+    call_count = 0
+
+    def first_call_blocks(spec, context):
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            current_call = call_count
+        if current_call == 1:
+            pivot_started.set()
+            while True:
+                context.checkpoint(label="pivot_test_cross_kind")
+                time.sleep(0.01)
+        return original(spec, context)
+
+    monkeypatch.setattr(_pivot_service, "_calculate", first_call_blocks)
+    pivot_run = client.post(
+        "/api/explore/pivots/run",
+        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": _pivot()},
+    ).json()
+    assert pivot_run["status"] == "started"
+    pivot_job_id = pivot_run["job_id"]
+    assert pivot_started.wait(3)
+
+    # Explore status/cancel must reject the pivot job id without mutating it:
+    # a 404 here proves an Explore cancel can never mark a pivot job cancelled
+    # while its calculation keeps running.
+    assert client.get(f"/api/explore/status/{pivot_job_id}").status_code == 404
+    assert client.post(f"/api/explore/cancel/{pivot_job_id}").status_code == 404
+    still_running = client.get(f"/api/explore/pivots/status/{pivot_job_id}").json()
+    assert still_running["status"] == "running"
+
+    cancelled = client.post(f"/api/explore/pivots/cancel/{pivot_job_id}").json()
+    assert cancelled["status"] == "cancelled"
+    _wait_for_pivot_worker(pivot_job_id)
 
 
 def test_pivot_failure_is_typed_and_never_publishes_partial_result(

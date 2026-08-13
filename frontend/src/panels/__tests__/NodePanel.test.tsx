@@ -1,5 +1,6 @@
+import { useEffect } from "react"
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within, act } from "@testing-library/react"
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
@@ -7,7 +8,7 @@ import useUIStore from "../../stores/useUIStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
@@ -19,6 +20,10 @@ const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explo
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
   fetchExplorePivotMembers: vi.fn(),
+  // When enabled, the ExplorePivotsConfig mock refetches members from a child
+  // passive effect keyed on currentConfigHash — the exact timing of the real
+  // FilterMemberPicker, which runs BEFORE any NodePanel parent effect.
+  simulatePickerRefetch: { enabled: false },
 }))
 
 vi.mock("../../api/client", async (importOriginal) => ({
@@ -62,6 +67,16 @@ vi.mock("../LazyNodeEditors", async () => {
   ExploreOverviewConfig: () => <div data-testid="explore-overview-config" />,
   ExplorePivotsConfig: (props: Record<string, unknown>) => {
     explorePivotsConfigProps.push(props)
+    const loadFilterMembers = props.loadFilterMembers as
+      | ((field: string, search: string, signal: AbortSignal) => Promise<unknown>)
+      | undefined
+    const currentConfigHash = props.currentConfigHash as string | null
+    useEffect(() => {
+      if (!simulatePickerRefetch.enabled || !loadFilterMembers) return
+      const controller = new AbortController()
+      void loadFilterMembers("premium", "", controller.signal).catch(() => {})
+      return () => controller.abort()
+    }, [currentConfigHash, loadFilterMembers])
     return <div data-testid="explore-pivots-config" />
   },
   ExploreChartsConfig: (props: Record<string, unknown>) => {
@@ -875,6 +890,59 @@ describe("NodePanel", () => {
 
     expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
     expect(screen.getByTestId("explore-charts-config")).toBeInTheDocument()
+  })
+
+  it("refetches open filter members with the new graph/source when the Explore identity changes", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      },
+    })
+    const sourceNode = makeNode({
+      id: "source_1",
+      data: {
+        label: "Claims Source",
+        description: "",
+        nodeType: "dataInput",
+        config: {},
+        _columns: [{ name: "premium", dtype: "Int64" }],
+      },
+    })
+    const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
+    fetchExplorePivotMembers.mockResolvedValue({
+      status: "ok",
+      field: "premium",
+      members: [],
+      failure: null,
+    })
+
+    simulatePickerRefetch.enabled = true
+    try {
+      renderPanel({ node: exploreNode, allNodes: [sourceNode, exploreNode], edges: [sourceEdge] })
+      fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
+      expect(fetchExplorePivotMembers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ source: "live" }),
+      )
+      fetchExplorePivotMembers.mockClear()
+
+      // The simulated picker refetch runs from a child passive effect, which
+      // React fires BEFORE any NodePanel parent effect. The request issued in
+      // that window must already carry the new source/graph — a loader that
+      // reads a parent-effect-updated ref would still send the old one.
+      act(() => {
+        useSettingsStore.setState({ activeSource: "batch" })
+      })
+      expect(fetchExplorePivotMembers).toHaveBeenCalledTimes(1)
+      expect(fetchExplorePivotMembers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ source: "batch", node_id: "explore_1" }),
+      )
+    } finally {
+      simulatePickerRefetch.enabled = false
+    }
   })
 
   it("renders the dataset-header toggle when the Explore Overview pane is selected", () => {

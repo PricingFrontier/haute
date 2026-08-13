@@ -141,7 +141,6 @@ describe("chart config", () => {
       future: { nested: [1] },
       category: {
         source: "rows",
-        include_subtotals: true,
         include_grand_total: true,
         label_rotation: -45,
         future_category: ["safe"],

@@ -23,6 +23,9 @@
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
+| `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
+| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
+| `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
 | `frontend/src/panels/editors/ExploreConfigCardList.tsx` | Shared Pivot/Chart list header, empty state, and action-card row, composing `ExploreToggleCard` with separate Delete and Configure actions. |
 | `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart v0/v1 validation and identity helpers consumed by the chart editor. |
@@ -247,7 +250,11 @@ Overview so enabled-state visuals, click targets, and accessibility cannot drift
 
 Configure parses the same node's ordered pivots and lists every pivot, irrespective of pivot
 visibility. Each option includes its current unconfigured/loading/error/stale/ready state and a
-hidden suffix where applicable. Selecting an initial source atomically seeds one default encoding
+hidden suffix where applicable. The ready state applies the same client identity gate as the
+Explore preview: a retained pivot result counts as ready only when the retained Explore result's
+`configHash` matches the current graph/source identity, its `dataframe_cache_key` matches the
+pivot result's, and the pivot's calculation identity matches; a retained result from a superseded
+identity reports stale, never ready. Selecting an initial source atomically seeds one default encoding
 per Pivot Value. Changing a populated source uses a confirmation dialog; cancel changes nothing,
 confirm replaces `pivot_id`, encodings, and overrides in one `onUpdate` call. With no pivots, an
 explicit action selects the Pivots editor pane without modifying config.
@@ -298,6 +305,12 @@ full names, short aliases, and Decimal. Numeric Values expose all seven operatio
 non-numeric Values (including Binary and Duration) expose count, distinct count, min, and max;
 nested List/Array/Struct and Object Values expose count only. The filter-member picker loads its
 initial list immediately, debounces non-empty searches by 250 ms, and aborts obsolete requests.
+A displayed member list is keyed to the node's current Explore cache identity hash (the same
+graph/source gate the Explore preview applies) as well as the field/search pair, so when the
+graph or source changes the previous dataset's members stop being rendered (and selectable)
+immediately rather than lingering until the replacement response lands. Display-only pivot and
+chart edits do not change that identity, so selecting a member neither hides the remaining
+choices nor triggers a redundant member reload.
 Row placements persist `sort: "ascending" | "descending"`, defaulting
 to ascending while parsing older v1 cards. Value placements persist
 `sort_rows: "none" | "ascending" | "descending"` and

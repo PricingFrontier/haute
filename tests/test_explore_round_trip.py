@@ -269,7 +269,6 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
             "kind": "combo",
             "category": {
                 "source": "rows",
-                "include_subtotals": False,
                 "include_grand_total": False,
                 "label_rotation": 0,
                 "future": {"nested": ["literal"]},

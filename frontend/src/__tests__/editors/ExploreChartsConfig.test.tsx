@@ -167,10 +167,12 @@ function seedFreshPivot(sourcePivot: ExplorePivotConfig) {
 
 function ChartConfigHarness({
   initialConfig = {},
+  currentConfigHash = "hash",
   onCommittedUpdate,
   onShowPivots,
 }: {
   initialConfig?: Record<string, unknown>
+  currentConfigHash?: string | null
   onCommittedUpdate?: () => void
   onShowPivots?: () => void
 }) {
@@ -191,6 +193,7 @@ function ChartConfigHarness({
         config={config}
         onUpdate={onUpdate}
         nodeId="explore_1"
+        currentConfigHash={currentConfigHash}
         onShowPivots={onShowPivots}
       />
       <output data-testid="persisted-config">{JSON.stringify(config)}</output>
@@ -257,7 +260,6 @@ describe("ExploreChartsConfig", () => {
       series_overrides: [],
       category: {
         source: "rows",
-        include_subtotals: false,
         include_grand_total: false,
         label_rotation: 0,
       },
@@ -542,6 +544,32 @@ describe("ExploreChartsConfig", () => {
     ).toBeVisible()
   })
 
+  it("reports a retained result from a superseded identity as stale, never ready", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    seedFreshPivot(sourcePivot)
+
+    // The retained Explore result was produced under configHash "hash"; the
+    // node's current identity has moved on (an upstream edit or source
+    // switch), so the pivot result must not be treated as current.
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+        currentConfigHash="hash-after-upstream-edit"
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    expect(
+      screen.getByRole("option", { name: new RegExp(`${sourcePivot.name}.*Stale`) }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/The source Pivot result is out of date/),
+    ).toBeVisible()
+  })
+
   it("surfaces malformed persisted charts without destructive controls", () => {
     render(
       <ExploreChartsConfig
@@ -553,6 +581,7 @@ describe("ExploreChartsConfig", () => {
         }}
         onUpdate={vi.fn()}
         nodeId="explore_1"
+        currentConfigHash={null}
       />,
     )
 

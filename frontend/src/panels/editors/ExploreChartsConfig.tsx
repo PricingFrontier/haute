@@ -17,6 +17,7 @@ import {
 } from "../explore/chartConfig"
 import { adaptPivotChartData } from "../explore/chartData"
 import { parseExplorePivots, pivotCalculationIdentity } from "../explore/pivotConfig"
+import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import {
   ExploreConfigCard,
@@ -28,12 +29,13 @@ type Props = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   nodeId: string
+  /**
+   * Hash of the node's current Explore cache identity (graph + source), or
+   * null when unknown. A retained Explore result only counts as current when
+   * its configHash matches — the same gate the Explore preview applies.
+   */
+  currentConfigHash: string | null
   onShowPivots?: () => void
-}
-const inputStyle = {
-  background: "var(--bg-input)",
-  border: "1px solid var(--border)",
-  color: "var(--text-primary)",
 }
 const presets: ChartPreset[] = [
   "clustered_columns",
@@ -99,7 +101,7 @@ function StyleControls({
         <select
           aria-label={`Mark for ${suffix}`}
           className={control}
-          style={inputStyle}
+          style={INPUT_STYLE}
           value={style.mark}
           onChange={(e) => {
             const mark = e.target.value as ChartMark
@@ -115,7 +117,7 @@ function StyleControls({
         <select
           aria-label={`Axis for ${suffix}`}
           className={control}
-          style={inputStyle}
+          style={INPUT_STYLE}
           value={style.axis}
           onChange={(e) => onChange({ axis: e.target.value as ChartAxis })}
         >
@@ -128,7 +130,7 @@ function StyleControls({
           aria-label={`Stack group for ${suffix}`}
           disabled={style.mark !== "column"}
           className={control}
-          style={inputStyle}
+          style={INPUT_STYLE}
           value={style.stack_group ?? ""}
           onChange={(e) => onChange({ stack_group: e.target.value.trim() || null })}
         />
@@ -190,7 +192,7 @@ function ColourControl({
         <input
           aria-label={`Colour for ${suffix}`}
           className="rounded px-1.5 py-1 text-xs"
-          style={inputStyle}
+          style={INPUT_STYLE}
           value={draft}
           placeholder="#RRGGBB or automatic"
           onChange={(event) => setDraft(event.target.value)}
@@ -255,7 +257,7 @@ function AxisBoundInput({
           step="any"
           aria-label={label}
           className="rounded px-2 py-1 text-xs"
-          style={inputStyle}
+          style={INPUT_STYLE}
           value={draft}
           placeholder="Automatic"
           onChange={(event) => setDraft(event.target.value)}
@@ -277,14 +279,24 @@ function AxisBoundInput({
   )
 }
 
-export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPivots }: Props) {
+export default function ExploreChartsConfig({
+  config,
+  onUpdate,
+  nodeId,
+  currentConfigHash,
+  onShowPivots,
+}: Props) {
   const [configuredId, setConfiguredId] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const pivotResults = useNodeResultsStore((s) => s.pivotResults)
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
-  const currentDataframeKey = useNodeResultsStore(
-    (s) => s.exploreResults[nodeId]?.result?.dataframe_cache_key ?? null,
-  )
+  const retainedExplore = useNodeResultsStore((s) => s.exploreResults[nodeId] ?? null)
+  const currentDataframeKey =
+    retainedExplore !== null &&
+    currentConfigHash !== null &&
+    retainedExplore.configHash === currentConfigHash
+      ? (retainedExplore.result?.dataframe_cache_key ?? null)
+      : null
   const parsedCharts = parseExploreCharts(config)
   const parsedPivots = parseExplorePivots(config)
   if (!parsedCharts.ok) return <ConfigError error={parsedCharts.error} />
@@ -449,7 +461,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
           aria-label="Chart name"
           defaultValue={chart.name}
           className="rounded px-2 py-1 text-xs"
-          style={inputStyle}
+          style={INPUT_STYLE}
           onBlur={(e) => nameCommit(e.currentTarget.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -484,7 +496,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
             aria-label="Source pivot"
             value={chart.pivot_id ?? ""}
             className="rounded px-2 py-1 text-xs"
-            style={inputStyle}
+            style={INPUT_STYLE}
             onChange={(e) => selectPivot(e.target.value)}
           >
             <option value="" disabled>
@@ -547,7 +559,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
                 <select
                   aria-label="Chart preset"
                   className="rounded px-2 py-1 text-xs"
-                  style={inputStyle}
+                  style={INPUT_STYLE}
                   value=""
                   onChange={(e) =>
                     commit(applyChartPreset(chart, e.target.value as ChartPreset, pivot))
@@ -591,7 +603,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
             <Field label="Primary axis title">
               <input
                 className="rounded px-2 py-1 text-xs"
-                style={inputStyle}
+                style={INPUT_STYLE}
                 value={chart.axes.primary.title}
                 onChange={(e) => updateAxis("primary", { title: e.target.value })}
               />
@@ -599,7 +611,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
             <Field label="Secondary axis title">
               <input
                 className="rounded px-2 py-1 text-xs"
-                style={inputStyle}
+                style={INPUT_STYLE}
                 value={chart.axes.secondary.title}
                 onChange={(e) => updateAxis("secondary", { title: e.target.value })}
               />
@@ -626,7 +638,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
                   <select
                     aria-label={`${axis === "primary" ? "Primary" : "Secondary"} number format`}
                     className="rounded px-2 py-1 text-xs"
-                    style={inputStyle}
+                    style={INPUT_STYLE}
                     value={chart.axes[axis].number_format}
                     onChange={(e) => updateAxis(axis, { number_format: e.target.value })}
                   >
@@ -653,7 +665,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
               <select
                 aria-label="Legend position"
                 className="rounded px-2 py-1 text-xs"
-                style={inputStyle}
+                style={INPUT_STYLE}
                 value={chart.legend.position}
                 onChange={(e) =>
                   commit({
@@ -674,7 +686,7 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
               <select
                 aria-label="Category label rotation"
                 className="rounded px-2 py-1 text-xs"
-                style={inputStyle}
+                style={INPUT_STYLE}
                 value={chart.category.label_rotation}
                 onChange={(e) =>
                   commit({
@@ -690,19 +702,6 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
                 ))}
               </select>
             </Field>
-            <label className="text-xs">
-              <input
-                type="checkbox"
-                checked={chart.category.include_subtotals}
-                onChange={(e) =>
-                  commit({
-                    ...chart,
-                    category: { ...chart.category, include_subtotals: e.target.checked },
-                  })
-                }
-              />{" "}
-              Include subtotals
-            </label>
             <label className="text-xs">
               <input
                 type="checkbox"

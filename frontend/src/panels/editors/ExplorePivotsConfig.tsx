@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
-import { ArrowLeft, GripVertical, Loader2 } from "lucide-react"
+import { useMemo, useState } from "react"
+import { ArrowLeft } from "lucide-react"
 
-import type { ExplorePivotMembersResponse } from "../../api/types"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
 import {
   dependentChartsForPivot,
@@ -14,692 +13,48 @@ import {
   defaultPivotAggregation,
   nextPivotPlacementId,
   parseExplorePivots,
-  pivotAggregationsForDtype,
   isNumericPivotDtype,
 } from "../explore/pivotConfig"
-import type {
-  ExplorePivotConfig,
-  PivotAggregation,
-  PivotAxisPlacement,
-  PivotFilterPlacement,
-  PivotMember,
-  PivotValuePlacement,
-} from "../explore/pivotConfig"
+import type { ExplorePivotConfig, PivotValuePlacement } from "../explore/pivotConfig"
+import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import {
   ExploreConfigCard,
   ExploreConfigCardEmptyState,
   ExploreConfigCardListHeader,
 } from "./ExploreConfigCardList"
+import ZoneSection from "./explorePivots/ZoneSection"
+import {
+  ZONES,
+  appendToZone,
+  hasDuplicateInZone,
+  normalizePivotOrdering,
+  removeFromZone,
+  zonePlacements,
+} from "./explorePivots/placements"
+import type {
+  Column,
+  DraggedPlacement,
+  LoadPivotFilterMembers,
+  Placement,
+  PlacementDropTarget,
+  Zone,
+} from "./explorePivots/placements"
 
-type Column = { name: string; dtype: string }
-type Zone = "filters" | "columns" | "rows" | "values"
-type Placement = PivotFilterPlacement | PivotAxisPlacement | PivotValuePlacement
-type DraggedPlacement = { sourceZone: Zone; placementId: string }
-type PlacementDropTarget = { zone: Zone; index: number }
-type ZoneDropState = "idle" | "available" | "active" | "blocked"
-
-export type LoadPivotFilterMembers = (
-  field: string,
-  search: string,
-  signal: AbortSignal,
-) => Promise<ExplorePivotMembersResponse>
+export type { LoadPivotFilterMembers } from "./explorePivots/placements"
 
 type ExplorePivotsConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: Column[]
   loadFilterMembers?: LoadPivotFilterMembers
-}
-
-const ZONES: readonly { key: Zone; label: string }[] = [
-  { key: "filters", label: "Filters" },
-  { key: "columns", label: "Columns" },
-  { key: "rows", label: "Rows" },
-  { key: "values", label: "Values" },
-]
-
-const PIVOT_PLACEMENT_MIME = "application/haute-pivot-placement"
-const FILTER_MEMBER_SEARCH_DEBOUNCE_MS = 250
-
-const INPUT_STYLE = {
-  background: "var(--bg-input)",
-  border: "1px solid var(--border)",
-  color: "var(--text-primary)",
-}
-
-function zonePlacements(pivot: ExplorePivotConfig, zone: Zone): Placement[] {
-  return pivot[zone]
-}
-
-function zoneLabel(zone: Zone): string {
-  return ZONES.find((candidate) => candidate.key === zone)?.label ?? zone
-}
-
-function futurePlacementFields(placement: Placement): Record<string, unknown> {
-  const known = new Set(["id", "field", "members", "aggregation", "display_name", "sort", "sort_rows", "color_scale"])
-  return Object.fromEntries(
-    Object.entries(placement).filter(([key]) => !known.has(key)),
-  )
-}
-
-
-function isFilterPlacement(placement: Placement): placement is PivotFilterPlacement {
-  return Array.isArray(placement.members)
-}
-
-function isValuePlacement(placement: Placement): placement is PivotValuePlacement {
-  return (
-    typeof placement.aggregation === "string" &&
-    typeof placement.display_name === "string"
-  )
-}
-
-function removeFromZone(
-  pivot: ExplorePivotConfig,
-  zone: Zone,
-  placementId: string,
-): ExplorePivotConfig {
-  switch (zone) {
-    case "filters":
-      return {
-        ...pivot,
-        filters: pivot.filters.filter((placement) => placement.id !== placementId),
-      }
-    case "columns":
-      return {
-        ...pivot,
-        columns: pivot.columns.filter((placement) => placement.id !== placementId),
-      }
-    case "rows":
-      return {
-        ...pivot,
-        rows: pivot.rows.filter((placement) => placement.id !== placementId),
-      }
-    case "values":
-      return {
-        ...pivot,
-        values: pivot.values.filter((placement) => placement.id !== placementId),
-      }
-  }
-}
-
-function appendToZone(
-  pivot: ExplorePivotConfig,
-  zone: Zone,
-  placement: Placement,
-  dtype: string,
-): ExplorePivotConfig {
-  const common = {
-    ...futurePlacementFields(placement),
-    id: placement.id,
-    field: placement.field,
-  }
-  switch (zone) {
-    case "filters":
-      return {
-        ...pivot,
-        filters: [
-          ...pivot.filters,
-          {
-            ...common,
-            members: isFilterPlacement(placement) ? placement.members : [],
-          },
-        ],
-      }
-    case "columns":
-      return { ...pivot, columns: [...pivot.columns, common] }
-    case "rows":
-      return {
-        ...pivot,
-        rows: [
-          ...pivot.rows,
-          {
-            ...common,
-            sort: isValuePlacement(placement) && placement.sort_rows !== "none"
-              ? placement.sort_rows
-              : "ascending",
-          },
-        ],
-      }
-    case "values":
-      return {
-        ...pivot,
-        values: [
-          ...pivot.values,
-          {
-            ...common,
-            aggregation:
-              isValuePlacement(placement)
-                ? placement.aggregation
-                : defaultPivotAggregation(dtype),
-            display_name:
-              isValuePlacement(placement) ? placement.display_name : placement.field,
-            sort_rows: isValuePlacement(placement)
-              ? placement.sort_rows
-              : (placement as PivotAxisPlacement).sort ?? "none",
-            color_scale: isValuePlacement(placement) ? placement.color_scale : "none",
-          },
-        ],
-      }
-  }
-}
-
-function normalizePivotOrdering(
-  pivot: ExplorePivotConfig,
-  requestedSortBy: string | null = pivot.options.sort_by ?? null,
-): ExplorePivotConfig {
-  const selectedRow = pivot.rows.find((row) => row.id === requestedSortBy)
-  const selectedValue = pivot.values.find((value) => value.id === requestedSortBy)
-  if (!selectedRow && !selectedValue) {
-    return {
-      ...pivot,
-      rows: pivot.rows.map((row) => ({ ...row, sort: "ascending" })),
-      values: pivot.values.map((value) => ({ ...value, sort_rows: "none" })),
-      options: { ...pivot.options, sort_by: null },
-    }
-  }
-  if (selectedRow) {
-    return {
-      ...pivot,
-      rows: pivot.rows.map((row) => ({
-        ...row,
-        sort: row.id === selectedRow.id ? row.sort ?? "ascending" : "ascending",
-      })),
-      values: pivot.values.map((value) => ({ ...value, sort_rows: "none" })),
-      options: { ...pivot.options, sort_by: selectedRow.id },
-    }
-  }
-  return {
-    ...pivot,
-    rows: pivot.rows.map((row) => ({ ...row, sort: "ascending" })),
-    values: pivot.values.map((value) => ({
-      ...value,
-      sort_rows: value.id === selectedValue?.id
-        ? value.sort_rows === "ascending" || value.sort_rows === "descending"
-          ? value.sort_rows
-          : "descending"
-        : "none",
-    })),
-    options: { ...pivot.options, sort_by: selectedValue?.id ?? null },
-  }
-}
-
-function hasDuplicateInZone(
-  pivot: ExplorePivotConfig,
-  zone: Zone,
-  field: string,
-): boolean {
-  return zone !== "values" && zonePlacements(pivot, zone).some((item) => item.field === field)
-}
-
-function memberIdentity(member: Pick<PivotMember, "kind" | "value">): string {
-  return JSON.stringify([member.kind, member.value])
-}
-
-function FilterMemberPicker({
-  placement,
-  loadMembers,
-  onChange,
-}: {
-  placement: PivotFilterPlacement
-  loadMembers?: LoadPivotFilterMembers
-  onChange: (members: PivotMember[]) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState("")
-  const requestKey = `${placement.field}\u0000${search}`
-  const [loadState, setLoadState] = useState<{
-    requestKey: string | null
-    response: ExplorePivotMembersResponse | null
-    error: string | null
-  }>({ requestKey: null, response: null, error: null })
-
-  useEffect(() => {
-    if (!open || !loadMembers) return
-
-    const controller = new AbortController()
-    const load = () => loadMembers(placement.field, search, controller.signal)
-      .then((nextResponse) => {
-        if (controller.signal.aborted) return
-        if (nextResponse.field !== null && nextResponse.field !== placement.field) {
-          throw new Error("Filter member response did not match the requested field.")
-        }
-        setLoadState({ requestKey, response: nextResponse, error: null })
-      })
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) return
-        setLoadState({
-          requestKey,
-          response: null,
-          error: reason instanceof Error ? reason.message : String(reason),
-        })
-      })
-    const timer = search === ""
-      ? null
-      : window.setTimeout(load, FILTER_MEMBER_SEARCH_DEBOUNCE_MS)
-    if (timer === null) load()
-
-    return () => {
-      if (timer !== null) window.clearTimeout(timer)
-      controller.abort()
-    }
-  }, [loadMembers, open, placement.field, requestKey, search])
-
-  const currentLoadState = loadState.requestKey === requestKey ? loadState : null
-  const response = currentLoadState?.response ?? null
-  const loading = open && !!loadMembers && currentLoadState === null
-  const unavailableMessage = loadMembers
-    ? null
-    : "Filter members are unavailable until the Explore dataset is cached."
-  const error = unavailableMessage ?? currentLoadState?.error ?? null
-
-  const selected = useMemo(
-    () => new Set(placement.members.map(memberIdentity)),
-    [placement.members],
-  )
-
-  const toggleMember = (member: PivotMember) => {
-    const identity = memberIdentity(member)
-    if (selected.has(identity)) {
-      onChange(placement.members.filter((candidate) => memberIdentity(candidate) !== identity))
-    } else {
-      onChange([...placement.members, { kind: member.kind, value: member.value }])
-    }
-  }
-
-  const failure = response?.failure
-  const summary =
-    placement.members.length === 0
-      ? "All members"
-      : `${placement.members.length} selected`
-
-  return (
-    <div className="mt-2 w-full">
-      <button
-        type="button"
-        aria-label={`Choose members for ${placement.field}`}
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-        className="focus-ring rounded px-2 py-1 text-[10px] font-semibold"
-        style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-      >
-        Choose members for {placement.field}: {summary}
-      </button>
-
-      {open && (
-        <div
-          className="mt-2 rounded-md p-2"
-          style={{ background: "var(--bg-panel)", border: "1px solid var(--border)" }}
-        >
-          <label className="block text-[10px] font-semibold">
-            Search members for {placement.field}
-            <input
-              type="search"
-              aria-label={`Search members for ${placement.field}`}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              className="mt-1 block w-full rounded px-2 py-1 text-xs"
-              style={INPUT_STYLE}
-            />
-          </label>
-
-          {loading && (
-            <div
-              role="status"
-              className="mt-2 flex items-center gap-1 text-[10px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <Loader2 size={11} className="animate-spin" aria-hidden="true" />
-              Loading members
-            </div>
-          )}
-
-          {(error || failure) && (
-            <div
-              role="alert"
-              className="mt-2 rounded px-2 py-1.5 text-[10px] leading-relaxed"
-              style={{ color: "var(--danger)", background: "var(--danger-soft)" }}
-            >
-              {error ?? failure?.message}
-              {failure?.remediation ? ` ${failure.remediation}` : ""}
-            </div>
-          )}
-
-          {!loading && response?.status === "ok" && response.members.length === 0 && (
-            <div className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-              No matching members.
-            </div>
-          )}
-
-          {response?.status === "ok" && response.members.length > 0 && (
-            <div className="mt-2 max-h-44 overflow-auto" role="group" aria-label="Filter members">
-              {response.members.map((option) => {
-                const member = option.key as PivotMember
-                return (
-                  <label
-                    key={memberIdentity(member)}
-                    className="flex items-center gap-2 rounded px-1.5 py-1 text-[11px]"
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`${option.label} (${option.count})`}
-                      checked={selected.has(memberIdentity(member))}
-                      onChange={() => toggleMember(member)}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                    <span style={{ color: "var(--text-muted)" }}>{option.count}</span>
-                  </label>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-type ZoneSectionProps = {
-  pivot: ExplorePivotConfig
-  zone: Zone
-  columnsByName: ReadonlyMap<string, Column>
-  persistPivot: (pivot: ExplorePivotConfig) => void
-  draggedPlacement: DraggedPlacement | null
-  activeDropTarget: PlacementDropTarget | null
-  canPositionPlacement: (
-    sourceZone: Zone,
-    placementId: string,
-    targetZone: Zone,
-    targetIndex: number,
-  ) => boolean
-  onDragPlacementStart: (placement: DraggedPlacement) => void
-  onDragPlacementOver: (target: PlacementDropTarget) => void
-  onDropPlacement: (target: PlacementDropTarget) => void
-  onDragPlacementEnd: () => void
-  onPositionPlacement: (
-    sourceZone: Zone,
-    placementId: string,
-    targetZone: Zone,
-    targetIndex: number,
-  ) => void
-  loadFilterMembers?: LoadPivotFilterMembers
-}
-
-function ZoneSection({
-  pivot,
-  zone,
-  columnsByName,
-  persistPivot,
-  draggedPlacement,
-  activeDropTarget,
-  canPositionPlacement,
-  onDragPlacementStart,
-  onDragPlacementOver,
-  onDropPlacement,
-  onDragPlacementEnd,
-  onPositionPlacement,
-  loadFilterMembers,
-}: ZoneSectionProps) {
-  const label = zoneLabel(zone)
-  const placements = zonePlacements(pivot, zone)
-  const endTarget = { zone, index: placements.length }
-  const canDropAtEnd =
-    draggedPlacement !== null &&
-    canPositionPlacement(
-      draggedPlacement.sourceZone,
-      draggedPlacement.placementId,
-      zone,
-      endTarget.index,
-    )
-  const dropState: ZoneDropState = !draggedPlacement
-    ? "idle"
-    : activeDropTarget?.zone === zone
-      ? "active"
-      : canDropAtEnd
-        ? "available"
-        : "blocked"
-
-  return (
-    <section
-      role="group"
-      aria-label={`${label} fields`}
-      data-drop-state={dropState}
-      onDragOver={(event) => {
-        if (!canDropAtEnd) return
-        event.preventDefault()
-        event.dataTransfer.dropEffect = "move"
-        onDragPlacementOver(endTarget)
-      }}
-      onDrop={(event) => {
-        if (!canDropAtEnd) {
-          onDragPlacementEnd()
-          return
-        }
-        event.preventDefault()
-        onDropPlacement(endTarget)
-      }}
-      className="min-h-36 p-2 transition-colors"
-      style={{
-        background:
-          dropState === "active" ? "var(--accent-soft)" : "var(--bg-input)",
-        boxShadow:
-          dropState === "active"
-            ? "inset 0 0 0 1px var(--accent)"
-            : undefined,
-      }}
-    >
-      <h4
-        className="text-[11px] font-bold uppercase tracking-wide"
-        style={{ color: "var(--text-secondary)" }}
-      >
-        {label}
-      </h4>
-      <div className="mt-2 flex flex-col gap-1.5">
-        {placements.length === 0 && (
-          <div className="px-1 py-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            No fields
-          </div>
-        )}
-        {placements.map((placement, index) => {
-          const column = columnsByName.get(placement.field)
-          const missing = column === undefined
-          const value = zone === "values" ? (placement as PivotValuePlacement) : undefined
-          const filter = zone === "filters" ? (placement as PivotFilterPlacement) : undefined
-          const aggregations = value
-            ? [
-                ...new Set([
-                  ...pivotAggregationsForDtype(column?.dtype ?? ""),
-                  value.aggregation,
-                ]),
-              ]
-            : []
-          const canDropBefore =
-            draggedPlacement !== null &&
-            canPositionPlacement(
-              draggedPlacement.sourceZone,
-              draggedPlacement.placementId,
-              zone,
-              index,
-            )
-          const isDropBeforeActive =
-            activeDropTarget?.zone === zone && activeDropTarget.index === index
-
-          return (
-            <div
-              key={placement.id}
-              role="group"
-              aria-label={`${placement.field} in ${label}`}
-              aria-invalid={missing || undefined}
-              aria-describedby="pivot-field-keyboard-instructions"
-              aria-grabbed={
-                draggedPlacement?.sourceZone === zone &&
-                draggedPlacement.placementId === placement.id
-              }
-              data-drop-position={isDropBeforeActive ? "before" : undefined}
-              tabIndex={0}
-              draggable
-              onDragStart={(event) => {
-                const dragged = { sourceZone: zone, placementId: placement.id }
-                event.dataTransfer.effectAllowed = "move"
-                event.dataTransfer.setData(
-                  PIVOT_PLACEMENT_MIME,
-                  JSON.stringify(dragged),
-                )
-                onDragPlacementStart(dragged)
-              }}
-              onDragEnd={onDragPlacementEnd}
-              onDragOver={(event) => {
-                event.stopPropagation()
-                if (!canDropBefore) return
-                event.preventDefault()
-                event.dataTransfer.dropEffect = "move"
-                onDragPlacementOver({ zone, index })
-              }}
-              onDrop={(event) => {
-                event.stopPropagation()
-                if (!canDropBefore) {
-                  onDragPlacementEnd()
-                  return
-                }
-                event.preventDefault()
-                onDropPlacement({ zone, index })
-              }}
-              onKeyDown={(event) => {
-                if (event.target !== event.currentTarget) return
-
-                let targetZone = zone
-                let targetIndex: number | null = null
-                if (event.key === "ArrowUp") {
-                  targetIndex = index - 1
-                } else if (event.key === "ArrowDown") {
-                  targetIndex = index + 2
-                } else if (event.key === "ArrowLeft") {
-                  const zoneIndex = ZONES.findIndex((candidate) => candidate.key === zone)
-                  const target = ZONES[zoneIndex - 1]
-                  if (target) {
-                    targetZone = target.key
-                    targetIndex = zonePlacements(pivot, targetZone).length
-                  }
-                } else if (event.key === "ArrowRight") {
-                  const zoneIndex = ZONES.findIndex((candidate) => candidate.key === zone)
-                  const target = ZONES[zoneIndex + 1]
-                  if (target) {
-                    targetZone = target.key
-                    targetIndex = zonePlacements(pivot, targetZone).length
-                  }
-                }
-
-                if (
-                  targetIndex !== null &&
-                  canPositionPlacement(
-                    zone,
-                    placement.id,
-                    targetZone,
-                    targetIndex,
-                  )
-                ) {
-                  event.preventDefault()
-                  onPositionPlacement(
-                    zone,
-                    placement.id,
-                    targetZone,
-                    targetIndex,
-                  )
-                }
-              }}
-              className="focus-ring cursor-grab rounded p-1.5 active:cursor-grabbing"
-              style={{
-                background: "var(--bg-panel)",
-                border: "1px solid var(--border)",
-                boxShadow: isDropBeforeActive
-                  ? "inset 0 2px 0 var(--accent)"
-                  : undefined,
-                color: "var(--text-primary)",
-                opacity:
-                  draggedPlacement?.sourceZone === zone &&
-                  draggedPlacement.placementId === placement.id
-                    ? 0.55
-                    : 1,
-              }}
-            >
-              <div className="flex flex-wrap items-center gap-1.5">
-                <GripVertical
-                  size={12}
-                  aria-hidden="true"
-                  style={{ color: "var(--text-muted)" }}
-                />
-                <span className="text-xs font-medium">{placement.field}</span>
-                {missing && (
-                  <span className="text-[10px]" style={{ color: "var(--danger)" }}>
-                    No longer available
-                  </span>
-                )}
-                {value && (
-                  <select
-                    aria-label={`Aggregation for ${placement.field}`}
-                    value={value.aggregation}
-                    onChange={(event) => {
-                      const aggregation = event.target.value as PivotAggregation
-                      persistPivot({
-                        ...pivot,
-                        values: pivot.values.map((candidate) =>
-                          candidate.id === value.id
-                            ? {
-                                ...candidate,
-                                aggregation,
-                                color_scale:
-                                  aggregation === "count" ||
-                                  aggregation === "distinct_count" ||
-                                  (column !== undefined && isNumericPivotDtype(column.dtype))
-                                    ? candidate.color_scale
-                                    : "none",
-                              }
-                            : candidate,
-                        ),
-                      })
-                    }}
-                    className="rounded px-1 py-0.5 text-[10px]"
-                    style={INPUT_STYLE}
-                  >
-                    {aggregations.map((aggregation) => (
-                      <option key={aggregation} value={aggregation}>
-                        {PIVOT_AGGREGATION_LABELS[aggregation]}
-                      </option>
-                    ))}
-                  </select>
-                )}
-
-                <button
-                  type="button"
-                  aria-label={`Remove ${placement.field} from ${label}`}
-                  onClick={() => persistPivot(normalizePivotOrdering(removeFromZone(pivot, zone, placement.id)))}
-                  className="ml-auto rounded px-1 text-[10px]"
-                >
-                  Remove
-                </button>
-              </div>
-
-              {filter && (
-                <FilterMemberPicker
-                  placement={filter}
-                  loadMembers={loadFilterMembers}
-                  onChange={(members) =>
-                    persistPivot({
-                      ...pivot,
-                      filters: pivot.filters.map((candidate) =>
-                        candidate.id === filter.id ? { ...candidate, members } : candidate,
-                      ),
-                    })
-                  }
-                />
-              )}
-            </div>
-          )
-        })}
-      </div>
-    </section>
-  )
+  /**
+   * Hash of the node's current Explore cache identity (graph + source), or
+   * null when unknown. Displayed filter members are keyed to it so a
+   * graph/source change hides them immediately, while display-only pivot
+   * edits leave them untouched.
+   */
+  currentConfigHash?: string | null
 }
 
 type PivotEditorProps = {
@@ -709,6 +64,7 @@ type PivotEditorProps = {
   persistPivot: (pivot: ExplorePivotConfig) => void
   onBack: () => void
   loadFilterMembers?: LoadPivotFilterMembers
+  currentConfigHash: string | null
 }
 
 function PivotEditor({
@@ -718,6 +74,7 @@ function PivotEditor({
   persistPivot,
   onBack,
   loadFilterMembers,
+  currentConfigHash,
 }: PivotEditorProps) {
   const [fieldSearch, setFieldSearch] = useState("")
   const [nameDraft, setNameDraft] = useState(pivot.name)
@@ -1069,6 +426,7 @@ function PivotEditor({
               onDragPlacementEnd={clearDragPlacement}
               onPositionPlacement={positionPlacement}
               loadFilterMembers={loadFilterMembers}
+              currentConfigHash={currentConfigHash}
             />
           ))}
         </div>
@@ -1386,6 +744,7 @@ export default function ExplorePivotsConfig({
   onUpdate,
   upstreamColumns = [],
   loadFilterMembers,
+  currentConfigHash = null,
 }: ExplorePivotsConfigProps) {
   const [configuredPivotId, setConfiguredPivotId] = useState<string | null>(null)
   const parsed = parseExplorePivots(config)
@@ -1420,6 +779,7 @@ export default function ExplorePivotsConfig({
         persistPivot={persistPivot}
         onBack={() => setConfiguredPivotId(null)}
         loadFilterMembers={loadFilterMembers}
+        currentConfigHash={currentConfigHash}
       />
     )
   }

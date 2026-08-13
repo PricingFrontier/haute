@@ -612,9 +612,11 @@ def test_cancelled_explore_refresh_preserves_last_durable_generation(
     assert snapshot.json()["result"] == first_completed["result"]
 
 
+@pytest.mark.parametrize("warm_process_caches", [False, True])
 def test_explore_cache_status_fails_loudly_for_corrupt_selected_generation(
     client: TestClient,
     tmp_path: Path,
+    warm_process_caches: bool,
 ) -> None:
     from haute._explore_cache import ExplorePersistentCacheStore
     from haute.routes.explore import _explore_service
@@ -631,13 +633,77 @@ def test_explore_cache_status_fails_loudly_for_corrupt_selected_generation(
     store = ExplorePersistentCacheStore(spec.project_root)
     pointer = store._family_dir(spec.family_key) / "current.json"
     atomic_write_text(pointer, "not valid json")
-    _explore_service._report_cache.clear()
-    spec.dataframe_cache_request.cache.clear()
+    if not warm_process_caches:
+        _explore_service._report_cache.clear()
+        spec.dataframe_cache_request.cache.clear()
 
     response = client.post("/api/explore/cache-status", json=body)
 
+    # The durable generation is inspected first, so warm process caches never
+    # hide a corrupt selected generation.
     assert response.status_code == 500
     assert response.json()["detail"] == "Internal server error"
+
+
+def test_explore_cache_status_reports_stale_durable_generation_despite_warm_process_caches(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    first_body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+    second_prep = "df = source.with_columns((pl.col('premium') * 3).alias('triple_premium'))"
+    second_body = {
+        "graph": _explore_graph(str(path), prep_code=second_prep),
+        "node_id": "explore",
+        "source": "live",
+    }
+
+    first_started = client.post("/api/explore/run", json=first_body).json()
+    assert _poll_explore(client, first_started["job_id"])["status"] == "completed"
+    second_started = client.post("/api/explore/run", json=second_body).json()
+    assert _poll_explore(client, second_started["job_id"])["status"] == "completed"
+
+    # The first identity's report and dataframe are still warm in the process
+    # caches, but the selected durable generation now belongs to the second
+    # identity: the durable inspection must win and report stale.
+    snapshot = client.post("/api/explore/cache-status", json=first_body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "stale"
+
+
+def test_explore_cache_status_falls_back_to_process_caches_without_durable_generation(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    completed = _poll_explore(client, started["job_id"])
+    assert completed["status"] == "completed"
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    shutil.rmtree(store._family_dir(spec.family_key))
+
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == completed["result"]
+
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "missing"
 
 
 def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(

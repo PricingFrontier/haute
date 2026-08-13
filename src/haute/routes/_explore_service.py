@@ -819,6 +819,7 @@ class ExploreService:
 
         job_id = self._store.create_job(
             {
+                "kind": "explore",
                 "status": "running",
                 "progress": 0.0,
                 "message": "Starting Explore cache materialisation",
@@ -854,6 +855,36 @@ class ExploreService:
         """Inspect and, on an exact hit, restore one durable Explore generation."""
 
         spec = self.prepare_spec(body)
+        persistent_store = ExplorePersistentCacheStore(spec.project_root)
+        with persistent_store.lease(
+            spec.family_key,
+            report_cache_key=spec.report_cache_key,
+        ) as snapshot:
+            if snapshot is not None:
+                if snapshot.state == "stale":
+                    return ExploreCacheSnapshotResponse(
+                        state="stale",
+                        message="Explore cache is stale",
+                    )
+                if snapshot.report is None:
+                    raise RuntimeError("Current durable Explore cache omitted its report")
+
+                persistent_store.restore(
+                    snapshot,
+                    spec.dataframe_cache_request,
+                    node_id=spec.node_id,
+                )
+                self._report_cache.put(spec.report_cache_key, snapshot.report)
+                return ExploreCacheSnapshotResponse(
+                    state="current",
+                    message="Explore data is cached",
+                    result=snapshot.report,
+                )
+
+        # Only when no durable generation exists may an exact report plus
+        # dataframe already present in the process-local caches satisfy
+        # `current`; the durable generation is always inspected first so a
+        # corrupt or stale generation is never hidden by warm process caches.
         key = spec.dataframe_cache_request.keys_by_node[spec.node_id]
         cached = self._report_cache.get(spec.report_cache_key)
         if cached is not None and spec.dataframe_cache_request.cache.get(key) is not None:
@@ -862,39 +893,15 @@ class ExploreService:
                 message="Explore data is cached",
                 result=cached,
             )
-
-        persistent_store = ExplorePersistentCacheStore(spec.project_root)
-        with persistent_store.lease(
-            spec.family_key,
-            report_cache_key=spec.report_cache_key,
-        ) as snapshot:
-            if snapshot is None:
-                return ExploreCacheSnapshotResponse(
-                    state="missing",
-                    message="Explore data needs caching",
-                )
-            if snapshot.state == "stale":
-                return ExploreCacheSnapshotResponse(
-                    state="stale",
-                    message="Explore cache is stale",
-                )
-            if snapshot.report is None:
-                raise RuntimeError("Current durable Explore cache omitted its report")
-
-            persistent_store.restore(
-                snapshot,
-                spec.dataframe_cache_request,
-                node_id=spec.node_id,
-            )
-            self._report_cache.put(spec.report_cache_key, snapshot.report)
-            return ExploreCacheSnapshotResponse(
-                state="current",
-                message="Explore data is cached",
-                result=snapshot.report,
-            )
+        return ExploreCacheSnapshotResponse(
+            state="missing",
+            message="Explore data needs caching",
+        )
 
     def status(self, job_id: str) -> ExploreStatusResponse:
         job = self._store.require_job(job_id)
+        if job.get("kind") != "explore":
+            raise HTTPException(status_code=404, detail="Explore job not found")
         return ExploreStatusResponse(
             status=job["status"],
             progress=job.get("progress", 0.0),
@@ -905,9 +912,9 @@ class ExploreService:
         )
 
     def cancel(self, job_id: str) -> ExploreStatusResponse:
+        current = self.status(job_id)
         cancelled = self._jobs.cancel(job_id)
-        job = self._store.require_job(job_id)
-        if cancelled or job.get("status") == "running":
+        if cancelled or current.status == "running":
             self._lifecycle.transition(
                 job_id,
                 to="cancelled",

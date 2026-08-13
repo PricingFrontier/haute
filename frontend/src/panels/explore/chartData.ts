@@ -120,8 +120,10 @@ function includePath(
   chart: ExploreChartConfig,
 ): boolean {
   if (path.is_grand_total) return chart.category.include_grand_total
-  const isSubtotal = path.members.length < fullDepth
-  return !isSubtotal || chart.category.include_subtotals
+  // The backend emits only full-depth paths plus optional grand totals; a
+  // shorter (subtotal-shaped) path is never charted. An over-depth path flows
+  // on to checkRenderedPath, which rejects it at the hierarchy-depth limit.
+  return path.members.length >= fullDepth
 }
 
 function numericCellValue(value: unknown): number | null {

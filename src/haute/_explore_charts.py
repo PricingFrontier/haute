@@ -226,7 +226,6 @@ def _migrate_v0(
         kind="combo",
         category={
             "source": "rows",
-            "include_subtotals": False,
             "include_grand_total": False,
             "label_rotation": 0,
         },
@@ -266,7 +265,7 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         raise ConfigError("Explore chart category must be a dict.", context=context, index=index)
     category = _copy_known(
         category,
-        known=frozenset({"source", "include_subtotals", "include_grand_total", "label_rotation"}),
+        known=frozenset({"source", "include_grand_total", "label_rotation"}),
         context=context,
         index=index,
         scope="category",
@@ -275,12 +274,6 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         raise ConfigError(
             "Explore chart has an unsupported category source.", context=context, index=index
         )
-    category["include_subtotals"] = _bool(
-        category.get("include_subtotals"),
-        context=context,
-        index=index,
-        label="category include_subtotals",
-    )
     category["include_grand_total"] = _bool(
         category.get("include_grand_total"),
         context=context,

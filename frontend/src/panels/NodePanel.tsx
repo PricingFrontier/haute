@@ -39,8 +39,9 @@ import {
   type HauteNodeData,
 } from "../types/node"
 import useUIStore, { type ExplorePane, type ModellingPane } from "../stores/useUIStore"
-import useNodeResultsStore from "../stores/useNodeResultsStore"
+import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
+import { buildExploreCacheIdentity } from "./explore/cacheIdentity"
 import PanelShell from "./PanelShell"
 import PreviewPanelTabs from "./PreviewPanelTabs"
 import { useGraph } from "./useGraph"
@@ -712,13 +713,22 @@ export default function NodePanel({
   useEffect(() => { setLabelUpdateError(null) }, [node?.id, node?.data.label])
   useEffect(() => { setActiveTab("config") }, [node?.id])
 
+  // Current Explore cache identity hash — the same client identity gate the
+  // Explore preview applies, so a Chart Configure subview never treats a
+  // retained result from a superseded identity as current, and the member
+  // picker never renders members from a superseded identity.
+  const exploreConfigHash = useMemo(() => {
+    if (!node || effectiveNodeType(node) !== NODE_TYPES.EXPLORE) return null
+    const identity = buildExploreCacheIdentity({ node, allNodes, edges, submodels, preamble })
+    return hashConfig({ graph: identity, source: activeSource })
+  }, [node, allNodes, edges, submodels, preamble, activeSource])
+
   const loadPivotFilterMembers = useCallback(
     (field: string, search: string, signal: AbortSignal) => {
-      const currentNode = nodeRef.current
-      if (!currentNode) throw new Error("Explore node is unavailable.")
+      if (!node) throw new Error("Explore node is unavailable.")
       return fetchExplorePivotMembers({
         graph: buildGraph(allNodes, edges, submodels, preamble),
-        node_id: currentNode.id,
+        node_id: node.id,
         field,
         source: activeSource,
         search: search || undefined,
@@ -726,7 +736,14 @@ export default function NodePanel({
         signal,
       })
     },
-    [activeSource, allNodes, edges, preamble, streamingChunkSize, submodels],
+    // Keyed by the Explore cache identity hash (plus the fetch chunk size):
+    // any render that keeps the same hash captures a graph snapshot whose
+    // data-affecting parts are identical, so display-only pivot edits do not
+    // churn the loader or reload members, while a hash change rebuilds the
+    // closure with the new graph/source in the same render that re-keys the
+    // member picker — there is no ref-update ordering to race against.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [exploreConfigHash, streamingChunkSize],
   )
 
   // Bundle 3b — dismissal state for the stale-columns banner.
@@ -909,6 +926,7 @@ export default function NodePanel({
                 onUpdate={handleConfigUpdate}
                 upstreamColumns={upstreamColumns}
                 loadFilterMembers={loadPivotFilterMembers}
+                currentConfigHash={exploreConfigHash}
               />
             )}
             {activeExplorePane === "charts" && (
@@ -916,6 +934,7 @@ export default function NodePanel({
                 config={config}
                 onUpdate={handleConfigUpdate}
                 nodeId={node.id}
+                currentConfigHash={exploreConfigHash}
                 onShowPivots={() => setExplorePane(node.id, "pivots")}
               />
             )}

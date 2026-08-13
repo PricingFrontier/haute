@@ -368,7 +368,6 @@ class ExploreChartSeriesOverride(ExploreChartStyle):
 
 class ExploreChartCategory(TypedDict):
     source: Literal["rows"]
-    include_subtotals: bool
     include_grand_total: bool
     label_rotation: int
 

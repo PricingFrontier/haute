@@ -49,11 +49,13 @@ function PivotConfigHarness({
   columns = upstreamColumns,
   onCommittedUpdate,
   loadFilterMembers,
+  currentConfigHash = "hash",
 }: {
   initialConfig?: Record<string, unknown>
   columns?: typeof upstreamColumns
   onCommittedUpdate?: () => void
   loadFilterMembers?: ComponentProps<typeof ExplorePivotsConfig>["loadFilterMembers"]
+  currentConfigHash?: string | null
 }) {
   const [config, setConfig] = useState(initialConfig)
   const onUpdate: OnUpdateConfig = (keyOrUpdates, value) => {
@@ -73,6 +75,7 @@ function PivotConfigHarness({
         onUpdate={onUpdate}
         upstreamColumns={columns}
         loadFilterMembers={loadFilterMembers}
+        currentConfigHash={currentConfigHash}
       />
       <output data-testid="persisted-config">{JSON.stringify(config)}</output>
     </>
@@ -485,6 +488,91 @@ describe("ExplorePivotsConfig", () => {
     })
     expect(loadFilterMembers).toHaveBeenCalledTimes(2)
     expect(loadFilterMembers).toHaveBeenLastCalledWith("region", "No", expect.any(AbortSignal))
+  })
+
+  it("discards loaded members as soon as the Explore cache identity changes", async () => {
+    let resolveSecond: (value: unknown) => void = () => {}
+    const loadFilterMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "ok",
+        field: "region",
+        members: [
+          { key: { kind: "string", value: "North" }, label: "North", count: 12 },
+        ],
+        failure: null,
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve
+          }),
+      )
+    const { rerender } = render(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [fullPivot()] }}
+        loadFilterMembers={loadFilterMembers}
+        currentConfigHash="hash-before"
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add region to Filters" }))
+    fireEvent.click(screen.getByRole("button", { name: "Choose members for region" }))
+    expect(await screen.findByRole("checkbox", { name: "North (12)" })).toBeInTheDocument()
+
+    // A changed Explore cache identity (a graph or source change) must hide
+    // the previous dataset's members immediately, not leave them selectable
+    // while the replacement response is in flight.
+    rerender(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [fullPivot()] }}
+        loadFilterMembers={loadFilterMembers}
+        currentConfigHash="hash-after"
+      />,
+    )
+    expect(screen.queryByRole("checkbox", { name: "North (12)" })).toBeNull()
+    expect(screen.getByText(/Loading members/)).toBeVisible()
+
+    resolveSecond({
+      status: "ok",
+      field: "region",
+      members: [{ key: { kind: "string", value: "South" }, label: "South", count: 3 }],
+      failure: null,
+    })
+    expect(await screen.findByRole("checkbox", { name: "South (3)" })).toBeInTheDocument()
+  })
+
+  it("keeps loaded members visible when only the loader reference changes", async () => {
+    const loaderA = vi.fn().mockResolvedValue({
+      status: "ok",
+      field: "region",
+      members: [
+        { key: { kind: "string", value: "North" }, label: "North", count: 12 },
+      ],
+      failure: null,
+    })
+    const loaderB = vi.fn().mockReturnValue(new Promise(() => {}))
+    const { rerender } = render(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [fullPivot()] }}
+        loadFilterMembers={loaderA}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add region to Filters" }))
+    fireEvent.click(screen.getByRole("button", { name: "Choose members for region" }))
+    expect(await screen.findByRole("checkbox", { name: "North (12)" })).toBeInTheDocument()
+
+    // A display-only edit may rebuild callbacks, but with an unchanged
+    // Explore cache identity the member list must not blank or become
+    // unselectable while any incidental reload is in flight.
+    rerender(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [fullPivot()] }}
+        loadFilterMembers={loaderB}
+      />,
+    )
+    expect(screen.getByRole("checkbox", { name: "North (12)" })).toBeInTheDocument()
   })
 
   it("renders an Excel-style area grid and drags a placement between zones", () => {

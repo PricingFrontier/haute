@@ -57,7 +57,6 @@ export type ChartAxisConfig = {
 
 export type ChartCategory = {
   source: "rows"
-  include_subtotals: boolean
   include_grand_total: boolean
   label_rotation: number
   [key: string]: unknown
@@ -120,7 +119,6 @@ const AXIS_KEYS = new Set([
 ])
 const CATEGORY_KEYS = new Set([
   "source",
-  "include_subtotals",
   "include_grand_total",
   "label_rotation",
 ])
@@ -271,7 +269,6 @@ function chartDefaults(id: string, name: string): ExploreChartConfig {
     kind: "combo",
     category: {
       source: "rows",
-      include_subtotals: false,
       include_grand_total: false,
       label_rotation: 0,
     },
@@ -366,7 +363,6 @@ function parseV1Chart(
   if (categoryFutureError) return categoryFutureError
   if (
     raw.category.source !== "rows" ||
-    typeof raw.category.include_subtotals !== "boolean" ||
     typeof raw.category.include_grand_total !== "boolean" ||
     typeof raw.category.label_rotation !== "number" ||
     !Number.isInteger(raw.category.label_rotation) ||

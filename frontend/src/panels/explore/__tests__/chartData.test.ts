@@ -262,7 +262,7 @@ describe("pivot chart data adapter", () => {
     })
   })
 
-  it("includes requested subtotals and grand totals without conflating them", () => {
+  it("excludes subtotal-shaped paths and includes grand totals only on request", () => {
     const sourcePivot = pivot({
       rows: [
         { id: "row_region", field: "region" },
@@ -292,11 +292,10 @@ describe("pivot chart data adapter", () => {
     const ordinary = adaptPivotChartData(chart(sourcePivot), sourcePivot, sourceResult)
     expect(ordinary.categories.map(({ label }) => label)).toEqual(["North › A"])
 
-    const withTotals = adaptPivotChartData(
+    const withGrandTotal = adaptPivotChartData(
       chart(sourcePivot, {
         category: {
           source: "rows",
-          include_subtotals: true,
           include_grand_total: true,
           label_rotation: 0,
         },
@@ -304,9 +303,10 @@ describe("pivot chart data adapter", () => {
       sourcePivot,
       sourceResult,
     )
-    expect(withTotals.categories.map(({ label }) => label)).toEqual([
+    // A partial-depth path ("North") is never charted: the backend emits only
+    // full-depth paths plus optional grand totals.
+    expect(withGrandTotal.categories.map(({ label }) => label)).toEqual([
       "North › A",
-      "North",
       "Grand total",
     ])
   })
