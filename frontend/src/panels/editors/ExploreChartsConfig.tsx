@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ArrowLeft, Plus, SlidersHorizontal, Trash2 } from "lucide-react"
+import { ArrowLeft } from "lucide-react"
 
 import useNodeResultsStore, { explorePivotResultKey } from "../../stores/useNodeResultsStore"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
@@ -18,6 +18,11 @@ import {
 import { adaptPivotChartData } from "../explore/chartData"
 import { parseExplorePivots, pivotCalculationIdentity } from "../explore/pivotConfig"
 import type { OnUpdateConfig } from "./_shared"
+import {
+  ExploreConfigCard,
+  ExploreConfigCardEmptyState,
+  ExploreConfigCardListHeader,
+} from "./ExploreConfigCardList"
 
 type Props = {
   config: Record<string, unknown>
@@ -296,92 +301,40 @@ export default function ExploreChartsConfig({ config, onUpdate, nodeId, onShowPi
   if (!chart)
     return (
       <div data-testid="explore-charts-config" className="px-4 py-3 flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <div
-              className="text-[11px] font-bold uppercase"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              Charts
-            </div>
-            <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-              Toggle charts shown in the visualisation area.
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => onUpdate("charts", [...charts, createExploreChart(charts)])}
-            className="rounded-md px-2.5 py-1.5 text-xs font-semibold"
-            style={{ color: "var(--text-on-accent)", background: NODE_GROUP_COLORS.explore }}
-          >
-            <Plus size={13} className="inline" /> Add Chart
-          </button>
-        </div>
+        <ExploreConfigCardListHeader
+          title="Charts"
+          description="Toggle charts shown in the visualisation area."
+          addLabel="Add Chart"
+          onAdd={() => onUpdate("charts", [...charts, createExploreChart(charts)])}
+        />
         {charts.length === 0 ? (
-          <div
-            className="rounded-lg px-3 py-5 text-center text-xs"
-            style={{
-              color: "var(--text-muted)",
-              background: "var(--bg-input)",
-              border: "1px dashed var(--border)",
-            }}
-          >
+          <ExploreConfigCardEmptyState>
             No charts yet. Add one to start building the visualisation area.
-          </div>
+          </ExploreConfigCardEmptyState>
         ) : (
-          charts.map((c) => (
-            <div
+          <div className="flex flex-col gap-2">
+            {charts.map((c) => (
+              <ExploreConfigCard
               key={c.id}
-              className="flex items-center rounded-lg p-2"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
-            >
-              <label
-                className="flex flex-1 items-center gap-2 text-xs font-semibold"
-                style={{ color: "var(--text-primary)" }}
-              >
-                <input
-                  type="checkbox"
-                  aria-label={`Show ${c.name}`}
-                  checked={c.enabled}
-                  onChange={() =>
-                    onUpdate(
-                      "charts",
-                      charts.map((x) => (x.id === c.id ? { ...x, enabled: !x.enabled } : x)),
-                    )
-                  }
-                />
-                {c.name}
-              </label>
-              <button
-                type="button"
-                aria-label={`Delete ${c.name}`}
-                title={`Delete ${c.name}`}
-                onClick={() => {
-                  if (!window.confirm(`Delete ${c.name}?`)) return
+                name={c.name}
+                enabled={c.enabled}
+                onEnabledChange={(enabled) =>
                   onUpdate(
                     "charts",
-                    charts.filter((candidate) => candidate.id !== c.id),
+                    charts.map((x) => (x.id === c.id ? { ...x, enabled } : x)),
                   )
+                }
+                onDelete={() => {
+                  if (!window.confirm(`Delete ${c.name}?`)) return
+                  onUpdate("charts", charts.filter((candidate) => candidate.id !== c.id))
                 }}
-                className="mr-1 inline-flex shrink-0 items-center rounded p-1.5"
-                style={{ color: "var(--danger)" }}
-              >
-                <Trash2 size={12} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                aria-label={`Configure ${c.name}`}
-                onClick={() => {
+                onConfigure={() => {
                   setMessage(null)
                   setConfiguredId(c.id)
                 }}
-                className="rounded px-2 py-1 text-[11px]"
-                style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-              >
-                <SlidersHorizontal size={11} className="inline" /> Configure
-              </button>
-            </div>
-          ))
+              />
+            ))}
+          </div>
         )}
       </div>
     )

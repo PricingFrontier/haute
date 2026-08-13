@@ -1,16 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
-import {
-  ArrowLeft,
-  Loader2,
-  Plus,
-  SlidersHorizontal,
-  Table2,
-  Trash2,
-} from "lucide-react"
+import { ArrowLeft, GripVertical, Loader2 } from "lucide-react"
 
 import type { ExplorePivotMembersResponse } from "../../api/types"
-import { NODE_GROUP_COLORS } from "../../theme/colors"
-import { withAlpha } from "../../utils/color"
 import {
   dependentChartsForPivot,
   parseExploreCharts,
@@ -23,6 +14,7 @@ import {
   nextPivotPlacementId,
   parseExplorePivots,
   pivotAggregationsForDtype,
+  isNumericPivotDtype,
 } from "../explore/pivotConfig"
 import type {
   ExplorePivotConfig,
@@ -33,10 +25,18 @@ import type {
   PivotValuePlacement,
 } from "../explore/pivotConfig"
 import type { OnUpdateConfig } from "./_shared"
+import {
+  ExploreConfigCard,
+  ExploreConfigCardEmptyState,
+  ExploreConfigCardListHeader,
+} from "./ExploreConfigCardList"
 
 type Column = { name: string; dtype: string }
 type Zone = "filters" | "columns" | "rows" | "values"
 type Placement = PivotFilterPlacement | PivotAxisPlacement | PivotValuePlacement
+type DraggedPlacement = { sourceZone: Zone; placementId: string }
+type PlacementDropTarget = { zone: Zone; index: number }
+type ZoneDropState = "idle" | "available" | "active" | "blocked"
 
 export type LoadPivotFilterMembers = (
   field: string,
@@ -48,7 +48,6 @@ type ExplorePivotsConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
   upstreamColumns?: Column[]
-  onUpdatePreview?: (pivotId: string) => void
   loadFilterMembers?: LoadPivotFilterMembers
 }
 
@@ -58,6 +57,8 @@ const ZONES: readonly { key: Zone; label: string }[] = [
   { key: "rows", label: "Rows" },
   { key: "values", label: "Values" },
 ]
+
+const PIVOT_PLACEMENT_MIME = "application/haute-pivot-placement"
 
 const INPUT_STYLE = {
   background: "var(--bg-input)",
@@ -74,7 +75,7 @@ function zoneLabel(zone: Zone): string {
 }
 
 function futurePlacementFields(placement: Placement): Record<string, unknown> {
-  const known = new Set(["id", "field", "members", "aggregation", "display_name"])
+  const known = new Set(["id", "field", "members", "aggregation", "display_name", "sort", "sort_rows", "color_scale"])
   return Object.fromEntries(
     Object.entries(placement).filter(([key]) => !known.has(key)),
   )
@@ -147,7 +148,18 @@ function appendToZone(
     case "columns":
       return { ...pivot, columns: [...pivot.columns, common] }
     case "rows":
-      return { ...pivot, rows: [...pivot.rows, common] }
+      return {
+        ...pivot,
+        rows: [
+          ...pivot.rows,
+          {
+            ...common,
+            sort: isValuePlacement(placement) && placement.sort_rows !== "none"
+              ? placement.sort_rows
+              : "ascending",
+          },
+        ],
+      }
     case "values":
       return {
         ...pivot,
@@ -161,9 +173,53 @@ function appendToZone(
                 : defaultPivotAggregation(dtype),
             display_name:
               isValuePlacement(placement) ? placement.display_name : placement.field,
+            sort_rows: isValuePlacement(placement)
+              ? placement.sort_rows
+              : (placement as PivotAxisPlacement).sort ?? "none",
+            color_scale: isValuePlacement(placement) ? placement.color_scale : "none",
           },
         ],
       }
+  }
+}
+
+function normalizePivotOrdering(
+  pivot: ExplorePivotConfig,
+  requestedSortBy: string | null = pivot.options.sort_by ?? null,
+): ExplorePivotConfig {
+  const selectedRow = pivot.rows.find((row) => row.id === requestedSortBy)
+  const selectedValue = pivot.values.find((value) => value.id === requestedSortBy)
+  if (!selectedRow && !selectedValue) {
+    return {
+      ...pivot,
+      rows: pivot.rows.map((row) => ({ ...row, sort: "ascending" })),
+      values: pivot.values.map((value) => ({ ...value, sort_rows: "none" })),
+      options: { ...pivot.options, sort_by: null },
+    }
+  }
+  if (selectedRow) {
+    return {
+      ...pivot,
+      rows: pivot.rows.map((row) => ({
+        ...row,
+        sort: row.id === selectedRow.id ? row.sort ?? "ascending" : "ascending",
+      })),
+      values: pivot.values.map((value) => ({ ...value, sort_rows: "none" })),
+      options: { ...pivot.options, sort_by: selectedRow.id },
+    }
+  }
+  return {
+    ...pivot,
+    rows: pivot.rows.map((row) => ({ ...row, sort: "ascending" })),
+    values: pivot.values.map((value) => ({
+      ...value,
+      sort_rows: value.id === selectedValue?.id
+        ? value.sort_rows === "ascending" || value.sort_rows === "descending"
+          ? value.sort_rows
+          : "descending"
+        : "none",
+    })),
+    options: { ...pivot.options, sort_by: selectedValue?.id ?? null },
   }
 }
 
@@ -340,6 +396,24 @@ type ZoneSectionProps = {
   zone: Zone
   columnsByName: ReadonlyMap<string, Column>
   persistPivot: (pivot: ExplorePivotConfig) => void
+  draggedPlacement: DraggedPlacement | null
+  activeDropTarget: PlacementDropTarget | null
+  canPositionPlacement: (
+    sourceZone: Zone,
+    placementId: string,
+    targetZone: Zone,
+    targetIndex: number,
+  ) => boolean
+  onDragPlacementStart: (placement: DraggedPlacement) => void
+  onDragPlacementOver: (target: PlacementDropTarget) => void
+  onDropPlacement: (target: PlacementDropTarget) => void
+  onDragPlacementEnd: () => void
+  onPositionPlacement: (
+    sourceZone: Zone,
+    placementId: string,
+    targetZone: Zone,
+    targetIndex: number,
+  ) => void
   loadFilterMembers?: LoadPivotFilterMembers
 }
 
@@ -348,33 +422,63 @@ function ZoneSection({
   zone,
   columnsByName,
   persistPivot,
+  draggedPlacement,
+  activeDropTarget,
+  canPositionPlacement,
+  onDragPlacementStart,
+  onDragPlacementOver,
+  onDropPlacement,
+  onDragPlacementEnd,
+  onPositionPlacement,
   loadFilterMembers,
 }: ZoneSectionProps) {
   const label = zoneLabel(zone)
   const placements = zonePlacements(pivot, zone)
-
-  const reorder = (placementId: string, direction: -1 | 1) => {
-    const next = [...placements]
-    const index = next.findIndex((placement) => placement.id === placementId)
-    const destination = index + direction
-    if (index < 0 || destination < 0 || destination >= next.length) return
-    ;[next[index], next[destination]] = [next[destination], next[index]]
-    persistPivot({ ...pivot, [zone]: next })
-  }
-
-  const moveToZone = (placement: Placement, target: Zone) => {
-    if (target === zone || hasDuplicateInZone(pivot, target, placement.field)) return
-    const withoutSource = removeFromZone(pivot, zone, placement.id)
-    const dtype = columnsByName.get(placement.field)?.dtype ?? ""
-    persistPivot(appendToZone(withoutSource, target, placement, dtype))
-  }
+  const endTarget = { zone, index: placements.length }
+  const canDropAtEnd =
+    draggedPlacement !== null &&
+    canPositionPlacement(
+      draggedPlacement.sourceZone,
+      draggedPlacement.placementId,
+      zone,
+      endTarget.index,
+    )
+  const dropState: ZoneDropState = !draggedPlacement
+    ? "idle"
+    : activeDropTarget?.zone === zone
+      ? "active"
+      : canDropAtEnd
+        ? "available"
+        : "blocked"
 
   return (
     <section
       role="group"
       aria-label={`${label} fields`}
-      className="rounded-lg p-2"
-      style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+      data-drop-state={dropState}
+      onDragOver={(event) => {
+        if (!canDropAtEnd) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = "move"
+        onDragPlacementOver(endTarget)
+      }}
+      onDrop={(event) => {
+        if (!canDropAtEnd) {
+          onDragPlacementEnd()
+          return
+        }
+        event.preventDefault()
+        onDropPlacement(endTarget)
+      }}
+      className="min-h-36 p-2 transition-colors"
+      style={{
+        background:
+          dropState === "active" ? "var(--accent-soft)" : "var(--bg-input)",
+        boxShadow:
+          dropState === "active"
+            ? "inset 0 0 0 1px var(--accent)"
+            : undefined,
+      }}
     >
       <h4
         className="text-[11px] font-bold uppercase tracking-wide"
@@ -401,6 +505,16 @@ function ZoneSection({
                 ]),
               ]
             : []
+          const canDropBefore =
+            draggedPlacement !== null &&
+            canPositionPlacement(
+              draggedPlacement.sourceZone,
+              draggedPlacement.placementId,
+              zone,
+              index,
+            )
+          const isDropBeforeActive =
+            activeDropTarget?.zone === zone && activeDropTarget.index === index
 
           return (
             <div
@@ -408,10 +522,104 @@ function ZoneSection({
               role="group"
               aria-label={`${placement.field} in ${label}`}
               aria-invalid={missing || undefined}
-              className="rounded p-1.5"
-              style={{ border: "1px solid var(--border)", color: "var(--text-primary)" }}
+              aria-describedby="pivot-field-keyboard-instructions"
+              aria-grabbed={
+                draggedPlacement?.sourceZone === zone &&
+                draggedPlacement.placementId === placement.id
+              }
+              data-drop-position={isDropBeforeActive ? "before" : undefined}
+              tabIndex={0}
+              draggable
+              onDragStart={(event) => {
+                const dragged = { sourceZone: zone, placementId: placement.id }
+                event.dataTransfer.effectAllowed = "move"
+                event.dataTransfer.setData(
+                  PIVOT_PLACEMENT_MIME,
+                  JSON.stringify(dragged),
+                )
+                onDragPlacementStart(dragged)
+              }}
+              onDragEnd={onDragPlacementEnd}
+              onDragOver={(event) => {
+                event.stopPropagation()
+                if (!canDropBefore) return
+                event.preventDefault()
+                event.dataTransfer.dropEffect = "move"
+                onDragPlacementOver({ zone, index })
+              }}
+              onDrop={(event) => {
+                event.stopPropagation()
+                if (!canDropBefore) {
+                  onDragPlacementEnd()
+                  return
+                }
+                event.preventDefault()
+                onDropPlacement({ zone, index })
+              }}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return
+
+                let targetZone = zone
+                let targetIndex: number | null = null
+                if (event.key === "ArrowUp") {
+                  targetIndex = index - 1
+                } else if (event.key === "ArrowDown") {
+                  targetIndex = index + 2
+                } else if (event.key === "ArrowLeft") {
+                  const zoneIndex = ZONES.findIndex((candidate) => candidate.key === zone)
+                  const target = ZONES[zoneIndex - 1]
+                  if (target) {
+                    targetZone = target.key
+                    targetIndex = zonePlacements(pivot, targetZone).length
+                  }
+                } else if (event.key === "ArrowRight") {
+                  const zoneIndex = ZONES.findIndex((candidate) => candidate.key === zone)
+                  const target = ZONES[zoneIndex + 1]
+                  if (target) {
+                    targetZone = target.key
+                    targetIndex = zonePlacements(pivot, targetZone).length
+                  }
+                }
+
+                if (
+                  targetIndex !== null &&
+                  canPositionPlacement(
+                    zone,
+                    placement.id,
+                    targetZone,
+                    targetIndex,
+                  )
+                ) {
+                  event.preventDefault()
+                  onPositionPlacement(
+                    zone,
+                    placement.id,
+                    targetZone,
+                    targetIndex,
+                  )
+                }
+              }}
+              className="focus-ring cursor-grab rounded p-1.5 active:cursor-grabbing"
+              style={{
+                background: "var(--bg-panel)",
+                border: "1px solid var(--border)",
+                boxShadow: isDropBeforeActive
+                  ? "inset 0 2px 0 var(--accent)"
+                  : undefined,
+                color: "var(--text-primary)",
+                opacity:
+                  draggedPlacement?.sourceZone === zone &&
+                  draggedPlacement.placementId === placement.id
+                    ? 0.55
+                    : 1,
+              }}
             >
               <div className="flex flex-wrap items-center gap-1.5">
+                <GripVertical
+                  size={12}
+                  aria-hidden="true"
+                  style={{ color: "var(--text-muted)" }}
+                />
                 <span className="text-xs font-medium">{placement.field}</span>
                 {missing && (
                   <span className="text-[10px]" style={{ color: "var(--danger)" }}>
@@ -428,7 +636,16 @@ function ZoneSection({
                         ...pivot,
                         values: pivot.values.map((candidate) =>
                           candidate.id === value.id
-                            ? { ...candidate, aggregation }
+                            ? {
+                                ...candidate,
+                                aggregation,
+                                color_scale:
+                                  aggregation === "count" ||
+                                  aggregation === "distinct_count" ||
+                                  (column !== undefined && isNumericPivotDtype(column.dtype))
+                                    ? candidate.color_scale
+                                    : "none",
+                              }
                             : candidate,
                         ),
                       })
@@ -444,55 +661,14 @@ function ZoneSection({
                   </select>
                 )}
 
-                <select
-                  aria-label={`Move ${placement.field} from ${label}`}
-                  value=""
-                  onChange={(event) => {
-                    if (event.target.value) moveToZone(placement, event.target.value as Zone)
-                  }}
-                  className="ml-auto rounded px-1 py-0.5 text-[10px]"
-                  style={INPUT_STYLE}
+                <button
+                  type="button"
+                  aria-label={`Remove ${placement.field} from ${label}`}
+                  onClick={() => persistPivot(normalizePivotOrdering(removeFromZone(pivot, zone, placement.id)))}
+                  className="ml-auto rounded px-1 text-[10px]"
                 >
-                  <option value="">Move to…</option>
-                  {ZONES.filter((candidate) => candidate.key !== zone).map((candidate) => (
-                    <option
-                      key={candidate.key}
-                      value={candidate.key}
-                      disabled={hasDuplicateInZone(pivot, candidate.key, placement.field)}
-                    >
-                      {candidate.label}
-                    </option>
-                  ))}
-                </select>
-
-                <span className="flex gap-1">
-                  <button
-                    type="button"
-                    aria-label={`Move ${placement.field} up in ${label}`}
-                    disabled={index === 0}
-                    onClick={() => reorder(placement.id, -1)}
-                    className="rounded px-1 text-[10px] disabled:opacity-40"
-                  >
-                    Move up
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Move ${placement.field} down in ${label}`}
-                    disabled={index === placements.length - 1}
-                    onClick={() => reorder(placement.id, 1)}
-                    className="rounded px-1 text-[10px] disabled:opacity-40"
-                  >
-                    Move down
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${placement.field} from ${label}`}
-                    onClick={() => persistPivot(removeFromZone(pivot, zone, placement.id))}
-                    className="rounded px-1 text-[10px]"
-                  >
-                    Remove
-                  </button>
-                </span>
+                  Remove
+                </button>
               </div>
 
               {filter && (
@@ -523,7 +699,6 @@ type PivotEditorProps = {
   upstreamColumns: Column[]
   persistPivot: (pivot: ExplorePivotConfig) => void
   onBack: () => void
-  onUpdatePreview?: (pivotId: string) => void
   loadFilterMembers?: LoadPivotFilterMembers
 }
 
@@ -533,12 +708,15 @@ function PivotEditor({
   upstreamColumns,
   persistPivot,
   onBack,
-  onUpdatePreview,
   loadFilterMembers,
 }: PivotEditorProps) {
   const [fieldSearch, setFieldSearch] = useState("")
   const [nameDraft, setNameDraft] = useState(pivot.name)
   const [nameError, setNameError] = useState<string | null>(null)
+  const [draggedPlacement, setDraggedPlacement] =
+    useState<DraggedPlacement | null>(null)
+  const [activeDropTarget, setActiveDropTarget] =
+    useState<PlacementDropTarget | null>(null)
   const columnsByName = useMemo(
     () => new Map(upstreamColumns.map((column) => [column.name, column])),
     [upstreamColumns],
@@ -547,6 +725,33 @@ function PivotEditor({
     const query = fieldSearch.trim().toLocaleLowerCase()
     return upstreamColumns.filter((column) => column.name.toLocaleLowerCase().includes(query))
   }, [fieldSearch, upstreamColumns])
+  const selectedSortBy = pivot.options.sort_by ?? ""
+  const selectedSortRow = pivot.rows.find((row) => row.id === selectedSortBy)
+  const selectedSortValue = pivot.values.find((value) => value.id === selectedSortBy)
+  const selectedSortValueNumeric = selectedSortValue !== undefined && (
+    selectedSortValue.aggregation === "count" ||
+    selectedSortValue.aggregation === "distinct_count" ||
+    isNumericPivotDtype(columnsByName.get(selectedSortValue.field)?.dtype ?? "")
+  )
+  const isNumericProducingValue = (value: PivotValuePlacement) =>
+    value.aggregation === "count" ||
+    value.aggregation === "distinct_count" ||
+    isNumericPivotDtype(columnsByName.get(value.field)?.dtype ?? "")
+  const valueDisplayLabel = (value: PivotValuePlacement) => {
+    const sameNameCount = pivot.values.filter((candidate) => candidate.display_name === value.display_name).length
+    return sameNameCount > 1
+      ? `${value.display_name} (${PIVOT_AGGREGATION_LABELS[value.aggregation]})`
+      : value.display_name
+  }
+  const conditionalFormattingRules = pivot.values.filter(
+    (value) => value.color_scale !== "none",
+  )
+  const unformattedCompatibleValues = pivot.values.filter(
+    (value) => value.color_scale === "none" && isNumericProducingValue(value),
+  )
+  const compatibleConditionalFormattingValues = pivot.values.filter(
+    isNumericProducingValue,
+  )
 
   const commitName = () => {
     const name = nameDraft.trim()
@@ -568,34 +773,132 @@ function PivotEditor({
   }
 
   const addPlacement = (column: Column, zone: Zone) => {
+    if (hasDuplicateInZone(pivot, zone, column.name)) return
     const prefix = zone.slice(0, -1)
     const id = nextPivotPlacementId(pivot, prefix)
-    if (zone === "values") {
-      persistPivot({
-        ...pivot,
-        values: [
-          ...pivot.values,
-          {
-            id,
-            field: column.name,
-            aggregation: defaultPivotAggregation(column.dtype),
-            display_name: column.name,
-          },
-        ],
-      })
+    const placement: Placement =
+      zone === "filters"
+        ? { id, field: column.name, members: [] }
+        : zone === "values"
+          ? {
+              id,
+              field: column.name,
+              aggregation: defaultPivotAggregation(column.dtype),
+              display_name: column.name,
+              sort_rows: "none",
+              color_scale: "none",
+            }
+          : { id, field: column.name, sort: "ascending" }
+
+    persistPivot(normalizePivotOrdering(appendToZone(pivot, zone, placement, column.dtype)))
+  }
+
+  const canPositionPlacement = (
+    sourceZone: Zone,
+    placementId: string,
+    targetZone: Zone,
+    targetIndex: number,
+  ) => {
+    const sourcePlacements = zonePlacements(pivot, sourceZone)
+    const sourceIndex = sourcePlacements.findIndex(
+      (candidate) => candidate.id === placementId,
+    )
+    if (sourceIndex < 0) return false
+
+    const placement = sourcePlacements[sourceIndex]
+    if (
+      sourceZone !== targetZone &&
+      hasDuplicateInZone(pivot, targetZone, placement.field)
+    ) {
+      return false
+    }
+
+    const targetLength = zonePlacements(pivot, targetZone).length
+    const clampedIndex = Math.max(0, Math.min(targetIndex, targetLength))
+    const insertionIndex =
+      sourceZone === targetZone && sourceIndex < clampedIndex
+        ? clampedIndex - 1
+        : clampedIndex
+    return sourceZone !== targetZone || insertionIndex !== sourceIndex
+  }
+
+  const positionPlacement = (
+    sourceZone: Zone,
+    placementId: string,
+    targetZone: Zone,
+    targetIndex: number,
+  ) => {
+    if (
+      !canPositionPlacement(
+        sourceZone,
+        placementId,
+        targetZone,
+        targetIndex,
+      )
+    ) {
       return
     }
-    if (zone === "filters") {
-      persistPivot({
-        ...pivot,
-        filters: [...pivot.filters, { id, field: column.name, members: [] }],
-      })
+
+    const sourcePlacements = zonePlacements(pivot, sourceZone)
+    const sourceIndex = sourcePlacements.findIndex(
+      (candidate) => candidate.id === placementId,
+    )
+    const placement = sourcePlacements[sourceIndex]
+    if (!placement) {
+      throw new Error(`Pivot placement ${placementId} disappeared during movement.`)
+    }
+
+    const targetLength = zonePlacements(pivot, targetZone).length
+    const clampedIndex = Math.max(0, Math.min(targetIndex, targetLength))
+    const insertionIndex =
+      sourceZone === targetZone && sourceIndex < clampedIndex
+        ? clampedIndex - 1
+        : clampedIndex
+
+    if (sourceZone === targetZone) {
+      const nextPlacements = sourcePlacements.filter(
+        (candidate) => candidate.id !== placementId,
+      )
+      nextPlacements.splice(insertionIndex, 0, placement)
+      persistPivot(normalizePivotOrdering({ ...pivot, [sourceZone]: nextPlacements }))
       return
     }
-    persistPivot({
-      ...pivot,
-      [zone]: [...pivot[zone], { id, field: column.name }],
-    })
+
+    const withoutSource = removeFromZone(pivot, sourceZone, placementId)
+    const dtype = columnsByName.get(placement.field)?.dtype ?? ""
+    const appended = appendToZone(withoutSource, targetZone, placement, dtype)
+    const nextTargetPlacements = [...zonePlacements(appended, targetZone)]
+    const convertedPlacement = nextTargetPlacements.pop()
+    if (!convertedPlacement) {
+      throw new Error(`Pivot placement ${placementId} was not appended to ${targetZone}.`)
+    }
+    nextTargetPlacements.splice(insertionIndex, 0, convertedPlacement)
+    persistPivot(normalizePivotOrdering({ ...appended, [targetZone]: nextTargetPlacements }, pivot.options.sort_by ?? null))
+  }
+
+  const clearDragPlacement = () => {
+    setDraggedPlacement(null)
+    setActiveDropTarget(null)
+  }
+
+  const dropPlacement = (target: PlacementDropTarget) => {
+    if (
+      draggedPlacement &&
+      canPositionPlacement(
+        draggedPlacement.sourceZone,
+        draggedPlacement.placementId,
+        target.zone,
+        target.index,
+      )
+    ) {
+      positionPlacement(
+        draggedPlacement.sourceZone,
+        draggedPlacement.placementId,
+        target.zone,
+        target.index,
+      )
+    }
+    clearDragPlacement()
   }
 
   return (
@@ -653,53 +956,330 @@ function PivotEditor({
             style={INPUT_STYLE}
           />
         </label>
-        <div className="mt-2 flex flex-col gap-1.5">
-          {availableColumns.map((column) => (
+        <div
+          role="group"
+          aria-label="Available pivot fields"
+          className="mt-2 h-52 overflow-y-auto rounded-md"
+          style={{
+            background: "var(--bg-input)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          {availableColumns.length === 0 ? (
             <div
-              key={column.name}
-              className="rounded-md p-2"
-              style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+              className="px-2 py-3 text-center text-[10px]"
+              style={{ color: "var(--text-muted)" }}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-xs font-semibold">{column.name}</span>
-                <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              No fields match your search.
+            </div>
+          ) : (
+            availableColumns.map((column) => (
+              <div
+                key={column.name}
+                role="group"
+                aria-label={`${column.name} field actions`}
+                className="flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1 text-[11px]"
+                style={{ borderBottom: "1px solid var(--border)" }}
+              >
+                <span className="min-w-[7rem] flex-1 truncate font-medium">
+                  {column.name}
+                </span>
+                <span
+                  className="shrink-0 text-[10px]"
+                  style={{ color: "var(--text-muted)" }}
+                >
                   {column.dtype}
                 </span>
-              </div>
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {ZONES.map(({ key, label }) => {
-                  const duplicate = hasDuplicateInZone(pivot, key, column.name)
-                  return (
+                <div className="flex shrink-0 flex-wrap items-center gap-1">
+                  <span
+                    className="text-[10px]"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    Add to:
+                  </span>
+                  {ZONES.map(({ key, label }) => (
                     <button
                       key={key}
                       type="button"
-                      disabled={duplicate}
+                      aria-label={`Add ${column.name} to ${label}`}
+                      disabled={hasDuplicateInZone(pivot, key, column.name)}
                       onClick={() => addPlacement(column, key)}
-                      className="rounded px-1.5 py-1 text-[10px] font-semibold disabled:opacity-40"
-                      style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+                      className="focus-ring rounded px-1.5 py-0.5 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                      style={{
+                        border: "1px solid var(--border)",
+                        color: "var(--text-secondary)",
+                      }}
                     >
-                      Add {column.name} to {label}
+                      {label}
                     </button>
-                  )
-                })}
+                  ))}
+                </div>
               </div>
-            </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div>
+        <div
+          id="pivot-field-area-instructions"
+          className="text-[11px] font-semibold"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          Drag fields between areas below:
+          <span id="pivot-field-keyboard-instructions" className="sr-only">
+            Focus a field card and use Up or Down to reorder it, or Left or Right
+            to move it between areas.
+          </span>
+        </div>
+        <div
+          data-testid="pivot-field-areas"
+          aria-describedby="pivot-field-area-instructions"
+          className="mt-2 grid grid-cols-2 gap-px overflow-hidden rounded-lg"
+          style={{
+            background: "var(--border)",
+            border: "1px solid var(--border)",
+          }}
+        >
+          {ZONES.map(({ key }) => (
+            <ZoneSection
+              key={key}
+              pivot={pivot}
+              zone={key}
+              columnsByName={columnsByName}
+              persistPivot={persistPivot}
+              draggedPlacement={draggedPlacement}
+              activeDropTarget={activeDropTarget}
+              canPositionPlacement={canPositionPlacement}
+              onDragPlacementStart={(placement) => {
+                setDraggedPlacement(placement)
+                setActiveDropTarget(null)
+              }}
+              onDragPlacementOver={setActiveDropTarget}
+              onDropPlacement={dropPlacement}
+              onDragPlacementEnd={clearDragPlacement}
+              onPositionPlacement={positionPlacement}
+              loadFilterMembers={loadFilterMembers}
+            />
           ))}
         </div>
       </div>
 
-      <div className="flex flex-col gap-3">
-        {ZONES.map(({ key }) => (
-          <ZoneSection
-            key={key}
-            pivot={pivot}
-            zone={key}
-            columnsByName={columnsByName}
-            persistPivot={persistPivot}
-            loadFilterMembers={loadFilterMembers}
-          />
-        ))}
-      </div>
+      <section data-testid="pivot-sorting-section" className="flex flex-col gap-2">
+        <h4 className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--text-secondary)" }}>
+          Sorting
+        </h4>
+        <label className="text-[10px]">
+          Sort by
+          <select
+            aria-label="Sort by"
+            value={selectedSortBy}
+            onChange={(event) => persistPivot(normalizePivotOrdering(pivot, event.target.value || null))}
+            className="mt-1 block rounded px-1 py-0.5 text-[10px]"
+            style={INPUT_STYLE}
+          >
+            <option value="">Default — Row labels</option>
+            <optgroup label="Rows">
+              {pivot.rows.map((row) => <option key={row.id} value={row.id}>Row — {row.field}</option>)}
+            </optgroup>
+            <optgroup label="Values">
+              {pivot.values.map((value) => <option key={value.id} value={value.id}>Value — {valueDisplayLabel(value)}</option>)}
+            </optgroup>
+          </select>
+        </label>
+        <label className="text-[10px]">
+          Order
+          <select
+            aria-label="Order"
+            disabled={!selectedSortRow && !selectedSortValue}
+            value={selectedSortRow?.sort ?? selectedSortValue?.sort_rows ?? "ascending"}
+            onChange={(event) => {
+              const order = event.target.value as "ascending" | "descending"
+              if (selectedSortRow) {
+                persistPivot(normalizePivotOrdering({
+                  ...pivot,
+                  rows: pivot.rows.map((row) => row.id === selectedSortRow.id ? { ...row, sort: order } : row),
+                }, selectedSortRow.id))
+              } else if (selectedSortValue) {
+                persistPivot(normalizePivotOrdering({
+                  ...pivot,
+                  values: pivot.values.map((value) => value.id === selectedSortValue.id ? { ...value, sort_rows: order } : value),
+                }, selectedSortValue.id))
+              }
+            }}
+            className="mt-1 block rounded px-1 py-0.5 text-[10px] disabled:opacity-50"
+            style={INPUT_STYLE}
+          >
+            <option value="ascending">{selectedSortValueNumeric ? "Low → High" : "A → Z"}</option>
+            <option value="descending">{selectedSortValueNumeric ? "High → Low" : "Z → A"}</option>
+          </select>
+        </label>
+      </section>
+
+      <section
+        data-testid="pivot-conditional-formatting-section"
+        className="rounded-md border p-3"
+        style={{ borderColor: "var(--border)", background: "var(--bg-input)" }}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <h4
+            className="text-[11px] font-bold uppercase tracking-wide"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            Conditional formatting
+          </h4>
+          <button
+            type="button"
+            aria-label="Add conditional formatting rule"
+            disabled={unformattedCompatibleValues.length === 0}
+            onClick={() => {
+              const nextValue = unformattedCompatibleValues[0]
+              if (!nextValue) return
+              persistPivot({
+                ...pivot,
+                values: pivot.values.map((value) =>
+                  value.id === nextValue.id
+                    ? { ...value, color_scale: "low_red_high_green" }
+                    : value,
+                ),
+              })
+            }}
+            className="focus-ring rounded px-2 py-1 text-[10px] font-semibold disabled:opacity-50"
+            style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+          >
+            Add rule
+          </button>
+        </div>
+
+        {conditionalFormattingRules.length === 0 ? (
+          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            No conditional formatting rules.
+          </p>
+        ) : (
+          <div className="mt-2 flex flex-col gap-2">
+            {conditionalFormattingRules.map((rule, index) => {
+              const compatibleTargets = pivot.values.filter(
+                (value) =>
+                  value.id === rule.id ||
+                  (value.color_scale === "none" && isNumericProducingValue(value)),
+              )
+              const previewLabel = rule.display_name || rule.field
+              return (
+                <div
+                  key={rule.id}
+                  role="group"
+                  aria-label={`Conditional formatting rule for ${valueDisplayLabel(rule)}`}
+                  className="flex flex-wrap items-end gap-2 rounded p-2"
+                  style={{ border: "1px solid var(--border)" }}
+                >
+                  <label className="text-[10px]">
+                    Value field
+                    <select
+                      aria-label={`Value field for conditional formatting rule ${index + 1}`}
+                      value={rule.id}
+                      onChange={(event) => {
+                        const targetId = event.target.value
+                        persistPivot({
+                          ...pivot,
+                          values: pivot.values.map((value) => {
+                            if (value.id === rule.id) return { ...value, color_scale: "none" }
+                            if (value.id === targetId) {
+                              return { ...value, color_scale: rule.color_scale }
+                            }
+                            return value
+                          }),
+                        })
+                      }}
+                      className="mt-1 block rounded px-1 py-0.5 text-[10px]"
+                      style={INPUT_STYLE}
+                    >
+                      {compatibleTargets.map((value) => (
+                        <option key={value.id} value={value.id}>
+                          {valueDisplayLabel(value)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-[10px]">
+                    Colour scale
+                    <select
+                      aria-label={`Colour scale for conditional formatting rule ${index + 1}`}
+                      value={rule.color_scale}
+                      onChange={(event) =>
+                        persistPivot({
+                          ...pivot,
+                          values: pivot.values.map((value) =>
+                            value.id === rule.id
+                              ? {
+                                  ...value,
+                                  color_scale: event.target.value as PivotValuePlacement["color_scale"],
+                                }
+                              : value,
+                          ),
+                        })
+                      }
+                      className="mt-1 block rounded px-1 py-0.5 text-[10px]"
+                      style={INPUT_STYLE}
+                    >
+                      <option value="low_red_high_green">Low red → High green</option>
+                      <option value="low_green_high_red">Low green → High red</option>
+                    </select>
+                  </label>
+                  <div
+                    role="img"
+                    aria-label={`Colour scale preview for ${previewLabel}`}
+                    className="flex items-center gap-1 text-[10px]"
+                  >
+                    <span>Low</span>
+                    <span
+                      className="h-2 w-12 rounded"
+                      style={{
+                        background:
+                          rule.color_scale === "low_red_high_green"
+                            ? "linear-gradient(to right, #fecaca, #fef08a, #bbf7d0)"
+                            : "linear-gradient(to right, #bbf7d0, #fef08a, #fecaca)",
+                      }}
+                    />
+                    <span>High</span>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={`Remove conditional formatting rule for ${valueDisplayLabel(rule)}`}
+                    onClick={() =>
+                      persistPivot({
+                        ...pivot,
+                        values: pivot.values.map((value) =>
+                          value.id === rule.id
+                            ? { ...value, color_scale: "none" }
+                            : value,
+                        ),
+                      })
+                    }
+                    className="ml-auto rounded px-1 text-[10px]"
+                  >
+                    Remove
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {pivot.values.length === 0 && (
+          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            Add a Value field to create a rule.
+          </p>
+        )}
+        {pivot.values.length > 0 && compatibleConditionalFormattingValues.length === 0 && (
+          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            Add a numeric-producing Value field to create a rule.
+          </p>
+        )}
+        {compatibleConditionalFormattingValues.length > 0 && unformattedCompatibleValues.length === 0 && (
+          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+            All compatible Value fields already have rules.
+          </p>
+        )}
+      </section>
 
       <div className="flex flex-col gap-1">
         <label className="text-xs">
@@ -730,17 +1310,6 @@ function PivotEditor({
         </label>
       </div>
 
-      <button
-        type="button"
-        onClick={() => onUpdatePreview?.(pivot.id)}
-        className="focus-ring self-start rounded-md px-2.5 py-1.5 text-xs font-semibold"
-        style={{
-          background: NODE_GROUP_COLORS.explore,
-          color: "var(--text-on-accent)",
-        }}
-      >
-        Update preview
-      </button>
     </div>
   )
 }
@@ -760,116 +1329,41 @@ function PivotCardList({
 }) {
   return (
     <div data-testid="explore-pivots-config" className="flex flex-col gap-3 px-4 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div
-            className="text-[11px] font-bold uppercase tracking-[0.08em]"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Pivots
-          </div>
-          <div className="mt-0.5 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            Add pivot layouts and configure their fields.
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={() => onUpdate(createExplorePivot(pivots))}
-          className="focus-ring inline-flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold"
-          style={{ color: "var(--text-on-accent)", background: NODE_GROUP_COLORS.explore }}
-        >
-          <Plus size={13} aria-hidden="true" />
-          Add Pivot
-        </button>
-      </div>
+      <ExploreConfigCardListHeader
+        title="Pivots"
+        description="Add pivot layouts and configure their fields."
+        addLabel="Add Pivot"
+        onAdd={() => onUpdate(createExplorePivot(pivots))}
+      />
 
       {pivots.length === 0 ? (
-        <div
-          className="rounded-lg px-3 py-5 text-center text-xs"
-          style={{
-            color: "var(--text-muted)",
-            background: "var(--bg-input)",
-            border: "1px dashed var(--border)",
-          }}
-        >
+        <ExploreConfigCardEmptyState>
           No pivots yet. Add one to start defining a pivot layout.
-        </div>
+        </ExploreConfigCardEmptyState>
       ) : (
         <div className="flex flex-col gap-2">
           {pivots.map((pivot) => {
             const dependents = dependentChartsForPivot(charts, pivot.id)
             return (
-              <div
+              <ExploreConfigCard
                 key={pivot.id}
-                role="group"
-                aria-label={pivot.name}
-                className="flex items-center overflow-hidden rounded-lg"
-                style={{
-                  background: "var(--bg-input)",
-                  border: "1px solid var(--border)",
-                }}
-              >
-                <div className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2">
-                <span
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md"
-                  style={{
-                    color: NODE_GROUP_COLORS.explore,
-                    background: withAlpha(NODE_GROUP_COLORS.explore, 0.12),
-                  }}
-                >
-                  <Table2 size={15} aria-hidden="true" />
-                </span>
-                  <span className="min-w-0 flex-1">
-                    <label className="block text-xs font-semibold">
-                      <input
-                        type="checkbox"
-                        aria-label={`Show ${pivot.name}`}
-                        checked={pivot.enabled}
-                        onChange={(event) =>
-                          onUpdate({ ...pivot, enabled: event.target.checked })
-                        }
-                      />{" "}
-                      {pivot.name}
-                    </label>
-                    {dependents.length > 0 && (
-                      <span
-                        className="mt-0.5 block truncate text-[10px]"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        Used by {dependents.map(({ name }) => name).join(", ")}
-                      </span>
-                    )}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  aria-label={`Delete ${pivot.name}`}
-                  title={
-                    dependents.length > 0
-                      ? `Reassign or remove ${dependents.map(({ name }) => name).join(", ")} first.`
-                      : `Delete ${pivot.name}`
-                  }
-                  disabled={dependents.length > 0}
-                  onClick={() => onDelete(pivot)}
-                  className="inline-flex shrink-0 items-center rounded p-1.5 disabled:cursor-not-allowed disabled:opacity-35"
-                  style={{ color: "var(--danger)" }}
-                >
-                  <Trash2 size={12} aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Configure ${pivot.name}`}
-                  onClick={() => onConfigure(pivot.id)}
-                  className="m-1.5 inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold"
-                  style={{
-                    color: "var(--text-secondary)",
-                    border: "1px solid var(--border)",
-                  }}
-                >
-                  <SlidersHorizontal size={11} aria-hidden="true" />
-                  Configure
-                </button>
-              </div>
+                name={pivot.name}
+                enabled={pivot.enabled}
+                detail={
+                  dependents.length > 0
+                    ? `Used by ${dependents.map(({ name }) => name).join(", ")}`
+                    : undefined
+                }
+                onEnabledChange={(enabled) => onUpdate({ ...pivot, enabled })}
+                onConfigure={() => onConfigure(pivot.id)}
+                onDelete={() => onDelete(pivot)}
+                deleteDisabled={dependents.length > 0}
+                deleteTitle={
+                  dependents.length > 0
+                    ? `Reassign or remove ${dependents.map(({ name }) => name).join(", ")} first.`
+                    : `Delete ${pivot.name}`
+                }
+              />
             )
           })}
         </div>
@@ -882,7 +1376,6 @@ export default function ExplorePivotsConfig({
   config,
   onUpdate,
   upstreamColumns = [],
-  onUpdatePreview,
   loadFilterMembers,
 }: ExplorePivotsConfigProps) {
   const [configuredPivotId, setConfiguredPivotId] = useState<string | null>(null)
@@ -917,7 +1410,6 @@ export default function ExplorePivotsConfig({
         upstreamColumns={upstreamColumns}
         persistPivot={persistPivot}
         onBack={() => setConfiguredPivotId(null)}
-        onUpdatePreview={onUpdatePreview}
         loadFilterMembers={loadFilterMembers}
       />
     )

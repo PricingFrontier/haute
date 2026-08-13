@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react"
 
+import { PIVOT_CHART_COLORS } from "../../theme/colors"
 import type { ExploreChartConfig } from "./chartConfig"
 import type { PivotChartData } from "./chartData"
 import { buildComboChartOptions, type ChartThemeTokens } from "./chartOptions"
@@ -11,22 +12,7 @@ type ComboChartRuntime = {
   dispose(): void
 }
 
-const FALLBACK_TOKENS: ChartThemeTokens = {
-  background: "#111827",
-  text: "#F9FAFB",
-  muted: "#9CA3AF",
-  grid: "#374151",
-  series: [
-    "#F59E0B",
-    "#3B82F6",
-    "#10B981",
-    "#EF4444",
-    "#A855F7",
-    "#06B6D4",
-    "#F97316",
-    "#EC4899",
-  ],
-}
+const FALLBACK_TOKENS: ChartThemeTokens = PIVOT_CHART_COLORS.fallback
 
 function cssValue(style: CSSStyleDeclaration, name: string, fallback: string): string {
   return style.getPropertyValue(name).trim() || fallback

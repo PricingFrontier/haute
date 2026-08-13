@@ -14,6 +14,7 @@ describe("ExploreOverviewConfig", () => {
   it("renders the overview card toggles", () => {
     render(<ExploreOverviewConfig config={{}} onUpdate={vi.fn()} />)
 
+    expect(screen.getAllByTestId("explore-toggle-card")).toHaveLength(5)
     expect(screen.getByRole("checkbox", { name: SNAPSHOT_TOGGLE })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByRole("checkbox", { name: SCHEMA_TOGGLE })).toHaveAttribute("aria-checked", "false")
     expect(screen.getByRole("checkbox", { name: NUMERIC_TOGGLE })).toHaveAttribute("aria-checked", "false")
@@ -97,6 +98,10 @@ describe("ExploreOverviewConfig", () => {
     render(<ExploreOverviewConfig config={{ overview: { schema: true } }} onUpdate={onUpdate} />)
 
     expect(screen.getByRole("checkbox", { name: SCHEMA_TOGGLE })).toHaveAttribute("aria-checked", "true")
+    expect(screen.getByRole("checkbox", { name: SCHEMA_TOGGLE })).toHaveAttribute("data-state", "enabled")
+    expect(screen.getByRole("checkbox", { name: SCHEMA_TOGGLE })).toHaveStyle({
+      background: "var(--accent-soft)",
+    })
     expect(screen.getByRole("checkbox", { name: QUALITY_TOGGLE })).toHaveAttribute("aria-checked", "false")
 
     fireEvent.click(screen.getByRole("checkbox", { name: SCHEMA_TOGGLE }))

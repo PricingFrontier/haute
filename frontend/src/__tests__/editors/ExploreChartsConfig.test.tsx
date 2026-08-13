@@ -214,19 +214,34 @@ describe("ExploreChartsConfig", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add Chart" }))
     fireEvent.click(screen.getByRole("button", { name: "Add Chart" }))
 
-    expect(screen.getByRole("checkbox", { name: "Show Chart 1" })).toBeChecked()
-    expect(screen.getByRole("checkbox", { name: "Show Chart 2" })).toBeChecked()
+    expect(screen.getByRole("group", { name: "Chart 1" })).toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "Chart 2" })).toBeInTheDocument()
+    expect(screen.getAllByTestId("explore-toggle-card")).toHaveLength(2)
+    expect(screen.getByRole("checkbox", { name: "Chart 1" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    )
+    expect(screen.getByRole("checkbox", { name: "Chart 2" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    )
 
     fireEvent.click(screen.getByRole("button", { name: "Configure Chart 1" }))
     expect(
       screen.getByRole("heading", { name: "Configure Chart 1" }),
     ).toBeVisible()
-    expect(screen.queryByRole("checkbox", { name: "Show Chart 1" })).toBeNull()
+    expect(screen.queryByRole("checkbox", { name: "Chart 1" })).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Back to charts" }))
-    fireEvent.click(screen.getByRole("checkbox", { name: "Show Chart 2" }))
-    expect(screen.getByRole("checkbox", { name: "Show Chart 1" })).toBeChecked()
-    expect(screen.getByRole("checkbox", { name: "Show Chart 2" })).not.toBeChecked()
+    fireEvent.click(screen.getByRole("checkbox", { name: "Chart 2" }))
+    expect(screen.getByRole("checkbox", { name: "Chart 1" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    )
+    expect(screen.getByRole("checkbox", { name: "Chart 2" })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    )
 
     const persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",

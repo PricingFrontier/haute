@@ -698,7 +698,6 @@ export default function NodePanel({
   const [labelUpdateError, setLabelUpdateError] = useState<string | null>(null)
   const rememberedExplorePane = useUIStore((s) => node?.id ? s.explorePanes[node.id] : undefined)
   const setExplorePane = useUIStore((s) => s.setExplorePane)
-  const setExplorePreviewPane = useUIStore((s) => s.setExplorePreviewPane)
   const rememberedModellingPane = useUIStore((s) => node?.id ? s.modellingPanes[node.id] : undefined)
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => node?.id ? Boolean(s.trainJobs[node.id]) : false)
@@ -909,7 +908,6 @@ export default function NodePanel({
                 config={config}
                 onUpdate={handleConfigUpdate}
                 upstreamColumns={upstreamColumns}
-                onUpdatePreview={() => setExplorePreviewPane(node.id, "pivots")}
                 loadFilterMembers={loadPivotFilterMembers}
               />
             )}

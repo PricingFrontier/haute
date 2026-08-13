@@ -125,4 +125,49 @@ describe("PivotTableGrid", () => {
     fireEvent.scroll(scroll, { target: { scrollTop: 32 * 100 } })
     expect(screen.getByText("Region 100")).toBeInTheDocument()
   })
+
+  it("applies a three-stop scale only to ordinary finite numeric body cells", () => {
+    const formattedPivot = {
+      ...pivot,
+      values: [{ ...pivot.values[0], color_scale: "low_red_high_green" as const }, pivot.values[1]],
+    }
+    const formatted = result(4)
+    formatted.row_paths = [
+      { members: [{ kind: "string", value: "Low" }], is_grand_total: false },
+      { members: [{ kind: "string", value: "Mid" }], is_grand_total: false },
+      { members: [{ kind: "string", value: "High" }], is_grand_total: false },
+      { members: [], is_grand_total: true },
+    ]
+    formatted.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: 0 },
+      { row_index: 1, column_index: 0, value_id: "v1", value: "10" },
+      { row_index: 2, column_index: 0, value_id: "v1", value: 20 },
+      { row_index: 3, column_index: 0, value_id: "v1", value: 100 },
+      { row_index: 0, column_index: 1, value_id: "v1", value: 100 },
+      { row_index: 1, column_index: 0, value_id: "v2", value: 3 },
+    ]
+    const { container } = render(<PivotTableGrid result={formatted} pivot={formattedPivot} />)
+    const cells = container.querySelectorAll('td[data-conditional-format="low_red_high_green"]')
+    expect(cells).toHaveLength(3)
+    expect((cells[0] as HTMLElement).style.background).toBe("rgb(254, 202, 202)")
+    expect((cells[1] as HTMLElement).style.background).toBe("rgb(254, 240, 138)")
+    expect((cells[2] as HTMLElement).style.background).toBe("rgb(187, 247, 208)")
+  })
+
+  it("reverses endpoint colours and uses yellow for equal values", () => {
+    const formatted = result(2)
+    formatted.column_paths = [
+      { members: [{ kind: "integer", value: "2024" }], is_grand_total: false },
+      { members: [{ kind: "integer", value: "2025" }], is_grand_total: false },
+    ]
+    formatted.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: 5 },
+      { row_index: 0, column_index: 1, value_id: "v1", value: 5 },
+    ]
+    const reverse = { ...pivot, values: [{ ...pivot.values[0], color_scale: "low_green_high_red" as const }, pivot.values[1]] }
+    const { container, rerender } = render(<PivotTableGrid result={formatted} pivot={reverse} />)
+    expect((container.querySelector('td[data-conditional-format]') as HTMLElement).style.background).toBe("rgb(254, 240, 138)")
+    rerender(<PivotTableGrid result={{ ...formatted, cells: [formatted.cells[0], { row_index: 0, column_index: 1, value_id: "v1", value: 10 }] }} pivot={reverse} />)
+    expect((container.querySelectorAll('td[data-conditional-format]')[0] as HTMLElement).style.background).toBe("rgb(187, 247, 208)")
+  })
 })

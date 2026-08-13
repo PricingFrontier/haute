@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -256,6 +257,304 @@ def test_explore_reuses_completed_report_for_same_analysis_key(
     assert second["result"] == first_status["result"]
 
 
+def test_explore_cache_status_reports_missing_before_first_materialisation(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "missing",
+        "message": "Explore data needs caching",
+        "result": None,
+    }
+
+
+def test_explore_cache_status_restores_durable_dataset_after_process_caches_are_cleared(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    completed = _poll_explore(client, started["job_id"])
+    assert completed["status"] == "completed"
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    assert spec.project_root == tmp_path.resolve()
+    dataframe_key = spec.dataframe_cache_request.keys_by_node["explore"]
+    assert spec.dataframe_cache_request.cache.get(dataframe_key) is not None
+
+    # Model a local backend restart: both process-owned layers disappear, while
+    # the project-local durable generation remains on disk.
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    assert spec.dataframe_cache_request.cache.get(dataframe_key) is None
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert snapshot["state"] == "current"
+    assert snapshot["message"] == "Explore data is cached"
+    assert snapshot["result"] == completed["result"]
+
+    restored_spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    restored_key = restored_spec.dataframe_cache_request.keys_by_node["explore"]
+    assert restored_spec.dataframe_cache_request.cache.get(restored_key) is not None
+
+    cache_hit = client.post("/api/explore/run", json=body).json()
+    assert cache_hit["status"] == "completed"
+    assert cache_hit["cached"] is True
+    assert cache_hit["result"] == completed["result"]
+
+
+def test_explore_cache_status_reports_stale_for_changed_analysis_identity(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    first_body = {
+        "graph": _explore_graph(str(path), explore_config={"code": "df = df"}),
+        "node_id": "explore",
+        "source": "live",
+    }
+    changed_body = {
+        "graph": _explore_graph(
+            str(path),
+            explore_config={"code": "df = df.filter(pl.col('premium') > 10)"},
+        ),
+        "node_id": "explore",
+        "source": "live",
+    }
+
+    started = client.post("/api/explore/run", json=first_body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+
+    # A stale generation may carry an older report schema. Staleness must be
+    # inspectable so the user can re-cache; only a current report is parsed as
+    # today's typed ExploreCacheReport.
+    first_spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(first_body))
+    store = ExplorePersistentCacheStore(first_spec.project_root)
+    family_dir = store._family_dir(first_spec.family_key)
+    pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    metadata_path = family_dir / "generations" / pointer["generation_id"] / "meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["report"] = {"legacy_report_schema": True}
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    response = client.post("/api/explore/cache-status", json=changed_body)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "stale",
+        "message": "Explore cache is stale",
+        "result": None,
+    }
+
+
+def test_explore_cache_status_detects_changed_source_data_as_stale(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+
+    pl.DataFrame({"quote_id": ["a", "b", "c"], "premium": [10, 20, 30]}).write_parquet(path)
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "stale"
+    assert response.json()["result"] is None
+
+
+def test_explore_refresh_bypasses_current_report_and_dataframe_caches(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes.explore import _explore_service
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    first_completed = _poll_explore(client, first["job_id"])
+    assert client.post("/api/explore/run", json=body).json()["cached"] is True
+
+    original_materialise = _explore_service._materialise_and_summarise
+    materialisations = 0
+
+    def count_materialisation(*args, **kwargs):
+        nonlocal materialisations
+        materialisations += 1
+        return original_materialise(*args, **kwargs)
+
+    monkeypatch.setattr(
+        _explore_service,
+        "_materialise_and_summarise",
+        count_materialisation,
+    )
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+
+    assert refreshed["status"] == "started"
+    assert refreshed["cached"] is False
+    refreshed_completed = _poll_explore(client, refreshed["job_id"])
+    assert refreshed_completed["status"] == "completed"
+    assert materialisations == 1
+    assert refreshed_completed["result"]["generated_at"] > first_completed["result"]["generated_at"]
+
+
+def test_failed_explore_refresh_preserves_last_durable_generation(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _explore_cache as persistent_cache_module
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    first_completed = _poll_explore(client, first["job_id"])
+    assert first_completed["status"] == "completed"
+
+    original_atomic_write_text = persistent_cache_module.atomic_write_text
+
+    def fail_pointer_publication(path: Path, data: str, encoding: str = "utf-8") -> None:
+        if path.name == "current.json":
+            raise OSError("forced durable pointer publication failure")
+        original_atomic_write_text(path, data, encoding)
+
+    monkeypatch.setattr(
+        persistent_cache_module,
+        "atomic_write_text",
+        fail_pointer_publication,
+    )
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+    failed = _poll_explore(client, refreshed["job_id"])
+    assert failed["status"] == "error"
+    assert "forced durable pointer publication failure" in failed["message"]
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    dataframe_key = spec.dataframe_cache_request.keys_by_node["explore"]
+    assert spec.dataframe_cache_request.cache.get(dataframe_key) is None
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == first_completed["result"]
+
+
+def test_cancelled_explore_refresh_preserves_last_durable_generation(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import _explore_service as service_mod
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    first_completed = _poll_explore(client, first["job_id"])
+    assert first_completed["status"] == "completed"
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_collect = service_mod.cancellable_streaming_collect
+
+    def gated_collect(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5.0)
+        return original_collect(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", gated_collect)
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+    assert refreshed["status"] == "started"
+    assert entered.wait(timeout=5.0)
+
+    cancelled = client.post(f"/api/explore/cancel/{refreshed['job_id']}")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    release.set()
+
+    worker_name = f"haute-explore-{refreshed['job_id']}"
+    for thread in threading.enumerate():
+        if thread.name == worker_name:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+            break
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == first_completed["result"]
+
+
+def test_explore_cache_status_fails_loudly_for_corrupt_selected_generation(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    pointer = store._family_dir(spec.family_key) / "current.json"
+    pointer.write_text("not valid json", encoding="utf-8")
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+
+
 def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
     client: TestClient,
     tmp_path: Path,
@@ -355,6 +654,7 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    from haute._polars_utils import read_parquet_metadata
     from haute.routes._explore_service import EXPLORE_CACHE_VERSION
     from haute.routes.explore import _explore_service
     from haute.schemas import ExploreCacheReport, ExploreRunRequest
@@ -369,6 +669,17 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
     spec = _explore_service._prepare_spec(ExploreRunRequest.model_validate(body))
     assert EXPLORE_CACHE_VERSION == 5
     assert spec.report_cache_key.startswith("explore:v5:")
+
+    dataframe_key = spec.dataframe_cache_request.keys_by_node["explore"]
+    dataframe_cache = spec.dataframe_cache_request.cache
+    with dataframe_cache.materialization_lock(dataframe_key):
+        artifact_path = dataframe_cache.path_for_key(dataframe_key)
+        pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(artifact_path)
+        dataframe_cache.store_artifact(
+            dataframe_key,
+            artifact_path,
+            read_parquet_metadata(artifact_path),
+        )
 
     _explore_service._report_cache.put(
         spec.report_cache_key,

@@ -121,6 +121,7 @@ export default function useExplorePivotActions({
       key: string,
       jobId: string,
       calculationIdentity: string,
+      requestedDataframeCacheKey: string | null,
     ) => {
       startJob(
         key,
@@ -132,6 +133,7 @@ export default function useExplorePivotActions({
         calculationIdentity,
         activeSource,
         structuralVersion,
+        requestedDataframeCacheKey,
       )
     },
     [activeSource, node.id, nodeLabel, startJob, structuralVersion],
@@ -144,6 +146,7 @@ export default function useExplorePivotActions({
       calculationIdentity: string,
       message: string,
       status: JobStatus,
+      requestedDataframeCacheKey: string | null,
       failure: ExplorePivotFailure | null = null,
       executionMetrics: ExecutionMetrics | null = null,
     ) => {
@@ -152,6 +155,7 @@ export default function useExplorePivotActions({
         key,
         `failed:${key}:${Date.now()}`,
         calculationIdentity,
+        requestedDataframeCacheKey,
       )
       failJob(
         key,
@@ -163,7 +167,10 @@ export default function useExplorePivotActions({
   )
 
   const updatePivot = useCallback(
-    async (pivot: ExplorePivotConfig) => {
+    async (
+      pivot: ExplorePivotConfig,
+      requestedDataframeCacheKey: string | null = null,
+    ) => {
       if (pivot.values.length === 0) return
 
       const key = explorePivotResultKey(node.id, pivot.id)
@@ -188,6 +195,7 @@ export default function useExplorePivotActions({
             calculationIdentity,
             message,
             "contract_error",
+            requestedDataframeCacheKey,
             response.failure,
           )
           return
@@ -198,7 +206,13 @@ export default function useExplorePivotActions({
             throw new Error("Pivot completed without a result")
           }
           const jobId = response.job_id ?? `cached:${key}`
-          startStoredJob(pivot, key, jobId, calculationIdentity)
+          startStoredJob(
+            pivot,
+            key,
+            jobId,
+            calculationIdentity,
+            requestedDataframeCacheKey,
+          )
           completeJob(key, response.result, {
             status: "completed",
             progress: 1,
@@ -214,7 +228,13 @@ export default function useExplorePivotActions({
         if (!response.job_id) {
           throw new Error("Pivot job did not return a job id")
         }
-        startStoredJob(pivot, key, response.job_id, calculationIdentity)
+        startStoredJob(
+          pivot,
+          key,
+          response.job_id,
+          calculationIdentity,
+          requestedDataframeCacheKey,
+        )
         updateProgress(key, {
           status: "running",
           progress: 0.05,
@@ -232,6 +252,7 @@ export default function useExplorePivotActions({
           calculationIdentity,
           errorMessage(error),
           executionJobStatusFromReason(terminalReason),
+          requestedDataframeCacheKey,
           null,
           executionMetricsFromError(error),
         )

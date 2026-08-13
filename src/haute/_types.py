@@ -435,16 +435,23 @@ class ExplorePivotAxisPlacement(TypedDict):
     field: str
 
 
+class ExplorePivotRowPlacement(ExplorePivotAxisPlacement):
+    sort: Literal["ascending", "descending"]
+
+
 class ExplorePivotValuePlacement(TypedDict):
     id: str
     field: str
     aggregation: Literal["sum", "count", "average", "min", "max", "median", "distinct_count"]
     display_name: str
+    sort_rows: Literal["none", "ascending", "descending"]
+    color_scale: Literal["none", "low_red_high_green", "low_green_high_red"]
 
 
 class ExplorePivotOptions(TypedDict):
     row_grand_totals: bool
     column_grand_totals: bool
+    sort_by: str | None
 
 
 class ExplorePivotConfig(TypedDict):
@@ -456,7 +463,7 @@ class ExplorePivotConfig(TypedDict):
     enabled: bool
     filters: list[ExplorePivotFilterPlacement]
     columns: list[ExplorePivotAxisPlacement]
-    rows: list[ExplorePivotAxisPlacement]
+    rows: list[ExplorePivotRowPlacement]
     values: list[ExplorePivotValuePlacement]
     options: ExplorePivotOptions
 

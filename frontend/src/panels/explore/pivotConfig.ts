@@ -39,6 +39,7 @@ export type PivotFilterPlacement = {
 export type PivotAxisPlacement = {
   id: string
   field: string
+  sort?: "ascending" | "descending"
   [key: string]: unknown
 }
 
@@ -47,12 +48,15 @@ export type PivotValuePlacement = {
   field: string
   aggregation: PivotAggregation
   display_name: string
+  sort_rows?: "none" | "ascending" | "descending"
+  color_scale?: "none" | "low_red_high_green" | "low_green_high_red"
   [key: string]: unknown
 }
 
 export type PivotOptions = {
   row_grand_totals: boolean
   column_grand_totals: boolean
+  sort_by?: string | null
   [key: string]: unknown
 }
 
@@ -86,6 +90,13 @@ const MEMBER_KINDS = new Set<PivotMemberKind>([
   "decimal",
 ])
 const AGGREGATIONS = new Set<string>(PIVOT_AGGREGATIONS)
+const AXIS_SORTS = new Set<PivotAxisPlacement["sort"]>(["ascending", "descending"])
+const VALUE_SORTS = new Set<PivotValuePlacement["sort_rows"]>(["none", "ascending", "descending"])
+const COLOR_SCALES = new Set<PivotValuePlacement["color_scale"]>([
+  "none",
+  "low_red_high_green",
+  "low_green_high_red",
+])
 const DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
 const DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/
 const TIME_PATTERN = /^(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/
@@ -228,7 +239,11 @@ function parseAxisZone(
   const placements: Array<PivotFilterPlacement | PivotAxisPlacement> = []
   for (const entry of raw) {
     if (!isPlainObject(entry)) return `Pivot ${position} ${zone} entries must be objects.`
-    const known = zone === "filters" ? new Set(["id", "field", "members"]) : new Set(["id", "field"])
+    const known = zone === "filters"
+      ? new Set(["id", "field", "members"])
+      : zone === "rows"
+        ? new Set(["id", "field", "sort"])
+        : new Set(["id", "field"])
     const futureError = validateFutureFields(entry, known, position, `${zone} placement`)
     if (futureError) return futureError
     if (!nonEmptyString(entry.id)) return `Pivot ${position} placement id must be a non-empty string.`
@@ -246,6 +261,11 @@ function parseAxisZone(
         members.push(member)
       }
       placements.push({ ...cloneLiteral(entry), id: entry.id, field: entry.field, members })
+    } else if (zone === "rows") {
+      if (entry.sort !== undefined && (typeof entry.sort !== "string" || !AXIS_SORTS.has(entry.sort as PivotAxisPlacement["sort"]))) {
+        return `Pivot ${position} ${zone} placement has an unsupported sort.`
+      }
+      placements.push({ ...cloneLiteral(entry), id: entry.id, field: entry.field, sort: (entry.sort ?? "ascending") as PivotAxisPlacement["sort"] })
     } else {
       placements.push({ ...cloneLiteral(entry), id: entry.id, field: entry.field })
     }
@@ -264,7 +284,7 @@ function parseValues(
     if (!isPlainObject(entry)) return `Pivot ${position} value entries must be objects.`
     const futureError = validateFutureFields(
       entry,
-      new Set(["id", "field", "aggregation", "display_name"]),
+      new Set(["id", "field", "aggregation", "display_name", "sort_rows", "color_scale"]),
       position,
       "value",
     )
@@ -276,6 +296,12 @@ function parseValues(
       return `Pivot ${position} value has an unsupported aggregation.`
     }
     if (!nonEmptyString(entry.display_name)) return `Pivot ${position} value display name must be non-empty.`
+    if (entry.sort_rows !== undefined && (typeof entry.sort_rows !== "string" || !VALUE_SORTS.has(entry.sort_rows as PivotValuePlacement["sort_rows"]))) {
+      return `Pivot ${position} value has an unsupported row sort.`
+    }
+    if (entry.color_scale !== undefined && (typeof entry.color_scale !== "string" || !COLOR_SCALES.has(entry.color_scale as PivotValuePlacement["color_scale"]))) {
+      return `Pivot ${position} value has an unsupported color scale.`
+    }
     placementIds.add(entry.id)
     values.push({
       ...cloneLiteral(entry),
@@ -283,6 +309,8 @@ function parseValues(
       field: entry.field,
       aggregation: entry.aggregation as PivotAggregation,
       display_name: entry.display_name,
+      sort_rows: (entry.sort_rows ?? "none") as PivotValuePlacement["sort_rows"],
+      color_scale: (entry.color_scale ?? "none") as PivotValuePlacement["color_scale"],
     })
   }
   return values
@@ -304,7 +332,7 @@ function migratePivot(raw: Record<string, unknown>, position: number): ExplorePi
     columns: [],
     rows: [],
     values: [],
-    options: { row_grand_totals: true, column_grand_totals: true },
+    options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
   }
 }
 
@@ -324,10 +352,13 @@ function parseV1Pivot(raw: Record<string, unknown>, position: number): ExplorePi
   if (typeof rows === "string") return rows
   const values = parseValues(raw.values, position, placementIds)
   if (typeof values === "string") return values
+  if (values.filter((value) => value.sort_rows !== "none").length > 1) {
+    return `Pivot ${position} may have only one active Value row sort.`
+  }
   if (!isPlainObject(raw.options)) return `Pivot ${position} options must be an object.`
   const optionError = validateFutureFields(
     raw.options,
-    new Set(["row_grand_totals", "column_grand_totals"]),
+    new Set(["row_grand_totals", "column_grand_totals", "sort_by"]),
     position,
     "options",
   )
@@ -337,6 +368,24 @@ function parseV1Pivot(raw: Record<string, unknown>, position: number): ExplorePi
   }
   if (typeof raw.options.column_grand_totals !== "boolean") {
     return `Pivot ${position} options.column_grand_totals must be a boolean.`
+  }
+  const activeValueSorts = values.filter((value) => value.sort_rows !== "none")
+  const sortBy = raw.options.sort_by === undefined
+    ? activeValueSorts[0]?.id ?? null
+    : raw.options.sort_by
+  if (sortBy !== null && !nonEmptyString(sortBy)) {
+    return `Pivot ${position} options.sort_by must be null or a placement id.`
+  }
+  const sortRow = typeof sortBy === "string" ? (rows as PivotAxisPlacement[]).find((row) => row.id === sortBy) : undefined
+  const sortValue = typeof sortBy === "string" ? values.find((value) => value.id === sortBy) : undefined
+  if (sortBy !== null && !sortRow && !sortValue) {
+    return `Pivot ${position} options.sort_by must reference a placed Row or Value placement.`
+  }
+  if (sortValue && (sortValue.sort_rows === "none" || activeValueSorts.length !== 1 || activeValueSorts[0].id !== sortValue.id)) {
+    return `Pivot ${position} options.sort_by must match the sole active Value row sort.`
+  }
+  if ((sortRow || sortBy === null) && activeValueSorts.length > 0) {
+    return `Pivot ${position} active Value row sort requires options.sort_by to reference that Value.`
   }
   return {
     ...cloneLiteral(raw),
@@ -348,7 +397,7 @@ function parseV1Pivot(raw: Record<string, unknown>, position: number): ExplorePi
     columns: columns as PivotAxisPlacement[],
     rows: rows as PivotAxisPlacement[],
     values,
-    options: cloneLiteral(raw.options) as PivotOptions,
+    options: { ...cloneLiteral(raw.options) as PivotOptions, sort_by: sortBy },
   }
 }
 
@@ -413,7 +462,7 @@ export function createExplorePivot(pivots: readonly ExplorePivotConfig[]): Explo
     columns: [],
     rows: [],
     values: [],
-    options: { row_grand_totals: true, column_grand_totals: true },
+    options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
   }
 }
 
@@ -443,11 +492,15 @@ export function pivotCalculationIdentity(pivot: ExplorePivotConfig): string {
   return JSON.stringify({
     filters,
     columns: pivot.columns.map((placement) => placement.field),
-    rows: pivot.rows.map((placement) => placement.field),
+    rows: pivot.rows.map((placement) => ({
+      field: placement.field,
+      sort: pivot.options.sort_by === placement.id ? placement.sort ?? "ascending" : "ascending",
+    })),
     values: pivot.values.map((value) => ({
       id: value.id,
       field: value.field,
       aggregation: value.aggregation,
+      sort_rows: pivot.options.sort_by === value.id ? value.sort_rows ?? "none" : "none",
     })),
     options: {
       row_grand_totals: pivot.options.row_grand_totals,

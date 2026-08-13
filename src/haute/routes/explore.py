@@ -10,6 +10,7 @@ from haute.routes._job_store import get_job_store
 from haute.routes._pivot_service import PivotService
 from haute.routes.pipeline import _ensure_source_file, _validate_runtime_input_paths
 from haute.schemas import (
+    ExploreCacheSnapshotResponse,
     ExplorePivotMembersRequest,
     ExplorePivotMembersResponse,
     ExplorePivotRunRequest,
@@ -34,6 +35,15 @@ def run_explore(body: ExploreRunRequest) -> ExploreRunResponse:
     _ensure_source_file(graph)
     _validate_runtime_input_paths(graph)
     return _explore_service.start(body.model_copy(update={"graph": graph}))
+
+
+@router.post("/cache-status", response_model=ExploreCacheSnapshotResponse)
+def explore_cache_status(body: ExploreRunRequest) -> ExploreCacheSnapshotResponse:
+    """Inspect the durable cache state for an Explore analysis identity."""
+    graph = flatten_graph(body.graph)
+    _ensure_source_file(graph)
+    _validate_runtime_input_paths(graph)
+    return _explore_service.cache_status(body.model_copy(update={"graph": graph}))
 
 
 @router.get("/status/{job_id}", response_model=ExploreStatusResponse)

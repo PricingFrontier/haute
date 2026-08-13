@@ -6,6 +6,7 @@
 | --- | --- |
 | `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin Explore materialisation and `/pivots` run/status/cancel/member endpoints. Graph-bearing requests share `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before service delegation. |
 | `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/_explore_cache.py` | Project-local durable Explore generations: strict metadata/current-report validation, atomic publication, current/stale lookup, and restoration into the process dataframe execution cache. |
 | `src/haute/routes/_pivot_service.py` | Pivot service: requires the derived Explore dataframe-cache entry, validates fields/aggregations, applies typed exact-member filters, enforces cardinality before aggregation, runs latest-wins admitted jobs, and caches typed matrices by calculation identity. |
 | `src/haute/_cache.py` | Dataframe execution-cache invariant owned by [caching](../caching/low-level.md) and used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
@@ -41,6 +42,15 @@
   (`node_id`, `upstream_node_id`, `source`, `dataframe_cache_key`), `row_count`, `column_count`,
   `columns`, `overview_summary`, `generated_at` (epoch seconds), and `execution_metrics`
   (attached after materialisation, not during `_build_frame_stats`).
+- **`ExploreCacheSnapshotResponse`** (`schemas.py`) - inspection result with a closed
+  `state: "missing" | "current" | "stale"`, a user-facing message, and a report only for a
+  current generation. Inspection never starts a job.
+- **Durable Explore generation** (`_explore_cache.py`) - one immutable generation directory
+  containing `data.parquet` and `meta.json`, selected by an atomically replaced `current.json`
+  pointer under `.haute_cache/explore/<family-digest>`. Metadata binds the family digest, exact
+  report/dataframe cache keys, typed report, and validated Parquet size/schema/counts. A family is
+  the pipeline source file, Explore node id, and active source; it retains one selected generation,
+  with the previous generation retired only after the new pointer is committed.
 - **`EXPLORE_OVERVIEW_TOGGLE_KEYS`** (`_explore_overview.py`) — frozenset of the five known
   overview card keys: `dataset_snapshot`, `data_quality`, `numeric_summary`,
   `categorical_summary`, `schema`. These must map to `bool`; any other key must map to a
@@ -84,13 +94,24 @@
   graph execution. Cache eviction between admission and scan becomes a typed local
   `cache_required` failure, never fresh execution.
 - Calculation canonicalisation includes only ordered filter field/member keys, ordered row and
-  column fields, Value placement ids/fields/aggregations, total options, dataframe key, and result
-  schema version. It excludes card name/enabled, Value display names, and all unknown
-  presentation fields. The in-process result LRU stores at most 32 matrices.
+  column fields plus their effective Row directions, Value placement ids/fields/aggregations plus
+  the selected Value direction, total options, dataframe key, and result schema version. A
+  `sort_by` selection whose effective ordering is unchanged reuses the same key. It excludes
+  card name/enabled, Value display names, Value colour scales, and all unknown presentation
+  fields. The in-process result LRU stores at most 32 matrices.
 - Aggregation aliases are derived from stable Value placement ids rather than field names.
   Numeric operations first map floating NaN to null. `sum`/`average`/`min`/`max`/`median` return
   null when a group contains no valid numeric values; `count` and `distinct_count` return integer
   zero. Row and column grand totals are explicit paths assembled from the same filtered frame.
+- `options.sort_by` is null or the placement id of exactly one Row/Value. A missing field on an
+  older v1 card derives the active Value id when one `sort_rows` direction exists, otherwise null.
+  Row paths are compared level-by-level: only a selected Row uses its persisted `sort` direction,
+  every other level is ascending, and null/NaN always remain last. When a Value is selected, the service also aggregates that
+  Value by the complete Rows path independently of the Columns layout, orders ordinary paths by
+  the resulting scalar, and falls back to ascending Row labels for ties. This auxiliary aggregate
+  is reused for a displayed row-grand-total column when present; it is never exposed as a hidden
+  cell when totals are disabled. A selected Value must carry the sole non-none `sort_rows`
+  direction; Row/default sorting requires every Value direction to be none.
 - A typed member key uses closed kinds `null|string|boolean|integer|float|nan|date|datetime|time|decimal`.
   Integer and decimal payloads are canonical decimal strings, temporal payloads are ISO strings,
   finite floats are JSON numbers, and null/NaN carry `value: null`. The members endpoint returns
@@ -123,6 +144,21 @@
 
 ## Control flow
 
+### `POST /api/explore/cache-status`
+
+1. The route applies the same graph flattening, source-file completion, and runtime-path
+   validation as `/run`, then derives the canonical `ExploreCacheSpec` without executing nodes.
+2. The service opens the selected durable family generation. No generation returns `missing`; a
+   generation whose `report_cache_key` differs returns `stale`; an exact match is strictly
+   validated, copied into the request's process-local `DataFrameExecutionCache` under its exact
+   key, and returned as `current` with its typed report.
+3. If no durable generation exists, an exact report plus dataframe already present in the two
+   process-local caches may satisfy `current`. A report alone is not a dataset cache hit.
+4. Malformed pointers, metadata/report disagreement, missing Parquet, or Parquet metadata mismatch
+   raise the durable-cache corruption error and fail the request; they never downgrade to
+   `missing`. A generation with a different report cache key is stale and its old report payload
+   is not parsed as the current schema; report-schema upgrades therefore remain re-cacheable.
+
 ### `POST /api/explore/run` (`routes/explore.py:run_explore` → `ExploreService.start`)
 
 1. `flatten_graph(body.graph)` resolves any subgraph/composite references in the posted graph.
@@ -133,16 +169,19 @@
    a. `_prepare_spec(body)` — see below — resolves node/upstream, builds the dataframe cache
       request, and derives both cache keys. Raises `HTTPException(400)` if the node is not
       Explore-typed or does not have exactly one parent.
-   b. If `self._report_cache.get(spec.report_cache_key)` hits, return
-      `ExploreRunResponse(status="completed", cached=True, result=cached)` immediately — no job,
-      no thread.
-   c. Otherwise create a job via `JobStore.create_job` with initial fields (`status="running"`,
+   b. Unless `body.refresh` is true, require both the exact report and dataframe process-cache
+      entries for an immediate in-process hit. If either is absent, inspect the durable family;
+      an exact generation is restored into the dataframe cache and returned synchronously as
+      `ExploreRunResponse(status="completed", cached=True, result=report)`.
+   c. For `refresh: true`, bypass those hits, evict the exact process report/dataframe entries, and
+      leave the selected durable generation untouched until a replacement succeeds.
+   d. Otherwise create a job via `JobStore.create_job` with initial fields (`status="running"`,
       `progress=0.0`, `node_id`, `upstream_node_id`, `source`, `analysis_key`).
-   d. `CancellableJobRegistry.register_latest(spec.family_key, job_id)` returns a cancellation
+   e. `CancellableJobRegistry.register_latest(spec.family_key, job_id)` returns a cancellation
       token and the previous job id (if any) for the same family. If a previous job existed, it
       is transitioned to `superseded` via `JobLifecycle.transition` (guarded by
       `expected_status="running"` — a no-op if it already finished).
-   e. A daemon thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
+   f. A daemon thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
       `ExploreRunResponse(status="started", job_id=job_id)` without waiting.
 
 ### `_prepare_spec` (`ExploreService._prepare_spec`)
@@ -177,10 +216,13 @@
 4. `execution_context.checkpoint(label="explore_before_store", node_id=spec.node_id)`.
 5. The report is copied with `execution_metrics` attached
    (`ExecutionMetricsPayload.model_validate(execution_context.metrics_payload(status="completed"))`).
-6. The report is stored in `self._report_cache` under `spec.report_cache_key`, then
+6. While the exact dataframe entry is protected from eviction, the service copies it into a new
+   durable generation, validates the staged Parquet/metadata, atomically selects that generation,
+   and only then retires the previous unselected generation.
+7. The report is stored in `self._report_cache` under `spec.report_cache_key`, then
    `JobLifecycle.transition(job_id, to="completed", fields={progress: 1.0, result: report,
    execution_metrics})`.
-7. `finally`: `execution_context.release_admission()` (if a context was created) and
+8. `finally`: `execution_context.release_admission()` (if a context was created) and
    `self._jobs.release(job_id)` always run, even on the exception paths below.
 
 Exception handling (each maps to a distinct terminal status via `JobLifecycle.transition`, see

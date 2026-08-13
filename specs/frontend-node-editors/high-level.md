@@ -58,19 +58,46 @@ backend API modules own validation and persistence.
 - A pivot cannot be deleted while charts reference it; the Pivots pane identifies dependent chart
   names so the analyst can reassign them. Chart appearance edits are presentation-only and never
   change dataframe/pivot calculation identities or structural execution version.
+- Overview, Pivot, and Chart cards share one Explore toggle-card presentation. The card body is an
+  accessible checkbox target: enabled cards use the Explore border, accent-soft background, and
+  accent label treatment; disabled cards use the neutral input treatment. Pivot and Chart cards
+  keep Delete and Configure as separate controls that never toggle visibility. Their list headers,
+  Add actions, empty states, optional detail text, and delete eligibility remain supplied by the
+  owning panes.
 - The Explore Pivots pane owns ordered version-1 cards. `Add Pivot` appends a fully populated,
   uniquely named, enabled card with the first-unused `pivot_N` identity. Each card exposes an
   accessible visibility checkbox and a separate `Configure` button; configuring never toggles
   visibility, and Back returns to the card list without persisting navigation state.
-- Pivot Configure provides a committed unique name, searchable dtype-labelled upstream-field
-  palette, and ordered Filters, Columns, Rows, and Values zones. Pointer and keyboard buttons add,
-  move, reorder, and remove placements. One field may appear across zones; Filters/Columns/Rows
+- Pivot Configure provides a committed unique name, an Excel-style searchable dtype-labelled
+  field palette in a fixed-height scrolling list, and ordered Filters, Columns, Rows, and Values
+  zones. Every field row shows `Add to:` followed by Filters, Columns, Rows, and Values buttons;
+  pressing one adds that field directly to the matching zone, with no separate selection/action
+  area. Assigned fields appear beneath `Drag fields between areas below:` in a fixed two-column
+  grid ordered Filters, Columns, Rows, Values like Excel. A placement can be dragged onto another
+  placement to insert before it, or onto open area space to append; this reorders within an area or
+  moves between valid areas in one committed graph edit. The visible Move-to and Move-up/down
+  controls are omitted; focused cards expose equivalent arrow-key movement, and Remove remains a
+  separate action. One field may appear across zones; Filters/Columns/Rows
   reject same-zone duplicates; Values permit repeated fields with stable ids. Numeric Values
   default to Sum and other dtypes to Count, with Sum/Count/Average/Min/Max/Median/Distinct count
-  available subject to dtype compatibility. Missing source fields remain visible as invalid chips.
-- Configuration edits commit immediately as ordinary graph changes. `Update preview` is a
-  separate action that opens the lower Pivots result pane, where the explicit `Update` control
-  starts calculation; neither action mutates persisted graph configuration.
+  available subject to dtype compatibility. Placement cards contain only placement-specific
+  controls (filter members, Value aggregation, and Remove); sorting and conditional formatting
+  never appear inside the draggable grid. Immediately after the grid, one Sorting section exposes
+  `Sort by` (default Row-label order, any placed Row, or any placed Value) and the matching
+  `Order` control. A separate Conditional formatting section is a bordered rules box with an
+  `Add rule` action. Every active rule is visible at the same time and exposes its Value field,
+  colour scale, labelled gradient preview, and Remove action. One Value placement can have at most
+  one rule. Adding chooses the first still-unformatted numeric Value and applies `Low red → High
+  green`; the action is disabled when no eligible Value remains. A rule can be reassigned to any
+  other eligible unformatted Value. Colour choices are `Low red → High green` and `Low green →
+  High red`; removing a rule persists its scale as None. An aggregation change that makes a Value
+  non-numeric also removes its rule. Missing source fields remain visible as invalid chips.
+- Configuration edits commit immediately as ordinary graph changes. When the lower Pivots or
+  Charts result pane is mounted, a committed calculation-affecting Pivot edit automatically
+  schedules one recalculation for the current dataframe-cache and calculation identities;
+  opening either pane later does the same for stale or missing source results. Pivot and Chart
+  name/appearance edits reuse retained data and rerender immediately without calculation. There
+  is no separate `Update preview` or routine manual refresh step.
 - The Explore node pane strip is ordered Polars Code, Overview, Pivots, Charts, Export.
   Relationships is not exposed as an Explore pane. Pivots hosts its card workflow in that
   position, and its selection is remembered independently per Explore node like the other panes.

@@ -17,6 +17,7 @@ import type {
   DatabricksWarehousesResponse,
   DissolveSubmodelResponse,
   ExploreRunResponse,
+  ExploreCacheSnapshotResponse,
   ExploreStatusResponse,
   ExplorePivotMembersResponse,
   ExplorePivotRunResponse,
@@ -97,6 +98,7 @@ import {
   parseDatabricksWarehousesResponse,
   parseDissolveSubmodelResponse,
   parseExploreRunResponse,
+  parseExploreCacheSnapshotResponse,
   parseExploreStatusResponse,
   parseExplorePivotMembersResponse,
   parseExplorePivotRunResponse,
@@ -906,9 +908,33 @@ export interface RunExploreArgs {
   graph: GraphPayload
   node_id: string
   source?: string
+  refresh?: boolean
   streamingChunkSize?: number
   signal?: AbortSignal
   timeout?: number
+}
+
+export interface GetExploreCacheSnapshotArgs {
+  graph: GraphPayload
+  node_id: string
+  source?: string
+  streamingChunkSize?: number
+  signal?: AbortSignal
+}
+
+export function getExploreCacheSnapshot(
+  args: GetExploreCacheSnapshotArgs,
+): Promise<ExploreCacheSnapshotResponse> {
+  const { streamingChunkSize, signal, ...payload } = args
+  return post<unknown>(
+    "/api/explore/cache-status",
+    {
+      ...payload,
+      source: payload.source ?? "live",
+      ...(streamingChunkSize !== undefined ? { streaming_chunk_size: streamingChunkSize } : {}),
+    },
+    { signal },
+  ).then(parseExploreCacheSnapshotResponse)
 }
 
 export function runExplore(args: RunExploreArgs): Promise<ExploreRunResponse> {

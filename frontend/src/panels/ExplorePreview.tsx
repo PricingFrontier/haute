@@ -1,8 +1,8 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, Play, XCircle } from "lucide-react"
 
-import { cancelExplore, runExplore } from "../api/client"
-import type { ExploreStatusResponse } from "../api/types"
+import { cancelExplore, getExploreCacheSnapshot, runExplore } from "../api/client"
+import type { ExploreCacheSnapshotResponse, ExploreStatusResponse } from "../api/types"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -88,13 +88,43 @@ export default function ExplorePreview({
     () => hashConfig({ graph: cacheIdentity, source: activeSource }),
     [activeSource, cacheIdentity],
   )
+  const [cacheSnapshot, setCacheSnapshot] = useState<{
+    configHash: string
+    state: ExploreCacheSnapshotResponse["state"] | "checking" | "error"
+  }>({ configHash, state: "checking" })
+  const [runJobId, setRunJobId] = useState<string | null>(null)
+  const cacheState = !hasInput
+    ? "missing"
+    : cacheSnapshot.configHash === configHash
+      ? cacheSnapshot.state
+      : "checking"
   const currentExploreJob = exploreJob ?? null
+  const hasActiveExploreJob = currentExploreJob !== null
   const currentCachedResult =
     cachedResult && cachedResult.configHash === configHash
       ? cachedResult
       : null
-  const report = currentCachedResult?.result ?? null
-  const status = currentExploreJob?.progress ?? currentCachedResult?.terminalStatus ?? null
+  const completedByThisMount = !!(
+    currentCachedResult?.result
+    && currentCachedResult.terminalStatus?.status === "completed"
+    && runJobId === currentCachedResult.jobId
+  )
+  const report = completedByThisMount || cacheState === "current" || cacheState === "checking"
+    ? (currentCachedResult?.result ?? null)
+    : null
+  const retainedCachedResult = cachedResult?.result ?? null
+  const idleCacheState = completedByThisMount || cacheState === "current"
+    ? "current"
+    : cacheState === "stale"
+      ? "stale"
+      : cacheState === "missing" || cacheState === "error"
+        ? "missing"
+        : report
+          ? "current"
+          : retainedCachedResult
+            ? "stale"
+            : "missing"
+  const status = currentExploreJob?.progress ?? (report ? currentCachedResult?.terminalStatus : null) ?? null
   const isBusy = submitting || !!currentExploreJob
   const progress = status?.status === "completed" ? 1 : (status?.progress ?? (submitting ? 0.03 : 0))
   const progressPercent = Math.min(Math.max(progress * 100, 0), 100)
@@ -104,6 +134,38 @@ export default function ExplorePreview({
       : "preview"
   const activePaneMeta = EXPLORE_PREVIEW_PANES.find((pane) => pane.key === activePane) ?? EXPLORE_PREVIEW_PANES[0]
   const statusSource = currentExploreJob?.source ?? activeSource
+
+  useEffect(() => {
+    if (!hasInput || hasActiveExploreJob) return
+    const controller = new AbortController()
+    void getExploreCacheSnapshot({
+      graph: buildGraph(allNodes, edges, submodels, preamble),
+      node_id: nodeId,
+      source: activeSource,
+      streamingChunkSize,
+      signal: controller.signal,
+    }).then((snapshot) => {
+      if (controller.signal.aborted) return
+      if (snapshot.state === "current") {
+        if (!snapshot.result) throw new Error("Current Explore cache status omitted its report")
+        startExploreJob(nodeId, `cache-status:${nodeId}`, nodeLabel, configHash, activeSource, structuralVersion)
+        completeExploreJob(nodeId, snapshot.result, {
+          status: "completed",
+          progress: 1,
+          message: "Cached",
+          result: snapshot.result,
+          terminal_reason: "completed",
+        })
+      }
+      setCacheSnapshot({ configHash, state: snapshot.state })
+    }).catch((err: unknown) => {
+      if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) return
+      const message = err instanceof Error ? err.message : String(err)
+      setCacheSnapshot({ configHash, state: "error" })
+      addToast("error", `Explore cache inspection failed: ${message}`)
+    })
+    return () => controller.abort()
+  }, [activeSource, addToast, allNodes, completeExploreJob, configHash, edges, hasActiveExploreJob, hasInput, nodeId, nodeLabel, preamble, startExploreJob, streamingChunkSize, structuralVersion, submodels])
 
   useEffect(() => {
     if (report) touchExplorePreview(nodeId)
@@ -118,10 +180,12 @@ export default function ExplorePreview({
         node_id: nodeId,
         source: activeSource,
         streamingChunkSize,
+        refresh: cacheState === "error" || idleCacheState !== "missing",
       })
       if (response.status === "completed") {
         if (!response.result) throw new Error("Explore completed without a cache report")
         const jobId = response.job_id ?? `cached:${nodeId}`
+        setRunJobId(jobId)
         startExploreJob(nodeId, jobId, nodeLabel, configHash, activeSource, structuralVersion)
         completeExploreJob(nodeId, response.result, {
           status: "completed",
@@ -134,6 +198,7 @@ export default function ExplorePreview({
         return
       }
       if (!response.job_id) throw new Error("Explore job did not return a job id")
+      setRunJobId(response.job_id)
       startExploreJob(nodeId, response.job_id, nodeLabel, configHash, activeSource, structuralVersion)
       updateExploreProgress(nodeId, {
         status: "running",
@@ -168,6 +233,8 @@ export default function ExplorePreview({
     nodeId,
     nodeLabel,
     preamble,
+    idleCacheState,
+    cacheState,
     startExploreJob,
     streamingChunkSize,
     structuralVersion,
@@ -191,6 +258,11 @@ export default function ExplorePreview({
     }
   }, [addToast, completeExploreJob, currentExploreJob, failExploreJob, nodeId])
 
+  const cacheButtonStyle = idleCacheState === "current"
+    ? { color: "var(--text-on-accent)", background: "var(--success-fill)" }
+    : idleCacheState === "stale"
+      ? { color: "var(--text-on-light-accent)", background: "var(--warning-strong)" }
+      : { color: "var(--text-on-accent)", background: "var(--danger-solid)" }
   const actions = currentExploreJob ? (
     <button
       type="button"
@@ -207,10 +279,10 @@ export default function ExplorePreview({
       onClick={handleRun}
       disabled={!hasInput || isBusy}
       className={`${PREVIEW_PANEL_ACTION_BUTTON_CLASS} disabled:opacity-45 disabled:cursor-not-allowed`}
-      style={{ color: "var(--text-on-accent)", background: NODE_GROUP_COLORS.explore }}
+      style={cacheButtonStyle}
     >
       {submitting ? <Loader2 size={12} className="shrink-0 animate-spin" /> : <Play size={12} className="shrink-0" />}
-      <span className="truncate">{report ? "Re-cache full data" : "Process & cache full data"}</span>
+      <span className="truncate">{idleCacheState === "missing" ? "Needs caching" : "Re-cache"}</span>
     </button>
   )
 
@@ -218,7 +290,7 @@ export default function ExplorePreview({
     <PreviewPanelFrame
       nodeLabel={nodeLabel}
       nodeType={nodeType}
-      subtitle={`${statusSource} | ${statusMessage(status, submitting)}`}
+      subtitle={`${statusSource} | ${isBusy ? statusMessage(status, submitting) : idleCacheState === "current" ? "Cached" : idleCacheState === "stale" ? "Cache stale" : "Needs caching"}`}
       actions={actions}
       data-testid="explore-preview-frame"
     >

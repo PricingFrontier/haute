@@ -897,6 +897,12 @@ export interface ExploreRunResponse {
   result?: ExploreCacheReport | null
 }
 
+export interface ExploreCacheSnapshotResponse {
+  state: "missing" | "current" | "stale"
+  message: string
+  result?: ExploreCacheReport | null
+}
+
 export interface ExploreStatusResponse {
   status: JobStatus
   progress: number

@@ -195,6 +195,45 @@ def test_pivot_run_requires_exact_materialised_explore_cache(
     }
 
 
+def test_pivot_uses_durable_explore_cache_restored_after_process_restart(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame(
+        {
+            "region": ["North", "South"],
+            "year": [2024, 2024],
+            "claims": [10.0, 20.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    request = ExploreRunRequest.model_validate(
+        {"graph": graph, "node_id": "explore", "source": "live"}
+    )
+    spec = _explore_service.prepare_spec(request)
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+
+    snapshot = client.post(
+        "/api/explore/cache-status",
+        json={"graph": graph, "node_id": "explore", "source": "live"},
+    )
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+
+    final, result = _run_pivot(client, graph, _pivot())
+
+    assert final["status"] == "completed"
+    assert result is not None
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "sum_claims") == 10.0
+
+
 def test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -396,6 +435,201 @@ def test_pivot_orders_multi_level_paths_by_typed_values(client: TestClient, tmp_
         [("integer", "2024"), ("string", "Q2")],
         [("integer", "2025"), ("string", "Q2")],
     ]
+
+
+def test_pivot_applies_only_the_selected_row_direction_and_keeps_missing_last(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame(
+        {
+            "region": ["Zulu", "Alpha", "Alpha", None],
+            "segment": [2, 10, 2, 1],
+            "year": [2024, 2024, 2024, 2024],
+            "claims": [4.0, 3.0, 2.0, 1.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        rows=[
+            {"id": "row_region", "field": "region", "sort": "descending"},
+            {"id": "row_segment", "field": "segment", "sort": "descending"},
+        ],
+        options={
+            "row_grand_totals": False,
+            "column_grand_totals": False,
+            "sort_by": "row_region",
+        },
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert [
+        [(member["kind"], member["value"]) for member in path["members"]]
+        for path in result["row_paths"]
+    ] == [
+        [("string", "Zulu"), ("integer", "2")],
+        [("string", "Alpha"), ("integer", "2")],
+        [("string", "Alpha"), ("integer", "10")],
+        [("null", None), ("integer", "1")],
+    ]
+
+
+def test_pivot_sorts_rows_by_correct_value_total_without_displaying_totals(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame(
+        {
+            "region": ["A", "A", "A", "B", "B", "C", "D"],
+            "year": [2024, 2024, 2025, 2024, 2025, 2024, 2024],
+            "claims": [0.0, 100.0, 0.0, 30.0, 30.0, None, 30.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        rows=[{"id": "row_region", "field": "region", "sort": "descending"}],
+        values=[
+            {
+                "id": "average_claims",
+                "field": "claims",
+                "aggregation": "average",
+                "display_name": "Average claims",
+                "sort_rows": "descending",
+                "color_scale": "none",
+            }
+        ],
+        options={
+            "row_grand_totals": False,
+            "column_grand_totals": False,
+            "sort_by": "average_claims",
+        },
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    # A's displayed year averages sum to 50 while B's sum to 60, but the
+    # correct all-years averages are 33.33 and 30. Value sorting must use the
+    # re-aggregated row total rather than combining displayed cells. D ties B,
+    # so their order follows the default ascending Row-label tie-breaker.
+    assert [path["members"][0]["value"] for path in result["row_paths"]] == [
+        "A",
+        "B",
+        "D",
+        "C",
+    ]
+    assert not any(path["is_grand_total"] for path in result["row_paths"])
+    assert not any(path["is_grand_total"] for path in result["column_paths"])
+
+
+def test_pivot_sort_settings_affect_cache_but_colour_scale_is_presentation_only(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame(
+        {
+            "region": ["North", "South"],
+            "year": [2024, 2024],
+            "claims": [10.0, 20.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    base_value = {
+        "id": "sum_claims",
+        "field": "claims",
+        "aggregation": "sum",
+        "display_name": "Claims",
+        "sort_rows": "none",
+        "color_scale": "none",
+    }
+
+    first, first_result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            rows=[{"id": "row_1", "field": "region", "sort": "ascending"}],
+            values=[base_value],
+        ),
+    )
+    recoloured, recoloured_result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            rows=[{"id": "row_1", "field": "region", "sort": "ascending"}],
+            values=[{**base_value, "color_scale": "low_red_high_green"}],
+        ),
+    )
+    explicitly_selected_default, explicitly_selected_default_result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            rows=[{"id": "row_1", "field": "region", "sort": "ascending"}],
+            values=[base_value],
+            options={
+                "row_grand_totals": True,
+                "column_grand_totals": True,
+                "sort_by": "row_1",
+            },
+        ),
+    )
+    resorted, resorted_result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            rows=[{"id": "row_1", "field": "region", "sort": "descending"}],
+            values=[base_value],
+            options={
+                "row_grand_totals": True,
+                "column_grand_totals": True,
+                "sort_by": "row_1",
+            },
+        ),
+    )
+    value_sorted, value_sorted_result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            rows=[{"id": "row_1", "field": "region", "sort": "ascending"}],
+            values=[{**base_value, "sort_rows": "descending"}],
+            options={
+                "row_grand_totals": True,
+                "column_grand_totals": True,
+                "sort_by": "sum_claims",
+            },
+        ),
+    )
+
+    assert first["status"] == "completed"
+    assert recoloured["cached"] is True
+    assert recoloured_result == first_result
+    assert explicitly_selected_default["cached"] is True
+    assert explicitly_selected_default_result == first_result
+    assert resorted["status"] == "completed"
+    assert "cached" not in resorted
+    assert resorted_result is not None
+    assert first_result is not None
+    assert resorted_result["calculation_key"] != first_result["calculation_key"]
+    assert [path["members"][0]["value"] for path in resorted_result["row_paths"][:-1]] == [
+        "South",
+        "North",
+    ]
+    assert value_sorted["status"] == "completed"
+    assert "cached" not in value_sorted
+    assert value_sorted_result is not None
+    assert value_sorted_result["calculation_key"] != first_result["calculation_key"]
+    assert [path["members"][0]["value"] for path in value_sorted_result["row_paths"][:-1]] == [
+        "South",
+        "North",
+    ]
+    assert value_sorted_result["row_paths"][-1]["is_grand_total"] is True
+    assert value_sorted_result["column_paths"][-1]["is_grand_total"] is True
 
 
 def test_pivot_job_can_be_cancelled_without_publishing_a_result(

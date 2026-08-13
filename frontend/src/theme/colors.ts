@@ -43,6 +43,35 @@ export const CHART_COLORS = {
   ],
 } as const
 
+export const PIVOT_CHART_COLORS = {
+  defaultSeries: [
+    "#D97706",
+    "#2563EB",
+    "#059669",
+    "#DC2626",
+    "#9333EA",
+    "#0891B2",
+    "#EA580C",
+    "#DB2777",
+  ],
+  fallback: {
+    background: "#111827",
+    text: "#F9FAFB",
+    muted: "#9CA3AF",
+    grid: "#374151",
+    series: [
+      "#F59E0B",
+      "#3B82F6",
+      "#10B981",
+      "#EF4444",
+      "#A855F7",
+      "#06B6D4",
+      "#F97316",
+      "#EC4899",
+    ],
+  },
+} as const
+
 export const NODE_GROUP_COLORS = {
   entry: "#E69F00",
   exit: "#D55E00",

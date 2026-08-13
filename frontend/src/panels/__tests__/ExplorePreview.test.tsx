@@ -5,6 +5,7 @@ import type { ExploreCacheReport } from "../../api/types"
 import useGraphStore from "../../stores/useGraphStore"
 import useNodeResultsStore, { hashConfig, resetNodeResultsDerivedCaches } from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
+import useToastStore from "../../stores/useToastStore"
 import useUIStore from "../../stores/useUIStore"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture"
 import type { PreviewData } from "../DataPreview"
@@ -15,12 +16,14 @@ import { DEFAULT_PREVIEW_PANEL_DIMENSIONS } from "../previewPanelLayout"
 
 const mockRunExplore = vi.fn()
 const mockGetExploreStatus = vi.fn()
+const mockGetExploreCacheSnapshot = vi.fn()
 const mockCancelExplore = vi.fn()
 
 vi.mock("../../api/client", () => ({
   checkMlflow: vi.fn(() => Promise.resolve({ mlflow_installed: false })),
   runExplore: (...args: unknown[]) => mockRunExplore(...args),
   getExploreStatus: (...args: unknown[]) => mockGetExploreStatus(...args),
+  getExploreCacheSnapshot: (...args: unknown[]) => mockGetExploreCacheSnapshot(...args),
   cancelExplore: (...args: unknown[]) => mockCancelExplore(...args),
 }))
 
@@ -169,6 +172,11 @@ function seedCachedExplore({
       },
     },
   })
+  mockGetExploreCacheSnapshot.mockResolvedValue({
+    state: "current",
+    message: "Cached",
+    result: report,
+  })
 }
 
 function resetStores() {
@@ -190,6 +198,7 @@ function resetStores() {
     streamingChunkSize: 250000,
   })
   useUIStore.setState({ explorePreviewPanes: {} })
+  useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
 
 function renderExplore(previewData?: PreviewData | null, node: SimpleNode = exploreNode) {
@@ -211,6 +220,8 @@ describe("ExplorePreview", () => {
     globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver
     mockRunExplore.mockReset()
     mockGetExploreStatus.mockReset()
+    mockGetExploreCacheSnapshot.mockReset()
+    mockGetExploreCacheSnapshot.mockResolvedValue({ state: "missing", message: "No cache" })
     mockCancelExplore.mockReset()
     resetStores()
   })
@@ -232,7 +243,7 @@ describe("ExplorePreview", () => {
     })
 
     renderExplore()
-    fireEvent.click(screen.getByRole("button", { name: /process & cache full data/i }))
+    fireEvent.click(screen.getByRole("button", { name: /needs caching/i }))
 
     await waitFor(() => expect(mockRunExplore).toHaveBeenCalledTimes(1))
     expect(mockRunExplore).toHaveBeenCalledWith({
@@ -248,10 +259,142 @@ describe("ExplorePreview", () => {
       node_id: "explore_1",
       source: "pricing",
       streamingChunkSize: 250000,
+      refresh: false,
     })
 
     expect(await screen.findByText(/pricing\s*\|\s*cached/i)).toBeInTheDocument()
     expect(useNodeResultsStore.getState().exploreResults.explore_1?.result).toEqual(report)
+  })
+
+  it("shows missing caches in red and requests a non-refreshing materialisation", async () => {
+    mockRunExplore.mockResolvedValueOnce({
+      status: "started", job_id: "explore-job-1", cached: false, message: "Started", result: null,
+    })
+    renderExplore()
+
+    const button = screen.getByRole("button", { name: "Needs caching" })
+    expect(button).toHaveStyle({ background: "var(--danger-solid)" })
+    expect(screen.getByText(/pricing\s*\|\s*needs caching/i)).toBeInTheDocument()
+    fireEvent.click(button)
+
+    await waitFor(() => expect(mockRunExplore).toHaveBeenCalledWith(expect.objectContaining({ refresh: false })))
+  })
+
+  it("shows a current frontend report in green and forces refresh", async () => {
+    const report = makeReport()
+    seedCachedExplore({ report })
+    mockGetExploreCacheSnapshot.mockResolvedValue({ state: "current", message: "Cached", result: report })
+    mockRunExplore.mockResolvedValueOnce({
+      status: "started", job_id: "explore-job-1", cached: false, message: "Started", result: null,
+    })
+    renderExplore()
+
+    const button = screen.getByRole("button", { name: "Re-cache" })
+    expect(button).toHaveStyle({ background: "var(--success-fill)" })
+    fireEvent.click(button)
+
+    await waitFor(() => expect(mockRunExplore).toHaveBeenCalledWith(expect.objectContaining({ refresh: true })))
+  })
+
+  it("shows a retained stale report in yellow, forces refresh, and does not render it", async () => {
+    const staleNode = exploreNodeWithConfig({ code: "df = df.filter(pl.col('premium') > 0)" })
+    seedCachedExplore({ node: exploreNode })
+    mockGetExploreCacheSnapshot.mockResolvedValue({ state: "stale", message: "Stale", result: null })
+    mockRunExplore.mockResolvedValueOnce({
+      status: "started", job_id: "explore-job-1", cached: false, message: "Started", result: null,
+    })
+    renderExplore(null, staleNode)
+
+    const button = screen.getByRole("button", { name: "Re-cache" })
+    expect(button).toHaveStyle({ background: "var(--warning-strong)" })
+    expect(screen.getByText(/pricing\s*\|\s*cache stale/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
+    expect(await screen.findByText(/No cards enabled/i)).toBeInTheDocument()
+    fireEvent.click(button)
+    await waitFor(() => expect(mockRunExplore).toHaveBeenCalledWith(expect.objectContaining({ refresh: true })))
+  })
+
+  it("hydrates a current backend cache without an active job", async () => {
+    const report = makeReport()
+    mockGetExploreCacheSnapshot.mockResolvedValueOnce({ state: "current", message: "Cached", result: report })
+    renderExplore()
+
+    await waitFor(() => expect(useNodeResultsStore.getState().exploreResults.explore_1?.result).toEqual(report))
+    expect(useNodeResultsStore.getState().exploreJobs.explore_1).toBeUndefined()
+    expect(screen.getByRole("button", { name: "Re-cache" })).toHaveStyle({ background: "var(--success-fill)" })
+  })
+
+  it("shows a backend stale cache without hydrating its report", async () => {
+    mockGetExploreCacheSnapshot.mockResolvedValueOnce({ state: "stale", message: "Stale", result: makeReport() })
+    renderExplore()
+
+    expect(await screen.findByRole("button", { name: "Re-cache" })).toHaveStyle({ background: "var(--warning-strong)" })
+    expect(useNodeResultsStore.getState().exploreResults.explore_1).toBeUndefined()
+  })
+
+  it("treats backend missing as authoritative over a retained frontend report", async () => {
+    const config = { overview: { dataset_snapshot: true } }
+    const nodeWithOverview = exploreNodeWithConfig(config)
+    seedCachedExplore({ config, node: nodeWithOverview })
+    mockGetExploreCacheSnapshot.mockResolvedValueOnce({ state: "missing", message: "Missing", result: null })
+
+    renderExplore(null, nodeWithOverview)
+
+    const button = await screen.findByRole("button", { name: "Needs caching" })
+    expect(button).toHaveStyle({ background: "var(--danger-solid)" })
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
+    expect(await screen.findByText(/No cached data yet/i)).toBeInTheDocument()
+  })
+
+  it("surfaces cache inspection errors and does not leave a green cache action", async () => {
+    seedCachedExplore()
+    mockGetExploreCacheSnapshot.mockRejectedValueOnce(new Error("durable metadata is corrupt"))
+    mockRunExplore.mockResolvedValueOnce({
+      status: "started", job_id: "explore-job-recovery", cached: false, message: "Started", result: null,
+    })
+
+    renderExplore()
+
+    const button = await screen.findByRole("button", { name: "Needs caching" })
+    expect(button).toHaveStyle({ background: "var(--danger-solid)" })
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({
+        type: "error",
+        text: "Explore cache inspection failed: durable metadata is corrupt",
+      }),
+    ])
+    fireEvent.click(button)
+    await waitFor(() => expect(mockRunExplore).toHaveBeenCalledWith(expect.objectContaining({ refresh: true })))
+  })
+
+  it("does not hydrate an obsolete cache inspection after the identity changes", async () => {
+    const oldReport = makeReport({ dataframe_cache_key: "explore_dataset:old" })
+    const currentReport = makeReport({ dataframe_cache_key: "explore_dataset:current" })
+    let resolveOld!: (value: { state: "current"; message: string; result: ExploreCacheReport }) => void
+    mockGetExploreCacheSnapshot
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+      .mockResolvedValueOnce({ state: "current", message: "Cached", result: currentReport })
+    const { rerender } = renderExplore()
+    await waitFor(() => expect(mockGetExploreCacheSnapshot).toHaveBeenCalledTimes(1))
+
+    const changedNode = exploreNodeWithConfig({ code: "df = df.filter(pl.col('premium') > 0)" })
+    rerender(
+      <ExplorePreview
+        node={changedNode}
+        allNodes={[sourceNode, changedNode]}
+        edges={edges}
+        submodels={{}}
+        preamble="import polars as pl"
+      />,
+    )
+    await waitFor(() => expect(useNodeResultsStore.getState().exploreResults.explore_1?.result).toEqual(currentReport))
+
+    await act(async () => {
+      resolveOld({ state: "current", message: "Cached", result: oldReport })
+      await Promise.resolve()
+    })
+
+    expect(useNodeResultsStore.getState().exploreResults.explore_1?.result).toEqual(currentReport)
   })
 
   it("renders preview rows for the Explore dataframe", () => {
@@ -259,7 +402,7 @@ describe("ExplorePreview", () => {
 
     const nodeTitle = screen.getByText("Explore Claims")
     const previewTab = screen.getByRole("tab", { name: "Preview" })
-    const processButton = screen.getByRole("button", { name: "Process & cache full data" })
+    const processButton = screen.getByRole("button", { name: "Needs caching" })
 
     expect(screen.getByTestId("explore-preview-frame")).toBeInTheDocument()
     expect(screen.getByTestId("explore-preview-frame")).toHaveStyle({
@@ -409,7 +552,7 @@ describe("ExplorePreview", () => {
     renderExplore()
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /process & cache full data/i }))
+      fireEvent.click(screen.getByRole("button", { name: /needs caching/i }))
     })
 
     expect(screen.getByText(/pricing\s*\|\s*caching/i)).toBeInTheDocument()
@@ -638,6 +781,9 @@ describe("ExplorePreview", () => {
   it("keeps an active Explore job visible and cancellable after its request identity changes", async () => {
     const previousNode = exploreNodeWithConfig({ code: "df = df.select(pl.all())" })
     const changedNode = exploreNodeWithConfig({ code: "df = df.filter(pl.col('premium') > 0)" })
+    mockGetExploreCacheSnapshot.mockResolvedValue({
+      state: "current", message: "Cached", result: makeReport({ source: "renewal" }),
+    })
     useNodeResultsStore.setState({
       exploreJobs: {
         explore_1: {
@@ -680,6 +826,7 @@ describe("ExplorePreview", () => {
     )
 
     expect(screen.getByText(/pricing\s*\|\s*caching/i)).toBeInTheDocument()
+    expect(mockGetExploreCacheSnapshot).not.toHaveBeenCalled()
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /cancel/i }))
     })
@@ -711,6 +858,7 @@ describe("ExplorePreview", () => {
       config: previousConfig,
       report: makeReport({ row_count: 9999, column_count: 4 }),
     })
+    mockGetExploreCacheSnapshot.mockResolvedValue({ state: "stale", message: "Stale", result: null })
     const changedNode: SimpleNode = {
       ...exploreNode,
       data: { ...exploreNode.data, config: nextConfig },
@@ -729,10 +877,10 @@ describe("ExplorePreview", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
-    expect(screen.getByText(/pricing\s*\|\s*ready/i)).toBeInTheDocument()
+    expect(screen.getByText(/pricing\s*\|\s*cache stale/i)).toBeInTheDocument()
     expect(await screen.findByText(/No cached data yet/i)).toBeInTheDocument()
     expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /process & cache full data/i })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Re-cache" })).toBeInTheDocument()
   })
 
   it("hides cached report and status when the active source changes", async () => {
@@ -743,6 +891,7 @@ describe("ExplorePreview", () => {
       report: makeReport({ source: "pricing", row_count: 9999 }),
     })
     useSettingsStore.setState({ activeSource: "renewal" })
+    mockGetExploreCacheSnapshot.mockResolvedValue({ state: "missing", message: "Missing", result: null })
     const nodeWithToggle: SimpleNode = {
       ...exploreNode,
       data: { ...exploreNode.data, config },
@@ -761,7 +910,8 @@ describe("ExplorePreview", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
-    expect(screen.getByText(/renewal\s*\|\s*ready/i)).toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "Needs caching" })).toBeInTheDocument()
+    expect(screen.getByText(/renewal\s*\|\s*needs caching/i)).toBeInTheDocument()
     expect(await screen.findByText(/No cached data yet/i)).toBeInTheDocument()
     expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
@@ -791,6 +941,7 @@ describe("ExplorePreview", () => {
       allNodes: [cachedSourceNode, nodeWithToggle],
       report: makeReport({ row_count: 9999 }),
     })
+    mockGetExploreCacheSnapshot.mockResolvedValue({ state: "stale", message: "Stale", result: null })
 
     render(
       <ExplorePreview
@@ -805,7 +956,7 @@ describe("ExplorePreview", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }))
 
-    expect(screen.getByText(/pricing\s*\|\s*ready/i)).toBeInTheDocument()
+    expect(screen.getByText(/pricing\s*\|\s*cache stale/i)).toBeInTheDocument()
     expect(await screen.findByText(/No cached data yet/i)).toBeInTheDocument()
     expect(screen.queryByTestId("explore-dataset-snapshot-card")).not.toBeInTheDocument()
   })
@@ -851,14 +1002,14 @@ describe("ExplorePreview", () => {
     renderExplore()
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: /process & cache full data/i }))
+      fireEvent.click(screen.getByRole("button", { name: /needs caching/i }))
     })
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /cancel/i }))
     })
 
     expect(mockCancelExplore).toHaveBeenCalledWith("explore-job-2")
-    expect(await screen.findByText(/pricing\s*\|\s*cancelled/i)).toBeInTheDocument()
+    expect(await screen.findByText(/pricing\s*\|\s*needs caching/i)).toBeInTheDocument()
     expect(useNodeResultsStore.getState().exploreJobs.explore_1).toBeUndefined()
   })
 })

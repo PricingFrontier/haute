@@ -29,6 +29,7 @@ from haute._types import (
     ExplorePivotConfig,
     ExplorePivotFilterPlacement,
     ExplorePivotOptions,
+    ExplorePivotRowPlacement,
     ExplorePivotValuePlacement,
     ModelScoreConfig,
     NodeType,
@@ -576,9 +577,14 @@ class TestSelectedColumnsUniversal:
             "enabled": bool,
             "filters": list[ExplorePivotFilterPlacement],
             "columns": list[ExplorePivotAxisPlacement],
-            "rows": list[ExplorePivotAxisPlacement],
+            "rows": list[ExplorePivotRowPlacement],
             "values": list[ExplorePivotValuePlacement],
             "options": ExplorePivotOptions,
+        }
+        assert get_type_hints(ExplorePivotOptions) == {
+            "row_grand_totals": bool,
+            "column_grand_totals": bool,
+            "sort_by": str | None,
         }
         overview_hints = get_type_hints(ExploreOverviewConfig)
         assert overview_hints == {

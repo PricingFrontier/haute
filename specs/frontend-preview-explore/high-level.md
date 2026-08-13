@@ -21,6 +21,13 @@ Modelling and optimiser result presentation belongs to
   exposes Preview, Overview, Pivots, and Charts tabs in that order, and uses a completed report only when its stored
   canonical identity matches the current graph identity. An active job remains visible and
   cancellable if the graph or active source changes while it runs.
+- Opening an Explore preview inspects the backend's durable cache for the current identity. A
+  current generation hydrates the report/result store without another run, including after a
+  browser or backend restart. The header cache action has three unambiguous idle states: red
+  `Needs caching` when no retained dataset exists, green `Re-cache` when the exact identity is
+  current, and yellow `Re-cache` when a retained dataset is stale. Re-cache is a forced refresh,
+  not a cache-hit lookup. While a run is active the existing progress and Cancel controls replace
+  the idle action.
 - Overview cards have a fixed order and are individually enabled from config. They display
   dataset, quality, numeric, categorical and schema information with accessible empty states.
   Schema, numeric-summary, and categorical-summary tables expose native-button actions to copy
@@ -44,13 +51,19 @@ Modelling and optimiser result presentation belongs to
   sections; disabled cards are hidden without deleting retained results. Distinct empty,
   all-disabled, malformed, unconfigured, cache-required, loading, stale, error, and fresh states
   tell the analyst what to do next.
-- Each configured pivot has its own Update/Cancel lifecycle keyed by Explore node plus pivot id.
-  A calculation-config edit makes only that pivot stale; a changed/absent Explore dataframe-cache
-  identity makes every dependent result stale/cache-required. A re-enabled unchanged pivot can
-  immediately reuse its retained matching result.
+- Each configured pivot has its own automatic calculation/Cancel lifecycle keyed by Explore node
+  plus pivot id. A mounted Pivots pane schedules each stale enabled pivot once; a mounted Charts
+  pane does the same for each distinct stale source pivot used by an enabled chart. A
+  calculation-config edit makes only that pivot stale; a changed Explore dataframe-cache identity
+  makes every dependent result stale, while an absent report waits for cached Explore data. A
+  re-enabled unchanged pivot immediately reuses its retained matching result. A terminal failure
+  stays local and exposes Retry; normal successful use has no extra refresh button.
 - A fresh result renders in a horizontally scrollable, row-virtualised semantic table with
   multi-level column headers, sticky row headers, explicit grand-total labels, and typed cell
-  display. One pivot's error never suppresses a successful sibling.
+  display. Configured Row/value sorting is already reflected by result order. A per-Value
+  three-colour scale applies only to ordinary finite numeric body cells for that placement;
+  blanks and grand-total row/column cells retain normal styling. One pivot's error never
+  suppresses a successful sibling.
 - The Explore run indicator exposes determinate `progressbar` semantics while a run is active,
   including a stable accessible name and a clamped percentage value from 0 through 100.
 - Utility manages reusable utility Python modules, including parsed syntax failure locations.
@@ -87,7 +100,8 @@ advances Explore jobs to terminal result-store state.
 Preview errors are normal rendered states. Explore start failures and cancellation responses that
 do not include a completed report are recorded as terminal errors and surfaced to the user; a
 cached report with a stale identity is not rendered, but an active node job is never hidden by an
-identity change. Invalid optional overview configuration is discarded while parsing. Invalid
+identity change. A failed cache-status inspection is surfaced rather than being mistaken for a
+green hit. Invalid optional overview configuration is discarded while parsing. Invalid
 chart- or pivot-card configuration is surfaced in its pane rather than silently replaced, while
 malformed data that a renderer cannot safely interpret is allowed to surface rather than being
 fabricated.

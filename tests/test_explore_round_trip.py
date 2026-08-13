@@ -223,19 +223,22 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                 }
             ],
             "columns": [{"id": "column_1", "field": "year"}],
-            "rows": [{"id": "row_1", "field": "region"}],
+            "rows": [{"id": "row_1", "field": "region", "sort": "descending"}],
             "values": [
                 {
                     "id": "value_1",
                     "field": "paid",
                     "aggregation": "sum",
                     "display_name": "Paid claims",
+                    "sort_rows": "descending",
+                    "color_scale": "low_red_high_green",
                     "future_value_setting": {"precision": 2},
                 }
             ],
             "options": {
                 "row_grand_totals": True,
                 "column_grand_totals": False,
+                "sort_by": "value_1",
                 "future_option": "compact",
             },
             "future_setting": {"palette": "warm"},
@@ -252,6 +255,7 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
             "options": {
                 "row_grand_totals": True,
                 "column_grand_totals": True,
+                "sort_by": None,
             },
         },
     ]

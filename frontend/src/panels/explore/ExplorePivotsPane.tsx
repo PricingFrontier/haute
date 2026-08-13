@@ -1,4 +1,5 @@
-import { Loader2, Play, Table2, XCircle } from "lucide-react"
+import { Loader2, RotateCw, Table2, XCircle } from "lucide-react"
+import { useMemo } from "react"
 
 import type { ExploreCacheReport } from "../../api/types"
 import useNodeResultsStore, {
@@ -8,6 +9,7 @@ import { NODE_GROUP_COLORS } from "../../theme/colors"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import PivotTableGrid from "./PivotTableGrid"
 import { parseExplorePivots, pivotCalculationIdentity } from "./pivotConfig"
+import useAutoUpdateExplorePivots from "./useAutoUpdateExplorePivots"
 import useExplorePivotActions from "./useExplorePivotActions"
 
 type ExplorePivotsPaneProps = {
@@ -56,7 +58,21 @@ export default function ExplorePivotsPane({
     submitting,
     updatePivot: update,
   } = useExplorePivotActions({ node, allNodes, edges, submodels, preamble })
-  const parsed = parseExplorePivots(node.data.config ?? {})
+  const parsed = useMemo(
+    () => parseExplorePivots(node.data.config ?? {}),
+    [node.data.config],
+  )
+  const enabledPivots = useMemo(
+    () => (parsed.ok ? parsed.pivots.filter((pivot) => pivot.enabled) : []),
+    [parsed],
+  )
+  useAutoUpdateExplorePivots({
+    nodeId: node.id,
+    pivots: enabledPivots,
+    report,
+    submitting,
+    updatePivot: update,
+  })
 
   if (!parsed.ok) {
     return (
@@ -84,7 +100,6 @@ export default function ExplorePivotsPane({
     )
   }
 
-  const enabledPivots = parsed.pivots.filter((pivot) => pivot.enabled)
   if (enabledPivots.length === 0) {
     return (
       <div data-testid="explore-pivots-pane" className="flex flex-1">
@@ -103,9 +118,12 @@ export default function ExplorePivotsPane({
           const isSubmitting = submitting[pivot.id] === true
           const notice = notices[pivot.id]
           const currentIdentity = pivotCalculationIdentity(pivot)
-          const fresh =
-            cached?.result?.dataframe_cache_key === report?.dataframe_cache_key
-            && cached.calculationIdentity === currentIdentity
+          const fresh = Boolean(
+            cached?.result
+              && report
+              && cached.result.dataframe_cache_key === report.dataframe_cache_key
+              && cached.calculationIdentity === currentIdentity,
+          )
           const status = job?.progress
           const failure =
             status?.failure
@@ -153,29 +171,35 @@ export default function ExplorePivotsPane({
                     <XCircle size={12} aria-hidden="true" />
                     Cancel
                   </button>
-                ) : (
+                ) : isSubmitting ? (
+                  <span
+                    role="status"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold"
+                    style={{ color: "var(--text-muted)" }}
+                  >
+                    <Loader2
+                      size={12}
+                      className="animate-spin"
+                      aria-hidden="true"
+                    />
+                    Starting calculation
+                  </span>
+                ) : alertMessage ? (
                   <button
                     type="button"
-                    onClick={() => void update(pivot)}
-                    disabled={pivot.values.length === 0 || isSubmitting}
-                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold disabled:opacity-45"
+                    onClick={() =>
+                      void update(pivot, report?.dataframe_cache_key ?? null)
+                    }
+                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold"
                     style={{
                       color: "var(--text-on-accent)",
                       background: NODE_GROUP_COLORS.explore,
                     }}
                   >
-                    {isSubmitting ? (
-                      <Loader2
-                        size={12}
-                        className="animate-spin"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <Play size={12} aria-hidden="true" />
-                    )}
-                    {isSubmitting ? "Starting" : "Update"}
+                    <RotateCw size={12} aria-hidden="true" />
+                    Retry
                   </button>
-                )}
+                ) : null}
               </div>
 
               {pivot.values.length === 0 ? (
@@ -212,7 +236,11 @@ export default function ExplorePivotsPane({
                       >
                         {fresh
                           ? "Current result"
-                          : "Result is out of date. Update to recalculate it."}
+                          : !report
+                            ? "Waiting for current cached Explore data."
+                            : alertMessage
+                              ? "Current result retained after the refresh failed."
+                              : "Updating automatically…"}
                       </div>
                       <PivotTableGrid result={cached.result} pivot={pivot} />
                     </>
@@ -234,12 +262,14 @@ export default function ExplorePivotsPane({
                     </div>
                   )}
 
-                  {!cached?.result && !job && !isSubmitting && !alertMessage && (
+                  {!cached?.result && !job && !alertMessage && (
                     <div
                       className="px-3 py-5 text-center text-[11px]"
                       style={{ color: "var(--text-muted)" }}
                     >
-                      Update this pivot to calculate its full-data result.
+                      {report
+                        ? "Calculating automatically…"
+                        : "Cache the full Explore data above to calculate this pivot automatically."}
                     </div>
                   )}
                 </>

@@ -527,6 +527,7 @@ describe("useNodeResultsStore", () => {
         "new-identity",
         "other-source",
         3,
+        "new-dataframe-cache",
       )
       const terminal = makePivotStatus({ message: "No memory" })
       useNodeResultsStore.getState().failExplorePivotJob(key, "No memory", terminal)
@@ -536,6 +537,8 @@ describe("useNodeResultsStore", () => {
         terminalStatus: terminal,
         jobId: "job-2",
         calculationIdentity: "identity-p1",
+        lastAttemptedCalculationIdentity: "new-identity",
+        lastAttemptedDataframeCacheKey: "new-dataframe-cache",
         source: "pricing",
         structuralVersion: 2,
       })

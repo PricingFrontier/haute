@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type {
   ExploreCacheReport,
   ExplorePivotResult,
+  ExplorePivotRunResponse,
   ExplorePivotStatusResponse,
 } from "../../../api/types"
 import useGraphStore from "../../../stores/useGraphStore"
@@ -137,7 +138,10 @@ function makeResult(
   }
 }
 
-function renderPane(pivots: ExplorePivotConfig[], report = makeReport()) {
+function renderPane(
+  pivots: ExplorePivotConfig[],
+  report: ExploreCacheReport | null = makeReport(),
+) {
   const node = makeNode(pivots)
   return render(
     <ExplorePivotsPane
@@ -155,6 +159,7 @@ function startStoredJob(
   pivot: ExplorePivotConfig,
   jobId: string,
   calculationIdentity = pivotCalculationIdentity(pivot),
+  requestedDataframeCacheKey: string | null = "explore_dataset:current",
 ) {
   const key = explorePivotResultKey("explore_1", pivot.id)
   useNodeResultsStore.getState().startExplorePivotJob(
@@ -167,7 +172,22 @@ function startStoredJob(
     calculationIdentity,
     "pricing",
     0,
+    requestedDataframeCacheKey,
   )
+  return key
+}
+
+function completeStoredResult(
+  pivot: ExplorePivotConfig,
+  dataframeCacheKey = "explore_dataset:current",
+  calculationIdentity = pivotCalculationIdentity(pivot),
+) {
+  const key = startStoredJob(pivot, `completed-${pivot.id}`, calculationIdentity)
+  act(() => {
+    useNodeResultsStore
+      .getState()
+      .completeExplorePivotJob(key, makeResult(pivot, dataframeCacheKey))
+  })
   return key
 }
 
@@ -186,7 +206,206 @@ describe("ExplorePivotsPane", () => {
 
   afterEach(cleanup)
 
-  it("does not calculate automatically and starts only the selected card", async () => {
+  it("renders malformed config instead of mounting pivot cards", () => {
+    const duplicate = makePivot("duplicate")
+
+    renderPane([duplicate, duplicate])
+
+    expect(screen.getByRole("alert")).toHaveTextContent(/duplicate pivot id/i)
+    expect(screen.queryByRole("region")).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ["no cards", [], "Add a pivot from the Pivots settings pane."],
+    [
+      "all cards hidden",
+      [makePivot("hidden", { enabled: false })],
+      "No pivots are currently shown.",
+    ],
+  ] as const)("renders the %s empty state", (_state, pivots, message) => {
+    renderPane([...pivots])
+
+    expect(screen.getByText(message)).toBeVisible()
+    expect(screen.queryByRole("region")).not.toBeInTheDocument()
+  })
+
+  it("treats an Explore node without config as having no pivot cards", () => {
+    const node = makeNode([])
+    delete node.data.config
+
+    render(
+      <ExplorePivotsPane
+        node={node}
+        allNodes={[node]}
+        edges={[]}
+        report={makeReport()}
+      />,
+    )
+
+    expect(
+      screen.getByText("Add a pivot from the Pivots settings pane."),
+    ).toBeVisible()
+  })
+
+  it("does not schedule or render a refresh action for a pivot without Values", () => {
+    const pivot = makePivot("unconfigured", { values: [] })
+
+    renderPane([pivot])
+
+    expect(screen.queryByRole("button", { name: "Update" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    expect(
+      screen.getByText("Add at least one Value in this pivot's configuration."),
+    ).toBeVisible()
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+  })
+
+  it("waits for cached Explore data without a report or retained result", () => {
+    const pivot = makePivot("average-claims", {
+      rows: [{ id: "cover-type", field: "cover_type" }],
+      values: [
+        {
+          id: "total-claims",
+          field: "total_claims",
+          aggregation: "average",
+          display_name: "Average total claims",
+        },
+      ],
+    })
+
+    renderPane([pivot], null)
+
+    expect(
+      screen.getByText(
+        "Cache the full Explore data above to calculate this pivot automatically.",
+      ),
+    ).toBeVisible()
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+  })
+
+  it("automatically calculates when the current cache report arrives", async () => {
+    const pivot = makePivot("report-arrived")
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "started",
+      job_id: "report-arrived-job",
+      cached: false,
+      message: "Calculating cached data",
+      result: null,
+      failure: null,
+    })
+    const view = renderPane([pivot], null)
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+
+    const node = makeNode([pivot])
+    view.rerender(
+      <ExplorePivotsPane
+        node={node}
+        allNodes={[node]}
+        edges={[]}
+        submodels={{}}
+        preamble=""
+        report={makeReport()}
+      />,
+    )
+
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
+    expect(screen.getByText("Calculating cached data")).toBeVisible()
+  })
+
+  it("keeps a retained result visible and waits when the report is absent", () => {
+    const pivot = makePivot("stale-absent")
+    completeStoredResult(pivot)
+
+    renderPane([pivot], null)
+
+    expect(screen.getByText("Waiting for current cached Explore data.")).toBeVisible()
+    expect(
+      screen.getByRole("table", { name: `${pivot.name} results` }),
+    ).toBeVisible()
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+  })
+
+  it("automatically refreshes a retained result when the report cache changes", async () => {
+    const pivot = makePivot("stale-report")
+    completeStoredResult(pivot)
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "started",
+      job_id: "refresh-report-job",
+      cached: false,
+      message: "Refreshing Pivot",
+      result: null,
+      failure: null,
+    })
+
+    renderPane([pivot], makeReport("explore_dataset:replacement"))
+
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
+    expect(screen.getByText("Refreshing Pivot")).toBeVisible()
+    expect(
+      screen.getByRole("table", { name: `${pivot.name} results` }),
+    ).toBeVisible()
+  })
+
+  it("shows submitting state until the automatic request resolves", async () => {
+    const pivot = makePivot("submitting")
+    let resolveRun!: (response: ExplorePivotRunResponse) => void
+    mockRunExplorePivot.mockReturnValueOnce(
+      new Promise<ExplorePivotRunResponse>((resolve) => {
+        resolveRun = resolve
+      }),
+    )
+
+    renderPane([pivot])
+
+    expect(await screen.findByText("Starting calculation")).toBeVisible()
+    expect(
+      screen.queryByRole("button", { name: "Update" }),
+    ).not.toBeInTheDocument()
+
+    await act(async () => {
+      resolveRun({
+        status: "started",
+        job_id: "submitting-job",
+        cached: false,
+        message: "Grouping claims",
+        result: null,
+        failure: null,
+      })
+    })
+
+    expect(await screen.findByRole("button", { name: "Cancel" })).toBeVisible()
+    expect(screen.getByRole("status")).toHaveTextContent("Grouping claims")
+  })
+
+  it("keeps a retained result visible while its refresh job is running", () => {
+    const pivot = makePivot("refreshing")
+    const key = completeStoredResult(pivot)
+    act(() => {
+      startStoredJob(pivot, "refresh-job")
+      useNodeResultsStore.getState().updateExplorePivotProgress(key, {
+        status: "running",
+        progress: 0.4,
+        message: "Grouping refreshed claims",
+        result: null,
+        failure: null,
+        terminal_reason: null,
+        execution_metrics: null,
+      })
+    })
+
+    renderPane([pivot])
+
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible()
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Grouping refreshed claims",
+    )
+    expect(screen.getByText("Current result")).toBeVisible()
+    expect(
+      screen.getByRole("table", { name: `${pivot.name} results` }),
+    ).toBeVisible()
+  })
+
+  it("automatically starts each stale enabled Pivot exactly once", async () => {
     const first = makePivot("first")
     const second = makePivot("second")
     mockRunExplorePivot.mockResolvedValueOnce({
@@ -197,21 +416,30 @@ describe("ExplorePivotsPane", () => {
       result: null,
       failure: null,
     })
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "started",
+      job_id: "pivot-job-second",
+      cached: false,
+      message: "Pivot started",
+      result: null,
+      failure: null,
+    })
 
     renderPane([first, second])
-    expect(mockRunExplorePivot).not.toHaveBeenCalled()
-
-    const firstCard = screen.getByRole("region", { name: first.name })
-    fireEvent.click(within(firstCard).getByRole("button", { name: "Update" }))
 
     const firstKey = explorePivotResultKey("explore_1", first.id)
     const secondKey = explorePivotResultKey("explore_1", second.id)
     await waitFor(() => {
+      expect(mockRunExplorePivot).toHaveBeenCalledTimes(2)
       expect(useNodeResultsStore.getState().pivotJobs[firstKey]?.jobId).toBe(
         "pivot-job-first",
       )
+      expect(useNodeResultsStore.getState().pivotJobs[secondKey]?.jobId).toBe(
+        "pivot-job-second",
+      )
     })
-    expect(useNodeResultsStore.getState().pivotJobs[secondKey]).toBeUndefined()
+    await Promise.resolve()
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(2)
   })
 
   it("stores an immediate cached result through the shared lifecycle", async () => {
@@ -227,7 +455,6 @@ describe("ExplorePivotsPane", () => {
     })
 
     renderPane([pivot])
-    fireEvent.click(screen.getByRole("button", { name: "Update" }))
 
     expect(await screen.findByText("Current result")).toBeVisible()
     const key = explorePivotResultKey("explore_1", pivot.id)
@@ -251,13 +478,21 @@ describe("ExplorePivotsPane", () => {
       result: null,
       failure,
     })
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "completed",
+      job_id: null,
+      cached: true,
+      message: "Cache hit after retry",
+      result: makeResult(pivot),
+      failure: null,
+    })
 
     const view = renderPane([pivot])
-    fireEvent.click(screen.getByRole("button", { name: "Update" }))
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Use Process & Cache Full Data.",
     )
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible()
     const key = explorePivotResultKey("explore_1", pivot.id)
     expect(useNodeResultsStore.getState().pivotResults[key]).toMatchObject({
       error: failure.message,
@@ -272,9 +507,85 @@ describe("ExplorePivotsPane", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Use Process & Cache Full Data.",
     )
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    expect(await screen.findByText("Current result")).toBeVisible()
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(2)
   })
 
-  it("keeps presentation-only edits fresh while calculation edits are stale", () => {
+  it("automatically retries a failed calculation for a new cache identity", async () => {
+    const pivot = makePivot("cache-changed-after-failure")
+    const failure = {
+      reason_code: "cache_required",
+      message: "Cache the Explore dataset first.",
+      remediation: "Use Process & Cache Full Data.",
+      dimensions: { node_id: "explore_1" },
+    }
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "cache_required",
+      job_id: null,
+      cached: false,
+      message: failure.message,
+      result: null,
+      failure,
+    })
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "completed",
+      job_id: null,
+      cached: true,
+      message: "New cache calculated",
+      result: makeResult(pivot, "explore_dataset:replacement"),
+      failure: null,
+    })
+
+    const view = renderPane([pivot])
+    expect(await screen.findByRole("alert")).toHaveTextContent(failure.message)
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
+
+    const node = makeNode([pivot])
+    view.rerender(
+      <ExplorePivotsPane
+        node={node}
+        allNodes={[node]}
+        edges={[]}
+        submodels={{}}
+        preamble=""
+        report={makeReport("explore_dataset:replacement")}
+      />,
+    )
+
+    expect(await screen.findByText("Current result")).toBeVisible()
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps a successful sibling visible when another pivot has failed", () => {
+    const failed = makePivot("failed")
+    const successful = makePivot("successful")
+    const failedKey = startStoredJob(failed, "failed-job")
+    completeStoredResult(successful)
+    act(() => {
+      useNodeResultsStore
+        .getState()
+        .failExplorePivotJob(failedKey, "Failed to group claims")
+    })
+
+    renderPane([failed, successful])
+
+    expect(
+      within(screen.getByRole("region", { name: failed.name })).getByRole(
+        "alert",
+      ),
+    ).toHaveTextContent("Failed to group claims")
+    expect(
+      within(screen.getByRole("region", { name: successful.name })).getByRole(
+        "table",
+        { name: `${successful.name} results` },
+      ),
+    ).toBeVisible()
+  })
+
+  it("reuses presentation edits and automatically recalculates calculation edits", async () => {
     const original = makePivot("identity")
     const key = startStoredJob(original, "completed-job")
     act(() => {
@@ -290,6 +601,16 @@ describe("ExplorePivotsPane", () => {
     }
     const view = renderPane([renamed])
     expect(screen.getByText("Current result")).toBeVisible()
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "started",
+      job_id: "changed-calculation-job",
+      cached: false,
+      message: "Updating changed Pivot",
+      result: null,
+      failure: null,
+    })
 
     view.rerender(
       <ExplorePivotsPane
@@ -307,9 +628,8 @@ describe("ExplorePivotsPane", () => {
         report={makeReport()}
       />,
     )
-    expect(
-      screen.getByText("Result is out of date. Update to recalculate it."),
-    ).toBeVisible()
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
+    expect(screen.getByText("Updating changed Pivot")).toBeVisible()
   })
 
   it("cancels only the selected pivot job", async () => {
@@ -341,5 +661,22 @@ describe("ExplorePivotsPane", () => {
     })
     expect(mockCancelExplorePivot).toHaveBeenCalledWith("job-first")
     expect(useNodeResultsStore.getState().pivotJobs[secondKey]).toBeDefined()
+  })
+
+  it("keeps polling and shows a card-local notice when cancellation fails", async () => {
+    const pivot = makePivot("cancel-failed")
+    const key = startStoredJob(pivot, "job-cancel-failed")
+    mockCancelExplorePivot.mockRejectedValueOnce(
+      new Error("Cancellation service unavailable"),
+    )
+
+    renderPane([pivot])
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Cancellation service unavailable",
+    )
+    expect(useNodeResultsStore.getState().pivotJobs[key]).toBeDefined()
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible()
   })
 })

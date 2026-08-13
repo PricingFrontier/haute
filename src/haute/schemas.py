@@ -1068,6 +1068,7 @@ class ExploreRunRequest(BaseModel):
     node_id: str
     source: str = "live"
     streaming_chunk_size: StreamingChunkSize = None
+    refresh: bool = False
 
 
 class ExploreRunResponse(BaseModel):
@@ -1085,6 +1086,12 @@ class ExploreStatusResponse(BaseModel):
     result: ExploreCacheReport | None = None
     terminal_reason: str | None = None
     execution_metrics: ExecutionMetricsPayload | None = None
+
+
+class ExploreCacheSnapshotResponse(BaseModel):
+    state: Literal["missing", "current", "stale"]
+    message: str
+    result: ExploreCacheReport | None = None
 
 
 ExplorePivotMemberKind = Literal[

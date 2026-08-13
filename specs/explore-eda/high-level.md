@@ -76,6 +76,22 @@ Out of scope (owned elsewhere):
   Explore code/config, same source, same report schema version) is already cached, the run
   request returns `status: "completed"` with the cached report synchronously — no job is
   created.
+- Completed Explore datasets are durable project-local cache generations. The Parquet dataset and
+  its typed report live under the project's ignored `.haute_cache/explore` directory, so closing
+  the browser or restarting the local Haute backend does not discard a valid cache. Reopening an
+  Explore node can inspect and restore that exact generation into the process execution cache
+  without executing the graph again.
+- `POST /api/explore/cache-status` compares the current graph/source identity with the latest
+  durable generation for that Explore node/source and returns exactly `missing`, `current`, or
+  `stale`. `current` includes the report and makes the dataframe immediately available to pivots;
+  `stale` means a retained generation exists for the same cache family but its exact analysis
+  identity differs. A corrupt or internally inconsistent durable generation fails explicitly; it
+  is never presented as a usable hit or silently replaced.
+- A run request with `refresh: true` is an explicit re-cache. It bypasses both report and durable
+  cache hits and invalidates the matching process-local dataframe entry before execution, while
+  retaining the last durable generation until the replacement has been completely and atomically
+  published. A failed or cancelled refresh therefore leaves the previous generation available
+  and stale/current according to its identity.
 - Otherwise a job is created and runs in a background thread. The client polls
   `GET /api/explore/status/{job_id}` until the job reaches a terminal status
   (`completed`, `error`, `cancelled`, `superseded`, `memory_limited`,
@@ -140,8 +156,13 @@ Out of scope (owned elsewhere):
   datetimes, times, and decimals do not collapse into display text. Empty member sets mean that
   the placed filter is not restricting the field. Float NaN is treated as missing by numeric
   aggregations but remains independently selectable as a filter/group member.
-- Rows and Columns retain configured field order. Group paths are ordered deterministically by
-  their typed values with null/NaN after ordinary values. Values support `sum`, `count`,
+- Rows and Columns retain configured field order. One optional `sort_by` target selects a placed
+  Row or Value; without it all Row labels use deterministic ascending order. A selected Row has an
+  ascending or descending label order while every other Row level remains ascending; null/NaN
+  remain after ordinary values in either direction. A selected Value uses that measure's correctly re-aggregated row
+  total across the filtered dataset (not a sum of displayed cells), puts blank aggregate values
+  last, and uses ascending Row labels as deterministic tie-breakers. Grand totals
+  remain last and Columns paths retain deterministic ascending typed order. Values support `sum`, `count`,
   `average`, `min`, `max`, `median`, and `distinct_count`; numeric-only aggregations reject
   incompatible dtypes, Count counts non-null/non-NaN values, and Distinct count excludes
   null/NaN. Repeated Values are legal because placement ids, not field names, identify measures.
@@ -150,9 +171,10 @@ Out of scope (owned elsewhere):
   that exceeds a limit returns the measured dimensions, the limit, and remediation; it is never
   truncated, sampled, downsampled, or partially published.
 - A completed result is cached by the exact Explore dataframe-cache key, pivot result schema
-  version, ordered calculation placements, exact filters, aggregations, and total options.
-  Card `name`/`enabled`, Value display names, and presentation-only/future formatting fields are
-  excluded, so those edits reuse the calculation. Starting a newer calculation supersedes only
+  version, ordered calculation placements, exact filters, aggregations, row/value sort settings,
+  and total options. Card `name`/`enabled`, Value display names, conditional colour scales, and
+  presentation-only/future formatting fields are excluded, so those edits reuse the calculation.
+  Starting a newer calculation supersedes only
   an older job for the same source, Explore node, and pivot id.
 - `validate_explore_overview` accepts only a dict at the top level with string keys. The five
   known toggle keys must be booleans; any other key's value must be JSON-round-trippable through

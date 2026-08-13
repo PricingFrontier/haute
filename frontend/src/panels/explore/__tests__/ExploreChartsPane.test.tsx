@@ -178,6 +178,7 @@ function seedResult(
     pivotCalculationIdentity(sourcePivot),
     "pricing",
     0,
+    sourceResult.dataframe_cache_key,
   )
   act(() => {
     useNodeResultsStore.getState().completeExplorePivotJob(key, sourceResult)
@@ -259,11 +260,11 @@ describe("ExploreChartsPane", () => {
     ).toHaveTextContent(/removed_pivot.*no longer exists/i)
   })
 
-  it("renders two charts from one fresh hidden Pivot result without recalculating", () => {
+  it("renders chart presentation edits immediately from one fresh hidden Pivot result", () => {
     const sourcePivot = pivot("shared", { enabled: false })
     seedResult(sourcePivot)
 
-    renderPane(
+    const view = renderPane(
       [sourcePivot],
       [chart("one", sourcePivot), chart("two", sourcePivot)],
     )
@@ -274,9 +275,39 @@ describe("ExploreChartsPane", () => {
         "repeat(auto-fit, minmax(min(100%, 28rem), 1fr))",
     })
     expect(mockRunExplorePivot).not.toHaveBeenCalled()
+
+    view.rerender(
+      <ExploreChartsPane
+        node={node(
+          [sourcePivot],
+          [
+            chart("one", sourcePivot, { name: "Renamed chart" }),
+            chart("two", sourcePivot),
+          ],
+        )}
+        allNodes={[]}
+        edges={[]}
+        report={report()}
+      />,
+    )
+    expect(screen.getByText(/Renamed chart: 1 categories/)).toBeVisible()
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
   })
 
-  it("marks a retained result stale and delegates Update only to its source Pivot", async () => {
+  it("waits for cached Explore data before calculating a chart source", () => {
+    const sourcePivot = pivot("waiting")
+
+    renderPane([sourcePivot], [chart("waiting", sourcePivot)], null)
+
+    expect(
+      screen.getByText(
+        "Cache the full Explore data above to calculate this chart automatically.",
+      ),
+    ).toBeVisible()
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+  })
+
+  it("automatically refreshes each distinct stale source Pivot once", async () => {
     const first = pivot("first")
     const second = pivot("second")
     seedResult(first, result(first, "dataframe-old"))
@@ -292,18 +323,19 @@ describe("ExploreChartsPane", () => {
 
     renderPane(
       [first, second],
-      [chart("first", first), chart("second", second)],
+      [
+        chart("first-a", first),
+        chart("first-b", first),
+        chart("second", second),
+      ],
     )
 
-    const firstCard = screen.getByRole("region", { name: "Chart first" })
-    expect(within(firstCard).getByText(/out of date/i)).toBeVisible()
     expect(
       within(screen.getByRole("region", { name: "Chart second" })).getByTestId(
         "combo-chart",
       ),
     ).toBeVisible()
 
-    fireEvent.click(within(firstCard).getByRole("button", { name: "Update" }))
     await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
     expect(mockRunExplorePivot.mock.calls[0][0]).toMatchObject({
       node_id: "explore_1",

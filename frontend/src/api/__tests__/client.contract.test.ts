@@ -24,6 +24,7 @@ import {
   buildInputCache,
   fetchSchema,
   getExploreStatus,
+  getExploreCacheSnapshot,
   getExplorePivotStatus,
   getMilestones,
   getMilestoneSaves,
@@ -350,6 +351,7 @@ describe("client runtime contracts", () => {
       graph: dummyGraph,
       node_id: "explore",
       source: "live",
+      refresh: true,
       streamingChunkSize: 2048,
     })
 
@@ -358,11 +360,28 @@ describe("client runtime contracts", () => {
       graph: dummyGraph,
       node_id: "explore",
       source: "live",
+      refresh: true,
       streaming_chunk_size: 2048,
     })
     expect(result.cached).toBe(true)
     expect(result.result?.row_count).toBe(150)
     expect(result.result?.dataframe_cache_key).toContain("explore_dataset")
+  })
+
+  it("getExploreCacheSnapshot posts the cache identity and parses its state", async () => {
+    const report = loadUiContractFixture<Record<string, unknown>>("explore_run_response").result
+    mockFetch.mockReturnValue(jsonResponse({ state: "current", message: "Cached", result: report }))
+
+    const result = await getExploreCacheSnapshot({
+      graph: dummyGraph, node_id: "explore", streamingChunkSize: 2048,
+    })
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/explore/cache-status")
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph, node_id: "explore", source: "live", streaming_chunk_size: 2048,
+    })
+    expect(result.state).toBe("current")
+    expect(result.result?.row_count).toBe(150)
   })
 
   it("getExploreStatus and cancelExplore parse terminal reports", async () => {
@@ -544,6 +563,12 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("explore_run_response"), cached: "yes" },
       call: () => runExplore({ graph: dummyGraph, node_id: "explore" }),
       error: /parseExploreRunResponse/i,
+    },
+    {
+      name: "getExploreCacheSnapshot",
+      response: { state: "ready", message: "wrong state", result: null },
+      call: () => getExploreCacheSnapshot({ graph: dummyGraph, node_id: "explore" }),
+      error: /parseExploreCacheSnapshotResponse/i,
     },
     {
       name: "getExploreStatus",

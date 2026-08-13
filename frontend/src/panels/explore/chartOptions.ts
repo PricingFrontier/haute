@@ -1,3 +1,4 @@
+import { PIVOT_CHART_COLORS } from "../../theme/colors"
 import type { ExploreChartConfig } from "./chartConfig"
 import { formatChartValue, type PivotChartData } from "./chartData"
 
@@ -16,16 +17,7 @@ type BuildOptionsInput = {
   reducedMotion: boolean
 }
 
-const DEFAULT_SERIES_COLOURS = [
-  "#D97706",
-  "#2563EB",
-  "#059669",
-  "#DC2626",
-  "#9333EA",
-  "#0891B2",
-  "#EA580C",
-  "#DB2777",
-]
+const DEFAULT_SERIES_COLOURS = PIVOT_CHART_COLORS.defaultSeries
 
 function seriesColour(
   seriesIndex: number,

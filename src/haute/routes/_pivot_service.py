@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from datetime import time as datetime_time
 from decimal import Decimal
-from functools import reduce
+from functools import cmp_to_key, reduce
 from operator import or_
 from typing import Any, cast
 
@@ -30,7 +30,12 @@ from haute._explore_pivots import validate_explore_pivots
 from haute._hashing import content_hash_bytes
 from haute._lru_cache import LRUCache
 from haute._polars_utils import cancellable_streaming_collect
-from haute._types import ExplorePivotConfig, ExplorePivotMember, ExplorePivotValuePlacement
+from haute._types import (
+    ExplorePivotConfig,
+    ExplorePivotMember,
+    ExplorePivotRowPlacement,
+    ExplorePivotValuePlacement,
+)
 from haute.routes._background_jobs import CancellableJobRegistry, JobCancellation
 from haute.routes._explore_service import ExploreCacheSpec, ExploreService
 from haute.routes._job_lifecycle import JobLifecycle, bind_running_execution_metrics_publisher
@@ -74,6 +79,7 @@ _MEMBER_KIND_ORDER = {
     "null": 8,
     "nan": 9,
 }
+_MISSING_MEMBER_KINDS = frozenset({"null", "nan"})
 _NON_FINITE_WARNING = "Non-finite aggregate results were rendered as blank."
 
 
@@ -188,6 +194,78 @@ def _member_sort_key(member: TypedMemberTuple) -> tuple[int, Any]:
 
 def _path_sort_key(path: TypedPathTuple) -> tuple[tuple[int, Any], ...]:
     return tuple(_member_sort_key(member) for member in path)
+
+
+def _compare_member(
+    left: TypedMemberTuple,
+    right: TypedMemberTuple,
+    direction: str,
+) -> int:
+    """Compare dimension members while keeping missing values at the end."""
+
+    left_missing = left[0] in _MISSING_MEMBER_KINDS
+    right_missing = right[0] in _MISSING_MEMBER_KINDS
+    if left_missing or right_missing:
+        if left_missing != right_missing:
+            return 1 if left_missing else -1
+        left_rank = _MEMBER_KIND_ORDER[left[0]]
+        right_rank = _MEMBER_KIND_ORDER[right[0]]
+        return (left_rank > right_rank) - (left_rank < right_rank)
+
+    left_key = _member_sort_key(left)
+    right_key = _member_sort_key(right)
+    comparison = (left_key > right_key) - (left_key < right_key)
+    return -comparison if direction == "descending" else comparison
+
+
+def _compare_row_paths(
+    left: TypedPathTuple,
+    right: TypedPathTuple,
+    placements: Sequence[ExplorePivotRowPlacement],
+    sort_by: str | None,
+) -> int:
+    for left_member, right_member, placement in zip(left, right, placements, strict=True):
+        direction = placement["sort"] if placement["id"] == sort_by else "ascending"
+        comparison = _compare_member(left_member, right_member, direction)
+        if comparison:
+            return comparison
+    return 0
+
+
+def _aggregate_comparable(
+    value: str | float | int | bool,
+    *,
+    dtype: pl.DataType,
+    aggregation: str,
+) -> Decimal | int | str:
+    if aggregation in _COUNT_AGGREGATIONS or dtype.is_numeric():
+        return Decimal(str(value))
+    if dtype.base_type() == pl.Boolean:
+        return int(cast(bool, value))
+    return str(value)
+
+
+def _compare_aggregate_values(
+    left: str | float | int | bool | None,
+    right: str | float | int | bool | None,
+    *,
+    dtype: pl.DataType,
+    aggregation: str,
+    direction: str,
+) -> int:
+    """Compare aggregate values while keeping blank results at the end."""
+
+    if left is None or right is None:
+        if left is right:
+            return 0
+        return 1 if left is None else -1
+    # Both values come from the same validated placement, so their comparable
+    # representation has the same runtime type even though the helper's union
+    # return type cannot express that relationship.
+    left_value = cast(Any, _aggregate_comparable(left, dtype=dtype, aggregation=aggregation))
+    right_value = cast(Any, _aggregate_comparable(right, dtype=dtype, aggregation=aggregation))
+    comparison = int((left_value > right_value) - (left_value < right_value))
+    return -comparison if direction == "descending" else comparison
 
 
 def _combined_path(
@@ -386,6 +464,7 @@ class PivotService:
 
     @staticmethod
     def _calculation_key(pivot: ExplorePivotConfig) -> str:
+        sort_by = pivot["options"]["sort_by"]
         payload = {
             "filters": [
                 {
@@ -398,12 +477,19 @@ class PivotService:
                 for placement in pivot["filters"]
             ],
             "columns": [placement["field"] for placement in pivot["columns"]],
-            "rows": [placement["field"] for placement in pivot["rows"]],
+            "rows": [
+                {
+                    "field": placement["field"],
+                    "sort": placement["sort"] if placement["id"] == sort_by else "ascending",
+                }
+                for placement in pivot["rows"]
+            ],
             "values": [
                 {
                     "id": placement["id"],
                     "field": placement["field"],
                     "aggregation": placement["aggregation"],
+                    "sort_rows": placement["sort_rows"] if placement["id"] == sort_by else "none",
                 }
                 for placement in pivot["values"]
             ],
@@ -817,11 +903,10 @@ class PivotService:
                 warnings,
             )
 
-        row_paths = sorted(
+        row_paths = list(
             {_path_tuple(row, row_fields) for row in base_frame.iter_rows(named=True)}
             if row_count and column_count
-            else set(),
-            key=_path_sort_key,
+            else set()
         )
         column_paths = sorted(
             {_path_tuple(row, column_fields) for row in base_frame.iter_rows(named=True)}
@@ -847,7 +932,12 @@ class PivotService:
             TypedPathTuple,
             tuple[str | float | int | bool | None, ...],
         ] = {}
-        if add_column_total:
+        sort_by = spec.pivot["options"]["sort_by"]
+        active_sort_index = next(
+            (value_index for value_index, value in enumerate(values) if value["id"] == sort_by),
+            None,
+        )
+        if row_paths and (add_column_total or active_sort_index is not None):
             frame = self._aggregate_frame(filtered, row_fields, values, schema, context)
             column_total_values = self._aggregate_map(
                 frame,
@@ -855,6 +945,22 @@ class PivotService:
                 values,
                 warnings,
             )
+
+        def compare_row_paths(left: TypedPathTuple, right: TypedPathTuple) -> int:
+            if active_sort_index is not None:
+                active_value = values[active_sort_index]
+                comparison = _compare_aggregate_values(
+                    column_total_values[left][active_sort_index],
+                    column_total_values[right][active_sort_index],
+                    dtype=schema[active_value["field"]],
+                    aggregation=active_value["aggregation"],
+                    direction=active_value["sort_rows"],
+                )
+                if comparison:
+                    return comparison
+            return _compare_row_paths(left, right, spec.pivot["rows"], sort_by)
+
+        row_paths.sort(key=cmp_to_key(compare_row_paths))
 
         grand_total_values: tuple[str | float | int | bool | None, ...] | None = None
         if add_row_total and add_column_total:

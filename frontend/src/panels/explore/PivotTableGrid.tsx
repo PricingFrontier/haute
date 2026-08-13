@@ -12,6 +12,45 @@ const ROW_HEIGHT = 32
 const VIEWPORT_HEIGHT = 320
 const OVERSCAN = 5
 const ROW_HEADER_WIDTH = 140
+const STRICT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
+
+type Color = readonly [number, number, number]
+const PALE_RED: Color = [254, 202, 202]
+const YELLOW: Color = [254, 240, 138]
+const GREEN: Color = [187, 247, 208]
+
+function numericCellValue(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null
+  if (typeof value === "string" && STRICT_DECIMAL_PATTERN.test(value)) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  return null
+}
+
+function median(sorted: readonly number[]): number {
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle]
+}
+
+function interpolate(left: Color, right: Color, ratio: number): string {
+  const channels = left.map((channel, index) => Math.round(channel + (right[index] - channel) * ratio))
+  return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`
+}
+
+function conditionalColor(value: number, domain: readonly [number, number, number], scale: "low_red_high_green" | "low_green_high_red"): string {
+  const [minimum, midpoint, maximum] = domain
+  if (minimum === maximum) return "rgb(254, 240, 138)"
+  const [low, high] = scale === "low_red_high_green" ? [PALE_RED, GREEN] : [GREEN, PALE_RED]
+  if (value <= midpoint) {
+    const ratio = midpoint === minimum ? 1 : (value - minimum) / (midpoint - minimum)
+    return interpolate(low, YELLOW, ratio)
+  }
+  const ratio = maximum === midpoint ? 1 : (value - midpoint) / (maximum - midpoint)
+  return interpolate(YELLOW, high, ratio)
+}
 
 function memberLabel(member: ExplorePivotMemberKey): string {
   if (member.kind === "null") return "(blank)"
@@ -65,6 +104,23 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
     }
     return indexed
   }, [result.cells])
+  const conditionalDomains = useMemo(() => {
+    const values = new Map<string, number[]>()
+    for (const cell of result.cells) {
+      if (result.row_paths[cell.row_index]?.is_grand_total || result.column_paths[cell.column_index]?.is_grand_total) continue
+      const numeric = numericCellValue(cell.value)
+      if (numeric === null) continue
+      const bucket = values.get(cell.value_id) ?? []
+      bucket.push(numeric)
+      values.set(cell.value_id, bucket)
+    }
+    return new Map(
+      [...values].map(([valueId, numbers]) => {
+        const sorted = [...numbers].sort((left, right) => left - right)
+        return [valueId, [sorted[0], median(sorted), sorted[sorted.length - 1]] as const]
+      }),
+    )
+  }, [result.cells, result.column_paths, result.row_paths])
 
   const dataColumnCount = result.column_paths.length * result.values.length
   const totalColumns = Math.max(
@@ -175,11 +231,28 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                     const cell = cells.get(
                       cellKey(rowIndex, columnIndex, value.id),
                     )
+                    const configuredValue = valuesById.get(value.id)
+                    const numeric = numericCellValue(cell)
+                    const scale = configuredValue?.color_scale
+                    const domain = conditionalDomains.get(value.id)
+                    const eligible =
+                      !rowPath.is_grand_total &&
+                      !result.column_paths[columnIndex]?.is_grand_total &&
+                      numeric !== null &&
+                      scale !== undefined &&
+                      scale !== "none" &&
+                      domain !== undefined
                     return (
                       <td
                         key={`${columnIndex}:${value.id}`}
                         className="whitespace-nowrap px-2"
-                        style={{ borderBottom: "1px solid var(--border)" }}
+                        data-conditional-format={eligible ? scale : undefined}
+                        style={{
+                          borderBottom: "1px solid var(--border)",
+                          ...(eligible
+                            ? { background: conditionalColor(numeric, domain, scale), color: "#111827" }
+                            : {}),
+                        }}
                       >
                         {cell === null || cell === undefined
                           ? "\u2014"

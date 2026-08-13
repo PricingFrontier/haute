@@ -1,4 +1,10 @@
-import { AlertTriangle, BarChart3, Loader2, Play, XCircle } from "lucide-react"
+import {
+  AlertTriangle,
+  BarChart3,
+  Loader2,
+  RotateCw,
+  XCircle,
+} from "lucide-react"
 import { useMemo } from "react"
 
 import type { ExploreCacheReport } from "../../api/types"
@@ -19,6 +25,7 @@ import {
   pivotCalculationIdentity,
   type ExplorePivotConfig,
 } from "./pivotConfig"
+import useAutoUpdateExplorePivots from "./useAutoUpdateExplorePivots"
 import useExplorePivotActions from "./useExplorePivotActions"
 
 type ExploreChartsPaneProps = {
@@ -88,7 +95,10 @@ type ChartCardProps = {
   report: ExploreCacheReport | null
   submitting: boolean
   notice?: { message: string; failure?: { remediation: string } | null }
-  onUpdate: (pivot: ExplorePivotConfig) => void
+  onRetry: (
+    pivot: ExplorePivotConfig,
+    requestedDataframeCacheKey?: string | null,
+  ) => void
   onCancel: (pivot: ExplorePivotConfig, jobId: string) => void
 }
 
@@ -100,7 +110,7 @@ function ChartCard({
   report,
   submitting,
   notice,
-  onUpdate,
+  onRetry,
   onCancel,
 }: ChartCardProps) {
   const key = pivot ? explorePivotResultKey(nodeId, pivot.id) : null
@@ -180,25 +190,31 @@ function ChartCard({
               <XCircle size={12} aria-hidden="true" />
               Cancel
             </button>
-          ) : (
+          ) : submitting ? (
+            <span
+              role="status"
+              className="inline-flex items-center gap-1 text-[11px] font-semibold"
+              style={{ color: "var(--text-muted)" }}
+            >
+              <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+              Starting calculation
+            </span>
+          ) : alertMessage ? (
             <button
               type="button"
-              onClick={() => void onUpdate(pivot)}
-              disabled={submitting}
-              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold disabled:opacity-45"
+              onClick={() =>
+                void onRetry(pivot, report?.dataframe_cache_key ?? null)
+              }
+              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold"
               style={{
                 color: "var(--text-on-accent)",
                 background: NODE_GROUP_COLORS.explore,
               }}
             >
-              {submitting ? (
-                <Loader2 size={12} className="animate-spin" aria-hidden="true" />
-              ) : (
-                <Play size={12} aria-hidden="true" />
-              )}
-              {submitting ? "Starting" : "Update"}
+              <RotateCw size={12} aria-hidden="true" />
+              Retry
             </button>
-          ))}
+          ) : null)}
       </div>
 
       {pivot === null && missingPivotId === null && (
@@ -227,11 +243,19 @@ function ChartCard({
       )}
       {pivot && cached?.result && !fresh && (
         <CardMessage>
-          Source Pivot result is out of date. Update to recalculate it.
+          {!report
+            ? "Waiting for current cached Explore data."
+            : alertMessage
+              ? "The current source result was retained after refresh failed."
+              : "Updating source Pivot automatically…"}
         </CardMessage>
       )}
-      {pivot && !cached?.result && !job && !submitting && !alertMessage && (
-        <CardMessage>Update this Pivot to calculate chart data.</CardMessage>
+      {pivot && !cached?.result && !job && !alertMessage && (
+        <CardMessage>
+          {report
+            ? "Calculating source Pivot automatically…"
+            : "Cache the full Explore data above to calculate this chart automatically."}
+        </CardMessage>
       )}
       {alertMessage && (
         <CardMessage danger>
@@ -274,6 +298,31 @@ export default function ExploreChartsPane({
     submitting,
     updatePivot,
   } = useExplorePivotActions({ node, allNodes, edges, submodels, preamble })
+  const visibleCharts = useMemo(
+    () =>
+      parsedCharts.ok
+        ? parsedCharts.charts.filter((chart) => chart.enabled)
+        : [],
+    [parsedCharts],
+  )
+  const sourcePivots = useMemo(() => {
+    if (!parsedPivots.ok) return []
+    const distinct = new Map<string, ExplorePivotConfig>()
+    for (const chart of visibleCharts) {
+      const source = resolveExploreChartSource(chart, parsedPivots.pivots)
+      if (source.status === "resolved") {
+        distinct.set(source.pivot.id, source.pivot)
+      }
+    }
+    return [...distinct.values()]
+  }, [parsedPivots, visibleCharts])
+  useAutoUpdateExplorePivots({
+    nodeId: node.id,
+    pivots: sourcePivots,
+    report,
+    submitting,
+    updatePivot,
+  })
 
   if (!parsedCharts.ok) {
     return (
@@ -318,7 +367,6 @@ export default function ExploreChartsPane({
     )
   }
 
-  const visibleCharts = parsedCharts.charts.filter((chart) => chart.enabled)
   if (visibleCharts.length === 0) {
     return (
       <div data-testid="explore-charts-pane" className="flex flex-1">
@@ -352,7 +400,7 @@ export default function ExploreChartsPane({
               report={report}
               submitting={pivot ? submitting[pivot.id] === true : false}
               notice={pivot ? notices[pivot.id] : undefined}
-              onUpdate={updatePivot}
+              onRetry={updatePivot}
               onCancel={cancelPivot}
             />
           )

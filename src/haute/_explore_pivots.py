@@ -14,6 +14,9 @@ EXPLORE_PIVOT_CONFIG_VERSION = 1
 PIVOT_AGGREGATIONS = frozenset(
     {"sum", "count", "average", "min", "max", "median", "distinct_count"}
 )
+PIVOT_SORT_DIRECTIONS = frozenset({"ascending", "descending"})
+PIVOT_VALUE_SORTS = frozenset({"none", *PIVOT_SORT_DIRECTIONS})
+PIVOT_COLOR_SCALES = frozenset({"none", "low_red_high_green", "low_green_high_red"})
 PIVOT_MEMBER_KINDS = frozenset(
     {"null", "string", "boolean", "integer", "float", "nan", "date", "datetime", "time", "decimal"}
 )
@@ -233,11 +236,15 @@ def _validate_axis_placements(
                 index=card_index,
                 placement_index=placement_index,
             )
+        if zone == "filters":
+            known_keys = frozenset({"id", "field", "members"})
+        elif zone == "rows":
+            known_keys = frozenset({"id", "field", "sort"})
+        else:
+            known_keys = frozenset({"id", "field"})
         copied = _copy_known_dict(
             placement,
-            known_keys=frozenset({"id", "field", "members"})
-            if zone == "filters"
-            else frozenset({"id", "field"}),
+            known_keys=known_keys,
             context=context,
             index=card_index,
             scope=f"{zone} placement",
@@ -285,6 +292,17 @@ def _validate_axis_placements(
                 )
                 for member_index, member in enumerate(members)
             ]
+        elif zone == "rows":
+            sort = copied.get("sort", "ascending")
+            if not isinstance(sort, str) or sort not in PIVOT_SORT_DIRECTIONS:
+                raise ConfigError(
+                    "Explore pivot row has an unsupported sort direction.",
+                    context=context,
+                    index=card_index,
+                    placement_index=placement_index,
+                    sort=sort,
+                )
+            copied["sort"] = sort
         placements.append(copied)
     return placements
 
@@ -314,7 +332,9 @@ def _validate_values(
             )
         copied = _copy_known_dict(
             value,
-            known_keys=frozenset({"id", "field", "aggregation", "display_name"}),
+            known_keys=frozenset(
+                {"id", "field", "aggregation", "display_name", "sort_rows", "color_scale"}
+            ),
             context=context,
             index=card_index,
             scope="value",
@@ -347,12 +367,32 @@ def _validate_values(
             index=card_index,
             label="value display name",
         )
+        sort_rows = copied.get("sort_rows", "none")
+        if not isinstance(sort_rows, str) or sort_rows not in PIVOT_VALUE_SORTS:
+            raise ConfigError(
+                "Explore pivot value has an unsupported row sort.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+                sort_rows=sort_rows,
+            )
+        color_scale = copied.get("color_scale", "none")
+        if not isinstance(color_scale, str) or color_scale not in PIVOT_COLOR_SCALES:
+            raise ConfigError(
+                "Explore pivot value has an unsupported colour scale.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+                color_scale=color_scale,
+            )
         placement_ids.add(placement_id)
         copied.update(
             id=placement_id,
             field=field,
             aggregation=aggregation,
             display_name=display_name,
+            sort_rows=sort_rows,
+            color_scale=color_scale,
         )
         values.append(copied)
     return values
@@ -383,7 +423,11 @@ def _migrate_v0(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, A
         columns=[],
         rows=[],
         values=[],
-        options={"row_grand_totals": True, "column_grand_totals": True},
+        options={
+            "row_grand_totals": True,
+            "column_grand_totals": True,
+            "sort_by": None,
+        },
     )
     copied["id"] = pivot_id
     return copied
@@ -441,6 +485,12 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         card_index=index,
         placement_ids=placement_ids,
     )
+    if sum(value["sort_rows"] != "none" for value in values) > 1:
+        raise ConfigError(
+            "Explore pivot may have only one active Value row sort.",
+            context=context,
+            index=index,
+        )
 
     options = copied.get("options")
     if not isinstance(options, dict):
@@ -452,7 +502,7 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         )
     copied_options = _copy_known_dict(
         options,
-        known_keys=frozenset({"row_grand_totals", "column_grand_totals"}),
+        known_keys=frozenset({"row_grand_totals", "column_grand_totals", "sort_by"}),
         context=context,
         index=index,
         scope="options",
@@ -464,6 +514,51 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
                 context=context,
                 index=index,
             )
+
+    active_value_ids = [value["id"] for value in values if value["sort_rows"] != "none"]
+    if "sort_by" not in copied_options:
+        # Older version-1 cards stored the active Value sort on the placement
+        # alone. Preserve that choice when normalising them to the current
+        # explicit sort-target model.
+        sort_by: str | None = active_value_ids[0] if active_value_ids else None
+    else:
+        raw_sort_by = copied_options["sort_by"]
+        if raw_sort_by is not None and not isinstance(raw_sort_by, str):
+            raise ConfigError(
+                "Explore pivot options.sort_by must be a string or null.",
+                context=context,
+                index=index,
+                actual_type=type(raw_sort_by).__name__,
+            )
+        sort_by = raw_sort_by
+
+    row_ids = {row["id"] for row in rows}
+    value_ids = {value["id"] for value in values}
+    if sort_by is not None and sort_by not in row_ids | value_ids:
+        raise ConfigError(
+            "Explore pivot options.sort_by must reference a Row or Value placement.",
+            context=context,
+            index=index,
+            sort_by=sort_by,
+        )
+    if sort_by in value_ids:
+        selected_value = next(value for value in values if value["id"] == sort_by)
+        if selected_value["sort_rows"] == "none":
+            raise ConfigError(
+                "Explore pivot options.sort_by selected Value must have an active row sort.",
+                context=context,
+                index=index,
+                sort_by=sort_by,
+            )
+    elif active_value_ids:
+        raise ConfigError(
+            "Explore pivot active Value row sort must match options.sort_by.",
+            context=context,
+            index=index,
+            sort_by=sort_by,
+            active_value_id=active_value_ids[0],
+        )
+    copied_options["sort_by"] = sort_by
 
     copied.update(
         version=version,

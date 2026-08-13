@@ -24,7 +24,7 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
         display_name: "Claims",
       },
     ],
-    options: { row_grand_totals: true, column_grand_totals: true },
+    options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
     ...overrides,
   }
 }
@@ -46,7 +46,7 @@ describe("pivotConfig", () => {
           columns: [],
           rows: [],
           values: [],
-          options: { row_grand_totals: true, column_grand_totals: true },
+          options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
         },
       ],
     })
@@ -90,6 +90,194 @@ describe("pivotConfig", () => {
     ).not.toBe(pivotCalculationIdentity(base))
   })
 
+  it("normalises missing v1 sort and colour fields, and rejects invalid enums", () => {
+    const parsed = parseExplorePivots({
+      pivots: [
+        pivot({
+          options: { row_grand_totals: true, column_grand_totals: true },
+        }),
+      ],
+    })
+    expect(parsed).toMatchObject({
+      ok: true,
+      pivots: [
+        {
+          rows: [{ sort: "ascending" }],
+          values: [{ sort_rows: "none", color_scale: "none" }],
+          options: { sort_by: null },
+        },
+      ],
+    })
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            rows: [
+              {
+                id: "row_1",
+                field: "region",
+                sort: "sideways" as never,
+              },
+            ],
+          }),
+        ],
+      }),
+    ).toMatchObject({ ok: false })
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            values: [
+              {
+                id: "value_1",
+                field: "claims",
+                aggregation: "sum",
+                display_name: "Claims",
+                sort_rows: "sideways" as never,
+              },
+            ],
+          }),
+        ],
+      }),
+    ).toMatchObject({ ok: false })
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            values: [
+              {
+                id: "value_1",
+                field: "claims",
+                aggregation: "sum",
+                display_name: "Claims",
+                color_scale: "rainbow" as never,
+              },
+            ],
+          }),
+        ],
+      }),
+    ).toMatchObject({ ok: false })
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            values: [
+              {
+                id: "value_1",
+                field: "claims",
+                aggregation: "sum",
+                display_name: "Claims",
+                sort_rows: "ascending",
+              },
+              {
+                id: "value_2",
+                field: "claims",
+                aggregation: "average",
+                display_name: "Average claims",
+                sort_rows: "descending",
+              },
+            ],
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("only one active Value row sort"),
+    })
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            options: {
+              row_grand_totals: true,
+              column_grand_totals: true,
+              sort_by: "missing",
+            },
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("Row or Value placement"),
+    })
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            values: [
+              {
+                id: "value_1",
+                field: "claims",
+                aggregation: "sum",
+                display_name: "Claims",
+                sort_rows: "descending",
+              },
+            ],
+            options: {
+              row_grand_totals: true,
+              column_grand_totals: true,
+              sort_by: null,
+            },
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("requires options.sort_by"),
+    })
+  })
+
+  it("derives the selected sort target for a legacy active Value sort", () => {
+    const parsed = parseExplorePivots({
+      pivots: [
+        pivot({
+          values: [
+            {
+              id: "value_1",
+              field: "claims",
+              aggregation: "sum",
+              display_name: "Claims",
+              sort_rows: "descending",
+            },
+          ],
+          options: { row_grand_totals: true, column_grand_totals: true },
+        }),
+      ],
+    })
+
+    expect(parsed).toMatchObject({
+      ok: true,
+      pivots: [{ options: { sort_by: "value_1" } }],
+    })
+  })
+
+  it("includes row and value sorts but excludes colour scale from calculation identity", () => {
+    const base = pivot()
+    const dormantRowDirection = {
+      ...base,
+      rows: [{ ...base.rows[0], sort: "descending" as const }],
+    }
+    const sortedRows = {
+      ...dormantRowDirection,
+      options: { ...base.options, sort_by: "row_1" },
+    }
+    const explicitlySelectedDefaultRow = {
+      ...base,
+      options: { ...base.options, sort_by: "row_1" },
+    }
+    const sortedValues = {
+      ...base,
+      values: [{ ...base.values[0], sort_rows: "ascending" as const }],
+      options: { ...base.options, sort_by: "value_1" },
+    }
+    const colourOnly = { ...base, values: [{ ...base.values[0], color_scale: "low_red_high_green" as const }] }
+    expect(pivotCalculationIdentity(dormantRowDirection)).toBe(pivotCalculationIdentity(base))
+    expect(pivotCalculationIdentity(explicitlySelectedDefaultRow)).toBe(pivotCalculationIdentity(base))
+    expect(pivotCalculationIdentity(sortedRows)).not.toBe(pivotCalculationIdentity(base))
+    expect(pivotCalculationIdentity(sortedValues)).not.toBe(pivotCalculationIdentity(base))
+    expect(pivotCalculationIdentity(colourOnly)).toBe(pivotCalculationIdentity(base))
+  })
+
   it.each([
     ["integer", "01"],
     ["decimal", "NaN"],
@@ -126,7 +314,7 @@ describe("pivotConfig", () => {
       columns: [],
       rows: [],
       values: [],
-      options: { row_grand_totals: true, column_grand_totals: true },
+      options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
     })
   })
 })

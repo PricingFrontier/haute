@@ -27,6 +27,7 @@ import type {
   ExecutionStrategyReason,
   ExecutionStageMetrics,
   ExploreCacheReport,
+  ExploreCacheSnapshotResponse,
   ExploreCategoricalColumnProfile,
   ExploreColumnStat,
   ExploreDataQualityIssue,
@@ -1659,6 +1660,20 @@ export function parseExploreCacheReport(value: unknown): ExploreCacheReport {
     columns: parseArray("parseExploreCacheReport", obj.columns, "field `columns`", parseExploreColumnStat),
     overview_summary: parseExploreOverviewSummary(obj.overview_summary, "field `overview_summary`"),
     execution_metrics: optionalExecutionMetrics("parseExploreCacheReport", obj, "execution_metrics"),
+  }
+}
+
+export function parseExploreCacheSnapshotResponse(value: unknown): ExploreCacheSnapshotResponse {
+  const obj = expectPlainObject("parseExploreCacheSnapshotResponse", value)
+  return {
+    state: expectStringLiteral(
+      "parseExploreCacheSnapshotResponse",
+      obj.state,
+      "field `state`",
+      ["missing", "current", "stale"] as const,
+    ),
+    message: expectString("parseExploreCacheSnapshotResponse", obj.message, "field `message`"),
+    result: obj.result === undefined || obj.result === null ? null : parseExploreCacheReport(obj.result),
   }
 }
 

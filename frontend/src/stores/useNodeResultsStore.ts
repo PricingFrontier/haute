@@ -252,6 +252,8 @@ interface CachedExplorePivotResult {
   nodeLabel: string
   pivotName: string
   calculationIdentity: string
+  lastAttemptedCalculationIdentity: string
+  lastAttemptedDataframeCacheKey: string | null
   source: string
   structuralVersion: number
 }
@@ -264,6 +266,7 @@ interface ActiveExplorePivotJob {
   nodeLabel: string
   pivotName: string
   calculationIdentity: string
+  requestedDataframeCacheKey: string | null
   source: string
   structuralVersion: number
   progress: ExplorePivotProgress | null
@@ -759,7 +762,7 @@ interface NodeResultsState {
   completeExploreJob: (nodeId: string, result: ExploreCacheReport, terminalStatus?: ExploreProgress) => void
   failExploreJob: (nodeId: string, error: string, terminalStatus?: ExploreProgress) => void
 
-  startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number) => void
+  startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number, requestedDataframeCacheKey?: string | null) => void
   updateExplorePivotProgress: (key: string, progress: ExplorePivotProgress) => void
   completeExplorePivotJob: (key: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
   failExplorePivotJob: (key: string, error: string, terminalStatus?: ExplorePivotProgress) => void
@@ -1263,11 +1266,11 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
-  startExplorePivotJob: (key, jobId, nodeId, pivotId, nodeLabel, pivotName, calculationIdentity, source, structuralVersion) =>
+  startExplorePivotJob: (key, jobId, nodeId, pivotId, nodeLabel, pivotName, calculationIdentity, source, structuralVersion, requestedDataframeCacheKey = null) =>
     set((s) => ({
       pivotJobs: {
         ...s.pivotJobs,
-        [key]: { jobId, key, nodeId, pivotId, nodeLabel, pivotName, calculationIdentity, source, structuralVersion, progress: null, error: null },
+        [key]: { jobId, key, nodeId, pivotId, nodeLabel, pivotName, calculationIdentity, requestedDataframeCacheKey, source, structuralVersion, progress: null, error: null },
       },
     })),
 
@@ -1294,6 +1297,9 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           nodeLabel: job.nodeLabel,
           pivotName: job.pivotName,
           calculationIdentity: job.calculationIdentity,
+          lastAttemptedCalculationIdentity: job.calculationIdentity,
+          lastAttemptedDataframeCacheKey:
+            job.requestedDataframeCacheKey ?? result.dataframe_cache_key,
           source: job.source,
           structuralVersion: job.structuralVersion,
         },
@@ -1326,6 +1332,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
           calculationIdentity: retainedResult
             ? previous.calculationIdentity
             : job.calculationIdentity,
+          lastAttemptedCalculationIdentity: job.calculationIdentity,
+          lastAttemptedDataframeCacheKey: job.requestedDataframeCacheKey,
           source: retainedResult ? previous.source : job.source,
           structuralVersion: retainedResult
             ? previous.structuralVersion

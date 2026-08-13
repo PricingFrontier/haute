@@ -24,18 +24,21 @@ def _pivot(**updates: object) -> dict[str, object]:
             }
         ],
         "columns": [{"id": "column_1", "field": "year"}],
-        "rows": [{"id": "row_1", "field": "region"}],
+        "rows": [{"id": "row_1", "field": "region", "sort": "ascending"}],
         "values": [
             {
                 "id": "value_1",
                 "field": "claims",
                 "aggregation": "sum",
                 "display_name": "Claims",
+                "sort_rows": "none",
+                "color_scale": "none",
             }
         ],
         "options": {
             "row_grand_totals": True,
             "column_grand_totals": True,
+            "sort_by": None,
         },
     }
     pivot.update(updates)
@@ -65,6 +68,7 @@ def test_validate_explore_pivots_migrates_v0_and_preserves_order_and_future_fiel
             "options": {
                 "row_grand_totals": True,
                 "column_grand_totals": True,
+                "sort_by": None,
             },
         },
         {
@@ -79,6 +83,7 @@ def test_validate_explore_pivots_migrates_v0_and_preserves_order_and_future_fiel
             "options": {
                 "row_grand_totals": True,
                 "column_grand_totals": True,
+                "sort_by": None,
             },
         },
     ]
@@ -95,6 +100,56 @@ def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -
     assert validated[0] is not raw[0]
     assert validated[0]["filters"] is not raw[0]["filters"]
     assert validated[0]["future"] is not raw[0]["future"]
+
+
+def test_validate_explore_pivots_defaults_sort_and_colour_fields_on_older_v1() -> None:
+    pivot = _pivot(
+        rows=[{"id": "row_1", "field": "region"}],
+        values=[
+            {
+                "id": "value_1",
+                "field": "claims",
+                "aggregation": "sum",
+                "display_name": "Claims",
+            }
+        ],
+        options={"row_grand_totals": True, "column_grand_totals": True},
+    )
+
+    validated = validate_explore_pivots([pivot], context="test")[0]
+
+    assert validated["rows"] == [{"id": "row_1", "field": "region", "sort": "ascending"}]
+    assert validated["values"] == [
+        {
+            "id": "value_1",
+            "field": "claims",
+            "aggregation": "sum",
+            "display_name": "Claims",
+            "sort_rows": "none",
+            "color_scale": "none",
+        }
+    ]
+    assert validated["options"]["sort_by"] is None
+
+
+def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> None:
+    pivot = _pivot(
+        values=[
+            {
+                "id": "value_1",
+                "field": "claims",
+                "aggregation": "sum",
+                "display_name": "Claims",
+                "sort_rows": "descending",
+                "color_scale": "none",
+            }
+        ],
+        options={"row_grand_totals": True, "column_grand_totals": True},
+    )
+
+    validated = validate_explore_pivots([pivot], context="test")[0]
+
+    assert validated["options"]["sort_by"] == "value_1"
 
 
 @pytest.mark.parametrize(
@@ -131,6 +186,119 @@ def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -
                 )
             ],
             "unsupported aggregation",
+        ),
+        (
+            [_pivot(rows=[{"id": "row_1", "field": "region", "sort": "sideways"}])],
+            "unsupported sort direction",
+        ),
+        (
+            [
+                _pivot(
+                    values=[
+                        {
+                            "id": "value_1",
+                            "field": "claims",
+                            "aggregation": "sum",
+                            "display_name": "Claims",
+                            "sort_rows": "sideways",
+                            "color_scale": "none",
+                        }
+                    ]
+                )
+            ],
+            "unsupported row sort",
+        ),
+        (
+            [
+                _pivot(
+                    values=[
+                        {
+                            "id": "value_1",
+                            "field": "claims",
+                            "aggregation": "sum",
+                            "display_name": "Claims",
+                            "sort_rows": "none",
+                            "color_scale": "rainbow",
+                        }
+                    ]
+                )
+            ],
+            "unsupported colour scale",
+        ),
+        (
+            [
+                _pivot(
+                    values=[
+                        {
+                            "id": "value_1",
+                            "field": "claims",
+                            "aggregation": "sum",
+                            "display_name": "Claims",
+                            "sort_rows": "ascending",
+                            "color_scale": "none",
+                        },
+                        {
+                            "id": "value_2",
+                            "field": "claims",
+                            "aggregation": "average",
+                            "display_name": "Average claims",
+                            "sort_rows": "descending",
+                            "color_scale": "none",
+                        },
+                    ]
+                )
+            ],
+            "only one active Value row sort",
+        ),
+        (
+            [_pivot(options={"row_grand_totals": True, "column_grand_totals": True, "sort_by": 1})],
+            "sort_by must be a string or null",
+        ),
+        (
+            [
+                _pivot(
+                    options={
+                        "row_grand_totals": True,
+                        "column_grand_totals": True,
+                        "sort_by": "missing",
+                    }
+                )
+            ],
+            "must reference a Row or Value placement",
+        ),
+        (
+            [
+                _pivot(
+                    options={
+                        "row_grand_totals": True,
+                        "column_grand_totals": True,
+                        "sort_by": "value_1",
+                    }
+                )
+            ],
+            "selected Value must have an active row sort",
+        ),
+        (
+            [
+                _pivot(
+                    values=[
+                        {
+                            "id": "value_1",
+                            "field": "claims",
+                            "aggregation": "sum",
+                            "display_name": "Claims",
+                            "sort_rows": "descending",
+                            "color_scale": "none",
+                        }
+                    ],
+                    options={
+                        "row_grand_totals": True,
+                        "column_grand_totals": True,
+                        "sort_by": None,
+                    },
+                )
+            ],
+            "active Value row sort must match options.sort_by",
         ),
         (
             [
@@ -185,14 +353,28 @@ def test_validate_explore_pivots_rejects_malformed_values(value: object, message
 def test_validate_explore_pivots_allows_repeated_value_fields_with_unique_ids() -> None:
     pivot = _pivot(
         values=[
-            {"id": "value_1", "field": "claims", "aggregation": "sum", "display_name": "Claims"},
+            {
+                "id": "value_1",
+                "field": "claims",
+                "aggregation": "sum",
+                "display_name": "Claims",
+                "sort_rows": "none",
+                "color_scale": "low_red_high_green",
+            },
             {
                 "id": "value_2",
                 "field": "claims",
                 "aggregation": "average",
                 "display_name": "Average claims",
+                "sort_rows": "descending",
+                "color_scale": "low_green_high_red",
             },
-        ]
+        ],
+        options={
+            "row_grand_totals": True,
+            "column_grand_totals": True,
+            "sort_by": "value_2",
+        },
     )
 
     assert validate_explore_pivots([pivot], context="test")[0]["values"] == pivot["values"]
