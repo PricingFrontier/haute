@@ -84,6 +84,18 @@ consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
 reason = "Preview/Explore owns the generic ARIA tab strip consumed by modelling result and node-panel panes."
 
 [[shared_file]]
+path = "frontend/src/panels/explore/chartConfig.ts"
+primary = "frontend-preview-explore"
+consumers = ["frontend-node-editors"]
+reason = "Explore owns chart parsing and identity invariants; node editors consume the shared chart configuration contract."
+
+[[shared_file]]
+path = "frontend/src/panels/explore/pivotConfig.ts"
+primary = "frontend-preview-explore"
+consumers = ["frontend-node-editors"]
+reason = "Explore owns pivot parsing and identity invariants; node editors consume the shared pivot configuration contract."
+
+[[shared_file]]
 path = "frontend/src/stores/useGitStore.ts"
 primary = "frontend-git-ui"
 consumers = ["hosted-project-storage"]

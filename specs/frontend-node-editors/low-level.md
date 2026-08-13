@@ -25,8 +25,8 @@
 | `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
 | `frontend/src/panels/editors/ExploreConfigCardList.tsx` | Shared Pivot/Chart list header, empty state, and action-card row, composing `ExploreToggleCard` with separate Delete and Configure actions. |
-| `frontend/src/panels/explore/chartConfig.ts` | Mirrors chart v0/v1 validation, preserves future round-trippable fields, allocates ids/names, resolves pivot links/dependants, and applies typed ComboChart presets. |
-| `frontend/src/panels/explore/pivotConfig.ts` | Validates the persisted ordered `pivots` array, preserves future round-trippable fields on valid cards, allocates the first unused `pivot_N` id, and supplies order-derived labels. |
+| `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart v0/v1 validation and identity helpers consumed by the chart editor. |
+| `frontend/src/panels/explore/pivotConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned pivot validation and identity helpers consumed by the pivot editor, including allocation of the first unused pivot id. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
 | `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned active-job state and per-node pane memory consumed by node-panel modelling chrome. |
@@ -293,7 +293,12 @@ Remove remains a separately named button. A field may occur in different zones. 
 addition gets a new
 first-unused placement id and repeated Values are allowed. Numeric dtypes default to `sum`;
 all other dtypes default to `count`. Value aggregation changes are committed selects and expose
-only compatible operations. Row placements persist `sort: "ascending" | "descending"`, defaulting
+only compatible operations. Numeric detection reuses the shared Polars dtype helper and recognises
+full names, short aliases, and Decimal. Numeric Values expose all seven operations; scalar
+non-numeric Values (including Binary and Duration) expose count, distinct count, min, and max;
+nested List/Array/Struct and Object Values expose count only. The filter-member picker loads its
+initial list immediately, debounces non-empty searches by 250 ms, and aborts obsolete requests.
+Row placements persist `sort: "ascending" | "descending"`, defaulting
 to ascending while parsing older v1 cards. Value placements persist
 `sort_rows: "none" | "ascending" | "descending"` and
 `color_scale: "none" | "low_red_high_green" | "low_green_high_red"`, both defaulting to none.

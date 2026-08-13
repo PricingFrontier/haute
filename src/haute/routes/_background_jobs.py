@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -120,6 +121,23 @@ class CancellableJobRegistry:
         with self._lock:
             token = self._tokens_by_job_id.get(job_id)
             return token.terminal_reason if token and token.cancelled else None
+
+    @contextmanager
+    def latest_publication(self, job_id: str) -> Iterator[bool]:
+        """Serialize a short final publication against cancellation/supersession.
+
+        Callers must prepare expensive output before entering this guard. Holding
+        the registry lock makes the latest-owner check and final commit one
+        indivisible operation relative to ``register_latest`` and ``cancel``.
+        """
+
+        with self._lock:
+            token = self._tokens_by_job_id.get(job_id)
+            yield bool(
+                token is not None
+                and not token.cancelled
+                and self._latest_by_key.get(token.key) == job_id
+            )
 
     def release(self, job_id: str) -> None:
         """Remove active coordination state for *job_id*."""

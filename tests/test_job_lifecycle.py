@@ -272,6 +272,18 @@ def test_cancellable_registry_records_registry_derived_stop_reason() -> None:
     assert registry.cancellation_reason("job-2") == "timed_out"
 
 
+def test_cancellable_registry_publication_guard_rejects_a_superseded_job() -> None:
+    registry = CancellableJobRegistry()
+
+    registry.register_latest(("kind", "node"), "job-1")
+    registry.register_latest(("kind", "node"), "job-2")
+
+    with registry.latest_publication("job-1") as owns_publication:
+        assert owns_publication is False
+    with registry.latest_publication("job-2") as owns_publication:
+        assert owns_publication is True
+
+
 def test_background_job_stopped_error_has_one_canonical_reason() -> None:
     error = BackgroundJobStoppedError("job-1", "cancelled")
 

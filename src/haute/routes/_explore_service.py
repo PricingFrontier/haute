@@ -31,7 +31,10 @@ from haute._execution_context import (
     ExecutionMemoryLimitExceededError,
     ExecutionProfile,
 )
-from haute._explore_cache import ExplorePersistentCacheStore
+from haute._explore_cache import (
+    ExplorePersistentCachePublication,
+    ExplorePersistentCacheStore,
+)
 from haute._hashing import content_hash_bytes
 from haute._logging import get_logger
 from haute._lru_cache import LRUCache
@@ -789,25 +792,25 @@ class ExploreService:
                 )
 
             persistent_store = ExplorePersistentCacheStore(spec.project_root)
-            snapshot = persistent_store.lookup(
+            with persistent_store.lease(
                 spec.family_key,
                 report_cache_key=spec.report_cache_key,
-            )
-            if snapshot is not None and snapshot.state == "current":
-                if snapshot.report is None:
-                    raise RuntimeError("Current durable Explore cache omitted its report")
-                persistent_store.restore(
-                    snapshot,
-                    spec.dataframe_cache_request,
-                    node_id=spec.node_id,
-                )
-                self._report_cache.put(spec.report_cache_key, snapshot.report)
-                return ExploreRunResponse(
-                    status="completed",
-                    cached=True,
-                    message="Explore cache hit",
-                    result=snapshot.report,
-                )
+            ) as snapshot:
+                if snapshot is not None and snapshot.state == "current":
+                    if snapshot.report is None:
+                        raise RuntimeError("Current durable Explore cache omitted its report")
+                    persistent_store.restore(
+                        snapshot,
+                        spec.dataframe_cache_request,
+                        node_id=spec.node_id,
+                    )
+                    self._report_cache.put(spec.report_cache_key, snapshot.report)
+                    return ExploreRunResponse(
+                        status="completed",
+                        cached=True,
+                        message="Explore cache hit",
+                        result=snapshot.report,
+                    )
         else:
             self._report_cache.evict_where(lambda cache_key: cache_key == spec.report_cache_key)
             spec.dataframe_cache_request.cache.evict_where(
@@ -861,34 +864,34 @@ class ExploreService:
             )
 
         persistent_store = ExplorePersistentCacheStore(spec.project_root)
-        snapshot = persistent_store.lookup(
+        with persistent_store.lease(
             spec.family_key,
             report_cache_key=spec.report_cache_key,
-        )
-        if snapshot is None:
-            return ExploreCacheSnapshotResponse(
-                state="missing",
-                message="Explore data needs caching",
-            )
-        if snapshot.state == "stale":
-            return ExploreCacheSnapshotResponse(
-                state="stale",
-                message="Explore cache is stale",
-            )
-        if snapshot.report is None:
-            raise RuntimeError("Current durable Explore cache omitted its report")
+        ) as snapshot:
+            if snapshot is None:
+                return ExploreCacheSnapshotResponse(
+                    state="missing",
+                    message="Explore data needs caching",
+                )
+            if snapshot.state == "stale":
+                return ExploreCacheSnapshotResponse(
+                    state="stale",
+                    message="Explore cache is stale",
+                )
+            if snapshot.report is None:
+                raise RuntimeError("Current durable Explore cache omitted its report")
 
-        persistent_store.restore(
-            snapshot,
-            spec.dataframe_cache_request,
-            node_id=spec.node_id,
-        )
-        self._report_cache.put(spec.report_cache_key, snapshot.report)
-        return ExploreCacheSnapshotResponse(
-            state="current",
-            message="Explore data is cached",
-            result=snapshot.report,
-        )
+            persistent_store.restore(
+                snapshot,
+                spec.dataframe_cache_request,
+                node_id=spec.node_id,
+            )
+            self._report_cache.put(spec.report_cache_key, snapshot.report)
+            return ExploreCacheSnapshotResponse(
+                state="current",
+                message="Explore data is cached",
+                result=snapshot.report,
+            )
 
     def status(self, job_id: str) -> ExploreStatusResponse:
         job = self._store.require_job(job_id)
@@ -1014,41 +1017,25 @@ class ExploreService:
                     ),
                 }
             )
-            dataframe_key = spec.dataframe_cache_request.keys_by_node[spec.node_id]
-            dataframe_cache = spec.dataframe_cache_request.cache
-            with dataframe_cache.materialization_lock(dataframe_key):
-                dataframe_entry = dataframe_cache.get(dataframe_key)
-                if dataframe_entry is None:
-                    raise RuntimeError(
-                        "Explore dataframe cache entry disappeared before durable publication "
-                        f"(node_id={spec.node_id!r}, cache_key={spec.dataframe_cache_key!r})"
-                    )
-                try:
-                    ExplorePersistentCacheStore(spec.project_root).publish(
-                        spec.family_key,
-                        report_cache_key=spec.report_cache_key,
-                        report=report,
-                        entry=dataframe_entry,
-                    )
-                except BaseException:
-                    # Never leave a freshly materialised process entry paired
-                    # with the previous durable generation's report.
-                    dataframe_cache.evict_where(
-                        lambda cache_key: cache_key == dataframe_key.cache_key
-                    )
-                    raise
-            self._report_cache.put(spec.report_cache_key, report)
-            self._lifecycle.transition(
+            # Computation is complete and the dataframe cache owns a Parquet
+            # artifact, so do not retain a memory-admission reservation while
+            # staging and atomically publishing durable output.
+            execution_context.release_admission()
+            if not self._publish_completed_result(
                 job_id,
-                to="completed",
-                message="Explore cache materialisation complete",
-                fields={
-                    "progress": 1.0,
-                    "result": report,
-                    "execution_metrics": report.execution_metrics,
-                },
-                elapsed_seconds=time.monotonic() - start_time,
-            )
+                spec,
+                report,
+                start_time=start_time,
+            ):
+                reason = token.terminal_reason or "cancelled"
+                self._lifecycle.transition(
+                    job_id,
+                    to=reason,
+                    message=f"Explore cache materialisation {reason}",
+                    expected_status="running",
+                    elapsed_seconds=time.monotonic() - start_time,
+                )
+                return
         except ExecutionCancelledError:
             reason = token.terminal_reason or "cancelled"
             self._lifecycle.transition(
@@ -1102,6 +1089,103 @@ class ExploreService:
             if execution_context is not None:
                 execution_context.release_admission()
             self._jobs.release(job_id)
+
+    def _publish_completed_result(
+        self,
+        job_id: str,
+        spec: ExploreCacheSpec,
+        report: ExploreCacheReport,
+        *,
+        start_time: float,
+    ) -> bool:
+        """Select and expose a prepared result only while this job is latest."""
+
+        dataframe_key = spec.dataframe_cache_request.keys_by_node[spec.node_id]
+        dataframe_cache = spec.dataframe_cache_request.cache
+        persistent_store = ExplorePersistentCacheStore(spec.project_root)
+        publication = None
+        committed = False
+        try:
+            try:
+                publication = self._prepare_durable_publication(
+                    persistent_store,
+                    spec,
+                    report,
+                )
+            except BaseException:
+                dataframe_cache.evict_where(lambda cache_key: cache_key == dataframe_key.cache_key)
+                raise
+
+            with self._jobs.latest_publication(job_id) as owns_publication:
+                if not owns_publication:
+                    return False
+                try:
+                    persistent_store.commit_publication(publication)
+                except BaseException:
+                    # A failed pointer commit must not leave the process entry
+                    # looking current beside the previous durable report.
+                    dataframe_cache.evict_where(
+                        lambda cache_key: cache_key == dataframe_key.cache_key
+                    )
+                    raise
+                committed = True
+                self._report_cache.put(spec.report_cache_key, report)
+                try:
+                    transitioned = self._lifecycle.transition(
+                        job_id,
+                        to="completed",
+                        message="Explore cache materialisation complete",
+                        fields={
+                            "progress": 1.0,
+                            "result": report,
+                            "execution_metrics": report.execution_metrics,
+                        },
+                        expected_status="running",
+                        elapsed_seconds=time.monotonic() - start_time,
+                    )
+                except BaseException:
+                    self._report_cache.evict_where(
+                        lambda cache_key: cache_key == spec.report_cache_key
+                    )
+                    raise
+                if transitioned is None:
+                    self._report_cache.evict_where(
+                        lambda cache_key: cache_key == spec.report_cache_key
+                    )
+                    raise RuntimeError(
+                        f"Explore job {job_id!r} lost running status during publication"
+                    )
+            return True
+        finally:
+            if publication is not None:
+                if committed:
+                    persistent_store.retire_unleased_generations(spec.family_key)
+                else:
+                    persistent_store.discard_publication(publication)
+
+    @staticmethod
+    def _prepare_durable_publication(
+        persistent_store: ExplorePersistentCacheStore,
+        spec: ExploreCacheSpec,
+        report: ExploreCacheReport,
+    ) -> ExplorePersistentCachePublication:
+        """Stage a snapshot while its process-cache artifact is pinned."""
+
+        dataframe_key = spec.dataframe_cache_request.keys_by_node[spec.node_id]
+        dataframe_cache = spec.dataframe_cache_request.cache
+        with dataframe_cache.materialization_lock(dataframe_key):
+            dataframe_entry = dataframe_cache.get(dataframe_key)
+            if dataframe_entry is None:
+                raise RuntimeError(
+                    "Explore dataframe cache entry disappeared before durable publication "
+                    f"(node_id={spec.node_id!r}, cache_key={spec.dataframe_cache_key!r})"
+                )
+            return persistent_store.prepare_publication(
+                spec.family_key,
+                report_cache_key=spec.report_cache_key,
+                report=report,
+                entry=dataframe_entry,
+            )
 
     def _materialise_and_summarise(
         self,

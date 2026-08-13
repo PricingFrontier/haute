@@ -1,5 +1,5 @@
 import { useState, type ComponentProps } from "react"
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import ExplorePivotsConfig from "../../panels/editors/ExplorePivotsConfig"
@@ -10,7 +10,10 @@ import {
 } from "../../panels/explore/chartConfig"
 import type { ExplorePivotConfig } from "../../panels/explore/pivotConfig"
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 const upstreamColumns = [
   { name: "region", dtype: "String" },
@@ -447,6 +450,41 @@ describe("ExplorePivotsConfig", () => {
       ])
     })
     expect(loadFilterMembers).toHaveBeenCalledWith("region", "", expect.any(AbortSignal))
+  })
+
+  it("debounces nonempty filter-member searches and only requests the final query", async () => {
+    vi.useFakeTimers()
+    const loadFilterMembers = vi.fn().mockResolvedValue({
+      status: "ok",
+      field: "region",
+      members: [],
+      failure: null,
+    })
+    render(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [fullPivot()] }}
+        loadFilterMembers={loadFilterMembers}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add region to Filters" }))
+    fireEvent.click(screen.getByRole("button", { name: "Choose members for region" }))
+    expect(loadFilterMembers).toHaveBeenCalledTimes(1)
+
+    const search = screen.getByRole("searchbox", { name: "Search members for region" })
+    fireEvent.change(search, { target: { value: "N" } })
+    fireEvent.change(search, { target: { value: "No" } })
+    expect(loadFilterMembers).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(249)
+    })
+    expect(loadFilterMembers).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(loadFilterMembers).toHaveBeenCalledTimes(2)
+    expect(loadFilterMembers).toHaveBeenLastCalledWith("region", "No", expect.any(AbortSignal))
   })
 
   it("renders an Excel-style area grid and drags a placement between zones", () => {

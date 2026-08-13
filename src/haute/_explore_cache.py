@@ -6,7 +6,9 @@ import json
 import shutil
 import threading
 import uuid
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,10 +19,14 @@ from haute._dataframe_execution_cache import (
 )
 from haute._file_ops import atomic_write_text
 from haute._hashing import content_hash_bytes
+from haute._logging import get_logger
 from haute._polars_utils import read_parquet_metadata
 from haute.schemas import ExploreCacheReport
 
 EXPLORE_PERSISTENT_CACHE_SCHEMA_VERSION = 1
+logger = get_logger(component="explore.persistent_cache")
+
+ExploreFamilyKey = tuple[str, str, str, str]
 
 
 class ExplorePersistentCacheError(RuntimeError):
@@ -36,14 +42,31 @@ class ExplorePersistentCacheSnapshot:
     """A strictly validated selected generation for one Explore family."""
 
     state: Literal["current", "stale"]
+    generation_id: str
     report_cache_key: str
     report: ExploreCacheReport | None
     data_path: Path
     artifact_metadata: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class ExplorePersistentCachePublication:
+    """One fully staged generation that is not selected until commit."""
+
+    family_key: ExploreFamilyKey
+    generation_id: str
+    staging_path: Path
+    final_path: Path
+
+
+@dataclass(slots=True)
+class _FamilyCoordination:
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    leases_by_generation: dict[str, int] = field(default_factory=dict)
+
+
 _COORDINATION_GUARD = threading.Lock()
-_FAMILY_LOCKS: dict[tuple[Path, str], threading.RLock] = {}
+_FAMILY_COORDINATION: dict[tuple[Path, str], _FamilyCoordination] = {}
 
 
 def _positive_or_zero_int(value: object, *, field: str) -> int:
@@ -74,7 +97,7 @@ class ExplorePersistentCacheStore:
         self.cache_root = self.project_root / ".haute_cache" / "explore"
 
     @staticmethod
-    def family_digest(family_key: tuple[str, str, str, str]) -> str:
+    def family_digest(family_key: ExploreFamilyKey) -> str:
         payload = {
             "kind": family_key[0],
             "source_file": family_key[1],
@@ -83,21 +106,24 @@ class ExplorePersistentCacheStore:
         }
         return content_hash_bytes(canonical_json(payload).encode())
 
-    def _family_dir(self, family_key: tuple[str, str, str, str]) -> Path:
+    def _family_dir(self, family_key: ExploreFamilyKey) -> Path:
         return self.cache_root / self.family_digest(family_key)
 
-    def _family_lock(self, family_key: tuple[str, str, str, str]) -> threading.RLock:
+    def _family_coordination(self, family_key: ExploreFamilyKey) -> _FamilyCoordination:
         digest = self.family_digest(family_key)
         coordination_key = (self.cache_root.resolve(), digest)
         with _COORDINATION_GUARD:
-            return _FAMILY_LOCKS.setdefault(coordination_key, threading.RLock())
+            return _FAMILY_COORDINATION.setdefault(coordination_key, _FamilyCoordination())
+
+    def _family_lock(self, family_key: ExploreFamilyKey) -> threading.RLock:
+        return self._family_coordination(family_key).lock
 
     def _read_generation(
         self,
-        family_key: tuple[str, str, str, str],
+        family_key: ExploreFamilyKey,
         *,
         expected_report_cache_key: str,
-    ) -> tuple[str, ExploreCacheReport | None, Path, dict[str, Any]] | None:
+    ) -> tuple[str, str, ExploreCacheReport | None, Path, dict[str, Any]] | None:
         family_dir = self._family_dir(family_key)
         pointer_path = family_dir / "current.json"
         if not pointer_path.exists():
@@ -190,43 +216,64 @@ class ExplorePersistentCacheStore:
                 "Selected Explore cache generation is corrupt"
             ) from exc
 
-        return report_cache_key, report, data_path, expected_artifact
+        return generation_id, report_cache_key, report, data_path, expected_artifact
 
     @staticmethod
     def _validate_artifact(observed: dict[str, Any], expected: dict[str, Any]) -> None:
-        for field in (
+        for artifact_field in (
             "row_count",
             "column_count",
             "columns",
             "size_bytes",
             "uncompressed_size_bytes",
         ):
-            if observed.get(field) != expected[field]:
-                raise ValueError(f"durable Explore artifact {field} does not match metadata")
+            if observed.get(artifact_field) != expected[artifact_field]:
+                raise ValueError(
+                    f"durable Explore artifact {artifact_field} does not match metadata"
+                )
 
-    def lookup(
+    @contextmanager
+    def lease(
         self,
-        family_key: tuple[str, str, str, str],
+        family_key: ExploreFamilyKey,
         *,
         report_cache_key: str,
-    ) -> ExplorePersistentCacheSnapshot | None:
-        """Return the selected generation and classify it against the exact key."""
+    ) -> Iterator[ExplorePersistentCacheSnapshot | None]:
+        """Pin and yield the selected generation for the full reader operation."""
 
-        with self._family_lock(family_key):
+        coordination = self._family_coordination(family_key)
+        snapshot: ExplorePersistentCacheSnapshot | None = None
+        with coordination.lock:
             selected = self._read_generation(
                 family_key,
                 expected_report_cache_key=report_cache_key,
             )
-            if selected is None:
-                return None
-            stored_key, report, data_path, artifact = selected
-            return ExplorePersistentCacheSnapshot(
-                state="current" if stored_key == report_cache_key else "stale",
-                report_cache_key=stored_key,
-                report=report,
-                data_path=data_path,
-                artifact_metadata=artifact,
-            )
+            if selected is not None:
+                generation_id, stored_key, report, data_path, artifact = selected
+                snapshot = ExplorePersistentCacheSnapshot(
+                    state="current" if stored_key == report_cache_key else "stale",
+                    generation_id=generation_id,
+                    report_cache_key=stored_key,
+                    report=report,
+                    data_path=data_path,
+                    artifact_metadata=artifact,
+                )
+                coordination.leases_by_generation[generation_id] = (
+                    coordination.leases_by_generation.get(generation_id, 0) + 1
+                )
+
+        try:
+            yield snapshot
+        finally:
+            if snapshot is not None:
+                with coordination.lock:
+                    generation_id = snapshot.generation_id
+                    lease_count = coordination.leases_by_generation[generation_id]
+                    if lease_count == 1:
+                        del coordination.leases_by_generation[generation_id]
+                        self._retire_generation_if_unselected_locked(family_key, generation_id)
+                    else:
+                        coordination.leases_by_generation[generation_id] = lease_count - 1
 
     def restore(
         self,
@@ -260,15 +307,15 @@ class ExplorePersistentCacheStore:
                 target.unlink(missing_ok=True)
                 raise
 
-    def publish(
+    def prepare_publication(
         self,
-        family_key: tuple[str, str, str, str],
+        family_key: ExploreFamilyKey,
         *,
         report_cache_key: str,
         report: ExploreCacheReport,
         entry: DataFrameExecutionCacheEntry,
-    ) -> None:
-        """Atomically select a fully written replacement generation."""
+    ) -> ExplorePersistentCachePublication:
+        """Copy and validate a replacement without making it visible to readers."""
 
         _non_empty_string(report_cache_key, field="report_cache_key")
         if (
@@ -281,56 +328,197 @@ class ExplorePersistentCacheStore:
         ):
             raise ValueError("Explore report, family, and dataframe cache entry do not match")
 
-        lock = self._family_lock(family_key)
-        with lock:
-            family_dir = self._family_dir(family_key)
-            generations_dir = family_dir / "generations"
-            generations_dir.mkdir(parents=True, exist_ok=True)
-            generation_id = str(uuid.uuid4())
-            staging = family_dir / f".staging-{generation_id}"
-            final_dir = generations_dir / generation_id
+        family_dir = self._family_dir(family_key)
+        generations_dir = family_dir / "generations"
+        generations_dir.mkdir(parents=True, exist_ok=True)
+        generation_id = str(uuid.uuid4())
+        staging = family_dir / f".staging-{generation_id}"
+        publication = ExplorePersistentCachePublication(
+            family_key=family_key,
+            generation_id=generation_id,
+            staging_path=staging,
+            final_path=generations_dir / generation_id,
+        )
+        try:
+            staging.mkdir()
+            staged_data = staging / "data.parquet"
+            shutil.copy2(entry.path, staged_data)
+            observed = read_parquet_metadata(staged_data)
+            expected = {
+                "row_count": entry.row_count,
+                "column_count": entry.column_count,
+                "columns": dict(entry.columns),
+                "size_bytes": entry.size_bytes,
+                "uncompressed_size_bytes": entry.uncompressed_size_bytes,
+            }
+            self._validate_artifact(observed, expected)
+            metadata = {
+                "schema_version": EXPLORE_PERSISTENT_CACHE_SCHEMA_VERSION,
+                "family_digest": self.family_digest(family_key),
+                "family": list(family_key),
+                "generation_id": generation_id,
+                "report_cache_key": report_cache_key,
+                "dataframe_cache_key": entry.key.cache_key,
+                "report": report.model_dump(mode="json"),
+                "artifact": expected,
+            }
+            atomic_write_text(staging / "meta.json", canonical_json(metadata))
+        except BaseException:
+            self._retire_directory_best_effort(staging)
+            raise
+        return publication
+
+    def commit_publication(self, publication: ExplorePersistentCachePublication) -> None:
+        """Atomically select one prepared generation; previous readers stay leased."""
+
+        self._validate_publication_paths(publication)
+        family_dir = self._family_dir(publication.family_key)
+        with self._family_lock(publication.family_key):
             selected = False
             try:
-                staging.mkdir()
-                staged_data = staging / "data.parquet"
-                shutil.copy2(entry.path, staged_data)
-                observed = read_parquet_metadata(staged_data)
-                expected = {
-                    "row_count": entry.row_count,
-                    "column_count": entry.column_count,
-                    "columns": dict(entry.columns),
-                    "size_bytes": entry.size_bytes,
-                    "uncompressed_size_bytes": entry.uncompressed_size_bytes,
-                }
-                self._validate_artifact(observed, expected)
-                metadata = {
-                    "schema_version": EXPLORE_PERSISTENT_CACHE_SCHEMA_VERSION,
-                    "family_digest": self.family_digest(family_key),
-                    "family": list(family_key),
-                    "generation_id": generation_id,
-                    "report_cache_key": report_cache_key,
-                    "dataframe_cache_key": entry.key.cache_key,
-                    "report": report.model_dump(mode="json"),
-                    "artifact": expected,
-                }
-                atomic_write_text(staging / "meta.json", canonical_json(metadata))
-                staging.replace(final_dir)
+                publication.staging_path.replace(publication.final_path)
                 atomic_write_text(
                     family_dir / "current.json",
                     canonical_json(
                         {
-                            "family_digest": self.family_digest(family_key),
-                            "generation_id": generation_id,
+                            "family_digest": self.family_digest(publication.family_key),
+                            "generation_id": publication.generation_id,
                         }
                     ),
                 )
                 selected = True
-                for candidate in generations_dir.iterdir():
-                    if candidate.is_dir() and candidate.name != generation_id:
-                        shutil.rmtree(candidate)
             except BaseException:
-                if staging.exists():
-                    shutil.rmtree(staging)
-                if final_dir.exists() and not selected:
-                    shutil.rmtree(final_dir)
+                self._retire_directory_best_effort(publication.staging_path)
+                if not selected:
+                    self._retire_directory_best_effort(publication.final_path)
                 raise
+
+    def discard_publication(self, publication: ExplorePersistentCachePublication) -> None:
+        """Best-effort removal for a prepared generation that lost latest-wins."""
+
+        self._validate_publication_paths(publication)
+        with self._family_lock(publication.family_key):
+            try:
+                if publication.staging_path.exists():
+                    shutil.rmtree(publication.staging_path)
+            except OSError as exc:
+                logger.warning(
+                    "explore_cache_staging_retirement_failed",
+                    generation_id=publication.generation_id,
+                    error=str(exc),
+                )
+
+    def retire_unleased_generations(self, family_key: ExploreFamilyKey) -> None:
+        """Best-effort retirement of non-current generations with no active reader."""
+
+        coordination = self._family_coordination(family_key)
+        with coordination.lock:
+            family_dir = self._family_dir(family_key)
+            try:
+                pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+                if not isinstance(pointer, dict):
+                    raise ValueError("current pointer must be an object")
+                current_generation_id = _generation_id(pointer.get("generation_id"))
+            except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "explore_cache_retirement_pointer_unreadable",
+                    error=str(exc),
+                )
+                return
+            generations_dir = family_dir / "generations"
+            try:
+                candidates = tuple(generations_dir.iterdir())
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                logger.warning(
+                    "explore_cache_generations_scan_failed",
+                    error=str(exc),
+                )
+                return
+            for candidate in candidates:
+                try:
+                    eligible = (
+                        candidate.is_dir()
+                        and candidate.name != current_generation_id
+                        and not coordination.leases_by_generation.get(candidate.name)
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "explore_cache_generation_inspection_failed",
+                        generation_id=candidate.name,
+                        error=str(exc),
+                    )
+                    continue
+                if eligible:
+                    self._retire_directory_best_effort(candidate)
+
+    def publish(
+        self,
+        family_key: ExploreFamilyKey,
+        *,
+        report_cache_key: str,
+        report: ExploreCacheReport,
+        entry: DataFrameExecutionCacheEntry,
+    ) -> None:
+        """Prepare and atomically select a generation for non-job callers."""
+
+        publication = self.prepare_publication(
+            family_key,
+            report_cache_key=report_cache_key,
+            report=report,
+            entry=entry,
+        )
+        try:
+            self.commit_publication(publication)
+        except BaseException:
+            self.discard_publication(publication)
+            raise
+        self.retire_unleased_generations(family_key)
+
+    def _retire_generation_if_unselected_locked(
+        self,
+        family_key: ExploreFamilyKey,
+        generation_id: str,
+    ) -> None:
+        family_dir = self._family_dir(family_key)
+        try:
+            pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+            if not isinstance(pointer, dict):
+                raise ValueError("current pointer must be an object")
+            if _generation_id(pointer.get("generation_id")) == generation_id:
+                return
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "explore_cache_lease_retirement_pointer_unreadable",
+                generation_id=generation_id,
+                error=str(exc),
+            )
+            return
+        self._retire_directory_best_effort(family_dir / "generations" / generation_id)
+
+    @staticmethod
+    def _retire_directory_best_effort(candidate: Path) -> None:
+        try:
+            shutil.rmtree(candidate)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            logger.warning(
+                "explore_cache_generation_retirement_failed",
+                generation_id=candidate.name,
+                error=str(exc),
+            )
+
+    def _validate_publication_paths(
+        self,
+        publication: ExplorePersistentCachePublication,
+    ) -> None:
+        family_dir = self._family_dir(publication.family_key)
+        generation_id = _generation_id(publication.generation_id)
+        expected_staging = family_dir / f".staging-{generation_id}"
+        expected_final = family_dir / "generations" / generation_id
+        if publication.staging_path != expected_staging or publication.final_path != expected_final:
+            raise ValueError("Explore publication paths do not match its family and generation")

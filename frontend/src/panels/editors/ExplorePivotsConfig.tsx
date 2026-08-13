@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { ArrowLeft, GripVertical, Loader2 } from "lucide-react"
 
 import type { ExplorePivotMembersResponse } from "../../api/types"
+import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
 import {
   dependentChartsForPivot,
   parseExploreCharts,
@@ -59,6 +60,7 @@ const ZONES: readonly { key: Zone; label: string }[] = [
 ]
 
 const PIVOT_PLACEMENT_MIME = "application/haute-pivot-placement"
+const FILTER_MEMBER_SEARCH_DEBOUNCE_MS = 250
 
 const INPUT_STYLE = {
   background: "var(--bg-input)",
@@ -257,7 +259,7 @@ function FilterMemberPicker({
     if (!open || !loadMembers) return
 
     const controller = new AbortController()
-    loadMembers(placement.field, search, controller.signal)
+    const load = () => loadMembers(placement.field, search, controller.signal)
       .then((nextResponse) => {
         if (controller.signal.aborted) return
         if (nextResponse.field !== null && nextResponse.field !== placement.field) {
@@ -273,8 +275,15 @@ function FilterMemberPicker({
           error: reason instanceof Error ? reason.message : String(reason),
         })
       })
+    const timer = search === ""
+      ? null
+      : window.setTimeout(load, FILTER_MEMBER_SEARCH_DEBOUNCE_MS)
+    if (timer === null) load()
 
-    return () => controller.abort()
+    return () => {
+      if (timer !== null) window.clearTimeout(timer)
+      controller.abort()
+    }
   }, [loadMembers, open, placement.field, requestKey, search])
 
   const currentLoadState = loadState.requestKey === requestKey ? loadState : null
@@ -1236,8 +1245,8 @@ function PivotEditor({
                       style={{
                         background:
                           rule.color_scale === "low_red_high_green"
-                            ? "linear-gradient(to right, #fecaca, #fef08a, #bbf7d0)"
-                            : "linear-gradient(to right, #bbf7d0, #fef08a, #fecaca)",
+                            ? `linear-gradient(to right, ${PIVOT_CONDITIONAL_FORMAT_COLORS.low.hex}, ${PIVOT_CONDITIONAL_FORMAT_COLORS.midpoint.hex}, ${PIVOT_CONDITIONAL_FORMAT_COLORS.high.hex})`
+                            : `linear-gradient(to right, ${PIVOT_CONDITIONAL_FORMAT_COLORS.high.hex}, ${PIVOT_CONDITIONAL_FORMAT_COLORS.midpoint.hex}, ${PIVOT_CONDITIONAL_FORMAT_COLORS.low.hex})`,
                       }}
                     />
                     <span>High</span>

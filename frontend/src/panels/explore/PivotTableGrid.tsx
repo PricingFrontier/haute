@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react"
 
 import type { ExplorePivotMemberKey, ExplorePivotResult } from "../../api/types"
+import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
 import type { ExplorePivotConfig } from "./pivotConfig"
 
 type PivotTableGridProps = {
@@ -15,9 +16,9 @@ const ROW_HEADER_WIDTH = 140
 const STRICT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
 
 type Color = readonly [number, number, number]
-const PALE_RED: Color = [254, 202, 202]
-const YELLOW: Color = [254, 240, 138]
-const GREEN: Color = [187, 247, 208]
+const PALE_RED: Color = PIVOT_CONDITIONAL_FORMAT_COLORS.low.rgb
+const YELLOW: Color = PIVOT_CONDITIONAL_FORMAT_COLORS.midpoint.rgb
+const GREEN: Color = PIVOT_CONDITIONAL_FORMAT_COLORS.high.rgb
 
 function numericCellValue(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null
@@ -35,14 +36,18 @@ function median(sorted: readonly number[]): number {
     : sorted[middle]
 }
 
+function colorCss(channels: readonly number[]): string {
+  return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`
+}
+
 function interpolate(left: Color, right: Color, ratio: number): string {
   const channels = left.map((channel, index) => Math.round(channel + (right[index] - channel) * ratio))
-  return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`
+  return colorCss(channels)
 }
 
 function conditionalColor(value: number, domain: readonly [number, number, number], scale: "low_red_high_green" | "low_green_high_red"): string {
   const [minimum, midpoint, maximum] = domain
-  if (minimum === maximum) return "rgb(254, 240, 138)"
+  if (minimum === maximum) return colorCss(YELLOW)
   const [low, high] = scale === "low_red_high_green" ? [PALE_RED, GREEN] : [GREEN, PALE_RED]
   if (value <= midpoint) {
     const ratio = midpoint === minimum ? 1 : (value - minimum) / (midpoint - minimum)
@@ -250,7 +255,10 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                         style={{
                           borderBottom: "1px solid var(--border)",
                           ...(eligible
-                            ? { background: conditionalColor(numeric, domain, scale), color: "#111827" }
+                            ? {
+                                background: conditionalColor(numeric, domain, scale),
+                                color: PIVOT_CONDITIONAL_FORMAT_COLORS.cellText,
+                              }
                             : {}),
                         }}
                       >

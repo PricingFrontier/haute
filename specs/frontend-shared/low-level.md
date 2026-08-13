@@ -17,7 +17,7 @@
 | `frontend/src/stores/useSettingsStore.ts` | Zustand store: row limit, streaming chunk size, section open/closed state, MLflow status cache, data sources, file-listing cache. |
 | `frontend/src/stores/useToastStore.ts` | Zustand store: toast queue with dedup, capped at 10 entries. |
 | `frontend/src/stores/useUIStore.ts` | Zustand store: modal/panel open flags (git/utility/imports/assistant, mutually exclusive by construction — each setter clears the others), sync banner, node panel width, per-node Explore/modelling selection memory, hover highlight, node search open flag. |
-| `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed hex `NODE_GROUP_COLORS` palette. |
+| `frontend/src/theme/colors.ts` | CSS-variable-backed colour token constants (`STRUCTURE_COLORS`, `STATUS_COLORS`, `MODEL_COLORS`, `CHART_COLORS`, `SYNTAX_COLORS`) plus the fixed `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and `PIVOT_CONDITIONAL_FORMAT_COLORS` visualisation palettes. |
 | `frontend/src/utils/formatBytes.ts` | Byte count → `B`/`KB`/`MB` string. |
 | `frontend/src/utils/formatTime.ts` | Unix timestamp → `HH:MM` / coarse relative-time label. |
 | `frontend/src/utils/formatValue.ts` | Renders backend's non-finite-float sentinel (`{__haute_type__: "non_finite_float", ...}`) as `NaN`/`Infinity`/`-Infinity`. |
@@ -477,10 +477,9 @@ Known gaps: `frontend/src/components/Toolbar.tsx`'s inline timing/memory formatt
 (`formatTiming`/`formatMemory`, distinct from and not delegating to
 `frontend/src/utils/formatTime.ts`/`frontend/src/utils/formatBytes.ts`) have no dedicated
 unit test, only
-indirect coverage via `frontend/src/components/__tests__/Toolbar.test.tsx`;
-`frontend/src/theme/colors.ts` has no test (it
-is a constants file with no logic to verify beyond TypeScript's own
-type-checking).
+indirect coverage via `frontend/src/components/__tests__/Toolbar.test.tsx`.
+`frontend/src/__tests__/semanticColorTokenization.test.ts` enforces that live components obtain
+fixed colour literals from `frontend/src/theme/colors.ts` instead of redeclaring them locally.
 
 ## Runtime response contracts
 

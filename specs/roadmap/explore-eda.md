@@ -14,15 +14,7 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 |---|---|---:|---|
 | EDA-E09 | Planned | P2 | Add bounded server-binned distributions. |
 | EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
-| EDA-E14 | Delivered | P2 | Establish the versioned pivot-card contract, toggles, and lower preview shell. |
-| EDA-E15 | Delivered | P2 | Add Excel-style Filter/Columns/Rows/Values authoring. |
-| EDA-E16 | Delivered | P2 | Add bounded, cached, cancellable pivot calculation. |
-| EDA-E17 | Delivered | P2 | Render every enabled pivot as a full-width result table. |
 | EDA-E18 | Deferred | P3 | Add advanced Excel-parity pivot operations after the MVP is proven. |
-| EDA-E19 | Delivered | P2 | Establish versioned PivotChart cards linked to stable pivot identities. |
-| EDA-E20 | Delivered | P2 | Adapt typed pivot results into deterministic, bounded chart datasets. |
-| EDA-E21 | Delivered | P2 | Add PivotChart source selection and Excel-style ComboChart configuration. |
-| EDA-E22 | Delivered | P2 | Render accessible, responsive, independently stateful ComboCharts. |
 | EDA-E23 | Deferred | P3 | Add shared PivotChart filtering and hierarchy interactions. |
 | EDA-E24 | Deferred | P3 | Add broader PivotChart types, export, and advanced presentation features. |
 

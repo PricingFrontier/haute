@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -310,6 +311,65 @@ def test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals(
     assert _cell(result, None, year_2024, "sum_claims") == 15.0
     assert _cell(result, None, None, "sum_claims") == 30.0
     assert result["execution_metrics"]["execution_strategy"]["profile"] == "explore_analysis"
+
+
+def test_pivot_normalises_binary_and_duration_min_max_results(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "scalar-values.parquet"
+    pl.DataFrame(
+        {
+            "region": ["All", "All"],
+            "year": [2024, 2024],
+            "binary_value": pl.Series([b"b", b"a"], dtype=pl.Binary),
+            "duration_value": pl.Series(
+                [timedelta(seconds=2), timedelta(seconds=1)],
+                dtype=pl.Duration("us"),
+            ),
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[
+            {
+                "id": "binary_min",
+                "field": "binary_value",
+                "aggregation": "min",
+                "display_name": "Binary min",
+            },
+            {
+                "id": "binary_max",
+                "field": "binary_value",
+                "aggregation": "max",
+                "display_name": "Binary max",
+            },
+            {
+                "id": "duration_min",
+                "field": "duration_value",
+                "aggregation": "min",
+                "display_name": "Duration min",
+            },
+            {
+                "id": "duration_max",
+                "field": "duration_value",
+                "aggregation": "max",
+                "display_name": "Duration max",
+            },
+        ]
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    row = [("string", "All")]
+    column = [("integer", "2024")]
+    assert _cell(result, row, column, "binary_min") == "a"
+    assert _cell(result, row, column, "binary_max") == "b"
+    assert _cell(result, row, column, "duration_min") == "0:00:01"
+    assert _cell(result, row, column, "duration_max") == "0:00:02"
 
 
 def test_pivot_result_cache_ignores_name_visibility_and_value_display_name(

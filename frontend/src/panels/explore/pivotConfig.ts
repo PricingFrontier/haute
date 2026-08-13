@@ -1,3 +1,5 @@
+import { isNumericDtype } from "../../utils/polarsDtypes"
+
 export const PIVOT_CONFIG_VERSION = 1 as const
 
 export const PIVOT_AGGREGATIONS = [
@@ -510,13 +512,13 @@ export function pivotCalculationIdentity(pivot: ExplorePivotConfig): string {
 }
 
 export function isNumericPivotDtype(dtype: string): boolean {
-  return /^(?:u?int|float|decimal)/i.test(dtype.trim())
+  return isNumericDtype(dtype)
 }
 
 export function pivotAggregationsForDtype(dtype: string): readonly PivotAggregation[] {
-  return isNumericPivotDtype(dtype)
-    ? PIVOT_AGGREGATIONS
-    : (["count", "distinct_count", "min", "max"] as const)
+  if (isNumericPivotDtype(dtype)) return PIVOT_AGGREGATIONS
+  if (/^(?:list|array|struct|object)(?:\(|\{|$)/i.test(dtype.trim())) return ["count"]
+  return ["count", "distinct_count", "min", "max"]
 }
 
 export function defaultPivotAggregation(dtype: string): PivotAggregation {

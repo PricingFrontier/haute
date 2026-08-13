@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest"
 
 import {
   createExplorePivot,
+  isNumericPivotDtype,
   parseExplorePivots,
   pivotCalculationIdentity,
+  pivotAggregationsForDtype,
   type ExplorePivotConfig,
 } from "../pivotConfig"
 
@@ -30,6 +32,27 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
 }
 
 describe("pivotConfig", () => {
+  it("selects aggregations from the Polars dtype capabilities", () => {
+    expect(isNumericPivotDtype("i64")).toBe(true)
+    expect(isNumericPivotDtype("f64")).toBe(true)
+    expect(isNumericPivotDtype("Decimal(12, 2)")).toBe(true)
+    expect(isNumericPivotDtype("Int64ish")).toBe(false)
+    expect(isNumericPivotDtype("Decimalish")).toBe(false)
+    expect(pivotAggregationsForDtype("i64")).toEqual([
+      "sum", "count", "average", "min", "max", "median", "distinct_count",
+    ])
+    expect(pivotAggregationsForDtype("Binary")).toEqual([
+      "count", "distinct_count", "min", "max",
+    ])
+    expect(pivotAggregationsForDtype("Duration(ms)")).toEqual([
+      "count", "distinct_count", "min", "max",
+    ])
+    expect(pivotAggregationsForDtype("List(Int64)")).toEqual(["count"])
+    expect(pivotAggregationsForDtype("Array(Float64, 3)")).toEqual(["count"])
+    expect(pivotAggregationsForDtype("Struct({x: Int64})")).toEqual(["count"])
+    expect(pivotAggregationsForDtype("Object")).toEqual(["count"])
+  })
+
   it("migrates versionless cards and preserves future literals", () => {
     expect(
       parseExplorePivots({ pivots: [{ id: "pivot_1", future: { format: "currency" } }] }),

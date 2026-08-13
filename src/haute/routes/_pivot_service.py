@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from decimal import Decimal
 from functools import cmp_to_key, reduce
@@ -410,6 +410,10 @@ def _normalise_cell(value: Any, warnings: set[str]) -> str | float | int | bool 
             return None
         return value
     if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, timedelta):
         return str(value)
     if isinstance(value, (datetime, date, datetime_time)):
         return value.isoformat()

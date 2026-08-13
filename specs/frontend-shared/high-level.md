@@ -265,8 +265,10 @@ therefore fail at the caller, consistent with the application's fail-loud policy
   `__tests__/cssColorTokenization.test.ts`). `theme/colors.ts` follows
   the same rule where TypeScript needs a colour value, re-exporting
   `var(--...)` strings rather than hex — except for the small
-  `NODE_GROUP_COLORS` palette, which is fixed-per-node-type branding
-  rather than a theme concern.
+  `NODE_GROUP_COLORS`, `PIVOT_CHART_COLORS`, and
+  `PIVOT_CONDITIONAL_FORMAT_COLORS` palettes, which are fixed branding or
+  visualisation semantics rather than theme roles. The semantic-colour
+  tokenization test rejects fixed colour literals everywhere else.
 - **Endpoint modules split out of `api/client.ts` when their only
   consumer is lazy-loaded.** `api/dispersion.ts` exists as a separate file
   — not more exports on `client.ts` — specifically so its code isn't

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
+from haute._file_ops import atomic_write_text
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -319,6 +320,44 @@ def test_explore_cache_status_restores_durable_dataset_after_process_caches_are_
     assert cache_hit["result"] == completed["result"]
 
 
+def test_durable_explore_generation_is_retained_while_a_reader_holds_a_lease(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, first["job_id"])["status"] == "completed"
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+
+    with store.lease(spec.family_key, report_cache_key=spec.report_cache_key) as snapshot:
+        assert snapshot is not None
+        assert snapshot.state == "current"
+        leased_generation_dir = snapshot.data_path.parent
+
+        refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+        assert _poll_explore(client, refreshed["job_id"])["status"] == "completed"
+        assert leased_generation_dir.exists()
+
+        spec.dataframe_cache_request.cache.clear()
+        restored = store.restore(
+            snapshot,
+            spec.dataframe_cache_request,
+            node_id=spec.node_id,
+        )
+        assert restored.path.exists()
+        assert restored.row_count == 2
+
+    assert not leased_generation_dir.exists()
+
+
 def test_explore_cache_status_reports_stale_for_changed_analysis_identity(
     client: TestClient,
     tmp_path: Path,
@@ -356,7 +395,7 @@ def test_explore_cache_status_reports_stale_for_changed_analysis_identity(
     metadata_path = family_dir / "generations" / pointer["generation_id"] / "meta.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["report"] = {"legacy_report_schema": True}
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    atomic_write_text(metadata_path, json.dumps(metadata))
 
     response = client.post("/api/explore/cache-status", json=changed_body)
 
@@ -473,6 +512,52 @@ def test_failed_explore_refresh_preserves_last_durable_generation(
     assert snapshot.json()["result"] == first_completed["result"]
 
 
+def test_committed_explore_refresh_survives_old_generation_cleanup_failure(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _explore_cache as persistent_cache_module
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, first["job_id"])["status"] == "completed"
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    family_dir = store._family_dir(spec.family_key)
+    old_pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    old_generation_dir = family_dir / "generations" / old_pointer["generation_id"]
+    original_rmtree = persistent_cache_module.shutil.rmtree
+
+    def fail_old_generation_retirement(candidate: Path, *args, **kwargs) -> None:
+        if Path(candidate) == old_generation_dir:
+            raise OSError("forced old-generation cleanup failure")
+        original_rmtree(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(persistent_cache_module.shutil, "rmtree", fail_old_generation_retirement)
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+    refreshed_completed = _poll_explore(client, refreshed["job_id"])
+
+    assert refreshed_completed["status"] == "completed"
+    new_pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    assert new_pointer["generation_id"] != old_pointer["generation_id"]
+    assert old_generation_dir.exists()
+
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == refreshed_completed["result"]
+
+
 def test_cancelled_explore_refresh_preserves_last_durable_generation(
     client: TestClient,
     tmp_path: Path,
@@ -545,7 +630,7 @@ def test_explore_cache_status_fails_loudly_for_corrupt_selected_generation(
     spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
     store = ExplorePersistentCacheStore(spec.project_root)
     pointer = store._family_dir(spec.family_key) / "current.json"
-    pointer.write_text("not valid json", encoding="utf-8")
+    atomic_write_text(pointer, "not valid json")
     _explore_service._report_cache.clear()
     spec.dataframe_cache_request.cache.clear()
 
@@ -863,6 +948,71 @@ def test_explore_supersedes_an_in_flight_job(
                 thread.join(timeout=5.0)
                 assert not thread.is_alive()
                 break
+
+
+def test_superseded_explore_job_cannot_select_its_prepared_generation(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newer job wins even if the older job already prepared durable output."""
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+    first_prepared = threading.Event()
+    release_first = threading.Event()
+    prepared = []
+    prepared_lock = threading.Lock()
+    original_prepare = _explore_service._prepare_durable_publication
+
+    def prepare_with_first_job_gated(*args, **kwargs):
+        publication = original_prepare(*args, **kwargs)
+        with prepared_lock:
+            prepared.append(publication)
+            call_number = len(prepared)
+        if call_number == 1:
+            first_prepared.set()
+            assert release_first.wait(timeout=5.0)
+        return publication
+
+    monkeypatch.setattr(
+        _explore_service,
+        "_prepare_durable_publication",
+        prepare_with_first_job_gated,
+    )
+
+    first = client.post("/api/explore/run", json=body).json()
+    assert first_prepared.wait(timeout=5.0)
+    second = client.post("/api/explore/run", json=body).json()
+    second_completed = _poll_explore(client, second["job_id"], timeout=5.0)
+    assert second_completed["status"] == "completed"
+
+    release_first.set()
+    first_completed = _poll_explore(client, first["job_id"], timeout=5.0)
+    assert first_completed["status"] == "superseded"
+    worker_name = f"haute-explore-{first['job_id']}"
+    for thread in threading.enumerate():
+        if thread.name == worker_name:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+            break
+
+    assert len(prepared) == 2
+    assert not prepared[0].staging_path.exists()
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    family_dir = prepared[1].final_path.parent.parent
+    pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == prepared[1].generation_id
+
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == second_completed["result"]
 
 
 def test_explore_rejects_node_without_exactly_one_parent(
