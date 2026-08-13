@@ -585,6 +585,76 @@ describe("ExplorePivotsPane", () => {
     ).toBeVisible()
   })
 
+  it("retains a failed refresh and retries when the current report is unavailable", async () => {
+    const pivot = makePivot("retained-refresh-failure")
+    const key = completeStoredResult(pivot)
+    const failure = {
+      reason_code: "contract_error",
+      message: "Refresh failed",
+      remediation: "Correct the pivot and retry.",
+      dimensions: { node_id: "explore_1" },
+    }
+    act(() => {
+      startStoredJob(
+        pivot,
+        "failed-refresh-job",
+        pivotCalculationIdentity(pivot),
+        "explore_dataset:replacement",
+      )
+      useNodeResultsStore.getState().failExplorePivotJob(key, failure.message, {
+        status: "contract_error",
+        progress: 1,
+        message: failure.message,
+        result: null,
+        failure,
+        terminal_reason: "contract_error",
+        execution_metrics: null,
+      })
+    })
+    mockRunExplorePivot.mockResolvedValueOnce({
+      status: "started",
+      job_id: "retry-without-report-job",
+      cached: false,
+      message: "Retrying Pivot",
+      result: null,
+      failure: null,
+    })
+
+    const view = renderPane(
+      [pivot],
+      makeReport("explore_dataset:replacement"),
+    )
+
+    expect(
+      screen.getByText("Current result retained after the refresh failed."),
+    ).toBeVisible()
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Correct the pivot and retry.",
+    )
+
+    const node = makeNode([pivot])
+    view.rerender(
+      <ExplorePivotsPane
+        node={node}
+        allNodes={[node]}
+        edges={[]}
+        submodels={{}}
+        preamble=""
+        report={null}
+      />,
+    )
+    expect(screen.getByText("Waiting for current cached Explore data.")).toBeVisible()
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(
+        useNodeResultsStore.getState().pivotJobs[key]?.requestedDataframeCacheKey,
+      ).toBeNull()
+    })
+  })
+
   it("reuses presentation edits and automatically recalculates calculation edits", async () => {
     const original = makePivot("identity")
     const key = startStoredJob(original, "completed-job")

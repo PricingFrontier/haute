@@ -5,17 +5,25 @@ import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import useSettingsStore from "../../stores/useSettingsStore"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
+  explorePivotsConfigProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   dataInputEditorProps: [] as Record<string, unknown>[],
   dataOutputEditorProps: [] as Record<string, unknown>[],
   columnsTabProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
+  fetchExplorePivotMembers: vi.fn(),
+}))
+
+vi.mock("../../api/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../api/client")>(),
+  fetchExplorePivotMembers,
 }))
 
 // Mock all editor components — we only care that the right one renders
@@ -52,8 +60,17 @@ vi.mock("../LazyNodeEditors", async () => {
     return <div data-testid="ExploreCodeEditor" />
   },
   ExploreOverviewConfig: () => <div data-testid="explore-overview-config" />,
-  ExplorePivotsConfig: () => <div data-testid="explore-pivots-config" />,
-  ExploreChartsConfig: () => <div data-testid="explore-charts-config" />,
+  ExplorePivotsConfig: (props: Record<string, unknown>) => {
+    explorePivotsConfigProps.push(props)
+    return <div data-testid="explore-pivots-config" />
+  },
+  ExploreChartsConfig: (props: Record<string, unknown>) => {
+    return (
+      <div data-testid="explore-charts-config">
+        <button type="button" onClick={props.onShowPivots as () => void}>Show pivots</button>
+      </div>
+    )
+  },
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => {
     bandingEditorProps.push(props)
@@ -204,12 +221,15 @@ describe("NodePanel", () => {
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
+    explorePivotsConfigProps.length = 0
     bandingEditorProps.length = 0
     dataInputEditorProps.length = 0
     dataOutputEditorProps.length = 0
     columnsTabProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
+    fetchExplorePivotMembers.mockReset()
+    useSettingsStore.setState({ activeSource: "live", streamingChunkSize: 500_000 })
   })
 
   afterEach(cleanup)
@@ -724,7 +744,7 @@ describe("NodePanel", () => {
     expect(onRefreshPreview).toHaveBeenCalledOnce()
   })
 
-  it("renders Explore code before analysis panes and switches between them", () => {
+  it("renders Explore code before analysis panes and switches between them", async () => {
     const exploreNode = makeNode({
       id: "explore_1",
       data: {
@@ -795,6 +815,37 @@ describe("NodePanel", () => {
     )
     expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
 
+    fetchExplorePivotMembers.mockResolvedValueOnce({
+      status: "ok",
+      field: "premium",
+      members: [],
+      failure: null,
+    })
+    const signal = new AbortController().signal
+    const loadFilterMembers = explorePivotsConfigProps.at(-1)?.loadFilterMembers as (
+      field: string,
+      search: string,
+      signal: AbortSignal,
+    ) => Promise<unknown>
+    await loadFilterMembers("premium", "north", signal)
+    expect(fetchExplorePivotMembers).toHaveBeenCalledWith({
+      graph: {
+        nodes: [
+          { id: "source_1", type: "dataInput", data: sourceNode.data, position: { x: 0, y: 0 } },
+          { id: "explore_1", type: "explore", data: exploreNode.data, position: { x: 0, y: 0 } },
+        ],
+        edges: [sourceEdge],
+        submodels: undefined,
+        preamble: undefined,
+      },
+      node_id: "explore_1",
+      field: "premium",
+      source: "live",
+      search: "north",
+      streamingChunkSize: 500_000,
+      signal,
+    })
+
     fireEvent.click(charts)
 
     expect(charts).toHaveAttribute("aria-selected", "true")
@@ -802,6 +853,12 @@ describe("NodePanel", () => {
       screen.getByTestId("explore-charts-config"),
     )
     expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
+
+    fireEvent.click(screen.getByRole("button", { name: "Show pivots" }))
+    expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
 
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
