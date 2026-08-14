@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import get_type_hints
+from typing import Literal, get_type_hints
 
 import pytest
 
@@ -17,8 +17,20 @@ from haute._types import (
     OPTIMISER_APPLY_CONFIG_KEYS,
     OPTIMISER_CONFIG_KEYS,
     SCENARIO_EXPANDER_CONFIG_KEYS,
+    ExploreChartAxes,
+    ExploreChartCategory,
+    ExploreChartConfig,
+    ExploreChartLegend,
+    ExploreChartSeriesOverride,
+    ExploreChartValueEncoding,
     ExploreConfig,
     ExploreOverviewConfig,
+    ExplorePivotAxisPlacement,
+    ExplorePivotConfig,
+    ExplorePivotFilterPlacement,
+    ExplorePivotOptions,
+    ExplorePivotRowPlacement,
+    ExplorePivotValuePlacement,
     ModelScoreConfig,
     NodeType,
     OptimiserApplyConfig,
@@ -542,6 +554,37 @@ class TestSelectedColumnsUniversal:
         assert get_type_hints(ExploreConfig) == {
             "code": str,
             "overview": ExploreOverviewConfig,
+            "pivots": list[ExplorePivotConfig],
+            "charts": list[ExploreChartConfig],
+        }
+        assert get_type_hints(ExploreChartConfig) == {
+            "version": Literal[1],
+            "id": str,
+            "name": str,
+            "enabled": bool,
+            "pivot_id": str | None,
+            "kind": Literal["combo"],
+            "category": ExploreChartCategory,
+            "value_encodings": list[ExploreChartValueEncoding],
+            "series_overrides": list[ExploreChartSeriesOverride],
+            "axes": ExploreChartAxes,
+            "legend": ExploreChartLegend,
+        }
+        assert get_type_hints(ExplorePivotConfig) == {
+            "version": Literal[1],
+            "id": str,
+            "name": str,
+            "enabled": bool,
+            "filters": list[ExplorePivotFilterPlacement],
+            "columns": list[ExplorePivotAxisPlacement],
+            "rows": list[ExplorePivotRowPlacement],
+            "values": list[ExplorePivotValuePlacement],
+            "options": ExplorePivotOptions,
+        }
+        assert get_type_hints(ExplorePivotOptions) == {
+            "row_grand_totals": bool,
+            "column_grand_totals": bool,
+            "sort_by": str | None,
         }
         overview_hints = get_type_hints(ExploreOverviewConfig)
         assert overview_hints == {
@@ -557,6 +600,15 @@ class TestSelectedColumnsUniversal:
         assert (
             warn_unrecognized_config_keys(
                 NodeType.EXPLORE, {"overview": {"dataset_snapshot": True}}
+            )
+            == []
+        )
+        assert (
+            warn_unrecognized_config_keys(NodeType.EXPLORE, {"pivots": [{"id": "pivot_1"}]}) == []
+        )
+        assert (
+            warn_unrecognized_config_keys(
+                NodeType.EXPLORE, {"charts": [{"id": "chart_1", "enabled": True}]}
             )
             == []
         )

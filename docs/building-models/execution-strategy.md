@@ -40,11 +40,12 @@ boundary is unexpectedly costly.
 ### Group-by operations
 
 Haute never generically chunks a group-by. A group-by is admitted only for the
-`preview_eager` or `deploy_live` profile when an available estimate fits the
-admitted headroom. Otherwise Haute returns a typed rejection; it does not
-approximate a partial aggregation or silently send it through a generic chunk
-runner. For large grouped work, reduce the input first, change the operation,
-or run it in an environment where the admitted estimate fits.
+`preview_eager`, explicit `explore_analysis` cache-materialisation, or `deploy_live`
+profile when an available estimate fits the admitted headroom. Otherwise Haute
+returns a typed rejection; it does not approximate a partial aggregation or silently
+send it through a generic chunk runner. For large grouped work, reduce the input
+first, change the operation, or run it in an environment where the admitted estimate
+fits.
 
 ## Reading diagnostics
 

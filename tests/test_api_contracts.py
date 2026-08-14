@@ -105,10 +105,40 @@ EXPECTED_API_CONTRACT_FINGERPRINT = {
             "success_schema": {"$ref": "#/components/schemas/WarehouseListResponse"},
         },
     },
+    "/api/explore/cache-status": {
+        "POST": {
+            "request_ref": "#/components/schemas/ExploreRunRequest",
+            "success_schema": {"$ref": "#/components/schemas/ExploreCacheSnapshotResponse"},
+        },
+    },
     "/api/explore/cancel/{job_id}": {
         "POST": {
             "request_ref": None,
             "success_schema": {"$ref": "#/components/schemas/ExploreStatusResponse"},
+        },
+    },
+    "/api/explore/pivots/cancel/{job_id}": {
+        "POST": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ExplorePivotStatusResponse"},
+        },
+    },
+    "/api/explore/pivots/members": {
+        "POST": {
+            "request_ref": "#/components/schemas/ExplorePivotMembersRequest",
+            "success_schema": {"$ref": "#/components/schemas/ExplorePivotMembersResponse"},
+        },
+    },
+    "/api/explore/pivots/run": {
+        "POST": {
+            "request_ref": "#/components/schemas/ExplorePivotRunRequest",
+            "success_schema": {"$ref": "#/components/schemas/ExplorePivotRunResponse"},
+        },
+    },
+    "/api/explore/pivots/status/{job_id}": {
+        "GET": {
+            "request_ref": None,
+            "success_schema": {"$ref": "#/components/schemas/ExplorePivotStatusResponse"},
         },
     },
     "/api/explore/run": {

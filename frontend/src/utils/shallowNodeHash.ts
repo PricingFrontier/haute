@@ -50,8 +50,10 @@ function stringifyExploreConfig(value: unknown): string {
   const dataConfig = Array.isArray(value)
     ? value
     : (() => {
-        const { overview: _overview, ...rest } = value as Record<string, unknown>
+        const { overview: _overview, pivots: _pivots, charts: _charts, ...rest } = value as Record<string, unknown>
         void _overview
+        void _pivots
+        void _charts
         return rest
       })()
   const serialized = JSON.stringify(dataConfig)
@@ -75,8 +77,9 @@ function stringifyNodeInputValue(data: Record<string, unknown>, key: InputKey): 
  * Primitive-valued keys (label, nodeType, code, func_name, description)
  * are String()-coerced; the ``config`` object (nested rules / code /
  * scoring parameters) is JSON.stringify()'d because its content genuinely
- * matters. Explore ``config.overview`` is presentation-only and is ignored
- * so toggling overview cards does not invalidate cached Explore data.
+ * matters. Explore ``config.overview``, ``config.pivots``, and ``config.charts`` are
+ * presentation-only and are ignored so changing display cards does not
+ * invalidate cached Explore data.
  * Result-only keys (_columns, _availableColumns, _schemaWarnings,
  * _status, _traceActive, _traceDimmed, _hoverDimmed, _traceValue,
  * _traceMotionDisabled) are ignored.

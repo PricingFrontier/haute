@@ -22,7 +22,14 @@
 | `frontend/src/panels/editors/ApiInputEditor.tsx`, `frontend/src/panels/editors/apiInputSchema.ts`, `frontend/src/panels/editors/apiInputInherit.ts`, `frontend/src/panels/editors/FrameTableActions.tsx` | API-input frame/schema editing, JSON/JSONL/NDJSON/XML preview selection and cache action, persisted/inferred schema conversion, reconciliation and row actions. |
 | `frontend/src/panels/editors/OutputEditor.tsx`, `frontend/src/panels/editors/outputMappingSchema.ts`, `frontend/src/panels/editors/outputPathTools.ts`, `frontend/src/panels/editors/jsonpath.ts`, `frontend/src/panels/editors/JsonPreview.tsx` | Output mappings, JSON-path validation/rewrites and preview. |
 | `frontend/src/panels/editors/ColumnsTab.tsx` | Generic column selection and rename configuration. |
-| `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx` | Explore-code and overview-card configuration. |
+| `frontend/src/panels/editors/ExploreCodeEditor.tsx`, `frontend/src/panels/editors/ExploreOverviewConfig.tsx`, `frontend/src/panels/editors/ExplorePivotsConfig.tsx`, `frontend/src/panels/editors/ExploreChartsConfig.tsx` | Explore-code, overview-card, pivot-card, and chart-card configuration. The Pivots and Charts editors own their list/configure navigation; chart parsing and identity allocation are also shared with the visualisation pane. |
+| `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
+| `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
+| `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
+| `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
+| `frontend/src/panels/editors/ExploreConfigCardList.tsx` | Shared Pivot/Chart list header, empty state, and action-card row, composing `ExploreToggleCard` with separate Delete and Configure actions. |
+| `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart v0/v1 validation and identity helpers consumed by the chart editor. |
+| `frontend/src/panels/explore/pivotConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned pivot validation and identity helpers consumed by the pivot editor, including allocation of the first unused pivot id. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
 | `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
 | `frontend/src/stores/useNodeResultsStore.ts`, `frontend/src/stores/useUIStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned active-job state and per-node pane memory consumed by node-panel modelling chrome. |
@@ -221,11 +228,134 @@ only complete `outputMapping` rows; API Input builds only `tables`.
 `NODE_TYPE_META` supplies those canonical defaults, and Optimiser Apply derives
 mode only from persisted `params.mode`.
 
+**Explore toggle-card presentation.** `ExploreToggleCard` owns the common Overview, Pivot, and
+Chart enabled/disabled presentation. Its card body is a button with `role="checkbox"` and
+`aria-checked`; clicking anywhere in that body toggles only the card's visibility. Enabled cards
+use `--accent-soft`, the Explore border, and the Explore label colour, while disabled cards use
+`--bg-input`, the neutral border, and primary label colour. Overview cards use the body as the
+whole card. Pivot and Chart cards place Delete and Configure in an adjacent action region outside
+the checkbox button, so either action leaves `enabled` unchanged.
+
+**Explore chart-card workflow.** `parseExploreCharts` mirrors the backend chart trust boundary:
+versionless `{id, enabled}` cards migrate to complete v1 drafts, all known nested fields are
+validated, and unknown simple-literal fields are retained. `Add Chart` writes the first unused
+`chart_N`, first unused `Chart N` name, `enabled: true`, `pivot_id: null`, `kind: "combo"`, empty
+encodings/overrides, Rows category defaults, automatic primary/secondary axes, and bottom legend.
+The card label is its persisted name. Its labelled toggle-card body updates only enabled;
+Configure and Back change only local navigation. Delete asks for confirmation and removes only
+the selected card, allowing a no-longer-needed PivotChart dependency to be released deliberately.
+The Chart and Pivot list views render their card rows, list headers, Add actions, and empty states
+through `ExploreConfigCardList`; that component composes the same `ExploreToggleCard` used by
+Overview so enabled-state visuals, click targets, and accessibility cannot drift across panes.
+
+Configure parses the same node's ordered pivots and lists every pivot, irrespective of pivot
+visibility. Each option includes its current unconfigured/loading/error/stale/ready state and a
+hidden suffix where applicable. The ready state applies the same client identity gate as the
+Explore preview: a retained pivot result counts as ready only when the retained Explore result's
+`configHash` matches the current graph/source identity, its `dataframe_cache_key` matches the
+pivot result's, and the pivot's calculation identity matches; a retained result from a superseded
+identity reports stale, never ready. Selecting an initial source atomically seeds one default encoding
+per Pivot Value. Changing a populated source uses a confirmation dialog; cancel changes nothing,
+confirm replaces `pivot_id`, encodings, and overrides in one `onUpdate` call. With no pivots, an
+explicit action selects the Pivots editor pane without modifying config.
+
+Preset application atomically rewrites Value styles for clustered columns, stacked columns,
+lines, column plus line, column plus secondary-axis line, or stacked columns plus line. Native
+controls edit mark, axis, stack group, colour, markers, and labels per Value; when a result exists,
+the generated-series table can create/edit an exact override or reset it to the Value default.
+New exact overrides allocate the first unused `override_N` id across both Value encodings and
+existing overrides, preserving the card-wide nested-id uniqueness invariant.
+Axis inputs commit valid finite
+bounds with minimum less than maximum, closed number formats, and titles. Legend visibility/
+position and category rotation are committed controls. Missing pivot Values and dormant overrides
+are explicit; no editor action silently selects a source or invents a replacement mapping.
+
+**Explore pivot-card workflow.** `parseExplorePivots` is the frontend trust boundary matching
+`validate_explore_pivots`: it migrates versionless `{id}` entries to complete v1 cards, validates
+known nested fields, preserves unknown simple-literal fields, and rejects duplicate ids,
+case-insensitive names, or placement ids. `Add Pivot` writes the first unused `pivot_N`, first
+unused `Pivot N` name, `enabled: true`, four empty zones, and both grand totals enabled. A card's
+label is its configured name. Its labelled toggle-card body updates only `enabled`; `Configure`
+and `Back to pivots` only change editor-local navigation.
+
+The Configure subview receives `upstreamColumns: {name, dtype}[]` from `NodePanel`. It has a
+committed name input (blur/Enter), a case-insensitive search input, a fixed-height scrolling field
+box, and four ordered zones. Every compact field row renders its name and dtype followed by
+`Add to:` and native Filters/Columns/Rows/Values buttons. A row action commits that one field
+directly to its target in one graph edit; there is no checkbox selection state or shared action
+block beneath the field box. Filters/Columns/Rows disable the matching row action when that field
+already exists in the target; Values always adds another stable placement. The four assigned-field
+areas render beneath `Drag fields between areas below:` as a two-column CSS grid in canonical
+Filters, Columns, Rows, Values order. Each placement card is native-HTML draggable and writes the
+namespaced `application/haute-pivot-placement` transfer payload. While a valid target handles
+`dragover`, it sets the move drop effect and exposes its active drop state. Dropping on a placement
+inserts before that placement; dropping on the remaining area appends. The positional move removes
+the current source placement, converts it with the same target-zone rules when crossing areas,
+normalises the insertion index after source removal, and commits exactly once. Same-area drops
+reorder when they change the position. Duplicate Filters/Columns/Rows targets do not accept a
+cross-area drop; Values accepts repeated fields. Visible Move-to and Move-up/down controls are not
+rendered. Placement cards are focusable: Up/Down reorder and Left/Right move to the previous/next
+canonical area when valid, while nested aggregation/filter controls retain their native keys.
+Remove remains a separately named button. A field may occur in different zones. Every Value
+addition gets a new
+first-unused placement id and repeated Values are allowed. Numeric dtypes default to `sum`;
+all other dtypes default to `count`. Value aggregation changes are committed selects and expose
+only compatible operations. Numeric detection reuses the shared Polars dtype helper and recognises
+full names, short aliases, and Decimal. Numeric Values expose all seven operations; scalar
+non-numeric Values (including Binary and Duration) expose count, distinct count, min, and max;
+nested List/Array/Struct and Object Values expose count only. The filter-member picker loads its
+initial list immediately, debounces non-empty searches by 250 ms, and aborts obsolete requests.
+A displayed member list is keyed to the node's current Explore cache identity hash (the same
+graph/source gate the Explore preview applies) as well as the field/search pair, so when the
+graph or source changes the previous dataset's members stop being rendered (and selectable)
+immediately rather than lingering until the replacement response lands. Display-only pivot and
+chart edits do not change that identity, so selecting a member neither hides the remaining
+choices nor triggers a redundant member reload.
+Row placements persist `sort: "ascending" | "descending"`, defaulting
+to ascending while parsing older v1 cards. Value placements persist
+`sort_rows: "none" | "ascending" | "descending"` and
+`color_scale: "none" | "low_red_high_green" | "low_green_high_red"`, both defaulting to none.
+`options.sort_by` persists the selected Row/Value placement id or null for default ascending Row
+labels. Older v1 cards derive it from their sole active Value sort, otherwise null. Placement cards
+render none of these controls. A full-width Sorting section after the area grid selects the target
+and direction; changing it atomically resets dormant Row directions to ascending and every
+non-target Value's `sort_rows` to none. A full-width Conditional formatting section follows it as
+a bordered rules box. Its ordered list is derived from Value placements whose `color_scale` is not
+none, so all persisted rules are simultaneously visible in Value-placement order. Each rule row
+contains a Value selector, a scale selector, its Low/High preview, and an explicitly named Remove
+button. Selector options contain the row's current Value plus compatible numeric Values without an
+existing rule; changing it atomically moves the scale to the new Value and resets the former Value
+to none. `Add rule` selects the first compatible unformatted Value in placement order and assigns
+`low_red_high_green`; it is disabled when none remains. Removing sets that Value's scale to none.
+Changing an aggregation to a non-numeric result atomically resets its colour scale to none. Empty,
+ineligible, and fully-configured states explain why no additional rule can be added. Removing or moving the active sort
+target outside Rows/Values clears `options.sort_by`; crossing between Rows and Values preserves the
+target with a valid direction for its new zone. Effective sort changes affect
+`pivotCalculationIdentity`; `sort_by` choices with identical effective ordering and colour-scale
+changes do not.
+Missing upstream fields remain in place with `aria-invalid` and an
+explicit unavailable-field message. The Configure subview has no preview/refresh callback:
+committed calculation changes are observed by a mounted lower Pivots or Charts pane, which
+automatically schedules the affected Pivot calculation. Presentation-only names and Chart
+appearance remain outside the Pivot calculation identity and rerender from retained results.
+
+**Explore pane ordering.** `NodePanel` declares exactly five Explore panes in this order:
+`code`, `overview`, `pivots`, `charts`, `export`; `relationships` is not a valid `ExplorePane`.
+The Pivots tab sits between Overview and Charts and renders `ExplorePivotsConfig` in its labelled
+tabpanel. The active `ExplorePane`, including `pivots`, is stored by node id in
+`useUIStore.explorePanes` so switching to another node and back restores the same selection.
+
 ## Edge cases and invariants
 
 - Column selectors accept unavailable/empty preview schema through their editor-specific text or
   persisted-value route; a known value is not silently erased just because upstream preview data
   changed.
+- Explore chart ids are stable persistence identities, while the visible `Chart N` label follows
+  array order. Adding or toggling a chart is display-only and must not invalidate the Explore
+  dataframe/report cache or increment the graph's execution-structural version.
+- Explore pivot ids are stable persistence identities and names are persisted display identities.
+  Adding, naming, toggling, or configuring a pivot is display-only and must not invalidate the
+  Explore dataframe/report cache or increment the graph's execution-structural version.
 - Schema/output rows that are persisted but incomplete stay editable. Fresh inferred rows can be
   filtered/merged before persistence without making existing user rows disappear.
 - Rating table normalisation supports missing/malformed entries by producing the editable table
@@ -304,6 +434,13 @@ React/Vitest tests cover editor interaction under `frontend/src/__tests__/editor
 schema paths, output paths, banding and rating editing, clipboard-related grid behaviour,
 Databricks/MLflow selection, panel dispatch/lazy loading and accessibility. There is no dedicated
 test file for every small barrel/style/helper module; those are covered through their consumers.
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx` pins add/configure/back/toggle,
+independent multi-card state, stable id allocation, future-field preservation, and malformed-state
+diagnostics; `frontend/src/panels/__tests__/NodePanel.test.tsx` pins the lazy Charts-pane dispatch.
+`frontend/src/__tests__/editors/ExplorePivotsConfig.test.tsx` pins add/configure/back, multiple
+cards, stable id allocation, future-field preservation, malformed-state diagnostics, and the
+absence of a speculative toggle. The same NodePanel suite pins the five-pane ordering, absence of
+Relationships, Pivots-pane dispatch, and per-node Pivots selection memory.
 `frontend/src/__tests__/editors/EdgeJoinEditor.test.tsx` pins fixed role displays and swap
 availability, all seven join options, same-name/asymmetric mode transitions, automatic key
 clearing for `cross`, advanced Polars options, and visible diagnostics for conflicting role/key

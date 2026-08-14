@@ -4,13 +4,17 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin `run`/`status`/`cancel` endpoints. Wires `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before delegating to a module-level `ExploreService` singleton. |
+| `src/haute/routes/explore.py` | FastAPI router (`/api/explore`): thin Explore materialisation and `/pivots` run/status/cancel/member endpoints. Graph-bearing requests share `flatten_graph`, `_ensure_source_file`, and `_validate_runtime_input_paths` before service delegation. |
 | `src/haute/routes/_explore_service.py` | Core service: cache-key derivation (`ExploreCacheSpec`), background job execution (`_run_job`, `_materialise_and_summarise`), and all statistics/summary computation (`_build_frame_stats`, `_build_data_quality_summary`, `_build_categorical_summary`, `_build_overview_summary`). |
+| `src/haute/_explore_cache.py` | Project-local durable Explore generations: strict metadata/current-report validation, leased current/stale reads, two-phase atomic publication, and restoration into the process dataframe execution cache. |
+| `src/haute/routes/_pivot_service.py` | Pivot service: requires the derived Explore dataframe-cache entry, validates fields/aggregations, applies typed exact-member filters, enforces cardinality before aggregation, runs latest-wins admitted jobs, and caches typed matrices by calculation identity. |
 | `src/haute/_cache.py` | Dataframe execution-cache invariant owned by [caching](../caching/low-level.md) and used by the execution path: the materialised Explore dataframe is reused independently of the in-process report cache. |
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
-| `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): column kinds/stats, distinct/categorical profiles, data-quality and overview summaries, cache report, run request/response, and status response. |
+| `src/haute/_explore_charts.py` | Standalone v0-to-v1 migration and strict validator for ordered PivotChart cards, nested mappings/styles/axes/legend, ids/names, finite bounds, and simple-literal future fields. |
+| `src/haute/_explore_pivots.py` | Standalone v0-to-v1 migration and strict validator for ordered Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. |
+| `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): existing cache-report contracts plus pivot run/status/member requests, typed failures, member/path/value/cell structures, and result matrices. |
 
 ## Key types and data structures
 
@@ -38,13 +42,40 @@
   (`node_id`, `upstream_node_id`, `source`, `dataframe_cache_key`), `row_count`, `column_count`,
   `columns`, `overview_summary`, `generated_at` (epoch seconds), and `execution_metrics`
   (attached after materialisation, not during `_build_frame_stats`).
+- **`ExploreCacheSnapshotResponse`** (`schemas.py`) - inspection result with a closed
+  `state: "missing" | "current" | "stale"`, a user-facing message, and a report only for a
+  current generation. Inspection never starts a job.
+- **Durable Explore generation** (`_explore_cache.py`) - one immutable generation directory
+  containing `data.parquet` and `meta.json`, selected by an atomically replaced `current.json`
+  pointer under `.haute_cache/explore/<family-digest>`. Metadata binds the family digest, exact
+  report/dataframe cache keys, typed report, and validated Parquet size/schema/counts. A family is
+  the pipeline source file, Explore node id, and active source; it retains one selected generation,
+  with the previous generation retired only after the new pointer is committed and its final
+  reader lease is released. Generation retirement is best-effort housekeeping after commit and
+  therefore cannot change a successfully published job into an error.
 - **`EXPLORE_OVERVIEW_TOGGLE_KEYS`** (`_explore_overview.py`) — frozenset of the five known
   overview card keys: `dataset_snapshot`, `data_quality`, `numeric_summary`,
   `categorical_summary`, `schema`. These must map to `bool`; any other key must map to a
   "round-trippable" value per `_is_round_trippable_overview_value` (recursively: `None`, `str`,
   `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
   `str`).
-- **`EXPLORE_CACHE_VERSION = 4`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
+- **`ExploreChartConfig`** (`_types.py`) — one persisted version-1 ComboChart with stable
+  id/name/enabled/source-pivot linkage, Rows category settings, ordered Value encodings and exact
+  series overrides, primary/secondary axes, and legend. Style mappings contain only closed mark,
+  axis, number-format, colour, stack, marker, and label values.
+- **`ExplorePivotConfig`** (`_types.py`) — version-1 persisted card with `id`, `name`,
+  `enabled`, ordered Filter/Columns/Rows/Values placements, and grand-total options. Each
+  placement owns a stable id. Filter members are typed scalars and Value placements add one of
+  the seven supported aggregations plus a presentation-only display name.
+- **`PivotCalculationSpec`** (`_pivot_service.py`, frozen dataclass) — resolved Explore cache
+  request/key, validated v1 pivot, calculation hash, result-cache key, and latest-wins family key
+  `("explore_pivot", source_file, node_id, source, pivot_id)`.
+- **`ExplorePivotResult`** (`schemas.py`) — result schema version, Explore/pivot/source/cache and
+  calculation identities, ordered row/column field names, stable value identities, typed row and
+  column paths with total markers, typed cells, warnings, generation time, and execution metrics.
+  Result values never carry card/value display names; the UI joins those from current persisted
+  presentation config so rename-only reuse cannot surface stale labels.
+- **`EXPLORE_CACHE_VERSION = 5`** and **`EXPLORE_REPORT_CACHE_MAX_ENTRIES = 16`** — module
   constants in `_explore_service.py`. The version is folded into `report_cache_key` so an
   incompatible report schema never collides with old cached payloads; the LRU is capped at 16
   entries (`LRUCache`, from `caching`). Bumped from 3 to 4 when categorical truncation began
@@ -53,7 +84,90 @@
   computes for an *unchanged* underlying dataframe, so a v2 report would otherwise be served with
   stale distinct counts and no NaN data under an identical dataframe cache key.
 
+## Pivot calculation invariants
+
+- `EXPLORE_PIVOT_RESULT_VERSION = 1`; limits are `MAX_ROW_GROUPS = 500`,
+  `MAX_COLUMN_GROUPS = 100`, `MAX_DISPLAY_CELLS = 50_000`, and
+  `MAX_FILTER_MEMBERS = 500`. Cardinalities are collected first under the admitted context. The
+  displayed-cell check includes each requested total path and uses `max(len(values), 1)` so even
+  an unconfigured layout has a bounded shape.
+- `ExploreService.prepare_spec()` is the sole derivation of the Explore dataframe cache identity.
+  `PivotService` consumes its request/key and calls `request.cache.get/scan`; it does not invoke
+  graph execution. Cache eviction between admission and scan becomes a typed local
+  `cache_required` failure, never fresh execution.
+- Calculation canonicalisation includes only ordered filter field/member keys, ordered row and
+  column fields plus their effective Row directions, Value placement ids/fields/aggregations plus
+  the selected Value direction, total options, dataframe key, and result schema version. A
+  `sort_by` selection whose effective ordering is unchanged reuses the same key. It excludes
+  card name/enabled, Value display names, Value colour scales, and all unknown presentation
+  fields. The in-process result LRU stores at most 32 matrices.
+- Aggregation aliases are derived from stable Value placement ids rather than field names.
+  Numeric operations first map floating NaN to null. `sum`/`average`/`median` require numeric
+  fields; `min`/`max` also accept supported scalar non-numeric fields. Empty aggregates return
+  null, while `count` and `distinct_count` return integer zero. Result normalisation preserves
+  finite JSON scalar types, renders Decimal exactly, renders integers beyond JavaScript's exact
+  range (|value| > 2^53 − 1) as canonical decimal strings so a JS client cannot silently round
+  them, uses ISO strings for date/time values, lossily decodes Binary as UTF-8, and renders
+  Duration with `str(timedelta)`. Row and column grand totals are explicit paths assembled from
+  the same filtered frame.
+- `options.sort_by` is null or the placement id of exactly one Row/Value. A missing field on an
+  older v1 card derives the active Value id when one `sort_rows` direction exists, otherwise null.
+  Row paths are compared level-by-level: only a selected Row uses its persisted `sort` direction,
+  every other level is ascending, and null/NaN always remain last. When a Value is selected, the service also aggregates that
+  Value by the complete Rows path independently of the Columns layout, orders ordinary paths by
+  the resulting scalar, and falls back to ascending Row labels for ties. This auxiliary aggregate
+  is reused for a displayed row-grand-total column when present; it is never exposed as a hidden
+  cell when totals are disabled. A selected Value must carry the sole non-none `sort_rows`
+  direction; Row/default sorting requires every Value direction to be none.
+- A typed member key uses closed kinds `null|string|boolean|integer|float|nan|date|datetime|time|decimal`.
+  Integer and decimal payloads are canonical decimal strings, temporal payloads are ISO strings,
+  finite floats are JSON numbers, and null/NaN carry `value: null`. The members endpoint returns
+  a display label and count beside the key, sorted by count descending then typed canonical key.
+- Explore materialisation and pivot calculation share the Explore job-store namespace, and every
+  job record carries its owning kind: `kind: "explore"` for materialisation jobs and
+  `kind: "pivot"` for pivot jobs. Each service's status and cancel reject a job id whose kind it
+  does not own with a 404, so an Explore cancel can never mark a pivot job cancelled without
+  signalling its pivot cancellation token, and vice versa.
+
+## PivotChart adapter invariants
+
+- `frontend/src/panels/explore/chartConfig.ts` mirrors the backend v0/v1 validator and exposes
+  deterministic chart creation, source resolution, dependent-chart lookup, presets, and canonical
+  typed series-key helpers. Source resolution never falls back from null/missing ids.
+- `chartData.ts` is a pure adapter over a guarded pivot result plus parsed pivot/chart config. It
+  checks source/result identities, explicit Value encodings, total inclusion, numeric cells,
+  hierarchy/label/cardinality limits, and applies matching exact overrides. Its output retains
+  raw `number | null` points separately from formatted text and reports dormant overrides.
+- `chartOptions.ts` is the only renderer-option builder. It maps the adapter's closed data to
+  ECharts Bar/Line series, primary/secondary axes, explicit column stacks, safe text tooltips,
+  deterministic token colours, axis bounds, legend, reduced motion, and zero-inclusive automatic
+  column axes. Legends use a bounded scrolling layout instead of wrapping across the plot. The
+  plot grid reserves space for every legend position and the title, and the secondary axis is
+  hidden until at least one series uses it. It accepts no opaque persisted renderer objects or
+  callbacks.
+- `ComboChart.tsx` owns runtime initialisation, theme redraw, ResizeObserver sizing, deterministic
+  disposal, a renderer-independent labelled summary region, and a toggleable semantic source-data
+  table. The stable Haute summary remains available even when ECharts annotates its own nested SVG
+  host. The ECharts runtime is imported only beneath the already-lazy Charts pane.
+- `useExplorePivotActions.ts` owns the one Pivot run/status/cancel write lifecycle shared by the
+  Pivots and Charts result panes; a chart never creates a parallel execution path.
+
 ## Control flow
+
+### `POST /api/explore/cache-status`
+
+1. The route applies the same graph flattening, source-file completion, and runtime-path
+   validation as `/run`, then derives the canonical `ExploreCacheSpec` without executing nodes.
+2. The service leases the selected durable family generation for the complete inspection/restore
+   operation. No generation returns `missing`; a generation whose `report_cache_key` differs
+   returns `stale`; an exact match is strictly validated, copied into the request's process-local
+   `DataFrameExecutionCache` while still leased, and returned as `current` with its typed report.
+3. If no durable generation exists, an exact report plus dataframe already present in the two
+   process-local caches may satisfy `current`. A report alone is not a dataset cache hit.
+4. Malformed pointers, metadata/report disagreement, missing Parquet, or Parquet metadata mismatch
+   raise the durable-cache corruption error and fail the request; they never downgrade to
+   `missing`. A generation with a different report cache key is stale and its old report payload
+   is not parsed as the current schema; report-schema upgrades therefore remain re-cacheable.
 
 ### `POST /api/explore/run` (`routes/explore.py:run_explore` → `ExploreService.start`)
 
@@ -62,22 +176,26 @@
    helpers) validate the graph has a resolvable source file and that runtime input paths are
    legal, before any Explore-specific logic runs.
 3. `ExploreService.start(body)`:
-   a. `_prepare_spec(body)` — see below — resolves node/upstream, builds the dataframe cache
+   a. `prepare_spec(body)` — see below — resolves node/upstream, builds the dataframe cache
       request, and derives both cache keys. Raises `HTTPException(400)` if the node is not
       Explore-typed or does not have exactly one parent.
-   b. If `self._report_cache.get(spec.report_cache_key)` hits, return
-      `ExploreRunResponse(status="completed", cached=True, result=cached)` immediately — no job,
-      no thread.
-   c. Otherwise create a job via `JobStore.create_job` with initial fields (`status="running"`,
-      `progress=0.0`, `node_id`, `upstream_node_id`, `source`, `analysis_key`).
-   d. `CancellableJobRegistry.register_latest(spec.family_key, job_id)` returns a cancellation
+   b. Unless `body.refresh` is true, require both the exact report and dataframe process-cache
+      entries for an immediate in-process hit. If either is absent, inspect the durable family;
+      an exact generation is restored into the dataframe cache and returned synchronously as
+      `ExploreRunResponse(status="completed", cached=True, result=report)`.
+   c. For `refresh: true`, bypass those hits, evict the exact process report/dataframe entries, and
+      leave the selected durable generation untouched until a replacement succeeds.
+   d. Otherwise create a job via `JobStore.create_job` with initial fields (`kind="explore"`,
+      `status="running"`, `progress=0.0`, `node_id`, `upstream_node_id`, `source`,
+      `analysis_key`).
+   e. `CancellableJobRegistry.register_latest(spec.family_key, job_id)` returns a cancellation
       token and the previous job id (if any) for the same family. If a previous job existed, it
       is transitioned to `superseded` via `JobLifecycle.transition` (guarded by
       `expected_status="running"` — a no-op if it already finished).
-   e. A daemon thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
+   f. A daemon thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
       `ExploreRunResponse(status="started", job_id=job_id)` without waiting.
 
-### `_prepare_spec` (`ExploreService._prepare_spec`)
+### `prepare_spec` (`ExploreService.prepare_spec`)
 
 1. `find_typed_node(graph, body.node_id, NodeType.EXPLORE, "explore")` — raises 404 if the node
    is missing and 400 if it exists but is not Explore-typed.
@@ -109,10 +227,17 @@
 4. `execution_context.checkpoint(label="explore_before_store", node_id=spec.node_id)`.
 5. The report is copied with `execution_metrics` attached
    (`ExecutionMetricsPayload.model_validate(execution_context.metrics_payload(status="completed"))`).
-6. The report is stored in `self._report_cache` under `spec.report_cache_key`, then
-   `JobLifecycle.transition(job_id, to="completed", fields={progress: 1.0, result: report,
-   execution_metrics})`.
-7. `finally`: `execution_context.release_admission()` (if a context was created) and
+6. Once computation and terminal metrics are complete, the context releases its memory-admission
+   reservation. While the exact dataframe entry is protected from eviction, the service copies
+   and validates a new staged durable generation without selecting it.
+7. `CancellableJobRegistry.latest_publication(job_id)` makes the latest-owner check indivisible
+   from the short final publication. A cancelled or superseded owner discards its staging
+   directory. The latest owner atomically selects the generation, stores the report in
+   `self._report_cache`, and transitions the still-running job to `completed` while the guard is
+   held; a replacement request therefore cannot interleave those three visible effects.
+8. After commit, unselected generations without reader leases are retired best-effort. Cleanup
+   failure is logged but does not invalidate the selected pointer or completed job.
+9. `finally`: `execution_context.release_admission()` (idempotently, if a context was created) and
    `self._jobs.release(job_id)` always run, even on the exception paths below.
 
 Exception handling (each maps to a distinct terminal status via `JobLifecycle.transition`, see
@@ -131,7 +256,10 @@ Error handling section): `ExecutionCancelledError` → `token.terminal_reason or
    preamble_ns=preamble_ns or None, source=body.source, enforce_contracts=True,
    execution_context=execution_context, dataframe_cache_request=spec.dataframe_cache_request)` —
    executes the graph lazily up to (and including) the Explore node's own analysis code, reusing
-   the dataframe cache when the request's cache key already has a hit.
+   the dataframe cache when the request's cache key already has a hit. If that lineage contains a
+   group-by, the lazy executor invokes graph-aware strategy planning before node execution so the
+   boundary is admitted only when its source-derived estimate fits this job's
+   `EXPLORE_ANALYSIS` admission headroom.
 4. `lazy_outputs.get(spec.node_id)` must not be `None`; if it is,
    `ValueError(f"No data arrived at Explore node '{spec.node_id}'.")` is raised (caught by the
    generic `except Exception` branch in `_run_job`, i.e. surfaces as job status `error`).
@@ -307,26 +435,26 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   invocations, and by
   inspecting the query plan for absence of `UNION`/`CACHE` nodes (ruling out an unpivot-based
   implementation).
-- **`overview` config round-trip**: an explicit `False` toggle value must be preserved through
-  codegen → parse (not treated the same as an absent key); an empty `overview: {}` dict must
-  *not* be emitted as `overview={}` in generated source at all (codegen only emits the kwarg when
-  the validated dict is non-empty).
+- **Explore display-config round-trip**: an explicit `False` overview toggle or disabled chart
+  must be preserved through codegen → parse (not treated the same as an absent key); pivot cards
+  retain ordered ids and future fields. Empty `overview: {}`, `pivots: []`, and `charts: []`
+  values must not be emitted as decorator kwargs. Non-empty kwargs are emitted in stable
+  overview-then-pivots-then-charts order.
 - **Downstream-edit cache stability**: `dataframe_cache_key` is unchanged by edits to nodes
-  downstream of the Explore node (verified by comparing `_prepare_spec(...).dataframe_cache_key`
-  across two graphs differing only in a downstream node's label) and by adding an `overview`
-  block to the Explore node's own config (the overview payload is not part of either cache key's
-  input). It *is* changed by editing the Explore node's own analysis `code`.
+  downstream of the Explore node (verified by comparing `prepare_spec(...).dataframe_cache_key`
+  across two graphs differing only in a downstream node's label) and by adding an `overview`,
+  `pivots`, or `charts` block to the Explore node's own config (the display payload is not part of either
+  cache key's input). It *is* changed by editing the Explore node's own analysis `code`.
 
 ## Error handling
 
 - `HTTPException(status_code=400, ...)` — raised synchronously (not inside the background job)
-  from `_prepare_spec` when the target node has zero or multiple upstream parents, and from
+  from `prepare_spec` when the target node has zero or multiple upstream parents, and from
   `find_typed_node` when the node is not Explore-typed. A missing node id returns HTTP 404. These
   surface directly as the HTTP response; no job is created.
-- `ConfigError` (from `haute.errors`) — raised by `validate_explore_overview` for structurally
-  invalid `overview` dicts (non-dict value, non-string key, wrong-typed known toggle, or
-  non-round-trippable unknown value). Raised during codegen/parse, not during the run/status/
-  cancel routes.
+- `ConfigError` (from `haute.errors`) — raised by the Explore display-config validators for
+  structurally invalid overview/pivot/chart values, including malformed cards and duplicate ids.
+  Raised during codegen/parse, not during the run/status/cancel routes.
 - `ExecutionCancelledError`, `ExecutionAdmissionError`, `ExecutionMemoryLimitExceededError`,
   `PUBLIC_CONTRACT_ERROR_TYPES` (mapped with `contract_error_job_fields` to `contract_error`),
   `ContractMismatchError`, `SchemaMismatchError`, `BoundedMemoryUnsupportedError` — all caught
@@ -356,9 +484,9 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
     return synchronously and skip `_materialise_and_summarise` entirely (asserted by
     monkeypatching it to raise on any call).
   - `test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache` /
-    `test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache` /
+    `test_explore_display_config_does_not_invalidate_analysis_dataframe_cache` /
     `test_explore_code_config_change_invalidates_analysis_dataframe_cache` — pin the cache-key
-    invalidation invariants directly via `_prepare_spec(...).dataframe_cache_key` comparisons.
+    invalidation invariants directly via `prepare_spec(...).dataframe_cache_key` comparisons.
   - `test_explore_rejects_non_explore_node_before_execution` — 400 with a message containing
     `"is not a explore node"`.
   - `test_explore_cancel_stops_in_flight_job` — gates the Explore collect helper on a
@@ -396,10 +524,14 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   - `_clean_explore_state` autouse fixture snapshots/restores `_store.jobs` and clears
     `_explore_service._report_cache` around each test so report-cache and job-store state never
     leaks between tests.
-- `tests/test_explore_round_trip.py` — exercises `validate_explore_overview` indirectly through
-  `graph_to_code` → `parse_pipeline_source`: known-toggle round trip (`dataset_snapshot`,
-  `schema`, both together), explicit `False` toggle preservation, unknown-key round trip with
-  simple literal values (including nested dict/list and `None`), and that an empty `overview`
-  dict is dropped from generated source rather than emitted as `overview={}`. This is the
-  authoritative round-trip suite for `_explore_overview.py`; its validation behaviour is also
-  covered by the focused overview-validation tests.
+- `tests/test_explore_round_trip.py` — exercises the Explore display validators indirectly
+  through `graph_to_code` → `parse_pipeline_source`: overview toggle/unknown-key round trips,
+  ordered pivot and enabled/disabled chart cards with future settings, and omission of empty
+  `overview={}`/`pivots=[]`/`charts=[]` kwargs.
+- `tests/test_explore_charts.py` — pins chart-container/card shape validation, required state,
+  duplicate-id rejection, future simple-literal fields, order preservation, and detached output.
+- `tests/test_explore_pivots.py` — pins pivot-container/card shape validation, duplicate-id
+  rejection, future simple-literal fields, order preservation, and detached output.
+- `tests/test_explore_pivot_routes.py` exercises cache-required behaviour, typed filters,
+  bounded aggregation/cardinality, sorting/totals, latest-wins job lifecycle, member lookup,
+  export, and JSON-safe scalar results including Binary and Duration min/max values.

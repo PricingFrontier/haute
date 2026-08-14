@@ -1,21 +1,34 @@
+import { useEffect } from "react"
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react"
+import { render, screen, fireEvent, cleanup, within, act } from "@testing-library/react"
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
 import useUIStore from "../../stores/useUIStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
+import useSettingsStore from "../../stores/useSettingsStore"
 
-const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps } = vi.hoisted(() => ({
+const { transformEditorProps, edgeJoinEditorProps, exploreCodeEditorProps, explorePivotsConfigProps, bandingEditorProps, dataInputEditorProps, dataOutputEditorProps, columnsTabProps, modellingConfigProps, optimiserConfigProps, fetchExplorePivotMembers, simulatePickerRefetch } = vi.hoisted(() => ({
   transformEditorProps: [] as Record<string, unknown>[],
   edgeJoinEditorProps: [] as Record<string, unknown>[],
   exploreCodeEditorProps: [] as Record<string, unknown>[],
+  explorePivotsConfigProps: [] as Record<string, unknown>[],
   bandingEditorProps: [] as Record<string, unknown>[],
   dataInputEditorProps: [] as Record<string, unknown>[],
   dataOutputEditorProps: [] as Record<string, unknown>[],
   columnsTabProps: [] as Record<string, unknown>[],
   modellingConfigProps: [] as Record<string, unknown>[],
   optimiserConfigProps: [] as Record<string, unknown>[],
+  fetchExplorePivotMembers: vi.fn(),
+  // When enabled, the ExplorePivotsConfig mock refetches members from a child
+  // passive effect keyed on currentConfigHash — the exact timing of the real
+  // FilterMemberPicker, which runs BEFORE any NodePanel parent effect.
+  simulatePickerRefetch: { enabled: false },
+}))
+
+vi.mock("../../api/client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../api/client")>(),
+  fetchExplorePivotMembers,
 }))
 
 // Mock all editor components — we only care that the right one renders
@@ -52,6 +65,27 @@ vi.mock("../LazyNodeEditors", async () => {
     return <div data-testid="ExploreCodeEditor" />
   },
   ExploreOverviewConfig: () => <div data-testid="explore-overview-config" />,
+  ExplorePivotsConfig: (props: Record<string, unknown>) => {
+    explorePivotsConfigProps.push(props)
+    const loadFilterMembers = props.loadFilterMembers as
+      | ((field: string, search: string, signal: AbortSignal) => Promise<unknown>)
+      | undefined
+    const currentConfigHash = props.currentConfigHash as string | null
+    useEffect(() => {
+      if (!simulatePickerRefetch.enabled || !loadFilterMembers) return
+      const controller = new AbortController()
+      void loadFilterMembers("premium", "", controller.signal).catch(() => {})
+      return () => controller.abort()
+    }, [currentConfigHash, loadFilterMembers])
+    return <div data-testid="explore-pivots-config" />
+  },
+  ExploreChartsConfig: (props: Record<string, unknown>) => {
+    return (
+      <div data-testid="explore-charts-config">
+        <button type="button" onClick={props.onShowPivots as () => void}>Show pivots</button>
+      </div>
+    )
+  },
   ModelScoreEditor: () => <div data-testid="ModelScoreEditor" />,
   BandingEditor: (props: Record<string, unknown>) => {
     bandingEditorProps.push(props)
@@ -202,12 +236,15 @@ describe("NodePanel", () => {
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
+    explorePivotsConfigProps.length = 0
     bandingEditorProps.length = 0
     dataInputEditorProps.length = 0
     dataOutputEditorProps.length = 0
     columnsTabProps.length = 0
     modellingConfigProps.length = 0
     optimiserConfigProps.length = 0
+    fetchExplorePivotMembers.mockReset()
+    useSettingsStore.setState({ activeSource: "live", streamingChunkSize: 500_000 })
   })
 
   afterEach(cleanup)
@@ -722,7 +759,7 @@ describe("NodePanel", () => {
     expect(onRefreshPreview).toHaveBeenCalledOnce()
   })
 
-  it("renders Explore code before analysis panes and switches between them", () => {
+  it("renders Explore code before analysis panes and switches between them", async () => {
     const exploreNode = makeNode({
       id: "explore_1",
       data: {
@@ -755,13 +792,20 @@ describe("NodePanel", () => {
 
     const code = screen.getByRole("tab", { name: "Polars Code" })
     const overview = screen.getByRole("tab", { name: "Overview" })
-    const relationships = screen.getByRole("tab", { name: "Relationships" })
+    const pivots = screen.getByRole("tab", { name: "Pivots" })
     const charts = screen.getByRole("tab", { name: "Charts" })
     const exportPane = screen.getByRole("tab", { name: "Export" })
 
+    expect(
+      within(screen.getByRole("tablist", { name: "Explore panes" }))
+        .getAllByRole("tab")
+        .map((tab) => tab.textContent),
+    ).toEqual(["Polars Code", "Overview", "Pivots", "Charts", "Export"])
+    expect(screen.queryByRole("tab", { name: "Relationships" })).not.toBeInTheDocument()
+
     expect(code).toHaveAttribute("aria-selected", "true")
     expect(overview).toHaveAttribute("aria-selected", "false")
-    expect(relationships).toHaveAttribute("aria-selected", "false")
+    expect(pivots).toHaveAttribute("aria-selected", "false")
     expect(charts).toHaveAttribute("aria-selected", "false")
     expect(exportPane).toHaveAttribute("aria-selected", "false")
     expect(screen.getByTestId("ExploreCodeEditor")).toBeInTheDocument()
@@ -778,11 +822,58 @@ describe("NodePanel", () => {
       upstreamColumns: [{ name: "premium", dtype: "Int64" }],
     })
 
+    fireEvent.click(pivots)
+
+    expect(pivots).toHaveAttribute("aria-selected", "true")
+    expect(screen.getByTestId("explore-pivots-pane")).toContainElement(
+      screen.getByTestId("explore-pivots-config"),
+    )
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
+
+    fetchExplorePivotMembers.mockResolvedValueOnce({
+      status: "ok",
+      field: "premium",
+      members: [],
+      failure: null,
+    })
+    const signal = new AbortController().signal
+    const loadFilterMembers = explorePivotsConfigProps.at(-1)?.loadFilterMembers as (
+      field: string,
+      search: string,
+      signal: AbortSignal,
+    ) => Promise<unknown>
+    await loadFilterMembers("premium", "north", signal)
+    expect(fetchExplorePivotMembers).toHaveBeenCalledWith({
+      graph: {
+        nodes: [
+          { id: "source_1", type: "dataInput", data: sourceNode.data, position: { x: 0, y: 0 } },
+          { id: "explore_1", type: "explore", data: exploreNode.data, position: { x: 0, y: 0 } },
+        ],
+        edges: [sourceEdge],
+        submodels: undefined,
+        preamble: undefined,
+      },
+      node_id: "explore_1",
+      field: "premium",
+      source: "live",
+      search: "north",
+      streamingChunkSize: 500_000,
+      signal,
+    })
+
     fireEvent.click(charts)
 
     expect(charts).toHaveAttribute("aria-selected", "true")
-    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+    expect(screen.getByTestId("explore-charts-pane")).toContainElement(
+      screen.getByTestId("explore-charts-config"),
+    )
     expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
+
+    fireEvent.click(screen.getByRole("button", { name: "Show pivots" }))
+    expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
+
+    fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
 
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
@@ -798,7 +889,60 @@ describe("NodePanel", () => {
     )
 
     expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
-    expect(screen.getByTestId("explore-charts-pane")).toBeEmptyDOMElement()
+    expect(screen.getByTestId("explore-charts-config")).toBeInTheDocument()
+  })
+
+  it("refetches open filter members with the new graph/source when the Explore identity changes", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: { code: "df = df.filter(pl.col('premium') > 0)" },
+      },
+    })
+    const sourceNode = makeNode({
+      id: "source_1",
+      data: {
+        label: "Claims Source",
+        description: "",
+        nodeType: "dataInput",
+        config: {},
+        _columns: [{ name: "premium", dtype: "Int64" }],
+      },
+    })
+    const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
+    fetchExplorePivotMembers.mockResolvedValue({
+      status: "ok",
+      field: "premium",
+      members: [],
+      failure: null,
+    })
+
+    simulatePickerRefetch.enabled = true
+    try {
+      renderPanel({ node: exploreNode, allNodes: [sourceNode, exploreNode], edges: [sourceEdge] })
+      fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
+      expect(fetchExplorePivotMembers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ source: "live" }),
+      )
+      fetchExplorePivotMembers.mockClear()
+
+      // The simulated picker refetch runs from a child passive effect, which
+      // React fires BEFORE any NodePanel parent effect. The request issued in
+      // that window must already carry the new source/graph — a loader that
+      // reads a parent-effect-updated ref would still send the old one.
+      act(() => {
+        useSettingsStore.setState({ activeSource: "batch" })
+      })
+      expect(fetchExplorePivotMembers).toHaveBeenCalledTimes(1)
+      expect(fetchExplorePivotMembers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ source: "batch", node_id: "explore_1" }),
+      )
+    } finally {
+      simulatePickerRefetch.enabled = false
+    }
   })
 
   it("renders the dataset-header toggle when the Explore Overview pane is selected", () => {
@@ -846,8 +990,8 @@ describe("NodePanel", () => {
 
     expect(screen.getByRole("tab", { name: "Polars Code" })).toHaveAttribute("aria-selected", "true")
 
-    fireEvent.click(screen.getByRole("tab", { name: "Relationships" }))
-    expect(screen.getByRole("tab", { name: "Relationships" })).toHaveAttribute("aria-selected", "true")
+    fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
+    expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")
 
     rerender(
       <GraphProvider allNodes={[]} edges={[]}>
@@ -858,7 +1002,7 @@ describe("NodePanel", () => {
     expect(screen.getByRole("tab", { name: "Export" })).toHaveAttribute("aria-selected", "true")
     expect(useUIStore.getState().explorePanes).toEqual({
       explore_1: "export",
-      explore_2: "relationships",
+      explore_2: "pivots",
     })
   })
 

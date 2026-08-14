@@ -160,6 +160,7 @@ vi.mock("../api/client", () => ({
   getOptimiserStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),
   getTrainStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0 })),
   getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
+  getExploreCacheSnapshot: vi.fn(() => Promise.resolve({ state: "missing", message: "No cache", result: null })),
 }))
 
 import App from "../App"

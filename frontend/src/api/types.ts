@@ -897,6 +897,12 @@ export interface ExploreRunResponse {
   result?: ExploreCacheReport | null
 }
 
+export interface ExploreCacheSnapshotResponse {
+  state: "missing" | "current" | "stale"
+  message: string
+  result?: ExploreCacheReport | null
+}
+
 export interface ExploreStatusResponse {
   status: JobStatus
   progress: number
@@ -904,6 +910,99 @@ export interface ExploreStatusResponse {
   result?: ExploreCacheReport | null
   terminal_reason?: string | null
   execution_metrics?: ExecutionMetrics | null
+}
+
+export type ExplorePivotMemberKind =
+  | "null"
+  | "string"
+  | "boolean"
+  | "integer"
+  | "float"
+  | "nan"
+  | "date"
+  | "datetime"
+  | "time"
+  | "decimal"
+
+export type ExplorePivotMemberKey =
+  | { kind: "null" | "nan"; value: null }
+  | { kind: "string" | "integer" | "date" | "datetime" | "time" | "decimal"; value: string }
+  | { kind: "boolean"; value: boolean }
+  | { kind: "float"; value: number }
+
+export interface ExplorePivotFailure {
+  reason_code: string
+  message: string
+  remediation: string
+  dimensions: Record<string, string | number>
+}
+
+export interface ExplorePivotMemberOption {
+  key: ExplorePivotMemberKey
+  label: string
+  count: number
+}
+
+export interface ExplorePivotValueIdentity {
+  id: string
+  field: string
+  aggregation: "sum" | "count" | "average" | "min" | "max" | "median" | "distinct_count"
+}
+
+export interface ExplorePivotPath {
+  members: ExplorePivotMemberKey[]
+  is_grand_total: boolean
+}
+
+export interface ExplorePivotCell {
+  row_index: number
+  column_index: number
+  value_id: string
+  value: string | number | boolean | null
+}
+
+export interface ExplorePivotResult {
+  version: 1
+  node_id: string
+  pivot_id: string
+  source: string
+  dataframe_cache_key: string
+  calculation_key: string
+  row_fields: string[]
+  column_fields: string[]
+  values: ExplorePivotValueIdentity[]
+  row_paths: ExplorePivotPath[]
+  column_paths: ExplorePivotPath[]
+  cells: ExplorePivotCell[]
+  warnings: string[]
+  generated_at: number
+  execution_metrics: ExecutionMetrics | null
+}
+
+export interface ExplorePivotRunResponse {
+  status: "started" | "completed" | "cache_required"
+  job_id: string | null
+  cached: boolean
+  message: string
+  result: ExplorePivotResult | null
+  failure: ExplorePivotFailure | null
+}
+
+export interface ExplorePivotStatusResponse {
+  status: JobStatus
+  progress: number
+  message: string
+  result: ExplorePivotResult | null
+  failure: ExplorePivotFailure | null
+  terminal_reason: string | null
+  execution_metrics: ExecutionMetrics | null
+}
+
+export interface ExplorePivotMembersResponse {
+  status: "ok" | "cache_required" | "error"
+  field: string | null
+  members: ExplorePivotMemberOption[]
+  failure: ExplorePivotFailure | null
 }
 
 export interface MlflowLogResponse {

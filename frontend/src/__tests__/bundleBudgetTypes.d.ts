@@ -9,6 +9,7 @@ declare module "*check-bundle-size.mjs" {
     maxInitialJsGzipKiB: number
     maxTotalJsGzipKiB: number
     maxSingleJsGzipKiB: number
+    maxChartVendorJsGzipKiB?: number
   }
 
   export function parseInitialJsAssetNames(html: string): string[]
@@ -32,6 +33,7 @@ declare module "*check-bundle-size.mjs" {
     failures: string[]
     initialAssets: JsAsset[]
     initialGzipBytes: number
+    chartVendorAsset: JsAsset | undefined
     jsAssets: JsAsset[]
     largest: JsAsset
     totalGzipBytes: number

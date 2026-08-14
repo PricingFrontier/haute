@@ -9,11 +9,15 @@
 | `frontend/src/panels/previewPanelLayout.ts` | Shared preview-panel dimensions and header/action layout constants. |
 | `frontend/src/components/ExecutionDiagnosticsSummary.tsx` | Actionable execution-diagnostic banner owned by [frontend-modelling-optimiser-ui](../frontend-modelling-optimiser-ui/low-level.md) and consumed by Explore progress and cache reports. |
 | `frontend/src/components/ExecutionDiagnosticsIndicator.tsx` | Compact preview-header execution diagnostic indicator. |
-| `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview tab composition. |
+| `frontend/src/panels/ExplorePreview.tsx` | Explore run/cancel/store lifecycle and Preview/Overview/Pivots/Charts tab composition. |
+| `frontend/src/api/types.ts`, `frontend/src/types/guards.ts`, `frontend/src/stores/useNodeResultsStore.ts` | [frontend-shared](../frontend-shared/low-level.md)-owned Explore API contracts, runtime guards, and node-scoped report/pivot job/result state consumed by the preview panes. |
 | `frontend/src/panels/UtilityPanel.tsx` | Utility-module list/read/create/delete/editor UI with debounced, flushable saves and syntax-error display. `App.tsx` loads the panel through a lazy import only after the user opens Utility, keeping its editor and API path out of startup JavaScript. |
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
+| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot v0/v1 parsing, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
+| `frontend/src/panels/explore/ExploreResultCardChrome.tsx` | Result-card chrome shared by the Pivots and Charts panes: the centered empty state and the Cancel/Starting/Retry run-status action cluster. |
+| `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/chartData.ts`, `frontend/src/panels/explore/chartOptions.ts`, `frontend/src/panels/explore/chartRuntime.ts`, `frontend/src/panels/explore/ComboChart.tsx`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Versioned chart parsing/linkage/presets; pure typed pivot adapter; safe renderer options; narrow ECharts registration/lifecycle/accessibility; enabled-card state dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
 | `frontend/src/panels/explore/DistinctInfoButton.tsx`, `frontend/src/panels/explore/StatValueCell.tsx` | Distinct-count explanation and reusable optional-stat cell. |
@@ -45,32 +49,125 @@
 ### Explore and overview
 
 1. `frontend/src/panels/explore/cacheIdentity.ts` finds all upstream nodes, removes Explore
-   overview display settings from data-affecting config, and includes submodels/preamble.
+   overview, pivot, and chart display settings from data-affecting config, and includes
+   submodels/preamble.
 2. `frontend/src/panels/ExplorePreview.tsx` canonicalises that identity together with the active
-   source. It ignores cached results with a different identity, but keeps the node's active job
-   visible and cancellable using the source that job actually started with. It records immediate
-   cache hits as completed results and background starts as jobs.
+   source. It posts that graph identity to `/api/explore/cache-status` on mount and whenever the
+   identity changes; a rerender that preserves the identity (for example a canvas drag) does not
+   re-post. A `current` response hydrates the completed result store without a run; a
+   `stale` response controls the warning action state but is not installed as a current report.
+   It ignores retained frontend results with a different identity, but keeps them as evidence of
+   staleness and keeps the node's active job visible and cancellable using the source that job
+   actually started with. It records immediate cache hits as completed results and background
+   starts as jobs.
 3. Start failures, and cancellation responses without a completed report, call the result-store
    failure path; thrown start/cancel errors also toast. `useBackgroundJobs` in frontend-shared
-   polls background Explore jobs and moves terminal responses into the result store. A visible
-   report is touched to update cache recency. Preview and Overview are the only tabs and mount
-   only for their active tab; a remembered value from a removed pane normalises to Preview.
+   polls background Explore and pivot jobs and moves terminal responses into the result store. A visible
+   report is touched to update cache recency. Preview, Overview, Pivots, and Charts mount only for their
+   active tab; a remembered value from a still-unsupported pane normalises to Preview.
    `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
    of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
    tabpanel until that module is ready.
-4. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
+4. When idle, the cache action derives one of three states from the identity-gated result, retained
+   stale result, and backend inspection: `missing` renders a filled red `Needs caching` button;
+   `current` renders a filled green `Re-cache` button; `stale` renders a filled yellow `Re-cache`
+   button. The subtitle mirrors `Needs caching`, `Cached`, or `Cache stale`. Clicking either
+   Re-cache state sends `refresh: true`; clicking Needs caching normally sends `refresh: false`.
+   After an inspection error it sends `refresh: true`, providing an explicit recovery path that
+   bypasses a corrupt selected generation. The status request is abortable and an obsolete
+   identity response cannot hydrate the new identity. A
+   resolved backend `missing` state is authoritative over an old in-browser report; changing to a
+   source with no generation therefore shows red, while a same-family identity mismatch reported
+   by the backend shows yellow. A stale, missing, or failed inspection suppresses the retained
+   report from dependent panes. Inspection failure also returns the action to red and emits an
+   explicit error toast rather than leaving an unverified green state.
+5. `frontend/src/panels/explore/overviewConfig.ts` drops malformed config values. The overview
    pane renders no-enabled-cards, no-report, or the ordered enabled renderer set.
-5. Schema, numeric-summary, and categorical-summary cards derive a `TableGrid` from the exact
+   `frontend/src/panels/explore/chartConfig.ts` instead returns an explicit parse failure for a
+   malformed `charts` block. The Charts pane renders that diagnostic or resolves enabled charts
+   against current pivots and retained pivot result state in persisted order.
+6. Schema, numeric-summary, and categorical-summary cards derive a `TableGrid` from the exact
    display fields they render and pass it to `ExploreTableActions`. Copy serialises the header
    and every exported row as TSV; download uses the shared CSV escaping helper. Schema supplies
    every column matching its current search query, not only the current 50-row page. Numeric and
    categorical summaries export their complete profile lists. The actions do not offer JSON
    sharing or paste-in because Explore reports are read-only analysis artifacts. The shared
    serializers remain click-loaded from the already-lazy Overview code.
-6. `SchemaTableCard` derives one factual Profile cell per column from the report's additive
+7. `SchemaTableCard` derives one factual Profile cell per column from the report's additive
    quality fields: ID candidate, high cardinality, text length min/mean/max, and temporal span.
    The same text participates in schema search and full filtered TSV/CSV export; an unflagged
    column renders an em dash.
+
+### Pivot results
+
+1. The Pivots pane parses current node config once and renders enabled pivots as full-width
+   sections in persisted order. It keys `pivotResults` and `pivotJobs` by `${nodeId}:${pivotId}`.
+   When a current Explore cache report exists, the mounted pane automatically sends every stale
+   or uncalculated configured card to the dedicated endpoint once per node, pivot calculation
+   identity, and dataframe-cache identity. A synchronous cache hit is stored immediately; a
+   started job enters shared polling; cache/cardinality/config errors stay on that section. A
+   running or submitting card is never started again. Cancel addresses only that section's job,
+   and an idle terminal failure exposes an explicit Retry.
+2. Freshness requires both the result's matching `dataframe_cache_key` and the stored frontend
+   calculation identity matching the current card. Layout changes therefore stale one result,
+   while an upstream/cache change stales all. Disabling changes no result-store entry, so
+   re-enabling an unchanged card immediately reuses its retained result. When the retained Pivot
+   result is absent and there is no current Explore report, the section explains that full data
+   must be processed and cached; when a report exists it shows automatic calculation progress.
+   When only the current Explore report is absent, a retained table remains visible but stale and
+   no request is started.
+3. The pane distinguishes malformed config, no cards, all-disabled cards, an enabled card without
+   Values, an uncalculated card, a submitting request, a running job, fresh and stale retained
+   results, and per-card failures. A running refresh may keep its retained table visible while the
+   card exposes progress and Cancel. Cache-key mismatch, calculation-identity mismatch, or an
+   absent report marks a retained result stale; only an absent retained result uses the
+   uncalculated guidance.
+4. A card without Values is excluded from automatic calculation. Otherwise automatic calculation
+   and failure-only Retry share explicit handling for cache-required, completed-with-result, and
+   started-with-job responses. A completed response without a result, a started response without
+   a job id, and a rejected request become retained terminal failures and always clear submitting
+   state. Automatic effect re-renders and several consumers of one Pivot are deduplicated, so the
+   same identity/cache pair is attempted once rather than entering a retry loop. The result store
+   records the last attempted calculation and dataframe-cache identities separately from any
+   retained successful result identity; remounting does not repeat a failed pair, while a new
+   calculation or cache identity is automatically eligible. Cancel completion stores a returned
+   result; every other terminal cancellation fails the job; a rejected cancellation keeps the
+   active job for polling and shows a card-local notice.
+5. `PivotTableGrid` receives an already guarded version-1 matrix and current Value presentation
+   labels. It renders one semantic table, a header row for every configured Column level plus the
+   Value level, sticky Row headers, explicit `Grand total` path labels, and null as an em dash.
+   The scroll container row-window renders viewport rows plus overscan and uses spacer rows to
+   preserve the complete scroll height. Horizontal overflow remains native so keyboard and
+   assistive technology semantics are not replaced by a div grid.
+6. Conditional formatting is keyed by stable Value placement id and never reorders or mutates the
+   result. For each non-None scale, the grid takes finite numeric ordinary cells across all Column
+   paths for that Value, excludes every grand-total row/column and blank/non-numeric cell, and uses
+   the minimum, median (Excel-style 50th-percentile yellow midpoint), and maximum as its domain.
+   It interpolates pale red–yellow–green or the reversed endpoints while retaining dark readable
+   text. An equal-valued domain renders yellow; an empty numeric domain renders no formatting.
+
+### PivotChart results
+
+1. The Charts pane parses current v1 charts and pivots, reads existing composite pivot job/result
+   entries, and resolves each enabled card independently. On mount it automatically schedules
+   each distinct stale or missing configured source Pivot once through that Pivot's existing
+   run/status lifecycle; charts sharing a source never create duplicate requests. Running work
+   exposes Cancel and an idle terminal failure exposes Retry. Chart appearance, name, ordering,
+   and visibility do not touch the calculation lifecycle and rerender from retained source data.
+2. A source is fresh only when its retained result dataframe key matches the current Explore
+   report and its stored frontend calculation identity matches the current pivot. A fresh source
+   is adapted separately for each chart, allowing presentation differences without copying or
+   recalculating the matrix. Draft and missing ids are distinct and never use the first pivot.
+3. `ComboChart` lazy-loads the registered ECharts core runtime, builds options solely from the
+   closed adapter dataset/config, observes its container, resizes on geometry changes, and
+   disposes on data replacement/unmount. The chart-card grid auto-fits against the available pane
+   width with a 28 rem target minimum rather than using a viewport breakpoint, so an open side
+   panel cannot force unreadably narrow cards. The accessible summary and semantic table derive
+   from the same dataset as the visual chart.
+4. The production bundle gate rejects any startup preload of the chart pane/runtime/vendor,
+   caps the narrowly imported `vendor-charts` chunk at 205 KiB gzip, and keeps the measured
+   application limits at 258 KiB initial and 1,300 KiB total gzip. Chart capability therefore
+   pays its cost only after Charts is opened and cannot quietly grow inside the aggregate budget.
 
 `DataPreview` consumes guarded version-1 execution metrics through
 `ExecutionDiagnosticsIndicator`: projected/admitted/not-planned states stay
@@ -103,6 +200,9 @@ and remediation without exposing raw bounded-collection JSON.
 - Explore refuses run while there is no input or a job is active. An instant completed response
   without a report, or a started response without `job_id`, is an explicit failure rather than a
   false success.
+- A valid empty/missing chart array prompts the user to add a chart. A non-empty array with every
+  card disabled reports that no charts are shown. Duplicate/blank ids and wrong-typed fields are
+  invalid configuration, not empty state.
 - Explore progress is a determinate ARIA progressbar only while the run is busy. Its value is
   the displayed fraction clamped to 0-100; native buttons give export actions keyboard semantics,
   and both are disabled when their grid has no body rows.
@@ -133,9 +233,11 @@ Tests live in `frontend/src/panels/__tests__/DataPreview.test.tsx`,
 `frontend/src/panels/__tests__/PreviewPanelTabs.test.tsx`,
 `frontend/src/panels/__tests__/ExplorePreview.test.tsx` and
 `frontend/src/panels/__tests__/UtilityPanel.test.tsx`, plus the focused overview suites under
-`frontend/src/panels/explore/__tests__/`. They cover virtualisation, frames, search, trace click
+`frontend/src/panels/explore/__tests__/` and
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`. They cover virtualisation, frames, search, trace click
 delegation, boundary/rejected execution diagnostics, cache identity/result/job lifecycle,
-card ordering/config, roving-tab accessibility, utility save-flush/stale-response behaviour and
+overview/chart card ordering and config, chart list/configure/back/toggle behavior, chart
+visualisation empty/error states, roving-tab accessibility, utility save-flush/stale-response behaviour and
 syntax errors. The Explore suites also pin progressbar name/value semantics, TSV headers and
 contents, RFC-4180 CSV quoting through the download blob, full filtered-schema export across
 pagination, disabled empty-table actions, and native-button accessibility.

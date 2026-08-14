@@ -362,7 +362,7 @@ describe("useGraphStore structuralVersion", () => {
     }
   })
 
-  it("does not bump structuralVersion when Explore overview card config changes", () => {
+  it("does not bump structuralVersion when Explore display-card config changes", () => {
     const store = useGraphStore.getState()
     const baseNode = makeNode("explore_1", "explore", {
       data: {
@@ -371,6 +371,8 @@ describe("useGraphStore structuralVersion", () => {
         config: {
           code: "df = df.select(pl.all())",
           overview: { dataset_snapshot: false },
+          pivots: [{ id: "pivot_1" }],
+          charts: [{ id: "chart_1", enabled: false }],
         },
       },
     })
@@ -391,6 +393,11 @@ describe("useGraphStore structuralVersion", () => {
             config: {
               code: "df = df.select(pl.all())",
               overview: { dataset_snapshot: true, schema: true, future_card: true },
+              pivots: [{ id: "pivot_1" }, { id: "pivot_2", future_setting: "rows" }],
+              charts: [
+                { id: "chart_1", enabled: true },
+                { id: "chart_2", enabled: true },
+              ],
             },
           },
         }),

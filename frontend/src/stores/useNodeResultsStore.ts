@@ -18,6 +18,8 @@ import type { OptimiserPreviewData } from "../panels/OptimiserPreview"
 import type {
   ExecutionMetrics,
   ExploreCacheReport,
+  ExplorePivotResult,
+  ExplorePivotStatusResponse,
   ExploreStatusResponse,
   FrontierData,
   FrontierSelectResponse,
@@ -32,6 +34,7 @@ export const MAX_CACHED_PREVIEWS = 24
 export const MAX_CACHED_SOLVE_RESULTS = 8
 export const MAX_CACHED_TRAIN_RESULTS = 8
 export const MAX_CACHED_EXPLORE_RESULTS = 8
+export const MAX_CACHED_EXPLORE_PIVOT_RESULTS = 32
 const NON_CONVERGED_WARNING = "Solver did not converge. Consider increasing max_iter or relaxing tolerance."
 
 type TrainEstimateSample = {
@@ -149,6 +152,12 @@ export type TrainProgress = {
 }
 
 export type ExploreProgress = ExploreStatusResponse
+export type ExplorePivotProgress = ExplorePivotStatusResponse
+
+/** A pivot ID is only unique within its owning Explore node. */
+export function explorePivotResultKey(nodeId: string, pivotId: string): string {
+  return `${nodeId}:${pivotId}`
+}
 
 interface CachedPreview {
   data: PreviewData
@@ -233,6 +242,37 @@ interface ActiveExploreJob {
   structuralVersion: number
 }
 
+interface CachedExplorePivotResult {
+  result: ExplorePivotResult | null
+  error?: string
+  terminalStatus?: ExplorePivotProgress | null
+  jobId: string
+  nodeId: string
+  pivotId: string
+  nodeLabel: string
+  pivotName: string
+  calculationIdentity: string
+  lastAttemptedCalculationIdentity: string
+  lastAttemptedDataframeCacheKey: string | null
+  source: string
+  structuralVersion: number
+}
+
+interface ActiveExplorePivotJob {
+  jobId: string
+  key: string
+  nodeId: string
+  pivotId: string
+  nodeLabel: string
+  pivotName: string
+  calculationIdentity: string
+  requestedDataframeCacheKey: string | null
+  source: string
+  structuralVersion: number
+  progress: ExplorePivotProgress | null
+  error: string | null
+}
+
 // ─── Config hashing ──────────────────────────────────────────────
 
 export function hashConfig(config: Record<string, unknown>): string {
@@ -286,6 +326,7 @@ const previewRecency = new Map<string, number>()
 const solveResultRecency = new Map<string, number>()
 const trainResultRecency = new Map<string, number>()
 const exploreResultRecency = new Map<string, number>()
+const explorePivotResultRecency = new Map<string, number>()
 
 export function resetNodeResultsDerivedCaches(): void {
   for (const key of Object.keys(_optimiserPreviewCache)) delete _optimiserPreviewCache[key]
@@ -294,6 +335,7 @@ export function resetNodeResultsDerivedCaches(): void {
   solveResultRecency.clear()
   trainResultRecency.clear()
   exploreResultRecency.clear()
+  explorePivotResultRecency.clear()
   resultCacheClock = 0
 }
 
@@ -624,6 +666,37 @@ function trimCacheByRecency<T>(
   return { records: nextRecords, evicted }
 }
 
+function trimExplorePivotCache(
+  records: Record<string, CachedExplorePivotResult>,
+  pinnedNodeId: string | null,
+): { records: Record<string, CachedExplorePivotResult>; evicted: string[] } {
+  assertValidCacheLimit(MAX_CACHED_EXPLORE_PIVOT_RESULTS)
+  for (const key of Array.from(explorePivotResultRecency.keys())) {
+    if (!Object.prototype.hasOwnProperty.call(records, key)) explorePivotResultRecency.delete(key)
+  }
+  const protectedKeys = new Set(
+    Object.entries(records)
+      .filter(([, entry]) => entry.nodeId === pinnedNodeId)
+      .map(([key]) => key),
+  )
+  const keys = Object.keys(records)
+  const evictCount = keys.length - MAX_CACHED_EXPLORE_PIVOT_RESULTS
+  if (evictCount <= 0) return { records, evicted: [] }
+  const byRecency = (a: string, b: string) => (explorePivotResultRecency.get(a) ?? 0) - (explorePivotResultRecency.get(b) ?? 0) || a.localeCompare(b)
+  const evictionOrder = [
+    ...keys.filter((key) => !protectedKeys.has(key)).sort(byRecency),
+    ...keys.filter((key) => protectedKeys.has(key)).sort(byRecency),
+  ]
+  const evicted = evictionOrder
+    .slice(0, evictCount)
+  const nextRecords = { ...records }
+  for (const key of evicted) {
+    delete nextRecords[key]
+    explorePivotResultRecency.delete(key)
+  }
+  return { records: nextRecords, evicted }
+}
+
 // ─── Store ───────────────────────────────────────────────────────
 
 interface NodeResultsState {
@@ -642,6 +715,10 @@ interface NodeResultsState {
   // Explore
   exploreResults: Record<string, CachedExploreResult>
   exploreJobs: Record<string, ActiveExploreJob>
+
+  // Explore pivots, keyed by explorePivotResultKey(nodeId, pivotId).
+  pivotResults: Record<string, CachedExplorePivotResult>
+  pivotJobs: Record<string, ActiveExplorePivotJob>
 
   // Column cache — keyed by "nodeId:source", cached across panel mounts.
   // structuralVersion stores the graph version captured at fetch time.
@@ -685,6 +762,11 @@ interface NodeResultsState {
   completeExploreJob: (nodeId: string, result: ExploreCacheReport, terminalStatus?: ExploreProgress) => void
   failExploreJob: (nodeId: string, error: string, terminalStatus?: ExploreProgress) => void
 
+  startExplorePivotJob: (key: string, jobId: string, nodeId: string, pivotId: string, nodeLabel: string, pivotName: string, calculationIdentity: string, source: string, structuralVersion: number, requestedDataframeCacheKey?: string | null) => void
+  updateExplorePivotProgress: (key: string, progress: ExplorePivotProgress) => void
+  completeExplorePivotJob: (key: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
+  failExplorePivotJob: (key: string, error: string, terminalStatus?: ExplorePivotProgress) => void
+
   // ── Derived helpers ──
   /** Build OptimiserPreviewData for a node (from completed result or null). */
   getOptimiserPreview: (nodeId: string) => OptimiserPreviewData | null
@@ -711,6 +793,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   trainJobs: {},
   exploreResults: {},
   exploreJobs: {},
+  pivotResults: {},
+  pivotJobs: {},
 
   // ── Column cache ──
 
@@ -1182,6 +1266,83 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       }
     }),
 
+  startExplorePivotJob: (key, jobId, nodeId, pivotId, nodeLabel, pivotName, calculationIdentity, source, structuralVersion, requestedDataframeCacheKey = null) =>
+    set((s) => ({
+      pivotJobs: {
+        ...s.pivotJobs,
+        [key]: { jobId, key, nodeId, pivotId, nodeLabel, pivotName, calculationIdentity, requestedDataframeCacheKey, source, structuralVersion, progress: null, error: null },
+      },
+    })),
+
+  updateExplorePivotProgress: (key, progress) =>
+    set((s) => {
+      const job = s.pivotJobs[key]
+      return job ? { pivotJobs: { ...s.pivotJobs, [key]: { ...job, progress } } } : s
+    }),
+
+  completeExplorePivotJob: (key, result, terminalStatus) =>
+    set((s) => {
+      const job = s.pivotJobs[key]
+      if (!job) return s
+      const { [key]: _removedJob, ...pivotJobs } = s.pivotJobs; void _removedJob
+      touchCachedResult(explorePivotResultRecency, key)
+      const pivotResults = trimExplorePivotCache({
+        ...s.pivotResults,
+        [key]: {
+          result,
+          terminalStatus: terminalStatus ?? null,
+          jobId: job.jobId,
+          nodeId: job.nodeId,
+          pivotId: job.pivotId,
+          nodeLabel: job.nodeLabel,
+          pivotName: job.pivotName,
+          calculationIdentity: job.calculationIdentity,
+          lastAttemptedCalculationIdentity: job.calculationIdentity,
+          lastAttemptedDataframeCacheKey:
+            job.requestedDataframeCacheKey ?? result.dataframe_cache_key,
+          source: job.source,
+          structuralVersion: job.structuralVersion,
+        },
+      }, s.pinnedPreviewNodeId).records
+      return { pivotJobs, pivotResults }
+    }),
+
+  failExplorePivotJob: (key, error, terminalStatus) =>
+    set((s) => {
+      const job = s.pivotJobs[key]
+      if (!job) return s
+      const { [key]: _removedJob, ...pivotJobs } = s.pivotJobs; void _removedJob
+      touchCachedResult(explorePivotResultRecency, key)
+      const previous = s.pivotResults[key]
+      const retainedResult = previous?.result ?? null
+      const pivotResults = trimExplorePivotCache({
+        ...s.pivotResults,
+        [key]: {
+          result: retainedResult,
+          error,
+          terminalStatus: terminalStatus ?? null,
+          jobId: job.jobId,
+          nodeId: job.nodeId,
+          pivotId: job.pivotId,
+          nodeLabel: job.nodeLabel,
+          pivotName: job.pivotName,
+          // A failed refresh may retain the last usable table, but it must
+          // retain that table's identity too. Otherwise an old result could
+          // be presented as current for the newly failed configuration.
+          calculationIdentity: retainedResult
+            ? previous.calculationIdentity
+            : job.calculationIdentity,
+          lastAttemptedCalculationIdentity: job.calculationIdentity,
+          lastAttemptedDataframeCacheKey: job.requestedDataframeCacheKey,
+          source: retainedResult ? previous.source : job.source,
+          structuralVersion: retainedResult
+            ? previous.structuralVersion
+            : job.structuralVersion,
+        },
+      }, s.pinnedPreviewNodeId).records
+      return { pivotJobs, pivotResults }
+    }),
+
   // ── Derived ──
 
   getOptimiserPreview: (nodeId) => {
@@ -1248,6 +1409,15 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _rtj, ...trainJobs } = s.trainJobs; void _rtj
       const { [nodeId]: _rer, ...exploreResults } = s.exploreResults; void _rer
       const { [nodeId]: _rej, ...exploreJobs } = s.exploreJobs; void _rej
+      const pivotResults = Object.fromEntries(
+        Object.entries(s.pivotResults).filter(([, entry]) => entry.nodeId !== nodeId),
+      )
+      const pivotJobs = Object.fromEntries(
+        Object.entries(s.pivotJobs).filter(([, job]) => job.nodeId !== nodeId),
+      )
+      for (const key of Object.keys(s.pivotResults)) {
+        if (s.pivotResults[key]?.nodeId === nodeId) dropCachedResult(explorePivotResultRecency, key)
+      }
       return {
         previews,
         pinnedPreviewNodeId: s.pinnedPreviewNodeId === nodeId ? null : s.pinnedPreviewNodeId,
@@ -1258,6 +1428,8 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         trainJobs,
         exploreResults,
         exploreJobs,
+        pivotResults,
+        pivotJobs,
       }
     })
   },

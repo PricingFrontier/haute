@@ -85,6 +85,7 @@ vi.mock("../api/client", async () => {
     selectFrontierPoint: vi.fn(() => Promise.resolve({})),
     // Explore
     runExplore: vi.fn(() => Promise.resolve({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })),
+    getExploreCacheSnapshot: vi.fn(() => Promise.resolve({ state: "missing", message: "No cache", result: null })),
     getExploreStatus: vi.fn(() => Promise.resolve({ status: "running", progress: 0, message: "running", result: null })),
     cancelExplore: vi.fn(() => Promise.resolve({ status: "cancelled", progress: 1, message: "cancelled", result: null })),
     // Databricks
@@ -413,6 +414,7 @@ beforeEach(() => {
   vi.mocked(api.savePipeline).mockReset().mockResolvedValue({ file: "pipeline.py", pipeline_name: "main", source_revision: "revision-test" })
   vi.mocked(api.previewNode).mockReset().mockResolvedValue({ node_id: "", status: "ok", columns: [], preview: [], row_count: 0, column_count: 0 })
   vi.mocked(api.runExplore).mockReset().mockResolvedValue({ status: "started", job_id: "explore-job-1", cached: false, message: "started" })
+  vi.mocked(api.getExploreCacheSnapshot).mockReset().mockResolvedValue({ state: "missing", message: "No cache", result: null })
   vi.mocked(api.getExploreStatus).mockReset().mockResolvedValue({ status: "running", progress: 0, message: "running", result: null })
   vi.mocked(api.cancelExplore).mockReset().mockResolvedValue({ status: "cancelled", progress: 1, message: "cancelled", result: null })
   vi.mocked(api.checkMlflow).mockReset().mockResolvedValue({
@@ -692,7 +694,11 @@ describe("App integration — load a pipeline with nodes", () => {
     const exploreNode = await screen.findByText("Claims Explore")
     fireEvent.click(exploreNode)
 
-    expect(await screen.findByRole("button", { name: /process & cache full data/i })).toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "Needs caching" })).toBeInTheDocument()
+    expect(vi.mocked(api.getExploreCacheSnapshot)).toHaveBeenCalledWith(expect.objectContaining({
+      node_id: "explore_1",
+      source: "live",
+    }))
     await waitFor(() => expect(vi.mocked(api.previewNode)).toHaveBeenCalledTimes(1))
     expect(vi.mocked(api.previewNode)).toHaveBeenCalledWith(expect.objectContaining({
       nodeId: "explore_1",

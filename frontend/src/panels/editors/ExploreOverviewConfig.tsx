@@ -1,79 +1,16 @@
 import type { OnUpdateConfig } from "./_shared"
-import { NODE_GROUP_COLORS } from "../../theme/colors"
-import { withAlpha } from "../../utils/color"
+import ExploreToggleCard from "./ExploreToggleCard"
 import {
   OVERVIEW_CARD_DEFINITIONS,
   OVERVIEW_CONFIG_KEYS,
   isOverviewCardEnabled,
   type OverviewCardKey,
 } from "../explore/overviewCardDefinitions"
-import { readOverview, type OverviewConfig } from "../explore/overviewConfig"
+import { readOverview } from "../explore/overviewConfig"
 
 type ExploreOverviewConfigProps = {
   config: Record<string, unknown>
   onUpdate: OnUpdateConfig
-}
-
-type OverviewCardToggleProps = {
-  enabled: boolean
-  toggleKey: keyof OverviewConfig
-  label: string
-  description: string
-  onToggle: () => void
-}
-
-/**
- * Full-box-highlight toggle for an Overview pane card.
- *
- * Renders the entire card row as the checkbox target: explore-pink border and
- * accent-soft background when enabled, neutral input background and border when
- * disabled.
- * Shared by every entry in the Overview cards list.
- */
-function OverviewCardToggle({
-  enabled,
-  toggleKey,
-  label,
-  description,
-  onToggle,
-}: OverviewCardToggleProps) {
-  const labelId = `explore-overview-toggle-${toggleKey}-label`
-  const descriptionId = `explore-overview-toggle-${toggleKey}-description`
-
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={enabled}
-      aria-labelledby={labelId}
-      aria-describedby={descriptionId}
-      onClick={onToggle}
-      className="focus-ring text-left flex items-center px-3 py-2 rounded-lg cursor-pointer select-none transition-colors hover:brightness-105"
-      style={{
-        background: enabled ? "var(--accent-soft)" : "var(--bg-input)",
-        border: `1px solid ${enabled ? NODE_GROUP_COLORS.explore : "var(--border)"}`,
-        ["--focus-ring-border" as string]: withAlpha(NODE_GROUP_COLORS.explore, 0.3),
-        ["--focus-ring-shadow" as string]: withAlpha(NODE_GROUP_COLORS.explore, 0.1),
-      }}
-    >
-      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
-        <span
-          id={labelId}
-          className="text-xs font-semibold"
-          style={{ color: enabled ? NODE_GROUP_COLORS.explore : "var(--text-primary)" }}
-        >
-          {label}
-        </span>
-        <span
-          id={descriptionId}
-          className="text-[11px] leading-relaxed"
-          style={{ color: "var(--text-muted)" }}
-        >
-          {description}
-        </span>
-      </span>
-    </button>
-  )
 }
 
 export default function ExploreOverviewConfig({
@@ -121,10 +58,9 @@ export default function ExploreOverviewConfig({
 
       <div className="flex flex-col gap-2">
         {OVERVIEW_CARD_DEFINITIONS.map((definition) => (
-          <OverviewCardToggle
+          <ExploreToggleCard
             key={definition.key}
             enabled={enabledByKey[definition.key]}
-            toggleKey={definition.key}
             label={definition.label}
             description={definition.description}
             onToggle={() => toggleKey(definition.key, enabledByKey[definition.key])}

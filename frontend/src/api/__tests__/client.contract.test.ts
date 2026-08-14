@@ -4,6 +4,7 @@ import { loadUiContractFixture } from "../../testSupport/uiContractFixtures"
 import {
   applyOptimiser,
   cancelExplore,
+  cancelExplorePivot,
   cancelOptimiserFrontierAutoRange,
   checkMlflow,
   createSubmodel,
@@ -19,9 +20,12 @@ import {
   resolveOutputDestination,
   writeOutput,
   fetchIoCapabilities,
+  fetchExplorePivotMembers,
   buildInputCache,
   fetchSchema,
   getExploreStatus,
+  getExploreCacheSnapshot,
+  getExplorePivotStatus,
   getMilestones,
   getMilestoneSaves,
   getOptimiserFrontierAutoRangeStatus,
@@ -50,6 +54,7 @@ import {
   previewNode,
   readUtilityFile,
   runExplore,
+  runExplorePivot,
   savePipeline,
   saveOptimiser,
   selectFrontierPoint,
@@ -346,6 +351,7 @@ describe("client runtime contracts", () => {
       graph: dummyGraph,
       node_id: "explore",
       source: "live",
+      refresh: true,
       streamingChunkSize: 2048,
     })
 
@@ -354,11 +360,28 @@ describe("client runtime contracts", () => {
       graph: dummyGraph,
       node_id: "explore",
       source: "live",
+      refresh: true,
       streaming_chunk_size: 2048,
     })
     expect(result.cached).toBe(true)
     expect(result.result?.row_count).toBe(150)
     expect(result.result?.dataframe_cache_key).toContain("explore_dataset")
+  })
+
+  it("getExploreCacheSnapshot posts the cache identity and parses its state", async () => {
+    const report = loadUiContractFixture<Record<string, unknown>>("explore_run_response").result
+    mockFetch.mockReturnValue(jsonResponse({ state: "current", message: "Cached", result: report }))
+
+    const result = await getExploreCacheSnapshot({
+      graph: dummyGraph, node_id: "explore", streamingChunkSize: 2048,
+    })
+
+    expect(mockFetch.mock.calls[0][0]).toBe("/api/explore/cache-status")
+    expect(JSON.parse(String(mockFetch.mock.calls[0][1]?.body))).toEqual({
+      graph: dummyGraph, node_id: "explore", source: "live", streaming_chunk_size: 2048,
+    })
+    expect(result.state).toBe("current")
+    expect(result.result?.row_count).toBe(150)
   })
 
   it("getExploreStatus and cancelExplore parse terminal reports", async () => {
@@ -540,6 +563,12 @@ describe("next-wave client runtime contracts", () => {
       response: { ...loadUiContractFixture<Record<string, unknown>>("explore_run_response"), cached: "yes" },
       call: () => runExplore({ graph: dummyGraph, node_id: "explore" }),
       error: /parseExploreRunResponse/i,
+    },
+    {
+      name: "getExploreCacheSnapshot",
+      response: { state: "ready", message: "wrong state", result: null },
+      call: () => getExploreCacheSnapshot({ graph: dummyGraph, node_id: "explore" }),
+      error: /parseExploreCacheSnapshotResponse/i,
     },
     {
       name: "getExploreStatus",
@@ -773,6 +802,76 @@ describe("shared client trust-boundary endpoints", () => {
       await expect(testCase.call()).rejects.toThrow()
     })
   }
+})
+
+describe("pivot client contracts", () => {
+  it("uses the pivot endpoints, preserves request bodies, and guards responses", async () => {
+    const run = loadUiContractFixture("explore_pivot_run_response")
+    const status = loadUiContractFixture("explore_pivot_status_response")
+    const members = loadUiContractFixture("explore_pivot_members_response")
+    mockFetch
+      .mockReturnValueOnce(jsonResponse(run))
+      .mockReturnValueOnce(jsonResponse(status))
+      .mockReturnValueOnce(jsonResponse(status))
+      .mockReturnValueOnce(jsonResponse(members))
+
+    await expect(
+      runExplorePivot({
+        graph: dummyGraph,
+        node_id: "explore",
+        pivot: { rows: ["region"] },
+        source: "pricing",
+        streamingChunkSize: 500,
+      }),
+    ).resolves.toMatchObject({ status: "completed" })
+    await expect(getExplorePivotStatus("job / 1")).resolves.toMatchObject({
+      status: "completed",
+    })
+    await expect(cancelExplorePivot("job / 1")).resolves.toMatchObject({
+      status: "completed",
+    })
+    await expect(
+      fetchExplorePivotMembers({
+        graph: dummyGraph,
+        node_id: "explore",
+        field: "region",
+        search: "Nor",
+        streamingChunkSize: 50,
+      }),
+    ).resolves.toMatchObject({ status: "ok" })
+
+    expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+      "/api/explore/pivots/run",
+      "/api/explore/pivots/status/job%20%2F%201",
+      "/api/explore/pivots/cancel/job%20%2F%201",
+      "/api/explore/pivots/members",
+    ])
+    expect(JSON.parse(String(mockFetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      graph: dummyGraph,
+      node_id: "explore",
+      pivot: { rows: ["region"] },
+      source: "pricing",
+      streaming_chunk_size: 500,
+    })
+    expect(JSON.parse(String(mockFetch.mock.calls[2]?.[1]?.body))).toEqual({})
+    expect(JSON.parse(String(mockFetch.mock.calls[3]?.[1]?.body))).toMatchObject({
+      graph: dummyGraph,
+      node_id: "explore",
+      field: "region",
+      search: "Nor",
+      source: "live",
+      streaming_chunk_size: 50,
+    })
+  })
+
+  it("rejects malformed successful pivot responses", async () => {
+    mockFetch.mockReturnValue(
+      jsonResponse({ status: "ok", field: "region", members: [], failure: null }),
+    )
+    await expect(
+      runExplorePivot({ graph: dummyGraph, node_id: "explore", pivot: {} }),
+    ).rejects.toThrow(/parseExplorePivotRunResponse/i)
+  })
 })
 
 describe("inferJsonCacheSchema completeness contract", () => {

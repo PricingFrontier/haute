@@ -5,7 +5,11 @@ import {
   parseApplyOptimiserResponse,
   parseDissolveSubmodelResponse,
   parseExploreRunResponse,
+  parseExploreCacheSnapshotResponse,
   parseExploreStatusResponse,
+  parseExplorePivotMembersResponse,
+  parseExplorePivotRunResponse,
+  parseExplorePivotStatusResponse,
   parseFrontierAutoRangeResponse,
   parseFrontierAutoRangeStatusResponse,
   parseFrontierResponse,
@@ -1101,6 +1105,85 @@ describe("API response guards", () => {
     expect(run.result?.dataframe_cache_key).toContain("explore_dataset")
     expect(run.result?.overview_summary.data_quality.issue_count).toBe(0)
     expect(status.result?.dataframe_cache_key).toBe(run.result?.dataframe_cache_key)
+  })
+
+  it("parses an Explore cache snapshot response", () => {
+    const parsed = parseExploreCacheSnapshotResponse({
+      state: "missing",
+      message: "No cached Explore result.",
+      result: null,
+    })
+
+    expect(parsed).toEqual({
+      state: "missing",
+      message: "No cached Explore result.",
+      result: null,
+    })
+  })
+
+  it("parses typed pivot matrices, job status, and exact members", () => {
+    const run = parseExplorePivotRunResponse(loadUiContractFixture("explore_pivot_run_response"))
+    const status = parseExplorePivotStatusResponse(loadUiContractFixture("explore_pivot_status_response"))
+    const members = parseExplorePivotMembersResponse(loadUiContractFixture("explore_pivot_members_response"))
+
+    expect(run.cached).toBe(true)
+    expect(run.result?.row_paths[0].members[0]).toEqual({ kind: "string", value: "North" })
+    expect(run.result?.cells[0].value).toBe(12.5)
+    expect(status.result?.calculation_key).toBe(run.result?.calculation_key)
+    expect(members.members[1].key).toEqual({ kind: "null", value: null })
+  })
+
+  it("parses every typed pivot member key", () => {
+    const parsed = parseExplorePivotMembersResponse({
+      status: "ok",
+      field: "value",
+      members: [
+        { key: { kind: "null", value: null }, label: "null", count: 1 },
+        { key: { kind: "nan", value: null }, label: "nan", count: 1 },
+        { key: { kind: "string", value: "North" }, label: "North", count: 1 },
+        { key: { kind: "boolean", value: true }, label: "true", count: 1 },
+        { key: { kind: "integer", value: "-42" }, label: "-42", count: 1 },
+        { key: { kind: "float", value: 12.5 }, label: "12.5", count: 1 },
+        { key: { kind: "decimal", value: "12.50" }, label: "12.50", count: 1 },
+        { key: { kind: "date", value: "2026-08-13" }, label: "date", count: 1 },
+        { key: { kind: "datetime", value: "2026-08-13T14:30:00+01:00" }, label: "datetime", count: 1 },
+        { key: { kind: "time", value: "14:30:00+01:00" }, label: "time", count: 1 },
+      ],
+      failure: null,
+    })
+
+    expect(parsed.members.map(({ key }) => key)).toEqual([
+      { kind: "null", value: null },
+      { kind: "nan", value: null },
+      { kind: "string", value: "North" },
+      { kind: "boolean", value: true },
+      { kind: "integer", value: "-42" },
+      { kind: "float", value: 12.5 },
+      { kind: "decimal", value: "12.50" },
+      { kind: "date", value: "2026-08-13" },
+      { kind: "datetime", value: "2026-08-13T14:30:00+01:00" },
+      { kind: "time", value: "14:30:00+01:00" },
+    ])
+  })
+
+  it("rejects malformed pivot path/cell/member payloads", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>("explore_pivot_run_response")
+    const result = fixture.result as Record<string, unknown>
+    expect(() =>
+      parseExplorePivotRunResponse({
+        ...fixture,
+        result: { ...result, cells: [{ row_index: -1, column_index: 0, value_id: "v", value: 1 }] },
+      }),
+    ).toThrow(/parseExplorePivot/i)
+
+    expect(() =>
+      parseExplorePivotMembersResponse({
+        status: "ok",
+        field: "region",
+        members: [{ key: { kind: "wat", value: null }, label: "bad", count: 1 }],
+        failure: null,
+      }),
+    ).toThrow(/parseExplorePivot/i)
   })
 
   it("rejects malformed explore result payloads", () => {

@@ -57,6 +57,9 @@ export default defineConfig({
       output: {
         manualChunks(id: string) {
           if (!id.includes("node_modules")) return;
+          if (id.includes("/echarts/") || id.includes("/zrender/")) {
+            return "vendor-charts";
+          }
           // React + ReactFlow share a chunk to avoid circular imports
           if (
             id.includes("/react-dom/") ||

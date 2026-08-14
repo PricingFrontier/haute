@@ -197,7 +197,9 @@ def test_execution_strategy_guide_is_in_public_navigation_and_states_key_contrac
         "Streaming boundary",
         "Materialisation boundary",
         "Haute never generically chunks a group-by.",
-        "`preview_eager` or `deploy_live`",
+        "`preview_eager`",
+        "`explore_analysis` cache-materialisation",
+        "`deploy_live`",
         "unavailable or `null`",
     ):
         assert claim in guide

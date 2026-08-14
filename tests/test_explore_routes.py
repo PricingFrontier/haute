@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import pytest
 
+from haute._file_ops import atomic_write_text
 from tests.conftest import make_edge, make_graph
 
 if TYPE_CHECKING:
@@ -192,6 +194,49 @@ def test_explore_run_applies_node_polars_code_before_caching(
     assert report["column_count"] == 4
 
 
+def test_explore_cache_materialises_admitted_upstream_group_by(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "claims.parquet"
+    pl.DataFrame(
+        {
+            "quote_id": ["a", "a", "b"],
+            "premium": [10, 20, 40],
+        }
+    ).write_parquet(path)
+
+    response = client.post(
+        "/api/explore/run",
+        json={
+            "graph": _explore_graph(
+                str(path),
+                prep_code=(
+                    "df = source.group_by('quote_id').agg(pl.col('premium').sum().alias('premium'))"
+                ),
+            ),
+            "node_id": "explore",
+            "source": "live",
+        },
+    )
+
+    assert response.status_code == 200
+    started = response.json()
+    final = _poll_explore(client, started["job_id"])
+
+    assert final["status"] == "completed", final
+    report = final["result"]
+    assert report["row_count"] == 2
+    assert report["column_count"] == 2
+    premium = next(column for column in report["columns"] if column["name"] == "premium")
+    assert premium["min_value"] == "30"
+    assert premium["max_value"] == "40"
+    strategy = final["execution_metrics"]["execution_strategy"]
+    assert strategy["profile"] == "explore_analysis"
+    assert strategy["reason_code"] == "group_by_materialisation_admitted"
+    assert strategy["estimated_peak_bytes"] <= strategy["headroom_bytes"]
+
+
 def test_explore_reuses_completed_report_for_same_analysis_key(
     client: TestClient,
     tmp_path: Path,
@@ -211,6 +256,456 @@ def test_explore_reuses_completed_report_for_same_analysis_key(
     assert second["status"] == "completed"
     assert second["cached"] is True
     assert second["result"] == first_status["result"]
+
+
+def test_explore_cache_status_reports_missing_before_first_materialisation(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "missing",
+        "message": "Explore data needs caching",
+        "result": None,
+    }
+
+
+def test_explore_cache_status_restores_durable_dataset_after_process_caches_are_cleared(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    completed = _poll_explore(client, started["job_id"])
+    assert completed["status"] == "completed"
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    assert spec.project_root == tmp_path.resolve()
+    dataframe_key = spec.dataframe_cache_request.keys_by_node["explore"]
+    assert spec.dataframe_cache_request.cache.get(dataframe_key) is not None
+
+    # Model a local backend restart: both process-owned layers disappear, while
+    # the project-local durable generation remains on disk.
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    assert spec.dataframe_cache_request.cache.get(dataframe_key) is None
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 200
+    snapshot = response.json()
+    assert snapshot["state"] == "current"
+    assert snapshot["message"] == "Explore data is cached"
+    assert snapshot["result"] == completed["result"]
+
+    restored_spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    restored_key = restored_spec.dataframe_cache_request.keys_by_node["explore"]
+    assert restored_spec.dataframe_cache_request.cache.get(restored_key) is not None
+
+    cache_hit = client.post("/api/explore/run", json=body).json()
+    assert cache_hit["status"] == "completed"
+    assert cache_hit["cached"] is True
+    assert cache_hit["result"] == completed["result"]
+
+
+def test_durable_explore_generation_is_retained_while_a_reader_holds_a_lease(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, first["job_id"])["status"] == "completed"
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+
+    with store.lease(spec.family_key, report_cache_key=spec.report_cache_key) as snapshot:
+        assert snapshot is not None
+        assert snapshot.state == "current"
+        leased_generation_dir = snapshot.data_path.parent
+
+        refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+        assert _poll_explore(client, refreshed["job_id"])["status"] == "completed"
+        assert leased_generation_dir.exists()
+
+        spec.dataframe_cache_request.cache.clear()
+        restored = store.restore(
+            snapshot,
+            spec.dataframe_cache_request,
+            node_id=spec.node_id,
+        )
+        assert restored.path.exists()
+        assert restored.row_count == 2
+
+    assert not leased_generation_dir.exists()
+
+
+def test_explore_cache_status_reports_stale_for_changed_analysis_identity(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    first_body = {
+        "graph": _explore_graph(str(path), explore_config={"code": "df = df"}),
+        "node_id": "explore",
+        "source": "live",
+    }
+    changed_body = {
+        "graph": _explore_graph(
+            str(path),
+            explore_config={"code": "df = df.filter(pl.col('premium') > 10)"},
+        ),
+        "node_id": "explore",
+        "source": "live",
+    }
+
+    started = client.post("/api/explore/run", json=first_body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+
+    # A stale generation may carry an older report schema. Staleness must be
+    # inspectable so the user can re-cache; only a current report is parsed as
+    # today's typed ExploreCacheReport.
+    first_spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(first_body))
+    store = ExplorePersistentCacheStore(first_spec.project_root)
+    family_dir = store._family_dir(first_spec.family_key)
+    pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    metadata_path = family_dir / "generations" / pointer["generation_id"] / "meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["report"] = {"legacy_report_schema": True}
+    atomic_write_text(metadata_path, json.dumps(metadata))
+
+    response = client.post("/api/explore/cache-status", json=changed_body)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "state": "stale",
+        "message": "Explore cache is stale",
+        "result": None,
+    }
+
+
+def test_explore_cache_status_detects_changed_source_data_as_stale(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+
+    pl.DataFrame({"quote_id": ["a", "b", "c"], "premium": [10, 20, 30]}).write_parquet(path)
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "stale"
+    assert response.json()["result"] is None
+
+
+def test_explore_refresh_bypasses_current_report_and_dataframe_caches(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes.explore import _explore_service
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    first_completed = _poll_explore(client, first["job_id"])
+    assert client.post("/api/explore/run", json=body).json()["cached"] is True
+
+    original_materialise = _explore_service._materialise_and_summarise
+    materialisations = 0
+
+    def count_materialisation(*args, **kwargs):
+        nonlocal materialisations
+        materialisations += 1
+        return original_materialise(*args, **kwargs)
+
+    monkeypatch.setattr(
+        _explore_service,
+        "_materialise_and_summarise",
+        count_materialisation,
+    )
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+
+    assert refreshed["status"] == "started"
+    assert refreshed["cached"] is False
+    refreshed_completed = _poll_explore(client, refreshed["job_id"])
+    assert refreshed_completed["status"] == "completed"
+    assert materialisations == 1
+    assert refreshed_completed["result"]["generated_at"] > first_completed["result"]["generated_at"]
+
+
+def test_failed_explore_refresh_preserves_last_durable_generation(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _explore_cache as persistent_cache_module
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    first_completed = _poll_explore(client, first["job_id"])
+    assert first_completed["status"] == "completed"
+
+    original_atomic_write_text = persistent_cache_module.atomic_write_text
+
+    def fail_pointer_publication(path: Path, data: str, encoding: str = "utf-8") -> None:
+        if path.name == "current.json":
+            raise OSError("forced durable pointer publication failure")
+        original_atomic_write_text(path, data, encoding)
+
+    monkeypatch.setattr(
+        persistent_cache_module,
+        "atomic_write_text",
+        fail_pointer_publication,
+    )
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+    failed = _poll_explore(client, refreshed["job_id"])
+    assert failed["status"] == "error"
+    assert "forced durable pointer publication failure" in failed["message"]
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    dataframe_key = spec.dataframe_cache_request.keys_by_node["explore"]
+    assert spec.dataframe_cache_request.cache.get(dataframe_key) is None
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == first_completed["result"]
+
+
+def test_committed_explore_refresh_survives_old_generation_cleanup_failure(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _explore_cache as persistent_cache_module
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, first["job_id"])["status"] == "completed"
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    family_dir = store._family_dir(spec.family_key)
+    old_pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    old_generation_dir = family_dir / "generations" / old_pointer["generation_id"]
+    original_rmtree = persistent_cache_module.shutil.rmtree
+
+    def fail_old_generation_retirement(candidate: Path, *args, **kwargs) -> None:
+        if Path(candidate) == old_generation_dir:
+            raise OSError("forced old-generation cleanup failure")
+        original_rmtree(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(persistent_cache_module.shutil, "rmtree", fail_old_generation_retirement)
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+    refreshed_completed = _poll_explore(client, refreshed["job_id"])
+
+    assert refreshed_completed["status"] == "completed"
+    new_pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    assert new_pointer["generation_id"] != old_pointer["generation_id"]
+    assert old_generation_dir.exists()
+
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == refreshed_completed["result"]
+
+
+def test_cancelled_explore_refresh_preserves_last_durable_generation(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import _explore_service as service_mod
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a", "b"], "premium": [10, 20]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    first = client.post("/api/explore/run", json=body).json()
+    first_completed = _poll_explore(client, first["job_id"])
+    assert first_completed["status"] == "completed"
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_collect = service_mod.cancellable_streaming_collect
+
+    def gated_collect(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5.0)
+        return original_collect(*args, **kwargs)
+
+    monkeypatch.setattr(service_mod, "cancellable_streaming_collect", gated_collect)
+
+    refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+    assert refreshed["status"] == "started"
+    assert entered.wait(timeout=5.0)
+
+    cancelled = client.post(f"/api/explore/cancel/{refreshed['job_id']}")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    release.set()
+
+    worker_name = f"haute-explore-{refreshed['job_id']}"
+    for thread in threading.enumerate():
+        if thread.name == worker_name:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+            break
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == first_completed["result"]
+
+
+@pytest.mark.parametrize("warm_process_caches", [False, True])
+def test_explore_cache_status_fails_loudly_for_corrupt_selected_generation(
+    client: TestClient,
+    tmp_path: Path,
+    warm_process_caches: bool,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    pointer = store._family_dir(spec.family_key) / "current.json"
+    atomic_write_text(pointer, "not valid json")
+    if not warm_process_caches:
+        _explore_service._report_cache.clear()
+        spec.dataframe_cache_request.cache.clear()
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    # The durable generation is inspected first, so warm process caches never
+    # hide a corrupt selected generation.
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+
+
+def test_explore_cache_status_reports_stale_durable_generation_despite_warm_process_caches(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    first_body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+    second_prep = "df = source.with_columns((pl.col('premium') * 3).alias('triple_premium'))"
+    second_body = {
+        "graph": _explore_graph(str(path), prep_code=second_prep),
+        "node_id": "explore",
+        "source": "live",
+    }
+
+    first_started = client.post("/api/explore/run", json=first_body).json()
+    assert _poll_explore(client, first_started["job_id"])["status"] == "completed"
+    second_started = client.post("/api/explore/run", json=second_body).json()
+    assert _poll_explore(client, second_started["job_id"])["status"] == "completed"
+
+    # The first identity's report and dataframe are still warm in the process
+    # caches, but the selected durable generation now belongs to the second
+    # identity: the durable inspection must win and report stale.
+    snapshot = client.post("/api/explore/cache-status", json=first_body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "stale"
+
+
+def test_explore_cache_status_falls_back_to_process_caches_without_durable_generation(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    completed = _poll_explore(client, started["job_id"])
+    assert completed["status"] == "completed"
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    family_dir = tmp_path / ".haute_cache" / "explore" / store.family_digest(spec.family_key)
+    assert family_dir == store._family_dir(spec.family_key)
+    shutil.rmtree(family_dir)
+
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == completed["result"]
+
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "missing"
 
 
 def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
@@ -236,7 +731,7 @@ def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
     first = client.post("/api/explore/run", json=first_body).json()
     first_status = _poll_explore(client, first["job_id"])
     assert first_status["status"] == "completed"
-    first_key = _explore_service._prepare_spec(
+    first_key = _explore_service.prepare_spec(
         ExploreRunRequest.model_validate(first_body)
     ).dataframe_cache_key
 
@@ -249,14 +744,14 @@ def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
 
     assert second_status["status"] == "completed"
     assert (
-        _explore_service._prepare_spec(
+        _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(second_body)
         ).dataframe_cache_key
         == first_key
     )
 
 
-def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
+def test_explore_display_config_does_not_invalidate_analysis_dataframe_cache(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -277,6 +772,8 @@ def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
             explore_config={
                 **data_config,
                 "overview": {"dataset_snapshot": True, "schema": True},
+                "pivots": [{"id": "pivot_1"}],
+                "charts": [{"id": "chart_1", "enabled": True}],
             },
         ),
         "node_id": "explore",
@@ -286,7 +783,7 @@ def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
     first = client.post("/api/explore/run", json=first_body).json()
     first_status = _poll_explore(client, first["job_id"])
     assert first_status["status"] == "completed"
-    first_key = _explore_service._prepare_spec(
+    first_key = _explore_service.prepare_spec(
         ExploreRunRequest.model_validate(first_body)
     ).dataframe_cache_key
 
@@ -298,7 +795,7 @@ def test_explore_overview_config_does_not_invalidate_analysis_dataframe_cache(
     assert second["cached"] is True
     assert second["result"]["dataframe_cache_key"] == first_key
     assert (
-        _explore_service._prepare_spec(
+        _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(second_body)
         ).dataframe_cache_key
         == first_key
@@ -310,6 +807,7 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    from haute._polars_utils import read_parquet_metadata
     from haute.routes._explore_service import EXPLORE_CACHE_VERSION
     from haute.routes.explore import _explore_service
     from haute.schemas import ExploreCacheReport, ExploreRunRequest
@@ -321,9 +819,20 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
         "node_id": "explore",
         "source": "live",
     }
-    spec = _explore_service._prepare_spec(ExploreRunRequest.model_validate(body))
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
     assert EXPLORE_CACHE_VERSION == 5
     assert spec.report_cache_key.startswith("explore:v5:")
+
+    dataframe_key = spec.dataframe_cache_request.keys_by_node["explore"]
+    dataframe_cache = spec.dataframe_cache_request.cache
+    with dataframe_cache.materialization_lock(dataframe_key):
+        artifact_path = dataframe_cache.path_for_key(dataframe_key)
+        pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(artifact_path)
+        dataframe_cache.store_artifact(
+            dataframe_key,
+            artifact_path,
+            read_parquet_metadata(artifact_path),
+        )
 
     _explore_service._report_cache.put(
         spec.report_cache_key,
@@ -396,10 +905,10 @@ def test_explore_code_config_change_invalidates_analysis_dataframe_cache(
     }
 
     assert (
-        _explore_service._prepare_spec(
+        _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(first_body)
         ).dataframe_cache_key
-        != _explore_service._prepare_spec(
+        != _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(second_body)
         ).dataframe_cache_key
     )
@@ -507,6 +1016,71 @@ def test_explore_supersedes_an_in_flight_job(
                 thread.join(timeout=5.0)
                 assert not thread.is_alive()
                 break
+
+
+def test_superseded_explore_job_cannot_select_its_prepared_generation(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newer job wins even if the older job already prepared durable output."""
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+    first_prepared = threading.Event()
+    release_first = threading.Event()
+    prepared = []
+    prepared_lock = threading.Lock()
+    original_prepare = _explore_service._prepare_durable_publication
+
+    def prepare_with_first_job_gated(*args, **kwargs):
+        publication = original_prepare(*args, **kwargs)
+        with prepared_lock:
+            prepared.append(publication)
+            call_number = len(prepared)
+        if call_number == 1:
+            first_prepared.set()
+            assert release_first.wait(timeout=5.0)
+        return publication
+
+    monkeypatch.setattr(
+        _explore_service,
+        "_prepare_durable_publication",
+        prepare_with_first_job_gated,
+    )
+
+    first = client.post("/api/explore/run", json=body).json()
+    assert first_prepared.wait(timeout=5.0)
+    second = client.post("/api/explore/run", json=body).json()
+    second_completed = _poll_explore(client, second["job_id"], timeout=5.0)
+    assert second_completed["status"] == "completed"
+
+    release_first.set()
+    first_completed = _poll_explore(client, first["job_id"], timeout=5.0)
+    assert first_completed["status"] == "superseded"
+    worker_name = f"haute-explore-{first['job_id']}"
+    for thread in threading.enumerate():
+        if thread.name == worker_name:
+            thread.join(timeout=5.0)
+            assert not thread.is_alive()
+            break
+
+    assert len(prepared) == 2
+    assert not prepared[0].staging_path.exists()
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    family_dir = prepared[1].final_path.parent.parent
+    pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    assert pointer["generation_id"] == prepared[1].generation_id
+
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+    snapshot = client.post("/api/explore/cache-status", json=body)
+    assert snapshot.status_code == 200
+    assert snapshot.json()["state"] == "current"
+    assert snapshot.json()["result"] == second_completed["result"]
 
 
 def test_explore_rejects_node_without_exactly_one_parent(

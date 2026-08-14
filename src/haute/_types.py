@@ -347,11 +347,133 @@ class ExploreOverviewConfig(TypedDict, total=False):
     schema: bool
 
 
+class ExploreChartStyle(TypedDict):
+    mark: Literal["column", "line", "area"]
+    axis: Literal["primary", "secondary"]
+    stack_group: str | None
+    color: str | None
+    data_labels: bool
+    markers: bool
+
+
+class ExploreChartValueEncoding(ExploreChartStyle):
+    id: str
+    value_id: str
+
+
+class ExploreChartSeriesOverride(ExploreChartStyle):
+    id: str
+    series_key: str
+
+
+class ExploreChartCategory(TypedDict):
+    source: Literal["rows"]
+    include_grand_total: bool
+    label_rotation: int
+
+
+class ExploreChartAxis(TypedDict):
+    title: str
+    minimum: int | float | None
+    maximum: int | float | None
+    number_format: Literal[
+        "inherit", "number", "integer", "percent", "currency_gbp", "currency_usd", "currency_eur"
+    ]
+
+
+class ExploreChartAxes(TypedDict):
+    primary: ExploreChartAxis
+    secondary: ExploreChartAxis
+
+
+class ExploreChartLegend(TypedDict):
+    visible: bool
+    position: Literal["top", "right", "bottom", "left"]
+
+
+class ExploreChartConfig(TypedDict):
+    """Persisted version-1 state for one Explore chart card."""
+
+    version: Literal[1]
+    id: str
+    name: str
+    enabled: bool
+    pivot_id: str | None
+    kind: Literal["combo"]
+    category: ExploreChartCategory
+    value_encodings: list[ExploreChartValueEncoding]
+    series_overrides: list[ExploreChartSeriesOverride]
+    axes: ExploreChartAxes
+    legend: ExploreChartLegend
+
+
+class ExplorePivotMember(TypedDict):
+    kind: Literal[
+        "null",
+        "string",
+        "boolean",
+        "integer",
+        "float",
+        "nan",
+        "date",
+        "datetime",
+        "time",
+        "decimal",
+    ]
+    value: str | float | int | bool | None
+
+
+class ExplorePivotFilterPlacement(TypedDict):
+    id: str
+    field: str
+    members: list[ExplorePivotMember]
+
+
+class ExplorePivotAxisPlacement(TypedDict):
+    id: str
+    field: str
+
+
+class ExplorePivotRowPlacement(ExplorePivotAxisPlacement):
+    sort: Literal["ascending", "descending"]
+
+
+class ExplorePivotValuePlacement(TypedDict):
+    id: str
+    field: str
+    aggregation: Literal["sum", "count", "average", "min", "max", "median", "distinct_count"]
+    display_name: str
+    sort_rows: Literal["none", "ascending", "descending"]
+    color_scale: Literal["none", "low_red_high_green", "low_green_high_red"]
+
+
+class ExplorePivotOptions(TypedDict):
+    row_grand_totals: bool
+    column_grand_totals: bool
+    sort_by: str | None
+
+
+class ExplorePivotConfig(TypedDict):
+    """Persisted version-1 state for one Explore pivot card."""
+
+    version: Literal[1]
+    id: str
+    name: str
+    enabled: bool
+    filters: list[ExplorePivotFilterPlacement]
+    columns: list[ExplorePivotAxisPlacement]
+    rows: list[ExplorePivotRowPlacement]
+    values: list[ExplorePivotValuePlacement]
+    options: ExplorePivotOptions
+
+
 class ExploreConfig(TypedDict, total=False):
     """Config for explore nodes."""
 
     code: str
     overview: ExploreOverviewConfig
+    pivots: list[ExplorePivotConfig]
+    charts: list[ExploreChartConfig]
 
 
 class ExternalFileConfig(TypedDict, total=False):

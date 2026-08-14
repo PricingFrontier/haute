@@ -26,7 +26,7 @@ reason = "The application shell hosts the canvas and wires in the assistant pane
 [[shared_file]]
 path = "frontend/src/api/types.ts"
 primary = "frontend-shared"
-consumers = ["frontend-modelling-optimiser-ui", "optimiser"]
+consumers = ["frontend-modelling-optimiser-ui", "frontend-preview-explore", "optimiser"]
 reason = "Shared UI owns the canonical API contracts extended by modelling and optimiser responses."
 
 [[shared_file]]
@@ -84,6 +84,18 @@ consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
 reason = "Preview/Explore owns the generic ARIA tab strip consumed by modelling result and node-panel panes."
 
 [[shared_file]]
+path = "frontend/src/panels/explore/chartConfig.ts"
+primary = "frontend-preview-explore"
+consumers = ["frontend-node-editors"]
+reason = "Explore owns chart parsing and identity invariants; node editors consume the shared chart configuration contract."
+
+[[shared_file]]
+path = "frontend/src/panels/explore/pivotConfig.ts"
+primary = "frontend-preview-explore"
+consumers = ["frontend-node-editors"]
+reason = "Explore owns pivot parsing and identity invariants; node editors consume the shared pivot configuration contract."
+
+[[shared_file]]
 path = "frontend/src/stores/useGitStore.ts"
 primary = "frontend-git-ui"
 consumers = ["hosted-project-storage"]
@@ -92,7 +104,7 @@ reason = "Git readiness state carries the storage binding and sync fields the st
 [[shared_file]]
 path = "frontend/src/stores/useNodeResultsStore.ts"
 primary = "frontend-shared"
-consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors"]
+consumers = ["frontend-modelling-optimiser-ui", "frontend-node-editors", "frontend-preview-explore"]
 reason = "Shared UI owns result/job state; modelling consumes training history/ETA and node chrome consumes active-job state."
 
 [[shared_file]]
@@ -104,7 +116,7 @@ reason = "Global UI state is consumed by the assistant and by modelling pane sel
 [[shared_file]]
 path = "frontend/src/types/guards.ts"
 primary = "frontend-shared"
-consumers = ["hosted-project-storage"]
+consumers = ["frontend-preview-explore", "hosted-project-storage"]
 reason = "Shared response guards parse the storage and sync fields added to git readiness."
 
 [[shared_file]]
@@ -159,7 +171,7 @@ reason = "Execution owns runtime builders; optimiser consumes OPTIMISER_APPLY ar
 path = "src/haute/_cache.py"
 primary = "caching"
 consumers = ["explore-eda"]
-reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview-field exclusion that keeps dataframe and report caching independent."
+reason = "Caching owns dataframe cache-key invariants; Explore consumes the overview/pivots/charts display-field exclusions that keep dataframe and report caching independent."
 
 [[shared_file]]
 path = "src/haute/_column_summary.py"

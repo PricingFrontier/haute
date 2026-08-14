@@ -11,10 +11,10 @@
  * wires up store selectors and API functions for each job type.
  */
 import { useCallback } from "react"
-import { getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
+import { getExplorePivotStatus, getExploreStatus, getOptimiserStatus, getTrainStatus } from "../api/client"
 import { FAILED_JOB_STATUSES } from "../api/types"
 import useNodeResultsStore from "../stores/useNodeResultsStore"
-import type { ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
+import type { ExplorePivotProgress, ExploreProgress, SolveProgress, TrainProgress } from "../stores/useNodeResultsStore"
 import useToastStore from "../stores/useToastStore"
 import { buildExecutionFailureMessage } from "../utils/executionDiagnostics"
 import useJobPolling from "./useJobPolling"
@@ -164,5 +164,49 @@ export default function useBackgroundJobs() {
     addToast,
     successLabel: "Explore complete",
     failLabel: "Explore failed",
+  })
+
+  // ── Explore pivot job polling ──
+
+  const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
+  const updateExplorePivotProgress = useNodeResultsStore((s) => s.updateExplorePivotProgress)
+  const completeExplorePivotJob = useNodeResultsStore((s) => s.completeExplorePivotJob)
+  const failExplorePivotJob = useNodeResultsStore((s) => s.failExplorePivotJob)
+  const pivotPollFn = useCallback(
+    (jobId: string) => getExplorePivotStatus(jobId),
+    [],
+  )
+  const pivotOnComplete = useCallback(
+    (key: string, status: ExplorePivotProgress) => {
+      if (!status.result) return
+      completeExplorePivotJob(key, status.result, status)
+    },
+    [completeExplorePivotJob],
+  )
+
+  useJobPolling<(typeof pivotJobs)[string], ExplorePivotProgress>({
+    jobs: pivotJobs,
+    pollFn: pivotPollFn,
+    onProgress: updateExplorePivotProgress,
+    progressThrottleMs: VISIBLE_PROGRESS_INTERVAL_MS,
+    onComplete: pivotOnComplete,
+    onFail: failExplorePivotJob,
+    labelFn: (job) => `${job.nodeLabel} — ${job.pivotName}`,
+    jobIdFn: (job) => job.jobId,
+    isComplete: (s) => s.status === "completed",
+    isError: (s) => FAILED_JOB_STATUSES.has(s.status),
+    getResult: (s) => (s.result ? s : undefined),
+    getErrorMessage: (s) => buildExecutionFailureMessage(
+      s.failure?.message || s.message || "Unknown error",
+      s.execution_metrics,
+      {
+        status: s.status,
+        terminalReason: s.terminal_reason,
+      },
+    ),
+    getTerminalPollErrorMessage: getMissingJobPollErrorMessage,
+    addToast,
+    successLabel: "Pivot complete",
+    failLabel: "Pivot failed",
   })
 }

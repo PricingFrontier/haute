@@ -8,13 +8,15 @@ import useNodeResultsStore, {
   MAX_CACHED_SOLVE_RESULTS,
   MAX_CACHED_TRAIN_RESULTS,
   MAX_CACHED_EXPLORE_RESULTS,
+  MAX_CACHED_EXPLORE_PIVOT_RESULTS,
+  explorePivotResultKey,
   hashConfig,
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore.ts"
 import useGraphStore from "../../stores/useGraphStore.ts"
 import type { PreviewData } from "../../panels/DataPreview.tsx"
 import type { OptimiserSolveResult } from "../../api/types.ts"
-import type { ExploreCacheReport } from "../../api/types.ts"
+import type { ExploreCacheReport, ExplorePivotResult, ExplorePivotStatusResponse } from "../../api/types.ts"
 import { makeExecutionMetricsFixture } from "../../testSupport/executionMetricsFixture.ts"
 import { makeTrainResult } from "../../test-utils/factories.ts"
 
@@ -35,6 +37,8 @@ function resetStore() {
     trainJobs: {},
     exploreResults: {},
     exploreJobs: {},
+    pivotResults: {},
+    pivotJobs: {},
   })
 }
 
@@ -86,6 +90,14 @@ function makeExploreReport(overrides: Partial<ExploreCacheReport> = {}): Explore
     },
     ...overrides,
   }
+}
+
+function makePivotResult(overrides: Partial<ExplorePivotResult> = {}): ExplorePivotResult {
+  return { version: 1, node_id: "e1", pivot_id: "p1", source: "pricing", dataframe_cache_key: "cache", calculation_key: "calc", row_fields: [], column_fields: [], values: [], row_paths: [], column_paths: [], cells: [], warnings: [], generated_at: 1, execution_metrics: null, ...overrides }
+}
+
+function makePivotStatus(overrides: Partial<ExplorePivotStatusResponse> = {}): ExplorePivotStatusResponse {
+  return { status: "error", progress: 1, message: "Pivot failed", result: null, failure: null, terminal_reason: "error", execution_metrics: null, ...overrides }
 }
 
 // ── Test suites ──────────────────────────────────────────────────
@@ -481,6 +493,77 @@ describe("useNodeResultsStore", () => {
       const state = useNodeResultsStore.getState()
       expect(Object.keys(state.exploreResults)).toHaveLength(MAX_CACHED_EXPLORE_RESULTS)
       expect(state.exploreResults.e0).toBeDefined()
+    })
+  })
+
+  describe("explore pivot job lifecycle", () => {
+    const start = (nodeId: string, pivotId: string, jobId = `${nodeId}-${pivotId}`) => {
+      const key = explorePivotResultKey(nodeId, pivotId)
+      useNodeResultsStore.getState().startExplorePivotJob(key, jobId, nodeId, pivotId, `Node ${nodeId}`, `Pivot ${pivotId}`, `identity-${pivotId}`, "pricing", 2)
+      return key
+    }
+
+    it("keeps pivot IDs on the same node independent and completes only the matching job", () => {
+      const first = start("e1", "p1")
+      const second = start("e1", "p2")
+      useNodeResultsStore.getState().completeExplorePivotJob(first, makePivotResult({ pivot_id: "p1" }))
+      const state = useNodeResultsStore.getState()
+      expect(state.pivotResults[first]?.result?.pivot_id).toBe("p1")
+      expect(state.pivotJobs[first]).toBeUndefined()
+      expect(state.pivotJobs[second]).toBeDefined()
+    })
+
+    it("retains a prior result when a refresh fails and records terminal failure metadata", () => {
+      const key = start("e1", "p1", "job-1")
+      const previous = makePivotResult({ pivot_id: "p1", calculation_key: "old" })
+      useNodeResultsStore.getState().completeExplorePivotJob(key, previous)
+      useNodeResultsStore.getState().startExplorePivotJob(
+        key,
+        "job-2",
+        "e1",
+        "p1",
+        "Node e1",
+        "Pivot p1",
+        "new-identity",
+        "other-source",
+        3,
+        "new-dataframe-cache",
+      )
+      const terminal = makePivotStatus({ message: "No memory" })
+      useNodeResultsStore.getState().failExplorePivotJob(key, "No memory", terminal)
+      expect(useNodeResultsStore.getState().pivotResults[key]).toMatchObject({
+        result: previous,
+        error: "No memory",
+        terminalStatus: terminal,
+        jobId: "job-2",
+        calculationIdentity: "identity-p1",
+        lastAttemptedCalculationIdentity: "new-identity",
+        lastAttemptedDataframeCacheKey: "new-dataframe-cache",
+        source: "pricing",
+        structuralVersion: 2,
+      })
+    })
+
+    it("clearNode removes only pivot entries owned by that node", () => {
+      const first = start("e1", "p1")
+      const second = start("e1", "p2")
+      const other = start("e10", "p1")
+      useNodeResultsStore.getState().completeExplorePivotJob(first, makePivotResult())
+      useNodeResultsStore.getState().completeExplorePivotJob(second, makePivotResult({ pivot_id: "p2" }))
+      useNodeResultsStore.getState().completeExplorePivotJob(other, makePivotResult({ node_id: "e10" }))
+      useNodeResultsStore.getState().clearNode("e1")
+      const state = useNodeResultsStore.getState()
+      expect(state.pivotResults[first]).toBeUndefined()
+      expect(state.pivotResults[second]).toBeUndefined()
+      expect(state.pivotResults[other]).toBeDefined()
+    })
+
+    it("enforces the pivot result LRU cap", () => {
+      for (let index = 0; index < MAX_CACHED_EXPLORE_PIVOT_RESULTS + 1; index += 1) {
+        const key = start(`e${index}`, "p1")
+        useNodeResultsStore.getState().completeExplorePivotJob(key, makePivotResult({ node_id: `e${index}` }))
+      }
+      expect(Object.keys(useNodeResultsStore.getState().pivotResults)).toHaveLength(MAX_CACHED_EXPLORE_PIVOT_RESULTS)
     })
   })
 

@@ -4,7 +4,7 @@
  * Drives a small card registry from the node's `config.overview` toggles:
  *
  *   1. No cards enabled         -> hint pointing at the right-panel toggle.
- *   2. >=1 toggle on, no report -> hint pointing at the "Process & cache full data" button.
+ *   2. >=1 toggle on, no report -> hint pointing at the cache action.
  *   3. >=1 toggle on, report set -> each enabled card stacked top-to-bottom.
  *
  * Adding a new card means updating the shared definition list and adding one
@@ -86,7 +86,7 @@ export default function ExploreOverviewPane({ node, report }: ExploreOverviewPan
       >
         <EmptyState
           title="No cached data yet"
-          body="Click 'Process & cache full data' above to populate the enabled cards."
+          body="Use 'Needs caching' above to cache the data and populate the enabled cards."
         />
       </div>
     )

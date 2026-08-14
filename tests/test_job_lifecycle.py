@@ -272,6 +272,32 @@ def test_cancellable_registry_records_registry_derived_stop_reason() -> None:
     assert registry.cancellation_reason("job-2") == "timed_out"
 
 
+def test_cancellable_registry_scopes_supersession_to_its_own_key() -> None:
+    registry = CancellableJobRegistry()
+
+    sibling_token, previous = registry.register_latest(("explore_pivot", "pivot_2"), "sibling")
+    assert previous is None
+    registry.register_latest(("explore_pivot", "pivot_1"), "job-1")
+    _second, previous = registry.register_latest(("explore_pivot", "pivot_1"), "job-2")
+
+    assert previous == "job-1"
+    assert registry.cancellation_reason("job-1") == "superseded"
+    assert registry.cancellation_reason("sibling") is None
+    assert not sibling_token.event.is_set()
+
+
+def test_cancellable_registry_publication_guard_rejects_a_superseded_job() -> None:
+    registry = CancellableJobRegistry()
+
+    registry.register_latest(("kind", "node"), "job-1")
+    registry.register_latest(("kind", "node"), "job-2")
+
+    with registry.latest_publication("job-1") as owns_publication:
+        assert owns_publication is False
+    with registry.latest_publication("job-2") as owns_publication:
+        assert owns_publication is True
+
+
 def test_background_job_stopped_error_has_one_canonical_reason() -> None:
     error = BackgroundJobStoppedError("job-1", "cancelled")
 

@@ -1,0 +1,9 @@
+{
+  "status": "ok",
+  "field": "region",
+  "members": [
+    {"key": {"kind": "string", "value": "North"}, "label": "North", "count": 12},
+    {"key": {"kind": "null", "value": null}, "label": "(blank)", "count": 2}
+  ],
+  "failure": null
+}

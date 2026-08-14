@@ -10,8 +10,8 @@
 import { create } from "zustand"
 
 export type RatingStepEditorSection = "tables" | "combined"
-export type ExplorePane = "code" | "overview" | "relationships" | "charts" | "export"
-export type ExplorePreviewPane = "preview" | "overview" | "relationships" | "charts"
+export type ExplorePane = "code" | "overview" | "pivots" | "charts" | "export"
+export type ExplorePreviewPane = "preview" | "overview" | "pivots" | "charts"
 export type ModellingPane = "target" | "features" | "params" | "split" | "train"
 
 function setNodeIdEntry<T>(map: Record<string, T>, nodeId: string, value: T): Record<string, T> {

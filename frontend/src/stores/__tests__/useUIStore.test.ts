@@ -187,22 +187,22 @@ describe("useUIStore", () => {
 
     it("stores the selected pane by node id", () => {
       useUIStore.getState().setExplorePane("explore_1", "code")
-      useUIStore.getState().setExplorePane("explore_2", "charts")
+      useUIStore.getState().setExplorePane("explore_2", "pivots")
 
       expect(useUIStore.getState().explorePanes).toEqual({
         explore_1: "code",
-        explore_2: "charts",
+        explore_2: "pivots",
       })
     })
 
     it("replaces only the selected node entry", () => {
       useUIStore.getState().setExplorePane("explore_1", "overview")
-      useUIStore.getState().setExplorePane("explore_2", "relationships")
+      useUIStore.getState().setExplorePane("explore_2", "charts")
       useUIStore.getState().setExplorePane("explore_1", "export")
 
       expect(useUIStore.getState().explorePanes).toEqual({
         explore_1: "export",
-        explore_2: "relationships",
+        explore_2: "charts",
       })
     })
   })
@@ -224,12 +224,12 @@ describe("useUIStore", () => {
 
     it("replaces only the selected node entry", () => {
       useUIStore.getState().setExplorePreviewPane("explore_1", "overview")
-      useUIStore.getState().setExplorePreviewPane("explore_2", "relationships")
+      useUIStore.getState().setExplorePreviewPane("explore_2", "pivots")
       useUIStore.getState().setExplorePreviewPane("explore_1", "charts")
 
       expect(useUIStore.getState().explorePreviewPanes).toEqual({
         explore_1: "charts",
-        explore_2: "relationships",
+        explore_2: "pivots",
       })
     })
   })
