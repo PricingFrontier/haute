@@ -20,8 +20,7 @@ type GeneratedAxis = {
   max?: number | ((extent: AxisExtent) => number)
 }
 type GeneratedSeries = {
-  itemStyle?: { color: string }
-  lineStyle?: { color: string }
+  color?: string
   label: { formatter: (params: { dataIndex?: number }) => string }
   tooltip: { valueFormatter: (value: unknown) => string }
 }
@@ -168,19 +167,20 @@ describe("ComboChart option builder", () => {
         yAxisIndex: 0,
         data: [5, -2],
         label: { show: true },
-        itemStyle: { color: light.series[0] },
+        color: light.series[0],
       },
       {
         type: "line",
         yAxisIndex: 1,
         data: [null, 8],
         showSymbol: true,
-        lineStyle: { color: "#AABBCC" },
+        color: "#AABBCC",
       },
       {
         type: "line",
         yAxisIndex: 0,
         data: [0.2, 0.3],
+        color: light.series[2],
         areaStyle: expect.any(Object),
       },
     ])
@@ -225,8 +225,8 @@ describe("ComboChart option builder", () => {
     expect(options.tooltip.renderMode).toBe("richText")
     expect(options.animation).toBe(false)
     expect(options.aria).toMatchObject({ enabled: true, decal: { show: true } })
-    expect(options.series[0].itemStyle?.color).toBe(dark.series[0])
-    expect(options.series[2].lineStyle?.color).toBe(dark.series[0])
+    expect(options.series[0].color).toBe(dark.series[0])
+    expect(options.series[2].color).toBe(dark.series[0])
 
     const repeatedValueData = dataset()
     repeatedValueData.series[1] = {
@@ -240,8 +240,8 @@ describe("ComboChart option builder", () => {
       tokens: light,
       reducedMotion: false,
     }) as unknown as GeneratedOptions
-    expect(repeatedValueOptions.series[0].itemStyle?.color).not.toBe(
-      repeatedValueOptions.series[1].lineStyle?.color,
+    expect(repeatedValueOptions.series[0].color).not.toBe(
+      repeatedValueOptions.series[1].color,
     )
   })
 

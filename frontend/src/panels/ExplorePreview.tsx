@@ -2,7 +2,11 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react
 import { Loader2, Play, XCircle } from "lucide-react"
 
 import { cancelExplore, getExploreCacheSnapshot, runExplore } from "../api/client"
-import type { ExploreCacheSnapshotResponse, ExploreStatusResponse } from "../api/types"
+import type {
+  ExploreCacheReport,
+  ExploreCacheSnapshotResponse,
+  ExploreStatusResponse,
+} from "../api/types"
 import useGraphStore from "../stores/useGraphStore"
 import useNodeResultsStore, { hashConfig } from "../stores/useNodeResultsStore"
 import useSettingsStore from "../stores/useSettingsStore"
@@ -48,6 +52,32 @@ function statusMessage(status: ExploreStatusResponse | null, submitting: boolean
   if (status.status === "cancelled") return "Cancelled"
   if (status.status === "error") return "Error"
   return status.status
+}
+
+type IdleCacheState = "current" | "stale" | "missing"
+
+/**
+ * The cache state shown while no job is running: an authoritative snapshot
+ * answer wins; while an inspection is still in flight the client falls back
+ * to what it retains locally rather than flashing "missing".
+ */
+function deriveIdleCacheState({
+  cacheState,
+  completedByThisMount,
+  report,
+  hasRetainedResult,
+}: {
+  cacheState: ExploreCacheSnapshotResponse["state"] | "checking" | "error"
+  completedByThisMount: boolean
+  report: ExploreCacheReport | null
+  hasRetainedResult: boolean
+}): IdleCacheState {
+  if (completedByThisMount || cacheState === "current") return "current"
+  if (cacheState === "stale") return "stale"
+  if (cacheState === "missing" || cacheState === "error") return "missing"
+  // The snapshot request is still checking this identity.
+  if (report) return "current"
+  return hasRetainedResult ? "stale" : "missing"
 }
 
 export default function ExplorePreview({
@@ -112,18 +142,12 @@ export default function ExplorePreview({
   const report = completedByThisMount || cacheState === "current" || cacheState === "checking"
     ? (currentCachedResult?.result ?? null)
     : null
-  const retainedCachedResult = cachedResult?.result ?? null
-  const idleCacheState = completedByThisMount || cacheState === "current"
-    ? "current"
-    : cacheState === "stale"
-      ? "stale"
-      : cacheState === "missing" || cacheState === "error"
-        ? "missing"
-        : report
-          ? "current"
-          : retainedCachedResult
-            ? "stale"
-            : "missing"
+  const idleCacheState = deriveIdleCacheState({
+    cacheState,
+    completedByThisMount,
+    report,
+    hasRetainedResult: Boolean(cachedResult?.result),
+  })
   const status = currentExploreJob?.progress ?? (report ? currentCachedResult?.terminalStatus : null) ?? null
   const isBusy = submitting || !!currentExploreJob
   const progress = status?.status === "completed" ? 1 : (status?.progress ?? (submitting ? 0.03 : 0))
@@ -165,7 +189,14 @@ export default function ExplorePreview({
       addToast("error", `Explore cache inspection failed: ${message}`)
     })
     return () => controller.abort()
-  }, [activeSource, addToast, allNodes, completeExploreJob, configHash, edges, hasActiveExploreJob, hasInput, nodeId, nodeLabel, preamble, startExploreJob, streamingChunkSize, structuralVersion, submodels])
+    // Gated on the Explore cache identity hash rather than the graph objects:
+    // any render that keeps the same configHash captures a graph snapshot and
+    // active source whose data-affecting parts are identical (the hash covers
+    // the source), so unrelated edits such as node drags do not re-fire the
+    // inspection request, while an identity change re-runs it with the fresh
+    // capture in the same render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addToast, completeExploreJob, configHash, hasActiveExploreJob, hasInput, nodeId, nodeLabel, startExploreJob, streamingChunkSize, structuralVersion])
 
   useEffect(() => {
     if (report) touchExplorePreview(nodeId)

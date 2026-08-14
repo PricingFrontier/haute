@@ -75,6 +75,19 @@ describe("pivotConfig", () => {
     })
   })
 
+  it("migration skips default names already taken by v1 cards", () => {
+    const parsed = parseExplorePivots({
+      pivots: [
+        pivot({ id: "pivot_existing", name: "  pIvOt 1  " }),
+        { id: "pivot_legacy" },
+      ],
+    })
+    expect(parsed).toMatchObject({
+      ok: true,
+      pivots: [{ name: "  pIvOt 1  " }, { name: "Pivot 2" }],
+    })
+  })
+
   it("validates v1 names, placement identities, and same-zone duplicates", () => {
     const duplicateName = parseExplorePivots({
       pivots: [pivot(), pivot({ id: "pivot_2", name: " claims BY REGION " })],
@@ -110,6 +123,35 @@ describe("pivotConfig", () => {
     expect(pivotCalculationIdentity(presentationEdit)).toBe(pivotCalculationIdentity(base))
     expect(
       pivotCalculationIdentity({ ...base, rows: [{ id: "row_1", field: "segment" }] }),
+    ).not.toBe(pivotCalculationIdentity(base))
+  })
+
+  it("deduplicates and canonically orders filter members in the calculation identity", () => {
+    const members = [
+      { kind: "string" as const, value: "North" },
+      { kind: "null" as const, value: null },
+      { kind: "string" as const, value: "East" },
+    ]
+    const base = pivot({
+      filters: [{ id: "filter_1", field: "region", members }],
+    })
+    const reorderedWithDuplicates = pivot({
+      filters: [
+        {
+          id: "filter_1",
+          field: "region",
+          members: [members[2], members[0], members[1], { ...members[0] }],
+        },
+      ],
+    })
+
+    expect(pivotCalculationIdentity(reorderedWithDuplicates)).toBe(
+      pivotCalculationIdentity(base),
+    )
+    expect(
+      pivotCalculationIdentity(
+        pivot({ filters: [{ id: "filter_1", field: "region", members: members.slice(0, 2) }] }),
+      ),
     ).not.toBe(pivotCalculationIdentity(base))
   })
 

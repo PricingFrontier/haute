@@ -993,11 +993,6 @@ class ExploreService:
             project_root=project_root,
         )
 
-    def _prepare_spec(self, body: ExploreRunRequest) -> ExploreCacheSpec:
-        """Compatibility alias for existing callers; new collaborators use ``prepare_spec``."""
-
-        return self.prepare_spec(body)
-
     def _run_job(
         self,
         job_id: str,

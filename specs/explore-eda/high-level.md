@@ -195,8 +195,9 @@ Out of scope (owned elsewhere):
   strictly typed. Unknown string-keyed fields survive only under the finite recursively
   simple-literal grammar. An empty list remains empty so callers may omit `charts=[]`.
 - `validate_explore_pivots` accepts only a list of dicts. An item without `version` is the sole
-  v0 shape and migrates to a complete v1 card using its list position for the default `Pivot N`
-  name. A v1 card requires exactly supported `version: 1`, non-empty `id` and `name`, Boolean
+  v0 shape and migrates to a complete v1 card using the first available `Pivot N` name across
+  both legacy and version-1 cards, so migration can never collide with an existing card name.
+  A v1 card requires exactly supported `version: 1`, non-empty `id` and `name`, Boolean
   `enabled`, list-valued `filters`/`columns`/`rows`/`values`, and Boolean
   `options.row_grand_totals`/`options.column_grand_totals`. Card ids and lower-cased trimmed names
   are unique. Placement ids are non-empty and unique across the card; Filter/Rows/Columns reject

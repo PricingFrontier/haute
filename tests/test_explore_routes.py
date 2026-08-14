@@ -731,7 +731,7 @@ def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
     first = client.post("/api/explore/run", json=first_body).json()
     first_status = _poll_explore(client, first["job_id"])
     assert first_status["status"] == "completed"
-    first_key = _explore_service._prepare_spec(
+    first_key = _explore_service.prepare_spec(
         ExploreRunRequest.model_validate(first_body)
     ).dataframe_cache_key
 
@@ -744,7 +744,7 @@ def test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache(
 
     assert second_status["status"] == "completed"
     assert (
-        _explore_service._prepare_spec(
+        _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(second_body)
         ).dataframe_cache_key
         == first_key
@@ -783,7 +783,7 @@ def test_explore_display_config_does_not_invalidate_analysis_dataframe_cache(
     first = client.post("/api/explore/run", json=first_body).json()
     first_status = _poll_explore(client, first["job_id"])
     assert first_status["status"] == "completed"
-    first_key = _explore_service._prepare_spec(
+    first_key = _explore_service.prepare_spec(
         ExploreRunRequest.model_validate(first_body)
     ).dataframe_cache_key
 
@@ -795,7 +795,7 @@ def test_explore_display_config_does_not_invalidate_analysis_dataframe_cache(
     assert second["cached"] is True
     assert second["result"]["dataframe_cache_key"] == first_key
     assert (
-        _explore_service._prepare_spec(
+        _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(second_body)
         ).dataframe_cache_key
         == first_key
@@ -819,7 +819,7 @@ def test_explore_reuses_typed_report_cache_without_reexecuting_sources(
         "node_id": "explore",
         "source": "live",
     }
-    spec = _explore_service._prepare_spec(ExploreRunRequest.model_validate(body))
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
     assert EXPLORE_CACHE_VERSION == 5
     assert spec.report_cache_key.startswith("explore:v5:")
 
@@ -905,10 +905,10 @@ def test_explore_code_config_change_invalidates_analysis_dataframe_cache(
     }
 
     assert (
-        _explore_service._prepare_spec(
+        _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(first_body)
         ).dataframe_cache_key
-        != _explore_service._prepare_spec(
+        != _explore_service.prepare_spec(
             ExploreRunRequest.model_validate(second_body)
         ).dataframe_cache_key
     )

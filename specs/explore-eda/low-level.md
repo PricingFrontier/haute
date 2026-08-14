@@ -105,9 +105,11 @@
   Numeric operations first map floating NaN to null. `sum`/`average`/`median` require numeric
   fields; `min`/`max` also accept supported scalar non-numeric fields. Empty aggregates return
   null, while `count` and `distinct_count` return integer zero. Result normalisation preserves
-  finite JSON scalar types, renders Decimal exactly, uses ISO strings for date/time values,
-  lossily decodes Binary as UTF-8, and renders Duration with `str(timedelta)`. Row and column grand
-  totals are explicit paths assembled from the same filtered frame.
+  finite JSON scalar types, renders Decimal exactly, renders integers beyond JavaScript's exact
+  range (|value| > 2^53 − 1) as canonical decimal strings so a JS client cannot silently round
+  them, uses ISO strings for date/time values, lossily decodes Binary as UTF-8, and renders
+  Duration with `str(timedelta)`. Row and column grand totals are explicit paths assembled from
+  the same filtered frame.
 - `options.sort_by` is null or the placement id of exactly one Row/Value. A missing field on an
   older v1 card derives the active Value id when one `sort_rows` direction exists, otherwise null.
   Row paths are compared level-by-level: only a selected Row uses its persisted `sort` direction,
@@ -174,7 +176,7 @@
    helpers) validate the graph has a resolvable source file and that runtime input paths are
    legal, before any Explore-specific logic runs.
 3. `ExploreService.start(body)`:
-   a. `_prepare_spec(body)` — see below — resolves node/upstream, builds the dataframe cache
+   a. `prepare_spec(body)` — see below — resolves node/upstream, builds the dataframe cache
       request, and derives both cache keys. Raises `HTTPException(400)` if the node is not
       Explore-typed or does not have exactly one parent.
    b. Unless `body.refresh` is true, require both the exact report and dataframe process-cache
@@ -193,7 +195,7 @@
    f. A daemon thread (`haute-explore-{job_id}`) runs `_run_job`; the route returns
       `ExploreRunResponse(status="started", job_id=job_id)` without waiting.
 
-### `_prepare_spec` (`ExploreService._prepare_spec`)
+### `prepare_spec` (`ExploreService.prepare_spec`)
 
 1. `find_typed_node(graph, body.node_id, NodeType.EXPLORE, "explore")` — raises 404 if the node
    is missing and 400 if it exists but is not Explore-typed.
@@ -439,7 +441,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   values must not be emitted as decorator kwargs. Non-empty kwargs are emitted in stable
   overview-then-pivots-then-charts order.
 - **Downstream-edit cache stability**: `dataframe_cache_key` is unchanged by edits to nodes
-  downstream of the Explore node (verified by comparing `_prepare_spec(...).dataframe_cache_key`
+  downstream of the Explore node (verified by comparing `prepare_spec(...).dataframe_cache_key`
   across two graphs differing only in a downstream node's label) and by adding an `overview`,
   `pivots`, or `charts` block to the Explore node's own config (the display payload is not part of either
   cache key's input). It *is* changed by editing the Explore node's own analysis `code`.
@@ -447,7 +449,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 ## Error handling
 
 - `HTTPException(status_code=400, ...)` — raised synchronously (not inside the background job)
-  from `_prepare_spec` when the target node has zero or multiple upstream parents, and from
+  from `prepare_spec` when the target node has zero or multiple upstream parents, and from
   `find_typed_node` when the node is not Explore-typed. A missing node id returns HTTP 404. These
   surface directly as the HTTP response; no job is created.
 - `ConfigError` (from `haute.errors`) — raised by the Explore display-config validators for
@@ -484,7 +486,7 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
   - `test_explore_downstream_edits_do_not_invalidate_analysis_dataframe_cache` /
     `test_explore_display_config_does_not_invalidate_analysis_dataframe_cache` /
     `test_explore_code_config_change_invalidates_analysis_dataframe_cache` — pin the cache-key
-    invalidation invariants directly via `_prepare_spec(...).dataframe_cache_key` comparisons.
+    invalidation invariants directly via `prepare_spec(...).dataframe_cache_key` comparisons.
   - `test_explore_rejects_non_explore_node_before_execution` — 400 with a message containing
     `"is not a explore node"`.
   - `test_explore_cancel_stops_in_flight_job` — gates the Explore collect helper on a

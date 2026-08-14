@@ -1,4 +1,4 @@
-import { Loader2, RotateCw, Table2, XCircle } from "lucide-react"
+import { Loader2, Table2 } from "lucide-react"
 import { useMemo } from "react"
 
 import type { ExploreCacheReport } from "../../api/types"
@@ -7,8 +7,16 @@ import useNodeResultsStore, {
 } from "../../stores/useNodeResultsStore"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import type { SimpleEdge, SimpleNode } from "../editors"
+import {
+  ExploreResultEmptyState,
+  PivotRunStatusActions,
+} from "./ExploreResultCardChrome"
 import PivotTableGrid from "./PivotTableGrid"
-import { parseExplorePivots, pivotCalculationIdentity } from "./pivotConfig"
+import {
+  isPivotResultFresh,
+  parseExplorePivots,
+  pivotCalculationIdentity,
+} from "./pivotConfig"
 import useAutoUpdateExplorePivots from "./useAutoUpdateExplorePivots"
 import useExplorePivotActions from "./useExplorePivotActions"
 
@@ -22,24 +30,7 @@ type ExplorePivotsPaneProps = {
 }
 
 function EmptyPivots({ children }: { children: string }) {
-  return (
-    <div className="flex flex-1 items-center justify-center p-4">
-      <div className="max-w-md text-center">
-        <Table2
-          size={24}
-          className="mx-auto mb-2"
-          aria-hidden="true"
-          style={{ color: NODE_GROUP_COLORS.explore }}
-        />
-        <div
-          className="text-xs font-semibold"
-          style={{ color: "var(--text-secondary)" }}
-        >
-          {children}
-        </div>
-      </div>
-    </div>
-  )
+  return <ExploreResultEmptyState icon={Table2}>{children}</ExploreResultEmptyState>
 }
 
 export default function ExplorePivotsPane({
@@ -118,11 +109,10 @@ export default function ExplorePivotsPane({
           const isSubmitting = submitting[pivot.id] === true
           const notice = notices[pivot.id]
           const currentIdentity = pivotCalculationIdentity(pivot)
-          const fresh = Boolean(
-            cached?.result
-              && report
-              && cached.result.dataframe_cache_key === report.dataframe_cache_key
-              && cached.calculationIdentity === currentIdentity,
+          const fresh = isPivotResultFresh(
+            cached,
+            report?.dataframe_cache_key,
+            currentIdentity,
           )
           const status = job?.progress
           const failure =
@@ -158,48 +148,15 @@ export default function ExplorePivotsPane({
                 >
                   {pivot.name}
                 </h3>
-                {job ? (
-                  <button
-                    type="button"
-                    onClick={() => void cancel(pivot, job.jobId)}
-                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold"
-                    style={{
-                      color: "var(--danger)",
-                      border: "1px solid var(--danger-border)",
-                    }}
-                  >
-                    <XCircle size={12} aria-hidden="true" />
-                    Cancel
-                  </button>
-                ) : isSubmitting ? (
-                  <span
-                    role="status"
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold"
-                    style={{ color: "var(--text-muted)" }}
-                  >
-                    <Loader2
-                      size={12}
-                      className="animate-spin"
-                      aria-hidden="true"
-                    />
-                    Starting calculation
-                  </span>
-                ) : alertMessage ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void update(pivot, report?.dataframe_cache_key ?? null)
-                    }
-                    className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold"
-                    style={{
-                      color: "var(--text-on-accent)",
-                      background: NODE_GROUP_COLORS.explore,
-                    }}
-                  >
-                    <RotateCw size={12} aria-hidden="true" />
-                    Retry
-                  </button>
-                ) : null}
+                <PivotRunStatusActions
+                  activeJobId={job?.jobId ?? null}
+                  submitting={isSubmitting}
+                  canRetry={Boolean(alertMessage)}
+                  onCancel={(jobId) => void cancel(pivot, jobId)}
+                  onRetry={() =>
+                    void update(pivot, report?.dataframe_cache_key ?? null)
+                  }
+                />
               </div>
 
               {pivot.values.length === 0 ? (

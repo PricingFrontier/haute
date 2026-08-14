@@ -139,7 +139,8 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
       key={rowField}
       rowSpan={columnHeaderDepth + 1}
       scope="col"
-      className="sticky z-10 min-w-[140px] px-2 py-1.5"
+      title={rowField}
+      className="sticky z-10 w-[140px] min-w-[140px] max-w-[140px] truncate px-2 py-1.5"
       style={{
         left: index * ROW_HEADER_WIDTH,
         background: "var(--bg-input)",
@@ -217,20 +218,24 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
             const rowIndex = start + visibleIndex
             return (
               <tr key={rowIndex} style={{ height: ROW_HEIGHT }}>
-                {result.row_fields.map((field, level) => (
-                  <th
-                    key={field}
-                    scope="row"
-                    className="sticky z-[1] min-w-[140px] whitespace-nowrap px-2 font-medium"
-                    style={{
-                      left: level * ROW_HEADER_WIDTH,
-                      background: "var(--bg-input)",
-                      borderBottom: "1px solid var(--border)",
-                    }}
-                  >
-                    {pathLabel(rowPath, level)}
-                  </th>
-                ))}
+                {result.row_fields.map((field, level) => {
+                  const label = pathLabel(rowPath, level)
+                  return (
+                    <th
+                      key={field}
+                      scope="row"
+                      title={label || undefined}
+                      className="sticky z-[1] w-[140px] min-w-[140px] max-w-[140px] truncate px-2 font-medium"
+                      style={{
+                        left: level * ROW_HEADER_WIDTH,
+                        background: "var(--bg-input)",
+                        borderBottom: "1px solid var(--border)",
+                      }}
+                    >
+                      {label}
+                    </th>
+                  )
+                })}
                 {result.column_paths.flatMap((_, columnIndex) =>
                   result.values.map((value) => {
                     const cell = cells.get(

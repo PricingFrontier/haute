@@ -89,6 +89,29 @@ def test_validate_explore_pivots_migrates_v0_and_preserves_order_and_future_fiel
     ]
 
 
+def test_validate_explore_pivots_migration_skips_names_taken_by_v1_cards() -> None:
+    raw = [
+        _pivot(id="pivot_existing", name="Pivot 1"),
+        {"id": "pivot_legacy"},
+    ]
+
+    validated = validate_explore_pivots(raw, context="test")
+
+    assert validated[0]["name"] == "Pivot 1"
+    assert validated[1]["name"] == "Pivot 2"
+
+
+def test_validate_explore_pivots_migration_name_match_is_case_insensitive() -> None:
+    raw = [
+        _pivot(id="pivot_existing", name="  pIvOt 1  "),
+        {"id": "pivot_legacy"},
+    ]
+
+    validated = validate_explore_pivots(raw, context="test")
+
+    assert validated[1]["name"] == "Pivot 2"
+
+
 def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -> None:
     raw = [_pivot(future={"nested": [1, 2]})]
     expected = copy.deepcopy(raw)

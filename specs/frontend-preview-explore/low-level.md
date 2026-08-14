@@ -15,7 +15,8 @@
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
-| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot v0/v1 parsing and calculation identity; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
+| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot v0/v1 parsing, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
+| `frontend/src/panels/explore/ExploreResultCardChrome.tsx` | Result-card chrome shared by the Pivots and Charts panes: the centered empty state and the Cancel/Starting/Retry run-status action cluster. |
 | `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/chartData.ts`, `frontend/src/panels/explore/chartOptions.ts`, `frontend/src/panels/explore/chartRuntime.ts`, `frontend/src/panels/explore/ComboChart.tsx`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Versioned chart parsing/linkage/presets; pure typed pivot adapter; safe renderer options; narrow ECharts registration/lifecycle/accessibility; enabled-card state dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
 | `frontend/src/panels/explore/ExploreTableActions.tsx` | Read-only copy-as-TSV and download-as-CSV actions for supported Explore tables, built on the shared table serializers. |
@@ -52,7 +53,8 @@
    submodels/preamble.
 2. `frontend/src/panels/ExplorePreview.tsx` canonicalises that identity together with the active
    source. It posts that graph identity to `/api/explore/cache-status` on mount and whenever the
-   identity changes. A `current` response hydrates the completed result store without a run; a
+   identity changes; a rerender that preserves the identity (for example a canvas drag) does not
+   re-post. A `current` response hydrates the completed result store without a run; a
    `stale` response controls the warning action state but is not installed as a current report.
    It ignores retained frontend results with a different identity, but keeps them as evidence of
    staleness and keeps the node's active job visible and cancellable using the source that job

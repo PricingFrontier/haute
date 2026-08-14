@@ -87,8 +87,10 @@ export function buildComboChartOptions({
       yAxisIndex: entry.style.axis === "primary" ? 0 : 1,
       data: entry.values,
       ...(isColumn && entry.style.stack_group !== null ? { stack: entry.style.stack_group } : {}),
-      ...(isColumn ? { itemStyle: { color: colour } } : { lineStyle: { color: colour } }),
-      ...(isArea ? { areaStyle: { color: colour, opacity: 0.2 } } : {}),
+      // Series-level colour drives the bar/line, its markers, and the legend
+      // swatch together; per-part item/line styles would let them disagree.
+      color: colour,
+      ...(isArea ? { areaStyle: { opacity: 0.2 } } : {}),
       ...(isColumn ? {} : { showSymbol: entry.style.markers }),
       label: {
         show: entry.style.data_labels,

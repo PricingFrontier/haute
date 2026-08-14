@@ -398,7 +398,9 @@ def _validate_values(
     return values
 
 
-def _migrate_v0(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, Any]:
+def _migrate_v0(
+    raw: dict[Any, Any], *, context: str, index: int, default_name: str
+) -> dict[str, Any]:
     copied = _copy_known_dict(
         raw,
         known_keys=_CARD_KEYS,
@@ -417,7 +419,7 @@ def _migrate_v0(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, A
         )
     copied.update(
         version=EXPLORE_PIVOT_CONFIG_VERSION,
-        name=f"Pivot {index + 1}",
+        name=default_name,
         enabled=True,
         filters=[],
         columns=[],
@@ -587,6 +589,15 @@ def validate_explore_pivots(value: Any, *, context: str) -> list[dict[str, Any]]
     pivots: list[dict[str, Any]] = []
     pivot_ids: set[str] = set()
     pivot_names: set[str] = set()
+    allocated_names = {
+        raw["name"].strip().lower()
+        for raw in value
+        if isinstance(raw, dict)
+        and "version" in raw
+        and isinstance(raw.get("name"), str)
+        and raw["name"].strip()
+    }
+    next_name_suffix = 1
     for index, raw in enumerate(value):
         if not isinstance(raw, dict):
             raise ConfigError(
@@ -597,11 +608,15 @@ def validate_explore_pivots(value: Any, *, context: str) -> list[dict[str, Any]]
             )
         if "id" not in raw:
             raise ConfigError("Explore pivot requires an id.", context=context, index=index)
-        pivot = (
-            _migrate_v0(raw, context=context, index=index)
-            if "version" not in raw
-            else _validate_v1(raw, context=context, index=index)
-        )
+        if "version" not in raw:
+            while f"pivot {next_name_suffix}" in allocated_names:
+                next_name_suffix += 1
+            default_name = f"Pivot {next_name_suffix}"
+            allocated_names.add(default_name.lower())
+            next_name_suffix += 1
+            pivot = _migrate_v0(raw, context=context, index=index, default_name=default_name)
+        else:
+            pivot = _validate_v1(raw, context=context, index=index)
         pivot_id = pivot["id"]
         pivot_name_key = pivot["name"].strip().lower()
         if pivot_id in pivot_ids:

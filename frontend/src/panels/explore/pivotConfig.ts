@@ -318,7 +318,11 @@ function parseValues(
   return values
 }
 
-function migratePivot(raw: Record<string, unknown>, position: number): ExplorePivotConfig | string {
+function migratePivot(
+  raw: Record<string, unknown>,
+  position: number,
+  defaultName: string,
+): ExplorePivotConfig | string {
   if (!nonEmptyString(raw.id)) return `Pivot ${position} id must be a non-empty string.`
   const conflicting = Object.keys(raw).filter((key) => key !== "id" && CARD_KEYS.has(key))
   if (conflicting.length > 0) return `Pivot ${position} versionless card contains version-1 fields.`
@@ -328,7 +332,7 @@ function migratePivot(raw: Record<string, unknown>, position: number): ExplorePi
     ...cloneLiteral(raw),
     version: 1,
     id: raw.id,
-    name: `Pivot ${position}`,
+    name: defaultName,
     enabled: true,
     filters: [],
     columns: [],
@@ -410,15 +414,32 @@ export function parseExplorePivots(config: Record<string, unknown>): ExplorePivo
   const pivots: ExplorePivotConfig[] = []
   const ids = new Set<string>()
   const names = new Set<string>()
+  const allocatedNames = new Set(
+    config.pivots.flatMap((raw) =>
+      isPlainObject(raw) &&
+      Object.prototype.hasOwnProperty.call(raw, "version") &&
+      nonEmptyString(raw.name)
+        ? [raw.name.trim().toLowerCase()]
+        : [],
+    ),
+  )
+  let nextNameSuffix = 1
   for (const [index, raw] of config.pivots.entries()) {
     const position = index + 1
     if (!isPlainObject(raw)) return { ok: false, error: `Pivot ${position} must be an object.` }
     if (!Object.prototype.hasOwnProperty.call(raw, "id")) {
       return { ok: false, error: `Pivot ${position} requires an id.` }
     }
-    const pivot = Object.prototype.hasOwnProperty.call(raw, "version")
-      ? parseV1Pivot(raw, position)
-      : migratePivot(raw, position)
+    let pivot: ExplorePivotConfig | string
+    if (Object.prototype.hasOwnProperty.call(raw, "version")) {
+      pivot = parseV1Pivot(raw, position)
+    } else {
+      while (allocatedNames.has(`pivot ${nextNameSuffix}`)) nextNameSuffix += 1
+      const defaultName = `Pivot ${nextNameSuffix}`
+      allocatedNames.add(defaultName.toLowerCase())
+      nextNameSuffix += 1
+      pivot = migratePivot(raw, position, defaultName)
+    }
     if (typeof pivot === "string") return { ok: false, error: pivot }
     if (ids.has(pivot.id)) {
       return { ok: false, error: `Explore pivots config contains duplicate pivot id "${pivot.id}".` }
@@ -485,12 +506,23 @@ export function explorePivotLabel(pivotOrIndex: ExplorePivotConfig | number): st
 }
 
 export function pivotCalculationIdentity(pivot: ExplorePivotConfig): string {
-  const filters = pivot.filters.map((filter) => ({
-    field: filter.field,
-    members: filter.members
-      .map((member) => ({ kind: member.kind, value: member.value }))
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
-  }))
+  // Mirror the backend calculation key: exact members are deduplicated and
+  // ordered by their canonical serialisation (code-unit order, never locale
+  // collation), so equivalent filter selections share one identity.
+  const filters = pivot.filters.map((filter) => {
+    const byIdentity = new Map(
+      filter.members.map((member) => [
+        JSON.stringify({ kind: member.kind, value: member.value }),
+        { kind: member.kind, value: member.value },
+      ]),
+    )
+    return {
+      field: filter.field,
+      members: [...byIdentity.entries()]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([, member]) => member),
+    }
+  })
   return JSON.stringify({
     filters,
     columns: pivot.columns.map((placement) => placement.field),
@@ -509,6 +541,31 @@ export function pivotCalculationIdentity(pivot: ExplorePivotConfig): string {
       column_grand_totals: pivot.options.column_grand_totals,
     },
   })
+}
+
+/** The retained-result fields freshness depends on; structurally satisfied by
+ * the node-results store's cached pivot entries. */
+export type PivotResultFreshnessEntry = {
+  result: { dataframe_cache_key: string } | null
+  calculationIdentity: string
+}
+
+/**
+ * One shared definition of "this retained Pivot result is current": it exists,
+ * it was calculated from the current Explore dataframe cache generation, and
+ * its calculation identity matches the current configuration.
+ */
+export function isPivotResultFresh(
+  entry: PivotResultFreshnessEntry | null | undefined,
+  dataframeCacheKey: string | null | undefined,
+  calculationIdentity: string,
+): boolean {
+  return Boolean(
+    entry?.result
+      && dataframeCacheKey
+      && entry.result.dataframe_cache_key === dataframeCacheKey
+      && entry.calculationIdentity === calculationIdentity,
+  )
 }
 
 export function isNumericPivotDtype(dtype: string): boolean {

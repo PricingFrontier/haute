@@ -397,6 +397,28 @@ describe("ExplorePreview", () => {
     expect(useNodeResultsStore.getState().exploreResults.explore_1?.result).toEqual(currentReport)
   })
 
+  it("does not re-inspect the cache when a rerender preserves the analysis identity", async () => {
+    const { rerender } = renderExplore()
+    await waitFor(() => expect(mockGetExploreCacheSnapshot).toHaveBeenCalledTimes(1))
+
+    // Fresh object identities with identical data-affecting content — the
+    // render shape a canvas drag or other unrelated edit produces.
+    rerender(
+      <ExplorePreview
+        node={{ ...exploreNode, data: { ...exploreNode.data } }}
+        allNodes={[{ ...sourceNode }, { ...exploreNode, data: { ...exploreNode.data } }]}
+        edges={edges.map((edge) => ({ ...edge }))}
+        submodels={{}}
+        preamble="import polars as pl"
+      />,
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(mockGetExploreCacheSnapshot).toHaveBeenCalledTimes(1)
+  })
+
   it("renders preview rows for the Explore dataframe", () => {
     renderExplore(makePreview())
 

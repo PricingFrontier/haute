@@ -5,6 +5,7 @@ import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
 import {
+  isPivotResultFresh,
   pivotCalculationIdentity,
   type ExplorePivotConfig,
 } from "./pivotConfig"
@@ -74,10 +75,10 @@ export default function useAutoUpdateExplorePivots({
       )
       currentAttempts.add(attemptKey)
 
-      const fresh = Boolean(
-        cached?.result
-          && cached.result.dataframe_cache_key === report.dataframe_cache_key
-          && cached.calculationIdentity === calculationIdentity,
+      const fresh = isPivotResultFresh(
+        cached,
+        report.dataframe_cache_key,
+        calculationIdentity,
       )
       const failedCurrentAttempt = Boolean(
         cached?.error

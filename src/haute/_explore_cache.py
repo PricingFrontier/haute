@@ -453,29 +453,6 @@ class ExplorePersistentCacheStore:
                 if eligible:
                     self._retire_directory_best_effort(candidate)
 
-    def publish(
-        self,
-        family_key: ExploreFamilyKey,
-        *,
-        report_cache_key: str,
-        report: ExploreCacheReport,
-        entry: DataFrameExecutionCacheEntry,
-    ) -> None:
-        """Prepare and atomically select a generation for non-job callers."""
-
-        publication = self.prepare_publication(
-            family_key,
-            report_cache_key=report_cache_key,
-            report=report,
-            entry=entry,
-        )
-        try:
-            self.commit_publication(publication)
-        except BaseException:
-            self.discard_publication(publication)
-            raise
-        self.retire_unleased_generations(family_key)
-
     def _retire_generation_if_unselected_locked(
         self,
         family_key: ExploreFamilyKey,

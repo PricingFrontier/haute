@@ -401,8 +401,15 @@ def _aggregation_expression(
     raise AssertionError(f"Unsupported validated pivot aggregation: {aggregation}")
 
 
+_JS_SAFE_INTEGER_LIMIT = 2**53 - 1
+
+
 def _normalise_cell(value: Any, warnings: set[str]) -> str | float | int | bool | None:
-    if value is None or isinstance(value, (str, bool, int)):
+    if isinstance(value, int) and not isinstance(value, bool):
+        # An i64 aggregate can exceed JavaScript's exact-integer range; the
+        # canonical decimal string keeps it precise, matching integer members.
+        return value if abs(value) <= _JS_SAFE_INTEGER_LIMIT else str(value)
+    if value is None or isinstance(value, (str, bool)):
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -892,6 +899,8 @@ class PivotService:
             TypedPathTuple,
             tuple[str | float | int | bool | None, ...],
         ] = {}
+        row_paths: list[TypedPathTuple] = []
+        column_paths: list[TypedPathTuple] = []
         if row_count and column_count:
             base_frame = self._aggregate_frame(
                 filtered,
@@ -906,18 +915,13 @@ class PivotService:
                 values,
                 warnings,
             )
-
-        row_paths = list(
-            {_path_tuple(row, row_fields) for row in base_frame.iter_rows(named=True)}
-            if row_count and column_count
-            else set()
-        )
-        column_paths = sorted(
-            {_path_tuple(row, column_fields) for row in base_frame.iter_rows(named=True)}
-            if row_count and column_count
-            else set(),
-            key=_path_sort_key,
-        )
+            row_members: set[TypedPathTuple] = set()
+            column_members: set[TypedPathTuple] = set()
+            for row in base_frame.iter_rows(named=True):
+                row_members.add(_path_tuple(row, row_fields))
+                column_members.add(_path_tuple(row, column_fields))
+            row_paths = list(row_members)
+            column_paths = sorted(column_members, key=_path_sort_key)
 
         row_total_values: dict[
             TypedPathTuple,
@@ -1098,7 +1102,10 @@ class PivotService:
             label = (
                 pl.when(column.is_null()).then(pl.lit("(blank)")).otherwise(column.cast(pl.String))
             )
-        return label.str.to_lowercase().str.contains(search.casefold(), literal=True)
+        # ``str.lower()`` mirrors Polars ``str.to_lowercase`` on the column side;
+        # ``casefold()`` would be stricter than the column transform and could
+        # match queries the column expression never produces.
+        return label.str.to_lowercase().str.contains(search.lower(), literal=True)
 
     def members(self, body: ExplorePivotMembersRequest) -> ExplorePivotMembersResponse:
         explore = self._explore_spec(body)

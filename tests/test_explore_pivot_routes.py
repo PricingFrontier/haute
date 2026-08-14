@@ -390,6 +390,46 @@ def test_pivot_normalises_binary_and_duration_min_max_results(
     assert _cell(result, row, column, "duration_max") == "0:00:02"
 
 
+def test_pivot_renders_integers_beyond_js_safe_range_as_decimal_strings(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "big-integers.parquet"
+    beyond_js_safe = 2**53 + 111
+    pl.DataFrame(
+        {
+            "region": ["A", "B"],
+            "year": [2024, 2024],
+            "claims": pl.Series([beyond_js_safe, 7], dtype=pl.Int64),
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[
+            {
+                "id": "max_claims",
+                "field": "claims",
+                "aggregation": "max",
+                "display_name": "Max claims",
+            }
+        ],
+        options={"row_grand_totals": False, "column_grand_totals": False},
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    column = [("integer", "2024")]
+    # A JS JSON.parse would round the raw integer; the canonical decimal string
+    # keeps it exact, while safe integers remain JSON numbers.
+    assert _cell(result, [("string", "A")], column, "max_claims") == str(beyond_js_safe)
+    small = _cell(result, [("string", "B")], column, "max_claims")
+    assert small == 7
+    assert isinstance(small, int)
+
+
 def test_pivot_result_cache_ignores_name_visibility_and_value_display_name(
     client: TestClient, tmp_path: Path
 ) -> None:

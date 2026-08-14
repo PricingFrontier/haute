@@ -16,7 +16,13 @@ import {
   type ExploreChartConfig,
 } from "../explore/chartConfig"
 import { adaptPivotChartData } from "../explore/chartData"
-import { parseExplorePivots, pivotCalculationIdentity } from "../explore/pivotConfig"
+import {
+  isPivotResultFresh,
+  parseExplorePivots,
+  pivotCalculationIdentity,
+  type ExplorePivotConfig,
+  type PivotResultFreshnessEntry,
+} from "../explore/pivotConfig"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import {
@@ -54,6 +60,38 @@ const formats: ChartNumberFormat[] = [
   "currency_usd",
   "currency_eur",
 ]
+
+type PivotSourceStatus =
+  | "unconfigured"
+  | "loading"
+  | "error"
+  | "not_calculated"
+  | "ready"
+  | "stale"
+
+const SOURCE_STATUS_LABELS: Readonly<Record<PivotSourceStatus, string>> = {
+  unconfigured: "Unconfigured",
+  loading: "Loading",
+  error: "Error",
+  not_calculated: "Not calculated",
+  ready: "Ready",
+  stale: "Stale",
+}
+
+function pivotSourceStatus(
+  pivot: ExplorePivotConfig,
+  entry: (PivotResultFreshnessEntry & { error?: string }) | undefined,
+  hasActiveJob: boolean,
+  currentDataframeKey: string | null,
+): PivotSourceStatus {
+  if (pivot.values.length === 0) return "unconfigured"
+  if (hasActiveJob) return "loading"
+  if (entry?.error && !entry.result) return "error"
+  if (!entry?.result) return "not_calculated"
+  return isPivotResultFresh(entry, currentDataframeKey, pivotCalculationIdentity(pivot))
+    ? "ready"
+    : "stale"
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -383,31 +421,17 @@ export default function ExploreChartsConfig({
   }
   let data: ReturnType<typeof adaptPivotChartData> | null = null
   let dataError: string | null = null
-  let sourceStatus: "unconfigured" | "loading" | "error" | "not_calculated" | "stale" | "ready" =
-    "unconfigured"
+  let sourceStatus: PivotSourceStatus = "unconfigured"
   if (pivot) {
     const key = explorePivotResultKey(nodeId, pivot.id)
     const entry = pivotResults[key]
-    const calculationIdentity = pivotCalculationIdentity(pivot)
-    const fresh = Boolean(
-      entry?.result &&
-        currentDataframeKey &&
-        entry.result.dataframe_cache_key === currentDataframeKey &&
-        entry.calculationIdentity === calculationIdentity,
+    sourceStatus = pivotSourceStatus(
+      pivot,
+      entry,
+      Boolean(pivotJobs[key]),
+      currentDataframeKey,
     )
-    sourceStatus =
-      pivot.values.length === 0
-        ? "unconfigured"
-        : pivotJobs[key]
-          ? "loading"
-          : entry?.error && !entry.result
-            ? "error"
-            : !entry?.result
-              ? "not_calculated"
-              : fresh
-                ? "ready"
-                : "stale"
-    if (entry?.result && fresh) {
+    if (sourceStatus === "ready" && entry?.result) {
       try {
         data = adaptPivotChartData(chart, pivot, entry.result)
       } catch (e) {
@@ -502,27 +526,22 @@ export default function ExploreChartsConfig({
             <option value="" disabled>
               Select a Pivot
             </option>
-            {pivots.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {p.enabled ? "" : " (Hidden)"}
-                {(() => {
-                  const key = explorePivotResultKey(nodeId, p.id)
-                  const entry = pivotResults[key]
-                  const isFresh = Boolean(
-                    entry?.result &&
-                      currentDataframeKey &&
-                      entry.result.dataframe_cache_key === currentDataframeKey &&
-                      entry.calculationIdentity === pivotCalculationIdentity(p),
-                  )
-                  if (p.values.length === 0) return " — Unconfigured"
-                  if (pivotJobs[key]) return " — Loading"
-                  if (entry?.error && !entry.result) return " — Error"
-                  if (!entry?.result) return " — Not calculated"
-                  return isFresh ? " — Ready" : " — Stale"
-                })()}
-              </option>
-            ))}
+            {pivots.map((p) => {
+              const key = explorePivotResultKey(nodeId, p.id)
+              const status = pivotSourceStatus(
+                p,
+                pivotResults[key],
+                Boolean(pivotJobs[key]),
+                currentDataframeKey,
+              )
+              return (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.enabled ? "" : " (Hidden)"}
+                  {` — ${SOURCE_STATUS_LABELS[status]}`}
+                </option>
+              )
+            })}
           </select>
         </Field>
       )}

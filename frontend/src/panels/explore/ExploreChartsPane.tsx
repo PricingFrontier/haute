@@ -1,10 +1,4 @@
-import {
-  AlertTriangle,
-  BarChart3,
-  Loader2,
-  RotateCw,
-  XCircle,
-} from "lucide-react"
+import { AlertTriangle, BarChart3, Loader2 } from "lucide-react"
 import { useMemo } from "react"
 
 import type { ExploreCacheReport } from "../../api/types"
@@ -15,12 +9,17 @@ import { NODE_GROUP_COLORS } from "../../theme/colors"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import ComboChart from "./ComboChart"
 import {
+  ExploreResultEmptyState,
+  PivotRunStatusActions,
+} from "./ExploreResultCardChrome"
+import {
   parseExploreCharts,
   resolveExploreChartSource,
   type ExploreChartConfig,
 } from "./chartConfig"
 import { adaptPivotChartData, ChartDataError } from "./chartData"
 import {
+  isPivotResultFresh,
   parseExplorePivots,
   pivotCalculationIdentity,
   type ExplorePivotConfig,
@@ -38,24 +37,7 @@ type ExploreChartsPaneProps = {
 }
 
 function EmptyCharts({ children }: { children: string }) {
-  return (
-    <div className="flex flex-1 items-center justify-center p-4">
-      <div className="max-w-md text-center">
-        <BarChart3
-          size={24}
-          className="mx-auto mb-2"
-          aria-hidden="true"
-          style={{ color: NODE_GROUP_COLORS.explore }}
-        />
-        <div
-          className="text-xs font-semibold"
-          style={{ color: "var(--text-secondary)" }}
-        >
-          {children}
-        </div>
-      </div>
-    </div>
-  )
+  return <ExploreResultEmptyState icon={BarChart3}>{children}</ExploreResultEmptyState>
 }
 
 function CardMessage({
@@ -122,13 +104,9 @@ function ChartCard({
   )
   const pivotResult = cached?.result ?? null
   const currentIdentity = pivot ? pivotCalculationIdentity(pivot) : null
-  const fresh = Boolean(
-    pivot &&
-      pivotResult &&
-      report &&
-      pivotResult.dataframe_cache_key === report.dataframe_cache_key &&
-      cached?.calculationIdentity === currentIdentity,
-  )
+  const fresh =
+    currentIdentity !== null &&
+    isPivotResultFresh(cached, report?.dataframe_cache_key, currentIdentity)
   const status = job?.progress
   const failure =
     status?.failure ?? (!job && !submitting ? cached?.terminalStatus?.failure : null)
@@ -176,45 +154,17 @@ function ChartCard({
         >
           {chart.name}
         </h3>
-        {pivot && pivot.values.length > 0 &&
-          (job ? (
-            <button
-              type="button"
-              onClick={() => void onCancel(pivot, job.jobId)}
-              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold"
-              style={{
-                color: "var(--danger)",
-                border: "1px solid var(--danger-border)",
-              }}
-            >
-              <XCircle size={12} aria-hidden="true" />
-              Cancel
-            </button>
-          ) : submitting ? (
-            <span
-              role="status"
-              className="inline-flex items-center gap-1 text-[11px] font-semibold"
-              style={{ color: "var(--text-muted)" }}
-            >
-              <Loader2 size={12} className="animate-spin" aria-hidden="true" />
-              Starting calculation
-            </span>
-          ) : alertMessage ? (
-            <button
-              type="button"
-              onClick={() =>
-                void onRetry(pivot, report?.dataframe_cache_key ?? null)
-              }
-              className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold"
-              style={{
-                color: "var(--text-on-accent)",
-                background: NODE_GROUP_COLORS.explore,
-              }}
-            >
-              <RotateCw size={12} aria-hidden="true" />
-              Retry
-            </button>
-          ) : null)}
+        {pivot && pivot.values.length > 0 && (
+          <PivotRunStatusActions
+            activeJobId={job?.jobId ?? null}
+            submitting={submitting}
+            canRetry={Boolean(alertMessage)}
+            onCancel={(jobId) => void onCancel(pivot, jobId)}
+            onRetry={() =>
+              void onRetry(pivot, report?.dataframe_cache_key ?? null)
+            }
+          />
+        )}
       </div>
 
       {pivot === null && missingPivotId === null && (
