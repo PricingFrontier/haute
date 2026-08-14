@@ -692,7 +692,9 @@ def test_explore_cache_status_falls_back_to_process_caches_without_durable_gener
 
     spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
     store = ExplorePersistentCacheStore(spec.project_root)
-    shutil.rmtree(store._family_dir(spec.family_key))
+    family_dir = tmp_path / ".haute_cache" / "explore" / store.family_digest(spec.family_key)
+    assert family_dir == store._family_dir(spec.family_key)
+    shutil.rmtree(family_dir)
 
     snapshot = client.post("/api/explore/cache-status", json=body)
     assert snapshot.status_code == 200
