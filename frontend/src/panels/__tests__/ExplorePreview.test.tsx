@@ -401,8 +401,12 @@ describe("ExplorePreview", () => {
     const { rerender } = renderExplore()
     await waitFor(() => expect(mockGetExploreCacheSnapshot).toHaveBeenCalledTimes(1))
 
-    // Fresh object identities with identical data-affecting content — the
-    // render shape a canvas drag or other unrelated edit produces.
+    // Fresh object identities with identical data-affecting content plus a
+    // structural-version bump — the render shape a canvas drag or an edit to
+    // a node downstream of the Explore node produces.
+    act(() => {
+      useGraphStore.setState({ structuralVersion: 7 })
+    })
     rerender(
       <ExplorePreview
         node={{ ...exploreNode, data: { ...exploreNode.data } }}

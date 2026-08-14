@@ -192,11 +192,14 @@ export default function ExplorePreview({
     // Gated on the Explore cache identity hash rather than the graph objects:
     // any render that keeps the same configHash captures a graph snapshot and
     // active source whose data-affecting parts are identical (the hash covers
-    // the source), so unrelated edits such as node drags do not re-fire the
-    // inspection request, while an identity change re-runs it with the fresh
-    // capture in the same render.
+    // the source and node labels), so unrelated edits such as node drags or
+    // downstream structural changes do not re-fire the inspection request,
+    // while an identity change re-runs it with the fresh capture in the same
+    // render. The structuralVersion recorded by a hydration is therefore the
+    // one captured at the last identity change; Explore results are staleness-
+    // gated by configHash, not structuralVersion, so that capture is safe.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addToast, completeExploreJob, configHash, hasActiveExploreJob, hasInput, nodeId, nodeLabel, startExploreJob, streamingChunkSize, structuralVersion])
+  }, [addToast, completeExploreJob, configHash, hasActiveExploreJob, hasInput, nodeId, nodeLabel, startExploreJob, streamingChunkSize])
 
   useEffect(() => {
     if (report) touchExplorePreview(nodeId)

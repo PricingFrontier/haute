@@ -390,6 +390,40 @@ def test_pivot_normalises_binary_and_duration_min_max_results(
     assert _cell(result, row, column, "duration_max") == "0:00:02"
 
 
+def test_pivot_member_search_matches_the_column_lowercase_transform(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "members-case.parquet"
+    pl.DataFrame(
+        {
+            "region": ["Straße", "North"],
+            "year": [2024, 2024],
+            "claims": [1.0, 2.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    response = client.post(
+        "/api/explore/pivots/members",
+        json={
+            "graph": graph,
+            "node_id": "explore",
+            "source": "live",
+            "field": "region",
+            "search": "Straße",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "ok"
+    # The query is lowered with the same transform Polars applies to the
+    # column ("straße"); a casefolded query ("strasse") would never match.
+    assert [member["label"] for member in payload["members"]] == ["Straße"]
+
+
 def test_pivot_renders_integers_beyond_js_safe_range_as_decimal_strings(
     client: TestClient,
     tmp_path: Path,

@@ -89,27 +89,35 @@ def test_validate_explore_pivots_migrates_v0_and_preserves_order_and_future_fiel
     ]
 
 
-def test_validate_explore_pivots_migration_skips_names_taken_by_v1_cards() -> None:
-    raw = [
-        _pivot(id="pivot_existing", name="Pivot 1"),
-        {"id": "pivot_legacy"},
-    ]
+@pytest.mark.parametrize("legacy_position", ["before_v1", "after_v1"])
+def test_validate_explore_pivots_migration_skips_names_taken_by_v1_cards(
+    legacy_position: str,
+) -> None:
+    # The legacy-before-v1 ordering is the discriminating case: a single-pass
+    # allocator that had not pre-scanned version-1 names would hand the legacy
+    # card "Pivot 1" and then fail the container-level duplicate-name check.
+    v1_card = _pivot(id="pivot_existing", name="Pivot 1")
+    legacy_card = {"id": "pivot_legacy"}
+    raw = [legacy_card, v1_card] if legacy_position == "before_v1" else [v1_card, legacy_card]
 
     validated = validate_explore_pivots(raw, context="test")
 
-    assert validated[0]["name"] == "Pivot 1"
-    assert validated[1]["name"] == "Pivot 2"
+    names_by_id = {pivot["id"]: pivot["name"] for pivot in validated}
+    assert names_by_id == {"pivot_existing": "Pivot 1", "pivot_legacy": "Pivot 2"}
 
 
-def test_validate_explore_pivots_migration_name_match_is_case_insensitive() -> None:
-    raw = [
-        _pivot(id="pivot_existing", name="  pIvOt 1  "),
-        {"id": "pivot_legacy"},
-    ]
+@pytest.mark.parametrize("legacy_position", ["before_v1", "after_v1"])
+def test_validate_explore_pivots_migration_name_match_is_case_insensitive(
+    legacy_position: str,
+) -> None:
+    v1_card = _pivot(id="pivot_existing", name="  pIvOt 1  ")
+    legacy_card = {"id": "pivot_legacy"}
+    raw = [legacy_card, v1_card] if legacy_position == "before_v1" else [v1_card, legacy_card]
 
     validated = validate_explore_pivots(raw, context="test")
 
-    assert validated[1]["name"] == "Pivot 2"
+    names_by_id = {pivot["id"]: pivot["name"] for pivot in validated}
+    assert names_by_id["pivot_legacy"] == "Pivot 2"
 
 
 def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -> None:

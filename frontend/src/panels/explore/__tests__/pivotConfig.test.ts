@@ -75,7 +75,7 @@ describe("pivotConfig", () => {
     })
   })
 
-  it("migration skips default names already taken by v1 cards", () => {
+  it("migration skips default names already taken by v1 cards in either order", () => {
     const parsed = parseExplorePivots({
       pivots: [
         pivot({ id: "pivot_existing", name: "  pIvOt 1  " }),
@@ -85,6 +85,20 @@ describe("pivotConfig", () => {
     expect(parsed).toMatchObject({
       ok: true,
       pivots: [{ name: "  pIvOt 1  " }, { name: "Pivot 2" }],
+    })
+
+    // Legacy-before-v1 is the discriminating ordering: without a pre-scan of
+    // v1 names the legacy card would take "Pivot 1" and the container-level
+    // duplicate-name check would reject the whole list.
+    const legacyFirst = parseExplorePivots({
+      pivots: [
+        { id: "pivot_legacy" },
+        pivot({ id: "pivot_existing", name: "Pivot 1" }),
+      ],
+    })
+    expect(legacyFirst).toMatchObject({
+      ok: true,
+      pivots: [{ name: "Pivot 2" }, { name: "Pivot 1" }],
     })
   })
 
