@@ -441,9 +441,22 @@ export function adaptPivotChartData(
   for (const [group, members] of normalizedGroups) {
     categories.forEach((category, categoryIndex) => {
       let denominator = 0
+      let maximumMagnitude = 0
+      let overflowScale: number | null = null
       for (const member of members) {
         const cell = member.values[categoryIndex]
-        if (cell !== null) denominator += Math.abs(cell)
+        if (cell !== null) {
+          const magnitude = Math.abs(cell)
+          denominator += magnitude
+          maximumMagnitude = Math.max(maximumMagnitude, magnitude)
+        }
+      }
+      if (!Number.isFinite(denominator)) {
+        overflowScale = maximumMagnitude
+        denominator = members.reduce((sum, member) => {
+          const cell = member.values[categoryIndex]
+          return cell === null ? sum : sum + Math.abs(cell) / maximumMagnitude
+        }, 0)
       }
       if (denominator === 0) {
         for (const member of members) member.values[categoryIndex] = null
@@ -455,7 +468,10 @@ export function adaptPivotChartData(
       }
       for (const member of members) {
         const cell = member.values[categoryIndex]
-        if (cell !== null) member.values[categoryIndex] = cell / denominator
+        if (cell !== null) {
+          const numerator = overflowScale === null ? cell : cell / overflowScale
+          member.values[categoryIndex] = numerator / denominator
+        }
       }
     })
   }

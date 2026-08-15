@@ -201,14 +201,20 @@ export default function useExplorePivotActions({
 
       const key = explorePivotResultKey(node.id, pivot.id)
       const calculationIdentity = pivotCalculationIdentity(pivot)
-      // An auto-scheduled submission may be superseded by a newer target while
-      // its request is in flight; a stale token discards the outcome so a late
-      // old response never overwrites newer work. Manual submissions carry no
-      // token and are never discarded.
+      const startToken = autoClaimToken
+        ?? useNodeResultsStore
+          .getState()
+          .claimExplorePivotManual(
+            key,
+            requestedDataframeCacheKey,
+            calculationIdentity,
+          )
+      // Every submission owns a claim generation. A newer automatic target or
+      // manual Retry replaces it, so a stale response never overwrites newer
+      // work shared by another mounted consumer.
       const claimCurrent = () =>
-        autoClaimToken === undefined
-        || useNodeResultsStore.getState().pivotAutoClaims[key]?.token
-          === autoClaimToken
+        useNodeResultsStore.getState().pivotStartClaims[key]?.token
+          === startToken
       setNotice(pivot.id, null)
       const submissionGeneration = beginSubmitting(pivot.id)
 
@@ -293,11 +299,7 @@ export default function useExplorePivotActions({
           executionMetricsFromError(error),
         )
       } finally {
-        if (autoClaimToken !== undefined) {
-          useNodeResultsStore
-            .getState()
-            .releaseExplorePivotAuto(key, autoClaimToken)
-        }
+        useNodeResultsStore.getState().releaseExplorePivotStart(key, startToken)
         endSubmitting(pivot.id, submissionGeneration)
       }
     },

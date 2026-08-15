@@ -140,6 +140,20 @@ const AXES = new Set<ChartAxis>(["primary", "secondary"])
 const NUMBER_FORMATS = new Set<string>(CHART_NUMBER_FORMATS)
 const LEGEND_POSITIONS = new Set(["top", "right", "bottom", "left"])
 const STRICT_HEX_COLOUR = /^#[0-9A-Fa-f]{6}$/
+const SERIES_KEY_FIELDS = new Set(["version", "value_id", "column_path"])
+const SERIES_MEMBER_FIELDS = new Set(["kind", "value"])
+const SERIES_MEMBER_KINDS = new Set<ExplorePivotMemberKey["kind"]>([
+  "null",
+  "nan",
+  "string",
+  "integer",
+  "date",
+  "datetime",
+  "time",
+  "decimal",
+  "boolean",
+  "float",
+])
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -175,6 +189,71 @@ function cloneLiteral<T>(value: T): T {
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function hasExactFields(
+  value: Record<string, unknown>,
+  fields: ReadonlySet<string>,
+): boolean {
+  const keys = Object.keys(value)
+  return keys.length === fields.size && keys.every((key) => fields.has(key))
+}
+
+function isCanonicalSeriesMember(
+  value: unknown,
+): value is ExplorePivotMemberKey {
+  if (!isPlainObject(value) || !hasExactFields(value, SERIES_MEMBER_FIELDS)) {
+    return false
+  }
+  if (
+    typeof value.kind !== "string"
+    || !SERIES_MEMBER_KINDS.has(value.kind as ExplorePivotMemberKey["kind"])
+  ) {
+    return false
+  }
+  switch (value.kind) {
+    case "null":
+    case "nan":
+      return value.value === null
+    case "boolean":
+      return typeof value.value === "boolean"
+    case "float":
+      return typeof value.value === "number" && Number.isFinite(value.value)
+    default:
+      return typeof value.value === "string"
+  }
+}
+
+type CanonicalSeriesKey = {
+  version: 1
+  value_id: string
+  column_path: ExplorePivotMemberKey[]
+}
+
+function parseCanonicalSeriesKey(seriesKey: string): CanonicalSeriesKey {
+  let raw: unknown
+  try {
+    raw = JSON.parse(seriesKey)
+  } catch {
+    throw new Error("Chart series key must be canonical JSON.")
+  }
+  if (
+    !isPlainObject(raw)
+    || !hasExactFields(raw, SERIES_KEY_FIELDS)
+    || raw.version !== 1
+    || !nonEmptyString(raw.value_id)
+    || !Array.isArray(raw.column_path)
+  ) {
+    throw new Error("Chart series key must be a canonical version-1 identity.")
+  }
+  if (!raw.column_path.every(isCanonicalSeriesMember)) {
+    throw new Error("Chart series key has an invalid column member.")
+  }
+  return {
+    version: 1,
+    value_id: raw.value_id,
+    column_path: raw.column_path,
+  }
 }
 
 function validateFutureFields(
@@ -221,7 +300,12 @@ function parseStyle(
   ) {
     return `${where} stack_group must be null or a non-empty string.`
   }
-  const stackNormalize = raw.stack_normalize ?? false
+  const stackNormalize = Object.prototype.hasOwnProperty.call(
+    raw,
+    "stack_normalize",
+  )
+    ? raw.stack_normalize
+    : false
   if (typeof stackNormalize !== "boolean") {
     return `${where} stack_normalize must be a boolean.`
   }
@@ -385,7 +469,9 @@ function parseV1Chart(
     return `Chart ${position} pivot_id must be null or a non-empty string.`
   }
   if (raw.kind !== "combo") return `Chart ${position} kind must be combo.`
-  const orientation = raw.orientation ?? "vertical"
+  const orientation = Object.prototype.hasOwnProperty.call(raw, "orientation")
+    ? raw.orientation
+    : "vertical"
   if (
     typeof orientation !== "string" ||
     !ORIENTATIONS.has(orientation as ChartOrientation)
@@ -451,6 +537,16 @@ function parseV1Chart(
     )
     if (typeof parsed === "string") return parsed
     const override = parsed as ChartSeriesOverride
+    try {
+      const identity = parseCanonicalSeriesKey(override.series_key)
+      override.series_key = exploreChartSeriesKey(
+        identity.value_id,
+        identity.column_path,
+      )
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error."
+      return `Chart ${position} override series_key is invalid: ${message}`
+    }
     if (nestedIds.has(override.id)) {
       return `Chart ${position} has duplicate encoding id "${override.id}".`
     }
@@ -1077,22 +1173,10 @@ export function exploreChartSeriesLabel(
   seriesKey: string,
   pivot: ExplorePivotConfig,
 ): string {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(seriesKey)
-  } catch {
-    return seriesKey
-  }
-  if (!isPlainObject(parsed) || parsed.version !== 1) return seriesKey
-  const valueId = parsed.value_id
-  const columnPath = parsed.column_path
-  if (typeof valueId !== "string" || !Array.isArray(columnPath)) {
-    return seriesKey
-  }
+  const { value_id: valueId, column_path: columnPath } = parseCanonicalSeriesKey(seriesKey)
   const value = pivot.values.find(({ id }) => id === valueId)
   const valueName = value ? value.display_name : "a removed Value"
   const members = columnPath.map((member) => {
-    if (!isPlainObject(member)) return "?"
     if (member.kind === "null") return "(blank)"
     if (member.kind === "nan") return "(NaN)"
     return String(member.value)
@@ -1100,13 +1184,11 @@ export function exploreChartSeriesLabel(
   return members.length === 0 ? valueName : `${members.join(" › ")} · ${valueName}`
 }
 
-type SeriesPathMember = Pick<ExplorePivotMemberKey, "kind" | "value">
-
 export function exploreChartSeriesKey(
   valueId: string,
   columnPath:
-    | { members: readonly SeriesPathMember[] }
-    | readonly SeriesPathMember[],
+    | { members: readonly ExplorePivotMemberKey[] }
+    | readonly ExplorePivotMemberKey[],
 ): string {
   const members = "members" in columnPath ? columnPath.members : columnPath
   return JSON.stringify({

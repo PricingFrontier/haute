@@ -339,6 +339,38 @@ describe("pivot chart data adapter", () => {
     expect(zeroDenominatorWarnings).toHaveLength(1)
   })
 
+  it("normalises finite huge stack members without overflow", () => {
+    const sourcePivot = pivot({
+      columns: [],
+      values: [
+        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
+      ],
+    })
+    const sourceResult = result(sourcePivot, {
+      column_fields: [],
+      row_paths: [path([member("Huge")])],
+      column_paths: [path([])],
+      cells: sourcePivot.values.map((value) => ({
+        row_index: 0,
+        column_index: 0,
+        value_id: value.id,
+        value: 1e308,
+      })),
+    })
+    const configured = chart(sourcePivot, {
+      value_encodings: seedValueEncodings(sourcePivot).map((encoding) => ({
+        ...encoding,
+        stack_group: "s",
+        stack_normalize: true,
+      })),
+    })
+
+    const data = adaptPivotChartData(configured, sourcePivot, sourceResult)
+
+    expect(data.series.map(({ values }) => values)).toEqual([[0.5], [0.5]])
+  })
+
   it("leaves non-normalised sibling groups untouched", () => {
     const sourcePivot = pivot({
       columns: [],

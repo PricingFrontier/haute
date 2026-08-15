@@ -107,7 +107,7 @@ describe("useExplorePivotActions", () => {
     useNodeResultsStore.setState({
       pivotResults: {},
       pivotJobs: {},
-      pivotAutoClaims: {},
+      pivotStartClaims: {},
     })
     useSettingsStore.setState({
       activeSource: "pricing",
@@ -367,14 +367,40 @@ describe("useExplorePivotActions", () => {
       expect(token2).not.toBeNull()
       expect(token2).not.toBe(token1)
 
-      store.releaseExplorePivotAuto(claimKey(), token1!)
+      store.releaseExplorePivotStart(claimKey(), token1!)
       expect(
-        useNodeResultsStore.getState().pivotAutoClaims[claimKey()]?.token,
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()]?.token,
       ).toBe(token2)
-      store.releaseExplorePivotAuto(claimKey(), token2!)
+      store.releaseExplorePivotStart(claimKey(), token2!)
       expect(
-        useNodeResultsStore.getState().pivotAutoClaims[claimKey()],
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()],
       ).toBeUndefined()
+    })
+
+    it("deduplicates an identical auto target but supersedes manual work for a newer dataframe", () => {
+      const store = useNodeResultsStore.getState()
+      const manualToken = store.claimExplorePivotManual(
+        claimKey(),
+        "df-current",
+        identity(),
+      )
+
+      expect(
+        store.claimExplorePivotAuto(claimKey(), "df-current", identity()),
+      ).toBeNull()
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()]?.token,
+      ).toBe(manualToken)
+
+      const newerToken = store.claimExplorePivotAuto(
+        claimKey(),
+        "df-next",
+        identity(),
+      )
+      expect(newerToken).not.toBeNull()
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()],
+      ).toMatchObject({ dataframeCacheKey: "df-next", token: newerToken })
     })
 
     it("releases the claim through the real failure path, allowing a retry", async () => {
@@ -389,7 +415,7 @@ describe("useExplorePivotActions", () => {
       await act(() => hook.current.updatePivot(pivot(), "df-a", token!))
 
       expect(
-        useNodeResultsStore.getState().pivotAutoClaims[key],
+        useNodeResultsStore.getState().pivotStartClaims[key],
       ).toBeUndefined()
       expect(
         useNodeResultsStore
@@ -431,7 +457,7 @@ describe("useExplorePivotActions", () => {
       expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
       expect(hook.current.notices.claims).toBeUndefined()
       expect(
-        useNodeResultsStore.getState().pivotAutoClaims[key]?.token,
+        useNodeResultsStore.getState().pivotStartClaims[key]?.token,
       ).toBe(token2)
     })
 
@@ -625,8 +651,62 @@ describe("useExplorePivotActions", () => {
       )
       // token2's finally released its own claim; token1's release no-oped.
       expect(
-        useNodeResultsStore.getState().pivotAutoClaims[key],
+        useNodeResultsStore.getState().pivotStartClaims[key],
       ).toBeUndefined()
+    })
+
+    it("discards an automatic response superseded by Retry in another mounted action hook", async () => {
+      const key = claimKey()
+      const token = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, "df-auto", identity())
+      expect(token).not.toBeNull()
+
+      let resolveAutomatic: (value: ExplorePivotRunResponse) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () => new Promise<ExplorePivotRunResponse>((resolve) => {
+          resolveAutomatic = resolve
+        }),
+      )
+      const { result: automaticHook } = renderActions()
+      const { result: retryHook } = renderActions()
+      let automaticStart: Promise<void> = Promise.resolve()
+      act(() => {
+        automaticStart = automaticHook.current.updatePivot(
+          pivot(),
+          "df-auto",
+          token!,
+        )
+      })
+
+      const retryResult = { ...result, dataframe_cache_key: "df-retry" }
+      mockRunExplorePivot.mockResolvedValueOnce({
+        status: "completed",
+        job_id: "retry-job",
+        cached: true,
+        message: "Completed",
+        result: retryResult,
+        failure: null,
+      })
+      await act(() => retryHook.current.updatePivot(pivot(), "df-retry"))
+
+      await act(async () => {
+        resolveAutomatic({
+          status: "completed",
+          job_id: "automatic-job",
+          cached: true,
+          message: "Completed",
+          result: { ...result, dataframe_cache_key: "df-auto" },
+          failure: null,
+        })
+        await automaticStart
+      })
+
+      expect(useNodeResultsStore.getState().pivotResults[key]).toMatchObject({
+        jobId: "retry-job",
+        result: { dataframe_cache_key: "df-retry" },
+      })
+      expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
     })
   })
 })

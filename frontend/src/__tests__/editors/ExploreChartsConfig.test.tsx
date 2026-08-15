@@ -240,7 +240,7 @@ describe("ExploreChartsConfig", () => {
       explorePreviewPanes: {},
       explorePanes: {},
     })
-    useNodeResultsStore.setState({ pivotAutoClaims: {} })
+    useNodeResultsStore.setState({ pivotStartClaims: {} })
     mockRunExplorePivot.mockReset()
     mockCancelExplorePivot.mockReset()
   })

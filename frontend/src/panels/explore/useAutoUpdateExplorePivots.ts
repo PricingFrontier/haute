@@ -98,7 +98,7 @@ export default function useAutoUpdateExplorePivots({
       // token so its outcome is discarded, and the backend's latest-wins
       // family key supersedes the older server-side job.
       const heldClaim =
-        useNodeResultsStore.getState().pivotAutoClaims[resultKey]
+        useNodeResultsStore.getState().pivotStartClaims[resultKey]
       const supersedesHeldClaim =
         heldClaim !== undefined
         && (heldClaim.dataframeCacheKey !== report.dataframe_cache_key

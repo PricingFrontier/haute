@@ -41,7 +41,7 @@ def _chart() -> dict[str, object]:
         "series_overrides": [
             {
                 "id": "override_1",
-                "series_key": "Open",
+                "series_key": '{"version":1,"value_id":"value_1","column_path":[]}',
                 "mark": "line",
                 "axis": "secondary",
                 "stack_group": None,
@@ -243,6 +243,49 @@ def test_materialises_orientation_and_stack_normalize_defaults() -> None:
     assert validated[0]["orientation"] == "vertical"
     assert validated[0]["value_encodings"][0]["stack_normalize"] is False
     assert validated[0]["series_overrides"][0]["stack_normalize"] is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: c.update(orientation=None),
+        lambda c: c["value_encodings"][0].update(stack_normalize=None),
+    ],
+)
+def test_rejects_explicit_null_for_defaulted_chart_fields(mutate: object) -> None:
+    chart = _chart()
+    mutate(chart)  # type: ignore[operator]
+    with pytest.raises(ConfigError):
+        validate_explore_charts([chart], context="test")
+
+
+@pytest.mark.parametrize(
+    "series_key",
+    [
+        "Open",
+        '{"version":true,"value_id":"value_1","column_path":[]}',
+        '{"version":1,"value_id":"value_1","column_path":[],"extra":true}',
+        '{"version":1,"value_id":"value_1","column_path":[{"kind":"boolean","value":"true"}]}',
+    ],
+)
+def test_rejects_noncanonical_series_key(series_key: str) -> None:
+    chart = _chart()
+    chart["series_overrides"][0]["series_key"] = series_key  # type: ignore[index]
+    with pytest.raises(ConfigError, match="series key"):
+        validate_explore_charts([chart], context="test")
+
+
+def test_materialises_canonical_series_key_serialization() -> None:
+    chart = _chart()
+    chart["series_overrides"][0]["series_key"] = (  # type: ignore[index]
+        '{ "column_path": [], "value_id": "value_1", "version": 1 }'
+    )
+
+    validated = validate_explore_charts([chart], context="test")
+
+    assert validated[0]["series_overrides"][0]["series_key"] == (
+        '{"version":1,"value_id":"value_1","column_path":[]}'
+    )
 
 
 def test_materialises_secondary_axis_enabled_and_rejects_disabled_but_used() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
 import re
 from typing import Any
@@ -33,6 +34,72 @@ _COLOR = re.compile(r"#[0-9A-Fa-f]{6}\Z")
 _NUMBER_FORMATS = frozenset(
     {"inherit", "number", "integer", "percent", "currency_gbp", "currency_usd", "currency_eur"}
 )
+_SERIES_MEMBER_KINDS = frozenset(
+    {"null", "nan", "string", "integer", "date", "datetime", "time", "decimal", "boolean", "float"}
+)
+
+
+def _canonical_series_key(value: Any, *, context: str, index: int) -> str:
+    value = _non_empty(value, context=context, index=index, label="series key")
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError) as error:
+        raise ConfigError(
+            "Explore chart series key must be canonical JSON.", context=context, index=index
+        ) from error
+    if (
+        not isinstance(parsed, dict)
+        or set(parsed) != {"version", "value_id", "column_path"}
+        or isinstance(parsed["version"], bool)
+        or not isinstance(parsed["version"], (int, float))
+        or parsed["version"] != EXPLORE_CHART_CONFIG_VERSION
+        or not isinstance(parsed["value_id"], str)
+        or not parsed["value_id"].strip()
+        or not isinstance(parsed["column_path"], list)
+    ):
+        raise ConfigError(
+            "Explore chart series key must be a canonical version-1 identity.",
+            context=context,
+            index=index,
+        )
+    for member in parsed["column_path"]:
+        if (
+            not isinstance(member, dict)
+            or set(member) != {"kind", "value"}
+            or member.get("kind") not in _SERIES_MEMBER_KINDS
+        ):
+            raise ConfigError(
+                "Explore chart series key has an invalid column member.",
+                context=context,
+                index=index,
+            )
+        kind, member_value = member["kind"], member["value"]
+        if kind in {"null", "nan"}:
+            valid = member_value is None
+        elif kind == "boolean":
+            valid = isinstance(member_value, bool)
+        elif kind == "float":
+            valid = (
+                isinstance(member_value, (int, float))
+                and not isinstance(member_value, bool)
+                and math.isfinite(member_value)
+            )
+        else:
+            valid = isinstance(member_value, str)
+        if not valid:
+            raise ConfigError(
+                "Explore chart series key has an invalid column member value.",
+                context=context,
+                index=index,
+            )
+    canonical = {
+        "version": EXPLORE_CHART_CONFIG_VERSION,
+        "value_id": parsed["value_id"],
+        "column_path": [
+            {"kind": member["kind"], "value": member["value"]} for member in parsed["column_path"]
+        ],
+    }
+    return json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
 
 
 def _is_simple_literal(value: Any) -> bool:
@@ -110,6 +177,8 @@ def _style(
     )
     for key in required:
         item[key] = _non_empty(item.get(key), context=context, index=index, label=f"{scope} {key}")
+    if "series_key" in required:
+        item["series_key"] = _canonical_series_key(item["series_key"], context=context, index=index)
     mark = item.get("mark")
     if mark not in {"column", "line", "area"}:
         raise ConfigError(
@@ -127,7 +196,7 @@ def _style(
             context=context,
             index=index,
         )
-    stack_normalize = item.get("stack_normalize", False)
+    stack_normalize = item["stack_normalize"] if "stack_normalize" in item else False
     if not isinstance(stack_normalize, bool):
         raise ConfigError(
             "Explore chart stack normalize must be a boolean.",
@@ -300,7 +369,7 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         )
     if card.get("kind") != "combo":
         raise ConfigError("Explore chart has an unsupported kind.", context=context, index=index)
-    orientation = card.get("orientation", "vertical")
+    orientation = card["orientation"] if "orientation" in card else "vertical"
     if orientation not in {"vertical", "horizontal"}:
         raise ConfigError(
             "Explore chart has an unsupported orientation.",

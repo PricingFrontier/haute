@@ -164,7 +164,9 @@
   and therefore detects as `clustered_columns`), canonical
   typed series-key helpers, a series-key display helper (`exploreChartSeriesLabel`: decodes a
   canonical series key to "column path › … · Value display name" against the current pivot,
-  falling back to the raw key on any parse failure), and value-encoding reconciliation
+  requiring the exact canonical version-1 JSON shape; persisted overrides materialise its
+  canonical serialization, while malformed persisted or direct-helper input is rejected clearly,
+  so no raw key or internal id is rendered), and value-encoding reconciliation
   (`reconcileValueEncodings`: appends one seeded default encoding per pivot Value without one,
   in pivot order; each id is the first unused `encoding_N` counting up from 1 against the
   card-wide nested-id set spanning both Value encodings and exact overrides — e.g. with
@@ -178,7 +180,8 @@
   column grand-total paths are excluded unconditionally), numeric cells,
   hierarchy/label/cardinality limits, and applies matching exact overrides. After series
   assembly it normalises every stack group whose styles set `stack_normalize`: per category,
-  each non-null cell becomes cell ÷ Σ|cells| over the group's non-null cells (range [-1, 1];
+  each non-null cell becomes cell ÷ Σ|cells| over the group's non-null cells; if that direct
+  sum overflows, it uses the equivalent max-magnitude-scaled denominator (range [-1, 1];
   nulls stay gaps and never enter the denominator), and a zero denominator renders every
   member's cell as a gap and appends one warning naming the category and group. Formatted text
   is derived after normalisation. Its output retains

@@ -263,11 +263,9 @@ Explore preview: a retained pivot result counts as ready only when the retained 
 pivot result's, and the pivot's calculation identity matches; a retained result from a superseded
 identity reports stale, never ready. Chart Configure edits chart formatting only — it renders
 no pivot field well, field summary, or disclosure box; pivot structure is edited exclusively in
-the Pivots editor. The configured
-chart/pivot
-subview ids are per-node view state in `useUIStore`: entering a Configure subview also selects
-the matching lower preview pane, deleting a card clears its stored id, and preview-side tab
-changes never modify editor state. While chart Configure is open it mounts the shared
+the Pivots editor. The configured chart/pivot subview ids are per-node view state in
+`useUIStore`; deleting a card clears its stored id. While chart Configure is open it mounts the
+shared
 per-pivot auto-update scheduler for its resolved source, claim-serialised with any mounted
 result pane. Selecting an initial source atomically seeds one explicit encoding per Pivot
 Value in the Combo default arrangement — columns with the last Value as an ungrouped primary

@@ -61,7 +61,7 @@ describe("useAutoUpdateExplorePivots claim serialisation", () => {
     useNodeResultsStore.setState({
       pivotResults: {},
       pivotJobs: {},
-      pivotAutoClaims: {},
+      pivotStartClaims: {},
     })
   })
 
@@ -88,7 +88,7 @@ describe("useAutoUpdateExplorePivots claim serialisation", () => {
 
     expect(updatePivot).toHaveBeenCalledTimes(1)
     const key = explorePivotResultKey(NODE_ID, "claims")
-    const claim = useNodeResultsStore.getState().pivotAutoClaims[key]
+    const claim = useNodeResultsStore.getState().pivotStartClaims[key]
     expect(claim).toMatchObject({
       dataframeCacheKey: "df-1",
       calculationIdentity: pivotCalculationIdentity(pivot()),
@@ -117,7 +117,7 @@ describe("useAutoUpdateExplorePivots claim serialisation", () => {
 
     expect(updatePivot).toHaveBeenCalledTimes(2)
     expect(updatePivot.mock.calls[1][1]).toBe("df-2")
-    const claim = useNodeResultsStore.getState().pivotAutoClaims[key]
+    const claim = useNodeResultsStore.getState().pivotStartClaims[key]
     expect(claim.dataframeCacheKey).toBe("df-2")
     expect(claim.token).not.toBe(firstToken)
     expect(updatePivot.mock.calls[1][2]).toBe(claim.token)

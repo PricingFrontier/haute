@@ -152,12 +152,13 @@
    entries, and resolves each enabled card independently. On mount it automatically schedules
    each distinct stale or missing configured source Pivot once through that Pivot's existing
    run/status lifecycle; charts sharing a source never create duplicate requests, and every
-   scheduler consumer (Pivots pane, Charts pane, chart Configure editor) takes the store's
-   atomic per-pivot claim before submitting — the claim records the target dataframe cache key,
-   calculation identity, and a generation token; an identical-target attempt while it is held
-   is a no-op, a newer target replaces it atomically, and only the current token may promote it
-   to the job entry on submission or release it on failure, so superseded outcomes are
-   discarded rather than overwriting newer work. Running work
+   scheduler consumer (Pivots pane, Charts pane, chart Configure editor) and every manual Retry
+   takes the store's atomic per-pivot start claim before submitting — the claim records the
+   requested dataframe cache key, calculation identity, and a generation token; an identical
+   automatic target while it is held is a no-op, every Retry and every newer automatic target
+   replaces it atomically, and only the current token may promote it to the job entry on
+   submission or release it, so superseded outcomes are discarded rather than overwriting newer
+   work. Running work
    exposes Cancel and an idle terminal failure exposes Retry. Chart appearance, name, ordering,
    and visibility do not touch the calculation lifecycle and rerender from retained source data.
    Each chart card's header offers a Configure action that stores the chart's id as the node's

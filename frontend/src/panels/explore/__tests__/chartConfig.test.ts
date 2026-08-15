@@ -217,6 +217,13 @@ describe("chart config", () => {
       override.series_key = "series_1"
       chart.series_overrides = [override]
     }],
+    ["malformed series identity", (chart: Record<string, unknown>) => {
+      const override = structuredClone(firstMutableRecord(chart.value_encodings))
+      delete override.value_id
+      override.id = "override_1"
+      override.series_key = "not-json"
+      chart.series_overrides = [override]
+    }],
     ["axis", (chart: Record<string, unknown>) => {
       mutableRecord(mutableRecord(chart.axes).primary).minimum = true
     }],
@@ -312,7 +319,7 @@ describe("chart config", () => {
         series_overrides: [
           {
             id: "override_1",
-            series_key: "old",
+            series_key: exploreChartSeriesKey("value_1", []),
             mark: "line",
             axis: "secondary",
             stack_group: null,
@@ -351,6 +358,45 @@ describe("chart config", () => {
     })
     expect(stringKey).not.toBe(integerKey)
   })
+
+  it("materialises structurally valid override identities into canonical keys", () => {
+    const nonCanonicalKey = '{ "column_path": [], "value_id": "value_1", "version": 1 }'
+    const override = {
+      id: "override_1",
+      series_key: nonCanonicalKey,
+      mark: "column" as const,
+      axis: "primary" as const,
+      stack_group: null,
+      stack_normalize: false,
+      color: null,
+      data_labels: false,
+      markers: false,
+    }
+    const raw = configured(pivot(), { series_overrides: [override] })
+    const parsed = parseExploreCharts({ charts: [raw] })
+
+    if (!parsed.ok) throw new Error(parsed.error)
+    expect(parsed.charts[0].series_overrides[0].series_key).toBe(
+      exploreChartSeriesKey("value_1", []),
+    )
+    expect(
+      parseExploreCharts({
+        charts: [
+          {
+            ...raw,
+            series_overrides: [
+              override,
+              {
+                ...override,
+                id: "override_2",
+                series_key: exploreChartSeriesKey("value_1", []),
+              },
+            ],
+          },
+        ],
+      }),
+    ).toMatchObject({ ok: false, error: expect.stringMatching(/duplicate/i) })
+  })
 })
 
 describe("orientation and stack-normalisation schema", () => {
@@ -373,6 +419,20 @@ describe("orientation and stack-normalisation schema", () => {
         (encoding) => encoding.stack_normalize === false,
       ),
     ).toBe(true)
+  })
+
+  it.each([
+    (raw: Record<string, unknown>) => {
+      raw.orientation = null
+    },
+    (raw: Record<string, unknown>) => {
+      const encodings = raw.value_encodings as Record<string, unknown>[]
+      encodings[0].stack_normalize = null
+    },
+  ])("rejects explicit null for defaulted fields", (mutate) => {
+    const raw = rawChart()
+    mutate(raw)
+    expect(parseExploreCharts({ charts: [raw] })).toMatchObject({ ok: false })
   })
 
   it("accepts horizontal orientation and stacked line/area marks", () => {
@@ -476,7 +536,7 @@ describe("secondary axis enablement", () => {
         series_overrides: [
           {
             id: "override_1",
-            series_key: "series-key-1",
+            series_key: exploreChartSeriesKey("value_1", []),
             mark: "column" as const,
             axis: "secondary" as const,
             stack_group: null,
@@ -519,7 +579,7 @@ describe("secondary axis enablement", () => {
       series_overrides: [
         {
           id: "override_1",
-          series_key: "series-key-1",
+          series_key: exploreChartSeriesKey("value_1", []),
           mark: "line" as const,
           axis: "secondary" as const,
           stack_group: "s",
@@ -881,7 +941,7 @@ describe("stacking transitions", () => {
 describe("exploreChartSeriesLabel", () => {
   const sourcePivot = pivot()
 
-  it("decodes canonical keys against the pivot and falls back safely", () => {
+  it("decodes canonical keys against the pivot", () => {
     const key = exploreChartSeriesKey("value_1", [
       { kind: "integer", value: "2099" },
     ])
@@ -897,7 +957,26 @@ describe("exploreChartSeriesLabel", () => {
       "North · a removed Value",
     )
 
-    expect(exploreChartSeriesLabel("not-json", sourcePivot)).toBe("not-json")
+  })
+
+  it.each([
+    ["non-JSON", "not-json"],
+    [
+      "wrong version type",
+      '{"version":true,"value_id":"value_1","column_path":[]}',
+    ],
+    [
+      "extra identity field",
+      '{"version":1,"value_id":"value_1","column_path":[],"extra":true}',
+    ],
+    [
+      "invalid typed member",
+      '{"version":1,"value_id":"value_1","column_path":[{"kind":"boolean","value":"true"}]}',
+    ],
+  ])("rejects %s series identities", (_case, seriesKey) => {
+    expect(() => exploreChartSeriesLabel(seriesKey, sourcePivot)).toThrow(
+      /canonical|invalid/i,
+    )
   })
 })
 
@@ -948,7 +1027,7 @@ describe("reconcileValueEncodings", () => {
       series_overrides: [
         {
           id: "encoding_2",
-          series_key: "series-key-1",
+          series_key: exploreChartSeriesKey("value_1", []),
           mark: "column",
           axis: "primary",
           stack_group: null,
