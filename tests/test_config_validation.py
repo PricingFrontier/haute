@@ -564,6 +564,7 @@ class TestSelectedColumnsUniversal:
             "enabled": bool,
             "pivot_id": str | None,
             "kind": Literal["combo"],
+            "orientation": Literal["vertical", "horizontal"],
             "category": ExploreChartCategory,
             "value_encodings": list[ExploreChartValueEncoding],
             "series_overrides": list[ExploreChartSeriesOverride],

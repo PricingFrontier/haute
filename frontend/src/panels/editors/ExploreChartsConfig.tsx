@@ -578,7 +578,7 @@ function ColourControl({
             aria-label={`Custom colour for ${suffix}`}
             className="h-5 w-7 cursor-pointer rounded border"
             style={{ borderColor: "var(--border)", padding: 0 }}
-            value={value ?? "#888888"}
+            value={value ?? PIVOT_CHART_COLORS.defaultSeries[0]}
             onChange={(event) => onCommit(event.target.value.toUpperCase())}
           />
         </div>
