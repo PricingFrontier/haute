@@ -398,6 +398,43 @@ describe("useExplorePivotActions", () => {
       ).not.toBeNull()
     })
 
+    it("discards a superseded rejection without persisting its stale failure", async () => {
+      const key = claimKey()
+      const token1 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, "df-old", identity())
+      expect(token1).not.toBeNull()
+      let rejectOld: (reason?: unknown) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () =>
+          new Promise<ExplorePivotRunResponse>((_resolve, reject) => {
+            rejectOld = reject
+          }),
+      )
+      const { result: hook } = renderActions()
+      let oldInFlight: Promise<void> = Promise.resolve()
+      act(() => {
+        oldInFlight = hook.current.updatePivot(pivot(), "df-old", token1!)
+      })
+
+      const token2 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, "df-new", identity())
+      expect(token2).not.toBeNull()
+
+      await act(async () => {
+        rejectOld(new Error("obsolete failure"))
+        await oldInFlight
+      })
+
+      expect(useNodeResultsStore.getState().pivotResults[key]).toBeUndefined()
+      expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
+      expect(hook.current.notices.claims).toBeUndefined()
+      expect(
+        useNodeResultsStore.getState().pivotAutoClaims[key]?.token,
+      ).toBe(token2)
+    })
+
     it("stores nothing when a tokened response resolves after clearNode", async () => {
       const key = claimKey()
       const token = useNodeResultsStore
