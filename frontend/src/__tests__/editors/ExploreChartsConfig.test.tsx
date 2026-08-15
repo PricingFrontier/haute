@@ -11,9 +11,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { ExplorePivotResult } from "../../api/types"
 import ExploreChartsConfig from "../../panels/editors/ExploreChartsConfig"
+import { GraphProvider } from "../../panels/GraphContext"
+import type { SimpleNode } from "../../panels/editors"
+
+const mockRunExplorePivot = vi.fn()
+const mockCancelExplorePivot = vi.fn()
+
+vi.mock("../../api/client", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  runExplorePivot: (...args: unknown[]) => mockRunExplorePivot(...args),
+  cancelExplorePivot: (...args: unknown[]) => mockCancelExplorePivot(...args),
+}))
 import type { OnUpdateConfig } from "../../panels/editors/_shared"
 import {
   createExploreChart,
+  exploreChartSeriesKey,
+  parseExploreCharts,
   type ExploreChartConfig,
 } from "../../panels/explore/chartConfig"
 import {
@@ -24,6 +37,7 @@ import useNodeResultsStore, {
   explorePivotResultKey,
   resetNodeResultsDerivedCaches,
 } from "../../stores/useNodeResultsStore"
+import useUIStore from "../../stores/useUIStore"
 
 afterEach(cleanup)
 
@@ -74,6 +88,7 @@ function chart(
             mark: "column" as const,
             axis: "primary" as const,
             stack_group: null,
+            stack_normalize: false,
             color: null,
             data_labels: false,
             markers: false,
@@ -187,8 +202,18 @@ function ChartConfigHarness({
     return { ok: true }
   }
 
+  const exploreNode: SimpleNode = {
+    id: "explore_1",
+    type: "explore",
+    data: {
+      label: "Explore Claims",
+      description: "",
+      nodeType: "explore",
+      config,
+    },
+  }
   return (
-    <>
+    <GraphProvider allNodes={[exploreNode]} edges={[]} submodels={{}} preamble="">
       <ExploreChartsConfig
         config={config}
         onUpdate={onUpdate}
@@ -197,7 +222,7 @@ function ChartConfigHarness({
         onShowPivots={onShowPivots}
       />
       <output data-testid="persisted-config">{JSON.stringify(config)}</output>
-    </>
+    </GraphProvider>
   )
 }
 
@@ -209,6 +234,407 @@ describe("ExploreChartsConfig", () => {
       pivotJobs: {},
       exploreResults: {},
     })
+    useUIStore.setState({
+      exploreConfiguredChartIds: {},
+      exploreConfiguredPivotIds: {},
+      explorePreviewPanes: {},
+      explorePanes: {},
+    })
+    useNodeResultsStore.setState({ pivotAutoClaims: {} })
+    mockRunExplorePivot.mockReset()
+    mockCancelExplorePivot.mockReset()
+  })
+
+  it("keeps chart Configure to formatting only, with no pivot field editing", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    // Pivot structure is edited in the Pivots editor; the chart view carries
+    // no field well, field summary, or disclosure box.
+    expect(screen.queryByText(/Fields are shared/i)).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("searchbox", { name: "Search pivot fields" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByTestId("pivot-field-areas")).not.toBeInTheDocument()
+  })
+
+  it("automatically refreshes a stale hidden source from Configure alone, once per target", async () => {
+    const sourcePivot = pivot("source", { enabled: false })
+    const configured = chart(sourcePivot)
+    seedFreshPivot(sourcePivot)
+    // Keep the retained Explore report but drop the pivot result: the open
+    // Configure view alone must schedule the refresh.
+    useNodeResultsStore.setState({ pivotResults: {}, pivotJobs: {} })
+    mockRunExplorePivot.mockImplementation(
+      async ({ pivot: requested }: { pivot: ExplorePivotConfig }) => ({
+        status: "completed",
+        job_id: `auto-${mockRunExplorePivot.mock.calls.length}`,
+        cached: true,
+        message: "Completed",
+        result: {
+          ...result(requested),
+          row_fields: requested.rows.map(({ field }) => field),
+        },
+        failure: null,
+      }),
+    )
+
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    await waitFor(() => expect(mockRunExplorePivot).toHaveBeenCalledTimes(1))
+    expect(mockRunExplorePivot.mock.calls[0][0].pivot.id).toBe(sourcePivot.id)
+    await waitFor(() =>
+      expect(
+        useNodeResultsStore.getState().pivotResults[
+          explorePivotResultKey("explore_1", sourcePivot.id)
+        ]?.result,
+      ).toBeTruthy(),
+    )
+    expect(mockRunExplorePivot).toHaveBeenCalledTimes(1)
+  })
+
+  it("never shows a status suffix in the source picker", () => {
+    const readyPivot = pivot("source")
+    const notCalculated = pivot("uncalc")
+    const configured = chart(readyPivot)
+    seedFreshPivot(readyPivot)
+    render(
+      <ChartConfigHarness
+        initialConfig={{
+          charts: [configured],
+          pivots: [readyPivot, notCalculated],
+        }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    const source = screen.getByRole("combobox", { name: "Source pivot" })
+    // Accessible-name lookup is a full match: any status suffix would fail.
+    expect(
+      within(source).getByRole("option", { name: readyPivot.name }),
+    ).toBeInTheDocument()
+    expect(
+      within(source).getByRole("option", { name: notCalculated.name }),
+    ).toBeInTheDocument()
+  })
+
+  it("groups axis formatting into Primary and Secondary boxes with a use-secondary tickbox", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    configured.value_encodings = configured.value_encodings.map(
+      (encoding, index) =>
+        index === 1 ? { ...encoding, axis: "secondary" as const } : encoding,
+    )
+    configured.axes = {
+      ...configured.axes,
+      secondary: {
+        title: "Avg",
+        minimum: 0,
+        maximum: 5,
+        number_format: "currency_gbp",
+        enabled: true,
+      },
+    }
+    configured.legend = { visible: true, position: "left" }
+    const onCommittedUpdate = vi.fn()
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+        onCommittedUpdate={onCommittedUpdate}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    // Requested ordering: gallery → orientation → axes → Value boxes.
+    const expectBefore = (first: Element, second: Element) => {
+      expect(
+        first.compareDocumentPosition(second) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+    }
+    const gallery = screen.getByRole("group", { name: "Chart type" })
+    const orientation = screen.getByRole("group", { name: "Orientation" })
+    const primaryBox = screen.getByRole("group", { name: "Primary axis" })
+    const secondaryBox = screen.getByRole("group", { name: "Secondary axis" })
+    const legendBox = screen.getByRole("group", { name: "Legend" })
+    const firstValueControl = screen.getByRole("combobox", {
+      name: "Chart type for Paid",
+    })
+    expectBefore(gallery, orientation)
+    expectBefore(orientation, primaryBox)
+    expectBefore(primaryBox, secondaryBox)
+    expectBefore(secondaryBox, legendBox)
+    expectBefore(legendBox, firstValueControl)
+
+    // The Legend box is gated by its Show legend tickbox; toggling preserves
+    // the (non-default) position in both directions.
+    expect(
+      within(legendBox).getByRole("combobox", { name: "Legend position" }),
+    ).toHaveValue("left")
+    fireEvent.click(
+      within(legendBox).getByRole("checkbox", { name: "Show legend" }),
+    )
+    expect(
+      within(legendBox).queryByRole("combobox", { name: "Legend position" }),
+    ).not.toBeInTheDocument()
+    expect(
+      JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+        .charts[0].legend,
+    ).toEqual({ visible: false, position: "left" })
+    fireEvent.click(
+      within(legendBox).getByRole("checkbox", { name: "Show legend" }),
+    )
+    expect(
+      JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+        .charts[0].legend,
+    ).toEqual({ visible: true, position: "left" })
+    expect(
+      within(legendBox).getByRole("combobox", { name: "Legend position" }),
+    ).toHaveValue("left")
+
+    const tickbox = within(secondaryBox).getByRole("checkbox", {
+      name: "Use secondary axis",
+    })
+    expect(tickbox).toBeChecked()
+    expect(
+      within(secondaryBox).getByRole("combobox", {
+        name: "Secondary number format",
+      }),
+    ).toBeVisible()
+
+    // Unticking is ONE committed edit that disables the axis, hides its
+    // fields, moves the secondary series back to primary, and removes the
+    // Secondary option per series — while retaining the axis formatting.
+    const commitsBeforeToggle = onCommittedUpdate.mock.calls.length
+    fireEvent.click(tickbox)
+    expect(onCommittedUpdate).toHaveBeenCalledTimes(commitsBeforeToggle + 1)
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].axes.secondary).toEqual({
+      title: "Avg",
+      minimum: 0,
+      maximum: 5,
+      number_format: "currency_gbp",
+      enabled: false,
+    })
+    expect(
+      persisted.charts[0].value_encodings.every(
+        (encoding: { axis: string }) => encoding.axis === "primary",
+      ),
+    ).toBe(true)
+    expect(parseExploreCharts({ charts: persisted.charts }).ok).toBe(true)
+    expect(
+      within(
+        screen.getByRole("group", { name: "Secondary axis" }),
+      ).queryByRole("combobox", { name: "Secondary number format" }),
+    ).not.toBeInTheDocument()
+    const axisSelect = screen.getByRole("combobox", { name: "Axis for Paid" })
+    expect(
+      within(axisSelect).queryByRole("option", { name: "Secondary" }),
+    ).not.toBeInTheDocument()
+
+    // Re-ticking is one edit that re-enables the axis with formatting
+    // intact and without touching series assignments.
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Use secondary axis" }),
+    )
+    expect(onCommittedUpdate).toHaveBeenCalledTimes(commitsBeforeToggle + 2)
+    const reEnabled = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(reEnabled.charts[0].axes.secondary).toEqual({
+      title: "Avg",
+      minimum: 0,
+      maximum: 5,
+      number_format: "currency_gbp",
+      enabled: true,
+    })
+    expect(
+      reEnabled.charts[0].value_encodings.every(
+        (encoding: { axis: string }) => encoding.axis === "primary",
+      ),
+    ).toBe(true)
+  })
+
+  it("moves a secondary override to primary when disabling and hides its Secondary option", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    configured.series_overrides = [
+      {
+        id: "override_1",
+        series_key: exploreChartSeriesKey(`${sourcePivot.id}-paid`, []),
+        mark: "line" as const,
+        axis: "secondary" as const,
+        stack_group: "s",
+        stack_normalize: false,
+        color: null,
+        data_labels: false,
+        markers: true,
+      },
+    ]
+    seedFreshPivot(sourcePivot)
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Use secondary axis" }),
+    )
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].series_overrides[0]).toMatchObject({
+      axis: "primary",
+      stack_group: null,
+      stack_normalize: false,
+    })
+    expect(parseExploreCharts({ charts: persisted.charts }).ok).toBe(true)
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Series overrides for Paid" }),
+    )
+    const overrideAxisSelect = screen.getByRole("combobox", {
+      name: "Axis for Paid exact series",
+    })
+    expect(overrideAxisSelect).toHaveValue("primary")
+    expect(
+      within(overrideAxisSelect).queryByRole("option", { name: "Secondary" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("hides series overrides when each Value yields a single series", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    seedFreshPivot(sourcePivot)
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    // Without a Columns split, the Value boxes ARE the series config: no
+    // override section is rendered at all.
+    expect(
+      screen.queryByRole("button", { name: /Series overrides for/ }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: /^Override / }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("keeps a pre-existing override reachable on a single-series Value", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    configured.series_overrides = [
+      {
+        id: "override_1",
+        series_key: exploreChartSeriesKey(`${sourcePivot.id}-paid`, []),
+        mark: "column" as const,
+        axis: "primary" as const,
+        stack_group: null,
+        stack_normalize: false,
+        color: "#112233",
+        data_labels: false,
+        markers: false,
+      },
+    ]
+    seedFreshPivot(sourcePivot)
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    // The override keeps its disclosure reachable even without Columns; the
+    // override-free single-series Value shows none.
+    expect(
+      screen.queryByRole("button", { name: "Series overrides for Claims" }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(
+      screen.getByRole("button", { name: "Series overrides for Paid" }),
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reset Paid to Value default" }),
+    )
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].series_overrides).toEqual([])
+  })
+
+  it("stores the configured chart without touching the preview, and clears on Back", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    // Seed a non-default preview pane so the untouched assertions below prove
+    // Configure/Back leave it alone rather than clearing it.
+    useUIStore.setState({ explorePreviewPanes: { explore_1: "overview" } })
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+    expect(
+      useUIStore.getState().exploreConfiguredChartIds.explore_1,
+    ).toBe(configured.id)
+    // Editor-side navigation never changes the preview pane.
+    expect(
+      useUIStore.getState().explorePreviewPanes.explore_1,
+    ).toBe("overview")
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to charts" }))
+    expect(
+      useUIStore.getState().exploreConfiguredChartIds.explore_1,
+    ).toBeNull()
+    expect(
+      useUIStore.getState().explorePreviewPanes.explore_1,
+    ).toBe("overview")
+  })
+
+  it("self-clears a stored configured id whose chart no longer exists", () => {
+    useUIStore.setState({
+      exploreConfiguredChartIds: { explore_1: "chart_ghost" },
+    })
+    render(<ChartConfigHarness initialConfig={{ charts: [], pivots: [] }} />)
+
+    expect(screen.getByRole("button", { name: "Add Chart" })).toBeVisible()
+    expect(
+      useUIStore.getState().exploreConfiguredChartIds.explore_1,
+    ).toBeNull()
   })
 
   it("adds complete drafts and keeps toggle separate from Configure and Back", () => {
@@ -319,14 +745,92 @@ describe("ExploreChartsConfig", () => {
     expect(within(source).getByRole("option", { name: /Hidden/i })).toBeVisible()
     fireEvent.change(source, { target: { value: hidden.id } })
 
-    expect(screen.getByText(/Rows: region/i)).toBeVisible()
-    expect(screen.getByText(/Values: Paid, Claims/i)).toBeVisible()
+    expect(screen.queryByTestId("pivot-field-areas")).not.toBeInTheDocument()
     const persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
     expect(persisted.charts[0].pivot_id).toBe(hidden.id)
-    expect(persisted.charts[0].value_encodings).toHaveLength(2)
+    // Source selection seeds the Combo default: columns + trailing line.
+    expect(
+      persisted.charts[0].value_encodings.map(
+        ({ mark, markers }: { mark: string; markers: boolean }) => ({
+          mark,
+          markers,
+        }),
+      ),
+    ).toEqual([
+      { mark: "column", markers: false },
+      { mark: "line", markers: true },
+    ])
     expect(persisted.charts[0].series_overrides).toEqual([])
+  })
+
+  it("reconciles a pivot Value added after chart creation and persists on the next commit", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    const grown = pivot("source", {
+      values: [
+        ...sourcePivot.values,
+        {
+          id: "source-rate",
+          field: "rate",
+          aggregation: "average",
+          display_name: "Rate",
+        },
+      ],
+    })
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [grown] }}
+      />,
+    )
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    expect(screen.queryByText(/Missing encoding/i)).not.toBeInTheDocument()
+    expect(
+      screen.getByText("New Value from the source Pivot — defaults applied."),
+    ).toBeVisible()
+    const seededMark = screen.getByRole("combobox", {
+      name: "Chart type for Rate",
+    })
+    expect(seededMark).toHaveValue("column")
+    expect(
+      JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+        .charts[0].value_encodings,
+    ).toHaveLength(2)
+
+    fireEvent.change(seededMark, { target: { value: "line" } })
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].value_encodings).toHaveLength(3)
+    expect(persisted.charts[0].value_encodings[2]).toMatchObject({
+      id: "encoding_3",
+      value_id: "source-rate",
+      mark: "line",
+    })
+  })
+
+  it("labels the inherit number format as General (automatic)", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+    const format = screen.getByRole("combobox", {
+      name: "Primary number format",
+    })
+    expect(
+      within(format).getByRole("option", { name: "General (automatic)" }),
+    ).toHaveValue("inherit")
   })
 
   it("confirms a populated source reset and commits it as one edit", () => {
@@ -375,7 +879,7 @@ describe("ExploreChartsConfig", () => {
     confirm.mockRestore()
   })
 
-  it("applies a combo preset and commits per-value, axis, legend, and category controls", async () => {
+  it("composes a column + secondary line via per-field controls and commits axis, legend, and category settings", async () => {
     const sourcePivot = pivot("source")
     const configured = chart(sourcePivot)
     render(
@@ -387,15 +891,27 @@ describe("ExploreChartsConfig", () => {
       screen.getByRole("button", { name: `Configure ${configured.name}` }),
     )
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Chart preset" }), {
-      target: { value: "column_line_secondary" },
-    })
-    expect(screen.getByRole("combobox", { name: "Mark for Claims" })).toHaveValue(
-      "line",
+    // Combo arrangements come from per-field chart type + axis, not presets.
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Chart type for Claims" }),
+      { target: { value: "line" } },
     )
+    fireEvent.change(screen.getByRole("combobox", { name: "Axis for Claims" }), {
+      target: { value: "secondary" },
+    })
+    expect(
+      screen.getByRole("combobox", { name: "Chart type for Claims" }),
+    ).toHaveValue("line")
     expect(screen.getByRole("combobox", { name: "Axis for Claims" })).toHaveValue(
       "secondary",
     )
+    // The composed state reads as the general Combo option in the gallery.
+    expect(
+      within(screen.getByRole("group", { name: "Chart type" })).getByRole(
+        "button",
+        { name: "Combo" },
+      ),
+    ).toHaveAttribute("aria-pressed", "true")
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Data labels for Paid" }))
     fireEvent.change(screen.getByRole("combobox", { name: "Legend position" }), {
@@ -439,6 +955,7 @@ describe("ExploreChartsConfig", () => {
           minimum: null,
           maximum: null,
           number_format: "inherit",
+          enabled: true,
         },
       },
     })
@@ -467,24 +984,386 @@ describe("ExploreChartsConfig", () => {
     )
     expect(persisted.charts[0].axes.primary.minimum).toBe(-5)
 
-    const colour = screen.getByRole("textbox", { name: "Colour for Paid" })
-    fireEvent.change(colour, { target: { value: "#12" } })
-    fireEvent.blur(colour)
-    expect(screen.getByRole("alert")).toHaveTextContent(/complete #RRGGBB/i)
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /Colour #[0-9A-F]{6} for Paid/ })[0],
+    )
     persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
-    expect(persisted.charts[0].value_encodings[0].color).toBeNull()
+    const paletteColour: string = persisted.charts[0].value_encodings[0].color
+    expect(paletteColour).toMatch(/^#[0-9A-F]{6}$/)
 
-    fireEvent.change(colour, { target: { value: "#aabbcc" } })
-    fireEvent.blur(colour)
+    const custom = screen.getByLabelText("Custom colour for Paid")
+    fireEvent.change(custom, { target: { value: "#aabbcc" } })
     persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
     expect(persisted.charts[0].value_encodings[0].color).toBe("#AABBCC")
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Automatic colour for Paid" }),
+    )
+    persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].value_encodings[0].color).toBeNull()
   })
 
-  it("shows concrete series and creates an exact override from a fresh result", () => {
+  it("shows the detected type, applies gallery presets, and preserves orientation", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot, { orientation: "horizontal" })
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    const gallery = screen.getByRole("group", { name: "Chart type" })
+    // Combo sits leftmost as the default option, exactly one option is
+    // pressed, and no separate Custom indicator exists.
+    expect(
+      within(gallery).getAllByRole("button")[0],
+    ).toHaveAccessibleName("Combo")
+    expect(
+      within(gallery)
+        .getAllByRole("button")
+        .filter(
+          (button) => button.getAttribute("aria-pressed") === "true",
+        ),
+    ).toHaveLength(1)
+    expect(within(gallery).queryByText("Custom")).not.toBeInTheDocument()
+    expect(
+      within(gallery).getByRole("button", { name: "Clustered columns" }),
+    ).toHaveAttribute("aria-pressed", "true")
+
+    fireEvent.click(
+      within(gallery).getByRole("button", { name: "100% stacked columns" }),
+    )
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].orientation).toBe("horizontal")
+    expect(
+      persisted.charts[0].value_encodings.every(
+        (encoding: { stack_group: string; stack_normalize: boolean }) =>
+          encoding.stack_group === "stack_1" &&
+          encoding.stack_normalize === true,
+      ),
+    ).toBe(true)
+    expect(persisted.charts[0].axes.primary.number_format).toBe("percent")
+    expect(
+      within(gallery).getByRole("button", { name: "100% stacked columns" }),
+    ).toHaveAttribute("aria-pressed", "true")
+  })
+
+  it("marks custom charts explicitly and toggles orientation", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    configured.value_encodings = configured.value_encodings.map(
+      (encoding, index) =>
+        index === 0 ? { ...encoding, mark: "area" as const } : encoding,
+    )
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    const gallery = screen.getByRole("group", { name: "Chart type" })
+    // An area-marked chart is outside the column layouts: Combo is pressed.
+    expect(
+      within(gallery).getByRole("button", { name: "Combo" }),
+    ).toHaveAttribute("aria-pressed", "true")
+
+    const orientation = screen.getByRole("group", { name: "Orientation" })
+    expect(
+      within(orientation).getByRole("button", { name: "Vertical columns" }),
+    ).toHaveAttribute("aria-pressed", "true")
+    fireEvent.click(
+      within(orientation).getByRole("button", { name: "Horizontal bars" }),
+    )
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].orientation).toBe("horizontal")
+  })
+
+  it("drives stacking transitions and shows the group input only on multi-group charts", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    configured.value_encodings = configured.value_encodings.map(
+      (encoding, index) =>
+        index === 0
+          ? { ...encoding, stack_group: "stack_1", stack_normalize: false }
+          : encoding,
+    )
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    expect(
+      screen.queryByRole("textbox", { name: "Stack group for Paid" }),
+    ).not.toBeInTheDocument()
+
+    const stackState = () => {
+      const persistedConfig = JSON.parse(
+        screen.getByTestId("persisted-config").textContent ?? "{}",
+      )
+      expect(parseExploreCharts({ charts: persistedConfig.charts }).ok).toBe(
+        true,
+      )
+      return {
+        persisted: persistedConfig,
+        stacks: persistedConfig.charts[0].value_encodings.map(
+          (encoding: {
+            stack_group: string | null
+            stack_normalize: boolean
+          }) => ({
+            stack_group: encoding.stack_group,
+            stack_normalize: encoding.stack_normalize,
+          }),
+        ),
+      }
+    }
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Stacking for Claims" }), {
+      target: { value: "stacked" },
+    })
+    expect(stackState().stacks).toEqual([
+      { stack_group: "stack_1", stack_normalize: false },
+      { stack_group: "stack_1", stack_normalize: false },
+    ])
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Stacking for Paid" }), {
+      target: { value: "normalized" },
+    })
+    expect(stackState().stacks).toEqual([
+      { stack_group: "stack_1", stack_normalize: true },
+      { stack_group: "stack_1", stack_normalize: true },
+    ])
+
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Stacking for Claims" }),
+      { target: { value: "none" } },
+    )
+    expect(stackState().stacks).toEqual([
+      { stack_group: "stack_1", stack_normalize: true },
+      { stack_group: null, stack_normalize: false },
+    ])
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Axis for Paid" }), {
+      target: { value: "secondary" },
+    })
+    const final = stackState()
+    expect(final.stacks).toEqual([
+      { stack_group: null, stack_normalize: false },
+      { stack_group: null, stack_normalize: false },
+    ])
+    expect(final.persisted.charts[0].value_encodings[0].axis).toBe("secondary")
+  })
+
+  it("renames stack groups atomically and rejects incompatible merges inline", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    configured.value_encodings = [
+      {
+        ...configured.value_encodings[0],
+        stack_group: "stack_1",
+        stack_normalize: false,
+      },
+      {
+        ...configured.value_encodings[1],
+        axis: "secondary" as const,
+        stack_group: "other",
+        stack_normalize: false,
+      },
+    ]
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    const groupInput = screen.getByRole("textbox", {
+      name: "Stack group for Paid",
+    })
+    fireEvent.change(groupInput, { target: { value: "other" } })
+    fireEvent.blur(groupInput)
+    expect(screen.getByRole("alert")).toHaveTextContent(/merge only/i)
+    let persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].value_encodings[0].stack_group).toBe("stack_1")
+
+    fireEvent.change(groupInput, { target: { value: "actuarial" } })
+    fireEvent.blur(groupInput)
+    persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].value_encodings[0].stack_group).toBe("actuarial")
+    expect(parseExploreCharts({ charts: persisted.charts }).ok).toBe(true)
+  })
+
+  it("uses Series vocabulary in every source-status message", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    const key = explorePivotResultKey("explore_1", sourcePivot.id)
+    const openConfigure = () => {
+      const view = render(
+        <ChartConfigHarness
+          initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+        />,
+      )
+      // The configured subview is per-node store state: the first mount opens
+      // it via the card action, later mounts restore it automatically.
+      const configureButton = screen.queryByRole("button", {
+        name: `Configure ${configured.name}`,
+      })
+      if (configureButton) fireEvent.click(configureButton)
+      expect(screen.queryByText(/concrete series/i)).not.toBeInTheDocument()
+      return view
+    }
+
+    const notCalculated = openConfigure()
+    expect(
+      screen.getByText("Update the source Pivot to discover its series."),
+    ).toBeVisible()
+    notCalculated.unmount()
+
+    useNodeResultsStore.getState().startExplorePivotJob(
+      key,
+      "pivot-loading",
+      "explore_1",
+      sourcePivot.id,
+      "Explore Claims",
+      sourcePivot.name,
+      pivotCalculationIdentity(sourcePivot),
+      "pricing",
+      0,
+    )
+    const loading = openConfigure()
+    expect(
+      screen.getByText(
+        "The source Pivot is updating. Series will refresh when it completes.",
+      ),
+    ).toBeVisible()
+    loading.unmount()
+
+    useNodeResultsStore.getState().failExplorePivotJob(key, "boom")
+    const errored = openConfigure()
+    expect(
+      screen.getByText(
+        "The source Pivot failed. Update it before configuring series overrides.",
+      ),
+    ).toBeVisible()
+    errored.unmount()
+  })
+
+  it("merges compatible stack groups through a rename", () => {
+    const sourcePivot = pivot("source")
+    const configured = chart(sourcePivot)
+    configured.value_encodings = [
+      {
+        ...configured.value_encodings[0],
+        stack_group: "stack_1",
+        stack_normalize: false,
+      },
+      {
+        ...configured.value_encodings[1],
+        stack_group: "other",
+        stack_normalize: false,
+      },
+    ]
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    const groupInput = screen.getByRole("textbox", {
+      name: "Stack group for Paid",
+    })
+    fireEvent.change(groupInput, { target: { value: "other" } })
+    fireEvent.blur(groupInput)
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(
+      persisted.charts[0].value_encodings.map(
+        (encoding: { stack_group: string | null }) => encoding.stack_group,
+      ),
+    ).toEqual(["other", "other"])
+    expect(parseExploreCharts({ charts: persisted.charts }).ok).toBe(true)
+  })
+
+  it("names dormant formatting instead of internal ids", () => {
+    const sourcePivot = pivot("source", {
+      columns: [{ id: "source-year", field: "year" }],
+    })
+    const configured = chart(sourcePivot)
+    configured.series_overrides = [
+      {
+        id: "override_1",
+        series_key: JSON.stringify({
+          version: 1,
+          value_id: `${sourcePivot.id}-paid`,
+          column_path: [{ kind: "integer", value: "2099" }],
+        }),
+        mark: "column" as const,
+        axis: "primary" as const,
+        stack_group: null,
+        stack_normalize: false,
+        color: null,
+        data_labels: false,
+        markers: false,
+      },
+    ]
+    const pivotResult = result(sourcePivot)
+    pivotResult.column_fields = ["year"]
+    pivotResult.column_paths = [
+      { members: [{ kind: "integer", value: "2024" }], is_grand_total: false },
+    ]
+    seedFreshPivot(sourcePivot)
+    const key = explorePivotResultKey("explore_1", sourcePivot.id)
+    useNodeResultsStore.setState((state) => ({
+      pivotResults: {
+        ...state.pivotResults,
+        [key]: { ...state.pivotResults[key], result: pivotResult },
+      },
+    }))
+
+    render(
+      <ChartConfigHarness
+        initialConfig={{ charts: [configured], pivots: [sourcePivot] }}
+      />,
+    )
+    fireEvent.click(
+      screen.getByRole("button", { name: `Configure ${configured.name}` }),
+    )
+
+    const dormant = screen.getByText(/kept for series not currently shown/i)
+    expect(dormant).toHaveTextContent("2099 · Paid")
+    expect(dormant).not.toHaveTextContent("override_1")
+  })
+
+  it("lists series and creates an exact override from a fresh result", () => {
     const sourcePivot = pivot("source", {
       columns: [{ id: "source-year", field: "year" }],
     })
@@ -516,7 +1395,21 @@ describe("ExploreChartsConfig", () => {
       screen.getByRole("button", { name: `Configure ${configured.name}` }),
     )
 
+    // Series overrides nest under their Value box behind per-Value
+    // disclosures, both collapsed initially.
+    const paidDisclosure = screen.getByRole("button", {
+      name: "Series overrides for Paid",
+    })
+    expect(paidDisclosure).toHaveAttribute("aria-expanded", "false")
+    expect(
+      screen.getByRole("button", { name: "Series overrides for Claims" }),
+    ).toHaveAttribute("aria-expanded", "false")
+
+    fireEvent.click(paidDisclosure)
+    expect(paidDisclosure).toHaveAttribute("aria-expanded", "true")
+    // Expanding Paid exposes only Paid's series; Claims stays collapsed.
     expect(screen.getByText("2024 · Paid")).toBeVisible()
+    expect(screen.queryByText("2024 · Claims")).not.toBeInTheDocument()
     fireEvent.click(
       screen.getByRole("button", { name: "Override 2024 · Paid" }),
     )
@@ -526,6 +1419,11 @@ describe("ExploreChartsConfig", () => {
     )
     expect(persisted.charts[0].series_overrides).toHaveLength(1)
     expect(persisted.charts[0].series_overrides[0].id).toBe("override_2")
+    expect(persisted.charts[0].series_overrides[0].series_key).toBe(
+      exploreChartSeriesKey(`${sourcePivot.id}-paid`, [
+        { kind: "integer", value: "2024" },
+      ]),
+    )
     expect(persisted.charts[0].series_overrides[0]).not.toHaveProperty(
       "value_id",
     )
@@ -562,12 +1460,17 @@ describe("ExploreChartsConfig", () => {
       screen.getByRole("button", { name: `Configure ${configured.name}` }),
     )
 
+    // The picker carries no status suffix even for a stale source; the state
+    // is communicated by the message below.
     expect(
-      screen.getByRole("option", { name: new RegExp(`${sourcePivot.name}.*Stale`) }),
+      screen.getByRole("option", { name: sourcePivot.name }),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/The source Pivot result is out of date/),
+      screen.getByText(
+        "The source Pivot result is out of date. Update it to refresh its series.",
+      ),
     ).toBeVisible()
+    expect(screen.queryByText(/concrete series/i)).not.toBeInTheDocument()
   })
 
   it("surfaces malformed persisted charts without destructive controls", () => {

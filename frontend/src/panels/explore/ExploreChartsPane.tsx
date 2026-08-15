@@ -1,10 +1,11 @@
-import { AlertTriangle, BarChart3, Loader2 } from "lucide-react"
+import { AlertTriangle, BarChart3, Loader2, Settings2 } from "lucide-react"
 import { useMemo } from "react"
 
 import type { ExploreCacheReport } from "../../api/types"
 import useNodeResultsStore, {
   explorePivotResultKey,
 } from "../../stores/useNodeResultsStore"
+import useUIStore from "../../stores/useUIStore"
 import { NODE_GROUP_COLORS } from "../../theme/colors"
 import type { SimpleEdge, SimpleNode } from "../editors"
 import ComboChart from "./ComboChart"
@@ -14,6 +15,7 @@ import {
 } from "./ExploreResultCardChrome"
 import {
   parseExploreCharts,
+  reconcileValueEncodings,
   resolveExploreChartSource,
   type ExploreChartConfig,
 } from "./chartConfig"
@@ -82,6 +84,7 @@ type ChartCardProps = {
     requestedDataframeCacheKey?: string | null,
   ) => void
   onCancel: (pivot: ExplorePivotConfig, jobId: string) => void
+  onConfigure: () => void
 }
 
 function ChartCard({
@@ -94,6 +97,7 @@ function ChartCard({
   notice,
   onRetry,
   onCancel,
+  onConfigure,
 }: ChartCardProps) {
   const key = pivot ? explorePivotResultKey(nodeId, pivot.id) : null
   const cached = useNodeResultsStore((state) =>
@@ -116,15 +120,19 @@ function ChartCard({
 
   const adaptation = useMemo(() => {
     if (!fresh || !pivot || !pivotResult) {
-      return { data: null, error: null }
+      return { chart, data: null, error: null }
     }
+    // A pivot Value added after chart creation renders with seeded defaults;
+    // the adapter itself still requires complete explicit encodings.
+    const reconciled = reconcileValueEncodings(chart, pivot)
     try {
       return {
-        data: adaptPivotChartData(chart, pivot, pivotResult),
+        chart: reconciled,
+        data: adaptPivotChartData(reconciled, pivot, pivotResult),
         error: null,
       }
     } catch (error) {
-      return { data: null, error: adapterFailureMessage(error) }
+      return { chart: reconciled, error: adapterFailureMessage(error), data: null }
     }
   }, [chart, fresh, pivot, pivotResult])
 
@@ -154,6 +162,16 @@ function ChartCard({
         >
           {chart.name}
         </h3>
+        <button
+          type="button"
+          aria-label={`Configure ${chart.name}`}
+          title={`Configure ${chart.name}`}
+          onClick={onConfigure}
+          className="focus-ring rounded p-1"
+          style={{ color: "var(--text-secondary)" }}
+        >
+          <Settings2 size={13} aria-hidden="true" />
+        </button>
         {pivot && pivot.values.length > 0 && (
           <PivotRunStatusActions
             activeJobId={job?.jobId ?? null}
@@ -221,7 +239,9 @@ function ChartCard({
           </span>
         </CardMessage>
       )}
-      {adaptation.data && <ComboChart chart={chart} data={adaptation.data} />}
+      {adaptation.data && (
+        <ComboChart chart={adaptation.chart} data={adaptation.data} />
+      )}
     </section>
   )
 }
@@ -248,6 +268,10 @@ export default function ExploreChartsPane({
     submitting,
     updatePivot,
   } = useExplorePivotActions({ node, allNodes, edges, submodels, preamble })
+  const setExplorePane = useUIStore((s) => s.setExplorePane)
+  const setExploreConfiguredChart = useUIStore(
+    (s) => s.setExploreConfiguredChart,
+  )
   const visibleCharts = useMemo(
     () =>
       parsedCharts.ok
@@ -352,6 +376,10 @@ export default function ExploreChartsPane({
               notice={pivot ? notices[pivot.id] : undefined}
               onRetry={updatePivot}
               onCancel={cancelPivot}
+              onConfigure={() => {
+                setExploreConfiguredChart(node.id, chart.id)
+                setExplorePane(node.id, "charts")
+              }}
             />
           )
         })}

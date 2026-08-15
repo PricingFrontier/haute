@@ -18,6 +18,7 @@ type UseAutoUpdateExplorePivotsInput = {
   updatePivot: (
     pivot: ExplorePivotConfig,
     requestedDataframeCacheKey?: string | null,
+    autoClaimToken?: number,
   ) => Promise<void>
 }
 
@@ -48,6 +49,7 @@ export default function useAutoUpdateExplorePivots({
 }: UseAutoUpdateExplorePivotsInput) {
   const pivotResults = useNodeResultsStore((state) => state.pivotResults)
   const pivotJobs = useNodeResultsStore((state) => state.pivotJobs)
+  const claimAuto = useNodeResultsStore((state) => state.claimExplorePivotAuto)
   const attempted = useRef(new Set<string>())
 
   useEffect(() => {
@@ -86,21 +88,40 @@ export default function useAutoUpdateExplorePivots({
           && cached.lastAttemptedDataframeCacheKey
             === report.dataframe_cache_key,
       )
+      if (fresh || failedCurrentAttempt || attempted.current.has(attemptKey)) {
+        continue
+      }
 
+      // A running job or in-flight submission blocks a repeat of the same
+      // target, but a held claim for a *different* target must be superseded
+      // immediately: replacing the claim invalidates the old submission's
+      // token so its outcome is discarded, and the backend's latest-wins
+      // family key supersedes the older server-side job.
+      const heldClaim =
+        useNodeResultsStore.getState().pivotAutoClaims[resultKey]
+      const supersedesHeldClaim =
+        heldClaim !== undefined
+        && (heldClaim.dataframeCacheKey !== report.dataframe_cache_key
+          || heldClaim.calculationIdentity !== calculationIdentity)
       if (
-        fresh
-        || failedCurrentAttempt
-        || pivotJobs[resultKey]
-        || submitting[pivot.id]
-        || attempted.current.has(attemptKey)
+        (pivotJobs[resultKey] || submitting[pivot.id])
+        && !supersedesHeldClaim
       ) {
         continue
       }
 
       // Record before starting: updatePivot synchronously enters submitting
-      // state, which reruns this effect before its request settles.
+      // state, which reruns this effect before its request settles. The
+      // per-instance set is only a fast path — the store claim is the
+      // authority that serialises concurrently mounted consumers.
       attempted.current.add(attemptKey)
-      void updatePivot(pivot, report.dataframe_cache_key)
+      const token = claimAuto(
+        resultKey,
+        report.dataframe_cache_key,
+        calculationIdentity,
+      )
+      if (token === null) continue
+      void updatePivot(pivot, report.dataframe_cache_key, token)
     }
 
     for (const attemptKey of attempted.current) {
@@ -108,5 +129,14 @@ export default function useAutoUpdateExplorePivots({
         attempted.current.delete(attemptKey)
       }
     }
-  }, [nodeId, pivotJobs, pivotResults, pivots, report, submitting, updatePivot])
+  }, [
+    claimAuto,
+    nodeId,
+    pivotJobs,
+    pivotResults,
+    pivots,
+    report,
+    submitting,
+    updatePivot,
+  ])
 }

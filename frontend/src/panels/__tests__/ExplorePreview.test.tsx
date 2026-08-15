@@ -197,7 +197,7 @@ function resetStores() {
     activeSource: "pricing",
     streamingChunkSize: 250000,
   })
-  useUIStore.setState({ explorePreviewPanes: {} })
+  useUIStore.setState({ explorePreviewPanes: {}, explorePanes: {} })
   useToastStore.setState({ toasts: [], _toastCounter: 0 })
 }
 
@@ -447,6 +447,9 @@ describe("ExplorePreview", () => {
   })
 
   it("offers the implemented Explore panes and hides preview rows on Overview", () => {
+    // Seed a non-default editor pane so the untouched assertions below prove
+    // Preview/Overview clicks leave it alone rather than clearing it.
+    useUIStore.setState({ explorePanes: { explore_1: "export" } })
     renderExplore(makePreview())
 
     const preview = screen.getByRole("tab", { name: "Preview" })
@@ -465,6 +468,14 @@ describe("ExplorePreview", () => {
     expect(screen.queryByTestId("data-preview-embedded")).not.toBeInTheDocument()
     expect(screen.getByTestId("explore-preview-overview-pane")).toBeInTheDocument()
     expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("overview")
+    // Preview/Overview selections leave the editor pane untouched.
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("export")
+
+    fireEvent.click(preview)
+
+    expect(preview).toHaveAttribute("aria-selected", "true")
+    expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("preview")
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("export")
   })
 
   it("falls back to Preview when an unsupported runtime pane was remembered", () => {
@@ -478,12 +489,17 @@ describe("ExplorePreview", () => {
   })
 
   it("lazy-loads the Pivots pane and distinguishes no cards from all hidden", async () => {
+    // Seed a different editor pane so the alignment assertion proves an
+    // existing value is overwritten, not just set from empty.
+    useUIStore.setState({ explorePanes: { explore_1: "code" } })
     const { rerender } = renderExplore(makePreview())
 
     fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
     expect(await screen.findByTestId("explore-pivots-pane")).toBeInTheDocument()
     expect(screen.getByText(/Add a pivot from the Pivots settings pane/i)).toBeInTheDocument()
     expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("pivots")
+    // Selecting Pivots here aligns the settings pane to the Pivots editor.
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
 
     const hiddenNode = exploreNodeWithConfig({
       pivots: [
@@ -521,6 +537,7 @@ describe("ExplorePreview", () => {
         { id: "chart_3", enabled: true },
       ],
     })
+    useUIStore.setState({ explorePanes: { explore_1: "code" } })
     renderExplore(makePreview(), node)
 
     fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
@@ -532,6 +549,8 @@ describe("ExplorePreview", () => {
     expect(visibleCharts[1]).toHaveAccessibleName("Chart 3")
     expect(screen.queryByLabelText("Chart 2")).not.toBeInTheDocument()
     expect(useUIStore.getState().explorePreviewPanes.explore_1).toBe("charts")
+    // Selecting Charts here aligns the settings pane to the Charts editor.
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
   })
 
   it("distinguishes no chart cards from cards that are all hidden", async () => {

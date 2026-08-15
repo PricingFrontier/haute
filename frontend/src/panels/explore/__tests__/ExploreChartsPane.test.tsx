@@ -12,6 +12,7 @@ import useNodeResultsStore, {
   resetNodeResultsDerivedCaches,
 } from "../../../stores/useNodeResultsStore"
 import useSettingsStore from "../../../stores/useSettingsStore"
+import useUIStore from "../../../stores/useUIStore"
 import type { SimpleNode } from "../../editors"
 import ExploreChartsPane from "../ExploreChartsPane"
 import {
@@ -215,6 +216,12 @@ describe("ExploreChartsPane", () => {
       streamingChunkSize: 250_000,
     })
     useNodeResultsStore.setState({ pivotResults: {}, pivotJobs: {} })
+    useUIStore.setState({
+      exploreConfiguredChartIds: {},
+      exploreConfiguredPivotIds: {},
+      explorePreviewPanes: {},
+      explorePanes: {},
+    })
   })
 
   afterEach(cleanup)
@@ -382,19 +389,59 @@ describe("ExploreChartsPane", () => {
     expect(mockCancelExplorePivot).toHaveBeenCalledWith("pivot-running")
   })
 
+  it("opens the chart's Configure subview from the card header", () => {
+    const sourcePivot = pivot("shared")
+    seedResult(sourcePivot)
+    renderPane([sourcePivot], [chart("card", sourcePivot)])
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Configure Chart card" }),
+    )
+
+    expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
+    expect(
+      useUIStore.getState().exploreConfiguredChartIds.explore_1,
+    ).toBe("card")
+  })
+
+  it("reconciles pivot Values added after chart creation into defaulted series", () => {
+    const sourcePivot = pivot("shared")
+    seedResult(sourcePivot)
+    const trailing = chart("trailing", sourcePivot, { value_encodings: [] })
+
+    renderPane([sourcePivot], [trailing])
+
+    const card = screen.getByRole("region", { name: "Chart trailing" })
+    expect(within(card).getByTestId("combo-chart")).toHaveTextContent(
+      "1 categories, 1 series",
+    )
+    expect(within(card).queryByRole("alert")).not.toBeInTheDocument()
+  })
+
   it("keeps an adapter error local while a successful sibling still renders", () => {
     const sourcePivot = pivot("shared")
     seedResult(sourcePivot)
-    const broken = chart("broken", sourcePivot, { value_encodings: [] })
+    const overlongPivot = pivot("overlong", {
+      values: [
+        {
+          id: "overlong_paid",
+          field: "paid",
+          aggregation: "sum",
+          display_name: "x".repeat(201),
+        },
+      ],
+    })
+    seedResult(overlongPivot)
+    const broken = chart("broken", overlongPivot)
     const good = chart("good", sourcePivot)
 
-    renderPane([sourcePivot], [broken, good])
+    renderPane([sourcePivot, overlongPivot], [broken, good])
 
     expect(
       within(screen.getByRole("region", { name: "Chart broken" })).getByRole(
         "alert",
       ),
-    ).toHaveTextContent(/explicit encoding/i)
+    ).toHaveTextContent(/label_length/i)
     expect(
       within(screen.getByRole("region", { name: "Chart good" })).getByTestId(
         "combo-chart",

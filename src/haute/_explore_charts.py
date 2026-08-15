@@ -18,6 +18,7 @@ _CARD_KEYS = frozenset(
         "enabled",
         "pivot_id",
         "kind",
+        "orientation",
         "category",
         "value_encodings",
         "series_overrides",
@@ -25,7 +26,9 @@ _CARD_KEYS = frozenset(
         "legend",
     }
 )
-_COMMON_STYLE_KEYS = frozenset({"mark", "axis", "stack_group", "color", "data_labels", "markers"})
+_COMMON_STYLE_KEYS = frozenset(
+    {"mark", "axis", "stack_group", "stack_normalize", "color", "data_labels", "markers"}
+)
 _COLOR = re.compile(r"#[0-9A-Fa-f]{6}\Z")
 _NUMBER_FORMATS = frozenset(
     {"inherit", "number", "integer", "percent", "currency_gbp", "currency_usd", "currency_eur"}
@@ -124,9 +127,16 @@ def _style(
             context=context,
             index=index,
         )
-    if stack_group is not None and mark != "column":
+    stack_normalize = item.get("stack_normalize", False)
+    if not isinstance(stack_normalize, bool):
         raise ConfigError(
-            "Explore chart stack group is valid only for column marks.",
+            "Explore chart stack normalize must be a boolean.",
+            context=context,
+            index=index,
+        )
+    if stack_normalize and stack_group is None:
+        raise ConfigError(
+            "Explore chart stack normalize requires a stack group.",
             context=context,
             index=index,
         )
@@ -141,7 +151,13 @@ def _style(
         item.get("data_labels"), context=context, index=index, label="data labels"
     )
     item["markers"] = _bool(item.get("markers"), context=context, index=index, label="markers")
-    item.update(mark=mark, axis=axis, stack_group=stack_group, color=color)
+    item.update(
+        mark=mark,
+        axis=axis,
+        stack_group=stack_group,
+        stack_normalize=stack_normalize,
+        color=color,
+    )
     return item
 
 
@@ -150,13 +166,25 @@ def _axis(raw: Any, *, context: str, index: int, name: str) -> dict[str, Any]:
         raise ConfigError(
             "Explore chart axes must be dicts.", context=context, index=index, axis=name
         )
+    known = {"title", "minimum", "maximum", "number_format"}
+    if name == "secondary":
+        known.add("enabled")
     axis = _copy_known(
         raw,
-        known=frozenset({"title", "minimum", "maximum", "number_format"}),
+        known=frozenset(known),
         context=context,
         index=index,
         scope="axis",
     )
+    if name == "secondary":
+        enabled = axis.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ConfigError(
+                "Explore chart secondary axis enabled must be a boolean.",
+                context=context,
+                index=index,
+            )
+        axis["enabled"] = enabled
     for required in ("title", "minimum", "maximum", "number_format"):
         if required not in axis:
             raise ConfigError(
@@ -224,6 +252,7 @@ def _migrate_v0(
         enabled=enabled,
         pivot_id=None,
         kind="combo",
+        orientation="vertical",
         category={
             "source": "rows",
             "include_grand_total": False,
@@ -232,8 +261,19 @@ def _migrate_v0(
         value_encodings=[],
         series_overrides=[],
         axes={
-            name: {"title": "", "minimum": None, "maximum": None, "number_format": "inherit"}
-            for name in ("primary", "secondary")
+            "primary": {
+                "title": "",
+                "minimum": None,
+                "maximum": None,
+                "number_format": "inherit",
+            },
+            "secondary": {
+                "title": "",
+                "minimum": None,
+                "maximum": None,
+                "number_format": "inherit",
+                "enabled": True,
+            },
         },
         legend={"visible": True, "position": "bottom"},
     )
@@ -260,6 +300,15 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         )
     if card.get("kind") != "combo":
         raise ConfigError("Explore chart has an unsupported kind.", context=context, index=index)
+    orientation = card.get("orientation", "vertical")
+    if orientation not in {"vertical", "horizontal"}:
+        raise ConfigError(
+            "Explore chart has an unsupported orientation.",
+            context=context,
+            index=index,
+            orientation=orientation,
+        )
+    card["orientation"] = orientation
     category = card.get("category")
     if not isinstance(category, dict):
         raise ConfigError("Explore chart category must be a dict.", context=context, index=index)
@@ -324,6 +373,20 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
                 series_keys.add(item["series_key"])
             items.append(item)
         card[field] = items
+    stack_identities: dict[str, tuple[bool, str]] = {}
+    for style in [*card["value_encodings"], *card["series_overrides"]]:
+        group = style["stack_group"]
+        if group is None:
+            continue
+        identity = (style["stack_normalize"], style["axis"])
+        if stack_identities.setdefault(group, identity) != identity:
+            raise ConfigError(
+                "Explore chart styles sharing a stack group must agree on"
+                " stack normalize and axis.",
+                context=context,
+                index=index,
+                stack_group=group,
+            )
     axes = card.get("axes")
     if not isinstance(axes, dict):
         raise ConfigError("Explore chart axes must be a dict.", context=context, index=index)
@@ -336,6 +399,15 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
             for name in ("primary", "secondary")
         }
     )
+    if axes["secondary"]["enabled"] is False and any(
+        style["axis"] == "secondary"
+        for style in [*card["value_encodings"], *card["series_overrides"]]
+    ):
+        raise ConfigError(
+            "Explore chart secondary axis is disabled but a style uses it.",
+            context=context,
+            index=index,
+        )
     card["axes"] = axes
     legend = card.get("legend")
     if not isinstance(legend, dict):

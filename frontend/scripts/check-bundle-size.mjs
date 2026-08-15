@@ -52,7 +52,14 @@ const DEFAULT_MAX_CHART_VENDOR_JS_GZIP_KIB = 205
 // Explore Pivot/PivotChart contracts, retained-result state, and pane dispatch
 // bring the merged startup bundle to 256.4 KiB without importing the chart
 // runtime. 258 KiB preserves a narrow ~1.6 KiB regression tripwire.
-const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 258
+// Excel-parity chart formatting adds ~1.6 KiB of deliberate eager state
+// contracts: per-node preview/editor pane alignment and configured-card
+// tracking in useUIStore, plus the pivot auto-claim registry in
+// useNodeResultsStore that keeps chart sources refreshing atomically. The
+// chart gallery, formatting editors, and data adapters all stay in lazy
+// chunks. The merged initial bundle is 258.0 KiB; 260 KiB restores about
+// 2 KiB of headroom.
+const DEFAULT_MAX_INITIAL_JS_GZIP_KIB = 260
 
 // Chunks that should only be fetched after a user opens a code/editor-heavy
 // surface. If one appears as a startup modulepreload, the app has likely

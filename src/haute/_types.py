@@ -351,6 +351,7 @@ class ExploreChartStyle(TypedDict):
     mark: Literal["column", "line", "area"]
     axis: Literal["primary", "secondary"]
     stack_group: str | None
+    stack_normalize: bool
     color: str | None
     data_labels: bool
     markers: bool
@@ -381,9 +382,13 @@ class ExploreChartAxis(TypedDict):
     ]
 
 
+class ExploreChartSecondaryAxis(ExploreChartAxis):
+    enabled: bool
+
+
 class ExploreChartAxes(TypedDict):
     primary: ExploreChartAxis
-    secondary: ExploreChartAxis
+    secondary: ExploreChartSecondaryAxis
 
 
 class ExploreChartLegend(TypedDict):
@@ -400,6 +405,7 @@ class ExploreChartConfig(TypedDict):
     enabled: bool
     pivot_id: str | None
     kind: Literal["combo"]
+    orientation: Literal["vertical", "horizontal"]
     category: ExploreChartCategory
     value_encodings: list[ExploreChartValueEncoding]
     series_overrides: list[ExploreChartSeriesOverride]

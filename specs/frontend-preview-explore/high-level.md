@@ -47,17 +47,37 @@ Modelling and optimiser result presentation belongs to
   secondary axes, safe tooltips, deterministic colours, markers/labels, legend, bounds, theme and
   reduced-motion changes. Every card includes a textual summary and toggleable semantic data table;
   one card's error never hides successful siblings.
+- Every rendered chart card offers a Download image action producing a 2× PNG of the current
+  rendering over the chart's resolved theme background. The action is disabled while the card
+  has no rendered chart data, and it fails loud: an SVG decode or canvas rasterisation failure
+  surfaces a visible error message on the card and saves nothing — never a partial or blank
+  file. The filename is the chart name lower-cased with every run of characters outside
+  `a–z`/`0–9`/`-`/`_` collapsed to one `-`, trimmed of leading/trailing `-`, falling back to
+  `chart`, plus `.png`.
 - Pivots is lazy-loaded. Enabled cards render in persisted order as independent full-width
   sections; disabled cards are hidden without deleting retained results. Distinct empty,
   all-disabled, malformed, unconfigured, cache-required, loading, stale, error, and fresh states
   tell the analyst what to do next.
 - Each configured pivot has its own automatic calculation/Cancel lifecycle keyed by Explore node
   plus pivot id. A mounted Pivots pane schedules each stale enabled pivot once; a mounted Charts
-  pane does the same for each distinct stale source pivot used by an enabled chart. A
+  pane does the same for each distinct stale source pivot used by an enabled chart; and an open
+  chart Configure editor schedules its resolved source pivot the same way, so an already-stale
+  source refreshes even while neither result pane is mounted (pivot structure itself is edited
+  only in the Pivots editor). Concurrent scheduler consumers are
+  serialised by the store's atomic per-pivot claim: exactly one submission per staleness target
+  regardless of how many consumers are mounted, a newer dataframe/calculation target atomically
+  replaces a held claim, and a superseded submission's outcome is discarded — an obsolete claim
+  never blocks fresh work and a late old response never overwrites a newer job or result. A
   calculation-config edit makes only that pivot stale; a changed Explore dataframe-cache identity
   makes every dependent result stale, while an absent report waits for cached Explore data. A
   re-enabled unchanged pivot immediately reuses its retained matching result. A terminal failure
   stays local and exposes Retry; normal successful use has no extra refresh button.
+- Selecting Pivots or Charts in the lower preview aligns the node panel's editor to the
+  matching pane; Preview and Overview selections leave the editor untouched, and editor-side
+  pane selections, Configure-subview entry, and Back never change the preview pane. Each chart
+  card in the Charts
+  pane offers a Configure action that opens the node panel's Charts editor directly at that
+  chart's Configure subview.
 - A fresh result renders in a horizontally scrollable, row-virtualised semantic table with
   multi-level column headers, sticky row headers, explicit grand-total labels, and typed cell
   display. Configured Row/value sorting is already reflected by result order. A per-Value

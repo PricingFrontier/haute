@@ -26,6 +26,7 @@
 | `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
 | `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
 | `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
+| `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, and pointer/keyboard placement state. Props: the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
 | `frontend/src/panels/editors/ExploreConfigCardList.tsx` | Shared Pivot/Chart list header, empty state, and action-card row, composing `ExploreToggleCard` with separate Delete and Configure actions. |
 | `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart v0/v1 validation and identity helpers consumed by the chart editor. |
@@ -242,33 +243,113 @@ validated, and unknown simple-literal fields are retained. `Add Chart` writes th
 `chart_N`, first unused `Chart N` name, `enabled: true`, `pivot_id: null`, `kind: "combo"`, empty
 encodings/overrides, Rows category defaults, automatic primary/secondary axes, and bottom legend.
 The card label is its persisted name. Its labelled toggle-card body updates only enabled;
-Configure and Back change only local navigation. Delete asks for confirmation and removes only
-the selected card, allowing a no-longer-needed PivotChart dependency to be released deliberately.
+Configure and Back change only navigation view state, never card config: the configured chart
+id lives per node in `useUIStore`, entering Configure stores it, Back clears that node's
+configured id, neither touches the preview pane, and pane
+switches on either side preserve a stored id so returning to the editor reopens the same
+subview. Delete asks for confirmation, removes only
+the selected card, allowing a no-longer-needed PivotChart dependency to be released
+deliberately, and clears the card's stored configured id.
 The Chart and Pivot list views render their card rows, list headers, Add actions, and empty states
 through `ExploreConfigCardList`; that component composes the same `ExploreToggleCard` used by
 Overview so enabled-state visuals, click targets, and accessibility cannot drift across panes.
 
 Configure parses the same node's ordered pivots and lists every pivot, irrespective of pivot
-visibility. Each option includes its current unconfigured/loading/error/stale/ready state and a
-hidden suffix where applicable. The ready state applies the same client identity gate as the
+visibility. Each option shows the pivot name plus a hidden suffix where applicable and never a
+status suffix; source state (unconfigured/loading/error/stale/not calculated/ready) is
+communicated by the status messaging in the Configure body, not the picker. The ready state applies the same client identity gate as the
 Explore preview: a retained pivot result counts as ready only when the retained Explore result's
 `configHash` matches the current graph/source identity, its `dataframe_cache_key` matches the
 pivot result's, and the pivot's calculation identity matches; a retained result from a superseded
-identity reports stale, never ready. Selecting an initial source atomically seeds one default encoding
-per Pivot Value. Changing a populated source uses a confirmation dialog; cancel changes nothing,
+identity reports stale, never ready. Chart Configure edits chart formatting only — it renders
+no pivot field well, field summary, or disclosure box; pivot structure is edited exclusively in
+the Pivots editor. The configured
+chart/pivot
+subview ids are per-node view state in `useUIStore`: entering a Configure subview also selects
+the matching lower preview pane, deleting a card clears its stored id, and preview-side tab
+changes never modify editor state. While chart Configure is open it mounts the shared
+per-pivot auto-update scheduler for its resolved source, claim-serialised with any mounted
+result pane. Selecting an initial source atomically seeds one explicit encoding per Pivot
+Value in the Combo default arrangement — columns with the last Value as an ungrouped primary
+line, a single Value as one plain column — so a newly sourced multi-Value chart opens on the
+gallery's leftmost, default Combo option (a single-Value chart's plain-column seed reads as
+Clustered columns). Navigation alignment is preview-driven: selecting Pivots or Charts in the
+lower preview aligns this editor to the matching pane, while editor-side pane selections,
+Configure entry, and Back never modify the preview pane. Pivot Values added after selection
+are reconciled on render
+(`reconcileValueEncodings`): their controls appear immediately with seeded defaults and a
+defaults-applied note, and the seeded encodings persist as part of the next committed chart edit
+— one undoable step, no effect-driven write. Changing a populated source uses a confirmation
+dialog; cancel changes nothing,
 confirm replaces `pivot_id`, encodings, and overrides in one `onUpdate` call. With no pivots, an
 explicit action selects the Pivots editor pane without modifying config.
 
-Preset application atomically rewrites Value styles for clustered columns, stacked columns,
-lines, column plus line, column plus secondary-axis line, or stacked columns plus line. Native
-controls edit mark, axis, stack group, colour, markers, and labels per Value; when a result exists,
-the generated-series table can create/edit an exact override or reset it to the Value default.
+The chart-type gallery renders one labelled icon button per option — Combo leftmost (the
+general category and default, as in Excel), then clustered columns,
+stacked columns, and 100% stacked columns — with
+`aria-pressed` on the type
+`detectChartPreset` reports; detection is total, so exactly one button is always pressed and
+there is no separate Custom indicator. Any arrangement outside the three column layouts —
+lines, mixed marks, secondary-axis series — reads as Combo, and clicking Combo seeds the
+classic columns-plus-last-Value-line starting arrangement for the per-Value chart-type and
+axis selects to refine. Activating a preset applies it
+atomically
+(`applyChartPreset`), which rewrites Value styles, clears exact overrides, and never changes
+chart orientation. The 100% preset always sets the primary axis number format to `percent`;
+every other preset resets a primary format of `percent` back to `inherit` and leaves any other
+primary format (for example a currency) untouched — deterministic in both directions, so
+restored raw values are never displayed as percentages and non-percent user formats survive
+preset changes. A
+separate orientation toggle commits `orientation` between vertical columns and horizontal bars.
+
+Per-series controls edit chart type (column/line/area), axis, stacking, colour, markers, and
+labels per Value. Exact-series overrides nest beneath their owning Value box as a collapsed
+"Series overrides (N)" disclosure rendered only when a result exists and either the source
+pivot has Columns (one Value fans out into several series) or that Value already has
+overrides; a single-series Value renders no override surface, because its Value box is the
+series configuration. Expanding the disclosure lists that Value's concrete series to create or
+edit an exact override or reset it
+to the Value default.
 New exact overrides allocate the first unused `override_N` id across both Value encodings and
 existing overrides, preserving the card-wide nested-id uniqueness invariant.
-Axis inputs commit valid finite
-bounds with minimum less than maximum, closed number formats, and titles. Legend visibility/
-position and category rotation are committed controls. Missing pivot Values and dormant overrides
-are explicit; no editor action silently selects a source or invents a replacement mapping.
+
+The stacking control is a per-series select — None, Stacked, 100% stacked — whose every
+transition commits once and lands on a card the validators accept: None clears that series'
+`stack_group` and `stack_normalize` only; Stacked or 100% on an ungrouped series joins the
+chart's sole existing group on the same axis (rewriting the whole group's `stack_normalize`
+when the chosen mode differs) or otherwise allocates the first unused `stack_N`; switching
+Stacked ⇄ 100% on a grouped series rewrites `stack_normalize` on every member of the group;
+and committing a different axis on a grouped series clears its group membership in the same
+commit — a group never spans axes. A group-name input appears only when the chart already has
+more than one stack group: renaming atomically rewrites every member of the current group, a
+rename onto another group commits only when that group's axis and normalisation agree
+(a compatible merge), and an incompatible rename shows an inline validation error and persists
+nothing.
+
+The colour control is a swatch row — an Automatic reset, the theme series palette, and a native
+colour input for custom values — persisting `#RRGGBB` or null with no free-text entry.
+
+The Configure body is ordered: chart-type gallery, orientation toggle, axis formatting, the
+Legend box, then
+the per-Value boxes. Axis formatting is two bordered boxes — Primary axis and Secondary axis.
+Each contains that axis's title, minimum, maximum, and number-format controls; axis inputs
+commit valid finite
+bounds with minimum less than maximum, closed number formats (the `inherit` option is labelled
+`General (automatic)`), and titles. The Secondary box is headed by a "Use secondary axis"
+checkbox bound to `axes.secondary.enabled`: its fields render only while ticked; unticking
+commits one edit that disables the axis and moves every secondary-assigned style back to
+primary (clearing stack membership per the axis-change rule); while unticked the per-series
+Axis selects offer no Secondary option, so a disabled-but-used state is unreachable and
+assigning a series to the secondary axis first requires re-ticking it. The
+Legend box follows the Secondary axis box and is headed by a "Show legend" checkbox bound to
+`legend.visible`; the position select renders inside it only while ticked. Category rotation
+and the grand-total opt-in remain committed controls after the per-Value boxes. Dormant encodings and overrides
+are explicit and described by name — a dormant override by its decoded series label
+(`exploreChartSeriesLabel`), a dormant encoding by its Value display name or as a removed
+Value — never by an internal id. A pivot Value without a persisted encoding renders seeded
+default controls with a
+defaults-applied note rather than a dead-end diagnostic, and no editor action silently selects a
+source or invents a replacement mapping.
 
 **Explore pivot-card workflow.** `parseExplorePivots` is the frontend trust boundary matching
 `validate_explore_pivots`: it migrates versionless `{id}` entries to complete v1 cards, validates
@@ -276,7 +357,10 @@ known nested fields, preserves unknown simple-literal fields, and rejects duplic
 case-insensitive names, or placement ids. `Add Pivot` writes the first unused `pivot_N`, first
 unused `Pivot N` name, `enabled: true`, four empty zones, and both grand totals enabled. A card's
 label is its configured name. Its labelled toggle-card body updates only `enabled`; `Configure`
-and `Back to pivots` only change editor-local navigation.
+and `Back to pivots` change only navigation view state, never card config, with the same
+per-node `useUIStore` lifecycle as chart cards: entering Configure stores the configured pivot
+id, Back clears the stored id, neither touches the preview
+pane, pane switches preserve it, and deleting the card clears it.
 
 The Configure subview receives `upstreamColumns: {name, dtype}[]` from `NodePanel`. It has a
 committed name input (blur/Enter), a case-insensitive search input, a fixed-height scrolling field

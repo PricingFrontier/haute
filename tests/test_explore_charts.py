@@ -19,6 +19,7 @@ def _chart() -> dict[str, object]:
         "enabled": True,
         "pivot_id": None,
         "kind": "combo",
+        "orientation": "vertical",
         "category": {
             "source": "rows",
             "include_grand_total": False,
@@ -31,6 +32,7 @@ def _chart() -> dict[str, object]:
                 "mark": "column",
                 "axis": "primary",
                 "stack_group": None,
+                "stack_normalize": False,
                 "color": "#AABBCC",
                 "data_labels": False,
                 "markers": False,
@@ -43,6 +45,7 @@ def _chart() -> dict[str, object]:
                 "mark": "line",
                 "axis": "secondary",
                 "stack_group": None,
+                "stack_normalize": False,
                 "color": None,
                 "data_labels": True,
                 "markers": True,
@@ -55,7 +58,13 @@ def _chart() -> dict[str, object]:
                 "maximum": None,
                 "number_format": "integer",
             },
-            "secondary": {"title": "", "minimum": 0, "maximum": 1, "number_format": "percent"},
+            "secondary": {
+                "title": "",
+                "minimum": 0,
+                "maximum": 1,
+                "number_format": "percent",
+                "enabled": True,
+            },
         },
         "legend": {"visible": True, "position": "bottom"},
     }
@@ -72,6 +81,7 @@ def test_migrates_v0_with_defaults_order_and_future_fields() -> None:
             "name": "Chart 1",
             "pivot_id": None,
             "kind": "combo",
+            "orientation": "vertical",
             "category": {
                 "source": "rows",
                 "include_grand_total": False,
@@ -91,6 +101,7 @@ def test_migrates_v0_with_defaults_order_and_future_fields() -> None:
                     "minimum": None,
                     "maximum": None,
                     "number_format": "inherit",
+                    "enabled": True,
                 },
             },
             "legend": {"visible": True, "position": "bottom"},
@@ -147,7 +158,12 @@ def test_full_v1_is_deeply_detached_including_nested_future_fields() -> None:
         (lambda c: c["value_encodings"][0].update(axis="tertiary"), "unsupported axis"),  # type: ignore[index]
         (lambda c: c["value_encodings"][0].update(color="#abc"), "strict #RRGGBB"),  # type: ignore[index]
         (lambda c: c["value_encodings"][0].update(color="#AABBCG"), "strict #RRGGBB"),  # type: ignore[index]
-        (lambda c: c["value_encodings"][0].update(stack_group="s", mark="line"), "stack group"),  # type: ignore[index]
+        (lambda c: c.update(orientation="diagonal"), "unsupported orientation"),
+        (lambda c: c["value_encodings"][0].update(stack_normalize=1), "must be a boolean"),  # type: ignore[index]
+        (
+            lambda c: c["value_encodings"][0].update(stack_normalize=True),  # type: ignore[index]
+            "requires a stack group",
+        ),
         (lambda c: c["value_encodings"][0].update(series_key="wrong"), "identity field"),  # type: ignore[index]
         (lambda c: c["series_overrides"][0].update(value_id="wrong"), "identity field"),  # type: ignore[index]
         (lambda c: c["axes"]["primary"].update(number_format="date"), "unsupported number format"),  # type: ignore[index]
@@ -214,3 +230,88 @@ def test_rejects_duplicate_nested_ids_and_keys(mutate: object, message: str) -> 
     mutate(chart)  # type: ignore[operator]
     with pytest.raises(ConfigError, match=message):
         validate_explore_charts([chart], context="test")
+
+
+def test_materialises_orientation_and_stack_normalize_defaults() -> None:
+    raw = _chart()
+    del raw["orientation"]
+    del raw["value_encodings"][0]["stack_normalize"]  # type: ignore[index]
+    del raw["series_overrides"][0]["stack_normalize"]  # type: ignore[index]
+
+    validated = validate_explore_charts([raw], context="test")
+
+    assert validated[0]["orientation"] == "vertical"
+    assert validated[0]["value_encodings"][0]["stack_normalize"] is False
+    assert validated[0]["series_overrides"][0]["stack_normalize"] is False
+
+
+def test_materialises_secondary_axis_enabled_and_rejects_disabled_but_used() -> None:
+    raw = _chart()
+    del raw["axes"]["secondary"]["enabled"]  # type: ignore[index]
+    validated = validate_explore_charts([raw], context="test")
+    assert validated[0]["axes"]["secondary"]["enabled"] is True
+
+    # The fixture's series override sits on the secondary axis.
+    disabled = _chart()
+    disabled["axes"]["secondary"]["enabled"] = False  # type: ignore[index]
+    with pytest.raises(ConfigError, match="secondary axis is disabled"):
+        validate_explore_charts([disabled], context="test")
+
+    # The same rejection covers a secondary-assigned Value encoding.
+    disabled_encoding = _chart()
+    disabled_encoding["axes"]["secondary"]["enabled"] = False  # type: ignore[index]
+    disabled_encoding["series_overrides"][0]["axis"] = "primary"  # type: ignore[index]
+    disabled_encoding["value_encodings"][0]["axis"] = "secondary"  # type: ignore[index]
+    with pytest.raises(ConfigError, match="secondary axis is disabled"):
+        validate_explore_charts([disabled_encoding], context="test")
+
+    disabled_unused = _chart()
+    disabled_unused["axes"]["secondary"]["enabled"] = False  # type: ignore[index]
+    disabled_unused["series_overrides"][0]["axis"] = "primary"  # type: ignore[index]
+    validated_disabled = validate_explore_charts([disabled_unused], context="test")
+    assert validated_disabled[0]["axes"]["secondary"]["enabled"] is False
+
+    non_boolean = _chart()
+    non_boolean["axes"]["secondary"]["enabled"] = 1  # type: ignore[index]
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        validate_explore_charts([non_boolean], context="test")
+
+
+def test_accepts_horizontal_orientation_and_stacked_line_and_area() -> None:
+    raw = _chart()
+    raw["orientation"] = "horizontal"
+    raw["value_encodings"][0].update(mark="line", stack_group="s")  # type: ignore[index]
+    raw["series_overrides"][0].update(mark="area", stack_group="other")  # type: ignore[index]
+
+    validated = validate_explore_charts([raw], context="test")
+
+    assert validated[0]["orientation"] == "horizontal"
+    assert validated[0]["value_encodings"][0]["stack_group"] == "s"
+    assert validated[0]["series_overrides"][0]["stack_group"] == "other"
+
+
+@pytest.mark.parametrize(
+    ("encoding_update", "override_update", "message"),
+    [
+        (
+            {"stack_group": "s", "stack_normalize": True},
+            {"stack_group": "s", "stack_normalize": False},
+            "must agree",
+        ),
+        (
+            {"stack_group": "s", "axis": "primary"},
+            {"stack_group": "s", "axis": "secondary"},
+            "must agree",
+        ),
+    ],
+)
+def test_rejects_inconsistent_stack_groups_across_encodings_and_overrides(
+    encoding_update: dict[str, object],
+    override_update: dict[str, object],
+    message: str,
+) -> None:
+    raw = _chart()
+    raw["value_encodings"][0].update(encoding_update)  # type: ignore[index]
+    raw["series_overrides"][0].update(override_update)  # type: ignore[index]
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_charts([raw], context="test")

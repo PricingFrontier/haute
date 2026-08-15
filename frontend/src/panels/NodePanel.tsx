@@ -924,6 +924,7 @@ export default function NodePanel({
               <ExplorePivotsConfig
                 config={config}
                 onUpdate={handleConfigUpdate}
+                nodeId={node.id}
                 upstreamColumns={upstreamColumns}
                 loadFilterMembers={loadPivotFilterMembers}
                 currentConfigHash={exploreConfigHash}

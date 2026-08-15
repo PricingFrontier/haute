@@ -1,7 +1,8 @@
 import { useState, type ComponentProps } from "react"
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import useUIStore from "../../stores/useUIStore"
 import ExplorePivotsConfig from "../../panels/editors/ExplorePivotsConfig"
 import type { OnUpdateConfig } from "../../panels/editors/_shared"
 import {
@@ -73,6 +74,7 @@ function PivotConfigHarness({
       <ExplorePivotsConfig
         config={config}
         onUpdate={onUpdate}
+        nodeId="explore_1"
         upstreamColumns={columns}
         loadFilterMembers={loadFilterMembers}
         currentConfigHash={currentConfigHash}
@@ -83,6 +85,52 @@ function PivotConfigHarness({
 }
 
 describe("ExplorePivotsConfig", () => {
+  beforeEach(() => {
+    useUIStore.setState({
+      exploreConfiguredChartIds: {},
+      exploreConfiguredPivotIds: {},
+      explorePreviewPanes: {},
+      explorePanes: {},
+    })
+  })
+
+  it("stores the configured pivot without touching the preview, and clears on Back", () => {
+    // Seed a non-default preview pane so the untouched assertions below prove
+    // Configure/Back leave it alone rather than clearing it.
+    useUIStore.setState({ explorePreviewPanes: { explore_1: "overview" } })
+    render(<PivotConfigHarness />)
+    fireEvent.click(screen.getByRole("button", { name: "Add Pivot" }))
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+
+    expect(
+      useUIStore.getState().exploreConfiguredPivotIds.explore_1,
+    ).toBe("pivot_1")
+    // Editor-side navigation never changes the preview pane.
+    expect(
+      useUIStore.getState().explorePreviewPanes.explore_1,
+    ).toBe("overview")
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to pivots" }))
+    expect(
+      useUIStore.getState().exploreConfiguredPivotIds.explore_1,
+    ).toBeNull()
+    expect(
+      useUIStore.getState().explorePreviewPanes.explore_1,
+    ).toBe("overview")
+  })
+
+  it("self-clears a stored configured id whose pivot no longer exists", () => {
+    useUIStore.setState({
+      exploreConfiguredPivotIds: { explore_1: "pivot_ghost" },
+    })
+    render(<PivotConfigHarness />)
+
+    expect(screen.getByRole("button", { name: "Add Pivot" })).toBeVisible()
+    expect(
+      useUIStore.getState().exploreConfiguredPivotIds.explore_1,
+    ).toBeNull()
+  })
+
   it("adds complete enabled cards and keeps toggle separate from Configure/Back", () => {
     render(<PivotConfigHarness />)
 
@@ -766,6 +814,7 @@ describe("ExplorePivotsConfig", () => {
       <ExplorePivotsConfig
         config={{ pivots: [{ id: "pivot_1" }, { id: "pivot_1" }] }}
         onUpdate={vi.fn()}
+        nodeId="explore_1"
         upstreamColumns={upstreamColumns}
       />,
     )

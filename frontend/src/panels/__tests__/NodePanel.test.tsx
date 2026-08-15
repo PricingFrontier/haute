@@ -784,6 +784,9 @@ describe("NodePanel", () => {
       id: "polars_1",
       data: { label: "Transform", description: "", nodeType: "polars", config: {} },
     })
+    // Seed a non-default preview pane so the untouched assertions below prove
+    // the editor leaves it alone rather than clearing it.
+    useUIStore.setState({ explorePreviewPanes: { explore_1: "overview" } })
     const { rerender, props } = renderPanel({
       node: exploreNode,
       allNodes: [sourceNode, exploreNode],
@@ -829,6 +832,10 @@ describe("NodePanel", () => {
       screen.getByTestId("explore-pivots-config"),
     )
     expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
+    // Editor-side pane selection never touches the lower preview.
+    expect(
+      useUIStore.getState().explorePreviewPanes.explore_1,
+    ).toBe("overview")
 
     fetchExplorePivotMembers.mockResolvedValueOnce({
       status: "ok",
@@ -868,10 +875,16 @@ describe("NodePanel", () => {
       screen.getByTestId("explore-charts-config"),
     )
     expect(useUIStore.getState().explorePanes.explore_1).toBe("charts")
+    expect(
+      useUIStore.getState().explorePreviewPanes.explore_1,
+    ).toBe("overview")
 
     fireEvent.click(screen.getByRole("button", { name: "Show pivots" }))
     expect(screen.getByRole("tab", { name: "Pivots" })).toHaveAttribute("aria-selected", "true")
     expect(useUIStore.getState().explorePanes.explore_1).toBe("pivots")
+    expect(
+      useUIStore.getState().explorePreviewPanes.explore_1,
+    ).toBe("overview")
 
     fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
 

@@ -267,6 +267,7 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
             "enabled": True,
             "pivot_id": "pivot_1",
             "kind": "combo",
+            "orientation": "horizontal",
             "category": {
                 "source": "rows",
                 "include_grand_total": False,
@@ -279,7 +280,8 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "value_id": "value_1",
                     "mark": "column",
                     "axis": "primary",
-                    "stack_group": None,
+                    "stack_group": "stack_1",
+                    "stack_normalize": True,
                     "color": "#AABBCC",
                     "data_labels": False,
                     "markers": False,
@@ -298,6 +300,9 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "minimum": None,
                     "maximum": None,
                     "number_format": "inherit",
+                    # Non-default so the round trip proves the field is
+                    # serialised rather than rematerialised from its default.
+                    "enabled": False,
                 },
             },
             "legend": {"visible": True, "position": "bottom"},

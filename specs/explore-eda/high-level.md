@@ -192,7 +192,15 @@ Out of scope (owned elsewhere):
   `series_key` only to exact-series overrides, so either identity is rejected in the other shape.
   Marks, axes, colours, stack groups, label/marker flags,
   number formats, legend positions, category rotation, and finite ordered manual bounds are
-  strictly typed. Unknown string-keyed fields survive only under the finite recursively
+  strictly typed. Chart-level `orientation` is `"vertical"` or `"horizontal"` and defaults to
+  `"vertical"` when absent; style-level `stack_normalize` is Boolean, defaults to `false` when
+  absent, and requires a non-null `stack_group`; the secondary axis carries Boolean `enabled`,
+  defaulting to `true` when absent, and a card whose secondary axis is disabled while any style
+  is assigned to it is rejected. These defaults are materialised into the
+  validated output. A stack group may be used by any mark. Across the union of a card's Value
+  encodings and exact-series overrides, every style sharing one `stack_group` must agree on
+  `stack_normalize` and on `axis` — a stack never mixes normalisation modes or spans value
+  axes. Unknown string-keyed fields survive only under the finite recursively
   simple-literal grammar. An empty list remains empty so callers may omit `charts=[]`.
 - `validate_explore_pivots` accepts only a list of dicts. An item without `version` is the sole
   v0 shape and migrates to a complete v1 card using the first available `Pivot N` name across
@@ -214,8 +222,15 @@ Out of scope (owned elsewhere):
 - Rows form ordered hierarchical categories. The ordered product of ordinary Column paths and
   pivot Values forms series. Each series key is the canonical versioned JSON identity of the
   Value placement id plus the complete typed Column-member path, so typed members cannot collide.
-  Row/Column grand totals are included only when requested.
-- Every pivot Value has one explicit Value encoding. Exact series overrides replace that
+  Row grand totals are included only when requested. Column grand-total paths are never charted:
+  a column grand total is the sum of the other series, so charting it would double-count stacks
+  and dwarf clustered columns.
+- Every charted pivot Value has one explicit Value encoding, and the adapter rejects a chart
+  whose encodings are incomplete. A persisted chart may trail its source pivot's Values (a Value
+  added after chart creation); chart consumers reconcile the parsed chart above the adapter by
+  seeding one explicit default encoding per unmatched Value, surfaced as a seeded default and
+  persisted by the next committed chart edit — never a hard failure and never a silent persisted
+  write. Exact series overrides replace that
   Value-level style only for a matching generated series; unmatched overrides remain dormant and
   visible rather than being discarded. Newly observed Column members inherit the explicit Value
   encoding. Null cells are gaps. Boolean, malformed, or non-finite numeric cells fail with
@@ -224,10 +239,21 @@ Out of scope (owned elsewhere):
   hierarchy depth 6, and 200 characters per rendered category/series label. Exceeding a limit
   reports its measured dimension and directs the analyst to reduce Pivot Rows, Columns, Values,
   or Filters. No chart is truncated or downsampled.
-- Supported marks are clustered/stacked `column`, `line`, and `area` on primary or secondary
-  numeric axes. Safe number formats are `inherit`, `number`, `integer`, `percent`,
+- Supported marks are `column`, `line`, and `area` on primary or secondary numeric axes; every
+  mark may be clustered or assigned to an explicit stack group. Charts render vertically by
+  default; `orientation: "horizontal"` swaps the category axis onto the vertical dimension and
+  the value axes onto the horizontal one without changing series identities, stacking, or
+  bounds semantics. A stack group with `stack_normalize` renders each cell as
+  cell ÷ Σ|cells| over the group's non-null cells in that category: results lie in [-1, 1],
+  negative shares plot below the axis, null cells stay gaps and are excluded from the
+  denominator, and a zero denominator (all cells null or zero) renders gaps for that category
+  and appends one adapter warning naming it. Safe number formats are `inherit`, `number`,
+  `integer`, `percent`,
   `currency_gbp`, `currency_usd`, and `currency_eur`; persisted configuration cannot inject raw
-  renderer options, callbacks, HTML, URLs, or executable formatters.
+  renderer options, callbacks, HTML, URLs, or executable formatters. `inherit` renders as the
+  General locale format — grouped `en-GB` digits with at most two fraction digits at magnitude
+  one or above, at most four significant digits below one, and `0` for zero — applied uniformly
+  to axis ticks, data labels, tooltips, and the semantic data table.
 
 ## Design rationale
 

@@ -76,17 +76,21 @@ export function buildComboChartOptions({
   tokens,
   reducedMotion,
 }: BuildOptionsInput): Record<string, unknown> {
+  const horizontal = chart.orientation === "horizontal"
   const series = data.series.map((entry, seriesIndex) => {
     const colour = seriesColour(seriesIndex, entry.style.color, tokens.series)
     const isColumn = entry.style.mark === "column"
     const isArea = entry.style.mark === "area"
     const numberFormat = chart.axes[entry.style.axis].number_format
+    const valueAxisIndex = entry.style.axis === "primary" ? 0 : 1
     return {
       name: entry.name,
       type: isColumn ? "bar" : "line",
-      yAxisIndex: entry.style.axis === "primary" ? 0 : 1,
+      ...(horizontal
+        ? { xAxisIndex: valueAxisIndex }
+        : { yAxisIndex: valueAxisIndex }),
       data: entry.values,
-      ...(isColumn && entry.style.stack_group !== null ? { stack: entry.style.stack_group } : {}),
+      ...(entry.style.stack_group !== null ? { stack: entry.style.stack_group } : {}),
       // Series-level colour drives the bar/line, its markers, and the legend
       // swatch together; per-part item/line styles would let them disagree.
       color: colour,
@@ -139,49 +143,65 @@ export function buildComboChartOptions({
       left: visibleLegendPosition === "left" ? 120 : 56,
       containLabel: true,
     },
-    xAxis: {
-      type: "category",
-      data: data.categories.map((category) => category.label),
-      axisLabel: { rotate: chart.category.label_rotation, color: tokens.muted },
-      axisLine: { lineStyle: { color: tokens.grid } },
-    },
-    yAxis: [
-      {
-        type: "value",
-        name: chart.axes.primary.title,
-        nameTextStyle: { color: tokens.muted },
+    ...(() => {
+      const categoryAxis = {
+        type: "category",
+        data: data.categories.map((category) => category.label),
+        // A horizontal y-axis renders bottom-up; inverting keeps the first
+        // pivot category at the top, matching the semantic table order.
+        ...(horizontal ? { inverse: true } : {}),
         axisLabel: {
+          rotate: chart.category.label_rotation,
           color: tokens.muted,
-          formatter: (value: unknown) =>
-            typeof value === "number"
-              ? formatChartValue(value, chart.axes.primary.number_format)
-              : String(value),
         },
-        splitLine: { lineStyle: { color: tokens.grid } },
-        ...primaryBounds,
-      },
-      {
-        type: "value",
-        show: hasSecondarySeries,
-        name: chart.axes.secondary.title,
-        nameTextStyle: { color: tokens.muted },
-        axisLabel: {
-          color: tokens.muted,
-          formatter: (value: unknown) =>
-            typeof value === "number"
-              ? formatChartValue(value, chart.axes.secondary.number_format)
-              : String(value),
+        axisLine: { lineStyle: { color: tokens.grid } },
+      }
+      const valueAxes = [
+        {
+          type: "value",
+          name: chart.axes.primary.title,
+          nameTextStyle: { color: tokens.muted },
+          axisLabel: {
+            color: tokens.muted,
+            formatter: (value: unknown) =>
+              typeof value === "number"
+                ? formatChartValue(value, chart.axes.primary.number_format)
+                : String(value),
+          },
+          splitLine: { lineStyle: { color: tokens.grid } },
+          ...primaryBounds,
         },
-        splitLine: { lineStyle: { color: tokens.grid } },
-        ...secondaryBounds,
-      },
-    ],
+        {
+          type: "value",
+          show: hasSecondarySeries,
+          name: chart.axes.secondary.title,
+          nameTextStyle: { color: tokens.muted },
+          axisLabel: {
+            color: tokens.muted,
+            formatter: (value: unknown) =>
+              typeof value === "number"
+                ? formatChartValue(value, chart.axes.secondary.number_format)
+                : String(value),
+          },
+          splitLine: { lineStyle: { color: tokens.grid } },
+          ...secondaryBounds,
+        },
+      ]
+      return horizontal
+        ? { xAxis: valueAxes, yAxis: categoryAxis }
+        : { xAxis: categoryAxis, yAxis: valueAxes }
+    })(),
     ...(hasManyCategories
       ? {
-          dataZoom: [
-            { type: "inside", start: 0, end: 100 },
-            { type: "slider", start: 0, end: 100 },
-          ],
+          dataZoom: horizontal
+            ? [
+                { type: "inside", yAxisIndex: 0, start: 0, end: 100 },
+                { type: "slider", yAxisIndex: 0, start: 0, end: 100 },
+              ]
+            : [
+                { type: "inside", start: 0, end: 100 },
+                { type: "slider", start: 0, end: 100 },
+              ],
         }
       : {}),
     series,

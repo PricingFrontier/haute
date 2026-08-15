@@ -15,8 +15,15 @@ specified in [Explore / EDA](../explore-eda/high-level.md),
 | EDA-E09 | Planned | P2 | Add bounded server-binned distributions. |
 | EDA-E10 | Planned | P2 | Add one cached on-demand relationship/key-analysis service. |
 | EDA-E18 | Deferred | P3 | Add advanced Excel-parity pivot operations after the MVP is proven. |
-| EDA-E23 | Deferred | P3 | Add shared PivotChart filtering and hierarchy interactions. |
-| EDA-E24 | Deferred | P3 | Add broader PivotChart types, export, and advanced presentation features. |
+| EDA-E23 | Deferred | P3 | Add chart-canvas filter controls and hierarchy interactions. |
+| EDA-E24 | Deferred | P3 | Broader PivotChart parity; horizontal bar/100% stacked (EDA-E27) and image export (EDA-E31) pulled forward. |
+| EDA-E25 | In progress | P1 | Reconcile chart Value encodings with seeded defaults instead of hard-failing. |
+| EDA-E26 | In progress | P1 | Chart row-only grand totals and General `inherit` number format. |
+| EDA-E27 | In progress | P1 | Chart-type model: orientation, stacked lines/areas, 100% stacked, type gallery. |
+| EDA-E28 | In progress | P1 | Excel-grade styling controls and user-facing chart terminology. |
+| EDA-E29 | In progress | P2 | Configure ↔ preview pane coupling and chart-card navigation. |
+| EDA-E30 | In progress | P1 | Chart Configure source auto-refresh with the atomic claim; the field-well embed was removed by review decision. |
+| EDA-E31 | In progress | P3 | Per-card PNG chart export. |
 
 ## Planned improvements
 
@@ -262,12 +269,24 @@ typed result.
 - Pivot Filters determine the chart's data; Rows become ordered hierarchical
   category-axis paths; Columns split Values into ordered legend series; and
   Values provide the numeric series. Subtotals and grand totals are excluded
-  by default. Pivot ordering is preserved rather than re-sorted by the chart.
+  by default; the `include_grand_total` opt-in admits row grand-total paths
+  only, and column grand-total paths are never charted (they are the sum of
+  the other series). Pivot ordering is preserved rather than re-sorted by
+  the chart.
 - The MVP chart kind is a two-dimensional ComboChart. Each generated series
   can be a column, line, or area on the primary or secondary numeric axis;
-  columns can be clustered or assigned to an explicit stack group. Presets
-  include clustered columns, stacked columns, lines, column plus line, column
-  plus line on a secondary axis, and stacked columns plus line.
+  any mark can be clustered or assigned to an explicit stack group, a stack
+  group can normalise to 100% (per category, cell ÷ Σ|cells| over the
+  group's non-null cells; zero denominators render gaps plus one named
+  warning), and the whole chart can render vertically or horizontally
+  (EDA-E27). Presets are Combo — leftmost, the general category and the
+  default seeded when a source pivot is selected, as in Excel — then
+  clustered, stacked, and 100% stacked columns (reduced from seven by review
+  decision). Combo's arrangement is columns with the last Value as a line;
+  all mixed arrangements are then composed through the per-Value
+  chart-type and axis controls and read as Combo in the gallery, where
+  detection is total and exactly one option is always highlighted.
+  Orientation is a separate toggle preserved across presets.
 - Pivot null cells render as gaps rather than invented zeroes. Non-finite or
   malformed numeric cells and chart cardinality limits produce actionable
   errors. Results are never silently truncated, downsampled, re-aggregated, or
@@ -296,6 +315,7 @@ The version-1 persisted chart shape is:
   "enabled": true,
   "pivot_id": "pivot_1",
   "kind": "combo",
+  "orientation": "vertical",
   "category": {
     "source": "rows",
     "include_subtotals": false,
@@ -309,6 +329,7 @@ The version-1 persisted chart shape is:
       "mark": "column",
       "axis": "primary",
       "stack_group": null,
+      "stack_normalize": false,
       "color": null,
       "data_labels": false,
       "markers": false
@@ -319,6 +340,7 @@ The version-1 persisted chart shape is:
       "mark": "line",
       "axis": "secondary",
       "stack_group": null,
+      "stack_normalize": false,
       "color": null,
       "data_labels": false,
       "markers": true
@@ -336,7 +358,8 @@ The version-1 persisted chart shape is:
       "title": "Average cost",
       "minimum": null,
       "maximum": null,
-      "number_format": "inherit"
+      "number_format": "inherit",
+      "enabled": true
     }
   },
   "legend": {
@@ -353,7 +376,11 @@ has Columns, an exact generated series identity combines the Value id with
 the typed column-member path. Optional `series_overrides` can style one of
 those concrete series differently; a newly observed member uses the explicit
 Value default and is surfaced as using that default rather than silently
-inventing configuration.
+inventing configuration. The same principle covers a pivot Value added
+after chart creation: consumers reconcile the chart with one seeded
+explicit default encoding per unmatched Value, surfaced as
+defaults-applied and persisted with the next committed chart edit — never
+a hard failure (EDA-E25).
 
 ### EDA-E19 — Versioned PivotChart contract and source linkage
 
@@ -372,8 +399,10 @@ names, and preservation of unknown simple-literal fields. Structural
 validation accepts a null draft or non-empty pivot id; a separate resolver
 reports unconfigured and missing references against the owning Explore node's
 ordered pivots. `Add Chart` writes a complete v1 draft. The source picker lists
-configured pivots regardless of their visibility and distinguishes ready,
-hidden, stale, unconfigured, and errored sources. Pivot deletion is blocked
+configured pivots regardless of their visibility with a hidden marker where
+applicable; per EDA-E30's review decision it carries no status suffix, and
+ready/stale/unconfigured/errored source states are communicated by the
+Configure body's status messages. Pivot deletion is blocked
 while dependent charts exist and lists those charts so the user can reassign
 or remove them deliberately.
 
@@ -560,9 +589,12 @@ result-store, Charts pane, and end-to-end workflow tests.
 them before the source-linked ComboChart is proven would expand the renderer,
 schema, and validation surface without evidence.
 
-**Plan:** Use post-release layouts and interaction metrics to prioritise
-horizontal bar, 100% stacked, pie/doughnut, additional area presets, reusable
-chart templates, drill-through, and PNG/SVG/data export. Keep scatter, bubble,
+**Plan:** Horizontal bar and 100% stacked are no longer this package's
+candidates: they were pulled forward by product decision and are owned by
+`EDA-E27`, as PNG export is by `EDA-E31`. Use post-release layouts and
+interaction metrics to prioritise the remainder — pie/doughnut, additional
+area presets, reusable
+chart templates, drill-through, and SVG/data export. Keep scatter, bubble,
 stock, and any chart that requires row-level observations explicitly
 unsupported while the source contract is a categorical pivot matrix. Each
 selected capability receives a spec amendment, typed compatibility rules,
@@ -578,6 +610,316 @@ and never reinterpret pivot categories as row-level observations.
 
 **Evidence:** Chart configuration/render telemetry, export requests, support
 feedback, and measured browser/bundle performance after the MVP is available.
+
+PivotChart Excel-parity delivery order is `EDA-E25` + `EDA-E26` (independent)
+→ `EDA-E27` → `EDA-E28` → `EDA-E29` → `EDA-E30` → `EDA-E31`, per the approved
+product decisions: row-only chart grand totals (D1), 100% stacking by value ÷
+sum of absolute values (D3), and cuttable 2× PNG export (D4). D2 originally
+approved chart-side field-well write-through to the shared pivot; its
+chart-side surface was removed by review decision in EDA-E30 — field
+authoring is Pivots-editor-only, and chart Configure only auto-refreshes an
+already-stale source. `EDA-E27` through `EDA-E31` receive
+their package sections here when their phase begins; the owning-spec deltas
+land before each phase's code.
+
+### EDA-E25 — Chart Value-encoding reconciliation
+
+**Why:** Adding a Value to a pivot hard-fails every dependent chart
+(`chart_encoding_missing`), and both recovery paths — re-applying a preset or
+re-selecting the source pivot — destroy custom styling and series overrides.
+Excel's equivalent action simply adds a defaulted series.
+
+**Plan:** Add pure `reconcileValueEncodings(chart, pivot)` to
+`chartConfig.ts`: append one seeded default encoding per pivot Value without
+one, in pivot order, allocating ids outside the card-wide nested-id set;
+return the input reference unchanged when complete; never mutate arguments.
+The Charts pane reconciles above the adapter at render time; Chart Configure
+drives its controls from the reconciled chart and persists the seeded
+encodings with the user's next committed edit as one undoable step — no
+effect-driven writes. The adapter keeps rejecting unreconciled charts as an
+invariant guard. The Configure "Missing encoding" dead-end is replaced by
+seeded controls with a defaults-applied note; removed Values keep today's
+dormant-encoding handling.
+
+**Acceptance:** Unit tests prove seeding order, first-unused `encoding_N`
+id allocation against the card-wide nested-id set (with encoding ids
+`encoding_1`/`encoding_3` and an override id `encoding_2`, two seeded
+encodings receive `encoding_4` then `encoding_5`), referential no-op on
+complete charts, and input immutability. Pane tests prove a newly added pivot Value renders as a
+defaulted series instead of a danger card. Editor tests prove the seeded
+controls are immediately editable, the next committed edit persists them,
+and no missing-encoding diagnostic remains.
+
+**Dependencies:** Delivered EDA-E19 through EDA-E22.
+
+**Evidence:** `frontend/src/panels/explore/chartConfig.ts`;
+`frontend/src/panels/explore/ExploreChartsPane.tsx`;
+`frontend/src/panels/editors/ExploreChartsConfig.tsx`;
+`frontend/src/panels/explore/__tests__/chartConfig.test.ts`;
+`frontend/src/panels/explore/__tests__/ExploreChartsPane.test.tsx`;
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`.
+
+### EDA-E26 — Row-only chart grand totals and General number format
+
+**Why:** The category grand-total opt-in also admits the column grand-total
+series — the sum of the other series, double-counting stacks and dwarfing
+clusters — and `inherit` renders `String(value)` with no digit grouping and
+raw float noise.
+
+**Plan:** Restrict the adapter's grand-total inclusion to row paths;
+column grand-total paths are excluded unconditionally (decision D1, no new
+config field). Reformat `inherit` as the General locale format: grouped
+`en-GB` digits, at most two fraction digits at magnitude ≥ 1, at most four
+significant digits below 1, `0` at zero, applied uniformly to ticks,
+labels, tooltips, and the semantic table through the single existing format
+path. The editor lists the option as `General (automatic)`; the persisted
+token remains `inherit`.
+
+**Acceptance:** Adapter tests prove column grand-total exclusion with the
+flag enabled, row grand-total inclusion, and unchanged explicit formats.
+Format tests pin grouping, large/small/zero/negative values.
+
+**Dependencies:** Delivered EDA-E20/EDA-E22.
+
+**Evidence:** `frontend/src/panels/explore/chartData.ts`;
+`frontend/src/panels/editors/ExploreChartsConfig.tsx`;
+`frontend/src/panels/explore/__tests__/chartData.test.ts`.
+
+### EDA-E27 — Chart-type model: orientation, universal stacking, 100% stacked, type gallery
+
+**Why:** The preset select is a stateless action — nothing answers "what kind
+of chart is this?" — and the type vocabulary is missing Excel pivot-chart
+staples: horizontal bars, 100% stacked, and stacked line/area (stacking is
+column-only in both validators today).
+
+**Plan:** Additive version-1 schema in both validators
+(`chartConfig.ts`, `_explore_charts.py`, `_types.py`): chart-level
+`orientation` defaulting to `"vertical"`, style-level `stack_normalize`
+defaulting to `false` and requiring a non-null `stack_group`, stacking
+allowed on every mark, and card-wide group consistency (styles sharing a
+`stack_group` across encodings and overrides agree on `stack_normalize` and
+`axis`); defaults are materialised into validated output, and older
+parser/validator generations retain the new keys as unknown simple
+literals. The adapter normalises 100% stacks per decision D3 after series
+assembly and before formatting. The options builder swaps axes under
+horizontal orientation (series bind via `xAxisIndex`; data zoom and label
+rotation follow the category axis) and emits stacks for any mark. The
+preset set gains `hundred_percent_stacked_columns` (stack + normalize +
+primary axis `percent`); preset application preserves orientation. A pure
+`detectChartPreset` inverts `applyChartPreset` over Value encodings alone,
+reporting `"custom"` when nothing matches; detection projects each encoding
+to `(mark, axis, stack_group, stack_normalize)` — ids, colours, markers,
+and labels never participate, and group names compare only as
+shared-vs-null — and combo presets collapse to their
+column shape on single-Value charts. Applying the 100% preset always sets
+the primary axis format to `percent`; applying any other preset resets a
+`percent` primary format to `inherit` and preserves every other primary
+format. The editor replaces the select with a
+labelled icon gallery (active type via `aria-pressed`, explicit Custom
+indicator) plus an orientation toggle.
+
+**Acceptance:** Both parsers: defaults for absent fields, rejection of
+normalize-without-group, mixed normalize or mixed axis within one group,
+stacking accepted on line/area, and round-trip preservation. Adapter
+normalisation with expected arrays: `[30, -10, 60]` → `[0.3, -0.1, 0.6]`;
+`[25, 75]` → `[0.25, 0.75]`; `[null, 40, 40]` → `[null, 0.5, 0.5]`;
+`[null, 0]` → `[null, null]` plus one warning naming the category and
+group; a non-normalised sibling group passes through untouched. Options:
+axis swap under horizontal orientation with legends, rotation, bounds, and
+data zoom intact; line/area stacks emitted. Detection: every preset
+round-trips `applyChartPreset` → `detectChartPreset` on a multi-Value
+pivot; a renamed shared stack group and colour/marker/label edits keep the
+detected type; hand-mixed configs (including composed combos) and any
+area mark report custom. **Review outcome:** the preset set was reduced
+during the user's review to clustered/stacked/100% stacked columns plus
+Combo — the general Excel-style category that replaced both the `lines`
+preset and the separate Custom indicator. Applying Combo seeds columns with
+the last Value as a line; all other mixed arrangements are composed via the
+per-Value chart-type and axis controls and detect as Combo, making
+detection total with exactly one gallery option highlighted. The dedicated
+combo presets' secondary-axis-re-enable behaviour was removed with them. Axis-format transitions: the 100% preset
+overwrites any primary format with `percent`; a following non-100% preset
+resets `percent` to `inherit` while a currency primary format survives
+non-100% preset application. Editor: gallery reflects the
+current type, applies presets, preserves orientation across presets.
+
+**Dependencies:** EDA-E25/E26 (this phase's baseline), delivered EDA-E19
+through EDA-E22.
+
+**Evidence:** `frontend/src/panels/explore/chartConfig.ts`;
+`frontend/src/panels/explore/chartData.ts`;
+`frontend/src/panels/explore/chartOptions.ts`;
+`frontend/src/panels/editors/ExploreChartsConfig.tsx`;
+`src/haute/_explore_charts.py`; `src/haute/_types.py`;
+`tests/test_explore_charts.py`; `tests/test_explore_round_trip.py`; the
+matching frontend test modules.
+
+### EDA-E28 — Excel-grade styling controls and terminology
+
+**Why:** Colour is a raw `#RRGGBB` text field, stacking is a free-text group
+name, and internal vocabulary leaks into the UI ("Mark", "Concrete series",
+"Dormant overrides: override_3").
+
+**Plan:** Replace the colour text input with a swatch row — Automatic reset,
+theme series palette, native colour input — persisting `#RRGGBB` or null
+with validation impossible by construction. **Review outcome:** the flat
+bottom "Series" section was replaced during the user's review by per-Value
+nested override disclosures, rendered only when a Columns split (or an
+existing override) makes them meaningful; a single-series Value shows no
+override surface. The Configure body was reordered to gallery → orientation
+→ axis formatting → per-Value boxes, with the axes as separate Primary and
+Secondary boxes and the Secondary gated by a "Use secondary axis" checkbox
+(`axes.secondary.enabled`, default true; unticking moves secondary series
+to primary in one edit and both validators reject disabled-but-used), and a
+Legend box after the Secondary box gated by a "Show legend" checkbox with
+the position select inside. Replace the free-text stack
+group with the None / Stacked / 100% stacked select whose transitions are
+specified in the node-editors spec (group-wide normalize rewrites,
+axis-change ungrouping, whole-group rename with compatible-merge-only
+collision handling); the group-name input appears only on multi-group
+charts. Rename user-facing vocabulary: chart type (not mark), Series (not
+concrete series), and dormant formatting described by decoded series labels
+(`exploreChartSeriesLabel`) or Value display names, never internal ids.
+
+**Acceptance:** Component tests cover swatch/custom/automatic colour paths;
+every stacking transition asserts the exact persisted chart object
+(including group-wide normalize rewrite, axis-change ungrouping,
+whole-group rename, compatible merge, and rejected incompatible rename with
+nothing persisted) and that no transition yields a config the validators
+reject; group-name input visibility; renamed labels; and named dormant
+messages with no internal id in any rendered string.
+
+**Dependencies:** EDA-E27.
+
+**Evidence:** `frontend/src/panels/editors/ExploreChartsConfig.tsx`;
+`frontend/src/panels/explore/chartConfig.ts`;
+`frontend/src/__tests__/editors/ExploreChartsConfig.test.tsx`;
+`frontend/src/panels/explore/__tests__/chartConfig.test.ts`.
+
+### EDA-E29 — Configure ↔ preview coupling and navigation affordances
+
+**Why:** The sidebar config pane and the lower preview pane remember their
+tabs independently, so analysts style charts while looking at the data grid,
+and chart cards offer no route to their configuration. Excel's loop is the
+field pane beside the live chart.
+
+**Plan:** Lift the Configure-subview selection out of editor-local state
+into per-node `useUIStore` view state (configured chart id and configured
+pivot id), cleared when the referenced card is deleted. Chart card headers
+in the Charts pane gain a Configure
+action that opens the node panel's Charts editor at that chart.
+**Review outcome:** alignment direction was reversed twice during the
+user's review and settled preview-driven — selecting Pivots or Charts in
+the lower preview aligns the node panel's editor to the matching pane,
+while editor-side pane selections, Configure-subview entry, and Back never
+change the preview pane (Preview/Overview selections leave the editor
+untouched). The
+plan-of-record's interim "edit source Pivot fields" jump link is not built:
+it was first subsumed by EDA-E30's field-well embed, which was itself
+removed in review; the Pivots editor remains reachable via the pane strip.
+
+**Acceptance:** Store tests cover the new per-node keys and clearing rules.
+Component tests prove preview→editor alignment from the preview tabs, the
+card-header Configure round-trip landing on the right chart, persistence of
+the configured subview across pane switches, and that editor-side pane and
+Configure changes leave the preview pane untouched while Preview/Overview
+selections leave the editor untouched.
+
+**Dependencies:** Delivered EDA-E14 through EDA-E22.
+
+**Evidence:** `frontend/src/stores/useUIStore.ts`;
+`frontend/src/panels/NodePanel.tsx`;
+`frontend/src/panels/explore/ExploreChartsPane.tsx`;
+`frontend/src/panels/editors/ExploreChartsConfig.tsx`;
+`frontend/src/panels/editors/ExplorePivotsConfig.tsx`;
+`frontend/src/stores/__tests__/useUIStore.test.ts`; the editor and pane
+test modules.
+
+### EDA-E30 — Embedded field well in chart Configure
+
+**Why:** Excel's pivot chart shows the pivot field pane with chart-oriented
+zone names and edits flow through to the linked table; Haute's chart
+Configure shows a read-only text summary and requires a tab round-trip for
+any field change.
+
+**Plan:** Extract the field-authoring surface of the Pivots editor into
+`PivotFieldWell` (search, available-fields list, zone grid,
+pointer/keyboard placement state); the Pivots
+editor recomposes it unchanged. **Review outcome:** the chart-side embed of
+that well was delivered and then removed by product decision during the
+user's review — the Pivots editor owns pivot structure and chart Configure
+owns chart formatting only, so the chart view renders no field well, field
+summary, or disclosure box, and the source picker carries no status
+suffixes (the hidden marker remains; source state is communicated by the
+Configure body's status messages). The extraction, the atomic claim, and
+the Configure-view scheduler below remain delivered. A
+field edit (made in the Pivots editor) marks dependents stale and the
+existing auto-update path
+refreshes them with exactly one pivot job consumed by the table and every
+dependent chart. Because today's scheduler state is per-instance and the
+job entry is created only after submission returns, the store gains the
+atomic per-pivot claim (target dataframe key + calculation identity +
+generation token; identical-target no-op, newer-target atomic replacement,
+token-guarded promotion/release, superseded outcomes discarded), and chart
+Configure mounts the scheduler for its resolved source so the refresh fires
+even when no result pane is mounted.
+
+**Acceptance:** Pivots-editor regression suite green with zero behavioural
+diff. Chart-side tests prove chart Configure renders no field well, field
+summary, or disclosure box, and that picker
+options render the bare pivot name (hidden marker aside) with no status
+suffix in any state. Scheduler tests assert exactly one
+recalculation in three mount states — Configure alone, Charts pane alone,
+and both mounted with simultaneously firing effects (claim admits one
+submission, loser no-ops, failure releases for retry) — plus the
+supersession pair: a newer target replacing a held claim with the old
+outcome discarded, and an old response completing last neither promoting
+nor overwriting the newer job. Hidden/disabled source pivots refresh
+identically, and a failed refresh retains the prior result under the
+existing messaging.
+
+**Dependencies:** EDA-E25 (reconciliation), EDA-E29 (view state), delivered
+EDA-E14 through EDA-E22.
+
+**Evidence:** `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx`
+(new); `frontend/src/panels/editors/ExplorePivotsConfig.tsx`;
+`frontend/src/panels/editors/ExploreChartsConfig.tsx`;
+`frontend/src/panels/NodePanel.tsx`;
+`frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`;
+`frontend/src/panels/explore/useExplorePivotActions.ts`;
+`frontend/src/stores/useNodeResultsStore.ts`; the editor, hook, and store
+test modules.
+
+### EDA-E31 — Per-card PNG chart export
+
+**Why:** Excel users copy charts into decks constantly; the runtime already
+renders SVG, so export is nearly free (decision D4).
+
+**Plan:** Extend the `chartRuntime.ts` wrapper with `getDataURL()` returning
+the SVG rendering as a data URL. ComboChart gains a Download image action
+that decodes that SVG, paints a canvas of exactly twice the rendered
+dimensions with the chart's resolved theme background token before drawing
+at 2×, and saves `<sanitised chart name>.png` (name lower-cased, runs of
+characters outside `a–z`/`0–9`/`-`/`_` collapsed to one `-`, trimmed,
+fallback `chart`). The action is disabled until the runtime has rendered;
+decode or rasterisation failure sets the card's visible error state and
+saves nothing. No new dependencies; the code stays inside the lazy chart
+chunk.
+
+**Acceptance:** Wrapper unit test for `getDataURL` exposure. Component
+tests for the action's presence and disabled state without rendered data,
+the exact filename rule (mixed case/punctuation and the all-punctuation
+fallback), canvas dimensions equalling exactly 2× the rendered SVG size,
+the background fill painted before the SVG draw, and the
+rasterisation-failure path showing the card error with no download
+triggered. The production bundle stays within the existing chart-chunk and
+application budgets.
+
+**Dependencies:** Delivered EDA-E22.
+
+**Evidence:** `frontend/src/panels/explore/chartRuntime.ts`;
+`frontend/src/panels/explore/ComboChart.tsx`; their test modules;
+`frontend/scripts/check-bundle-size.mjs` output.
 
 ### EDA-E09 — Distribution charts
 **Why:** Analysts need distributions without client-side raw-data processing.

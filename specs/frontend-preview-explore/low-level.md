@@ -151,16 +151,42 @@
 1. The Charts pane parses current v1 charts and pivots, reads existing composite pivot job/result
    entries, and resolves each enabled card independently. On mount it automatically schedules
    each distinct stale or missing configured source Pivot once through that Pivot's existing
-   run/status lifecycle; charts sharing a source never create duplicate requests. Running work
+   run/status lifecycle; charts sharing a source never create duplicate requests, and every
+   scheduler consumer (Pivots pane, Charts pane, chart Configure editor) takes the store's
+   atomic per-pivot claim before submitting — the claim records the target dataframe cache key,
+   calculation identity, and a generation token; an identical-target attempt while it is held
+   is a no-op, a newer target replaces it atomically, and only the current token may promote it
+   to the job entry on submission or release it on failure, so superseded outcomes are
+   discarded rather than overwriting newer work. Running work
    exposes Cancel and an idle terminal failure exposes Retry. Chart appearance, name, ordering,
    and visibility do not touch the calculation lifecycle and rerender from retained source data.
+   Each chart card's header offers a Configure action that stores the chart's id as the node's
+   configured chart and selects the node panel's Charts editor pane.
 2. A source is fresh only when its retained result dataframe key matches the current Explore
    report and its stored frontend calculation identity matches the current pivot. A fresh source
    is adapted separately for each chart, allowing presentation differences without copying or
-   recalculating the matrix. Draft and missing ids are distinct and never use the first pivot.
+   recalculating the matrix. Each chart is reconciled above the adapter
+   (`reconcileValueEncodings`) so a pivot Value added after chart creation renders as a series
+   with seeded default styling rather than an error; reconciliation is render-scoped here and
+   persists only through the editor's next committed chart edit. The adapter admits row
+   grand-total paths only behind the `include_grand_total` opt-in and excludes column
+   grand-total paths unconditionally, and `inherit` number formatting renders as the General
+   locale format (grouped `en-GB`; at most two fraction digits at magnitude ≥ 1, at most four
+   significant digits below 1, `0` at zero) across ticks, labels, tooltips, and the semantic
+   table. Draft and missing ids are
+   distinct and never use the first pivot.
 3. `ComboChart` lazy-loads the registered ECharts core runtime, builds options solely from the
-   closed adapter dataset/config, observes its container, resizes on geometry changes, and
-   disposes on data replacement/unmount. The chart-card grid auto-fits against the available pane
+   closed adapter dataset/config — including horizontal orientation (category axis vertical,
+   value axes horizontal), stacks on any mark, and pre-normalised 100% stack values — observes
+   its container, resizes on geometry changes, and
+   disposes on data replacement/unmount. The runtime wrapper additionally exposes
+   `getDataURL()` (the SVG rendering as a data URL); ComboChart's Download image action decodes
+   that SVG into an `Image`, paints a canvas of exactly twice the rendered width and height
+   with the chart's resolved theme background token before drawing the image at 2×, and saves
+   the canvas as `<sanitised chart name>.png` via a transient anchor. The action is disabled
+   until the runtime has rendered; decode or rasterisation failure sets the card's visible
+   error state and triggers no download. No new dependency is introduced and the code stays
+   inside the lazy chart chunk. The chart-card grid auto-fits against the available pane
    width with a 28 rem target minimum rather than using a viewport breakpoint, so an open side
    panel cannot force unreadably narrow cards. The accessible summary and semantic table derive
    from the same dataset as the visual chart.
