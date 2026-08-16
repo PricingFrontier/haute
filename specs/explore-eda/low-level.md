@@ -12,8 +12,8 @@
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
-| `src/haute/_explore_charts.py` | Standalone v0-to-v1 migration and strict validator for ordered PivotChart cards, nested mappings/styles/axes/legend, ids/names, finite bounds, orientation and stack-normalisation defaults, card-wide stack-group consistency, and simple-literal future fields. |
-| `src/haute/_explore_pivots.py` | Standalone v0-to-v1 migration and strict validator for ordered Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. |
+| `src/haute/_explore_charts.py` | Standalone strict validator for ordered version-1 PivotChart cards, nested mappings/styles/axes/legend, ids/names, finite bounds, required orientation and stack-normalisation flags, card-wide stack-group consistency, and simple-literal future fields. Versionless cards are rejected, never migrated. |
+| `src/haute/_explore_pivots.py` | Standalone strict validator for ordered version-1 Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. Versionless cards are rejected, never migrated. |
 | `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): existing cache-report contracts plus pivot run/status/member requests, typed failures, member/path/value/cell structures, and result matrices. |
 
 ## Key types and data structures
@@ -133,10 +133,10 @@
 
 ## PivotChart adapter invariants
 
-- `frontend/src/panels/explore/chartConfig.ts` mirrors the backend v0/v1 validator (including
-  orientation and stack-normalisation defaults, any-mark stacking, card-wide
-  stack-group consistency, and the secondary axis's Boolean `enabled` — defaulting to `true`
-  when absent, materialised into the parsed card, and rejected when disabled while any style
+- `frontend/src/panels/explore/chartConfig.ts` mirrors the backend version-1 validator (including
+  required orientation and stack-normalisation flags, any-mark stacking, card-wide
+  stack-group consistency, and the secondary axis's required Boolean `enabled` — rejected
+  when absent or when disabled while any style
   is assigned to the secondary axis) and exposes
   `setSecondaryAxisEnabled` (disabling atomically moves every secondary-assigned style to the
   primary axis, clearing its stack membership per the axis-change rule, in the same commit;

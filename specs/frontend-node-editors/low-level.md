@@ -29,7 +29,7 @@
 | `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, and pointer/keyboard placement state. Props: the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
 | `frontend/src/panels/editors/ExploreConfigCardList.tsx` | Shared Pivot/Chart list header, empty state, and action-card row, composing `ExploreToggleCard` with separate Delete and Configure actions. |
-| `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart v0/v1 validation and identity helpers consumed by the chart editor. |
+| `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart version-1 validation and identity helpers consumed by the chart editor. |
 | `frontend/src/panels/explore/pivotConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned pivot validation and identity helpers consumed by the pivot editor, including allocation of the first unused pivot id. |
 | `frontend/src/panels/editors/MlflowModelPicker.tsx`, `frontend/src/panels/editors/ModelScoreEditor.tsx`, `frontend/src/panels/editors/OptimiserApplyEditor.tsx`, `frontend/src/panels/editors/SubmodelEditor.tsx` | MLflow/model-score, optimiser-apply and submodel editors. |
 | `frontend/src/panels/editors/BandingEditor.tsx` | Composes banding mode, rules, histogram and generation controls. |
@@ -238,7 +238,8 @@ whole card. Pivot and Chart cards place Delete and Configure in an adjacent acti
 the checkbox button, so either action leaves `enabled` unchanged.
 
 **Explore chart-card workflow.** `parseExploreCharts` mirrors the backend chart trust boundary:
-versionless `{id, enabled}` cards migrate to complete v1 drafts, all known nested fields are
+every card must be complete version 1 (versionless cards are rejected, never migrated), all
+known nested fields are
 validated, and unknown simple-literal fields are retained. `Add Chart` writes the first unused
 `chart_N`, first unused `Chart N` name, `enabled: true`, `pivot_id: null`, `kind: "combo"`, empty
 encodings/overrides, Rows category defaults, automatic primary/secondary axes, and bottom legend.
@@ -325,7 +326,10 @@ rename onto another group commits only when that group's axis and normalisation 
 nothing.
 
 The colour control is a swatch row — an Automatic reset, the theme series palette, and a native
-colour input for custom values — persisting `#RRGGBB` or null with no free-text entry.
+colour input for custom values — persisting `#RRGGBB` or null with no free-text entry. Swatch
+and Automatic clicks commit immediately; the custom input is a committed control that tracks the
+picker's streamed change events as a local draft and persists once on blur, so a drag through
+the native picker never commits per tick.
 
 The Configure body is ordered: chart-type gallery, orientation toggle, axis formatting, the
 Legend box, then
@@ -350,7 +354,8 @@ defaults-applied note rather than a dead-end diagnostic, and no editor action si
 source or invents a replacement mapping.
 
 **Explore pivot-card workflow.** `parseExplorePivots` is the frontend trust boundary matching
-`validate_explore_pivots`: it migrates versionless `{id}` entries to complete v1 cards, validates
+`validate_explore_pivots`: every card must be complete version 1 (versionless entries are
+rejected, never migrated); it validates
 known nested fields, preserves unknown simple-literal fields, and rejects duplicate ids,
 case-insensitive names, or placement ids. `Add Pivot` writes the first unused `pivot_N`, first
 unused `Pivot N` name, `enabled: true`, four empty zones, and both grand totals enabled. A card's

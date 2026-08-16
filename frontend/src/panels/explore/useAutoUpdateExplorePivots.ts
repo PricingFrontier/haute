@@ -117,6 +117,7 @@ export default function useAutoUpdateExplorePivots({
       attempted.current.add(attemptKey)
       const token = claimAuto(
         resultKey,
+        nodeId,
         report.dataframe_cache_key,
         calculationIdentity,
       )

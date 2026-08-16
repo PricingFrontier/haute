@@ -206,6 +206,7 @@ export default function useExplorePivotActions({
           .getState()
           .claimExplorePivotManual(
             key,
+            node.id,
             requestedDataframeCacheKey,
             calculationIdentity,
           )

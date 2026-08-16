@@ -27,14 +27,15 @@ In scope:
 - Validating the `overview` config dict attached to an Explore node — the set of toggle cards
   (`dataset_snapshot`, `data_quality`, `numeric_summary`, `categorical_summary`, `schema`) a user
   has enabled, plus round-trip-safe storage of any unrecognised keys.
-- Validating the ordered, versioned `charts` config list attached to an Explore node. Version-0
-  `{id, enabled}` cards migrate once to version 1 using the first available `Chart N` name across
-  both legacy and version-1 cards. Every v1 ComboChart has a unique id and
+- Validating the ordered, versioned `charts` config list attached to an Explore node. Every
+  ComboChart card is complete version 1 — there is no legacy migration, and a card without
+  `version: 1` is rejected. Every card has a unique id and
   case-insensitively unique name, a nullable stable pivot id, typed category/Value/series
   mappings, two typed numeric axes, and a typed legend; unknown simple-literal fields remain
   round-trippable at every supported nesting level.
-- Validating the ordered, versioned `pivots` config list attached to an Explore node. Version-0
-  `{id}` cards migrate once at this trust boundary to version 1. Every v1 card has a unique id,
+- Validating the ordered, versioned `pivots` config list attached to an Explore node. Every card
+  is complete version 1 — there is no legacy migration, and a card without `version: 1` is
+  rejected. Every card has a unique id,
   case-insensitively unique name, visibility state, typed Filter/Columns/Rows/Values placements,
   and row/column grand-total options; unknown simple-literal fields remain round-trippable.
 - Starting, polling, and cancelling pivot calculations over an existing Explore dataframe cache
@@ -182,9 +183,8 @@ Out of scope (owned elsewhere):
   a newer UI's overview cards remain readable by, and rewritable through, an older parser/codegen
   pair. An empty `overview` dict is preserved as empty (not defaulted) so callers can choose to
   omit the config entirely rather than emit `overview={}`.
-- `validate_explore_charts` accepts only a list of dicts. A versionless item is the sole v0 shape
-  and requires `id` plus Boolean `enabled`; it migrates to a complete v1 draft with the first
-  available `Chart N` name. A v1 chart requires
+- `validate_explore_charts` accepts only a list of dicts, each a complete version-1 card — a
+  versionless item is rejected, never migrated. A v1 chart requires
   supported `version: 1`, unique non-empty id/name, Boolean enabled, `pivot_id` null or non-empty,
   `kind: "combo"`, one Rows category mapping, ordered Value encodings and exact-series overrides,
   complete primary/secondary axes, and a complete legend. Nested mapping ids, Value ids, and exact
@@ -192,19 +192,18 @@ Out of scope (owned elsewhere):
   `series_key` only to exact-series overrides, so either identity is rejected in the other shape.
   Marks, axes, colours, stack groups, label/marker flags,
   number formats, legend positions, category rotation, and finite ordered manual bounds are
-  strictly typed. Chart-level `orientation` is `"vertical"` or `"horizontal"` and defaults to
-  `"vertical"` when absent; style-level `stack_normalize` is Boolean, defaults to `false` when
-  absent, and requires a non-null `stack_group`; the secondary axis carries Boolean `enabled`,
-  defaulting to `true` when absent, and a card whose secondary axis is disabled while any style
-  is assigned to it is rejected. These defaults are materialised into the
-  validated output. A stack group may be used by any mark. Across the union of a card's Value
+  strictly typed. Chart-level `orientation` is a required `"vertical"` or `"horizontal"`;
+  style-level `stack_normalize` is a required Boolean and requires a non-null `stack_group`;
+  the secondary axis carries a required Boolean `enabled`, and a card whose secondary axis is
+  disabled while any style is assigned to it is rejected. Like every other known v1 field,
+  these are rejected when absent rather than defaulted — writers always persist complete
+  cards, so the validators materialise no defaults. A stack group may be used by any mark. Across the union of a card's Value
   encodings and exact-series overrides, every style sharing one `stack_group` must agree on
   `stack_normalize` and on `axis` — a stack never mixes normalisation modes or spans value
   axes. Unknown string-keyed fields survive only under the finite recursively
   simple-literal grammar. An empty list remains empty so callers may omit `charts=[]`.
-- `validate_explore_pivots` accepts only a list of dicts. An item without `version` is the sole
-  v0 shape and migrates to a complete v1 card using the first available `Pivot N` name across
-  both legacy and version-1 cards, so migration can never collide with an existing card name.
+- `validate_explore_pivots` accepts only a list of dicts, each a complete version-1 card — an
+  item without `version` is rejected, never migrated.
   A v1 card requires exactly supported `version: 1`, non-empty `id` and `name`, Boolean
   `enabled`, list-valued `filters`/`columns`/`rows`/`values`, and Boolean
   `options.row_grand_totals`/`options.column_grand_totals`. Card ids and lower-cased trimmed names

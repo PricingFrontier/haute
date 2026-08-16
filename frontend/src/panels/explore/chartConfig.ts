@@ -300,16 +300,10 @@ function parseStyle(
   ) {
     return `${where} stack_group must be null or a non-empty string.`
   }
-  const stackNormalize = Object.prototype.hasOwnProperty.call(
-    raw,
-    "stack_normalize",
-  )
-    ? raw.stack_normalize
-    : false
-  if (typeof stackNormalize !== "boolean") {
+  if (typeof raw.stack_normalize !== "boolean") {
     return `${where} stack_normalize must be a boolean.`
   }
-  if (stackNormalize && raw.stack_group === null) {
+  if (raw.stack_normalize && raw.stack_group === null) {
     return `${where} stack_normalize requires a stack group.`
   }
   if (
@@ -324,10 +318,7 @@ function parseStyle(
   ) {
     return `${where} labels and markers must be boolean.`
   }
-  return {
-    ...cloneLiteral(raw),
-    stack_normalize: stackNormalize,
-  } as ChartStyle & Record<string, unknown>
+  return cloneLiteral(raw) as ChartStyle & Record<string, unknown>
 }
 
 function parseAxis(
@@ -339,13 +330,8 @@ function parseAxis(
   const known = secondary ? new Set([...AXIS_KEYS, "enabled"]) : AXIS_KEYS
   const futureError = validateFutureFields(raw, known, where)
   if (futureError) return futureError
-  if (secondary) {
-    // Default only when the key is absent: an explicit null is rejected,
-    // matching the backend validator.
-    const enabled = "enabled" in raw ? raw.enabled : true
-    if (typeof enabled !== "boolean") {
-      return `${where}.enabled must be a boolean.`
-    }
+  if (secondary && typeof raw.enabled !== "boolean") {
+    return `${where}.enabled must be a boolean.`
   }
   if (typeof raw.title !== "string") return `${where}.title must be a string.`
 
@@ -410,38 +396,6 @@ function chartDefaults(id: string, name: string): ExploreChartConfig {
   }
 }
 
-function migrateChart(
-  raw: Record<string, unknown>,
-  position: number,
-  defaultName: string,
-): ExploreChartConfig | string {
-  if (!nonEmptyString(raw.id)) {
-    return `Chart ${position} id must be a non-empty string.`
-  }
-  if (typeof raw.enabled !== "boolean") {
-    return `Chart ${position} enabled state must be a boolean.`
-  }
-  const conflicting = Object.keys(raw).filter(
-    (key) => key !== "id" && key !== "enabled" && CARD_KEYS.has(key),
-  )
-  if (conflicting.length > 0) {
-    return `Chart ${position} versionless card contains version-1 fields.`
-  }
-  const futureError = validateFutureFields(
-    raw,
-    new Set(["id", "enabled"]),
-    `Chart ${position}`,
-  )
-  if (futureError) return futureError
-  return {
-    ...chartDefaults(raw.id, defaultName),
-    ...cloneLiteral(raw),
-    version: 1,
-    id: raw.id,
-    enabled: raw.enabled,
-  }
-}
-
 function parseV1Chart(
   raw: Record<string, unknown>,
   position: number,
@@ -469,14 +423,11 @@ function parseV1Chart(
     return `Chart ${position} pivot_id must be null or a non-empty string.`
   }
   if (raw.kind !== "combo") return `Chart ${position} kind must be combo.`
-  const orientation = Object.prototype.hasOwnProperty.call(raw, "orientation")
-    ? raw.orientation
-    : "vertical"
   if (
-    typeof orientation !== "string" ||
-    !ORIENTATIONS.has(orientation as ChartOrientation)
+    typeof raw.orientation !== "string" ||
+    !ORIENTATIONS.has(raw.orientation as ChartOrientation)
   ) {
-    return `Chart ${position} has an unsupported orientation.`
+    return `Chart ${position} orientation must be vertical or horizontal.`
   }
 
   if (!isPlainObject(raw.category)) {
@@ -597,10 +548,7 @@ function parseV1Chart(
     true,
   )
   if (typeof parsedSecondary === "string") return parsedSecondary
-  const secondary: ChartSecondaryAxisConfig = {
-    ...parsedSecondary,
-    enabled: (parsedSecondary.enabled ?? true) as boolean,
-  }
+  const secondary = parsedSecondary as ChartSecondaryAxisConfig
   if (
     !secondary.enabled &&
     [...valueEncodings, ...seriesOverrides].some(
@@ -635,7 +583,7 @@ function parseV1Chart(
     enabled: raw.enabled,
     pivot_id: raw.pivot_id,
     kind: "combo",
-    orientation: orientation as ChartOrientation,
+    orientation: raw.orientation as ChartOrientation,
     category: cloneLiteral(raw.category) as ChartCategory,
     value_encodings: valueEncodings,
     series_overrides: seriesOverrides,
@@ -657,36 +605,12 @@ export function parseExploreCharts(
   const charts: ExploreChartConfig[] = []
   const ids = new Set<string>()
   const names = new Set<string>()
-  const allocatedNames = new Set(
-    config.charts.flatMap((raw) =>
-      isPlainObject(raw) &&
-      Object.prototype.hasOwnProperty.call(raw, "version") &&
-      nonEmptyString(raw.name)
-        ? [raw.name.trim().toLowerCase()]
-        : [],
-    ),
-  )
-  let nextNameSuffix = 1
   for (const [index, raw] of config.charts.entries()) {
     const position = index + 1
     if (!isPlainObject(raw)) {
       return { ok: false, error: `Chart ${position} must be an object.` }
     }
-    if (!Object.prototype.hasOwnProperty.call(raw, "id")) {
-      return { ok: false, error: `Chart ${position} requires an id.` }
-    }
-    let chart: ExploreChartConfig | string
-    if (Object.prototype.hasOwnProperty.call(raw, "version")) {
-      chart = parseV1Chart(raw, position)
-    } else {
-      while (allocatedNames.has(`chart ${nextNameSuffix}`)) {
-        nextNameSuffix += 1
-      }
-      const defaultName = `Chart ${nextNameSuffix}`
-      allocatedNames.add(defaultName.toLowerCase())
-      nextNameSuffix += 1
-      chart = migrateChart(raw, position, defaultName)
-    }
+    const chart = parseV1Chart(raw, position)
     if (typeof chart === "string") return { ok: false, error: chart }
     if (ids.has(chart.id)) {
       return {
@@ -1166,8 +1090,9 @@ export function renameChartStackGroup(
 
 /**
  * Decodes a canonical series key to a human label against the current pivot
- * ("column path › … · Value display name"), falling back to the raw key when
- * the key does not parse as a canonical identity.
+ * ("column path › … · Value display name"). Malformed input throws rather
+ * than degrading to the raw key, so no raw key or internal id is rendered;
+ * callers pass keys that already survived parsing.
  */
 export function exploreChartSeriesLabel(
   seriesKey: string,

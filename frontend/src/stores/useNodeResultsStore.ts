@@ -259,6 +259,7 @@ interface CachedExplorePivotResult {
 }
 
 export interface ExplorePivotStartClaim {
+  nodeId: string
   dataframeCacheKey: string | null
   calculationIdentity: string
   token: number
@@ -788,12 +789,14 @@ interface NodeResultsState {
    */
   claimExplorePivotAuto: (
     key: string,
+    nodeId: string,
     dataframeCacheKey: string,
     calculationIdentity: string,
   ) => number | null
   /** A manual start always becomes the current generation for this pivot. */
   claimExplorePivotManual: (
     key: string,
+    nodeId: string,
     dataframeCacheKey: string | null,
     calculationIdentity: string,
   ) => number
@@ -1377,7 +1380,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return { pivotJobs, pivotResults }
     }),
 
-  claimExplorePivotAuto: (key, dataframeCacheKey, calculationIdentity) => {
+  claimExplorePivotAuto: (key, nodeId, dataframeCacheKey, calculationIdentity) => {
     const current = get().pivotStartClaims[key]
     if (
       current
@@ -1391,7 +1394,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => ({
       pivotStartClaims: {
         ...s.pivotStartClaims,
-        [key]: { dataframeCacheKey, calculationIdentity, token },
+        [key]: { nodeId, dataframeCacheKey, calculationIdentity, token },
       },
     }))
     return token
@@ -1399,6 +1402,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
 
   claimExplorePivotManual: (
     key,
+    nodeId,
     dataframeCacheKey,
     calculationIdentity,
   ) => {
@@ -1407,7 +1411,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
     set((s) => ({
       pivotStartClaims: {
         ...s.pivotStartClaims,
-        [key]: { dataframeCacheKey, calculationIdentity, token },
+        [key]: { nodeId, dataframeCacheKey, calculationIdentity, token },
       },
     }))
     return token
@@ -1499,7 +1503,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       // cleared state or leak into a later node reusing the id.
       const pivotStartClaims = Object.fromEntries(
         Object.entries(s.pivotStartClaims).filter(
-          ([key]) => !key.startsWith(`${nodeId}:`),
+          ([, claim]) => claim.nodeId !== nodeId,
         ),
       )
       for (const key of Object.keys(s.pivotResults)) {

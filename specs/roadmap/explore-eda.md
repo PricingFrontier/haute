@@ -737,7 +737,17 @@ preset and the separate Custom indicator. Applying Combo seeds columns with
 the last Value as a line; all other mixed arrangements are composed via the
 per-Value chart-type and axis controls and detect as Combo, making
 detection total with exactly one gallery option highlighted. The dedicated
-combo presets' secondary-axis-re-enable behaviour was removed with them. Axis-format transitions: the 100% preset
+combo presets' secondary-axis-re-enable behaviour was removed with them. A
+follow-up review round also removed the planned absent-field defaults:
+`orientation`, `stack_normalize`, and the secondary axis's `enabled` are
+required in both validators (the library has no external users and both
+writers always persist complete cards), and the backend now rejects an
+absent `stack_group` or `color` exactly as the frontend always has — the
+validators materialise no defaults. The same round removed the v0→v1
+migration layer entirely from all four validators: versionless chart and
+pivot cards are rejected with "version must be 1" rather than migrated, as
+no persisted config predates version 1 anywhere that matters. Axis-format
+transitions: the 100% preset
 overwrites any primary format with `percent`; a following non-100% preset
 resets `percent` to `inherit` while a currency primary format survives
 non-100% preset application. Editor: gallery reflects the
@@ -769,7 +779,8 @@ existing override) makes them meaningful; a single-series Value shows no
 override surface. The Configure body was reordered to gallery → orientation
 → axis formatting → per-Value boxes, with the axes as separate Primary and
 Secondary boxes and the Secondary gated by a "Use secondary axis" checkbox
-(`axes.secondary.enabled`, default true; unticking moves secondary series
+(`axes.secondary.enabled`, a required Boolean; unticking moves secondary
+series
 to primary in one edit and both validators reject disabled-but-used), and a
 Legend box after the Secondary box gated by a "Show legend" checkbox with
 the position select inside. Replace the free-text stack

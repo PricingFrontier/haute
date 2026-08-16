@@ -70,59 +70,10 @@ def _chart() -> dict[str, object]:
     }
 
 
-def test_migrates_v0_with_defaults_order_and_future_fields() -> None:
-    raw = [{"id": "old", "enabled": False, "future": {"nested": [1, {"x": 2.0}]}}]
-    assert validate_explore_charts(raw, context="test") == [
-        {
-            "id": "old",
-            "enabled": False,
-            "future": {"nested": [1, {"x": 2.0}]},
-            "version": 1,
-            "name": "Chart 1",
-            "pivot_id": None,
-            "kind": "combo",
-            "orientation": "vertical",
-            "category": {
-                "source": "rows",
-                "include_grand_total": False,
-                "label_rotation": 0,
-            },
-            "value_encodings": [],
-            "series_overrides": [],
-            "axes": {
-                "primary": {
-                    "title": "",
-                    "minimum": None,
-                    "maximum": None,
-                    "number_format": "inherit",
-                },
-                "secondary": {
-                    "title": "",
-                    "minimum": None,
-                    "maximum": None,
-                    "number_format": "inherit",
-                    "enabled": True,
-                },
-            },
-            "legend": {"visible": True, "position": "bottom"},
-        }
-    ]
-
-
-def test_v0_migration_allocates_names_around_existing_v1_cards() -> None:
-    existing = _chart()
-    existing.update(id="configured", name="Chart 1")
-
-    charts = validate_explore_charts(
-        [
-            {"id": "legacy_a", "enabled": True},
-            existing,
-            {"id": "legacy_b", "enabled": False},
-        ],
-        context="test",
-    )
-
-    assert [chart["name"] for chart in charts] == ["Chart 2", "Chart 1", "Chart 3"]
+def test_rejects_versionless_cards_instead_of_migrating() -> None:
+    """There is no v0 migration: every persisted card is complete version 1."""
+    with pytest.raises(ConfigError, match="version must be 1"):
+        validate_explore_charts([{"id": "old", "enabled": False}], context="test")
 
 
 def test_full_v1_is_deeply_detached_including_nested_future_fields() -> None:
@@ -158,7 +109,12 @@ def test_full_v1_is_deeply_detached_including_nested_future_fields() -> None:
         (lambda c: c["value_encodings"][0].update(axis="tertiary"), "unsupported axis"),  # type: ignore[index]
         (lambda c: c["value_encodings"][0].update(color="#abc"), "strict #RRGGBB"),  # type: ignore[index]
         (lambda c: c["value_encodings"][0].update(color="#AABBCG"), "strict #RRGGBB"),  # type: ignore[index]
-        (lambda c: c.update(orientation="diagonal"), "unsupported orientation"),
+        (lambda c: c["value_encodings"][0].pop("color"), "strict #RRGGBB"),  # type: ignore[index]
+        (
+            lambda c: c["value_encodings"][0].pop("stack_group"),  # type: ignore[index]
+            "null or a non-empty string",
+        ),
+        (lambda c: c.update(orientation="diagonal"), "vertical or horizontal"),
         (lambda c: c["value_encodings"][0].update(stack_normalize=1), "must be a boolean"),  # type: ignore[index]
         (
             lambda c: c["value_encodings"][0].update(stack_normalize=True),  # type: ignore[index]
@@ -188,8 +144,8 @@ def test_rejects_invalid_v1_known_fields(mutate: object, message: str) -> None:
     [
         ({}, "must be a list"),
         (["chart"], "entries must be dicts"),
-        ([{"enabled": True}], "requires an id"),
-        ([{"id": "old", "enabled": True, "name": "no"}], "Versionless Explore chart"),
+        ([{"enabled": True}], "version must be 1"),
+        ([{"id": "old", "enabled": True, "name": "no"}], "version must be 1"),
         ([{"id": "old", "enabled": True, "future": object()}], "simple literals"),
         (
             [{**_chart(), "category": {**_chart()["category"], "future": object()}}],
@@ -199,7 +155,7 @@ def test_rejects_invalid_v1_known_fields(mutate: object, message: str) -> None:
         ([_chart(), {**_chart(), "id": "other", "name": " claims "}], "duplicate chart name"),
     ],
 )
-def test_rejects_malformed_top_card_and_v0_fields(charts: object, message: str) -> None:
+def test_rejects_malformed_top_cards(charts: object, message: str) -> None:
     with pytest.raises(ConfigError, match=message):
         validate_explore_charts(charts, context="test")
 
@@ -232,27 +188,18 @@ def test_rejects_duplicate_nested_ids_and_keys(mutate: object, message: str) -> 
         validate_explore_charts([chart], context="test")
 
 
-def test_materialises_orientation_and_stack_normalize_defaults() -> None:
-    raw = _chart()
-    del raw["orientation"]
-    del raw["value_encodings"][0]["stack_normalize"]  # type: ignore[index]
-    del raw["series_overrides"][0]["stack_normalize"]  # type: ignore[index]
-
-    validated = validate_explore_charts([raw], context="test")
-
-    assert validated[0]["orientation"] == "vertical"
-    assert validated[0]["value_encodings"][0]["stack_normalize"] is False
-    assert validated[0]["series_overrides"][0]["stack_normalize"] is False
-
-
 @pytest.mark.parametrize(
     "mutate",
     [
+        lambda c: c.pop("orientation"),
         lambda c: c.update(orientation=None),
+        lambda c: c["value_encodings"][0].pop("stack_normalize"),
         lambda c: c["value_encodings"][0].update(stack_normalize=None),
+        lambda c: c["series_overrides"][0].pop("stack_normalize"),
     ],
 )
-def test_rejects_explicit_null_for_defaulted_chart_fields(mutate: object) -> None:
+def test_requires_orientation_and_stack_normalize(mutate: object) -> None:
+    """Absent and null are both rejected: every v1 field is written explicitly."""
     chart = _chart()
     mutate(chart)  # type: ignore[operator]
     with pytest.raises(ConfigError):
@@ -288,11 +235,11 @@ def test_materialises_canonical_series_key_serialization() -> None:
     )
 
 
-def test_materialises_secondary_axis_enabled_and_rejects_disabled_but_used() -> None:
+def test_requires_secondary_axis_enabled_and_rejects_disabled_but_used() -> None:
     raw = _chart()
     del raw["axes"]["secondary"]["enabled"]  # type: ignore[index]
-    validated = validate_explore_charts([raw], context="test")
-    assert validated[0]["axes"]["secondary"]["enabled"] is True
+    with pytest.raises(ConfigError, match="enabled must be a boolean"):
+        validate_explore_charts([raw], context="test")
 
     # The fixture's series override sits on the secondary axis.
     disabled = _chart()

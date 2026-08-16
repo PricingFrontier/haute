@@ -85,61 +85,15 @@ function firstMutableRecord(value: unknown): Record<string, unknown> {
 }
 
 describe("chart config", () => {
-  it("migrates only the versionless v0 shape and deeply detaches future literals", () => {
-    const future = { nested: ["value", { count: 1 }] }
-    const result = parseExploreCharts({
-      charts: [{ id: "chart_1", enabled: false, future }],
-    })
-
-    expect(result).toMatchObject({
-      ok: true,
-      charts: [
-        {
-          version: 1,
-          id: "chart_1",
-          name: "Chart 1",
-          enabled: false,
-          pivot_id: null,
-          kind: "combo",
-          value_encodings: [],
-          series_overrides: [],
-        },
-      ],
-    })
-    future.nested[0] = "changed"
-    if (result.ok) {
-      expect(
-        (result.charts[0].future as { nested: unknown[] }).nested[0],
-      ).toBe("value")
-    }
+  it("rejects versionless cards instead of migrating them", () => {
+    // There is no v0 migration: every persisted card is complete version 1.
     expect(
       parseExploreCharts({
-        charts: [{ id: "chart_1", enabled: true, name: "not-v0" }],
+        charts: [{ id: "chart_1", enabled: false }],
       }),
-    ).toMatchObject({ ok: false, error: expect.stringMatching(/versionless/i) })
-  })
-
-  it("allocates legacy names around existing version-1 chart names", () => {
-    const existing = configured(pivot(), {
-      id: "configured",
-      name: "Chart 1",
-    })
-
-    const parsed = parseExploreCharts({
-      charts: [
-        { id: "legacy_a", enabled: true },
-        existing,
-        { id: "legacy_b", enabled: false },
-      ],
-    })
-
-    expect(parsed).toMatchObject({
-      ok: true,
-      charts: [
-        { name: "Chart 2" },
-        { name: "Chart 1" },
-        { name: "Chart 3" },
-      ],
+    ).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/version must be 1/i),
     })
   })
 
@@ -405,35 +359,29 @@ describe("orientation and stack-normalisation schema", () => {
     return JSON.parse(JSON.stringify(base)) as Record<string, unknown>
   }
 
-  it("materialises defaults for absent orientation and stack_normalize", () => {
-    const raw = rawChart()
-    delete raw.orientation
-    for (const encoding of raw.value_encodings as Record<string, unknown>[]) {
-      delete encoding.stack_normalize
-    }
-    const parsed = parseExploreCharts({ charts: [raw] })
-    if (!parsed.ok) throw new Error(parsed.error)
-    expect(parsed.charts[0].orientation).toBe("vertical")
-    expect(
-      parsed.charts[0].value_encodings.every(
-        (encoding) => encoding.stack_normalize === false,
-      ),
-    ).toBe(true)
-  })
-
   it.each([
+    (raw: Record<string, unknown>) => {
+      delete raw.orientation
+    },
     (raw: Record<string, unknown>) => {
       raw.orientation = null
     },
     (raw: Record<string, unknown>) => {
       const encodings = raw.value_encodings as Record<string, unknown>[]
+      delete encodings[0].stack_normalize
+    },
+    (raw: Record<string, unknown>) => {
+      const encodings = raw.value_encodings as Record<string, unknown>[]
       encodings[0].stack_normalize = null
     },
-  ])("rejects explicit null for defaulted fields", (mutate) => {
-    const raw = rawChart()
-    mutate(raw)
-    expect(parseExploreCharts({ charts: [raw] })).toMatchObject({ ok: false })
-  })
+  ])(
+    "requires orientation and stack_normalize: absent and null both reject",
+    (mutate) => {
+      const raw = rawChart()
+      mutate(raw)
+      expect(parseExploreCharts({ charts: [raw] })).toMatchObject({ ok: false })
+    },
+  )
 
   it("accepts horizontal orientation and stacked line/area marks", () => {
     const raw = rawChart()
@@ -496,16 +444,17 @@ describe("orientation and stack-normalisation schema", () => {
 })
 
 describe("secondary axis enablement", () => {
-  it("materialises the default only for an absent key and validates the flag", () => {
-    const raw = JSON.parse(JSON.stringify(configured())) as Record<
+  it("requires the enabled flag and validates it as a boolean", () => {
+    const absent = JSON.parse(JSON.stringify(configured())) as Record<
       string,
       unknown
     >
-    delete (raw.axes as Record<string, Record<string, unknown>>).secondary
+    delete (absent.axes as Record<string, Record<string, unknown>>).secondary
       .enabled
-    const parsed = parseExploreCharts({ charts: [raw] })
-    if (!parsed.ok) throw new Error(parsed.error)
-    expect(parsed.charts[0].axes.secondary.enabled).toBe(true)
+    expect(parseExploreCharts({ charts: [absent] })).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/enabled must be a boolean/i),
+    })
 
     for (const invalidValue of [null, 1]) {
       const invalid = JSON.parse(JSON.stringify(configured())) as Record<

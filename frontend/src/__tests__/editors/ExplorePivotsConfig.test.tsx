@@ -812,7 +812,12 @@ describe("ExplorePivotsConfig", () => {
   it("surfaces malformed persisted pivots without destructive controls", () => {
     render(
       <ExplorePivotsConfig
-        config={{ pivots: [{ id: "pivot_1" }, { id: "pivot_1" }] }}
+        config={{
+          pivots: [
+            fullPivot({ id: "pivot_1" }),
+            fullPivot({ id: "pivot_1", name: "Other pivot" }),
+          ],
+        }}
         onUpdate={vi.fn()}
         nodeId="explore_1"
         upstreamColumns={upstreamColumns}

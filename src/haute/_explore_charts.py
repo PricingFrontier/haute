@@ -190,13 +190,15 @@ def _style(
             "Explore chart has an unsupported axis.", context=context, index=index, axis=axis
         )
     stack_group = item.get("stack_group")
-    if stack_group is not None and (not isinstance(stack_group, str) or not stack_group.strip()):
+    if "stack_group" not in item or (
+        stack_group is not None and (not isinstance(stack_group, str) or not stack_group.strip())
+    ):
         raise ConfigError(
             "Explore chart stack group must be null or a non-empty string.",
             context=context,
             index=index,
         )
-    stack_normalize = item["stack_normalize"] if "stack_normalize" in item else False
+    stack_normalize = item.get("stack_normalize")
     if not isinstance(stack_normalize, bool):
         raise ConfigError(
             "Explore chart stack normalize must be a boolean.",
@@ -210,23 +212,16 @@ def _style(
             index=index,
         )
     color = item.get("color")
-    if color is not None and (not isinstance(color, str) or _COLOR.fullmatch(color) is None):
+    if "color" not in item or (
+        color is not None and (not isinstance(color, str) or _COLOR.fullmatch(color) is None)
+    ):
         raise ConfigError(
             "Explore chart color must be null or a strict #RRGGBB hex value.",
             context=context,
             index=index,
         )
-    item["data_labels"] = _bool(
-        item.get("data_labels"), context=context, index=index, label="data labels"
-    )
-    item["markers"] = _bool(item.get("markers"), context=context, index=index, label="markers")
-    item.update(
-        mark=mark,
-        axis=axis,
-        stack_group=stack_group,
-        stack_normalize=stack_normalize,
-        color=color,
-    )
+    _bool(item.get("data_labels"), context=context, index=index, label="data labels")
+    _bool(item.get("markers"), context=context, index=index, label="markers")
     return item
 
 
@@ -245,15 +240,12 @@ def _axis(raw: Any, *, context: str, index: int, name: str) -> dict[str, Any]:
         index=index,
         scope="axis",
     )
-    if name == "secondary":
-        enabled = axis.get("enabled", True)
-        if not isinstance(enabled, bool):
-            raise ConfigError(
-                "Explore chart secondary axis enabled must be a boolean.",
-                context=context,
-                index=index,
-            )
-        axis["enabled"] = enabled
+    if name == "secondary" and not isinstance(axis.get("enabled"), bool):
+        raise ConfigError(
+            "Explore chart secondary axis enabled must be a boolean.",
+            context=context,
+            index=index,
+        )
     for required in ("title", "minimum", "maximum", "number_format"):
         if required not in axis:
             raise ConfigError(
@@ -300,55 +292,6 @@ def _axis(raw: Any, *, context: str, index: int, name: str) -> dict[str, Any]:
     return axis
 
 
-def _migrate_v0(
-    raw: dict[Any, Any], *, context: str, index: int, default_name: str
-) -> dict[str, Any]:
-    card = _copy_known(raw, known=_CARD_KEYS, context=context, index=index, scope="card")
-    chart_id = _non_empty(card.get("id"), context=context, index=index, label="id")
-    conflicting = sorted(key for key in card if key in _CARD_KEYS and key not in {"id", "enabled"})
-    if conflicting:
-        raise ConfigError(
-            "Versionless Explore chart may contain only id, enabled, and future fields.",
-            context=context,
-            index=index,
-            fields=conflicting,
-        )
-    enabled = _bool(card.get("enabled"), context=context, index=index, label="enabled state")
-    card.update(
-        version=1,
-        id=chart_id,
-        name=default_name,
-        enabled=enabled,
-        pivot_id=None,
-        kind="combo",
-        orientation="vertical",
-        category={
-            "source": "rows",
-            "include_grand_total": False,
-            "label_rotation": 0,
-        },
-        value_encodings=[],
-        series_overrides=[],
-        axes={
-            "primary": {
-                "title": "",
-                "minimum": None,
-                "maximum": None,
-                "number_format": "inherit",
-            },
-            "secondary": {
-                "title": "",
-                "minimum": None,
-                "maximum": None,
-                "number_format": "inherit",
-                "enabled": True,
-            },
-        },
-        legend={"visible": True, "position": "bottom"},
-    )
-    return card
-
-
 def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, Any]:
     card = _copy_known(raw, known=_CARD_KEYS, context=context, index=index, scope="card")
     if type(card.get("version")) is not int or card["version"] != 1:
@@ -369,15 +312,14 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         )
     if card.get("kind") != "combo":
         raise ConfigError("Explore chart has an unsupported kind.", context=context, index=index)
-    orientation = card["orientation"] if "orientation" in card else "vertical"
+    orientation = card.get("orientation")
     if orientation not in {"vertical", "horizontal"}:
         raise ConfigError(
-            "Explore chart has an unsupported orientation.",
+            "Explore chart orientation must be vertical or horizontal.",
             context=context,
             index=index,
             orientation=orientation,
         )
-    card["orientation"] = orientation
     category = card.get("category")
     if not isinstance(category, dict):
         raise ConfigError("Explore chart category must be a dict.", context=context, index=index)
@@ -500,7 +442,7 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
 
 
 def validate_explore_charts(value: Any, *, context: str) -> list[dict[str, Any]]:
-    """Return migrated, validated, deeply detached Explore chart cards."""
+    """Return validated, deeply detached Explore chart cards."""
     if not isinstance(value, list):
         raise ConfigError(
             "Explore charts config must be a list.",
@@ -510,15 +452,6 @@ def validate_explore_charts(value: Any, *, context: str) -> list[dict[str, Any]]
     charts: list[dict[str, Any]] = []
     ids: set[str] = set()
     names: set[str] = set()
-    allocated_names = {
-        raw["name"].strip().lower()
-        for raw in value
-        if isinstance(raw, dict)
-        and "version" in raw
-        and isinstance(raw.get("name"), str)
-        and raw["name"].strip()
-    }
-    next_name_suffix = 1
     for index, raw in enumerate(value):
         if not isinstance(raw, dict):
             raise ConfigError(
@@ -527,22 +460,7 @@ def validate_explore_charts(value: Any, *, context: str) -> list[dict[str, Any]]
                 index=index,
                 actual_type=type(raw).__name__,
             )
-        if "id" not in raw:
-            raise ConfigError("Explore chart requires an id.", context=context, index=index)
-        if "version" not in raw:
-            while f"chart {next_name_suffix}" in allocated_names:
-                next_name_suffix += 1
-            default_name = f"Chart {next_name_suffix}"
-            allocated_names.add(default_name.lower())
-            next_name_suffix += 1
-            chart = _migrate_v0(
-                raw,
-                context=context,
-                index=index,
-                default_name=default_name,
-            )
-        else:
-            chart = _validate_v1(raw, context=context, index=index)
+        chart = _validate_v1(raw, context=context, index=index)
         if chart["id"] in ids:
             raise ConfigError(
                 "Explore chart has a duplicate chart id.",

@@ -993,8 +993,16 @@ describe("ExploreChartsConfig", () => {
     const paletteColour: string = persisted.charts[0].value_encodings[0].color
     expect(paletteColour).toMatch(/^#[0-9A-F]{6}$/)
 
+    // The native picker streams change events while dragging; only blur
+    // commits, so a drag-in-progress persists nothing.
     const custom = screen.getByLabelText("Custom colour for Paid")
+    fireEvent.change(custom, { target: { value: "#118822" } })
     fireEvent.change(custom, { target: { value: "#aabbcc" } })
+    persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.charts[0].value_encodings[0].color).toBe(paletteColour)
+    fireEvent.blur(custom)
     persisted = JSON.parse(
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
@@ -1478,8 +1486,8 @@ describe("ExploreChartsConfig", () => {
       <ExploreChartsConfig
         config={{
           charts: [
-            { id: "chart_1", enabled: true },
-            { id: "chart_1", enabled: false },
+            chart(null, { id: "chart_1", name: "Chart A" }),
+            chart(null, { id: "chart_1", name: "Chart B" }),
           ],
         }}
         onUpdate={vi.fn()}

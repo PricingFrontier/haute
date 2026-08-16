@@ -103,6 +103,51 @@ function exploreNodeWithConfig(config: Record<string, unknown>): SimpleNode {
   }
 }
 
+function draftChart(id: string, name: string, enabled: boolean) {
+  return {
+    version: 1,
+    id,
+    name,
+    enabled,
+    pivot_id: null,
+    kind: "combo",
+    orientation: "vertical",
+    category: { source: "rows", include_grand_total: false, label_rotation: 0 },
+    value_encodings: [],
+    series_overrides: [],
+    axes: {
+      primary: {
+        title: "",
+        minimum: null,
+        maximum: null,
+        number_format: "inherit",
+      },
+      secondary: {
+        title: "",
+        minimum: null,
+        maximum: null,
+        number_format: "inherit",
+        enabled: true,
+      },
+    },
+    legend: { visible: true, position: "bottom" },
+  }
+}
+
+function draftPivot(id: string, name: string) {
+  return {
+    version: 1,
+    id,
+    name,
+    enabled: true,
+    filters: [],
+    columns: [],
+    rows: [],
+    values: [],
+    options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
+  }
+}
+
 function makeExploreDataCacheHash({
   node,
   allNodes,
@@ -532,9 +577,9 @@ describe("ExplorePreview", () => {
   it("renders enabled draft chart cards in config order and remembers the Charts pane", async () => {
     const node = exploreNodeWithConfig({
       charts: [
-        { id: "chart_1", enabled: true },
-        { id: "chart_2", enabled: false },
-        { id: "chart_3", enabled: true },
+        draftChart("chart_1", "Chart 1", true),
+        draftChart("chart_2", "Chart 2", false),
+        draftChart("chart_3", "Chart 3", true),
       ],
     })
     useUIStore.setState({ explorePanes: { explore_1: "code" } })
@@ -559,7 +604,9 @@ describe("ExplorePreview", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Charts" }))
     expect(await screen.findByText(/Add a chart from the Charts settings pane/i)).toBeInTheDocument()
 
-    const hiddenNode = exploreNodeWithConfig({ charts: [{ id: "chart_1", enabled: false }] })
+    const hiddenNode = exploreNodeWithConfig({
+      charts: [draftChart("chart_1", "Chart 1", false)],
+    })
     rerender(
       <ExplorePreview
         node={hiddenNode}
@@ -576,7 +623,10 @@ describe("ExplorePreview", () => {
 
   it("surfaces malformed chart config in the visualisation pane", async () => {
     const node = exploreNodeWithConfig({
-      charts: [{ id: "chart_1", enabled: true }, { id: "chart_1", enabled: false }],
+      charts: [
+        draftChart("chart_1", "Chart A", true),
+        draftChart("chart_1", "Chart B", false),
+      ],
     })
     renderExplore(makePreview(), node)
 
@@ -694,8 +744,8 @@ describe("ExplorePreview", () => {
         config: {
           ...dataConfig,
           overview: { dataset_snapshot: true },
-          pivots: [{ id: "pivot_1" }],
-          charts: [{ id: "chart_1", enabled: true }],
+          pivots: [draftPivot("pivot_1", "Pivot 1")],
+          charts: [draftChart("chart_1", "Chart 1", true)],
         },
       },
     }

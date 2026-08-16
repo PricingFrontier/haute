@@ -573,17 +573,45 @@ function ColourControl({
               }}
             />
           ))}
-          <input
-            type="color"
-            aria-label={`Custom colour for ${suffix}`}
-            className="h-5 w-7 cursor-pointer rounded border"
-            style={{ borderColor: "var(--border)", padding: 0 }}
-            value={value ?? PIVOT_CHART_COLORS.defaultSeries[0]}
-            onChange={(event) => onCommit(event.target.value.toUpperCase())}
+          <CustomColourInput
+            key={value ?? "automatic"}
+            suffix={suffix}
+            value={value}
+            onCommit={onCommit}
           />
         </div>
       </Field>
     </div>
+  )
+}
+
+function CustomColourInput({
+  suffix,
+  value,
+  onCommit,
+}: {
+  suffix: string
+  value: string | null
+  onCommit: (value: string) => void
+}) {
+  // The native picker fires an input event per drag tick; committing each
+  // tick would persist one graph edit (and one undo step) per tick. Track a
+  // local draft and commit once on blur, like the other committed controls.
+  // The parent remounts this input (keyed on the committed value) whenever
+  // an external change lands, discarding the stale draft.
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <input
+      type="color"
+      aria-label={`Custom colour for ${suffix}`}
+      className="h-5 w-7 cursor-pointer rounded border"
+      style={{ borderColor: "var(--border)", padding: 0 }}
+      value={draft ?? value ?? PIVOT_CHART_COLORS.defaultSeries[0]}
+      onChange={(event) => setDraft(event.target.value.toUpperCase())}
+      onBlur={() => {
+        if (draft !== null && draft !== value) onCommit(draft)
+      }}
+    />
   )
 }
 
@@ -667,11 +695,14 @@ export default function ExploreChartsConfig({
   const pivotResults = useNodeResultsStore((s) => s.pivotResults)
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
   const retainedExplore = useNodeResultsStore((s) => s.exploreResults[nodeId] ?? null)
-  const parsedChartsForLifecycle = parseExploreCharts(config)
+  // Parsing deep-clones every card and this editor re-renders on pivot
+  // polling ticks, so parse once per config identity, as the Charts pane does.
+  const parsedCharts = useMemo(() => parseExploreCharts(config), [config])
+  const parsedPivots = useMemo(() => parseExplorePivots(config), [config])
   const configuredChartExists =
-    !parsedChartsForLifecycle.ok ||
+    !parsedCharts.ok ||
     configuredId === null ||
-    parsedChartsForLifecycle.charts.some(({ id }) => id === configuredId)
+    parsedCharts.charts.some(({ id }) => id === configuredId)
   useEffect(() => {
     // A stored subview id whose card was deleted (from any surface) clears
     // itself so a later card reusing the id cannot reopen unexpectedly.
@@ -683,8 +714,6 @@ export default function ExploreChartsConfig({
     retainedExplore.configHash === currentConfigHash
       ? (retainedExplore.result?.dataframe_cache_key ?? null)
       : null
-  const parsedCharts = parseExploreCharts(config)
-  const parsedPivots = parseExplorePivots(config)
   if (!parsedCharts.ok) return <ConfigError error={parsedCharts.error} />
   if (!parsedPivots.ok) return <ConfigError error={parsedPivots.error} />
   const charts = parsedCharts.charts,
@@ -715,7 +744,7 @@ export default function ExploreChartsConfig({
           <div className="flex flex-col gap-2">
             {charts.map((c) => (
               <ExploreConfigCard
-              key={c.id}
+                key={c.id}
                 name={c.name}
                 enabled={c.enabled}
                 onEnabledChange={(enabled) =>

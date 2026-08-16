@@ -357,13 +357,13 @@ describe("useExplorePivotActions", () => {
 
     it("no-ops identical targets, replaces newer targets, and guards release by token", () => {
       const store = useNodeResultsStore.getState()
-      const token1 = store.claimExplorePivotAuto(claimKey(), "df-a", identity())
+      const token1 = store.claimExplorePivotAuto(claimKey(), node.id, "df-a", identity())
       expect(token1).not.toBeNull()
       expect(
-        store.claimExplorePivotAuto(claimKey(), "df-a", identity()),
+        store.claimExplorePivotAuto(claimKey(), node.id, "df-a", identity()),
       ).toBeNull()
 
-      const token2 = store.claimExplorePivotAuto(claimKey(), "df-b", identity())
+      const token2 = store.claimExplorePivotAuto(claimKey(), node.id, "df-b", identity())
       expect(token2).not.toBeNull()
       expect(token2).not.toBe(token1)
 
@@ -381,12 +381,13 @@ describe("useExplorePivotActions", () => {
       const store = useNodeResultsStore.getState()
       const manualToken = store.claimExplorePivotManual(
         claimKey(),
+        node.id,
         "df-current",
         identity(),
       )
 
       expect(
-        store.claimExplorePivotAuto(claimKey(), "df-current", identity()),
+        store.claimExplorePivotAuto(claimKey(), node.id, "df-current", identity()),
       ).toBeNull()
       expect(
         useNodeResultsStore.getState().pivotStartClaims[claimKey()]?.token,
@@ -394,6 +395,7 @@ describe("useExplorePivotActions", () => {
 
       const newerToken = store.claimExplorePivotAuto(
         claimKey(),
+        node.id,
         "df-next",
         identity(),
       )
@@ -407,7 +409,7 @@ describe("useExplorePivotActions", () => {
       const key = claimKey()
       const token = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-a", identity())
+        .claimExplorePivotAuto(key, node.id, "df-a", identity())
       expect(token).not.toBeNull()
       mockRunExplorePivot.mockRejectedValueOnce(new Error("boom"))
 
@@ -420,7 +422,7 @@ describe("useExplorePivotActions", () => {
       expect(
         useNodeResultsStore
           .getState()
-          .claimExplorePivotAuto(key, "df-a", identity()),
+          .claimExplorePivotAuto(key, node.id, "df-a", identity()),
       ).not.toBeNull()
     })
 
@@ -428,7 +430,7 @@ describe("useExplorePivotActions", () => {
       const key = claimKey()
       const token1 = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-old", identity())
+        .claimExplorePivotAuto(key, node.id, "df-old", identity())
       expect(token1).not.toBeNull()
       let rejectOld: (reason?: unknown) => void = () => {}
       mockRunExplorePivot.mockImplementationOnce(
@@ -445,7 +447,7 @@ describe("useExplorePivotActions", () => {
 
       const token2 = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-new", identity())
+        .claimExplorePivotAuto(key, node.id, "df-new", identity())
       expect(token2).not.toBeNull()
 
       await act(async () => {
@@ -465,7 +467,7 @@ describe("useExplorePivotActions", () => {
       const key = claimKey()
       const token = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-a", identity())
+        .claimExplorePivotAuto(key, node.id, "df-a", identity())
       let resolveRun: (value: ExplorePivotRunResponse) => void = () => {}
       mockRunExplorePivot.mockImplementationOnce(
         () =>
@@ -501,7 +503,7 @@ describe("useExplorePivotActions", () => {
       const key = claimKey()
       const token1 = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-old", identity())
+        .claimExplorePivotAuto(key, node.id, "df-old", identity())
       let resolveOld: (value: ExplorePivotRunResponse) => void = () => {}
       mockRunExplorePivot.mockImplementationOnce(
         () =>
@@ -518,7 +520,7 @@ describe("useExplorePivotActions", () => {
 
       const token2 = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-new", identity())
+        .claimExplorePivotAuto(key, node.id, "df-new", identity())
       const newResult = { ...result, dataframe_cache_key: "df-new" }
       mockRunExplorePivot.mockResolvedValueOnce({
         status: "completed",
@@ -537,7 +539,7 @@ describe("useExplorePivotActions", () => {
       // A third target submits freely while the obsolete request hangs.
       const token3 = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-next", identity())
+        .claimExplorePivotAuto(key, node.id, "df-next", identity())
       let resolveNext: (value: ExplorePivotRunResponse) => void = () => {}
       mockRunExplorePivot.mockImplementationOnce(
         () =>
@@ -593,7 +595,7 @@ describe("useExplorePivotActions", () => {
       const key = claimKey()
       const token1 = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-old", identity())
+        .claimExplorePivotAuto(key, node.id, "df-old", identity())
       expect(token1).not.toBeNull()
 
       let resolveOld: (value: ExplorePivotRunResponse) => void = () => {}
@@ -613,7 +615,7 @@ describe("useExplorePivotActions", () => {
       // and its submission completes first.
       const token2 = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-new", identity())
+        .claimExplorePivotAuto(key, node.id, "df-new", identity())
       expect(token2).not.toBeNull()
       const newResult = { ...result, dataframe_cache_key: "df-new" }
       mockRunExplorePivot.mockResolvedValueOnce({
@@ -659,7 +661,7 @@ describe("useExplorePivotActions", () => {
       const key = claimKey()
       const token = useNodeResultsStore
         .getState()
-        .claimExplorePivotAuto(key, "df-auto", identity())
+        .claimExplorePivotAuto(key, node.id, "df-auto", identity())
       expect(token).not.toBeNull()
 
       let resolveAutomatic: (value: ExplorePivotRunResponse) => void = () => {}
