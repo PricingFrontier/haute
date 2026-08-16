@@ -118,8 +118,13 @@ function includePath(
   path: ExplorePivotPath,
   fullDepth: number,
   chart: ExploreChartConfig,
+  axis: "row" | "column",
 ): boolean {
-  if (path.is_grand_total) return chart.category.include_grand_total
+  // The grand-total opt-in admits row paths only: a column grand total is the
+  // sum of the other series, so charting it would double-count stacks.
+  if (path.is_grand_total) {
+    return axis === "row" && chart.category.include_grand_total
+  }
   // The backend emits only full-depth paths plus optional grand totals; a
   // shorter (subtotal-shaped) path is never charted. An over-depth path flows
   // on to checkRenderedPath, which rejects it at the hierarchy-depth limit.
@@ -139,11 +144,51 @@ function numericCellValue(value: unknown): number | null {
   )
 }
 
+// Formatter construction is expensive and formatChartValue runs per rendered
+// point (up to CHART_MAX_POINTS per chart), so instances are cached per key.
+const NUMBER_FORMATTERS = new Map<string, Intl.NumberFormat>()
+
+function numberFormatter(
+  key: string,
+  options: Intl.NumberFormatOptions,
+): Intl.NumberFormat {
+  let formatter = NUMBER_FORMATTERS.get(key)
+  if (!formatter) {
+    formatter = new Intl.NumberFormat("en-GB", options)
+    NUMBER_FORMATTERS.set(key, formatter)
+  }
+  return formatter
+}
+
+/**
+ * Chart-name → export filename: lower-cased, runs of characters outside
+ * a–z/0–9/-/_ collapsed to one "-", trimmed of leading/trailing "-", with
+ * "chart" as the all-punctuation fallback, plus ".png".
+ */
+export function chartExportFileName(name: string): string {
+  const sanitised = name
+    .toLowerCase()
+    .replace(/[^a-z0-9\-_]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return `${sanitised || "chart"}.png`
+}
+
 export function formatChartValue(
   value: number,
   format: ChartNumberFormat,
 ): string {
-  if (format === "inherit") return String(value)
+  if (format === "inherit") {
+    // General locale format: grouped digits, at most two fraction digits at
+    // magnitude >= 1, at most four significant digits below 1, "0" at zero.
+    if (value === 0) return "0"
+    return Math.abs(value) >= 1
+      ? numberFormatter("inherit_ge1", { maximumFractionDigits: 2 }).format(
+          value,
+        )
+      : numberFormatter("inherit_lt1", {
+          maximumSignificantDigits: 4,
+        }).format(value)
+  }
 
   const options: Intl.NumberFormatOptions =
     format === "number"
@@ -161,7 +206,7 @@ export function formatChartValue(
                     ? "USD"
                     : "EUR",
             }
-  return new Intl.NumberFormat("en-GB", options).format(value)
+  return numberFormatter(format, options).format(value)
 }
 
 function sameOrderedFields(
@@ -261,10 +306,14 @@ export function adaptPivotChartData(
 
   const rowEntries = result.row_paths
     .map((path, rowIndex) => ({ path, rowIndex }))
-    .filter(({ path }) => includePath(path, result.row_fields.length, chart))
+    .filter(({ path }) =>
+      includePath(path, result.row_fields.length, chart, "row"),
+    )
   const columnEntries = result.column_paths
     .map((path, columnIndex) => ({ path, columnIndex }))
-    .filter(({ path }) => includePath(path, result.column_fields.length, chart))
+    .filter(({ path }) =>
+      includePath(path, result.column_fields.length, chart, "column"),
+    )
 
   for (const { path } of [...rowEntries, ...columnEntries]) {
     checkRenderedPath(path)
@@ -364,7 +413,6 @@ export function adaptPivotChartData(
         }
         return numericCellValue(cell.value)
       })
-      const format = chart.axes[style.axis].number_format
       series.push({
         key,
         id: key,
@@ -373,11 +421,65 @@ export function adaptPivotChartData(
         columnIndex,
         style,
         values,
-        formattedValues: values.map((cell) =>
-          cell === null ? null : formatChartValue(cell, format),
-        ),
+        formattedValues: [],
       })
     }
+  }
+
+  // 100% stacking: per category and normalised group, cell -> cell / sum of
+  // |cells| over the group's non-null cells. Runs before formatting so
+  // formatted text reflects the normalised values.
+  const warnings = [...result.warnings]
+  const normalizedGroups = new Map<string, ChartSeriesData[]>()
+  for (const entry of series) {
+    if (entry.style.stack_group !== null && entry.style.stack_normalize) {
+      const members = normalizedGroups.get(entry.style.stack_group) ?? []
+      members.push(entry)
+      normalizedGroups.set(entry.style.stack_group, members)
+    }
+  }
+  for (const [group, members] of normalizedGroups) {
+    categories.forEach((category, categoryIndex) => {
+      let denominator = 0
+      let maximumMagnitude = 0
+      let overflowScale: number | null = null
+      for (const member of members) {
+        const cell = member.values[categoryIndex]
+        if (cell !== null) {
+          const magnitude = Math.abs(cell)
+          denominator += magnitude
+          maximumMagnitude = Math.max(maximumMagnitude, magnitude)
+        }
+      }
+      if (!Number.isFinite(denominator)) {
+        overflowScale = maximumMagnitude
+        denominator = members.reduce((sum, member) => {
+          const cell = member.values[categoryIndex]
+          return cell === null ? sum : sum + Math.abs(cell) / maximumMagnitude
+        }, 0)
+      }
+      if (denominator === 0) {
+        for (const member of members) member.values[categoryIndex] = null
+        warnings.push(
+          `100% stacking has no non-zero values for category ` +
+            `"${category.label}" in stack group "${group}".`,
+        )
+        return
+      }
+      for (const member of members) {
+        const cell = member.values[categoryIndex]
+        if (cell !== null) {
+          const numerator = overflowScale === null ? cell : cell / overflowScale
+          member.values[categoryIndex] = numerator / denominator
+        }
+      }
+    })
+  }
+  for (const entry of series) {
+    const format = chart.axes[entry.style.axis].number_format
+    entry.formattedValues = entry.values.map((cell) =>
+      cell === null ? null : formatChartValue(cell, format),
+    )
   }
 
   return {
@@ -389,6 +491,6 @@ export function adaptPivotChartData(
     dormantEncodingIds: chart.value_encodings
       .filter(({ id }) => !usedEncodingIds.has(id))
       .map(({ id }) => id),
-    warnings: [...result.warnings],
+    warnings,
   }
 }

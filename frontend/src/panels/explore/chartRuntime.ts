@@ -26,6 +26,7 @@ export type ComboChartInstance = {
   setOption(option: Record<string, unknown>): void
   resize(): void
   dispose(): void
+  getDataURL(): string
 }
 
 export function createComboChart(element: HTMLElement): ComboChartInstance {
@@ -39,6 +40,9 @@ export function createComboChart(element: HTMLElement): ComboChartInstance {
     },
     dispose() {
       instance.dispose()
+    },
+    getDataURL() {
+      return instance.getDataURL({ type: "svg" })
     },
   }
 }

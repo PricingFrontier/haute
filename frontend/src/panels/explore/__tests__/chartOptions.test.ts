@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+﻿import { describe, expect, it } from "vitest"
 
 import type { PivotChartData } from "../chartData"
 import { createExploreChart, type ExploreChartConfig } from "../chartConfig"
@@ -68,6 +68,7 @@ function configuredChart(overrides: Partial<ExploreChartConfig> = {}): ExploreCh
         minimum: 1,
         maximum: 10,
         number_format: "integer",
+        enabled: true,
       },
     },
     ...overrides,
@@ -101,6 +102,7 @@ function dataset(): PivotChartData {
           mark: "column",
           axis: "primary",
           stack_group: "paid-stack",
+          stack_normalize: false,
           color: null,
           data_labels: true,
           markers: false,
@@ -118,6 +120,7 @@ function dataset(): PivotChartData {
           mark: "line",
           axis: "secondary",
           stack_group: null,
+          stack_normalize: false,
           color: "#AABBCC",
           data_labels: false,
           markers: true,
@@ -135,6 +138,7 @@ function dataset(): PivotChartData {
           mark: "area",
           axis: "primary",
           stack_group: null,
+          stack_normalize: false,
           color: null,
           data_labels: false,
           markers: false,
@@ -265,6 +269,7 @@ describe("ComboChart option builder", () => {
             minimum: null,
             maximum: null,
             number_format: "number",
+            enabled: true,
           },
         },
       }),
@@ -277,6 +282,86 @@ describe("ComboChart option builder", () => {
     expect(evaluateBound(options.yAxis[0].max, { min: 4, max: 100 })).toBe(100)
     expect(options.yAxis[1].min).toBeUndefined()
     expect(options.yAxis[1].max).toBeUndefined()
+  })
+
+  it("swaps axes and series bindings under horizontal orientation", () => {
+    const options = buildComboChartOptions({
+      chart: configuredChart({ orientation: "horizontal" }),
+      data: dataset(),
+      tokens: light,
+      reducedMotion: false,
+    }) as unknown as {
+      xAxis: GeneratedAxis[]
+      yAxis: { type: string; data: string[]; axisLabel: { rotate: number } }
+      series: Array<{ xAxisIndex?: number; yAxisIndex?: number }>
+    }
+
+    expect(options.yAxis.type).toBe("category")
+    expect(options.yAxis.data).toEqual([
+      "North <img src=x onerror=alert(1)>",
+      "South",
+    ])
+    expect(
+      (options.yAxis as unknown as { inverse?: boolean }).inverse,
+    ).toBe(true)
+    expect(options.yAxis.axisLabel.rotate).toBe(45)
+    expect(options.xAxis[0]).toMatchObject({ name: "Paid" })
+    expect(options.xAxis[1]).toMatchObject({ name: "Claims" })
+    expect(
+      options.series.map(({ xAxisIndex, yAxisIndex }) => ({
+        xAxisIndex,
+        yAxisIndex,
+      })),
+    ).toEqual([
+      { xAxisIndex: 0, yAxisIndex: undefined },
+      { xAxisIndex: 1, yAxisIndex: undefined },
+      { xAxisIndex: 0, yAxisIndex: undefined },
+    ])
+  })
+
+  it("moves the many-categories data zoom onto the category axis when horizontal", () => {
+    const data = dataset()
+    data.categories = Array.from({ length: 13 }, (_, index) => ({
+      key: `category_${index}`,
+      label: `Category ${index}`,
+      rowIndex: index,
+      path: { members: [], is_grand_total: false },
+    }))
+    for (const series of data.series) {
+      series.values = data.categories.map((_, index) => index)
+      series.formattedValues = data.categories.map((_, index) => String(index))
+    }
+
+    const options = buildComboChartOptions({
+      chart: configuredChart({ orientation: "horizontal" }),
+      data,
+      tokens: light,
+      reducedMotion: false,
+    }) as unknown as {
+      dataZoom: Array<{ type: string; yAxisIndex?: number }>
+    }
+
+    expect(options.dataZoom).toEqual([
+      { type: "inside", yAxisIndex: 0, start: 0, end: 100 },
+      { type: "slider", yAxisIndex: 0, start: 0, end: 100 },
+    ])
+  })
+
+  it("emits stacks for line and area marks", () => {
+    const data = dataset()
+    data.series[1].style.stack_group = "s"
+    data.series[2].style.stack_group = "s"
+    data.series[2].style.axis = "secondary"
+
+    const options = buildComboChartOptions({
+      chart: configuredChart(),
+      data,
+      tokens: light,
+      reducedMotion: false,
+    }) as unknown as { series: Array<{ stack?: string }> }
+
+    expect(options.series[1].stack).toBe("s")
+    expect(options.series[2].stack).toBe("s")
   })
 
   it("reserves plot space for positioned legends and hides an unused secondary axis", () => {

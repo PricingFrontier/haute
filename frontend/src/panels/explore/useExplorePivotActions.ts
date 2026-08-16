@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 
 import { cancelExplorePivot, runExplorePivot } from "../../api/client"
 import type {
@@ -115,6 +115,31 @@ export default function useExplorePivotActions({
     [],
   )
 
+  // A superseding submission can overlap the one it replaced. The visible
+  // submitting flag belongs to the LATEST submission generation only: an
+  // obsolete request settling (in either order) never touches the flag, and
+  // the latest request settling clears it immediately — so a superseded
+  // request can neither strand the flag on nor clear it prematurely.
+  const submissionGenerations = useRef<Record<string, number>>({})
+  const beginSubmitting = useCallback(
+    (pivotId: string): number => {
+      const generation = (submissionGenerations.current[pivotId] ?? 0) + 1
+      submissionGenerations.current[pivotId] = generation
+      setCardSubmitting(pivotId, true)
+      return generation
+    },
+    [setCardSubmitting],
+  )
+  const endSubmitting = useCallback(
+    (pivotId: string, generation: number) => {
+      // The counter is monotonic and never reset: deleting it here would let
+      // a later submission reuse an obsolete in-flight request's generation.
+      if (submissionGenerations.current[pivotId] !== generation) return
+      setCardSubmitting(pivotId, false)
+    },
+    [setCardSubmitting],
+  )
+
   const startStoredJob = useCallback(
     (
       pivot: ExplorePivotConfig,
@@ -170,13 +195,29 @@ export default function useExplorePivotActions({
     async (
       pivot: ExplorePivotConfig,
       requestedDataframeCacheKey: string | null = null,
+      autoClaimToken?: number,
     ) => {
       if (pivot.values.length === 0) return
 
       const key = explorePivotResultKey(node.id, pivot.id)
       const calculationIdentity = pivotCalculationIdentity(pivot)
+      const startToken = autoClaimToken
+        ?? useNodeResultsStore
+          .getState()
+          .claimExplorePivotManual(
+            key,
+            node.id,
+            requestedDataframeCacheKey,
+            calculationIdentity,
+          )
+      // Every submission owns a claim generation. A newer automatic target or
+      // manual Retry replaces it, so a stale response never overwrites newer
+      // work shared by another mounted consumer.
+      const claimCurrent = () =>
+        useNodeResultsStore.getState().pivotStartClaims[key]?.token
+          === startToken
       setNotice(pivot.id, null)
-      setCardSubmitting(pivot.id, true)
+      const submissionGeneration = beginSubmitting(pivot.id)
 
       try {
         const response = await runExplorePivot({
@@ -186,6 +227,7 @@ export default function useExplorePivotActions({
           source: activeSource,
           streamingChunkSize,
         })
+        if (!claimCurrent()) return
 
         if (response.status === "cache_required") {
           const message = response.failure?.message ?? response.message
@@ -245,6 +287,7 @@ export default function useExplorePivotActions({
           execution_metrics: null,
         })
       } catch (error) {
+        if (!claimCurrent()) return
         const terminalReason = executionTerminalReasonFromError(error)
         persistStartFailure(
           pivot,
@@ -257,18 +300,20 @@ export default function useExplorePivotActions({
           executionMetricsFromError(error),
         )
       } finally {
-        setCardSubmitting(pivot.id, false)
+        useNodeResultsStore.getState().releaseExplorePivotStart(key, startToken)
+        endSubmitting(pivot.id, submissionGeneration)
       }
     },
     [
       activeSource,
       allNodes,
+      beginSubmitting,
       completeJob,
       edges,
+      endSubmitting,
       node.id,
       persistStartFailure,
       preamble,
-      setCardSubmitting,
       setNotice,
       startStoredJob,
       streamingChunkSize,

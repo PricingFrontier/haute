@@ -337,6 +337,9 @@ _FRONTEND_MINT_ALLOWLIST = {
     "frontend/src/panels/editors/apiInputInherit.ts",
     # safeTestId mints data-testid attributes only — never persisted.
     "frontend/src/panels/explore/SchemaTableCard.tsx",
+    # chartExportFileName mints a one-off browser-download filename only;
+    # it never names a project artefact, and collisions are therefore cosmetic.
+    "frontend/src/panels/explore/chartData.ts",
 }
 
 

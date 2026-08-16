@@ -13,6 +13,7 @@ import {
   CHART_MAX_POINTS,
   CHART_MAX_SERIES,
   ChartDataError,
+  formatChartValue,
 } from "../chartData"
 import {
   createExploreChart,
@@ -147,6 +148,7 @@ describe("pivot chart data adapter", () => {
           minimum: null,
           maximum: null,
           number_format: "integer",
+          enabled: true,
         },
       },
       value_encodings: seedValueEncodings(sourcePivot).map((encoding) =>
@@ -184,6 +186,7 @@ describe("pivot chart data adapter", () => {
           mark: "column",
           axis: "primary",
           stack_group: null,
+          stack_normalize: false,
           color: null,
           data_labels: false,
           markers: false,
@@ -196,6 +199,7 @@ describe("pivot chart data adapter", () => {
           mark: "line",
           axis: "secondary",
           stack_group: null,
+          stack_normalize: false,
           color: "#AABBCC",
           data_labels: true,
           markers: true,
@@ -209,6 +213,7 @@ describe("pivot chart data adapter", () => {
           mark: "column",
           axis: "primary",
           stack_group: null,
+          stack_normalize: false,
           color: null,
           data_labels: false,
           markers: false,
@@ -260,6 +265,187 @@ describe("pivot chart data adapter", () => {
       categories: [{ label: "All" }],
       series: [{ name: "Paid", values: [-3] }],
     })
+  })
+
+  it("normalises 100% stack groups per category and warns once on zero denominators", () => {
+    const sourcePivot = pivot({
+      columns: [],
+      values: [
+        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
+        { id: "value_c", field: "c", aggregation: "sum", display_name: "C" },
+      ],
+    })
+    const rows = ["mixed", "simple", "gapped", "empty"]
+    const cellsByRow: Array<Array<number | null>> = [
+      [30, -10, 60],
+      [25, 75, null],
+      [null, 40, 40],
+      [null, 0, null],
+    ]
+    const sourceResult = result(sourcePivot, {
+      column_fields: [],
+      row_paths: rows.map((label) => path([member(label)])),
+      column_paths: [path([])],
+      cells: cellsByRow.flatMap((cells, rowIndex) =>
+        cells.map((value, valueIndex) => ({
+          row_index: rowIndex,
+          column_index: 0,
+          value_id: sourcePivot.values[valueIndex].id,
+          value,
+        })),
+      ),
+    })
+    const configured = chart(sourcePivot, {
+      value_encodings: seedValueEncodings(sourcePivot).map((encoding) => ({
+        ...encoding,
+        stack_group: "s",
+        stack_normalize: true,
+      })),
+      axes: {
+        primary: {
+          title: "",
+          minimum: null,
+          maximum: null,
+          number_format: "percent",
+        },
+        secondary: {
+          title: "",
+          minimum: null,
+          maximum: null,
+          number_format: "inherit",
+          enabled: true,
+        },
+      },
+    })
+
+    const data = adaptPivotChartData(configured, sourcePivot, sourceResult)
+
+    expect(data.series.map(({ values }) => values)).toEqual([
+      [0.3, 0.25, null, null],
+      [-0.1, 0.75, 0.5, null],
+      [0.6, null, 0.5, null],
+    ])
+    // Formatting runs after normalisation: labels/tooltips/table show the
+    // normalised shares, and zero-denominator categories stay gaps.
+    expect(data.series.map(({ formattedValues }) => formattedValues)).toEqual([
+      ["30%", "25%", null, null],
+      ["-10%", "75%", "50%", null],
+      ["60%", null, "50%", null],
+    ])
+    const zeroDenominatorWarnings = data.warnings.filter(
+      (warning) => warning.includes("empty") && warning.includes('"s"'),
+    )
+    expect(zeroDenominatorWarnings).toHaveLength(1)
+  })
+
+  it("normalises finite huge stack members without overflow", () => {
+    const sourcePivot = pivot({
+      columns: [],
+      values: [
+        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
+      ],
+    })
+    const sourceResult = result(sourcePivot, {
+      column_fields: [],
+      row_paths: [path([member("Huge")])],
+      column_paths: [path([])],
+      cells: sourcePivot.values.map((value) => ({
+        row_index: 0,
+        column_index: 0,
+        value_id: value.id,
+        value: 1e308,
+      })),
+    })
+    const configured = chart(sourcePivot, {
+      value_encodings: seedValueEncodings(sourcePivot).map((encoding) => ({
+        ...encoding,
+        stack_group: "s",
+        stack_normalize: true,
+      })),
+    })
+
+    const data = adaptPivotChartData(configured, sourcePivot, sourceResult)
+
+    expect(data.series.map(({ values }) => values)).toEqual([[0.5], [0.5]])
+  })
+
+  it("leaves non-normalised sibling groups untouched", () => {
+    const sourcePivot = pivot({
+      columns: [],
+      values: [
+        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
+        { id: "value_c", field: "c", aggregation: "sum", display_name: "C" },
+      ],
+    })
+    const sourceResult = result(sourcePivot, {
+      column_fields: [],
+      row_paths: [path([member("North")])],
+      column_paths: [path([])],
+      cells: sourcePivot.values.map((value, valueIndex) => ({
+        row_index: 0,
+        column_index: 0,
+        value_id: value.id,
+        value: (valueIndex + 1) * 10,
+      })),
+    })
+    const configured = chart(sourcePivot, {
+      value_encodings: seedValueEncodings(sourcePivot).map(
+        (encoding, index) =>
+          index < 2
+            ? { ...encoding, stack_group: "s", stack_normalize: true }
+            : { ...encoding, stack_group: "raw" },
+      ),
+    })
+
+    const data = adaptPivotChartData(configured, sourcePivot, sourceResult)
+
+    expect(data.series.map(({ values }) => values)).toEqual([
+      [10 / 30],
+      [20 / 30],
+      [30],
+    ])
+    expect(data.warnings).toEqual([])
+  })
+
+  it("never charts column grand-total paths, even when grand totals are requested", () => {
+    const sourcePivot = pivot({ values: [pivot().values[0]] })
+    const rowPaths = [path([member("North")]), path([], true)]
+    const columnPaths = [
+      path([{ kind: "integer", value: "2024" }]),
+      path([], true),
+    ]
+    const sourceResult = result(sourcePivot, {
+      row_paths: rowPaths,
+      column_paths: columnPaths,
+      cells: rowPaths.flatMap((_, rowIndex) =>
+        columnPaths.map((__, columnIndex) => ({
+          row_index: rowIndex,
+          column_index: columnIndex,
+          value_id: "value_paid",
+          value: rowIndex * 10 + columnIndex + 1,
+        })),
+      ),
+    })
+
+    const data = adaptPivotChartData(
+      chart(sourcePivot, {
+        category: {
+          source: "rows",
+          include_grand_total: true,
+          label_rotation: 0,
+        },
+      }),
+      sourcePivot,
+      sourceResult,
+    )
+    expect(data.categories.map(({ label }) => label)).toEqual([
+      "North",
+      "Grand total",
+    ])
+    expect(data.series.map(({ name }) => name)).toEqual(["2024 · Paid"])
   })
 
   it("excludes subtotal-shaped paths and includes grand totals only on request", () => {
@@ -461,5 +647,22 @@ describe("pivot chart data adapter", () => {
         ),
       "chart_cardinality_limit",
     )
+  })
+})
+
+describe("formatChartValue", () => {
+  it("renders inherit as the General locale format", () => {
+    expect(formatChartValue(1234567.891, "inherit")).toBe("1,234,567.89")
+    expect(formatChartValue(1234.5, "inherit")).toBe("1,234.5")
+    expect(formatChartValue(12, "inherit")).toBe("12")
+    expect(formatChartValue(0.12345, "inherit")).toBe("0.1235")
+    expect(formatChartValue(-0.000123, "inherit")).toBe("-0.000123")
+    expect(formatChartValue(0, "inherit")).toBe("0")
+  })
+
+  it("keeps explicit formats unchanged", () => {
+    expect(formatChartValue(1234.5, "integer")).toBe("1,235")
+    expect(formatChartValue(0.5, "percent")).toBe("50%")
+    expect(formatChartValue(100, "currency_gbp")).toBe("£100.00")
   })
 })

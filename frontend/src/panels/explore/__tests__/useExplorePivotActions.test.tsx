@@ -104,7 +104,11 @@ describe("useExplorePivotActions", () => {
     mockRunExplorePivot.mockReset()
     mockCancelExplorePivot.mockReset()
     resetNodeResultsDerivedCaches()
-    useNodeResultsStore.setState({ pivotResults: {}, pivotJobs: {} })
+    useNodeResultsStore.setState({
+      pivotResults: {},
+      pivotJobs: {},
+      pivotStartClaims: {},
+    })
     useSettingsStore.setState({
       activeSource: "pricing",
       streamingChunkSize: 250_000,
@@ -344,6 +348,367 @@ describe("useExplorePivotActions", () => {
     expect(useNodeResultsStore.getState().pivotJobs[key]).toBeDefined()
     expect(hook.current.notices[config.id]).toEqual({
       message: "Cancellation unavailable",
+    })
+  })
+
+  describe("auto-update claim", () => {
+    const claimKey = () => explorePivotResultKey(node.id, "claims")
+    const identity = () => pivotCalculationIdentity(pivot())
+
+    it("no-ops identical targets, replaces newer targets, and guards release by token", () => {
+      const store = useNodeResultsStore.getState()
+      const token1 = store.claimExplorePivotAuto(claimKey(), node.id, "df-a", identity())
+      expect(token1).not.toBeNull()
+      expect(
+        store.claimExplorePivotAuto(claimKey(), node.id, "df-a", identity()),
+      ).toBeNull()
+
+      const token2 = store.claimExplorePivotAuto(claimKey(), node.id, "df-b", identity())
+      expect(token2).not.toBeNull()
+      expect(token2).not.toBe(token1)
+
+      store.releaseExplorePivotStart(claimKey(), token1!)
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()]?.token,
+      ).toBe(token2)
+      store.releaseExplorePivotStart(claimKey(), token2!)
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()],
+      ).toBeUndefined()
+    })
+
+    it("deduplicates an identical auto target but supersedes manual work for a newer dataframe", () => {
+      const store = useNodeResultsStore.getState()
+      const manualToken = store.claimExplorePivotManual(
+        claimKey(),
+        node.id,
+        "df-current",
+        identity(),
+      )
+
+      expect(
+        store.claimExplorePivotAuto(claimKey(), node.id, "df-current", identity()),
+      ).toBeNull()
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()]?.token,
+      ).toBe(manualToken)
+
+      const newerToken = store.claimExplorePivotAuto(
+        claimKey(),
+        node.id,
+        "df-next",
+        identity(),
+      )
+      expect(newerToken).not.toBeNull()
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[claimKey()],
+      ).toMatchObject({ dataframeCacheKey: "df-next", token: newerToken })
+    })
+
+    it("releases the claim through the real failure path, allowing a retry", async () => {
+      const key = claimKey()
+      const token = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-a", identity())
+      expect(token).not.toBeNull()
+      mockRunExplorePivot.mockRejectedValueOnce(new Error("boom"))
+
+      const { result: hook } = renderActions()
+      await act(() => hook.current.updatePivot(pivot(), "df-a", token!))
+
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[key],
+      ).toBeUndefined()
+      expect(
+        useNodeResultsStore
+          .getState()
+          .claimExplorePivotAuto(key, node.id, "df-a", identity()),
+      ).not.toBeNull()
+    })
+
+    it("discards a superseded rejection without persisting its stale failure", async () => {
+      const key = claimKey()
+      const token1 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-old", identity())
+      expect(token1).not.toBeNull()
+      let rejectOld: (reason?: unknown) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () =>
+          new Promise<ExplorePivotRunResponse>((_resolve, reject) => {
+            rejectOld = reject
+          }),
+      )
+      const { result: hook } = renderActions()
+      let oldInFlight: Promise<void> = Promise.resolve()
+      act(() => {
+        oldInFlight = hook.current.updatePivot(pivot(), "df-old", token1!)
+      })
+
+      const token2 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-new", identity())
+      expect(token2).not.toBeNull()
+
+      await act(async () => {
+        rejectOld(new Error("obsolete failure"))
+        await oldInFlight
+      })
+
+      expect(useNodeResultsStore.getState().pivotResults[key]).toBeUndefined()
+      expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
+      expect(hook.current.notices.claims).toBeUndefined()
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[key]?.token,
+      ).toBe(token2)
+    })
+
+    it("stores nothing when a tokened response resolves after clearNode", async () => {
+      const key = claimKey()
+      const token = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-a", identity())
+      let resolveRun: (value: ExplorePivotRunResponse) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () =>
+          new Promise<ExplorePivotRunResponse>((resolve) => {
+            resolveRun = resolve
+          }),
+      )
+      const { result: hook } = renderActions()
+      let inFlight: Promise<void> = Promise.resolve()
+      act(() => {
+        inFlight = hook.current.updatePivot(pivot(), "df-a", token!)
+      })
+
+      act(() => useNodeResultsStore.getState().clearNode(node.id))
+
+      await act(async () => {
+        resolveRun({
+          status: "completed",
+          job_id: "late-job",
+          cached: true,
+          message: "Completed",
+          result,
+          failure: null,
+        })
+        await inFlight
+      })
+
+      expect(useNodeResultsStore.getState().pivotResults[key]).toBeUndefined()
+      expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
+    })
+
+    it("scopes the submitting flag to the latest generation so obsolete requests neither strand nor clear it", async () => {
+      const key = claimKey()
+      const token1 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-old", identity())
+      let resolveOld: (value: ExplorePivotRunResponse) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () =>
+          new Promise<ExplorePivotRunResponse>((resolve) => {
+            resolveOld = resolve
+          }),
+      )
+      const { result: hook } = renderActions()
+      let oldInFlight: Promise<void> = Promise.resolve()
+      act(() => {
+        oldInFlight = hook.current.updatePivot(pivot(), "df-old", token1!)
+      })
+      expect(hook.current.submitting.claims).toBe(true)
+
+      const token2 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-new", identity())
+      const newResult = { ...result, dataframe_cache_key: "df-new" }
+      mockRunExplorePivot.mockResolvedValueOnce({
+        status: "completed",
+        job_id: "new-job",
+        cached: true,
+        message: "Completed",
+        result: newResult,
+        failure: null,
+      })
+      await act(() => hook.current.updatePivot(pivot(), "df-new", token2!))
+      // The latest generation settled: the flag clears immediately even
+      // though the obsolete first request is still pending, so fresh work
+      // is not blocked behind it.
+      expect(hook.current.submitting.claims).toBeUndefined()
+
+      // A third target submits freely while the obsolete request hangs.
+      const token3 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-next", identity())
+      let resolveNext: (value: ExplorePivotRunResponse) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () =>
+          new Promise<ExplorePivotRunResponse>((resolve) => {
+            resolveNext = resolve
+          }),
+      )
+      let nextInFlight: Promise<void> = Promise.resolve()
+      act(() => {
+        nextInFlight = hook.current.updatePivot(pivot(), "df-next", token3!)
+      })
+      expect(mockRunExplorePivot).toHaveBeenCalledTimes(3)
+      expect(hook.current.submitting.claims).toBe(true)
+
+      // The obsolete first request settling never touches the flag.
+      await act(async () => {
+        resolveOld({
+          status: "completed",
+          job_id: "old-job",
+          cached: true,
+          message: "Completed",
+          result,
+          failure: null,
+        })
+        await oldInFlight
+      })
+      expect(hook.current.submitting.claims).toBe(true)
+      expect(
+        useNodeResultsStore.getState().pivotResults[key]?.result
+          ?.dataframe_cache_key,
+      ).toBe("df-new")
+
+      const nextResult = { ...result, dataframe_cache_key: "df-next" }
+      await act(async () => {
+        resolveNext({
+          status: "completed",
+          job_id: "next-job",
+          cached: true,
+          message: "Completed",
+          result: nextResult,
+          failure: null,
+        })
+        await nextInFlight
+      })
+      expect(hook.current.submitting.claims).toBeUndefined()
+      expect(
+        useNodeResultsStore.getState().pivotResults[key]?.result
+          ?.dataframe_cache_key,
+      ).toBe("df-next")
+    })
+
+    it("discards a superseded submission's outcome so a late old response never overwrites newer work", async () => {
+      const key = claimKey()
+      const token1 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-old", identity())
+      expect(token1).not.toBeNull()
+
+      let resolveOld: (value: ExplorePivotRunResponse) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () =>
+          new Promise<ExplorePivotRunResponse>((resolve) => {
+            resolveOld = resolve
+          }),
+      )
+      const { result: hook } = renderActions()
+      let oldInFlight: Promise<void> = Promise.resolve()
+      act(() => {
+        oldInFlight = hook.current.updatePivot(pivot(), "df-old", token1!)
+      })
+
+      // A newer target replaces the claim while the old request is in flight,
+      // and its submission completes first.
+      const token2 = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-new", identity())
+      expect(token2).not.toBeNull()
+      const newResult = { ...result, dataframe_cache_key: "df-new" }
+      mockRunExplorePivot.mockResolvedValueOnce({
+        status: "completed",
+        job_id: "new-job",
+        cached: true,
+        message: "Completed",
+        result: newResult,
+        failure: null,
+      })
+      await act(() => hook.current.updatePivot(pivot(), "df-new", token2!))
+      expect(
+        useNodeResultsStore.getState().pivotResults[key]?.result
+          ?.dataframe_cache_key,
+      ).toBe("df-new")
+
+      // The old response completes last: neither promoted nor stored.
+      await act(async () => {
+        resolveOld({
+          status: "completed",
+          job_id: "old-job",
+          cached: true,
+          message: "Completed",
+          result,
+          failure: null,
+        })
+        await oldInFlight
+      })
+      expect(
+        useNodeResultsStore.getState().pivotResults[key]?.result
+          ?.dataframe_cache_key,
+      ).toBe("df-new")
+      expect(useNodeResultsStore.getState().pivotResults[key]?.jobId).toBe(
+        "new-job",
+      )
+      // token2's finally released its own claim; token1's release no-oped.
+      expect(
+        useNodeResultsStore.getState().pivotStartClaims[key],
+      ).toBeUndefined()
+    })
+
+    it("discards an automatic response superseded by Retry in another mounted action hook", async () => {
+      const key = claimKey()
+      const token = useNodeResultsStore
+        .getState()
+        .claimExplorePivotAuto(key, node.id, "df-auto", identity())
+      expect(token).not.toBeNull()
+
+      let resolveAutomatic: (value: ExplorePivotRunResponse) => void = () => {}
+      mockRunExplorePivot.mockImplementationOnce(
+        () => new Promise<ExplorePivotRunResponse>((resolve) => {
+          resolveAutomatic = resolve
+        }),
+      )
+      const { result: automaticHook } = renderActions()
+      const { result: retryHook } = renderActions()
+      let automaticStart: Promise<void> = Promise.resolve()
+      act(() => {
+        automaticStart = automaticHook.current.updatePivot(
+          pivot(),
+          "df-auto",
+          token!,
+        )
+      })
+
+      const retryResult = { ...result, dataframe_cache_key: "df-retry" }
+      mockRunExplorePivot.mockResolvedValueOnce({
+        status: "completed",
+        job_id: "retry-job",
+        cached: true,
+        message: "Completed",
+        result: retryResult,
+        failure: null,
+      })
+      await act(() => retryHook.current.updatePivot(pivot(), "df-retry"))
+
+      await act(async () => {
+        resolveAutomatic({
+          status: "completed",
+          job_id: "automatic-job",
+          cached: true,
+          message: "Completed",
+          result: { ...result, dataframe_cache_key: "df-auto" },
+          failure: null,
+        })
+        await automaticStart
+      })
+
+      expect(useNodeResultsStore.getState().pivotResults[key]).toMatchObject({
+        jobId: "retry-job",
+        result: { dataframe_cache_key: "df-retry" },
+      })
+      expect(useNodeResultsStore.getState().pivotJobs[key]).toBeUndefined()
     })
   })
 })

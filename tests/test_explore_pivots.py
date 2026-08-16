@@ -45,79 +45,10 @@ def _pivot(**updates: object) -> dict[str, object]:
     return pivot
 
 
-def test_validate_explore_pivots_migrates_v0_and_preserves_order_and_future_fields() -> None:
-    raw = [
-        {
-            "id": "pivot_1",
-            "future_setting": {"format": "accounting", "limit": None},
-        },
-        {"id": "pivot_2"},
-    ]
-
-    assert validate_explore_pivots(raw, context="test") == [
-        {
-            "id": "pivot_1",
-            "future_setting": {"format": "accounting", "limit": None},
-            "version": 1,
-            "name": "Pivot 1",
-            "enabled": True,
-            "filters": [],
-            "columns": [],
-            "rows": [],
-            "values": [],
-            "options": {
-                "row_grand_totals": True,
-                "column_grand_totals": True,
-                "sort_by": None,
-            },
-        },
-        {
-            "id": "pivot_2",
-            "version": 1,
-            "name": "Pivot 2",
-            "enabled": True,
-            "filters": [],
-            "columns": [],
-            "rows": [],
-            "values": [],
-            "options": {
-                "row_grand_totals": True,
-                "column_grand_totals": True,
-                "sort_by": None,
-            },
-        },
-    ]
-
-
-@pytest.mark.parametrize("legacy_position", ["before_v1", "after_v1"])
-def test_validate_explore_pivots_migration_skips_names_taken_by_v1_cards(
-    legacy_position: str,
-) -> None:
-    # The legacy-before-v1 ordering is the discriminating case: a single-pass
-    # allocator that had not pre-scanned version-1 names would hand the legacy
-    # card "Pivot 1" and then fail the container-level duplicate-name check.
-    v1_card = _pivot(id="pivot_existing", name="Pivot 1")
-    legacy_card = {"id": "pivot_legacy"}
-    raw = [legacy_card, v1_card] if legacy_position == "before_v1" else [v1_card, legacy_card]
-
-    validated = validate_explore_pivots(raw, context="test")
-
-    names_by_id = {pivot["id"]: pivot["name"] for pivot in validated}
-    assert names_by_id == {"pivot_existing": "Pivot 1", "pivot_legacy": "Pivot 2"}
-
-
-@pytest.mark.parametrize("legacy_position", ["before_v1", "after_v1"])
-def test_validate_explore_pivots_migration_name_match_is_case_insensitive(
-    legacy_position: str,
-) -> None:
-    v1_card = _pivot(id="pivot_existing", name="  pIvOt 1  ")
-    legacy_card = {"id": "pivot_legacy"}
-    raw = [legacy_card, v1_card] if legacy_position == "before_v1" else [v1_card, legacy_card]
-
-    validated = validate_explore_pivots(raw, context="test")
-
-    names_by_id = {pivot["id"]: pivot["name"] for pivot in validated}
-    assert names_by_id["pivot_legacy"] == "Pivot 2"
+def test_validate_explore_pivots_rejects_versionless_cards_instead_of_migrating() -> None:
+    """There is no v0 migration: every persisted card is complete version 1."""
+    with pytest.raises(ConfigError, match="version must be 1"):
+        validate_explore_pivots([{"id": "pivot_1"}], context="test")
 
 
 def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -> None:
@@ -188,8 +119,8 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
     [
         ({}, "must be a list"),
         (["pivot_1"], "entries must be dicts"),
-        ([{}], "requires an id"),
-        ([{"id": "   "}], "id must be a non-empty string"),
+        ([{}], "version must be 1"),
+        ([_pivot(id="   ")], "id must be a non-empty string"),
         ([_pivot(version=2)], "version must be 1"),
         ([_pivot(name="   ")], "name must be a non-empty string"),
         ([_pivot(enabled=1)], "enabled state must be a boolean"),

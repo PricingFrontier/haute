@@ -318,30 +318,6 @@ function parseValues(
   return values
 }
 
-function migratePivot(
-  raw: Record<string, unknown>,
-  position: number,
-  defaultName: string,
-): ExplorePivotConfig | string {
-  if (!nonEmptyString(raw.id)) return `Pivot ${position} id must be a non-empty string.`
-  const conflicting = Object.keys(raw).filter((key) => key !== "id" && CARD_KEYS.has(key))
-  if (conflicting.length > 0) return `Pivot ${position} versionless card contains version-1 fields.`
-  const futureError = validateFutureFields(raw, new Set(["id"]), position, "card")
-  if (futureError) return futureError
-  return {
-    ...cloneLiteral(raw),
-    version: 1,
-    id: raw.id,
-    name: defaultName,
-    enabled: true,
-    filters: [],
-    columns: [],
-    rows: [],
-    values: [],
-    options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
-  }
-}
-
 function parseV1Pivot(raw: Record<string, unknown>, position: number): ExplorePivotConfig | string {
   const futureError = validateFutureFields(raw, CARD_KEYS, position, "card")
   if (futureError) return futureError
@@ -414,32 +390,10 @@ export function parseExplorePivots(config: Record<string, unknown>): ExplorePivo
   const pivots: ExplorePivotConfig[] = []
   const ids = new Set<string>()
   const names = new Set<string>()
-  const allocatedNames = new Set(
-    config.pivots.flatMap((raw) =>
-      isPlainObject(raw) &&
-      Object.prototype.hasOwnProperty.call(raw, "version") &&
-      nonEmptyString(raw.name)
-        ? [raw.name.trim().toLowerCase()]
-        : [],
-    ),
-  )
-  let nextNameSuffix = 1
   for (const [index, raw] of config.pivots.entries()) {
     const position = index + 1
     if (!isPlainObject(raw)) return { ok: false, error: `Pivot ${position} must be an object.` }
-    if (!Object.prototype.hasOwnProperty.call(raw, "id")) {
-      return { ok: false, error: `Pivot ${position} requires an id.` }
-    }
-    let pivot: ExplorePivotConfig | string
-    if (Object.prototype.hasOwnProperty.call(raw, "version")) {
-      pivot = parseV1Pivot(raw, position)
-    } else {
-      while (allocatedNames.has(`pivot ${nextNameSuffix}`)) nextNameSuffix += 1
-      const defaultName = `Pivot ${nextNameSuffix}`
-      allocatedNames.add(defaultName.toLowerCase())
-      nextNameSuffix += 1
-      pivot = migratePivot(raw, position, defaultName)
-    }
+    const pivot = parseV1Pivot(raw, position)
     if (typeof pivot === "string") return { ok: false, error: pivot }
     if (ids.has(pivot.id)) {
       return { ok: false, error: `Explore pivots config contains duplicate pivot id "${pivot.id}".` }

@@ -15,6 +15,8 @@ function reset() {
     ratingStepEditorSections: {},
     explorePanes: {},
     explorePreviewPanes: {},
+    exploreConfiguredChartIds: {},
+    exploreConfiguredPivotIds: {},
     modellingPanes: {},
     hoveredNodeId: null,
     nodeSearchOpen: false,
@@ -46,6 +48,28 @@ describe("useUIStore", () => {
       useUIStore.getState().setShortcutsOpen(false)
       useUIStore.getState().setShortcutsOpen((prev) => !prev)
       expect(useUIStore.getState().shortcutsOpen).toBe(true)
+    })
+  })
+
+  describe("Explore configured subview ids", () => {
+    it("stores, isolates per node, and clears with null", () => {
+      const state = useUIStore.getState()
+      state.setExploreConfiguredChart("a", "chart_1")
+      state.setExploreConfiguredPivot("a", "pivot_2")
+      state.setExploreConfiguredChart("b", "chart_9")
+
+      expect(useUIStore.getState().exploreConfiguredChartIds).toEqual({
+        a: "chart_1",
+        b: "chart_9",
+      })
+      expect(useUIStore.getState().exploreConfiguredPivotIds).toEqual({
+        a: "pivot_2",
+      })
+
+      state.setExploreConfiguredChart("a", null)
+      expect(useUIStore.getState().exploreConfiguredChartIds.a).toBeNull()
+      expect(useUIStore.getState().exploreConfiguredChartIds.b).toBe("chart_9")
+      expect(useUIStore.getState().exploreConfiguredPivotIds.a).toBe("pivot_2")
     })
   })
 

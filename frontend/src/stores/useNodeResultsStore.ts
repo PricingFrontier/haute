@@ -258,6 +258,17 @@ interface CachedExplorePivotResult {
   structuralVersion: number
 }
 
+export interface ExplorePivotStartClaim {
+  nodeId: string
+  dataframeCacheKey: string | null
+  calculationIdentity: string
+  token: number
+}
+
+// Monotonic token source for pivot auto-update claims; uniqueness is all that
+// matters, so it never resets.
+let nextExplorePivotClaimToken = 1
+
 interface ActiveExplorePivotJob {
   jobId: string
   key: string
@@ -719,6 +730,10 @@ interface NodeResultsState {
   // Explore pivots, keyed by explorePivotResultKey(nodeId, pivotId).
   pivotResults: Record<string, CachedExplorePivotResult>
   pivotJobs: Record<string, ActiveExplorePivotJob>
+  // Atomic start claims, keyed like pivotResults. One current claim per pivot
+  // serialises concurrent consumers: automatic matching targets no-op, while
+  // newer automatic targets and every manual start replace the generation.
+  pivotStartClaims: Record<string, ExplorePivotStartClaim>
 
   // Column cache — keyed by "nodeId:source", cached across panel mounts.
   // structuralVersion stores the graph version captured at fetch time.
@@ -766,6 +781,27 @@ interface NodeResultsState {
   updateExplorePivotProgress: (key: string, progress: ExplorePivotProgress) => void
   completeExplorePivotJob: (key: string, result: ExplorePivotResult, terminalStatus?: ExplorePivotProgress) => void
   failExplorePivotJob: (key: string, error: string, terminalStatus?: ExplorePivotProgress) => void
+  /**
+   * Takes the auto-update claim for a pivot before submitting. Returns the
+   * claim token, or null when an identical target is already claimed (the
+   * caller must not submit). A different target atomically replaces the
+   * current claim, invalidating its token.
+   */
+  claimExplorePivotAuto: (
+    key: string,
+    nodeId: string,
+    dataframeCacheKey: string,
+    calculationIdentity: string,
+  ) => number | null
+  /** A manual start always becomes the current generation for this pivot. */
+  claimExplorePivotManual: (
+    key: string,
+    nodeId: string,
+    dataframeCacheKey: string | null,
+    calculationIdentity: string,
+  ) => number
+  /** Releases the claim only when `token` is still current; stale tokens no-op. */
+  releaseExplorePivotStart: (key: string, token: number) => void
 
   // ── Derived helpers ──
   /** Build OptimiserPreviewData for a node (from completed result or null). */
@@ -795,6 +831,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
   exploreJobs: {},
   pivotResults: {},
   pivotJobs: {},
+  pivotStartClaims: {},
 
   // ── Column cache ──
 
@@ -1343,6 +1380,52 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       return { pivotJobs, pivotResults }
     }),
 
+  claimExplorePivotAuto: (key, nodeId, dataframeCacheKey, calculationIdentity) => {
+    const current = get().pivotStartClaims[key]
+    if (
+      current
+      && current.dataframeCacheKey === dataframeCacheKey
+      && current.calculationIdentity === calculationIdentity
+    ) {
+      return null
+    }
+    const token = nextExplorePivotClaimToken
+    nextExplorePivotClaimToken += 1
+    set((s) => ({
+      pivotStartClaims: {
+        ...s.pivotStartClaims,
+        [key]: { nodeId, dataframeCacheKey, calculationIdentity, token },
+      },
+    }))
+    return token
+  },
+
+  claimExplorePivotManual: (
+    key,
+    nodeId,
+    dataframeCacheKey,
+    calculationIdentity,
+  ) => {
+    const token = nextExplorePivotClaimToken
+    nextExplorePivotClaimToken += 1
+    set((s) => ({
+      pivotStartClaims: {
+        ...s.pivotStartClaims,
+        [key]: { nodeId, dataframeCacheKey, calculationIdentity, token },
+      },
+    }))
+    return token
+  },
+
+  releaseExplorePivotStart: (key, token) =>
+    set((s) => {
+      const current = s.pivotStartClaims[key]
+      if (!current || current.token !== token) return s
+      const { [key]: _removed, ...pivotStartClaims } = s.pivotStartClaims
+      void _removed
+      return { pivotStartClaims }
+    }),
+
   // ── Derived ──
 
   getOptimiserPreview: (nodeId) => {
@@ -1415,6 +1498,14 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const pivotJobs = Object.fromEntries(
         Object.entries(s.pivotJobs).filter(([, job]) => job.nodeId !== nodeId),
       )
+      // Invalidating the node's claims makes any in-flight submission's
+      // claimCurrent() gate fail, so a late response cannot repopulate the
+      // cleared state or leak into a later node reusing the id.
+      const pivotStartClaims = Object.fromEntries(
+        Object.entries(s.pivotStartClaims).filter(
+          ([, claim]) => claim.nodeId !== nodeId,
+        ),
+      )
       for (const key of Object.keys(s.pivotResults)) {
         if (s.pivotResults[key]?.nodeId === nodeId) dropCachedResult(explorePivotResultRecency, key)
       }
@@ -1430,6 +1521,7 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
         exploreJobs,
         pivotResults,
         pivotJobs,
+        pivotStartClaims,
       }
     })
   },

@@ -1,22 +1,39 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import ComboChart from "../ComboChart"
-import type { PivotChartData } from "../chartData"
+import { chartExportFileName, type PivotChartData } from "../chartData"
 import { createExploreChart } from "../chartConfig"
 
 const setOption = vi.fn()
 const resize = vi.fn()
 const dispose = vi.fn()
+const getDataURL = vi.fn(() => "data:image/svg+xml;charset=UTF-8,<svg/>")
 const createComboChart = vi.fn<(element: HTMLElement) => {
   setOption: typeof setOption
   resize: typeof resize
   dispose: typeof dispose
-}>(() => ({ setOption, resize, dispose }))
+  getDataURL: typeof getDataURL
+}>(() => ({ setOption, resize, dispose, getDataURL }))
 
 vi.mock("../chartRuntime", () => ({
   createComboChart: (element: HTMLElement) => createComboChart(element),
 }))
+
+class StubImage {
+  onload: (() => void) | null = null
+  onerror: (() => void) | null = null
+  naturalWidth = 400
+  naturalHeight = 280
+  srcValue = ""
+
+  set src(value: string) {
+    this.srcValue = value
+    stubImages.push(this)
+  }
+}
+
+const stubImages: StubImage[] = []
 
 let resizeCallback: ResizeObserverCallback | null = null
 
@@ -62,6 +79,7 @@ const data: PivotChartData = {
         mark: "column",
         axis: "primary",
         stack_group: null,
+        stack_normalize: false,
         color: null,
         data_labels: false,
         markers: false,
@@ -81,6 +99,8 @@ describe("ComboChart", () => {
     resize.mockReset()
     dispose.mockReset()
     createComboChart.mockClear()
+    getDataURL.mockClear()
+    stubImages.length = 0
     resizeCallback = null
     vi.stubGlobal("ResizeObserver", MockResizeObserver)
     vi.stubGlobal(
@@ -138,6 +158,132 @@ describe("ComboChart", () => {
     expect(table).toHaveTextContent("—")
     fireEvent.click(screen.getByRole("button", { name: "Hide data table" }))
     expect(screen.queryByRole("table")).toBeNull()
+  })
+
+  it("derives export filenames with sanitisation and an all-punctuation fallback", () => {
+    expect(chartExportFileName("Claims & Cost (GBP)")).toBe(
+      "claims-cost-gbp.png",
+    )
+    expect(chartExportFileName("Chart 1")).toBe("chart-1.png")
+    expect(chartExportFileName("???")).toBe("chart.png")
+  })
+
+  it("exports a 2x PNG painted with the theme background before the chart", async () => {
+    render(<ComboChart chart={chart} data={data} />)
+    const download = screen.getByRole("button", {
+      name: "Download Claims chart image",
+    })
+    // The action is disabled until the async runtime has rendered.
+    expect(download).toBeDisabled()
+    await waitFor(() => expect(createComboChart).toHaveBeenCalled())
+    await waitFor(() => expect(download).toBeEnabled())
+
+    const operations: string[] = []
+    const context = {
+      fillStyle: "",
+      fillRect: () => operations.push("fillRect"),
+      drawImage: () => operations.push("drawImage"),
+    }
+    const canvas = {
+      width: 0,
+      height: 0,
+      getContext: () => context,
+      toDataURL: () => "data:image/png;base64,exported",
+    }
+    const anchor = { href: "", download: "", click: vi.fn() }
+    const realCreateElement = document.createElement.bind(document)
+    const createElementSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tag: string) => {
+        if (tag === "canvas") return canvas as unknown as HTMLElement
+        if (tag === "a") return anchor as unknown as HTMLElement
+        return realCreateElement(tag)
+      })
+    vi.stubGlobal("Image", StubImage)
+
+    fireEvent.click(download)
+    expect(getDataURL).toHaveBeenCalledTimes(1)
+    const image = stubImages[stubImages.length - 1]
+    expect(image.srcValue).toContain("image/svg+xml")
+    act(() => image.onload?.())
+
+    expect(canvas.width).toBe(800)
+    expect(canvas.height).toBe(560)
+    expect(operations).toEqual(["fillRect", "drawImage"])
+    expect(context.fillStyle).toBe("#111827")
+    expect(anchor.download).toBe("claims-chart.png")
+    expect(anchor.href).toBe("data:image/png;base64,exported")
+    expect(anchor.click).toHaveBeenCalledTimes(1)
+    createElementSpy.mockRestore()
+  })
+
+  it("surfaces a canvas rasterisation failure on the card and saves nothing", async () => {
+    render(<ComboChart chart={chart} data={data} />)
+    await waitFor(() => expect(createComboChart).toHaveBeenCalled())
+    const download = screen.getByRole("button", {
+      name: "Download Claims chart image",
+    })
+    await waitFor(() => expect(download).toBeEnabled())
+
+    const anchorClick = vi.fn()
+    const realCreateElement = document.createElement.bind(document)
+    const createElementSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tag: string) => {
+        if (tag === "canvas") {
+          return {
+            width: 0,
+            height: 0,
+            getContext: () => null,
+          } as unknown as HTMLElement
+        }
+        if (tag === "a") {
+          return { href: "", download: "", click: anchorClick } as unknown as HTMLElement
+        }
+        return realCreateElement(tag)
+      })
+    vi.stubGlobal("Image", StubImage)
+
+    fireEvent.click(download)
+    const image = stubImages[stubImages.length - 1]
+    act(() => image.onload?.())
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "A 2D canvas context is unavailable.",
+    )
+    expect(anchorClick).not.toHaveBeenCalled()
+    createElementSpy.mockRestore()
+  })
+
+  it("surfaces a decode failure on the card and saves nothing", async () => {
+    render(<ComboChart chart={chart} data={data} />)
+    await waitFor(() => expect(createComboChart).toHaveBeenCalled())
+    const download = screen.getByRole("button", {
+      name: "Download Claims chart image",
+    })
+    await waitFor(() => expect(download).toBeEnabled())
+
+    const anchorClick = vi.fn()
+    const realCreateElement = document.createElement.bind(document)
+    const createElementSpy = vi
+      .spyOn(document, "createElement")
+      .mockImplementation((tag: string) => {
+        if (tag === "a") {
+          return { href: "", download: "", click: anchorClick } as unknown as HTMLElement
+        }
+        return realCreateElement(tag)
+      })
+    vi.stubGlobal("Image", StubImage)
+
+    fireEvent.click(download)
+    const image = stubImages[stubImages.length - 1]
+    act(() => image.onerror?.())
+
+    expect(
+      screen.getByRole("alert"),
+    ).toHaveTextContent("Could not export the chart image.")
+    expect(anchorClick).not.toHaveBeenCalled()
+    createElementSpy.mockRestore()
   })
 
   it("rebuilds when the application theme changes", async () => {

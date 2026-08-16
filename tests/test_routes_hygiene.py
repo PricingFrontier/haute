@@ -40,8 +40,8 @@ import importlib
 import json
 import os
 import re
+import subprocess
 import sys
-import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, NoReturn
@@ -290,30 +290,32 @@ class TestPipelineImportableCold:
         """Measured cold-import latency for ``haute.routes.pipeline``.
 
         The budget is tight enough to catch accidentally-hoisted heavyweight
-        dependencies while allowing a small amount of Windows coverage/xdist
-        scheduler overhead.  The guard rail exists so the dev does not
-        accidentally hoist a heavy import (``torch``, ``mlflow``, etc.) to
-        module top when breaking a cycle.
+        dependencies.  Measure in a clean child interpreter with coverage
+        auto-start disabled: the coverage tracer otherwise makes this a
+        shared-runner load test instead of an import-graph tripwire.  The
+        deterministic companion below still names known heavyweight imports.
         """
-        # Snapshot every ``haute.*`` entry before eviction and restore
-        # afterwards — including parent-package attribute bindings.
-        # Without attribute restoration, ``haute.routes.pipeline`` on the
-        # parent ``haute.routes`` package still points at the fresh copy
-        # after the ``sys.modules`` restore, so ``import haute.routes
-        # .pipeline as route_mod`` (which uses attribute access, not the
-        # ``sys.modules`` cache) resolves to the dead copy.  The result
-        # is a test-order flake where ``monkeypatch.setattr(route_mod,
-        # ...)`` writes to a module that nothing else actually reads.
-        snapshot = _snapshot_haute_modules("haute")
-        for name in snapshot["modules"]:
-            del sys.modules[name]
-
-        try:
-            start = time.perf_counter()
-            importlib.import_module("haute.routes.pipeline")
-            elapsed_ms = (time.perf_counter() - start) * 1000.0
-        finally:
-            _restore_haute_modules(snapshot)
+        probe = (
+            "import importlib, time\n"
+            "start = time.perf_counter()\n"
+            'importlib.import_module("haute.routes.pipeline")\n'
+            "print((time.perf_counter() - start) * 1000.0)\n"
+        )
+        probe_env = {
+            key: value
+            for key, value in os.environ.items()
+            if key != "COVERAGE_PROCESS_START" and not key.startswith("COV_CORE_")
+        }
+        completed = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=_REPO_ROOT,
+            env=probe_env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, completed.stderr
+        elapsed_ms = float(completed.stdout.strip())
 
         assert elapsed_ms < _COLD_IMPORT_BUDGET_MS, (
             f"Cold import of haute.routes.pipeline took {elapsed_ms:.1f}ms — "

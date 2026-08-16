@@ -106,6 +106,19 @@ export default function ExplorePreview({
   const touchExplorePreview = useNodeResultsStore((s) => s.touchExplorePreview)
   const rememberedPane = useUIStore((s) => s.explorePreviewPanes[nodeId])
   const setExplorePreviewPane = useUIStore((s) => s.setExplorePreviewPane)
+  const setExplorePane = useUIStore((s) => s.setExplorePane)
+  // Selecting Pivots or Charts here aligns the settings pane to the matching
+  // editor pane (one-directional; Preview/Overview leave the editor alone,
+  // and editor-side pane changes never touch this preview).
+  const selectPreviewPane = useCallback(
+    (pane: ExplorePreviewPane) => {
+      setExplorePreviewPane(nodeId, pane)
+      if (pane === "pivots" || pane === "charts") {
+        setExplorePane(nodeId, pane)
+      }
+    },
+    [nodeId, setExplorePane, setExplorePreviewPane],
+  )
 
   const [submitting, setSubmitting] = useState(false)
 
@@ -354,7 +367,7 @@ export default function ExplorePreview({
       <PreviewPanelTabs
         tabs={EXPLORE_PREVIEW_PANES}
         activeTab={activePane}
-        onChange={(pane) => setExplorePreviewPane(nodeId, pane)}
+        onChange={selectPreviewPane}
         ariaLabel="Explore result panes"
         accentColor={NODE_GROUP_COLORS.explore}
         idPrefix="explore-preview"

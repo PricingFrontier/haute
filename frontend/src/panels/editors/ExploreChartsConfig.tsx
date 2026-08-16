@@ -1,21 +1,38 @@
-import { useState } from "react"
-import { ArrowLeft } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import {
+  ArrowLeft,
+  ChartColumn,
+  ChartColumnStacked,
+  ChartLine,
+} from "lucide-react"
 
 import useNodeResultsStore, { explorePivotResultKey } from "../../stores/useNodeResultsStore"
-import { NODE_GROUP_COLORS } from "../../theme/colors"
+import useUIStore from "../../stores/useUIStore"
+import { NODE_GROUP_COLORS, PIVOT_CHART_COLORS } from "../../theme/colors"
 import {
   applyChartPreset,
+  chartStackingMode,
   createExploreChart,
+  detectChartPreset,
+  exploreChartSeriesLabel,
   parseExploreCharts,
+  reconcileValueEncodings,
+  renameChartStackGroup,
   seedValueEncodings,
+  setChartStacking,
+  setChartStyleAxis,
+  setSecondaryAxisEnabled,
   type ChartAxis,
+  type ChartAxisConfig,
   type ChartMark,
   type ChartNumberFormat,
   type ChartPreset,
+  type ChartSeriesOverride,
+  type ChartStackingMode,
   type ChartStyle,
   type ExploreChartConfig,
 } from "../explore/chartConfig"
-import { adaptPivotChartData } from "../explore/chartData"
+import { adaptPivotChartData, type ChartSeriesData } from "../explore/chartData"
 import {
   isPivotResultFresh,
   parseExplorePivots,
@@ -30,6 +47,10 @@ import {
   ExploreConfigCardEmptyState,
   ExploreConfigCardListHeader,
 } from "./ExploreConfigCardList"
+import { useGraph } from "../useGraph"
+import type { SimpleNode } from "../editors"
+import useAutoUpdateExplorePivots from "../explore/useAutoUpdateExplorePivots"
+import useExplorePivotActions from "../explore/useExplorePivotActions"
 
 type Props = {
   config: Record<string, unknown>
@@ -43,14 +64,88 @@ type Props = {
   currentConfigHash: string | null
   onShowPivots?: () => void
 }
+
+/**
+ * Mounts the shared per-pivot auto-update scheduler for the configured
+ * chart's resolved source, so opening Configure refreshes an already-stale
+ * source even when neither result pane is mounted. Claim-serialised with
+ * any mounted pane.
+ */
+function ConfigureSourceScheduler({
+  node,
+  pivot,
+  currentConfigHash,
+}: {
+  node: SimpleNode
+  pivot: ExplorePivotConfig
+  currentConfigHash: string | null
+}) {
+  const graph = useGraph()
+  const retained = useNodeResultsStore(
+    (s) => s.exploreResults[node.id] ?? null,
+  )
+  const report =
+    retained !== null &&
+    currentConfigHash !== null &&
+    retained.configHash === currentConfigHash
+      ? (retained.result ?? null)
+      : null
+  const { submitting, updatePivot } = useExplorePivotActions({
+    node,
+    allNodes: graph.allNodes,
+    edges: graph.edges,
+    submodels: graph.submodels,
+    preamble: graph.preamble,
+  })
+  const pivots = useMemo(() => [pivot], [pivot])
+  useAutoUpdateExplorePivots({
+    nodeId: node.id,
+    pivots,
+    report,
+    submitting,
+    updatePivot,
+  })
+  return null
+}
+
+function SourceSchedulerMount({
+  nodeId,
+  pivot,
+  currentConfigHash,
+}: {
+  nodeId: string
+  pivot: ExplorePivotConfig
+  currentConfigHash: string | null
+}) {
+  const graph = useGraph()
+  const node = graph.allNodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return null
+  return (
+    <ConfigureSourceScheduler
+      node={node}
+      pivot={pivot}
+      currentConfigHash={currentConfigHash}
+    />
+  )
+}
 const presets: ChartPreset[] = [
+  "combo",
   "clustered_columns",
   "stacked_columns",
-  "lines",
-  "column_line",
-  "column_line_secondary",
-  "stacked_column_line",
+  "hundred_percent_stacked_columns",
 ]
+const PRESET_LABELS: Readonly<Record<ChartPreset, string>> = {
+  clustered_columns: "Clustered columns",
+  stacked_columns: "Stacked columns",
+  hundred_percent_stacked_columns: "100% stacked columns",
+  combo: "Combo",
+}
+const PRESET_ICONS: Readonly<Record<ChartPreset, typeof ChartColumn>> = {
+  clustered_columns: ChartColumn,
+  stacked_columns: ChartColumnStacked,
+  hundred_percent_stacked_columns: ChartColumnStacked,
+  combo: ChartLine,
+}
 const formats: ChartNumberFormat[] = [
   "inherit",
   "number",
@@ -68,15 +163,6 @@ type PivotSourceStatus =
   | "not_calculated"
   | "ready"
   | "stale"
-
-const SOURCE_STATUS_LABELS: Readonly<Record<PivotSourceStatus, string>> = {
-  unconfigured: "Unconfigured",
-  loading: "Loading",
-  error: "Error",
-  not_calculated: "Not calculated",
-  ready: "Ready",
-  stale: "Stale",
-}
 
 function pivotSourceStatus(
   pivot: ExplorePivotConfig,
@@ -123,11 +209,21 @@ function ConfigError({ error }: { error: string }) {
 function StyleControls({
   style,
   suffix,
+  multiGroup,
+  secondaryEnabled,
   onChange,
+  onAxisChange,
+  onStackingChange,
+  onGroupRename,
 }: {
   style: ChartStyle
   suffix: string
+  multiGroup: boolean
+  secondaryEnabled: boolean
   onChange: (change: Partial<ChartStyle>) => void
+  onAxisChange: (axis: ChartAxis) => void
+  onStackingChange: (mode: ChartStackingMode) => void
+  onGroupRename: (name: string) => string | null
 }) {
   const control = "rounded px-1.5 py-1 text-xs"
   return (
@@ -135,16 +231,13 @@ function StyleControls({
       className="grid grid-cols-2 gap-2 rounded p-2"
       style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
     >
-      <Field label={`Mark for ${suffix}`}>
+      <Field label={`Chart type for ${suffix}`}>
         <select
-          aria-label={`Mark for ${suffix}`}
+          aria-label={`Chart type for ${suffix}`}
           className={control}
           style={INPUT_STYLE}
           value={style.mark}
-          onChange={(e) => {
-            const mark = e.target.value as ChartMark
-            onChange({ mark, ...(mark === "column" ? {} : { stack_group: null }) })
-          }}
+          onChange={(e) => onChange({ mark: e.target.value as ChartMark })}
         >
           <option value="column">Column</option>
           <option value="line">Line</option>
@@ -157,24 +250,36 @@ function StyleControls({
           className={control}
           style={INPUT_STYLE}
           value={style.axis}
-          onChange={(e) => onChange({ axis: e.target.value as ChartAxis })}
+          onChange={(e) => onAxisChange(e.target.value as ChartAxis)}
         >
           <option value="primary">Primary</option>
-          <option value="secondary">Secondary</option>
+          {secondaryEnabled && <option value="secondary">Secondary</option>}
         </select>
       </Field>
-      <Field label={`Stack group for ${suffix}`}>
-        <input
-          aria-label={`Stack group for ${suffix}`}
-          disabled={style.mark !== "column"}
+      <Field label={`Stacking for ${suffix}`}>
+        <select
+          aria-label={`Stacking for ${suffix}`}
           className={control}
           style={INPUT_STYLE}
-          value={style.stack_group ?? ""}
-          onChange={(e) => onChange({ stack_group: e.target.value.trim() || null })}
-        />
+          value={chartStackingMode(style)}
+          onChange={(e) => onStackingChange(e.target.value as ChartStackingMode)}
+        >
+          <option value="none">None</option>
+          <option value="stacked">Stacked</option>
+          <option value="normalized">100% stacked</option>
+        </select>
       </Field>
+      {multiGroup && style.stack_group !== null ? (
+        <StackGroupInput
+          key={style.stack_group}
+          suffix={suffix}
+          group={style.stack_group}
+          onRename={onGroupRename}
+        />
+      ) : (
+        <div aria-hidden="true" />
+      )}
       <ColourControl
-        key={style.color ?? "automatic"}
         suffix={suffix}
         value={style.color}
         onCommit={(color) => onChange({ color })}
@@ -201,38 +306,34 @@ function StyleControls({
   )
 }
 
-function ColourControl({
+function StackGroupInput({
   suffix,
-  value,
-  onCommit,
+  group,
+  onRename,
 }: {
   suffix: string
-  value: string | null
-  onCommit: (value: string | null) => void
+  group: string
+  onRename: (name: string) => string | null
 }) {
-  const [draft, setDraft] = useState(value ?? "")
+  const [draft, setDraft] = useState(group)
   const [error, setError] = useState<string | null>(null)
 
   const commit = () => {
-    const next = draft.trim()
-    if (next && !/^#[0-9A-Fa-f]{6}$/.test(next)) {
-      setError("Colour must be a complete #RRGGBB value.")
+    if (draft.trim() === group) {
+      setError(null)
       return
     }
-    setError(null)
-    const normalized = next ? next.toUpperCase() : null
-    if (normalized !== value) onCommit(normalized)
+    setError(onRename(draft))
   }
 
   return (
     <div>
-      <Field label={`Colour for ${suffix}`}>
+      <Field label={`Stack group for ${suffix}`}>
         <input
-          aria-label={`Colour for ${suffix}`}
+          aria-label={`Stack group for ${suffix}`}
           className="rounded px-1.5 py-1 text-xs"
           style={INPUT_STYLE}
           value={draft}
-          placeholder="#RRGGBB or automatic"
           onChange={(event) => setDraft(event.target.value)}
           onBlur={commit}
           onKeyDown={(event) => {
@@ -249,6 +350,268 @@ function ColourControl({
         </div>
       )}
     </div>
+  )
+}
+
+function AxisFields({
+  axis,
+  config,
+  updateAxis,
+}: {
+  axis: "primary" | "secondary"
+  config: ChartAxisConfig
+  updateAxis: (
+    axis: "primary" | "secondary",
+    change: Record<string, unknown>,
+  ) => void
+}) {
+  const prefix = axis === "primary" ? "Primary" : "Secondary"
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <Field label={`${prefix} axis title`}>
+        <input
+          className="rounded px-2 py-1 text-xs"
+          style={INPUT_STYLE}
+          value={config.title}
+          onChange={(e) => updateAxis(axis, { title: e.target.value })}
+        />
+      </Field>
+      <Field label={`${prefix} number format`}>
+        <select
+          aria-label={`${prefix} number format`}
+          className="rounded px-2 py-1 text-xs"
+          style={INPUT_STYLE}
+          value={config.number_format}
+          onChange={(e) => updateAxis(axis, { number_format: e.target.value })}
+        >
+          {formats.map((f) => (
+            <option key={f} value={f}>
+              {f === "inherit" ? "General (automatic)" : f}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <AxisBoundInput
+        key={`${axis}-minimum-${config.minimum ?? "automatic"}`}
+        axis={axis}
+        bound="minimum"
+        value={config.minimum}
+        other={config.maximum}
+        onCommit={(value) => updateAxis(axis, { minimum: value })}
+      />
+      <AxisBoundInput
+        key={`${axis}-maximum-${config.maximum ?? "automatic"}`}
+        axis={axis}
+        bound="maximum"
+        value={config.maximum}
+        other={config.minimum}
+        onCommit={(value) => updateAxis(axis, { maximum: value })}
+      />
+    </div>
+  )
+}
+
+function AxisFormattingBox({
+  title,
+  axis,
+  config,
+  updateAxis,
+}: {
+  title: string
+  axis: "primary" | "secondary"
+  config: ChartAxisConfig
+  updateAxis: (
+    axis: "primary" | "secondary",
+    change: Record<string, unknown>,
+  ) => void
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={title}
+      className="flex flex-col gap-2 rounded p-2"
+      style={{ background: "var(--bg-input)", border: "1px solid var(--border)" }}
+    >
+      <div className="text-xs font-semibold" style={{ color: "var(--text-primary)" }}>
+        {title}
+      </div>
+      <AxisFields axis={axis} config={config} updateAxis={updateAxis} />
+    </div>
+  )
+}
+
+function ValueSeriesOverrides({
+  valueName,
+  series,
+  overrides,
+  multiGroup,
+  secondaryEnabled,
+  onCreateOverride,
+  onRemoveOverride,
+  onStyleChange,
+  onAxisChange,
+  onStackingChange,
+  onGroupRename,
+}: {
+  valueName: string
+  series: ChartSeriesData[]
+  overrides: readonly ChartSeriesOverride[]
+  multiGroup: boolean
+  secondaryEnabled: boolean
+  onCreateOverride: (series: ChartSeriesData) => void
+  onRemoveOverride: (overrideId: string) => void
+  onStyleChange: (overrideId: string, change: Partial<ChartStyle>) => void
+  onAxisChange: (overrideId: string, axis: ChartAxis) => void
+  onStackingChange: (overrideId: string, mode: ChartStackingMode) => void
+  onGroupRename: (overrideId: string, name: string) => string | null
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={`Series overrides for ${valueName}`}
+        onClick={() => setOpen((visible) => !visible)}
+        className="text-[10px] font-semibold"
+        style={{ color: "var(--text-secondary)" }}
+      >
+        {open ? "▾" : "▸"} Series overrides ({series.length})
+      </button>
+      {open && (
+        <div className="mt-1 flex flex-col gap-2 pl-3">
+          {series.map((entry) => {
+            const override = overrides.find(
+              (candidate) => candidate.series_key === entry.key,
+            )
+            return override ? (
+              <div key={entry.key} role="group" aria-label={`Override ${entry.name}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-semibold">{entry.name}</div>
+                  <button
+                    type="button"
+                    aria-label={`Reset ${entry.name} to Value default`}
+                    onClick={() => onRemoveOverride(override.id)}
+                    className="text-[10px] font-semibold"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    Use Value default
+                  </button>
+                </div>
+                <StyleControls
+                  style={override}
+                  suffix={`${entry.name} exact series`}
+                  multiGroup={multiGroup}
+                  secondaryEnabled={secondaryEnabled}
+                  onChange={(change) => onStyleChange(override.id, change)}
+                  onAxisChange={(axis) => onAxisChange(override.id, axis)}
+                  onStackingChange={(mode) => onStackingChange(override.id, mode)}
+                  onGroupRename={(name) => onGroupRename(override.id, name)}
+                />
+              </div>
+            ) : (
+              <div
+                key={entry.key}
+                className="flex items-center justify-between text-xs"
+              >
+                <span>{entry.name}</span>
+                <button
+                  type="button"
+                  aria-label={`Override ${entry.name}`}
+                  onClick={() => onCreateOverride(entry)}
+                >
+                  Override {entry.name}
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ColourControl({
+  suffix,
+  value,
+  onCommit,
+}: {
+  suffix: string
+  value: string | null
+  onCommit: (value: string | null) => void
+}) {
+  const swatch = "h-5 w-5 rounded border"
+  return (
+    <div className="col-span-2">
+      <Field label={`Colour for ${suffix}`}>
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            aria-label={`Automatic colour for ${suffix}`}
+            aria-pressed={value === null}
+            onClick={() => onCommit(null)}
+            className="rounded px-1.5 py-0.5 text-[10px] font-semibold"
+            style={{
+              border: `1px solid ${value === null ? "var(--text-secondary)" : "var(--border)"}`,
+              color: "var(--text-secondary)",
+            }}
+          >
+            Automatic
+          </button>
+          {PIVOT_CHART_COLORS.defaultSeries.map((hex) => (
+            <button
+              key={hex}
+              type="button"
+              aria-label={`Colour ${hex} for ${suffix}`}
+              aria-pressed={value === hex}
+              onClick={() => onCommit(hex)}
+              className={swatch}
+              style={{
+                background: hex,
+                borderColor:
+                  value === hex ? "var(--text-primary)" : "var(--border)",
+              }}
+            />
+          ))}
+          <CustomColourInput
+            key={value ?? "automatic"}
+            suffix={suffix}
+            value={value}
+            onCommit={onCommit}
+          />
+        </div>
+      </Field>
+    </div>
+  )
+}
+
+function CustomColourInput({
+  suffix,
+  value,
+  onCommit,
+}: {
+  suffix: string
+  value: string | null
+  onCommit: (value: string) => void
+}) {
+  // The native picker fires an input event per drag tick; committing each
+  // tick would persist one graph edit (and one undo step) per tick. Track a
+  // local draft and commit once on blur, like the other committed controls.
+  // The parent remounts this input (keyed on the committed value) whenever
+  // an external change lands, discarding the stale draft.
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <input
+      type="color"
+      aria-label={`Custom colour for ${suffix}`}
+      className="h-5 w-7 cursor-pointer rounded border"
+      style={{ borderColor: "var(--border)", padding: 0 }}
+      value={draft ?? value ?? PIVOT_CHART_COLORS.defaultSeries[0]}
+      onChange={(event) => setDraft(event.target.value.toUpperCase())}
+      onBlur={() => {
+        if (draft !== null && draft !== value) onCommit(draft)
+      }}
+    />
   )
 }
 
@@ -324,31 +687,47 @@ export default function ExploreChartsConfig({
   currentConfigHash,
   onShowPivots,
 }: Props) {
-  const [configuredId, setConfiguredId] = useState<string | null>(null)
+  const configuredId = useUIStore(
+    (s) => s.exploreConfiguredChartIds[nodeId] ?? null,
+  )
+  const setExploreConfiguredChart = useUIStore((s) => s.setExploreConfiguredChart)
   const [message, setMessage] = useState<string | null>(null)
   const pivotResults = useNodeResultsStore((s) => s.pivotResults)
   const pivotJobs = useNodeResultsStore((s) => s.pivotJobs)
   const retainedExplore = useNodeResultsStore((s) => s.exploreResults[nodeId] ?? null)
+  // Parsing deep-clones every card and this editor re-renders on pivot
+  // polling ticks, so parse once per config identity, as the Charts pane does.
+  const parsedCharts = useMemo(() => parseExploreCharts(config), [config])
+  const parsedPivots = useMemo(() => parseExplorePivots(config), [config])
+  const configuredChartExists =
+    !parsedCharts.ok ||
+    configuredId === null ||
+    parsedCharts.charts.some(({ id }) => id === configuredId)
+  useEffect(() => {
+    // A stored subview id whose card was deleted (from any surface) clears
+    // itself so a later card reusing the id cannot reopen unexpectedly.
+    if (!configuredChartExists) setExploreConfiguredChart(nodeId, null)
+  }, [configuredChartExists, nodeId, setExploreConfiguredChart])
   const currentDataframeKey =
     retainedExplore !== null &&
     currentConfigHash !== null &&
     retainedExplore.configHash === currentConfigHash
       ? (retainedExplore.result?.dataframe_cache_key ?? null)
       : null
-  const parsedCharts = parseExploreCharts(config)
-  const parsedPivots = parseExplorePivots(config)
   if (!parsedCharts.ok) return <ConfigError error={parsedCharts.error} />
   if (!parsedPivots.ok) return <ConfigError error={parsedPivots.error} />
   const charts = parsedCharts.charts,
     pivots = parsedPivots.pivots
-  const chart = configuredId ? charts.find((c) => c.id === configuredId) : undefined
+  const persistedChart = configuredId
+    ? charts.find((c) => c.id === configuredId)
+    : undefined
   const commit = (next: ExploreChartConfig) =>
     onUpdate(
       "charts",
       charts.map((c) => (c.id === next.id ? next : c)),
     )
 
-  if (!chart)
+  if (!persistedChart)
     return (
       <div data-testid="explore-charts-config" className="px-4 py-3 flex flex-col gap-3">
         <ExploreConfigCardListHeader
@@ -365,7 +744,7 @@ export default function ExploreChartsConfig({
           <div className="flex flex-col gap-2">
             {charts.map((c) => (
               <ExploreConfigCard
-              key={c.id}
+                key={c.id}
                 name={c.name}
                 enabled={c.enabled}
                 onEnabledChange={(enabled) =>
@@ -376,11 +755,12 @@ export default function ExploreChartsConfig({
                 }
                 onDelete={() => {
                   if (!window.confirm(`Delete ${c.name}?`)) return
+                  if (configuredId === c.id) setExploreConfiguredChart(nodeId, null)
                   onUpdate("charts", charts.filter((candidate) => candidate.id !== c.id))
                 }}
                 onConfigure={() => {
                   setMessage(null)
-                  setConfiguredId(c.id)
+                  setExploreConfiguredChart(nodeId, c.id)
                 }}
               />
             ))}
@@ -390,8 +770,18 @@ export default function ExploreChartsConfig({
     )
 
   const pivot =
-    chart.pivot_id === null ? null : (pivots.find((p) => p.id === chart.pivot_id) ?? null)
-  const sourceMissing = chart.pivot_id !== null && !pivot
+    persistedChart.pivot_id === null
+      ? null
+      : (pivots.find((p) => p.id === persistedChart.pivot_id) ?? null)
+  const sourceMissing = persistedChart.pivot_id !== null && !pivot
+  // The editor view reconciles pivot Values the persisted chart does not yet
+  // encode; any committed edit persists the seeded encodings as one step.
+  const chart = pivot
+    ? reconcileValueEncodings(persistedChart, pivot)
+    : persistedChart
+  const persistedEncodingIds = new Set(
+    persistedChart.value_encodings.map(({ id }) => id),
+  )
   const updateStyle = (
     collection: "value_encodings" | "series_overrides",
     id: string,
@@ -403,6 +793,27 @@ export default function ExploreChartsConfig({
         item.id === id ? { ...item, ...change } : item,
       ),
     })
+  const commitStacking = (styleId: string, mode: ChartStackingMode) => {
+    const next = setChartStacking(chart, styleId, mode)
+    if (next !== chart) commit(next)
+  }
+  const commitStyleAxis = (styleId: string, axis: ChartAxis) => {
+    const next = setChartStyleAxis(chart, styleId, axis)
+    if (next !== chart) commit(next)
+  }
+  const commitGroupRename = (styleId: string, name: string): string | null => {
+    const next = renameChartStackGroup(chart, styleId, name)
+    if (typeof next === "string") return next
+    if (next !== chart) commit(next)
+    return null
+  }
+  const multiGroup =
+    new Set(
+      [...chart.value_encodings, ...chart.series_overrides]
+        .map(({ stack_group }) => stack_group)
+        .filter((group): group is string => group !== null),
+    ).size > 1
+  const detectedPreset = detectChartPreset(chart)
   const selectPivot = (id: string) => {
     const next = pivots.find((p) => p.id === id)
     if (!next) return
@@ -465,7 +876,7 @@ export default function ExploreChartsConfig({
       <button
         type="button"
         aria-label="Back to charts"
-        onClick={() => setConfiguredId(null)}
+        onClick={() => setExploreConfiguredChart(nodeId, null)}
         className="self-start text-xs"
         style={{ color: "var(--text-secondary)" }}
       >
@@ -526,22 +937,12 @@ export default function ExploreChartsConfig({
             <option value="" disabled>
               Select a Pivot
             </option>
-            {pivots.map((p) => {
-              const key = explorePivotResultKey(nodeId, p.id)
-              const status = pivotSourceStatus(
-                p,
-                pivotResults[key],
-                Boolean(pivotJobs[key]),
-                currentDataframeKey,
-              )
-              return (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                  {p.enabled ? "" : " (Hidden)"}
-                  {` — ${SOURCE_STATUS_LABELS[status]}`}
-                </option>
-              )
-            })}
+            {pivots.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {p.enabled ? "" : " (Hidden)"}
+              </option>
+            ))}
           </select>
         </Field>
       )}
@@ -552,51 +953,187 @@ export default function ExploreChartsConfig({
       )}
       {pivot && (
         <>
-          <div
-            className="rounded p-2 text-[11px]"
-            style={{
-              background: "var(--bg-input)",
-              border: "1px solid var(--border)",
-              color: "var(--text-secondary)",
-            }}
-          >
-            Filters: {pivot.filters.map((x) => x.field).join(", ") || "None"}
-            <br />
-            Rows: {pivot.rows.map((x) => x.field).join(", ") || "None"}
-            <br />
-            Columns: {pivot.columns.map((x) => x.field).join(", ") || "None"}
-            <br />
-            Values: {pivot.values.map((x) => x.display_name).join(", ") || "None"}
-          </div>
+          <SourceSchedulerMount
+            nodeId={nodeId}
+            pivot={pivot}
+            currentConfigHash={currentConfigHash}
+          />
           {pivot.values.length === 0 ? (
             <div role="alert" className="text-xs" style={{ color: "var(--danger)" }}>
               Add at least one Value to the source Pivot before configuring this chart.
             </div>
           ) : (
             <>
-              <Field label="Chart preset">
-                <select
-                  aria-label="Chart preset"
-                  className="rounded px-2 py-1 text-xs"
-                  style={INPUT_STYLE}
-                  value=""
-                  onChange={(e) =>
-                    commit(applyChartPreset(chart, e.target.value as ChartPreset, pivot))
-                  }
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                  Chart type
+                </span>
+                <div
+                  role="group"
+                  aria-label="Chart type"
+                  className="flex flex-wrap items-center gap-1"
                 >
-                  <option value="" disabled>
-                    Apply a preset…
-                  </option>
-                  {presets.map((p) => (
-                    <option key={p} value={p}>
-                      {p.replaceAll("_", " ")}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+                  {presets.map((p) => {
+                    const Icon = PRESET_ICONS[p]
+                    const active = detectedPreset === p
+                    return (
+                      <button
+                        key={p}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => commit(applyChartPreset(chart, p, pivot))}
+                        className="focus-ring inline-flex items-center gap-1 rounded px-1.5 py-1 text-[10px] font-semibold"
+                        style={{
+                          border: `1px solid ${active ? NODE_GROUP_COLORS.explore : "var(--border)"}`,
+                          color: active
+                            ? NODE_GROUP_COLORS.explore
+                            : "var(--text-secondary)",
+                        }}
+                      >
+                        <Icon size={12} aria-hidden="true" />
+                        {PRESET_LABELS[p]}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1">
+                <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                  Orientation
+                </span>
+                <div
+                  role="group"
+                  aria-label="Orientation"
+                  className="flex items-center gap-1"
+                >
+                  {(
+                    [
+                      ["vertical", "Vertical columns"],
+                      ["horizontal", "Horizontal bars"],
+                    ] as const
+                  ).map(([orientation, label]) => {
+                    const active = chart.orientation === orientation
+                    return (
+                      <button
+                        key={orientation}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() =>
+                          active ? undefined : commit({ ...chart, orientation })
+                        }
+                        className="focus-ring rounded px-1.5 py-1 text-[10px] font-semibold"
+                        style={{
+                          border: `1px solid ${active ? NODE_GROUP_COLORS.explore : "var(--border)"}`,
+                          color: active
+                            ? NODE_GROUP_COLORS.explore
+                            : "var(--text-secondary)",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <AxisFormattingBox
+                title="Primary axis"
+                axis="primary"
+                config={chart.axes.primary}
+                updateAxis={updateAxis}
+              />
+              <div
+                role="group"
+                aria-label="Secondary axis"
+                className="flex flex-col gap-2 rounded p-2"
+                style={{
+                  background: "var(--bg-input)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <label
+                  className="flex items-center gap-2 text-xs font-semibold"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label="Use secondary axis"
+                    checked={chart.axes.secondary.enabled}
+                    onChange={(e) =>
+                      commit(setSecondaryAxisEnabled(chart, e.target.checked))
+                    }
+                  />
+                  Secondary axis
+                </label>
+                {chart.axes.secondary.enabled && (
+                  <AxisFields
+                    axis="secondary"
+                    config={chart.axes.secondary}
+                    updateAxis={updateAxis}
+                  />
+                )}
+              </div>
+              <div
+                role="group"
+                aria-label="Legend"
+                className="flex flex-col gap-2 rounded p-2"
+                style={{
+                  background: "var(--bg-input)",
+                  border: "1px solid var(--border)",
+                }}
+              >
+                <label
+                  className="flex items-center gap-2 text-xs font-semibold"
+                  style={{ color: "var(--text-primary)" }}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label="Show legend"
+                    checked={chart.legend.visible}
+                    onChange={(e) =>
+                      commit({
+                        ...chart,
+                        legend: { ...chart.legend, visible: e.target.checked },
+                      })
+                    }
+                  />
+                  Legend
+                </label>
+                {chart.legend.visible && (
+                  <Field label="Legend position">
+                    <select
+                      aria-label="Legend position"
+                      className="rounded px-2 py-1 text-xs"
+                      style={INPUT_STYLE}
+                      value={chart.legend.position}
+                      onChange={(e) =>
+                        commit({
+                          ...chart,
+                          legend: {
+                            ...chart.legend,
+                            position: e.target
+                              .value as ExploreChartConfig["legend"]["position"],
+                          },
+                        })
+                      }
+                    >
+                      {["top", "right", "bottom", "left"].map((x) => (
+                        <option key={x}>{x}</option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
+              </div>
               {pivot.values.map((value) => {
                 const encoding = chart.value_encodings.find((x) => x.value_id === value.id)
-                return encoding ? (
+                if (!encoding) return null
+                const valueSeries =
+                  data?.series.filter((series) => series.valueId === value.id) ?? []
+                const hasOverrides = valueSeries.some((series) =>
+                  chart.series_overrides.some(
+                    (override) => override.series_key === series.key,
+                  ),
+                )
+                return (
                   <div key={value.id}>
                     <div
                       className="mb-1 text-xs font-semibold"
@@ -604,103 +1141,73 @@ export default function ExploreChartsConfig({
                     >
                       {value.display_name}
                     </div>
+                    {!persistedEncodingIds.has(encoding.id) && (
+                      <div
+                        className="mb-1 text-[10px]"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        New Value from the source Pivot — defaults applied.
+                      </div>
+                    )}
                     <StyleControls
                       style={encoding}
                       suffix={value.display_name}
+                      multiGroup={multiGroup}
+                      secondaryEnabled={chart.axes.secondary.enabled}
                       onChange={(change) => updateStyle("value_encodings", encoding.id, change)}
+                      onAxisChange={(axis) => commitStyleAxis(encoding.id, axis)}
+                      onStackingChange={(mode) => commitStacking(encoding.id, mode)}
+                      onGroupRename={(name) => commitGroupRename(encoding.id, name)}
                     />
-                  </div>
-                ) : (
-                  <div role="alert" key={value.id}>
-                    Missing encoding for {value.display_name}.
+                    {(pivot.columns.length > 0 || hasOverrides) &&
+                      valueSeries.length > 0 && (
+                        <ValueSeriesOverrides
+                          valueName={value.display_name}
+                          series={valueSeries}
+                          overrides={chart.series_overrides}
+                          multiGroup={multiGroup}
+                          secondaryEnabled={chart.axes.secondary.enabled}
+                          onCreateOverride={(series) =>
+                            commit({
+                              ...chart,
+                              series_overrides: [
+                                ...chart.series_overrides,
+                                {
+                                  id: firstUnused(),
+                                  series_key: series.key,
+                                  mark: series.style.mark,
+                                  axis: series.style.axis,
+                                  stack_group: series.style.stack_group,
+                                  stack_normalize: series.style.stack_normalize,
+                                  color: series.style.color,
+                                  data_labels: series.style.data_labels,
+                                  markers: series.style.markers,
+                                },
+                              ],
+                            })
+                          }
+                          onRemoveOverride={(overrideId) =>
+                            commit({
+                              ...chart,
+                              series_overrides: chart.series_overrides.filter(
+                                (candidate) => candidate.id !== overrideId,
+                              ),
+                            })
+                          }
+                          onStyleChange={(overrideId, change) =>
+                            updateStyle("series_overrides", overrideId, change)
+                          }
+                          onAxisChange={commitStyleAxis}
+                          onStackingChange={commitStacking}
+                          onGroupRename={commitGroupRename}
+                        />
+                      )}
                   </div>
                 )
               })}
             </>
           )}
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Primary axis title">
-              <input
-                className="rounded px-2 py-1 text-xs"
-                style={INPUT_STYLE}
-                value={chart.axes.primary.title}
-                onChange={(e) => updateAxis("primary", { title: e.target.value })}
-              />
-            </Field>
-            <Field label="Secondary axis title">
-              <input
-                className="rounded px-2 py-1 text-xs"
-                style={INPUT_STYLE}
-                value={chart.axes.secondary.title}
-                onChange={(e) => updateAxis("secondary", { title: e.target.value })}
-              />
-            </Field>
-            {(["primary", "secondary"] as const).map((axis) => (
-              <div key={axis} className="contents">
-                <AxisBoundInput
-                  key={`${axis}-minimum-${chart.axes[axis].minimum ?? "automatic"}`}
-                  axis={axis}
-                  bound="minimum"
-                  value={chart.axes[axis].minimum}
-                  other={chart.axes[axis].maximum}
-                  onCommit={(value) => updateAxis(axis, { minimum: value })}
-                />
-                <AxisBoundInput
-                  key={`${axis}-maximum-${chart.axes[axis].maximum ?? "automatic"}`}
-                  axis={axis}
-                  bound="maximum"
-                  value={chart.axes[axis].maximum}
-                  other={chart.axes[axis].minimum}
-                  onCommit={(value) => updateAxis(axis, { maximum: value })}
-                />
-                <Field label={`${axis === "primary" ? "Primary" : "Secondary"} number format`}>
-                  <select
-                    aria-label={`${axis === "primary" ? "Primary" : "Secondary"} number format`}
-                    className="rounded px-2 py-1 text-xs"
-                    style={INPUT_STYLE}
-                    value={chart.axes[axis].number_format}
-                    onChange={(e) => updateAxis(axis, { number_format: e.target.value })}
-                  >
-                    {formats.map((f) => (
-                      <option key={f}>{f}</option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-            ))}
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs">
-              <input
-                type="checkbox"
-                checked={chart.legend.visible}
-                onChange={(e) =>
-                  commit({ ...chart, legend: { ...chart.legend, visible: e.target.checked } })
-                }
-              />{" "}
-              Legend visible
-            </label>
-            <Field label="Legend position">
-              <select
-                aria-label="Legend position"
-                className="rounded px-2 py-1 text-xs"
-                style={INPUT_STYLE}
-                value={chart.legend.position}
-                onChange={(e) =>
-                  commit({
-                    ...chart,
-                    legend: {
-                      ...chart.legend,
-                      position: e.target.value as ExploreChartConfig["legend"]["position"],
-                    },
-                  })
-                }
-              >
-                {["top", "right", "bottom", "left"].map((x) => (
-                  <option key={x}>{x}</option>
-                ))}
-              </select>
-            </Field>
             <Field label="Category label rotation">
               <select
                 aria-label="Category label rotation"
@@ -737,24 +1244,24 @@ export default function ExploreChartsConfig({
           </div>
           {!data && !dataError && sourceStatus === "loading" && (
             <div role="status" className="text-xs" style={{ color: "var(--text-muted)" }}>
-              The source Pivot is updating. Concrete series will refresh when it completes.
+              The source Pivot is updating. Series will refresh when it completes.
             </div>
           )}
           {!data && !dataError && sourceStatus === "stale" && (
             <div className="text-xs" style={{ color: "var(--warning)" }}>
-              The source Pivot result is out of date. Update it to refresh concrete series.
+              The source Pivot result is out of date. Update it to refresh its series.
             </div>
           )}
           {!data && !dataError && sourceStatus === "error" && (
             <div className="text-xs" style={{ color: "var(--danger)" }}>
-              The source Pivot failed. Update it before configuring concrete series.
+              The source Pivot failed. Update it before configuring series overrides.
             </div>
           )}
           {!data &&
             !dataError &&
             (sourceStatus === "not_calculated" || sourceStatus === "unconfigured") && (
             <div className="text-xs" style={{ color: "var(--text-muted)" }}>
-              Update is required to generate concrete series.
+              Update the source Pivot to discover its series.
             </div>
             )}
           {dataError && (
@@ -764,76 +1271,33 @@ export default function ExploreChartsConfig({
           )}
           {data && (
             <div className="flex flex-col gap-2">
-              <div className="text-xs font-semibold">Concrete series</div>
               {data.dormantOverrideIds.length > 0 && (
-                <div role="alert" className="text-xs">
-                  Dormant overrides: {data.dormantOverrideIds.join(", ")}
+                <div role="status" className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  Series formatting kept for series not currently shown:{" "}
+                  {chart.series_overrides
+                    .filter(({ id }) => data.dormantOverrideIds.includes(id))
+                    .map(({ series_key }) =>
+                      exploreChartSeriesLabel(series_key, pivot),
+                    )
+                    .join(", ")}
+                  .
                 </div>
               )}
               {data.dormantEncodingIds.length > 0 && (
-                <div role="alert" className="text-xs">
-                  Dormant encodings: {data.dormantEncodingIds.join(", ")}
+                <div role="status" className="text-xs" style={{ color: "var(--text-muted)" }}>
+                  Value formatting kept for Values no longer in the source
+                  Pivot:{" "}
+                  {chart.value_encodings
+                    .filter(({ id }) => data.dormantEncodingIds.includes(id))
+                    .map(
+                      ({ value_id }) =>
+                        pivot.values.find(({ id }) => id === value_id)
+                          ?.display_name ?? "a removed Value",
+                    )
+                    .join(", ")}
+                  .
                 </div>
               )}
-              {data.series.map((series) => {
-                const override = chart.series_overrides.find((x) => x.series_key === series.key)
-                return override ? (
-                  <div key={series.key} role="group" aria-label={`Override ${series.name}`}>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="text-xs font-semibold">{series.name}</div>
-                      <button
-                        type="button"
-                        aria-label={`Reset ${series.name} to Value default`}
-                        onClick={() =>
-                          commit({
-                            ...chart,
-                            series_overrides: chart.series_overrides.filter(
-                              (candidate) => candidate.id !== override.id,
-                            ),
-                          })
-                        }
-                        className="text-[10px] font-semibold"
-                        style={{ color: "var(--text-secondary)" }}
-                      >
-                        Use Value default
-                      </button>
-                    </div>
-                    <StyleControls
-                      style={override}
-                      suffix={`${series.name} exact series`}
-                      onChange={(change) => updateStyle("series_overrides", override.id, change)}
-                    />
-                  </div>
-                ) : (
-                  <div key={series.key} className="flex items-center justify-between text-xs">
-                    <span>{series.name}</span>
-                    <button
-                      type="button"
-                      aria-label={`Override ${series.name}`}
-                      onClick={() =>
-                        commit({
-                          ...chart,
-                          series_overrides: [
-                            ...chart.series_overrides,
-                            {
-                              id: firstUnused(),
-                              series_key: series.key,
-                              mark: series.style.mark,
-                              axis: series.style.axis,
-                              stack_group: series.style.stack_group,
-                              color: series.style.color,
-                              data_labels: series.style.data_labels,
-                              markers: series.style.markers,
-                            },
-                          ],
-                        })
-                      }
-                    >
-                      Override {series.name}
-                    </button>
-                  </div>
-                )
-              })}
             </div>
           )}
         </>

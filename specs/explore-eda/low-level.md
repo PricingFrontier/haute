@@ -12,8 +12,8 @@
 | `src/haute/_polars_utils.py` | [io-layer](../io-layer/low-level.md)-owned `cancellable_streaming_collect` primitive consumed by Explore so a cancelled analysis interrupts its in-flight native Polars query. |
 | `src/haute/_column_summary.py` | Dtype facts shared with the [assistant](../assistant/low-level.md)'s value profiles: `is_unhashable_dtype` (the distinct-count gate), the reserved count-field alias `CATEGORICAL_COUNT_FIELD`, and `json_safe_scalar`. Explore's display formatting stays local to the service; only the facts that a second summariser would otherwise have to rediscover as production failures live here. |
 | `src/haute/_explore_overview.py` | Standalone validator for the Explore node's `overview` config dict (`validate_explore_overview`, `EXPLORE_OVERVIEW_TOGGLE_KEYS`). Imported by codegen (`_codegen_builders.py`) and the parser (`_config_builder.py`), not by the service or route module. |
-| `src/haute/_explore_charts.py` | Standalone v0-to-v1 migration and strict validator for ordered PivotChart cards, nested mappings/styles/axes/legend, ids/names, finite bounds, and simple-literal future fields. |
-| `src/haute/_explore_pivots.py` | Standalone v0-to-v1 migration and strict validator for ordered Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. |
+| `src/haute/_explore_charts.py` | Standalone strict validator for ordered version-1 PivotChart cards, nested mappings/styles/axes/legend, ids/names, finite bounds, required orientation and stack-normalisation flags, card-wide stack-group consistency, and simple-literal future fields. Versionless cards are rejected, never migrated. |
+| `src/haute/_explore_pivots.py` | Standalone strict validator for ordered version-1 Explore pivot cards, placements, typed members, supported aggregations/options, unique ids/names, and simple-literal future fields. Versionless cards are rejected, never migrated. |
 | `src/haute/schemas.py` | Shared Explore API/report contracts owned by [server-api](../server-api/low-level.md): existing cache-report contracts plus pivot run/status/member requests, typed failures, member/path/value/cell structures, and result matrices. |
 
 ## Key types and data structures
@@ -60,9 +60,11 @@
   `bool`, `int`, finite `float`, or `list`/`dict` of the same, with dict keys required to be
   `str`).
 - **`ExploreChartConfig`** (`_types.py`) — one persisted version-1 ComboChart with stable
-  id/name/enabled/source-pivot linkage, Rows category settings, ordered Value encodings and exact
+  id/name/enabled/source-pivot linkage, chart `orientation` (`"vertical"`/`"horizontal"`), Rows
+  category settings, ordered Value encodings and exact
   series overrides, primary/secondary axes, and legend. Style mappings contain only closed mark,
-  axis, number-format, colour, stack, marker, and label values.
+  axis, number-format, colour, stack (`stack_group` plus Boolean `stack_normalize`), marker, and
+  label values.
 - **`ExplorePivotConfig`** (`_types.py`) — version-1 persisted card with `id`, `name`,
   `enabled`, ordered Filter/Columns/Rows/Values placements, and grand-total options. Each
   placement owns a stable id. Filter members are typed scalars and Value placements add one of
@@ -131,17 +133,73 @@
 
 ## PivotChart adapter invariants
 
-- `frontend/src/panels/explore/chartConfig.ts` mirrors the backend v0/v1 validator and exposes
-  deterministic chart creation, source resolution, dependent-chart lookup, presets, and canonical
-  typed series-key helpers. Source resolution never falls back from null/missing ids.
+- `frontend/src/panels/explore/chartConfig.ts` mirrors the backend version-1 validator (including
+  required orientation and stack-normalisation flags, any-mark stacking, card-wide
+  stack-group consistency, and the secondary axis's required Boolean `enabled` — rejected
+  when absent or when disabled while any style
+  is assigned to the secondary axis) and exposes
+  `setSecondaryAxisEnabled` (disabling atomically moves every secondary-assigned style to the
+  primary axis, clearing its stack membership per the axis-change rule, in the same commit;
+  enabling changes only the flag) alongside
+  deterministic chart creation, source resolution, dependent-chart lookup, presets
+  (`combo`, `clustered_columns`, `stacked_columns`, and `hundred_percent_stacked_columns` —
+  Combo leads as the general category and default, matching Excel's Combo: applying it seeds
+  the classic starting
+  arrangement of columns with the last Value as an ungrouped primary line, from which the
+  per-Value chart-type and axis controls compose any mixed arrangement, and
+  `seedValueEncodings` seeds the same Combo arrangement when a source pivot is selected (a
+  single Value seeds one plain column); the 100% preset also
+  sets the
+  primary axis number format to `percent`, every other preset resets a `percent` primary to
+  `inherit` while other formats survive, and preset application preserves chart orientation),
+  preset detection (`detectChartPreset`: a pure predicate over the ordered Value encodings'
+  `(mark, axis, stack_group, stack_normalize)` projection only — ids, colours, markers, and
+  data labels never participate, and stack-group names are compared solely for shared-vs-null
+  membership so a renamed group detects identically. Predicates: `clustered_columns` = every
+  encoding column/primary/ungrouped; `stacked_columns` = every encoding column/primary sharing
+  one group with normalize false; `hundred_percent_stacked_columns` = the same with normalize
+  true. Everything else — lines, mixed marks, area marks, secondary-axis assignments, or an
+  empty encoding list — is the general `combo` category; detection is total over `ChartPreset`
+  with no separate custom state. On a single-Value chart applying `combo` yields one column
+  and therefore detects as `clustered_columns`), canonical
+  typed series-key helpers, a series-key display helper (`exploreChartSeriesLabel`: decodes a
+  canonical series key to "column path › … · Value display name" against the current pivot,
+  requiring the exact canonical version-1 JSON shape; persisted overrides materialise its
+  canonical serialization, while malformed persisted or direct-helper input is rejected clearly,
+  so no raw key or internal id is rendered), and value-encoding reconciliation
+  (`reconcileValueEncodings`: appends one seeded default encoding per pivot Value without one,
+  in pivot order; each id is the first unused `encoding_N` counting up from 1 against the
+  card-wide nested-id set spanning both Value encodings and exact overrides — e.g. with
+  encoding ids `encoding_1`/`encoding_3` and an override id `encoding_2`, two seeded
+  encodings receive `encoding_4` then `encoding_5`; returns its input
+  reference unchanged when the chart is already complete and never mutates arguments). Source
+  resolution never falls back from null/missing ids.
 - `chartData.ts` is a pure adapter over a guarded pivot result plus parsed pivot/chart config. It
-  checks source/result identities, explicit Value encodings, total inclusion, numeric cells,
-  hierarchy/label/cardinality limits, and applies matching exact overrides. Its output retains
+  checks source/result identities, explicit Value encodings (rejecting an unreconciled chart),
+  row-only grand-total inclusion (`include_grand_total` admits row grand-total paths only;
+  column grand-total paths are excluded unconditionally), numeric cells,
+  hierarchy/label/cardinality limits, and applies matching exact overrides. After series
+  assembly it normalises every stack group whose styles set `stack_normalize`: per category,
+  each non-null cell becomes cell ÷ Σ|cells| over the group's non-null cells; if that direct
+  sum overflows, it uses the equivalent max-magnitude-scaled denominator (range [-1, 1];
+  nulls stay gaps and never enter the denominator), and a zero denominator renders every
+  member's cell as a gap and appends one warning naming the category and group. Formatted text
+  is derived after normalisation. Its output retains
   raw `number | null` points separately from formatted text and reports dormant overrides.
+  `inherit` formatting is the General locale format: grouped `en-GB` with
+  `maximumFractionDigits: 2` at magnitude ≥ 1, `maximumSignificantDigits: 4` for non-zero
+  magnitude < 1, and the literal `0` at zero — e.g. `1234567.891` → `1,234,567.89`,
+  `1234.5` → `1,234.5`, `12` → `12`, `0.12345` → `0.1235`, `-0.000123` → `-0.000123`,
+  `0` → `0`.
 - `chartOptions.ts` is the only renderer-option builder. It maps the adapter's closed data to
-  ECharts Bar/Line series, primary/secondary axes, explicit column stacks, safe text tooltips,
+  ECharts Bar/Line series, primary/secondary axes, explicit stacks on any mark, safe text
+  tooltips,
   deterministic token colours, axis bounds, legend, reduced motion, and zero-inclusive automatic
-  column axes. Legends use a bounded scrolling layout instead of wrapping across the plot. The
+  column axes. Under `orientation: "horizontal"` the category axis moves to `yAxis`, the value
+  axes to `xAxis`, series bind through `xAxisIndex` instead of `yAxisIndex`, and the
+  many-categories data zoom follows the category axis; category label rotation applies to the
+  category axis wherever it sits. Legends use a bounded scrolling layout instead of wrapping
+  across the plot. The
   plot grid reserves space for every legend position and the title, and the secondary axis is
   hidden until at least one series uses it. It accepts no opaque persisted renderer objects or
   callbacks.

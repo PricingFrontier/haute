@@ -48,13 +48,42 @@ backend API modules own validation and persistence.
 - The Explore Charts pane owns ordered version-1 PivotChart cards. `Add Chart` appends a complete
   enabled draft with a unique id/name; each card's checkbox changes only visibility, `Configure`
   never toggles it, and a separately confirmed Delete removes only that card. Back changes only
-  editor-local navigation.
+  navigation view state — it clears the node's stored configured-chart id and never touches card
+  config or the preview pane.
 - Chart Configure selects any pivot on the same Explore node, including a hidden one, by stable id.
-  It exposes the chart name, inherited Pivot Filters/Rows/Columns/Values summary, six ComboChart
-  presets, per-Value defaults, discovered exact-series overrides, two numeric axes, legend, and
-  category-label controls. Changing an already mapped source requires confirmation and commits
+  It is a chart-formatting surface only: pivot structure (fields, zones, filters) is edited
+  exclusively in the Pivots editor, and the chart view renders no field well, field summary, or
+  disclosure box between the source picker and the chart controls. It
+  exposes the chart name, a chart-type
+  gallery over four options — Combo leftmost as the general category and the default for a
+  newly sourced multi-Value chart (as in Excel; a single-Value chart's plain-column seed reads
+  as Clustered columns), then clustered, stacked, and 100% stacked columns —
+  where exactly one option is always highlighted: any
+  arrangement beyond the three column layouts reads as Combo and is refined per Value through
+  its chart-type and
+  axis selects, plus a vertical/horizontal orientation toggle preserved
+  across preset
+  application, per-Value defaults with exact-series overrides nested beneath each Value box (a
+  collapsed expandable list, present only when a Columns field splits that Value into several
+  series or overrides already exist — a single-series Value's box is its series config), two
+  numeric axes presented as separate Primary and Secondary boxes ordered before the per-Value
+  boxes, with the Secondary box gated by a "Use secondary axis" checkbox whose untick moves
+  secondary-assigned series back to primary in one edit, a Legend box after the Secondary box
+  gated by a "Show legend" checkbox, and
+  category-label controls. Navigation alignment is preview-driven — selecting Pivots or Charts
+  in the lower preview aligns the editor, while editor-side selections and Configure/Back
+  never change the preview; the configured subview is per-node view state that survives pane
+  switches and clears when its card is deleted. Per-series controls use user-facing vocabulary — chart type, series,
+  stacking (None / Stacked / 100% stacked with valid-by-construction group transitions), and a
+  swatch-based colour control with an Automatic reset — and unused formatting is described by
+  the series or Value name it belonged to, never by an internal id. A pivot Value the chart
+  does not yet encode is reconciled with seeded
+  defaults (surfaced as such, persisted with the next committed edit) instead of blocking the
+  editor. Changing an already mapped source requires confirmation and commits
   the reset in one graph edit. Draft, missing, unconfigured, loading, stale, errored, hidden, and
-  ready source states remain explicit.
+  ready source states remain explicit, but the source picker itself never carries a status
+  suffix — options show the pivot name (plus a hidden marker where applicable), and source
+  state is communicated by the status messaging in the Configure body.
 - A pivot cannot be deleted while charts reference it; the Pivots pane identifies dependent chart
   names so the analyst can reassign them. Chart appearance edits are presentation-only and never
   change dataframe/pivot calculation identities or structural execution version.
@@ -67,7 +96,8 @@ backend API modules own validation and persistence.
 - The Explore Pivots pane owns ordered version-1 cards. `Add Pivot` appends a fully populated,
   uniquely named, enabled card with the first-unused `pivot_N` identity. Each card exposes an
   accessible visibility checkbox and a separate `Configure` button; configuring never toggles
-  visibility, and Back returns to the card list without persisting navigation state.
+  visibility, and Back returns to the card list by clearing the node's stored configured-pivot
+  id without touching card config or the preview pane.
 - Pivot Configure provides a committed unique name, an Excel-style searchable dtype-labelled
   field palette in a fixed-height scrolling list, and ordered Filters, Columns, Rows, and Values
   zones. Every field row shows `Add to:` followed by Filters, Columns, Rows, and Values buttons;

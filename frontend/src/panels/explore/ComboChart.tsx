@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react"
 
 import { PIVOT_CHART_COLORS } from "../../theme/colors"
 import type { ExploreChartConfig } from "./chartConfig"
-import type { PivotChartData } from "./chartData"
+import { chartExportFileName, type PivotChartData } from "./chartData"
 import { buildComboChartOptions, type ChartThemeTokens } from "./chartOptions"
 
 type ComboChartProps = { chart: ExploreChartConfig; data: PivotChartData }
@@ -10,6 +10,7 @@ type ComboChartRuntime = {
   setOption(option: Record<string, unknown>): void
   resize(): void
   dispose(): void
+  getDataURL(): string
 }
 
 const FALLBACK_TOKENS: ChartThemeTokens = PIVOT_CHART_COLORS.fallback
@@ -37,7 +38,10 @@ function themeTokens(element: HTMLElement): ChartThemeTokens {
 
 export default function ComboChart({ chart, data }: ComboChartProps) {
   const hostRef = useRef<HTMLDivElement>(null)
+  const runtimeRef = useRef<ComboChartRuntime | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
+  const [rendered, setRendered] = useState(false)
   const [showTable, setShowTable] = useState(false)
   const [environmentRevision, setEnvironmentRevision] = useState(0)
   const summaryId = useId()
@@ -87,6 +91,8 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
         if (disposed) return
         runtime = createComboChart(element)
         runtime.setOption(options)
+        runtimeRef.current = runtime
+        setRendered(true)
         if (typeof ResizeObserver !== "undefined") {
           observer = new ResizeObserver(() => runtime?.resize())
           observer.observe(element)
@@ -101,8 +107,62 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
       disposed = true
       observer?.disconnect()
       runtime?.dispose()
+      runtimeRef.current = null
+      setRendered(false)
     }
   }, [chart, data, environmentRevision])
+
+  const downloadImage = () => {
+    const runtime = runtimeRef.current
+    const host = hostRef.current
+    if (!runtime || !host) return
+    let dataUrl: string
+    try {
+      dataUrl = runtime.getDataURL()
+    } catch (cause) {
+      setExportError(
+        cause instanceof Error ? cause.message : "Could not export the chart image.",
+      )
+      return
+    }
+    const image = new Image()
+    image.onload = () => {
+      try {
+        const width = image.naturalWidth || host.clientWidth
+        const height = image.naturalHeight || host.clientHeight
+        if (!width || !height) {
+          throw new Error("The rendered chart has no measurable size.")
+        }
+        const canvas = document.createElement("canvas")
+        canvas.width = width * 2
+        canvas.height = height * 2
+        const context = canvas.getContext("2d")
+        if (!context) {
+          throw new Error("A 2D canvas context is unavailable.")
+        }
+        // The SVG has a transparent backdrop: paint the resolved theme
+        // background first so the PNG matches the on-screen rendering.
+        context.fillStyle = themeTokens(host).background
+        context.fillRect(0, 0, canvas.width, canvas.height)
+        context.drawImage(image, 0, 0, canvas.width, canvas.height)
+        const anchor = document.createElement("a")
+        anchor.href = canvas.toDataURL("image/png")
+        anchor.download = chartExportFileName(chart.name)
+        anchor.click()
+        setExportError(null)
+      } catch (cause) {
+        setExportError(
+          cause instanceof Error
+            ? cause.message
+            : "Could not export the chart image.",
+        )
+      }
+    }
+    image.onerror = () => {
+      setExportError("Could not export the chart image.")
+    }
+    image.src = dataUrl
+  }
 
   const summary = `${chart.name}: ${data.categories.length} categories and ${data.series.length} series.`
   return (
@@ -137,16 +197,37 @@ export default function ComboChart({ chart, data }: ComboChartProps) {
           ))}
         </ul>
       )}
-      <button
-        type="button"
-        aria-expanded={showTable}
-        aria-controls={tableId}
-        onClick={() => setShowTable((visible) => !visible)}
-        className="self-start rounded px-2 py-1 text-[11px] font-semibold"
-        style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
-      >
-        {showTable ? "Hide data table" : "Show data table"}
-      </button>
+      {exportError !== null && (
+        <div
+          role="alert"
+          className="rounded px-2 py-1.5 text-[11px]"
+          style={{ color: "var(--danger)", background: "var(--danger-soft)" }}
+        >
+          {exportError}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          aria-expanded={showTable}
+          aria-controls={tableId}
+          onClick={() => setShowTable((visible) => !visible)}
+          className="rounded px-2 py-1 text-[11px] font-semibold"
+          style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+        >
+          {showTable ? "Hide data table" : "Show data table"}
+        </button>
+        <button
+          type="button"
+          aria-label={`Download ${chart.name} image`}
+          disabled={!rendered}
+          onClick={downloadImage}
+          className="rounded px-2 py-1 text-[11px] font-semibold disabled:opacity-50"
+          style={{ color: "var(--text-secondary)", border: "1px solid var(--border)" }}
+        >
+          Download image
+        </button>
+      </div>
       {showTable && (
         <div className="max-h-72 overflow-auto rounded" style={{ border: "1px solid var(--border)" }}>
           <table

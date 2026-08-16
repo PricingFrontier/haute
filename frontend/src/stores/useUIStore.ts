@@ -52,6 +52,13 @@ interface UIState {
   setExplorePane: (nodeId: string, pane: ExplorePane) => void
   explorePreviewPanes: Record<string, ExplorePreviewPane>
   setExplorePreviewPane: (nodeId: string, pane: ExplorePreviewPane) => void
+  // Configure-subview ids for the Explore Charts/Pivots editors (null = card
+  // list). Entering Configure stores the id; Back and card deletion clear it;
+  // pane switches on either side preserve it.
+  exploreConfiguredChartIds: Record<string, string | null>
+  setExploreConfiguredChart: (nodeId: string, chartId: string | null) => void
+  exploreConfiguredPivotIds: Record<string, string | null>
+  setExploreConfiguredPivot: (nodeId: string, pivotId: string | null) => void
   modellingPanes: Record<string, ModellingPane>
   setModellingPane: (nodeId: string, pane: ModellingPane) => void
 
@@ -109,6 +116,22 @@ const useUIStore = create<UIState>()((set) => ({
   explorePreviewPanes: {},
   setExplorePreviewPane: (nodeId, pane) => set((state) => ({
     explorePreviewPanes: setNodeIdEntry(state.explorePreviewPanes, nodeId, pane),
+  })),
+  exploreConfiguredChartIds: {},
+  setExploreConfiguredChart: (nodeId, chartId) => set((state) => ({
+    exploreConfiguredChartIds: setNodeIdEntry(
+      state.exploreConfiguredChartIds,
+      nodeId,
+      chartId,
+    ),
+  })),
+  exploreConfiguredPivotIds: {},
+  setExploreConfiguredPivot: (nodeId, pivotId) => set((state) => ({
+    exploreConfiguredPivotIds: setNodeIdEntry(
+      state.exploreConfiguredPivotIds,
+      nodeId,
+      pivotId,
+    ),
   })),
   modellingPanes: {},
   setModellingPane: (nodeId, pane) => set((state) => ({

@@ -15,7 +15,7 @@
 | `frontend/src/panels/explore/cacheIdentity.ts` | Upstream-lineage/config identity for an Explore cache request. |
 | `frontend/src/panels/explore/overviewCardDefinitions.ts`, `frontend/src/panels/explore/overviewConfig.ts` | Ordered overview-card registry and defensive config reader. |
 | `frontend/src/panels/explore/ExploreOverviewPane.tsx` | Enabled-card/empty-state dispatcher. |
-| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot v0/v1 parsing, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
+| `frontend/src/panels/explore/pivotConfig.ts`, `frontend/src/panels/explore/useExplorePivotActions.ts`, `frontend/src/panels/explore/useAutoUpdateExplorePivots.ts`, `frontend/src/panels/explore/ExplorePivotsPane.tsx`, `frontend/src/panels/explore/PivotTableGrid.tsx` | Pivot version-1 parsing, calculation identity, and the shared result-freshness predicate; shared table/chart run and cancel lifecycle; deduplicated automatic scheduling for mounted consumers; enabled-section lifecycle; virtualised semantic matrix rendering. |
 | `frontend/src/panels/explore/ExploreResultCardChrome.tsx` | Result-card chrome shared by the Pivots and Charts panes: the centered empty state and the Cancel/Starting/Retry run-status action cluster. |
 | `frontend/src/panels/explore/chartConfig.ts`, `frontend/src/panels/explore/chartData.ts`, `frontend/src/panels/explore/chartOptions.ts`, `frontend/src/panels/explore/chartRuntime.ts`, `frontend/src/panels/explore/ComboChart.tsx`, `frontend/src/panels/explore/ExploreChartsPane.tsx` | Versioned chart parsing/linkage/presets; pure typed pivot adapter; safe renderer options; narrow ECharts registration/lifecycle/accessibility; enabled-card state dispatch. |
 | `frontend/src/panels/explore/ExploreSummaryCards.tsx`, `frontend/src/panels/explore/SchemaTableCard.tsx` | Dataset, quality, numeric, categorical and schema report cards, including card-specific export grids. |
@@ -151,16 +151,43 @@
 1. The Charts pane parses current v1 charts and pivots, reads existing composite pivot job/result
    entries, and resolves each enabled card independently. On mount it automatically schedules
    each distinct stale or missing configured source Pivot once through that Pivot's existing
-   run/status lifecycle; charts sharing a source never create duplicate requests. Running work
+   run/status lifecycle; charts sharing a source never create duplicate requests, and every
+   scheduler consumer (Pivots pane, Charts pane, chart Configure editor) and every manual Retry
+   takes the store's atomic per-pivot start claim before submitting — the claim records the
+   requested dataframe cache key, calculation identity, and a generation token; an identical
+   automatic target while it is held is a no-op, every Retry and every newer automatic target
+   replaces it atomically, and only the current token may promote it to the job entry on
+   submission or release it, so superseded outcomes are discarded rather than overwriting newer
+   work. Running work
    exposes Cancel and an idle terminal failure exposes Retry. Chart appearance, name, ordering,
    and visibility do not touch the calculation lifecycle and rerender from retained source data.
+   Each chart card's header offers a Configure action that stores the chart's id as the node's
+   configured chart and selects the node panel's Charts editor pane.
 2. A source is fresh only when its retained result dataframe key matches the current Explore
    report and its stored frontend calculation identity matches the current pivot. A fresh source
    is adapted separately for each chart, allowing presentation differences without copying or
-   recalculating the matrix. Draft and missing ids are distinct and never use the first pivot.
+   recalculating the matrix. Each chart is reconciled above the adapter
+   (`reconcileValueEncodings`) so a pivot Value added after chart creation renders as a series
+   with seeded default styling rather than an error; reconciliation is render-scoped here and
+   persists only through the editor's next committed chart edit. The adapter admits row
+   grand-total paths only behind the `include_grand_total` opt-in and excludes column
+   grand-total paths unconditionally, and `inherit` number formatting renders as the General
+   locale format (grouped `en-GB`; at most two fraction digits at magnitude ≥ 1, at most four
+   significant digits below 1, `0` at zero) across ticks, labels, tooltips, and the semantic
+   table. Draft and missing ids are
+   distinct and never use the first pivot.
 3. `ComboChart` lazy-loads the registered ECharts core runtime, builds options solely from the
-   closed adapter dataset/config, observes its container, resizes on geometry changes, and
-   disposes on data replacement/unmount. The chart-card grid auto-fits against the available pane
+   closed adapter dataset/config — including horizontal orientation (category axis vertical,
+   value axes horizontal), stacks on any mark, and pre-normalised 100% stack values — observes
+   its container, resizes on geometry changes, and
+   disposes on data replacement/unmount. The runtime wrapper additionally exposes
+   `getDataURL()` (the SVG rendering as a data URL); ComboChart's Download image action decodes
+   that SVG into an `Image`, paints a canvas of exactly twice the rendered width and height
+   with the chart's resolved theme background token before drawing the image at 2×, and saves
+   the canvas as `<sanitised chart name>.png` via a transient anchor. The action is disabled
+   until the runtime has rendered; decode or rasterisation failure sets the card's visible
+   error state and triggers no download. No new dependency is introduced and the code stays
+   inside the lazy chart chunk. The chart-card grid auto-fits against the available pane
    width with a 28 rem target minimum rather than using a viewport breakpoint, so an open side
    panel cannot force unreadably narrow cards. The accessible summary and semantic table derive
    from the same dataset as the visual chart.
