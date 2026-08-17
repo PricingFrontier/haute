@@ -61,10 +61,12 @@
    actually started with. It records immediate cache hits as completed results and background
    starts as jobs.
 3. Start failures, and cancellation responses without a completed report, call the result-store
-   failure path; thrown start/cancel errors also toast. `useBackgroundJobs` in frontend-shared
-   polls background Explore and pivot jobs and moves terminal responses into the result store. A visible
-   report is touched to update cache recency. Preview, Overview, Pivots, and Charts mount only for their
-   active tab; a remembered value from a still-unsupported pane normalises to Preview.
+   failure path; thrown start/cancel errors also toast. When that path retains an earlier successful
+   report, its stored graph/source identity remains the identity that produced the report rather
+   than being relabelled as the failed attempt's identity. `useBackgroundJobs` in frontend-shared
+   polls background Explore and pivot jobs and moves terminal responses into the result store. A
+   visible report is touched to update cache recency. Preview, Overview, Pivots, and Charts mount
+   only for their active tab; a remembered value from a still-unsupported pane normalises to Preview.
    `ExploreOverviewPane` is a `React.lazy` boundary, so its report-card and export code stays out
    of startup JavaScript. Suspense renders a labelled Overview loading state inside the existing
    tabpanel until that module is ready.
@@ -133,18 +135,35 @@
    calculation or cache identity is automatically eligible. Cancel completion stores a returned
    result; every other terminal cancellation fails the job; a rejected cancellation keeps the
    active job for polling and shows a card-local notice.
-5. `PivotTableGrid` receives an already guarded version-1 matrix and current Value presentation
-   labels. It renders one semantic table, a header row for every configured Column level plus the
+5. `PivotTableGrid` receives an already guarded version-1 matrix and current placement presentation
+   settings. It renders one semantic table, a header row for every configured Column level plus the
    Value level, sticky Row headers, explicit `Grand total` path labels, and null as an em dash.
+   `general` with Automatic precision retains the existing raw typed display. `number` exposes an
+   ordinary decimal representation; `percent` multiplies the source value by 100 and appends `%`;
+   the three currency formats prefix `£`, `US$`, or `€`. Percentage Automatic uses up to two
+   decimals, currency Automatic uses exactly two, and a fixed 0–10 precision overrides those
+   defaults with matching trailing zeroes. `use_grouping` inserts or suppresses the `en-GB` comma
+   thousands separator for every non-General format and for fixed-precision General output.
+   Formatting applies by Column/Row path level or stable Value placement id only to finite numeric
+   values; null, NaN, Boolean, text, and temporal values remain unchanged. Rounding is
+   half-away-from-zero. Canonical decimal strings, exponent notation, and integers outside
+   JavaScript's safe range are transformed as decimal text rather than first being coerced to a
+   lossy `number`.
    The scroll container row-window renders viewport rows plus overscan and uses spacer rows to
    preserve the complete scroll height. Horizontal overflow remains native so keyboard and
    assistive technology semantics are not replaced by a div grid.
 6. Conditional formatting is keyed by stable Value placement id and never reorders or mutates the
-   result. For each non-None scale, the grid takes finite numeric ordinary cells across all Column
-   paths for that Value, excludes every grand-total row/column and blank/non-numeric cell, and uses
-   the minimum, median (Excel-style 50th-percentile yellow midpoint), and maximum as its domain.
-   It interpolates pale red–yellow–green or the reversed endpoints while retaining dark readable
-   text. An equal-valued domain renders yellow; an empty numeric domain renders no formatting.
+   result. For each non-None scale with no split, the grid takes finite numeric ordinary cells across
+   all Row and Column paths for that Value. A `color_scale_split_by` Row or Column placement id instead
+   partitions those cells by the selected path level's typed `{kind, value}` member and calculates an
+   independent domain for every distinct member (the same member is pooled across other path levels).
+   Split references are validated against the current placed axes rather than silently falling back
+   to a global scale. Every domain excludes grand-total row/column and blank/non-numeric cells, and
+   uses the minimum, median (Excel-style 50th-percentile yellow midpoint), and maximum.
+   It interpolates the prominent Excel-style red `#F8696B`, yellow `#FFEB84`, and green `#63BE7B`
+   stops, or the reversed endpoints, while retaining dark readable text. The rule-editor preview
+   consumes those same shared stops. An equal-valued domain renders yellow; an empty numeric domain
+   renders no formatting.
 
 ### PivotChart results
 
@@ -272,8 +291,15 @@ pagination, disabled empty-table actions, and native-button accessibility.
 guard the Utility panel's on-demand chunk boundary. Shared layout/constants and small visual
 helpers are exercised through these component tests rather than owning standalone suites.
 
-Browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
+Generic browser preview/smoke coverage is in `frontend/e2e/core-flows.spec.ts`,
 `frontend/e2e/data-preview-scroll.benchmark.spec.ts`, and `frontend/e2e/smoke.spec.ts`.
+Explore owns a dedicated browser journey in `frontend/e2e/explore.spec.ts`: it authors and
+connects an Explore node, materialises the full cache, reloads the application, opens Pivots,
+asserts that the durable report's post-code schema populates the field palette, commits a Pivot
+with fixed decimal places for a Column, Row, and Value, and observes those formats in its calculated
+result. Focused component tests additionally exercise rejected or
+malformed run responses and rejected cancellation so start/cancel failures cannot leave a job or
+cache action in a false-success state.
 
 ## Modelling config panes
 

@@ -68,7 +68,13 @@
 - **`ExplorePivotConfig`** (`_types.py`) — version-1 persisted card with `id`, `name`,
   `enabled`, ordered Filter/Columns/Rows/Values placements, and grand-total options. Each
   placement owns a stable id. Filter members are typed scalars and Value placements add one of
-  the seven supported aggregations plus a presentation-only display name.
+  the seven supported aggregations plus a presentation-only display name. Column, Row, and Value
+  placements also own presentation-only `number_format`, `decimal_places: None | 0..10`, and
+  `use_grouping` settings. The closed formats are General, Number, Percentage, and GBP/USD/EUR
+  currency. Older version-1 cards default to General/Automatic/grouping-on, except that an existing
+  fixed decimal setting migrates to Number to preserve its established rendering. Value placements
+  additionally own `color_scale` and nullable `color_scale_split_by`; a non-null split is valid only
+  for an active scale and references a current Row/Column placement id. Omitted splits default null.
 - **`PivotCalculationSpec`** (`_pivot_service.py`, frozen dataclass) — resolved Explore cache
   request/key, validated v1 pivot, calculation hash, result-cache key, and latest-wins family key
   `("explore_pivot", source_file, node_id, source, pivot_id)`.
@@ -101,8 +107,9 @@
   column fields plus their effective Row directions, Value placement ids/fields/aggregations plus
   the selected Value direction, total options, dataframe key, and result schema version. A
   `sort_by` selection whose effective ordering is unchanged reuses the same key. It excludes
-  card name/enabled, Value display names, Value colour scales, and all unknown presentation
-  fields. The in-process result LRU stores at most 32 matrices.
+  card name/enabled, Value display names, all Column/Row/Value numeric-format settings, Value
+  colour scales and their split-by references, and all unknown presentation fields. The in-process result LRU stores at most 32
+  matrices.
 - Aggregation aliases are derived from stable Value placement ids rather than field names.
   Numeric operations first map floating NaN to null. `sum`/`average`/`median` require numeric
   fields; `min`/`max` also accept supported scalar non-numeric fields. Empty aggregates return
@@ -593,3 +600,15 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - `tests/test_explore_pivot_routes.py` exercises cache-required behaviour, typed filters,
   bounded aggregation/cardinality, sorting/totals, latest-wins job lifecycle, member lookup,
   export, and JSON-safe scalar results including Binary and Duration min/max values.
+  Its runtime type matrix covers every persisted member kind (null, NaN, string, Boolean,
+  integer, finite float, decimal, date, datetime, and time), dtype-mismatch failures, and
+  unsupported dimension/value dtypes rather than stopping at config validation. The four hard
+  bounds (row groups, column groups, displayed cells, and filter members) are each pinned at and
+  immediately above their limit.
+- Explore route tests pin every terminal worker mapping (`memory_limited`, `contract_error`,
+  `error`, cancellation, and supersession), zero and multiple upstream parents, missing nodes,
+  named-source cache isolation, and the cache-identity invalidation matrix for upstream code,
+  Explore code, preamble, source file, and input source.
+- Focused persistent-cache tests cover metadata/report/artifact inconsistency, cleanup after a
+  failed process-cache restore, nested simultaneous reader leases, and publication-path
+  validation in addition to the route-level restart, refresh, and corrupt-pointer scenarios.

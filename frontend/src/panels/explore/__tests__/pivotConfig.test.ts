@@ -82,6 +82,7 @@ describe("pivotConfig", () => {
 
   it("allows repeated Values and excludes presentation edits from calculation identity", () => {
     const base = pivot({
+      columns: [{ id: "column_1", field: "year" }],
       values: [
         { id: "value_1", field: "claims", aggregation: "sum", display_name: "Claims" },
         { id: "value_2", field: "claims", aggregation: "average", display_name: "Average" },
@@ -91,7 +92,25 @@ describe("pivotConfig", () => {
       ...base,
       name: "Renamed",
       enabled: false,
-      values: base.values.map((value) => ({ ...value, display_name: `Renamed ${value.id}` })),
+      columns: base.columns.map((column) => ({
+        ...column,
+        number_format: "currency_gbp" as const,
+        decimal_places: 0,
+        use_grouping: false,
+      })),
+      rows: base.rows.map((row) => ({
+        ...row,
+        number_format: "percent" as const,
+        decimal_places: 4,
+        use_grouping: true,
+      })),
+      values: base.values.map((value) => ({
+        ...value,
+        display_name: `Renamed ${value.id}`,
+        number_format: "currency_eur" as const,
+        decimal_places: 2,
+        use_grouping: false,
+      })),
     }
 
     expect(parseExplorePivots({ pivots: [base] })).toMatchObject({ ok: true })
@@ -130,10 +149,11 @@ describe("pivotConfig", () => {
     ).not.toBe(pivotCalculationIdentity(base))
   })
 
-  it("normalises missing v1 sort and colour fields, and rejects invalid enums", () => {
+  it("normalises missing v1 formatting, sort, and colour fields, and rejects invalid enums", () => {
     const parsed = parseExplorePivots({
       pivots: [
         pivot({
+          columns: [{ id: "column_1", field: "year" }],
           options: { row_grand_totals: true, column_grand_totals: true },
         }),
       ],
@@ -142,8 +162,21 @@ describe("pivotConfig", () => {
       ok: true,
       pivots: [
         {
-          rows: [{ sort: "ascending" }],
-          values: [{ sort_rows: "none", color_scale: "none" }],
+          columns: [{ number_format: "general", decimal_places: null, use_grouping: true }],
+          rows: [{
+            sort: "ascending",
+            number_format: "general",
+            decimal_places: null,
+            use_grouping: true,
+          }],
+          values: [{
+            sort_rows: "none",
+            color_scale: "none",
+            color_scale_split_by: null,
+            number_format: "general",
+            decimal_places: null,
+            use_grouping: true,
+          }],
           options: { sort_by: null },
         },
       ],
@@ -267,6 +300,143 @@ describe("pivotConfig", () => {
     })
   })
 
+  it("accepts active colour-scale splits by Row or Column and rejects invalid references", () => {
+    for (const splitId of ["row_1", "column_1"]) {
+      expect(parseExplorePivots({
+        pivots: [pivot({
+          columns: [{ id: "column_1", field: "year" }],
+          values: [{
+            ...pivot().values[0],
+            color_scale: "low_red_high_green",
+            color_scale_split_by: splitId,
+          }],
+        })],
+      })).toMatchObject({
+        ok: true,
+        pivots: [{ values: [{ color_scale_split_by: splitId }] }],
+      })
+    }
+
+    const invalidCases: Array<[unknown, "none" | "low_red_high_green"]> = [
+      [42, "low_red_high_green"],
+      ["missing", "low_red_high_green"],
+      ["filter_1", "low_red_high_green"],
+      ["value_1", "low_red_high_green"],
+      ["row_1", "none"],
+    ]
+    for (const [split, colorScale] of invalidCases) {
+      expect(parseExplorePivots({
+        pivots: [pivot({
+          filters: [{ id: "filter_1", field: "status", members: [] }],
+          columns: [{ id: "column_1", field: "year" }],
+          values: [{
+            ...pivot().values[0],
+            color_scale: colorScale,
+            color_scale_split_by: split as never,
+          }],
+        })],
+      })).toMatchObject({ ok: false, error: expect.stringMatching(/split/i) })
+    }
+  })
+
+  it("validates number formats, grouping, and decimal-place boundaries", () => {
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            columns: [{
+              id: "column_1",
+              field: "year",
+              number_format: "currency_gbp",
+              decimal_places: 0,
+              use_grouping: false,
+            }],
+            rows: [{
+              id: "row_1",
+              field: "region",
+              number_format: "percent",
+              decimal_places: 10,
+              use_grouping: true,
+            }],
+            values: [{
+              id: "value_1",
+              field: "claims",
+              aggregation: "sum",
+              display_name: "Claims",
+              number_format: "currency_eur",
+              decimal_places: 2,
+              use_grouping: false,
+            }],
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      ok: true,
+      pivots: [{
+        columns: [{ number_format: "currency_gbp", decimal_places: 0, use_grouping: false }],
+        rows: [{ number_format: "percent", decimal_places: 10, use_grouping: true }],
+        values: [{ number_format: "currency_eur", decimal_places: 2, use_grouping: false }],
+      }],
+    })
+
+    for (const decimal_places of [-1, 11, 1.5, true, "2"]) {
+      expect(
+        parseExplorePivots({
+          pivots: [
+            pivot({
+              columns: [{
+                id: "column_1",
+                field: "year",
+                decimal_places: decimal_places as never,
+              }],
+            }),
+          ],
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(/decimal places/i),
+      })
+    }
+
+    for (const [field, value, message] of [
+      ["number_format", "accounting", /number format/i],
+      ["number_format", 2, /number format/i],
+      ["use_grouping", "yes", /grouping/i],
+      ["use_grouping", 1, /grouping/i],
+    ] as const) {
+      expect(
+        parseExplorePivots({
+          pivots: [
+            pivot({
+              columns: [{ id: "column_1", field: "year", [field]: value }],
+            }),
+          ],
+        }),
+      ).toMatchObject({ ok: false, error: expect.stringMatching(message) })
+    }
+  })
+
+  it("migrates an existing fixed-decimal v1 placement to Number formatting", () => {
+    expect(
+      parseExplorePivots({
+        pivots: [
+          pivot({
+            columns: [{ id: "column_1", field: "year", decimal_places: 2 }],
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      ok: true,
+      pivots: [{
+        columns: [{
+          number_format: "number",
+          decimal_places: 2,
+          use_grouping: true,
+        }],
+      }],
+    })
+  })
+
   it("derives the selected sort target for a legacy active Value sort", () => {
     const parsed = parseExplorePivots({
       pivots: [
@@ -291,7 +461,7 @@ describe("pivotConfig", () => {
     })
   })
 
-  it("includes row and value sorts but excludes colour scale from calculation identity", () => {
+  it("includes row and value sorts but excludes colour scale, scale splits, and number formatting from calculation identity", () => {
     const base = pivot()
     const dormantRowDirection = {
       ...base,
@@ -311,11 +481,36 @@ describe("pivotConfig", () => {
       options: { ...base.options, sort_by: "value_1" },
     }
     const colourOnly = { ...base, values: [{ ...base.values[0], color_scale: "low_red_high_green" as const }] }
+    const splitOnly = {
+      ...base,
+      values: [{
+        ...base.values[0],
+        color_scale: "low_red_high_green" as const,
+        color_scale_split_by: "row_1",
+      }],
+    }
+    const decimalsOnly = {
+      ...base,
+      rows: [{
+        ...base.rows[0],
+        number_format: "percent" as const,
+        decimal_places: 3,
+        use_grouping: false,
+      }],
+      values: [{
+        ...base.values[0],
+        number_format: "currency_usd" as const,
+        decimal_places: 2,
+        use_grouping: true,
+      }],
+    }
     expect(pivotCalculationIdentity(dormantRowDirection)).toBe(pivotCalculationIdentity(base))
     expect(pivotCalculationIdentity(explicitlySelectedDefaultRow)).toBe(pivotCalculationIdentity(base))
     expect(pivotCalculationIdentity(sortedRows)).not.toBe(pivotCalculationIdentity(base))
     expect(pivotCalculationIdentity(sortedValues)).not.toBe(pivotCalculationIdentity(base))
     expect(pivotCalculationIdentity(colourOnly)).toBe(pivotCalculationIdentity(base))
+    expect(pivotCalculationIdentity(splitOnly)).toBe(pivotCalculationIdentity(base))
+    expect(pivotCalculationIdentity(decimalsOnly)).toBe(pivotCalculationIdentity(base))
   })
 
   it.each([

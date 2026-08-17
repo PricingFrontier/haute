@@ -1,6 +1,15 @@
 import { isNumericDtype } from "../../utils/polarsDtypes"
 
 export const PIVOT_CONFIG_VERSION = 1 as const
+export const PIVOT_DECIMAL_PLACES_MAX = 10
+export const PIVOT_NUMBER_FORMATS = [
+  "general",
+  "number",
+  "percent",
+  "currency_gbp",
+  "currency_usd",
+  "currency_eur",
+] as const
 
 export const PIVOT_AGGREGATIONS = [
   "sum",
@@ -13,6 +22,8 @@ export const PIVOT_AGGREGATIONS = [
 ] as const
 
 export type PivotAggregation = (typeof PIVOT_AGGREGATIONS)[number]
+export type PivotDecimalPlaces = number | null
+export type PivotNumberFormat = (typeof PIVOT_NUMBER_FORMATS)[number]
 export type PivotMemberKind =
   | "null"
   | "string"
@@ -42,6 +53,9 @@ export type PivotAxisPlacement = {
   id: string
   field: string
   sort?: "ascending" | "descending"
+  number_format?: PivotNumberFormat
+  decimal_places?: PivotDecimalPlaces
+  use_grouping?: boolean
   [key: string]: unknown
 }
 
@@ -52,6 +66,10 @@ export type PivotValuePlacement = {
   display_name: string
   sort_rows?: "none" | "ascending" | "descending"
   color_scale?: "none" | "low_red_high_green" | "low_green_high_red"
+  color_scale_split_by?: string | null
+  number_format?: PivotNumberFormat
+  decimal_places?: PivotDecimalPlaces
+  use_grouping?: boolean
   [key: string]: unknown
 }
 
@@ -92,6 +110,7 @@ const MEMBER_KINDS = new Set<PivotMemberKind>([
   "decimal",
 ])
 const AGGREGATIONS = new Set<string>(PIVOT_AGGREGATIONS)
+const NUMBER_FORMATS = new Set<string>(PIVOT_NUMBER_FORMATS)
 const AXIS_SORTS = new Set<PivotAxisPlacement["sort"]>(["ascending", "descending"])
 const VALUE_SORTS = new Set<PivotValuePlacement["sort_rows"]>(["none", "ascending", "descending"])
 const COLOR_SCALES = new Set<PivotValuePlacement["color_scale"]>([
@@ -138,6 +157,63 @@ function cloneLiteral<T>(value: T): T {
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0
+}
+
+function parseDecimalPlaces(
+  value: unknown,
+  position: number,
+  scope: string,
+): PivotDecimalPlaces | string {
+  if (value === undefined || value === null) return null
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > PIVOT_DECIMAL_PLACES_MAX
+  ) {
+    return `Pivot ${position} ${scope} decimal places must be null or an integer from 0 to ${PIVOT_DECIMAL_PLACES_MAX}.`
+  }
+  return value
+}
+
+type ParsedNumberFormatting = {
+  number_format: PivotNumberFormat
+  decimal_places: PivotDecimalPlaces
+  use_grouping: boolean
+}
+
+function parseNumberFormatting(
+  entry: Record<string, unknown>,
+  position: number,
+  scope: string,
+): ParsedNumberFormatting | string {
+  const decimalPlaces = parseDecimalPlaces(
+    entry.decimal_places,
+    position,
+    scope,
+  )
+  if (typeof decimalPlaces === "string") return decimalPlaces
+
+  const defaultFormat: PivotNumberFormat = decimalPlaces === null
+    ? "general"
+    : "number"
+  const numberFormat = entry.number_format === undefined
+    ? defaultFormat
+    : entry.number_format
+  if (typeof numberFormat !== "string" || !NUMBER_FORMATS.has(numberFormat)) {
+    return `Pivot ${position} ${scope} has an unsupported number format.`
+  }
+  const useGrouping = entry.use_grouping === undefined
+    ? true
+    : entry.use_grouping
+  if (typeof useGrouping !== "boolean") {
+    return `Pivot ${position} ${scope} grouping must be a boolean.`
+  }
+  return {
+    number_format: numberFormat as PivotNumberFormat,
+    decimal_places: decimalPlaces,
+    use_grouping: useGrouping,
+  }
 }
 
 function isValidDate(value: string): boolean {
@@ -244,8 +320,21 @@ function parseAxisZone(
     const known = zone === "filters"
       ? new Set(["id", "field", "members"])
       : zone === "rows"
-        ? new Set(["id", "field", "sort"])
-        : new Set(["id", "field"])
+        ? new Set([
+            "id",
+            "field",
+            "sort",
+            "number_format",
+            "decimal_places",
+            "use_grouping",
+          ])
+        : new Set([
+            "id",
+            "field",
+            "number_format",
+            "decimal_places",
+            "use_grouping",
+          ])
     const futureError = validateFutureFields(entry, known, position, `${zone} placement`)
     if (futureError) return futureError
     if (!nonEmptyString(entry.id)) return `Pivot ${position} placement id must be a non-empty string.`
@@ -264,12 +353,27 @@ function parseAxisZone(
       }
       placements.push({ ...cloneLiteral(entry), id: entry.id, field: entry.field, members })
     } else if (zone === "rows") {
+      const formatting = parseNumberFormatting(entry, position, `${zone} placement`)
+      if (typeof formatting === "string") return formatting
       if (entry.sort !== undefined && (typeof entry.sort !== "string" || !AXIS_SORTS.has(entry.sort as PivotAxisPlacement["sort"]))) {
         return `Pivot ${position} ${zone} placement has an unsupported sort.`
       }
-      placements.push({ ...cloneLiteral(entry), id: entry.id, field: entry.field, sort: (entry.sort ?? "ascending") as PivotAxisPlacement["sort"] })
+      placements.push({
+        ...cloneLiteral(entry),
+        id: entry.id,
+        field: entry.field,
+        sort: (entry.sort ?? "ascending") as PivotAxisPlacement["sort"],
+        ...formatting,
+      })
     } else {
-      placements.push({ ...cloneLiteral(entry), id: entry.id, field: entry.field })
+      const formatting = parseNumberFormatting(entry, position, `${zone} placement`)
+      if (typeof formatting === "string") return formatting
+      placements.push({
+        ...cloneLiteral(entry),
+        id: entry.id,
+        field: entry.field,
+        ...formatting,
+      })
     }
   }
   return placements as PivotFilterPlacement[] | PivotAxisPlacement[]
@@ -286,7 +390,18 @@ function parseValues(
     if (!isPlainObject(entry)) return `Pivot ${position} value entries must be objects.`
     const futureError = validateFutureFields(
       entry,
-      new Set(["id", "field", "aggregation", "display_name", "sort_rows", "color_scale"]),
+      new Set([
+        "id",
+        "field",
+        "aggregation",
+        "display_name",
+        "sort_rows",
+        "color_scale",
+        "color_scale_split_by",
+        "number_format",
+        "decimal_places",
+        "use_grouping",
+      ]),
       position,
       "value",
     )
@@ -304,6 +419,15 @@ function parseValues(
     if (entry.color_scale !== undefined && (typeof entry.color_scale !== "string" || !COLOR_SCALES.has(entry.color_scale as PivotValuePlacement["color_scale"]))) {
       return `Pivot ${position} value has an unsupported color scale.`
     }
+    if (
+      entry.color_scale_split_by !== undefined &&
+      entry.color_scale_split_by !== null &&
+      typeof entry.color_scale_split_by !== "string"
+    ) {
+      return `Pivot ${position} value color scale split must be a string or null.`
+    }
+    const formatting = parseNumberFormatting(entry, position, "value")
+    if (typeof formatting === "string") return formatting
     placementIds.add(entry.id)
     values.push({
       ...cloneLiteral(entry),
@@ -313,6 +437,8 @@ function parseValues(
       display_name: entry.display_name,
       sort_rows: (entry.sort_rows ?? "none") as PivotValuePlacement["sort_rows"],
       color_scale: (entry.color_scale ?? "none") as PivotValuePlacement["color_scale"],
+      color_scale_split_by: entry.color_scale_split_by ?? null,
+      ...formatting,
     })
   }
   return values
@@ -336,6 +462,20 @@ function parseV1Pivot(raw: Record<string, unknown>, position: number): ExplorePi
   if (typeof values === "string") return values
   if (values.filter((value) => value.sort_rows !== "none").length > 1) {
     return `Pivot ${position} may have only one active Value row sort.`
+  }
+  const conditionalSplitIds = new Set([
+    ...(columns as PivotAxisPlacement[]).map((column) => column.id),
+    ...(rows as PivotAxisPlacement[]).map((row) => row.id),
+  ])
+  for (const value of values) {
+    const splitBy = value.color_scale_split_by
+    if (splitBy === null || splitBy === undefined) continue
+    if (value.color_scale === "none") {
+      return `Pivot ${position} value color scale split requires an active color scale.`
+    }
+    if (!conditionalSplitIds.has(splitBy)) {
+      return `Pivot ${position} value color scale split must reference a placed Row or Column placement.`
+    }
   }
   if (!isPlainObject(raw.options)) return `Pivot ${position} options must be an object.`
   const optionError = validateFutureFields(

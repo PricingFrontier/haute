@@ -660,6 +660,32 @@ describe("ExplorePreview", () => {
     expect(mockGetExploreStatus).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ["rejects", () => Promise.reject(new Error("runner unavailable")), "runner unavailable"],
+    ["completes without a report", () => Promise.resolve({
+      status: "completed", job_id: null, cached: false, message: "Done", result: null,
+    }), "Explore completed without a cache report"],
+    ["starts without a job id", () => Promise.resolve({
+      status: "started", job_id: null, cached: false, message: "Started", result: null,
+    }), "Explore job did not return a job id"],
+  ])("recovers when Explore %s", async (_caseName, response, expectedMessage) => {
+    mockRunExplore.mockImplementationOnce(response)
+    renderExplore()
+
+    fireEvent.click(screen.getByRole("button", { name: /needs caching/i }))
+
+    await waitFor(() => expect(useNodeResultsStore.getState().exploreJobs.explore_1).toBeUndefined())
+    expect(useNodeResultsStore.getState().exploreResults.explore_1?.terminalStatus).toMatchObject({
+      status: "error",
+      terminal_reason: "startup_failure",
+      message: expectedMessage,
+    })
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: "error", text: `Explore failed: ${expectedMessage}` }),
+    ])
+    expect(screen.getByRole("button", { name: "Needs caching" })).toBeEnabled()
+  })
+
   it("renders the dataset snapshot card on Overview tab when toggle is on and report present", async () => {
     const report = makeReport({ row_count: 9876, column_count: 7, source: "pricing" })
     const nodeWithToggle: SimpleNode = {
@@ -1106,5 +1132,27 @@ describe("ExplorePreview", () => {
     expect(mockCancelExplore).toHaveBeenCalledWith("explore-job-2")
     expect(await screen.findByText(/pricing\s*\|\s*needs caching/i)).toBeInTheDocument()
     expect(useNodeResultsStore.getState().exploreJobs.explore_1).toBeUndefined()
+  })
+
+  it("recovers the cache action when cancelling an Explore job fails", async () => {
+    mockRunExplore.mockResolvedValueOnce({
+      status: "started", job_id: "explore-job-cancel-failure", cached: false, message: "Started", result: null,
+    })
+    mockCancelExplore.mockRejectedValueOnce(new Error("cancel service unavailable"))
+    renderExplore()
+
+    fireEvent.click(screen.getByRole("button", { name: /needs caching/i }))
+    expect(await screen.findByRole("button", { name: /cancel/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }))
+
+    await waitFor(() => expect(useNodeResultsStore.getState().exploreJobs.explore_1).toBeUndefined())
+    expect(useNodeResultsStore.getState().exploreResults.explore_1).toMatchObject({
+      error: "cancel service unavailable",
+      terminalStatus: null,
+    })
+    expect(useToastStore.getState().toasts).toEqual([
+      expect.objectContaining({ type: "error", text: "Explore cancel failed: cancel service unavailable" }),
+    ])
+    expect(screen.getByRole("button", { name: "Needs caching" })).toBeEnabled()
   })
 })

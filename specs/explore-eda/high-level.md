@@ -167,14 +167,19 @@ Out of scope (owned elsewhere):
   `average`, `min`, `max`, `median`, and `distinct_count`; numeric-only aggregations reject
   incompatible dtypes, Count counts non-null/non-NaN values, and Distinct count excludes
   null/NaN. Repeated Values are legal because placement ids, not field names, identify measures.
+- Each Value may persist a presentation-only conditional colour scale and an optional split-by
+  placement id. A split is valid only for an active scale and must reference a currently placed Row
+  or Column; omitted split fields normalise to null. It does not change aggregation or result order.
 - The v1 result limit is 500 ordinary row groups, 100 ordinary column groups, 50,000 displayed
   cells (including enabled grand-total row/column cells), and 500 filter-member rows. A request
   that exceeds a limit returns the measured dimensions, the limit, and remediation; it is never
   truncated, sampled, downsampled, or partially published.
 - A completed result is cached by the exact Explore dataframe-cache key, pivot result schema
   version, ordered calculation placements, exact filters, aggregations, row/value sort settings,
-  and total options. Card `name`/`enabled`, Value display names, conditional colour scales, and
-  presentation-only/future formatting fields are excluded, so those edits reuse the calculation.
+  and total options. Card `name`/`enabled`, Value display names, number-format, decimal-place and
+  grouping settings, conditional colour scales and their split-by references, and
+  presentation-only/future formatting fields
+  are excluded, so those edits reuse the calculation.
   Starting a newer calculation supersedes only
   an older job for the same source, Explore node, and pivot id.
 - `validate_explore_overview` accepts only a dict at the top level with string keys. The five

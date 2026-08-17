@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 import threading
 import time
-from datetime import timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as datetime_time
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -109,9 +111,11 @@ def _poll(client: TestClient, path: str, job_id: str, timeout: float = 10.0) -> 
     raise TimeoutError(job_id)
 
 
-def _materialise(client: TestClient, graph: dict[str, Any]) -> dict[str, Any]:
+def _materialise(
+    client: TestClient, graph: dict[str, Any], *, source: str = "live"
+) -> dict[str, Any]:
     response = client.post(
-        "/api/explore/run", json={"graph": graph, "node_id": "explore", "source": "live"}
+        "/api/explore/run", json={"graph": graph, "node_id": "explore", "source": source}
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -144,10 +148,12 @@ def _run_pivot(
     client: TestClient,
     graph: dict[str, Any],
     pivot: dict[str, Any],
+    *,
+    source: str = "live",
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     response = client.post(
         "/api/explore/pivots/run",
-        json={"graph": graph, "node_id": "explore", "source": "live", "pivot": pivot},
+        json={"graph": graph, "node_id": "explore", "source": source, "pivot": pivot},
     )
     assert response.status_code == 200, response.text
     started = response.json()
@@ -680,7 +686,7 @@ def test_pivot_sorts_rows_by_correct_value_total_without_displaying_totals(
     assert not any(path["is_grand_total"] for path in result["column_paths"])
 
 
-def test_pivot_sort_settings_affect_cache_but_colour_scale_is_presentation_only(
+def test_pivot_sort_settings_affect_cache_but_formatting_is_presentation_only(
     client: TestClient, tmp_path: Path
 ) -> None:
     path = tmp_path / "claims.parquet"
@@ -716,6 +722,53 @@ def test_pivot_sort_settings_affect_cache_but_colour_scale_is_presentation_only(
         _pivot(
             rows=[{"id": "row_1", "field": "region", "sort": "ascending"}],
             values=[{**base_value, "color_scale": "low_red_high_green"}],
+        ),
+    )
+    split_recoloured, split_recoloured_result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            rows=[{"id": "row_1", "field": "region", "sort": "ascending"}],
+            values=[
+                {
+                    **base_value,
+                    "color_scale": "low_red_high_green",
+                    "color_scale_split_by": "row_1",
+                }
+            ],
+        ),
+    )
+    number_formatted, number_formatted_result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            columns=[
+                {
+                    "id": "column_1",
+                    "field": "year",
+                    "number_format": "percent",
+                    "decimal_places": 0,
+                    "use_grouping": False,
+                }
+            ],
+            rows=[
+                {
+                    "id": "row_1",
+                    "field": "region",
+                    "sort": "ascending",
+                    "number_format": "currency_usd",
+                    "decimal_places": 2,
+                    "use_grouping": True,
+                }
+            ],
+            values=[
+                {
+                    **base_value,
+                    "number_format": "currency_eur",
+                    "decimal_places": 3,
+                    "use_grouping": False,
+                }
+            ],
         ),
     )
     explicitly_selected_default, explicitly_selected_default_result = _run_pivot(
@@ -761,6 +814,10 @@ def test_pivot_sort_settings_affect_cache_but_colour_scale_is_presentation_only(
     assert first["status"] == "completed"
     assert recoloured["cached"] is True
     assert recoloured_result == first_result
+    assert split_recoloured["cached"] is True
+    assert split_recoloured_result == first_result
+    assert number_formatted["cached"] is True
+    assert number_formatted_result == first_result
     assert explicitly_selected_default["cached"] is True
     assert explicitly_selected_default_result == first_result
     assert resorted["status"] == "completed"
@@ -1056,3 +1113,294 @@ def test_pivot_members_are_typed_exact_and_cache_backed(client: TestClient, tmp_
         {"key": {"kind": "string", "value": "North"}, "label": "North", "count": 2},
         {"key": {"kind": "null", "value": None}, "label": "(blank)", "count": 1},
     ]
+
+
+def test_pivot_runtime_members_and_exact_filters_cover_all_persisted_kinds(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The runtime path, not only config validation, preserves every member kind."""
+    path = tmp_path / "typed-members.parquet"
+    pl.DataFrame(
+        {
+            "text": [None, "North"],
+            "floating": [math.nan, 1.5],
+            "flag": [True, False],
+            "whole": [7, 8],
+            "decimal": pl.Series([Decimal("1.20"), Decimal("2.30")], dtype=pl.Decimal(8, 2)),
+            "day": [date(2024, 2, 29), date(2024, 3, 1)],
+            "moment": [datetime(2024, 2, 29, 12, 30), datetime(2024, 3, 1, 1, 2)],
+            "clock": [datetime_time(12, 30, 0, 123456), datetime_time(1, 2, 3)],
+            "claims": [11.0, 22.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    cases = [
+        ("text", {"kind": "null", "value": None}, 11.0),
+        ("text", {"kind": "string", "value": "North"}, 22.0),
+        ("floating", {"kind": "nan", "value": None}, 11.0),
+        ("floating", {"kind": "float", "value": 1.5}, 22.0),
+        ("flag", {"kind": "boolean", "value": True}, 11.0),
+        ("whole", {"kind": "integer", "value": "7"}, 11.0),
+        ("decimal", {"kind": "decimal", "value": "1.20"}, 11.0),
+        ("day", {"kind": "date", "value": "2024-02-29"}, 11.0),
+        ("moment", {"kind": "datetime", "value": "2024-02-29T12:30:00"}, 11.0),
+        ("clock", {"kind": "time", "value": "12:30:00.123456"}, 11.0),
+    ]
+    observed_keys: set[tuple[str, Any]] = set()
+    for field, member, expected_sum in cases:
+        members = client.post(
+            "/api/explore/pivots/members",
+            json={"graph": graph, "node_id": "explore", "source": "live", "field": field},
+        )
+        assert members.status_code == 200, members.text
+        payload = members.json()
+        assert payload["status"] == "ok", payload
+        observed_keys.update(
+            (item["key"]["kind"], item["key"]["value"]) for item in payload["members"]
+        )
+        assert member in [item["key"] for item in payload["members"]]
+
+        final, result = _run_pivot(
+            client,
+            graph,
+            _pivot(
+                filters=[{"id": f"filter_{field}", "field": field, "members": [member]}],
+                rows=[],
+                columns=[],
+                options={"row_grand_totals": False, "column_grand_totals": False},
+            ),
+        )
+        assert final["status"] == "completed", final
+        assert result is not None
+        assert _cell(result, [], [], "sum_claims") == expected_sum
+
+    assert {
+        ("null", None),
+        ("nan", None),
+        ("string", "North"),
+        ("boolean", True),
+        ("integer", "7"),
+        ("float", 1.5),
+        ("decimal", "1.20"),
+        ("date", "2024-02-29"),
+        ("datetime", "2024-02-29T12:30:00"),
+        ("time", "12:30:00.123456"),
+    } <= observed_keys
+
+
+@pytest.mark.parametrize(
+    ("pivot_updates", "reason_code", "dimensions"),
+    [
+        (
+            {
+                "filters": [
+                    {
+                        "id": "filter_1",
+                        "field": "whole",
+                        "members": [{"kind": "string", "value": "7"}],
+                    }
+                ]
+            },
+            "invalid_pivot_filter_member",
+            {"field": "whole", "member_kind": "string"},
+        ),
+        (
+            {"rows": [{"id": "row_1", "field": "nested"}]},
+            "invalid_pivot_field",
+            {"field": "nested"},
+        ),
+        (
+            {
+                "values": [
+                    {
+                        "id": "sum_text",
+                        "field": "text",
+                        "aggregation": "sum",
+                        "display_name": "Text",
+                    }
+                ]
+            },
+            "invalid_pivot_field",
+            {"field": "text"},
+        ),
+        ({"values": []}, "pivot_unconfigured", {}),
+    ],
+)
+def test_pivot_runtime_rejections_are_typed_and_remediable(
+    client: TestClient,
+    tmp_path: Path,
+    pivot_updates: dict[str, Any],
+    reason_code: str,
+    dimensions: dict[str, Any],
+) -> None:
+    path = tmp_path / "invalid-pivot-runtime.parquet"
+    pl.DataFrame(
+        {
+            "region": ["North"],
+            "year": [2024],
+            "claims": [10.0],
+            "whole": [7],
+            "text": ["not numeric"],
+            "nested": [["not groupable"]],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    final, result = _run_pivot(client, graph, _pivot(**pivot_updates))
+
+    assert final["status"] == "contract_error"
+    assert result is None
+    assert final["failure"]["reason_code"] == reason_code
+    assert final["failure"]["dimensions"] == dimensions
+    assert final["failure"]["remediation"]
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "pivot", "expected_dimension", "at_limit", "above_limit"),
+    [
+        (
+            "MAX_ROW_GROUPS",
+            _pivot(columns=[], options={"row_grand_totals": False, "column_grand_totals": False}),
+            "row_groups",
+            2,
+            1,
+        ),
+        (
+            "MAX_COLUMN_GROUPS",
+            _pivot(rows=[], options={"row_grand_totals": False, "column_grand_totals": False}),
+            "column_groups",
+            2,
+            1,
+        ),
+        (
+            "MAX_DISPLAY_CELLS",
+            _pivot(options={"row_grand_totals": False, "column_grand_totals": False}),
+            "display_cells",
+            4,
+            3,
+        ),
+    ],
+)
+def test_pivot_cardinality_limits_accept_the_boundary_and_reject_one_above(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    pivot: dict[str, Any],
+    expected_dimension: str,
+    at_limit: int,
+    above_limit: int,
+) -> None:
+    import haute.routes._pivot_service as pivot_service
+
+    path = tmp_path / f"{expected_dimension}.parquet"
+    pl.DataFrame(
+        {"region": ["North", "South"], "year": [2024, 2025], "claims": [10.0, 20.0]}
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    monkeypatch.setattr(pivot_service, limit_name, at_limit)
+    boundary, boundary_result = _run_pivot(client, graph, pivot)
+    assert boundary["status"] == "completed", boundary
+    assert boundary_result is not None
+
+    monkeypatch.setattr(pivot_service, limit_name, above_limit)
+    final, result = _run_pivot(
+        client,
+        graph,
+        _pivot(**{**pivot, "id": f"{expected_dimension}_above_limit"}),
+    )
+    assert final["status"] == "contract_error"
+    assert result is None
+    assert final["failure"]["reason_code"] == "pivot_cardinality_limit"
+    assert final["failure"]["remediation"] == "Reduce pivot dimensions or filter the dataset."
+    assert final["failure"]["dimensions"] == {
+        "dimension": expected_dimension,
+        "actual": at_limit,
+        "limit": above_limit,
+    }
+
+
+def test_pivot_filter_member_limits_apply_to_calculation_and_members_endpoint(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import haute.routes._pivot_service as pivot_service
+
+    path = tmp_path / "filter-members.parquet"
+    pl.DataFrame(
+        {"region": ["North", "South"], "year": [2024, 2024], "claims": [10.0, 20.0]}
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    members = [{"kind": "string", "value": value} for value in ["North", "South"]]
+
+    monkeypatch.setattr(pivot_service, "MAX_FILTER_MEMBERS", 2)
+    boundary, boundary_result = _run_pivot(
+        client, graph, _pivot(filters=[{"id": "filter_1", "field": "region", "members": members}])
+    )
+    assert boundary["status"] == "completed", boundary
+    assert boundary_result is not None
+    endpoint_boundary = client.post(
+        "/api/explore/pivots/members",
+        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+    ).json()
+    assert endpoint_boundary["status"] == "ok"
+
+    monkeypatch.setattr(pivot_service, "MAX_FILTER_MEMBERS", 1)
+    final, result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            id="filter_members_above_limit",
+            filters=[{"id": "filter_1", "field": "region", "members": members}],
+        ),
+    )
+    assert final["status"] == "contract_error"
+    assert result is None
+    assert final["failure"]["reason_code"] == "pivot_cardinality_limit"
+    assert final["failure"]["dimensions"] == {
+        "dimension": "filter_members",
+        "actual": 2,
+        "limit": 1,
+    }
+    endpoint_above = client.post(
+        "/api/explore/pivots/members",
+        json={"graph": graph, "node_id": "explore", "source": "live", "field": "region"},
+    ).json()
+    assert endpoint_above["status"] == "error"
+    assert endpoint_above["failure"]["reason_code"] == "pivot_cardinality_limit"
+    assert endpoint_above["failure"]["dimensions"] == {
+        "dimension": "filter_members",
+        "actual": 2,
+        "limit": 1,
+    }
+
+
+def test_pivot_named_sources_require_and_preserve_their_own_materialised_cache(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "named-sources.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    live_report = _materialise(client, graph, source="live")
+
+    missing, missing_result = _run_pivot(client, graph, _pivot(), source="named")
+    assert missing["status"] == "cache_required"
+    assert missing_result is None
+
+    named_report = _materialise(client, graph, source="named")
+    named_final, named_result = _run_pivot(client, graph, _pivot(), source="named")
+    live_final, live_result = _run_pivot(client, graph, _pivot(), source="live")
+
+    assert named_final["status"] == "completed", named_final
+    assert named_result is not None
+    assert named_result["source"] == "named"
+    assert named_result["dataframe_cache_key"] == named_report["dataframe_cache_key"]
+    assert named_report["dataframe_cache_key"] != live_report["dataframe_cache_key"]
+    assert live_final["status"] == "completed", live_final
+    assert live_result is not None
+    assert live_result["source"] == "live"
+    assert live_result["dataframe_cache_key"] == live_report["dataframe_cache_key"]

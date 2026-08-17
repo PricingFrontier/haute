@@ -23,8 +23,25 @@ def _pivot(**updates: object) -> dict[str, object]:
                 "members": [{"kind": "string", "value": "North"}],
             }
         ],
-        "columns": [{"id": "column_1", "field": "year"}],
-        "rows": [{"id": "row_1", "field": "region", "sort": "ascending"}],
+        "columns": [
+            {
+                "id": "column_1",
+                "field": "year",
+                "number_format": "general",
+                "decimal_places": None,
+                "use_grouping": True,
+            }
+        ],
+        "rows": [
+            {
+                "id": "row_1",
+                "field": "region",
+                "sort": "ascending",
+                "number_format": "general",
+                "decimal_places": None,
+                "use_grouping": True,
+            }
+        ],
         "values": [
             {
                 "id": "value_1",
@@ -33,6 +50,10 @@ def _pivot(**updates: object) -> dict[str, object]:
                 "display_name": "Claims",
                 "sort_rows": "none",
                 "color_scale": "none",
+                "color_scale_split_by": None,
+                "number_format": "general",
+                "decimal_places": None,
+                "use_grouping": True,
             }
         ],
         "options": {
@@ -64,8 +85,9 @@ def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -
     assert validated[0]["future"] is not raw[0]["future"]
 
 
-def test_validate_explore_pivots_defaults_sort_and_colour_fields_on_older_v1() -> None:
+def test_validate_explore_pivots_defaults_formatting_sort_and_colour_fields_on_older_v1() -> None:
     pivot = _pivot(
+        columns=[{"id": "column_1", "field": "year"}],
         rows=[{"id": "row_1", "field": "region"}],
         values=[
             {
@@ -80,7 +102,25 @@ def test_validate_explore_pivots_defaults_sort_and_colour_fields_on_older_v1() -
 
     validated = validate_explore_pivots([pivot], context="test")[0]
 
-    assert validated["rows"] == [{"id": "row_1", "field": "region", "sort": "ascending"}]
+    assert validated["columns"] == [
+        {
+            "id": "column_1",
+            "field": "year",
+            "number_format": "general",
+            "decimal_places": None,
+            "use_grouping": True,
+        }
+    ]
+    assert validated["rows"] == [
+        {
+            "id": "row_1",
+            "field": "region",
+            "sort": "ascending",
+            "number_format": "general",
+            "decimal_places": None,
+            "use_grouping": True,
+        }
+    ]
     assert validated["values"] == [
         {
             "id": "value_1",
@@ -89,9 +129,153 @@ def test_validate_explore_pivots_defaults_sort_and_colour_fields_on_older_v1() -
             "display_name": "Claims",
             "sort_rows": "none",
             "color_scale": "none",
+            "color_scale_split_by": None,
+            "number_format": "general",
+            "decimal_places": None,
+            "use_grouping": True,
         }
     ]
     assert validated["options"]["sort_by"] is None
+
+
+@pytest.mark.parametrize("decimal_places", [0, 10])
+def test_validate_explore_pivots_accepts_number_formats_and_decimal_place_boundaries(
+    decimal_places: int,
+) -> None:
+    pivot = _pivot(
+        columns=[
+            {
+                "id": "column_1",
+                "field": "year",
+                "number_format": "currency_gbp",
+                "decimal_places": decimal_places,
+                "use_grouping": False,
+            }
+        ],
+        rows=[
+            {
+                "id": "row_1",
+                "field": "region",
+                "sort": "ascending",
+                "number_format": "percent",
+                "decimal_places": decimal_places,
+                "use_grouping": True,
+            }
+        ],
+        values=[
+            {
+                "id": "value_1",
+                "field": "claims",
+                "aggregation": "sum",
+                "display_name": "Claims",
+                "sort_rows": "none",
+                "color_scale": "none",
+                "number_format": "currency_eur",
+                "decimal_places": decimal_places,
+                "use_grouping": False,
+            }
+        ],
+    )
+
+    validated = validate_explore_pivots([pivot], context="test")[0]
+
+    assert validated["columns"][0]["decimal_places"] == decimal_places
+    assert validated["rows"][0]["decimal_places"] == decimal_places
+    assert validated["values"][0]["decimal_places"] == decimal_places
+    assert validated["columns"][0]["number_format"] == "currency_gbp"
+    assert validated["columns"][0]["use_grouping"] is False
+    assert validated["rows"][0]["number_format"] == "percent"
+    assert validated["values"][0]["number_format"] == "currency_eur"
+
+
+@pytest.mark.parametrize("decimal_places", [-1, 11, 1.5, True, "2"])
+def test_validate_explore_pivots_rejects_invalid_decimal_places(
+    decimal_places: object,
+) -> None:
+    with pytest.raises(ConfigError, match="decimal places"):
+        validate_explore_pivots(
+            [
+                _pivot(
+                    columns=[
+                        {
+                            "id": "column_1",
+                            "field": "year",
+                            "decimal_places": decimal_places,
+                        }
+                    ]
+                )
+            ],
+            context="test",
+        )
+
+
+@pytest.mark.parametrize("number_format", ["accounting", "currency_cad", 2, None])
+def test_validate_explore_pivots_rejects_invalid_number_formats(
+    number_format: object,
+) -> None:
+    with pytest.raises(ConfigError, match="number format"):
+        validate_explore_pivots(
+            [
+                _pivot(
+                    columns=[
+                        {
+                            "id": "column_1",
+                            "field": "year",
+                            "number_format": number_format,
+                        }
+                    ]
+                )
+            ],
+            context="test",
+        )
+
+
+@pytest.mark.parametrize("use_grouping", [0, 1, "yes", None])
+def test_validate_explore_pivots_rejects_invalid_grouping(
+    use_grouping: object,
+) -> None:
+    with pytest.raises(ConfigError, match="grouping"):
+        validate_explore_pivots(
+            [
+                _pivot(
+                    values=[
+                        {
+                            "id": "value_1",
+                            "field": "claims",
+                            "aggregation": "sum",
+                            "display_name": "Claims",
+                            "use_grouping": use_grouping,
+                        }
+                    ]
+                )
+            ],
+            context="test",
+        )
+
+
+def test_validate_explore_pivots_migrates_fixed_decimal_placements_to_number() -> None:
+    validated = validate_explore_pivots(
+        [
+            _pivot(
+                columns=[
+                    {
+                        "id": "column_1",
+                        "field": "year",
+                        "decimal_places": 2,
+                    }
+                ]
+            )
+        ],
+        context="test",
+    )[0]
+
+    assert validated["columns"][0] == {
+        "id": "column_1",
+        "field": "year",
+        "number_format": "number",
+        "decimal_places": 2,
+        "use_grouping": True,
+    }
 
 
 def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> None:
@@ -312,6 +496,31 @@ def test_validate_explore_pivots_rejects_malformed_values(value: object, message
         validate_explore_pivots(value, context="test")
 
 
+@pytest.mark.parametrize(
+    ("split_by", "color_scale", "message"),
+    [
+        (42, "low_red_high_green", "split.*string or null"),
+        ("missing", "low_red_high_green", "split.*Row or Column"),
+        ("filter_1", "low_red_high_green", "split.*Row or Column"),
+        ("value_1", "low_red_high_green", "split.*Row or Column"),
+        ("row_1", "none", "split.*active colour scale"),
+    ],
+)
+def test_validate_explore_pivots_rejects_invalid_colour_scale_splits(
+    split_by: object,
+    color_scale: str,
+    message: str,
+) -> None:
+    pivot = _pivot()
+    value = copy.deepcopy(pivot["values"])[0]
+    value["color_scale"] = color_scale
+    value["color_scale_split_by"] = split_by
+    pivot["values"] = [value]
+
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_pivots([pivot], context="test")
+
+
 def test_validate_explore_pivots_allows_repeated_value_fields_with_unique_ids() -> None:
     pivot = _pivot(
         values=[
@@ -322,6 +531,10 @@ def test_validate_explore_pivots_allows_repeated_value_fields_with_unique_ids() 
                 "display_name": "Claims",
                 "sort_rows": "none",
                 "color_scale": "low_red_high_green",
+                "color_scale_split_by": "row_1",
+                "number_format": "general",
+                "decimal_places": None,
+                "use_grouping": True,
             },
             {
                 "id": "value_2",
@@ -330,6 +543,10 @@ def test_validate_explore_pivots_allows_repeated_value_fields_with_unique_ids() 
                 "display_name": "Average claims",
                 "sort_rows": "descending",
                 "color_scale": "low_green_high_red",
+                "color_scale_split_by": "column_1",
+                "number_format": "general",
+                "decimal_places": None,
+                "use_grouping": True,
             },
         ],
         options={

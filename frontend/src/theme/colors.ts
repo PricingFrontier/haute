@@ -73,9 +73,9 @@ export const PIVOT_CHART_COLORS = {
 } as const
 
 export const PIVOT_CONDITIONAL_FORMAT_COLORS = {
-  low: { hex: "#fecaca", rgb: [254, 202, 202] },
-  midpoint: { hex: "#fef08a", rgb: [254, 240, 138] },
-  high: { hex: "#bbf7d0", rgb: [187, 247, 208] },
+  low: { hex: "#F8696B", rgb: [248, 105, 107] },
+  midpoint: { hex: "#FFEB84", rgb: [255, 235, 132] },
+  high: { hex: "#63BE7B", rgb: [99, 190, 123] },
   cellText: "#111827",
 } as const
 

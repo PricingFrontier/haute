@@ -100,7 +100,10 @@ backend API modules own validation and persistence.
   id without touching card config or the preview pane.
 - Pivot Configure provides a committed unique name, an Excel-style searchable dtype-labelled
   field palette in a fixed-height scrolling list, and ordered Filters, Columns, Rows, and Values
-  zones. Every field row shows `Add to:` followed by Filters, Columns, Rows, and Values buttons;
+  zones. A current Explore cache report supplies the palette's authoritative post-analysis schema;
+  before one is available the editor may use the upstream preview schema, but it never uses a
+  retained report from a different graph/source identity. Every field row shows `Add to:` followed
+  by Filters, Columns, Rows, and Values buttons;
   pressing one adds that field directly to the matching zone, with no separate selection/action
   area. Assigned fields appear beneath `Drag fields between areas below:` in a fixed two-column
   grid ordered Filters, Columns, Rows, Values like Excel. A placement can be dragged onto another
@@ -111,17 +114,36 @@ backend API modules own validation and persistence.
   reject same-zone duplicates; Values permit repeated fields with stable ids. Numeric Values
   default to Sum and other dtypes to Count, with Sum/Count/Average/Min/Max/Median/Distinct count
   available subject to dtype compatibility. Placement cards contain only placement-specific
-  controls (filter members, Value aggregation, and Remove); sorting and conditional formatting
-  never appear inside the draggable grid. Immediately after the grid, one Sorting section exposes
-  `Sort by` (default Row-label order, any placed Row, or any placed Value) and the matching
-  `Order` control. A separate Conditional formatting section is a bordered rules box with an
-  `Add rule` action. Every active rule is visible at the same time and exposes its Value field,
-  colour scale, labelled gradient preview, and Remove action. One Value placement can have at most
+  controls (filter members, Value aggregation, and Remove); sorting and formatting never appear
+  inside the draggable grid. The Configure subview starts directly with the Pivot name setting,
+  without repeating `Configure <name>` above it. Sorting, Formatting, and Conditional Formatting
+  use the standard uppercase node-editor micro-title, standalone above their settings and never
+  inside a bordered settings box. Immediately after the grid, the Sorting settings box exposes
+  `Sort by` (default Row-label order, any placed Row, or any placed Value) and its matching `Order`
+  control side by side. A following Formatting section lists every
+  displayed Column, Row, and Value placement. Numeric output can use General, Number, Percentage,
+  GBP currency, USD currency, or EUR currency formatting, Automatic or a fixed 0–10 decimal
+  places, and an explicit thousands-separator option. Filters are omitted because they do not
+  render in the pivot table; non-numeric placements remain identified but have no numeric-format
+  controls, without redundant introductory copy above the placement list. Formatting is
+  presentation-only and updates a retained result immediately. A separate
+  Conditional Formatting title is followed by a bordered rules box. Every active rule is visible
+  at the same time and exposes its Value field, colour scale, an optional `Split scale by`
+  selector, labelled gradient preview, and Remove action; the `Add rule` action follows the rule
+  list at the bottom of the box. Split choices are restricted to fields currently placed in Rows
+  or Columns. With no split, one scale covers the whole Value; selecting a placement gives each
+  distinct typed member of that Row or Column field its own scale. The preview uses Excel's prominent
+  red–yellow–green three-colour palette (`#F8696B`, `#FFEB84`, `#63BE7B`), reversing the same
+  endpoints for green-to-red. One Value placement can have at most
   one rule. Adding chooses the first still-unformatted numeric Value and applies `Low red → High
-  green`; the action is disabled when no eligible Value remains. A rule can be reassigned to any
+  green`; the action is disabled when no eligible Value remains, without an additional
+  all-fields-configured message. A rule can be reassigned to any
   other eligible unformatted Value. Colour choices are `Low red → High green` and `Low green →
-  High red`; removing a rule persists its scale as None. An aggregation change that makes a Value
-  non-numeric also removes its rule. Missing source fields remain visible as invalid chips.
+  High red`; removing a rule persists its scale as None and clears its split. Reassigning a rule
+  carries its split with it. Removing the selected Row/Column placement, or moving it out of those
+  two zones, clears every rule that referenced it; moving it between Rows and Columns preserves the
+  stable reference. An aggregation change that makes a Value non-numeric also removes its rule and
+  split. Missing source fields remain visible as invalid chips.
 - Configuration edits commit immediately as ordinary graph changes. When the lower Pivots or
   Charts result pane is mounted, a committed calculation-affecting Pivot edit automatically
   schedules one recalculation for the current dataframe-cache and calculation identities;

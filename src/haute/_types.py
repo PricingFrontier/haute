@@ -438,6 +438,11 @@ class ExplorePivotFilterPlacement(TypedDict):
 class ExplorePivotAxisPlacement(TypedDict):
     id: str
     field: str
+    decimal_places: int | None
+    number_format: Literal[
+        "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
+    ]
+    use_grouping: bool
 
 
 class ExplorePivotRowPlacement(ExplorePivotAxisPlacement):
@@ -451,6 +456,12 @@ class ExplorePivotValuePlacement(TypedDict):
     display_name: str
     sort_rows: Literal["none", "ascending", "descending"]
     color_scale: Literal["none", "low_red_high_green", "low_green_high_red"]
+    color_scale_split_by: str | None
+    decimal_places: int | None
+    number_format: Literal[
+        "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
+    ]
+    use_grouping: bool
 
 
 class ExplorePivotOptions(TypedDict):

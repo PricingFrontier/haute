@@ -222,8 +222,25 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "members": [{"kind": "string", "value": "Open"}],
                 }
             ],
-            "columns": [{"id": "column_1", "field": "year"}],
-            "rows": [{"id": "row_1", "field": "region", "sort": "descending"}],
+            "columns": [
+                {
+                    "id": "column_1",
+                    "field": "year",
+                    "number_format": "percent",
+                    "decimal_places": 0,
+                    "use_grouping": False,
+                }
+            ],
+            "rows": [
+                {
+                    "id": "row_1",
+                    "field": "region",
+                    "sort": "descending",
+                    "number_format": "currency_usd",
+                    "decimal_places": 3,
+                    "use_grouping": True,
+                }
+            ],
             "values": [
                 {
                     "id": "value_1",
@@ -232,6 +249,10 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "display_name": "Paid claims",
                     "sort_rows": "descending",
                     "color_scale": "low_red_high_green",
+                    "color_scale_split_by": "row_1",
+                    "number_format": "currency_eur",
+                    "decimal_places": 2,
+                    "use_grouping": False,
                     "future_value_setting": {"precision": 2},
                 }
             ],

@@ -587,6 +587,27 @@ class TestSelectedColumnsUniversal:
             "column_grand_totals": bool,
             "sort_by": str | None,
         }
+        assert get_type_hints(ExplorePivotAxisPlacement)["decimal_places"] == int | None
+        assert get_type_hints(ExplorePivotRowPlacement)["decimal_places"] == int | None
+        assert get_type_hints(ExplorePivotValuePlacement)["decimal_places"] == int | None
+        pivot_number_format = Literal[
+            "general",
+            "number",
+            "percent",
+            "currency_gbp",
+            "currency_usd",
+            "currency_eur",
+        ]
+        assert get_type_hints(ExplorePivotAxisPlacement)["number_format"] == pivot_number_format
+        assert get_type_hints(ExplorePivotRowPlacement)["number_format"] == pivot_number_format
+        assert get_type_hints(ExplorePivotValuePlacement)["number_format"] == pivot_number_format
+        assert get_type_hints(ExplorePivotAxisPlacement)["use_grouping"] is bool
+        assert get_type_hints(ExplorePivotRowPlacement)["use_grouping"] is bool
+        assert get_type_hints(ExplorePivotValuePlacement)["use_grouping"] is bool
+        assert get_type_hints(ExplorePivotValuePlacement)["color_scale_split_by"] == str | None
+        assert "decimal_places" not in get_type_hints(ExplorePivotFilterPlacement)
+        assert "number_format" not in get_type_hints(ExplorePivotFilterPlacement)
+        assert "use_grouping" not in get_type_hints(ExplorePivotFilterPlacement)
         overview_hints = get_type_hints(ExploreOverviewConfig)
         assert overview_hints == {
             "dataset_snapshot": bool,

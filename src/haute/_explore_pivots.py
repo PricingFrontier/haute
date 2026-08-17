@@ -17,6 +17,10 @@ PIVOT_AGGREGATIONS = frozenset(
 PIVOT_SORT_DIRECTIONS = frozenset({"ascending", "descending"})
 PIVOT_VALUE_SORTS = frozenset({"none", *PIVOT_SORT_DIRECTIONS})
 PIVOT_COLOR_SCALES = frozenset({"none", "low_red_high_green", "low_green_high_red"})
+PIVOT_DECIMAL_PLACES_MAX = 10
+PIVOT_NUMBER_FORMATS = frozenset(
+    {"general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"}
+)
 PIVOT_MEMBER_KINDS = frozenset(
     {"null", "string", "boolean", "integer", "float", "nan", "date", "datetime", "time", "decimal"}
 )
@@ -102,6 +106,76 @@ def _require_non_empty_string(
             actual_type=type(value).__name__,
         )
     return value
+
+
+def _validate_decimal_places(
+    value: Any,
+    *,
+    context: str,
+    card_index: int,
+    placement_index: int,
+) -> int | None:
+    """Validate the optional presentation precision for a pivot placement."""
+
+    if value is None:
+        return None
+    if type(value) is not int or not 0 <= value <= PIVOT_DECIMAL_PLACES_MAX:
+        raise ConfigError(
+            "Explore pivot decimal places must be an integer from 0 through "
+            f"{PIVOT_DECIMAL_PLACES_MAX} or null.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+            actual_type=type(value).__name__,
+        )
+    return value
+
+
+def _normalise_number_format(
+    placement: dict[str, Any],
+    *,
+    decimal_places: int | None,
+    context: str,
+    card_index: int,
+    placement_index: int,
+) -> str:
+    """Validate the persisted number format and migrate absent v1 values."""
+
+    if "number_format" not in placement:
+        return "number" if decimal_places is not None else "general"
+    number_format = placement["number_format"]
+    if not isinstance(number_format, str) or number_format not in PIVOT_NUMBER_FORMATS:
+        raise ConfigError(
+            "Explore pivot number format is unsupported.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+            actual_type=type(number_format).__name__,
+        )
+    return number_format
+
+
+def _normalise_grouping(
+    placement: dict[str, Any],
+    *,
+    context: str,
+    card_index: int,
+    placement_index: int,
+) -> bool:
+    """Validate the persisted grouping preference and migrate absent v1 values."""
+
+    if "use_grouping" not in placement:
+        return True
+    use_grouping = placement["use_grouping"]
+    if type(use_grouping) is not bool:
+        raise ConfigError(
+            "Explore pivot grouping must be a boolean.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+            actual_type=type(use_grouping).__name__,
+        )
+    return use_grouping
 
 
 def _is_valid_temporal_member(kind: str, value: Any) -> bool:
@@ -239,9 +313,13 @@ def _validate_axis_placements(
         if zone == "filters":
             known_keys = frozenset({"id", "field", "members"})
         elif zone == "rows":
-            known_keys = frozenset({"id", "field", "sort"})
+            known_keys = frozenset(
+                {"id", "field", "sort", "decimal_places", "number_format", "use_grouping"}
+            )
         else:
-            known_keys = frozenset({"id", "field"})
+            known_keys = frozenset(
+                {"id", "field", "decimal_places", "number_format", "use_grouping"}
+            )
         copied = _copy_known_dict(
             placement,
             known_keys=known_keys,
@@ -273,6 +351,27 @@ def _validate_axis_placements(
         fields.add(field)
         copied["id"] = placement_id
         copied["field"] = field
+        if zone != "filters":
+            decimal_places = _validate_decimal_places(
+                copied.get("decimal_places"),
+                context=context,
+                card_index=card_index,
+                placement_index=placement_index,
+            )
+            copied["decimal_places"] = decimal_places
+            copied["number_format"] = _normalise_number_format(
+                copied,
+                decimal_places=decimal_places,
+                context=context,
+                card_index=card_index,
+                placement_index=placement_index,
+            )
+            copied["use_grouping"] = _normalise_grouping(
+                copied,
+                context=context,
+                card_index=card_index,
+                placement_index=placement_index,
+            )
         if zone == "filters":
             members = copied.get("members")
             if not isinstance(members, list):
@@ -333,7 +432,18 @@ def _validate_values(
         copied = _copy_known_dict(
             value,
             known_keys=frozenset(
-                {"id", "field", "aggregation", "display_name", "sort_rows", "color_scale"}
+                {
+                    "id",
+                    "field",
+                    "aggregation",
+                    "display_name",
+                    "sort_rows",
+                    "color_scale",
+                    "color_scale_split_by",
+                    "decimal_places",
+                    "number_format",
+                    "use_grouping",
+                }
             ),
             context=context,
             index=card_index,
@@ -385,6 +495,34 @@ def _validate_values(
                 value_index=value_index,
                 color_scale=color_scale,
             )
+        color_scale_split_by = copied.get("color_scale_split_by")
+        if color_scale_split_by is not None and not isinstance(color_scale_split_by, str):
+            raise ConfigError(
+                "Explore pivot colour scale split must be a string or null.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+                actual_type=type(color_scale_split_by).__name__,
+            )
+        decimal_places = _validate_decimal_places(
+            copied.get("decimal_places"),
+            context=context,
+            card_index=card_index,
+            placement_index=value_index,
+        )
+        number_format = _normalise_number_format(
+            copied,
+            decimal_places=decimal_places,
+            context=context,
+            card_index=card_index,
+            placement_index=value_index,
+        )
+        use_grouping = _normalise_grouping(
+            copied,
+            context=context,
+            card_index=card_index,
+            placement_index=value_index,
+        )
         placement_ids.add(placement_id)
         copied.update(
             id=placement_id,
@@ -393,6 +531,10 @@ def _validate_values(
             display_name=display_name,
             sort_rows=sort_rows,
             color_scale=color_scale,
+            color_scale_split_by=color_scale_split_by,
+            decimal_places=decimal_places,
+            number_format=number_format,
+            use_grouping=use_grouping,
         )
         values.append(copied)
     return values
@@ -456,6 +598,28 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
             context=context,
             index=index,
         )
+
+    split_axis_ids = {column["id"] for column in columns} | {row["id"] for row in rows}
+    for value in values:
+        color_scale_split_by = value["color_scale_split_by"]
+        if color_scale_split_by is None:
+            continue
+        if color_scale_split_by not in split_axis_ids:
+            raise ConfigError(
+                "Explore pivot colour scale split must reference a Row or Column placement.",
+                context=context,
+                index=index,
+                value_id=value["id"],
+                color_scale_split_by=color_scale_split_by,
+            )
+        if value["color_scale"] == "none":
+            raise ConfigError(
+                "Explore pivot colour scale split requires an active colour scale.",
+                context=context,
+                index=index,
+                value_id=value["id"],
+                color_scale_split_by=color_scale_split_by,
+            )
 
     options = copied.get("options")
     if not isinstance(options, dict):

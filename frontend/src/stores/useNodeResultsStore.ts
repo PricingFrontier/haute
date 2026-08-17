@@ -1278,14 +1278,19 @@ const useNodeResultsStore = create<NodeResultsState>()((set, get) => ({
       const { [nodeId]: _removedJob, ...remainingJobs } = s.exploreJobs; void _removedJob
       touchCachedResult(exploreResultRecency, nodeId)
       const previous = s.exploreResults[nodeId]
+      const retained = previous?.result ? previous : null
       const nextCached: CachedExploreResult = {
-        result: previous?.result ?? null,
+        result: retained?.result ?? null,
         terminalStatus: terminalStatus ?? null,
         jobId: job.jobId,
-        configHash: job.configHash,
-        source: job.source,
-        structuralVersion: job.structuralVersion,
-        nodeLabel: job.nodeLabel,
+        // The identity fields describe `result`, not the most recent attempt.
+        // Relabelling an older report as the failed job's identity would let
+        // downstream Pivot/Chart consumers mistake stale schema and cache keys
+        // for current data.
+        configHash: retained?.configHash ?? job.configHash,
+        source: retained?.source ?? job.source,
+        structuralVersion: retained?.structuralVersion ?? job.structuralVersion,
+        nodeLabel: retained?.nodeLabel ?? job.nodeLabel,
         error,
       }
       const bounded = trimCacheByRecency(

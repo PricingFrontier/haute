@@ -7,6 +7,7 @@ import type {
   PivotMember,
   PivotValuePlacement,
 } from "../../explore/pivotConfig"
+import { effectivePivotNumberFormat } from "../../explore/pivotNumberFormat"
 
 export type Column = { name: string; dtype: string }
 export type Zone = "filters" | "columns" | "rows" | "values"
@@ -39,7 +40,20 @@ export function zoneLabel(zone: Zone): string {
 }
 
 function futurePlacementFields(placement: Placement): Record<string, unknown> {
-  const known = new Set(["id", "field", "members", "aggregation", "display_name", "sort", "sort_rows", "color_scale"])
+  const known = new Set([
+    "id",
+    "field",
+    "members",
+    "aggregation",
+    "display_name",
+    "sort",
+    "sort_rows",
+    "color_scale",
+    "color_scale_split_by",
+    "number_format",
+    "decimal_places",
+    "use_grouping",
+  ])
   return Object.fromEntries(
     Object.entries(placement).filter(([key]) => !known.has(key)),
   )
@@ -55,6 +69,21 @@ function isValuePlacement(placement: Placement): placement is PivotValuePlacemen
     typeof placement.aggregation === "string" &&
     typeof placement.display_name === "string"
   )
+}
+
+function displayedPlacementFormatting(placement: Placement) {
+  if (isFilterPlacement(placement)) {
+    return {
+      number_format: "general" as const,
+      decimal_places: null,
+      use_grouping: true,
+    }
+  }
+  return {
+    number_format: effectivePivotNumberFormat(placement),
+    decimal_places: placement.decimal_places ?? null,
+    use_grouping: placement.use_grouping ?? true,
+  }
 }
 
 export function removeFromZone(
@@ -110,7 +139,13 @@ export function appendToZone(
         ],
       }
     case "columns":
-      return { ...pivot, columns: [...pivot.columns, common] }
+      return {
+        ...pivot,
+        columns: [
+          ...pivot.columns,
+          { ...common, ...displayedPlacementFormatting(placement) },
+        ],
+      }
     case "rows":
       return {
         ...pivot,
@@ -118,6 +153,7 @@ export function appendToZone(
           ...pivot.rows,
           {
             ...common,
+            ...displayedPlacementFormatting(placement),
             sort: isValuePlacement(placement) && placement.sort_rows !== "none"
               ? placement.sort_rows
               : "ascending",
@@ -131,6 +167,7 @@ export function appendToZone(
           ...pivot.values,
           {
             ...common,
+            ...displayedPlacementFormatting(placement),
             aggregation:
               isValuePlacement(placement)
                 ? placement.aggregation
@@ -141,9 +178,35 @@ export function appendToZone(
               ? placement.sort_rows
               : (placement as PivotAxisPlacement).sort ?? "none",
             color_scale: isValuePlacement(placement) ? placement.color_scale : "none",
+            color_scale_split_by: isValuePlacement(placement)
+              ? placement.color_scale_split_by ?? null
+              : null,
           },
         ],
       }
+  }
+}
+
+function normalizePivotColorScaleSplits(pivot: ExplorePivotConfig): ExplorePivotConfig {
+  const conditionalSplitIds = new Set([
+    ...pivot.columns.map((column) => column.id),
+    ...pivot.rows.map((row) => row.id),
+  ])
+  return {
+    ...pivot,
+    values: pivot.values.map((value) => {
+      const activeScale =
+        value.color_scale === "low_red_high_green" ||
+        value.color_scale === "low_green_high_red"
+      const splitBy = activeScale &&
+        typeof value.color_scale_split_by === "string" &&
+        conditionalSplitIds.has(value.color_scale_split_by)
+        ? value.color_scale_split_by
+        : null
+      return value.color_scale_split_by === splitBy
+        ? value
+        : { ...value, color_scale_split_by: splitBy }
+    }),
   }
 }
 
@@ -151,31 +214,35 @@ export function normalizePivotOrdering(
   pivot: ExplorePivotConfig,
   requestedSortBy: string | null = pivot.options.sort_by ?? null,
 ): ExplorePivotConfig {
-  const selectedRow = pivot.rows.find((row) => row.id === requestedSortBy)
-  const selectedValue = pivot.values.find((value) => value.id === requestedSortBy)
+  // Field-well placement edits already pass through this normalizer to repair
+  // sort targets. Repair conditional-format axis references in the same atomic
+  // persisted update so a removed/moved axis can never leave dangling config.
+  const normalizedPivot = normalizePivotColorScaleSplits(pivot)
+  const selectedRow = normalizedPivot.rows.find((row) => row.id === requestedSortBy)
+  const selectedValue = normalizedPivot.values.find((value) => value.id === requestedSortBy)
   if (!selectedRow && !selectedValue) {
     return {
-      ...pivot,
-      rows: pivot.rows.map((row) => ({ ...row, sort: "ascending" })),
-      values: pivot.values.map((value) => ({ ...value, sort_rows: "none" })),
-      options: { ...pivot.options, sort_by: null },
+      ...normalizedPivot,
+      rows: normalizedPivot.rows.map((row) => ({ ...row, sort: "ascending" })),
+      values: normalizedPivot.values.map((value) => ({ ...value, sort_rows: "none" })),
+      options: { ...normalizedPivot.options, sort_by: null },
     }
   }
   if (selectedRow) {
     return {
-      ...pivot,
-      rows: pivot.rows.map((row) => ({
+      ...normalizedPivot,
+      rows: normalizedPivot.rows.map((row) => ({
         ...row,
         sort: row.id === selectedRow.id ? row.sort ?? "ascending" : "ascending",
       })),
-      values: pivot.values.map((value) => ({ ...value, sort_rows: "none" })),
-      options: { ...pivot.options, sort_by: selectedRow.id },
+      values: normalizedPivot.values.map((value) => ({ ...value, sort_rows: "none" })),
+      options: { ...normalizedPivot.options, sort_by: selectedRow.id },
     }
   }
   return {
-    ...pivot,
-    rows: pivot.rows.map((row) => ({ ...row, sort: "ascending" })),
-    values: pivot.values.map((value) => ({
+    ...normalizedPivot,
+    rows: normalizedPivot.rows.map((row) => ({ ...row, sort: "ascending" })),
+    values: normalizedPivot.values.map((value) => ({
       ...value,
       sort_rows: value.id === selectedValue?.id
         ? value.sort_rows === "ascending" || value.sort_rows === "descending"
@@ -183,7 +250,7 @@ export function normalizePivotOrdering(
           : "descending"
         : "none",
     })),
-    options: { ...pivot.options, sort_by: selectedValue?.id ?? null },
+    options: { ...normalizedPivot.options, sort_by: selectedValue?.id ?? null },
   }
 }
 

@@ -80,8 +80,14 @@ Modelling and optimiser result presentation belongs to
   chart's Configure subview.
 - A fresh result renders in a horizontally scrollable, row-virtualised semantic table with
   multi-level column headers, sticky row headers, explicit grand-total labels, and typed cell
-  display. Configured Row/value sorting is already reflected by result order. A per-Value
-  three-colour scale applies only to ordinary finite numeric body cells for that placement;
+  display. Per-placement numeric formatting covers General, Number, Percentage, GBP/USD/EUR
+  currency, optional thousands separators, and Automatic or fixed 0–10 decimal places for finite
+  numeric Column members, Row members, and Value cells. Configured Row/value sorting is already
+  reflected by result order. A per-Value
+  prominent Excel-style red–yellow–green three-colour scale applies only to ordinary finite
+  numeric body cells for that placement. By default its domain spans the entire Value; an optional
+  split by a placed Row or Column field instead computes an independent domain for each distinct
+  typed member of that field;
   blanks and grand-total row/column cells retain normal styling. One pivot's error never
   suppresses a successful sibling.
 - The Explore run indicator exposes determinate `progressbar` semantics while a run is active,

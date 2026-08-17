@@ -153,7 +153,8 @@ describe("ExplorePivotsConfig", () => {
     })
 
     fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
-    expect(screen.getByRole("heading", { name: "Configure Pivot 1" })).toBeInTheDocument()
+    expect(screen.queryByText("Configure Pivot 1")).not.toBeInTheDocument()
+    expect(screen.getByRole("textbox", { name: "Pivot name" })).toHaveValue("Pivot 1")
     expect(screen.queryByRole("checkbox", { name: "Pivot 1" })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Back to pivots" }))
     expect(screen.getByRole("checkbox", { name: "Pivot 1" })).toHaveAttribute(
@@ -229,40 +230,87 @@ describe("ExplorePivotsConfig", () => {
     ).toHaveValue("count")
   })
 
-  it("keeps sorting and conditional formatting in ordered sections after the field grid", () => {
+  it("keeps concise section titles outside their settings boxes after the field grid", () => {
     render(<PivotConfigHarness initialConfig={{ pivots: [fullPivot()] }} />)
     fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
     fireEvent.click(screen.getByRole("button", { name: "Add region to Rows" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add year to Columns" }))
     fireEvent.click(screen.getByRole("button", { name: "Add claims to Values" }))
     fireEvent.click(screen.getByRole("button", { name: "Add claims to Values" }))
 
     const areas = screen.getByTestId("pivot-field-areas")
+    const numberFormatting = screen.getByTestId("pivot-formatting-section")
     const sorting = screen.getByTestId("pivot-sorting-section")
-    const formatting = screen.getByTestId("pivot-conditional-formatting-section")
-    expect(areas.compareDocumentPosition(sorting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const conditionalFormatting = screen.getByTestId("pivot-conditional-formatting-section")
+    const sortingHeading = within(sorting).getByRole("heading", { name: "Sorting" })
+    const formattingHeading = within(numberFormatting).getByRole("heading", { name: "Formatting" })
+    const conditionalFormattingHeading = within(conditionalFormatting).getByRole("heading", {
+      name: "Conditional Formatting",
+    })
     expect(
-      sorting.compareDocumentPosition(formatting) & Node.DOCUMENT_POSITION_FOLLOWING,
+      areas.compareDocumentPosition(sorting) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+    expect(
+      sorting.compareDocumentPosition(numberFormatting) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      numberFormatting.compareDocumentPosition(conditionalFormatting) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(screen.queryByText("Configure Pivot 1")).not.toBeInTheDocument()
+    expect(screen.getByRole("textbox", { name: "Pivot name" })).toBeVisible()
+    for (const heading of [sortingHeading, formattingHeading, conditionalFormattingHeading]) {
+      expect(heading.closest(".border")).toBeNull()
+      expect(heading.firstElementChild).toHaveClass(
+        "text-[11px]",
+        "font-bold",
+        "uppercase",
+        "tracking-[0.08em]",
+      )
+      expect(heading.firstElementChild).toHaveStyle({ color: "var(--text-muted)" })
+    }
+    expect(screen.queryByText("Format numeric Columns, Rows, and Values shown in the table."))
+      .not.toBeInTheDocument()
+
+    const sortingSettings = sortingHeading.nextElementSibling as HTMLElement
+    const formattingSettings = formattingHeading.nextElementSibling as HTMLElement
+    const conditionalFormattingSettings = conditionalFormattingHeading.nextElementSibling as HTMLElement
+    for (const settings of [sortingSettings, formattingSettings, conditionalFormattingSettings]) {
+      expect(settings).toHaveClass("mt-1.5", "rounded-lg", "border", "p-3")
+    }
+    expect(sorting).not.toHaveClass("border")
+    expect(numberFormatting).not.toHaveClass("border")
+    expect(conditionalFormatting).not.toHaveClass("border")
     expect(within(areas).queryByRole("combobox", { name: /Label order/i })).not.toBeInTheDocument()
     expect(within(areas).queryByRole("combobox", { name: /Sort rows by/i })).not.toBeInTheDocument()
     expect(within(areas).queryByRole("combobox", { name: /Colour scale/i })).not.toBeInTheDocument()
 
-    const sortBy = within(sorting).getByRole("combobox", { name: "Sort by" })
-    const order = within(sorting).getByRole("combobox", { name: "Order" })
+    const sortingControls = within(sortingSettings).getByTestId("pivot-sorting-controls")
+    expect(sortingControls).toHaveClass("grid", "grid-cols-2")
+    const sortBy = within(sortingControls).getByRole("combobox", { name: "Sort by" })
+    const order = within(sortingControls).getByRole("combobox", { name: "Order" })
+    expect(sortBy.closest("label")?.parentElement).toBe(sortingControls)
+    expect(order.closest("label")?.parentElement).toBe(sortingControls)
     expect(within(sortBy).getByRole("option", { name: "Default — Row labels" })).toBeInTheDocument()
     fireEvent.change(sortBy, { target: { value: "row_1" } })
     fireEvent.change(order, { target: { value: "descending" } })
     fireEvent.change(sortBy, { target: { value: "value_2" } })
 
-    const addRule = within(formatting).getByRole("button", {
+    const addRule = within(conditionalFormattingSettings).getByRole("button", {
       name: "Add conditional formatting rule",
     })
-    expect(within(formatting).getByText("No conditional formatting rules."))
+    expect(within(conditionalFormattingSettings).getByText("No conditional formatting rules."))
       .toBeInTheDocument()
+    const emptyRules = within(conditionalFormattingSettings).getByText("No conditional formatting rules.")
+    expect(
+      emptyRules.compareDocumentPosition(addRule) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     fireEvent.click(addRule)
     fireEvent.click(addRule)
+    expect(within(conditionalFormattingSettings).queryByText(
+      "All compatible Value fields already have rules.",
+    )).not.toBeInTheDocument()
 
-    const rules = within(formatting).getAllByRole("group", {
+    const rules = within(conditionalFormatting).getAllByRole("group", {
       name: /Conditional formatting rule for claims/,
     })
     expect(rules).toHaveLength(2)
@@ -272,13 +320,32 @@ describe("ExplorePivotsConfig", () => {
     expect(within(rules[1]).getByRole("combobox", {
       name: "Value field for conditional formatting rule 2",
     })).toHaveValue("value_2")
-    expect(within(rules[0]).getByRole("img", {
+    const firstSplit = within(rules[0]).getByRole("combobox", {
+      name: "Split scale by for conditional formatting rule 1",
+    })
+    const secondSplit = within(rules[1]).getByRole("combobox", {
+      name: "Split scale by for conditional formatting rule 2",
+    })
+    expect(within(firstSplit).getByRole("option", { name: "None — entire Value" })).toBeInTheDocument()
+    expect(within(firstSplit).getByRole("option", { name: "Row — region" })).toBeInTheDocument()
+    expect(within(firstSplit).getByRole("option", { name: "Column — year" })).toBeInTheDocument()
+    expect(within(firstSplit).queryByRole("option", { name: /Filter|Value — claims/ })).not.toBeInTheDocument()
+    fireEvent.change(firstSplit, { target: { value: "row_1" } })
+    fireEvent.change(secondSplit, { target: { value: "column_1" } })
+    const forwardPreview = within(rules[0]).getByRole("img", {
       name: "Colour scale preview for claims",
-    })).toBeVisible()
+    })
+    expect(forwardPreview).toBeVisible()
+    expect(forwardPreview.children[1]).toHaveStyle({
+      background: "linear-gradient(to right, #F8696B, #FFEB84, #63BE7B)",
+    })
     expect(within(rules[1]).getByRole("img", {
       name: "Colour scale preview for claims",
     })).toBeVisible()
     expect(addRule).toBeDisabled()
+    expect(
+      rules[1].compareDocumentPosition(addRule) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
 
     fireEvent.change(
       within(rules[1]).getByRole("combobox", {
@@ -286,6 +353,12 @@ describe("ExplorePivotsConfig", () => {
       }),
       { target: { value: "low_green_high_red" } },
     )
+    const reversePreview = within(rules[1]).getByRole("img", {
+      name: "Colour scale preview for claims",
+    })
+    expect(reversePreview.children[1]).toHaveStyle({
+      background: "linear-gradient(to right, #63BE7B, #FFEB84, #F8696B)",
+    })
 
     const persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
     expect(persisted.pivots[0].options.sort_by).toBe("value_2")
@@ -296,6 +369,8 @@ describe("ExplorePivotsConfig", () => {
     ])
     expect(persisted.pivots[0].values.map((value: { color_scale: string }) => value.color_scale))
       .toEqual(["low_red_high_green", "low_green_high_red"])
+    expect(persisted.pivots[0].values.map((value: { color_scale_split_by: string | null }) => value.color_scale_split_by))
+      .toEqual(["row_1", "column_1"])
 
     const valueZone = screen.getByRole("group", { name: "Values fields" })
     const aggregations = within(valueZone).getAllByRole("combobox", {
@@ -310,13 +385,13 @@ describe("ExplorePivotsConfig", () => {
     fireEvent.click(within(rules[0]).getByRole("button", {
       name: /Remove conditional formatting rule for claims/,
     }))
-    expect(within(formatting).getAllByRole("group", {
+    expect(within(conditionalFormatting).getAllByRole("group", {
       name: /Conditional formatting rule for claims/,
     })).toHaveLength(1)
     expect(addRule).toBeEnabled()
     fireEvent.click(addRule)
 
-    const currentRules = within(formatting).getAllByRole("group", {
+    const currentRules = within(conditionalFormatting).getAllByRole("group", {
       name: /Conditional formatting rule for/,
     })
     expect(currentRules).toHaveLength(2)
@@ -328,13 +403,129 @@ describe("ExplorePivotsConfig", () => {
       JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
         .pivots[0].values.map((value: { color_scale: string }) => value.color_scale),
     ).toEqual(["low_red_high_green", "none", "low_green_high_red"])
+    expect(
+      JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+        .pivots[0].values.map((value: { color_scale_split_by: string | null }) => value.color_scale_split_by),
+    ).toEqual([null, null, "column_1"])
     fireEvent.change(
       screen.getByRole("combobox", { name: "Aggregation for region" }),
       { target: { value: "min" } },
     )
-    expect(within(formatting).getAllByRole("group", {
+    expect(within(conditionalFormatting).getAllByRole("group", {
       name: /Conditional formatting rule for/,
     })).toHaveLength(1)
+    expect(
+      JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+        .pivots[0].values[2].color_scale_split_by,
+    ).toBeNull()
+  })
+
+  it("formats displayed placements as numbers, percentages, or currencies without offering Filters", () => {
+    const onCommittedUpdate = vi.fn()
+    render(
+      <PivotConfigHarness
+        initialConfig={{
+          pivots: [
+            fullPivot({
+              filters: [{ id: "filter_1", field: "region", members: [] }],
+              columns: [{ id: "column_1", field: "year" }],
+              rows: [{ id: "row_1", field: "region" }],
+              values: [
+                {
+                  id: "value_1",
+                  field: "claims",
+                  aggregation: "sum",
+                  display_name: "Claims",
+                },
+                {
+                  id: "value_2",
+                  field: "region",
+                  aggregation: "count",
+                  display_name: "Region count",
+                },
+              ],
+            }),
+          ],
+        }}
+        onCommittedUpdate={onCommittedUpdate}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+
+    const formatting = screen.getByTestId("pivot-formatting-section")
+    expect(within(formatting).getByRole("heading", { name: "Formatting" })).toBeVisible()
+    expect(within(formatting).getByRole("group", {
+      name: "Column 1 — year formatting",
+    })).toBeVisible()
+    expect(within(formatting).getByRole("group", {
+      name: "Row 1 — region formatting",
+    })).toHaveTextContent("Not numeric")
+    expect(within(formatting).queryByRole("group", {
+      name: /Filter 1/,
+    })).not.toBeInTheDocument()
+
+    const columnFormat = within(formatting).getByRole("combobox", {
+      name: "Number format for Column 1 — year",
+    })
+    const columnDecimals = within(formatting).getByRole("combobox", {
+      name: "Decimal places for Column 1 — year",
+    })
+    const columnGrouping = within(formatting).getByRole("checkbox", {
+      name: "Use thousands separator for Column 1 — year",
+    })
+    const valueFormat = within(formatting).getByRole("combobox", {
+      name: "Number format for Value 1 — Claims",
+    })
+    const valueDecimals = within(formatting).getByRole("combobox", {
+      name: "Decimal places for Value 1 — Claims",
+    })
+    const countDecimals = within(formatting).getByRole("combobox", {
+      name: "Decimal places for Value 2 — Region count",
+    })
+    const countGrouping = within(formatting).getByRole("checkbox", {
+      name: "Use thousands separator for Value 2 — Region count",
+    })
+    expect(columnFormat).toHaveValue("general")
+    expect(columnDecimals).toHaveValue("automatic")
+    expect(columnGrouping).not.toBeChecked()
+    expect(valueDecimals).toHaveValue("automatic")
+    expect(countDecimals).toBeEnabled()
+    expect(countGrouping).not.toBeChecked()
+    expect(within(columnFormat).getByRole("option", { name: "General" })).toBeVisible()
+    expect(within(columnFormat).getByRole("option", { name: "Number" })).toBeVisible()
+    expect(within(columnFormat).getByRole("option", { name: "Percentage" })).toBeVisible()
+    expect(within(columnFormat).getByRole("option", { name: "Currency (£ GBP)" })).toBeVisible()
+    expect(within(columnFormat).getByRole("option", { name: "Currency (US$ USD)" })).toBeVisible()
+    expect(within(columnFormat).getByRole("option", { name: "Currency (€ EUR)" })).toBeVisible()
+    expect(within(columnDecimals).getByRole("option", { name: "Automatic" })).toBeVisible()
+    expect(within(columnDecimals).getByRole("option", { name: "10" })).toBeVisible()
+
+    fireEvent.change(columnFormat, { target: { value: "percent" } })
+    expect(columnGrouping).toBeChecked()
+    fireEvent.change(columnDecimals, { target: { value: "0" } })
+    fireEvent.click(columnGrouping)
+    fireEvent.change(valueFormat, { target: { value: "currency_gbp" } })
+    fireEvent.change(valueDecimals, { target: { value: "2" } })
+    fireEvent.click(countGrouping)
+
+    expect(onCommittedUpdate).toHaveBeenCalledTimes(6)
+    const persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivots[0].columns[0]).toMatchObject({
+      number_format: "percent",
+      decimal_places: 0,
+      use_grouping: false,
+    })
+    expect(persisted.pivots[0].rows[0].decimal_places).toBeNull()
+    expect(persisted.pivots[0].values[0]).toMatchObject({
+      number_format: "currency_gbp",
+      decimal_places: 2,
+      use_grouping: true,
+    })
+    expect(persisted.pivots[0].values[1]).toMatchObject({
+      number_format: "number",
+      decimal_places: null,
+      use_grouping: true,
+    })
   })
 
   it("shows every persisted conditional formatting rule without selecting between them", () => {
@@ -422,8 +613,22 @@ describe("ExplorePivotsConfig", () => {
       screen.getByTestId("persisted-config").textContent ?? "{}",
     )
     expect(persisted.pivots[0].rows).toEqual([
-      { id: "row_1", field: "region", sort: "ascending" },
-      { id: "row_2", field: "year", sort: "ascending" },
+      {
+        id: "row_1",
+        field: "region",
+        sort: "ascending",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
+      {
+        id: "row_2",
+        field: "year",
+        sort: "ascending",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
     ])
   })
 
@@ -454,8 +659,22 @@ describe("ExplorePivotsConfig", () => {
       JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
         .pivots[0].rows,
     ).toEqual([
-      { id: "row_2", field: "year", sort: "ascending" },
-      { id: "row_1", field: "region", sort: "ascending" },
+      {
+        id: "row_2",
+        field: "year",
+        sort: "ascending",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
+      {
+        id: "row_1",
+        field: "region",
+        sort: "ascending",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
     ])
     fireEvent.click(screen.getByRole("button", { name: "Remove region from Rows" }))
     fireEvent.click(screen.getByRole("checkbox", { name: "Show row grand totals" }))
@@ -630,8 +849,23 @@ describe("ExplorePivotsConfig", () => {
         initialConfig={{
           pivots: [
             fullPivot({
-              columns: [{ id: "column_1", field: "year" }],
+              columns: [{
+                id: "column_1",
+                field: "year",
+                number_format: "currency_usd",
+                decimal_places: 4,
+                use_grouping: false,
+              }],
               rows: [{ id: "row_1", field: "region" }],
+              values: [{
+                id: "value_1",
+                field: "claims",
+                aggregation: "sum",
+                display_name: "Claims",
+                sort_rows: "none",
+                color_scale: "low_red_high_green",
+                color_scale_split_by: "column_1",
+              }],
             }),
           ],
         }}
@@ -666,11 +900,65 @@ describe("ExplorePivotsConfig", () => {
 
     const persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
     expect(persisted.pivots[0].columns).toEqual([])
+    expect(persisted.pivots[0].values[0].color_scale_split_by).toBe("column_1")
     expect(persisted.pivots[0].rows).toEqual([
-      { id: "column_1", field: "year", sort: "ascending" },
-      { id: "row_1", field: "region", sort: "ascending" },
+      {
+        id: "column_1",
+        field: "year",
+        sort: "ascending",
+        number_format: "currency_usd",
+        decimal_places: 4,
+        use_grouping: false,
+      },
+      {
+        id: "row_1",
+        field: "region",
+        sort: "ascending",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
     ])
     expect(onCommittedUpdate).toHaveBeenCalledTimes(1)
+
+    const movedSource = screen.getByRole("group", { name: "year in Rows" })
+    const filterTarget = screen.getByRole("group", { name: "Filters fields" })
+    const secondTransfer = createDragDataTransfer()
+    fireEvent.dragStart(movedSource, { dataTransfer: secondTransfer })
+    fireEvent.dragOver(filterTarget, { dataTransfer: secondTransfer })
+    fireEvent.drop(filterTarget, { dataTransfer: secondTransfer })
+
+    const movedToFilter = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(movedToFilter.pivots[0].filters).toEqual([
+      { id: "column_1", field: "year", members: [] },
+    ])
+    expect(movedToFilter.pivots[0].values[0].color_scale_split_by).toBeNull()
+    expect(onCommittedUpdate).toHaveBeenCalledTimes(2)
+
+    const filterSource = screen.getByRole("group", { name: "year in Filters" })
+    const columnTarget = screen.getByRole("group", { name: "Columns fields" })
+    const thirdTransfer = createDragDataTransfer()
+    fireEvent.dragStart(filterSource, { dataTransfer: thirdTransfer })
+    fireEvent.dragOver(columnTarget, { dataTransfer: thirdTransfer })
+    fireEvent.drop(columnTarget, { dataTransfer: thirdTransfer })
+
+    const movedBackToDisplay = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(movedBackToDisplay.pivots[0].filters).toEqual([])
+    expect(movedBackToDisplay.pivots[0].columns).toEqual([
+      {
+        id: "column_1",
+        field: "year",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
+    ])
+    expect(movedBackToDisplay.pivots[0].values[0].color_scale_split_by).toBeNull()
+    expect(onCommittedUpdate).toHaveBeenCalledTimes(3)
   })
 
   it("rejects a drag into a duplicate-restricted target zone", () => {
@@ -741,8 +1029,22 @@ describe("ExplorePivotsConfig", () => {
 
     const persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
     expect(persisted.pivots[0].rows).toEqual([
-      { id: "row_2", field: "year", sort: "ascending" },
-      { id: "row_1", field: "region", sort: "ascending" },
+      {
+        id: "row_2",
+        field: "year",
+        sort: "ascending",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
+      {
+        id: "row_1",
+        field: "region",
+        sort: "ascending",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      },
     ])
     expect(onCommittedUpdate).toHaveBeenCalledTimes(1)
   })

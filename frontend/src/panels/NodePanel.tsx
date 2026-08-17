@@ -702,6 +702,7 @@ export default function NodePanel({
   const rememberedModellingPane = useUIStore((s) => node?.id ? s.modellingPanes[node.id] : undefined)
   const setModellingPane = useUIStore((s) => s.setModellingPane)
   const hasActiveTrainJob = useNodeResultsStore((s) => node?.id ? Boolean(s.trainJobs[node.id]) : false)
+  const cachedExploreResult = useNodeResultsStore((s) => node?.id ? s.exploreResults[node.id] : undefined)
   const activeSource = useSettingsStore((s) => s.activeSource)
   const streamingChunkSize = useSettingsStore((s) => s.streamingChunkSize)
 
@@ -820,6 +821,14 @@ export default function NodePanel({
     // upstream schema, so they should preserve this array identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedNodeId, upstreamSchemaSignature])
+  const pivotColumns = useMemo(() => {
+    const report = cachedExploreResult?.configHash === exploreConfigHash
+      ? cachedExploreResult.result
+      : null
+    return report
+      ? report.columns.map(({ name, dtype }) => ({ name, dtype }))
+      : upstreamColumns
+  }, [cachedExploreResult, exploreConfigHash, upstreamColumns])
   if (!node) return null
 
   const isInstance = !!config.instanceOf
@@ -925,7 +934,7 @@ export default function NodePanel({
                 config={config}
                 onUpdate={handleConfigUpdate}
                 nodeId={node.id}
-                upstreamColumns={upstreamColumns}
+                upstreamColumns={pivotColumns}
                 loadFilterMembers={loadPivotFilterMembers}
                 currentConfigHash={exploreConfigHash}
               />

@@ -280,12 +280,18 @@ export default function ZoneSection({
                             ? {
                                 ...candidate,
                                 aggregation,
-                                color_scale:
+                                 color_scale:
+                                   aggregation === "count" ||
+                                   aggregation === "distinct_count" ||
+                                   (column !== undefined && isNumericPivotDtype(column.dtype))
+                                     ? candidate.color_scale
+                                     : "none",
+                                color_scale_split_by:
                                   aggregation === "count" ||
                                   aggregation === "distinct_count" ||
                                   (column !== undefined && isNumericPivotDtype(column.dtype))
-                                    ? candidate.color_scale
-                                    : "none",
+                                    ? candidate.color_scale_split_by ?? null
+                                    : null,
                               }
                             : candidate,
                         ),

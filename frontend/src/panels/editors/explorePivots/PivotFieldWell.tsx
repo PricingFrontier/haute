@@ -76,8 +76,19 @@ export default function PivotFieldWell({
               display_name: column.name,
               sort_rows: "none",
               color_scale: "none",
+              color_scale_split_by: null,
+              number_format: "general",
+              decimal_places: null,
+              use_grouping: true,
             }
-          : { id, field: column.name, sort: "ascending" }
+          : {
+              id,
+              field: column.name,
+              sort: "ascending",
+              number_format: "general",
+              decimal_places: null,
+              use_grouping: true,
+            }
 
     persistPivot(normalizePivotOrdering(appendToZone(pivot, zone, placement, column.dtype)))
   }
