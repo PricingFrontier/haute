@@ -428,8 +428,10 @@ direction. Its width-constrained
 two-column row; changing them atomically resets dormant Row directions to ascending and every
 non-target Value's `sort_rows` to none. A full-width
 Formatting section follows Sorting with the same standalone-title-then-bordered-settings pattern and
-lists placements in Columns, Rows, Values order without an explanatory introduction. Each row is identified by its zone position and
-field/display label without exposing its internal id. Numeric Columns/Rows and numeric-producing
+lists placements in Columns, Rows, then combined-`value_order` output order without an explanatory
+introduction. Each row is identified by its kind position and field/display label without exposing
+its internal id; Values and selected formulas keep their mixed display order but number
+independently per kind, so a leading formula never shifts a `Value N` label. Numeric Columns/Rows and numeric-producing
 Values expose native Format and Decimal places selects plus a Thousands separator checkbox.
 Format choices are General, Number, Percentage, Currency (£ GBP), Currency (US$ USD), and Currency
 (€ EUR); precision is Automatic followed by 0 through 10. Non-numeric placements remain visible

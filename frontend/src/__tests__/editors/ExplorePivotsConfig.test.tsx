@@ -842,6 +842,45 @@ describe("ExplorePivotsConfig", () => {
     })
   })
 
+  it("numbers Formatting rows per kind so a leading formula does not shift Value labels", () => {
+    const formula: PivotFormulaPlacement = {
+      id: "formula_1",
+      reference: "double_claims",
+      display_name: "Double claims",
+      expression: 'pl.col("claims").sum() * 2',
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
+    }
+    const pivot = fullPivot({
+      values: [{
+        id: "value_1",
+        field: "claims",
+        aggregation: "sum",
+        reference: "claims_sum",
+        display_name: "Claims",
+      }],
+      formulas: [formula],
+      value_order: ["formula_1", "value_1"],
+    })
+    render(
+      <PivotConfigHarness
+        initialConfig={{
+          pivot_formulas: [formula],
+          pivots: [{ ...pivot, formulas: [formula.id] }],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+
+    const formatting = screen.getByTestId("pivot-formatting-section")
+    const groups = within(formatting).getAllByRole("group")
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual([
+      "Formula 1 — Double claims formatting",
+      "Value 1 — Claims formatting",
+    ])
+  })
+
   it("shows every persisted conditional formatting rule without selecting between them", () => {
     render(
       <PivotConfigHarness

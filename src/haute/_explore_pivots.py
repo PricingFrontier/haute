@@ -645,21 +645,31 @@ def _validate_formulas(
     raw: Any,
     *,
     context: str,
-    card_index: int,
+    card_index: int | None,
     placement_ids: set[str],
     references: set[str],
 ) -> list[dict[str, Any]]:
+    """Validate resolved formula objects for one card or the shared library.
+
+    ``card_index`` is the owning card's position, or ``None`` when validating the
+    Explore-level ``pivot_formulas`` library; library errors then report each
+    formula's own position in that list as ``index``.
+    """
+
     if not isinstance(raw, list):
         raise ConfigError(
-            "Explore pivot formulas must be a list.", context=context, index=card_index
+            "Explore pivot formulas must be a list.",
+            context=context,
+            **({} if card_index is None else {"index": card_index}),
         )
     formulas: list[dict[str, Any]] = []
     for formula_index, formula in enumerate(raw):
+        entry_index = formula_index if card_index is None else card_index
         if not isinstance(formula, dict):
             raise ConfigError(
                 "Explore pivot formula entries must be dicts.",
                 context=context,
-                index=card_index,
+                index=entry_index,
                 formula_index=formula_index,
             )
         copied = _copy_known_dict(
@@ -676,34 +686,34 @@ def _validate_formulas(
                 }
             ),
             context=context,
-            index=card_index,
+            index=entry_index,
             scope="formula",
         )
         formula_id = _require_non_empty_string(
-            copied.get("id"), context=context, index=card_index, label="formula id"
+            copied.get("id"), context=context, index=entry_index, label="formula id"
         )
         if formula_id in placement_ids:
             raise ConfigError(
                 "Explore pivot has a duplicate placement id.",
                 context=context,
-                index=card_index,
+                index=entry_index,
                 placement_id=formula_id,
             )
         display_name = _require_non_empty_string(
             copied.get("display_name"),
             context=context,
-            index=card_index,
+            index=entry_index,
             label="formula display name",
         )
         reference = copied.get("reference")
         reference = _require_non_empty_string(
-            reference, context=context, index=card_index, label="formula reference"
+            reference, context=context, index=entry_index, label="formula reference"
         )
         if not _REFERENCE_PATTERN.fullmatch(reference) or reference.startswith("__haute_"):
             raise ConfigError(
                 "Explore pivot formula reference is invalid.",
                 context=context,
-                index=card_index,
+                index=entry_index,
                 formula_index=formula_index,
                 reference=reference,
             )
@@ -711,24 +721,24 @@ def _validate_formulas(
             raise ConfigError(
                 "Explore pivot has a duplicate formula reference.",
                 context=context,
-                index=card_index,
+                index=entry_index,
                 formula_index=formula_index,
                 reference=reference,
             )
         expression = _require_non_empty_string(
-            copied.get("expression"), context=context, index=card_index, label="formula expression"
+            copied.get("expression"), context=context, index=entry_index, label="formula expression"
         )
         if "decimal_places" not in copied:
             raise ConfigError(
                 "Explore pivot decimal places is required.",
                 context=context,
-                index=card_index,
+                index=entry_index,
                 formula_index=formula_index,
             )
         decimal_places = _validate_decimal_places(
             copied["decimal_places"],
             context=context,
-            card_index=card_index,
+            card_index=entry_index,
             placement_index=formula_index,
         )
         copied.update(
@@ -740,11 +750,11 @@ def _validate_formulas(
             number_format=_validate_number_format(
                 copied,
                 context=context,
-                card_index=card_index,
+                card_index=entry_index,
                 placement_index=formula_index,
             ),
             use_grouping=_validate_grouping(
-                copied, context=context, card_index=card_index, placement_index=formula_index
+                copied, context=context, card_index=entry_index, placement_index=formula_index
             ),
         )
         placement_ids.add(formula_id)
@@ -1058,27 +1068,29 @@ def validate_explore_pivot_state(
     definitions = _validate_formulas(
         list(pivot_formulas or []),
         context=context,
-        card_index=-1,
+        card_index=None,
         placement_ids=set(),
         references=set(),
     )
     definitions_by_id = {definition["id"]: definition for definition in definitions}
 
     selections: list[list[str]] = []
-    for pivot_index, pivot in enumerate(pivots):
-        if not isinstance(pivot, dict):
+    resolved_pivots: list[dict[str, Any]] = []
+    for pivot_index, raw_pivot in enumerate(pivots):
+        if not isinstance(raw_pivot, dict):
             raise ConfigError(
                 "Explore pivot entries must be dicts.",
                 context=context,
                 index=pivot_index,
-                actual_type=type(pivot).__name__,
+                actual_type=type(raw_pivot).__name__,
             )
-        raw_formulas = pivot.get("formulas")
+        raw_formulas = raw_pivot.get("formulas")
         if not isinstance(raw_formulas, list):
             raise ConfigError(
                 "Explore pivot formulas must be a list.", context=context, index=pivot_index
             )
-        ids: list[str] = []
+        selected_ids: list[str] = []
+        selected: list[dict[str, Any]] = []
         for formula_index, selection in enumerate(raw_formulas):
             if not isinstance(selection, str) or not selection.strip():
                 raise ConfigError(
@@ -1087,54 +1099,31 @@ def validate_explore_pivot_state(
                     index=pivot_index,
                     formula_index=formula_index,
                 )
-            formula_id = selection
-            if formula_id in ids:
+            if selection in selected_ids:
                 raise ConfigError(
                     "Explore pivot has a duplicate formula selection.",
                     context=context,
                     index=pivot_index,
-                    formula_id=formula_id,
+                    formula_id=selection,
                 )
-            ids.append(formula_id)
-        selections.append(ids)
-
-    validated_pivots: list[dict[str, Any]] = []
-    pivot_ids: set[str] = set()
-    pivot_names: set[str] = set()
-    for pivot_index, (raw_pivot, selected_ids) in enumerate(zip(pivots, selections, strict=True)):
-        base_raw = copy.deepcopy(raw_pivot)
-        selected: list[dict[str, Any]] = []
-        for formula_id in selected_ids:
-            definition = definitions_by_id.get(formula_id)
+            definition = definitions_by_id.get(selection)
             if definition is None:
                 raise ConfigError(
                     "Explore pivot selected an unknown shared formula id.",
                     context=context,
                     index=pivot_index,
-                    formula_id=formula_id,
+                    formula_id=selection,
                 )
+            selected_ids.append(selection)
             selected.append(copy.deepcopy(definition))
-        base_raw["formulas"] = selected
-        pivot = _validate_v1(base_raw, context=context, index=pivot_index)
-        pivot["formulas"] = list(selected_ids)
+        selections.append(selected_ids)
+        resolved = copy.deepcopy(raw_pivot)
+        resolved["formulas"] = selected
+        resolved_pivots.append(resolved)
 
-        pivot_id = pivot["id"]
-        pivot_name_key = pivot["name"].strip().lower()
-        if pivot_id in pivot_ids:
-            raise ConfigError(
-                "Explore pivot has a duplicate pivot id.",
-                context=context,
-                index=pivot_index,
-                pivot_id=pivot_id,
-            )
-        if pivot_name_key in pivot_names:
-            raise ConfigError(
-                "Explore pivot has a duplicate pivot name.",
-                context=context,
-                index=pivot_index,
-                pivot_name=pivot["name"],
-            )
-        pivot_ids.add(pivot_id)
-        pivot_names.add(pivot_name_key)
-        validated_pivots.append(pivot)
+    # Card validation and the duplicate pivot id/name checks are shared with the
+    # request-path validator; only the persisted formula-id selections differ.
+    validated_pivots = validate_explore_pivots(resolved_pivots, context=context)
+    for pivot, selected_ids in zip(validated_pivots, selections, strict=True):
+        pivot["formulas"] = list(selected_ids)
     return definitions, validated_pivots

@@ -121,7 +121,8 @@ backend API modules own validation and persistence.
   inside a bordered settings box. Immediately after the grid, the Sorting settings box exposes
   `Sort by` (default Row-label order, any placed Row, or any placed Value) and its matching `Order`
   control side by side. A following Formatting section lists every
-  displayed Column, Row, and Value placement. Numeric output can use General, Number, Percentage,
+  displayed Column, Row, Value, and selected-formula placement, with Values and formulas numbered
+  independently per kind. Numeric output can use General, Number, Percentage,
   GBP currency, USD currency, or EUR currency formatting, Automatic or a fixed 0–10 decimal
   places, and an explicit thousands-separator option. Filters are omitted because they do not
   render in the pivot table; non-numeric placements remain identified but have no numeric-format

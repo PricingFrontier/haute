@@ -265,6 +265,15 @@ def test_validate_explore_pivot_state_rejects_incomplete_formula_formatting(
         validate_explore_pivot_state([definition], [_pivot(formulas=["formula_1"])], context="test")
 
 
+def test_validate_explore_pivot_state_reports_library_errors_at_the_formula_position() -> None:
+    bad = _formula(id="formula_2", reference="second_share")
+    del bad["number_format"]
+
+    with pytest.raises(ConfigError, match="number format is required") as exc_info:
+        validate_explore_pivot_state([_formula(), bad], [], context="test")
+    assert exc_info.value.context["index"] == 1
+
+
 def test_value_order_requires_current_v1_cards_and_validates_selected_formula_order() -> None:
     definition = _formula()
     values = [

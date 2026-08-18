@@ -117,11 +117,10 @@ function decoratedLabel(
 export function effectivePivotNumberFormat(
   formatting: PivotNumberFormatting,
 ): PivotNumberFormat {
-  return formatting.number_format ?? (
-    formatting.decimal_places === null || formatting.decimal_places === undefined
-      ? "general"
-      : "number"
-  )
+  // Absent formatting only occurs for sources without persisted settings (a
+  // filter moving into a displayed zone, or a retained result whose value no
+  // longer exists in the pivot); parsed placements always carry the full trio.
+  return formatting.number_format ?? "general"
 }
 
 export function formatPivotNumber(

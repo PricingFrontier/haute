@@ -44,6 +44,26 @@ type PivotFieldWellProps = {
   formulaFieldInserter?: ((field: string) => void) | null
 }
 
+function isFormulaInValues(pivot: ExplorePivotConfig, placementId: string): boolean {
+  return pivot.formulas.some((formula) => formula.id === placementId)
+}
+
+/**
+ * Where a Values-zone output lands in `value_order` when dropped at
+ * `targetIndex`, or null when the output is not in the order.
+ */
+function valuesReorderPlan(
+  pivot: ExplorePivotConfig,
+  placementId: string,
+  targetIndex: number,
+): { sourceIndex: number; insertionIndex: number } | null {
+  const sourceIndex = pivot.value_order.indexOf(placementId)
+  if (sourceIndex < 0) return null
+  const clampedIndex = Math.max(0, Math.min(targetIndex, pivot.value_order.length))
+  const insertionIndex = sourceIndex < clampedIndex ? clampedIndex - 1 : clampedIndex
+  return { sourceIndex, insertionIndex }
+}
+
 export default function PivotFieldWell({
   pivot,
   persistPivot,
@@ -107,16 +127,12 @@ export default function PivotFieldWell({
     targetZone: Zone,
     targetIndex: number,
   ) => {
-    const isFormula = sourceZone === "values" && pivot.formulas.some(
-      (formula) => formula.id === placementId,
-    )
-    if (isFormula && targetZone !== "values") return false
+    if (sourceZone === "values" && isFormulaInValues(pivot, placementId) && targetZone !== "values") {
+      return false
+    }
     if (sourceZone === "values" && targetZone === "values") {
-      const sourceIndex = pivot.value_order.indexOf(placementId)
-      if (sourceIndex < 0) return false
-      const clampedIndex = Math.max(0, Math.min(targetIndex, pivot.value_order.length))
-      const insertionIndex = sourceIndex < clampedIndex ? clampedIndex - 1 : clampedIndex
-      return insertionIndex !== sourceIndex
+      const plan = valuesReorderPlan(pivot, placementId, targetIndex)
+      return plan !== null && plan.insertionIndex !== plan.sourceIndex
     }
     const sourcePlacements = zonePlacements(pivot, sourceZone)
     const sourceIndex = sourcePlacements.findIndex(
@@ -160,16 +176,14 @@ export default function PivotFieldWell({
       return
     }
 
-    const isFormula = sourceZone === "values" && pivot.formulas.some(
-      (formula) => formula.id === placementId,
-    )
-    if (isFormula && targetZone !== "values") return
+    if (sourceZone === "values" && isFormulaInValues(pivot, placementId) && targetZone !== "values") {
+      return
+    }
     if (sourceZone === "values" && targetZone === "values") {
+      const plan = valuesReorderPlan(pivot, placementId, targetIndex)
+      if (plan === null) return
       const nextOrder = pivot.value_order.filter((id) => id !== placementId)
-      const sourceIndex = pivot.value_order.indexOf(placementId)
-      const clampedIndex = Math.max(0, Math.min(targetIndex, pivot.value_order.length))
-      const insertionIndex = sourceIndex < clampedIndex ? clampedIndex - 1 : clampedIndex
-      nextOrder.splice(insertionIndex, 0, placementId)
+      nextOrder.splice(plan.insertionIndex, 0, placementId)
       persistPivot({ ...pivot, value_order: nextOrder })
       return
     }

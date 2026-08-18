@@ -95,6 +95,33 @@ export default function PivotFormattingSection({
   const columnsByName = new Map(
     upstreamColumns.map((column) => [column.name, column]),
   )
+  // Outputs keep their mixed display order, but each kind numbers its own
+  // positions so a Value keeps its "Value N" identity when formulas precede it.
+  const outputs = pivotOutputs(pivot)
+  const kindPositions = new Map([
+    ...outputs
+      .filter(isPivotFormulaPlacement)
+      .map((placement, index) => [placement.id, index + 1] as const),
+    ...outputs
+      .filter((placement) => !isPivotFormulaPlacement(placement))
+      .map((placement, index) => [placement.id, index + 1] as const),
+  ])
+  const outputEntries: FormattingEntry[] = outputs.map((placement) =>
+    isPivotFormulaPlacement(placement)
+      ? {
+          zone: "formulas" as const,
+          placement,
+          positionLabel: `Formula ${kindPositions.get(placement.id)}`,
+          displayLabel: placement.display_name,
+          numeric: true,
+        }
+      : {
+          zone: "values" as const,
+          placement,
+          positionLabel: `Value ${kindPositions.get(placement.id)}`,
+          displayLabel: placement.display_name,
+          numeric: isNumericProducingValue(placement, columnsByName),
+        })
   const entries: FormattingEntry[] = [
     ...pivot.columns.map((placement, index) => ({
       zone: "columns" as const,
@@ -110,21 +137,7 @@ export default function PivotFormattingSection({
       displayLabel: placement.field,
       numeric: isNumericPivotDtype(columnsByName.get(placement.field)?.dtype ?? ""),
     })),
-    ...pivotOutputs(pivot).map((placement, index) => isPivotFormulaPlacement(placement)
-      ? {
-          zone: "formulas" as const,
-          placement,
-          positionLabel: `Formula ${index + 1}`,
-          displayLabel: placement.display_name,
-          numeric: true,
-        }
-      : {
-          zone: "values" as const,
-          placement,
-          positionLabel: `Value ${index + 1}`,
-          displayLabel: placement.display_name,
-          numeric: isNumericProducingValue(placement, columnsByName),
-        }),
+    ...outputEntries,
   ]
 
   const persistFormatting = (
