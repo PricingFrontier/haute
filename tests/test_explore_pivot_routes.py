@@ -589,6 +589,73 @@ def test_pivot_formula_failures_are_typed(
     assert final["failure"]["dimensions"] == {"formula_id": "formula_1"}
 
 
+def test_pivot_formula_runtime_failure_is_typed(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "runtime-formula-failure.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": ["not-a-number"]}).write_parquet(
+        path
+    )
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[],
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "calculated",
+                "display_name": "Calculated",
+                "expression": 'pl.col("claims").cast(pl.Int64).sum()',
+            }
+        ],
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "contract_error"
+    assert result is None
+    assert final["failure"] == {
+        "reason_code": "invalid_pivot_formula",
+        "message": "A pivot formula failed while evaluating the grouped data.",
+        "remediation": "Check the selected formulas against the source field values and types.",
+        "dimensions": {"formula_ids": "formula_1"},
+    }
+
+
+def test_pivot_formula_metadata_failure_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from haute.routes import _pivot_service as pivot_module
+
+    class BrokenMetadata:
+        @staticmethod
+        def root_names() -> list[str]:
+            raise RuntimeError("metadata unavailable")
+
+    class BrokenExpression:
+        meta = BrokenMetadata()
+
+    def broken_formula_expression(_formula):
+        return BrokenExpression()
+
+    monkeypatch.setattr(pivot_module, "_formula_expression", broken_formula_expression)
+    formula = {
+        "id": "formula_1",
+        "reference": "calculated",
+        "display_name": "Calculated",
+        "expression": 'pl.col("claims").sum()',
+    }
+
+    with pytest.raises(pivot_module.PivotContractError) as caught:
+        pivot_module._compile_formulas([formula], {"claims": pl.Float64})
+
+    assert caught.value.failure.model_dump() == {
+        "reason_code": "invalid_pivot_formula",
+        "message": "Pivot formula is invalid.",
+        "remediation": "Use a safe Python expression that returns one Polars expression.",
+        "dimensions": {"formula_id": "formula_1"},
+    }
+
+
 def test_pivot_formula_missing_source_field_is_typed_and_remediable(
     client: TestClient,
     tmp_path: Path,
