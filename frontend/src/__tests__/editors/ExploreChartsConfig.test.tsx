@@ -58,17 +58,21 @@ function pivot(
         id: `${id}-paid`,
         field: "paid",
         aggregation: "sum",
+        reference: "paid_sum",
         display_name: "Paid",
       },
       {
         id: `${id}-count`,
         field: "claim_id",
         aggregation: "count",
+        reference: "claim_id_count",
         display_name: "Claims",
       },
     ],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? (overrides.values ?? []).map(({ id }) => id),
   }
 }
 
@@ -775,6 +779,7 @@ describe("ExploreChartsConfig", () => {
           id: "source-rate",
           field: "rate",
           aggregation: "average",
+          reference: "rate_mean",
           display_name: "Rate",
         },
       ],
@@ -841,6 +846,7 @@ describe("ExploreChartsConfig", () => {
           id: "second-average",
           field: "paid",
           aggregation: "average",
+          reference: "paid_mean",
           display_name: "Average paid",
         },
       ],

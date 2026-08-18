@@ -167,6 +167,45 @@ Out of scope (owned elsewhere):
   `average`, `min`, `max`, `median`, and `distinct_count`; numeric-only aggregations reject
   incompatible dtypes, Count counts non-null/non-NaN values, and Distinct count excludes
   null/NaN. Repeated Values are legal because placement ids, not field names, identify measures.
+  Each Value also owns a stable, unique formula reference derived from its field followed by its
+  aggregation (for example `total_claims_sum` and `total_claims_mean`). Repeating the exact same
+  field/aggregation appends a numeric suffix.
+- An Explore node owns one ordered library of shared calculated fields in `pivot_formulas`; a
+  formula is defined once and can be added to the Values area of any compatible pivot. Each pivot
+  persists its selected formula ids plus one `value_order` containing every ordinary Value and
+  selected formula id exactly once. The Values area renders that combined order: ordinary Values
+  retain their existing cross-area drag behaviour, while formulas can be dragged or keyboard-
+  reordered only within Values and are blocked from Filters, Columns, and Rows. This order is the
+  displayed pivot-column order. A missing `value_order` on an older version-1 card normalises to
+  ordinary Values followed by selected formulas. Beneath the normal field selector, the formula
+  area mirrors the source-field picker with a formula search input and a content-sized list that
+  grows to a bounded, scrolling maximum. Its compact calculated-field rows expose `Edit formula`
+  and `Add to: Values` actions. It opens one
+  add/edit form at a time beneath the list and does not leave every code editor expanded. A
+  selected formula is also visible and removable in that pivot's Values area.
+- Each shared formula has a stable id/reference, display name, one Python expression that must
+  return a Polars `pl.Expr`, and shared number-formatting settings. The expression receives the
+  complete Polars namespace and the existing user-code sandbox rules; there is no formula-function
+  allowlist. A formula is a self-contained grouped expression over source fields, for example
+  `pl.col("total_claims").sum() * 2`; source fields do not have to be present in the pivot's visible
+  Values area. While a formula editor is open, each source-field row temporarily replaces its
+  normal Filter/Columns/Rows/Values placement actions with `Add to: Formula`, which inserts that
+  field's `pl.col(...)` expression at the editor cursor; closing the editor restores the normal
+  placement actions. `Add to: Values` depends only on whether that formula is already selected and
+  whether its output reference would collide. Value/formula output aliases are identities, not
+  formula inputs, so formulas do not depend on selected Values or earlier formulas and there is no
+  missing-Value dependency state.
+  The engine derives root source-column names from Polars, rejects unavailable source fields, and
+  requires the expression to produce one scalar aggregate per group; an unaggregated column
+  expression that produces a list is invalid. It never inserts a hidden Value, guesses an
+  aggregation, or drops the formula implicitly.
+  The engine evaluates selected formula expressions alongside Values for each ordinary or total
+  grouping context, before the grouped result is widened into the displayed matrix.
+  Consequently one definition applies to every Rows/Columns bucket and every pivot that selects
+  it, while totals aggregate the underlying filtered rows first and then evaluate the formula
+  rather than combining displayed formula cells. A syntax error, unavailable source field,
+  non-`pl.Expr` result, non-scalar grouped result, or incompatible Polars expression fails clearly
+  as an invalid pivot formula; it is never omitted or replaced with a fallback value.
 - Each Value may persist a presentation-only conditional colour scale and an optional split-by
   placement id. A split is valid only for an active scale and must reference a currently placed Row
   or Column; omitted split fields normalise to null. It does not change aggregation or result order.
@@ -176,8 +215,10 @@ Out of scope (owned elsewhere):
   truncated, sampled, downsampled, or partially published.
 - A completed result is cached by the exact Explore dataframe-cache key, pivot result schema
   version, ordered calculation placements, exact filters, aggregations, row/value sort settings,
-  and total options. Card `name`/`enabled`, Value display names, number-format, decimal-place and
-  grouping settings, conditional colour scales and their split-by references, and
+  ordered selected formula ids/references/expressions, the combined `value_order`, and total
+  options. Card `name`/`enabled`,
+  Value or formula display names, number-format, decimal-place and grouping settings, conditional
+  colour scales and their split-by references, and
   presentation-only/future formatting fields
   are excluded, so those edits reuse the calculation.
   Starting a newer calculation supersedes only
@@ -211,9 +252,17 @@ Out of scope (owned elsewhere):
   item without `version` is rejected, never migrated.
   A v1 card requires exactly supported `version: 1`, non-empty `id` and `name`, Boolean
   `enabled`, list-valued `filters`/`columns`/`rows`/`values`, and Boolean
-  `options.row_grand_totals`/`options.column_grand_totals`. Card ids and lower-cased trimmed names
-  are unique. Placement ids are non-empty and unique across the card; Filter/Rows/Columns reject
-  a repeated field within the same zone, while Values may repeat fields. Every known nested field
+  `options.row_grand_totals`/`options.column_grand_totals`; `formulas` is a required list of unique
+  ids from the Explore node's `pivot_formulas` library. `value_order`, when present, is a list of
+  non-empty unique ids that covers every placed Value and selected formula exactly once; omission
+  receives the deterministic Values-then-formulas version-1 default.
+  Card ids and lower-cased trimmed names are unique. Placement ids are non-empty and unique across
+  the card; Filter/Rows/Columns reject a repeated field within the same zone, while Values may
+  repeat fields. Value references are required valid non-reserved identifiers and unique within
+  the card. Shared formula definitions live only in `pivot_formulas`; formula references are
+  required, and shared formula ids/references are unique in the Explore node. Inline formula
+  objects, missing references, and missing formula selections are rejected rather than migrated.
+  Every known nested field
   is type checked and unknown string-keyed fields are retained only when they use the finite,
   recursively simple-literal grammar. An empty list remains empty so callers may omit
   `pivots=[]`.

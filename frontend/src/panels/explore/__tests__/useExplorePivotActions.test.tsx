@@ -47,11 +47,14 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
         id: "paid",
         field: "paid",
         aggregation: "sum",
+        reference: "paid_sum",
         display_name: "Paid",
       },
     ],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? (overrides.values ?? [{ id: "paid" }]).map(({ id }) => id),
   }
 }
 

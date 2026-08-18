@@ -946,7 +946,7 @@ export interface ExplorePivotMemberOption {
 export interface ExplorePivotValueIdentity {
   id: string
   field: string
-  aggregation: "sum" | "count" | "average" | "min" | "max" | "median" | "distinct_count"
+  aggregation: "sum" | "count" | "average" | "min" | "max" | "median" | "distinct_count" | "formula"
 }
 
 export interface ExplorePivotPath {

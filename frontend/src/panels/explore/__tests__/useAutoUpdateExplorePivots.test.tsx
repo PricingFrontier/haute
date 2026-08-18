@@ -24,8 +24,10 @@ function pivot(): ExplorePivotConfig {
     rows: [{ id: "region", field: "region" }],
     columns: [],
     values: [
-      { id: "paid", field: "paid", aggregation: "sum", display_name: "Paid" },
+      { id: "paid", field: "paid", aggregation: "sum", reference: "paid_sum", display_name: "Paid" },
     ],
+    formulas: [],
+    value_order: ["value_1"],
     options: { row_grand_totals: true, column_grand_totals: true },
   }
 }

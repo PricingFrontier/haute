@@ -6,7 +6,7 @@ import copy
 
 import pytest
 
-from haute._explore_pivots import validate_explore_pivots
+from haute._explore_pivots import validate_explore_pivot_state, validate_explore_pivots
 from haute.errors import ConfigError
 
 
@@ -47,6 +47,7 @@ def _pivot(**updates: object) -> dict[str, object]:
                 "id": "value_1",
                 "field": "claims",
                 "aggregation": "sum",
+                "reference": "claims_sum",
                 "display_name": "Claims",
                 "sort_rows": "none",
                 "color_scale": "none",
@@ -56,6 +57,7 @@ def _pivot(**updates: object) -> dict[str, object]:
                 "use_grouping": True,
             }
         ],
+        "formulas": [],
         "options": {
             "row_grand_totals": True,
             "column_grand_totals": True,
@@ -75,6 +77,7 @@ def test_validate_explore_pivots_rejects_versionless_cards_instead_of_migrating(
 def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -> None:
     raw = [_pivot(future={"nested": [1, 2]})]
     expected = copy.deepcopy(raw)
+    expected[0]["value_order"] = ["value_1"]
 
     validated = validate_explore_pivots(raw, context="test")
 
@@ -85,7 +88,9 @@ def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -
     assert validated[0]["future"] is not raw[0]["future"]
 
 
-def test_validate_explore_pivots_defaults_formatting_sort_and_colour_fields_on_older_v1() -> None:
+def test_validate_explore_pivots_defaults_formatting_sort_and_colour_fields_on_canonical_v1() -> (
+    None
+):
     pivot = _pivot(
         columns=[{"id": "column_1", "field": "year"}],
         rows=[{"id": "row_1", "field": "region"}],
@@ -94,12 +99,12 @@ def test_validate_explore_pivots_defaults_formatting_sort_and_colour_fields_on_o
                 "id": "value_1",
                 "field": "claims",
                 "aggregation": "sum",
+                "reference": "claims_sum",
                 "display_name": "Claims",
             }
         ],
         options={"row_grand_totals": True, "column_grand_totals": True},
     )
-
     validated = validate_explore_pivots([pivot], context="test")[0]
 
     assert validated["columns"] == [
@@ -126,6 +131,7 @@ def test_validate_explore_pivots_defaults_formatting_sort_and_colour_fields_on_o
             "id": "value_1",
             "field": "claims",
             "aggregation": "sum",
+            "reference": "claims_sum",
             "display_name": "Claims",
             "sort_rows": "none",
             "color_scale": "none",
@@ -135,7 +141,172 @@ def test_validate_explore_pivots_defaults_formatting_sort_and_colour_fields_on_o
             "use_grouping": True,
         }
     ]
+    assert validated["formulas"] == []
     assert validated["options"]["sort_by"] is None
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {
+                "values": [
+                    {
+                        "id": "value_1",
+                        "field": "claims",
+                        "aggregation": "sum",
+                        "display_name": "Claims",
+                    }
+                ]
+            },
+            "reference",
+        ),
+        (
+            {
+                "values": [
+                    {
+                        "id": "value_1",
+                        "field": "claims",
+                        "aggregation": "sum",
+                        "reference": "value_1",
+                        "display_name": "Claims",
+                    }
+                ]
+            },
+            "reference",
+        ),
+        (
+            {
+                "values": [
+                    {
+                        "id": "value_1",
+                        "field": "claims",
+                        "aggregation": "sum",
+                        "reference": "sum_claims",
+                        "display_name": "Claims",
+                    }
+                ]
+            },
+            "reference",
+        ),
+        (
+            {
+                "formulas": [
+                    {"id": "formula_1", "display_name": "Claim share", "expression": "pl.lit(1)"}
+                ]
+            },
+            "reference",
+        ),
+        ({"formulas": None}, "formulas must be a list"),
+    ],
+)
+def test_validate_explore_pivots_rejects_noncanonical_required_fields(
+    updates: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_pivots([_pivot(**updates)], context="test")
+
+
+def test_validate_explore_pivots_accepts_double_digit_duplicate_reference_suffixes() -> None:
+    values = [
+        {
+            "id": f"value_{position}",
+            "field": "claims",
+            "aggregation": "sum",
+            "reference": "claims_sum" if position == 1 else f"claims_sum_{position}",
+            "display_name": "Claims",
+        }
+        for position in range(1, 11)
+    ]
+
+    validated = validate_explore_pivots([_pivot(values=values)], context="test")
+
+    assert validated[0]["values"][-1]["reference"] == "claims_sum_10"
+
+
+def test_validate_explore_pivot_state_resolves_shared_formulas_and_rejects_unknown_ids() -> None:
+    definitions = [
+        {
+            "id": "formula_1",
+            "reference": "claim_share",
+            "display_name": "Claim share",
+            "expression": 'pl.col("claims").sum() / 100',
+        }
+    ]
+    first = _pivot(formulas=["formula_1"])
+    second = _pivot(id="pivot_2", name="Second", formulas=["formula_1"])
+
+    shared, pivots = validate_explore_pivot_state(definitions, [first, second], context="test")
+
+    assert shared[0]["id"] == "formula_1"
+    assert [pivot["formulas"][0] for pivot in pivots] == ["formula_1", "formula_1"]
+    with pytest.raises(ConfigError, match="unknown shared formula id"):
+        validate_explore_pivot_state(definitions, [_pivot(formulas=["missing"])], context="test")
+
+
+def test_validate_explore_pivot_state_rejects_inline_formula_selections() -> None:
+    definition = {
+        "id": "formula_1",
+        "reference": "claim_share",
+        "display_name": "Claim share",
+        "expression": 'pl.col("claims").sum() / 100',
+    }
+
+    with pytest.raises(ConfigError, match="formula.*id"):
+        validate_explore_pivot_state([definition], [_pivot(formulas=[definition])], context="test")
+
+
+def test_value_order_normalises_legacy_cards_and_validates_selected_formula_order() -> None:
+    definition = {
+        "id": "formula_1",
+        "reference": "claim_share",
+        "display_name": "Claim share",
+        "expression": 'pl.col("claims").sum() / 100',
+    }
+    values = [
+        _pivot()["values"][0],
+        {
+            "id": "value_2",
+            "field": "paid",
+            "aggregation": "sum",
+            "reference": "paid_sum",
+            "display_name": "Paid",
+        },
+    ]
+
+    legacy = validate_explore_pivots([_pivot(values=values)], context="test")[0]
+    assert legacy["value_order"] == ["value_1", "value_2"]
+
+    _, pivots = validate_explore_pivot_state(
+        [definition],
+        [
+            _pivot(
+                values=values,
+                formulas=["formula_1"],
+                value_order=["formula_1", "value_2", "value_1"],
+            )
+        ],
+        context="test",
+    )
+    assert pivots[0]["value_order"] == ["formula_1", "value_2", "value_1"]
+
+
+@pytest.mark.parametrize(
+    "value_order",
+    [
+        ["value_1", "value_1"],
+        [],
+        ["value_1", "missing"],
+        None,
+        "value_1",
+        ["value_1", ""],
+    ],
+)
+def test_value_order_rejects_duplicate_missing_unknown_or_malformed_ids(
+    value_order: object,
+) -> None:
+    with pytest.raises(ConfigError, match="value_order"):
+        validate_explore_pivots([_pivot(value_order=value_order)], context="test")
 
 
 @pytest.mark.parametrize("decimal_places", [0, 10])
@@ -167,6 +338,7 @@ def test_validate_explore_pivots_accepts_number_formats_and_decimal_place_bounda
                 "id": "value_1",
                 "field": "claims",
                 "aggregation": "sum",
+                "reference": "claims_sum",
                 "display_name": "Claims",
                 "sort_rows": "none",
                 "color_scale": "none",
@@ -243,6 +415,7 @@ def test_validate_explore_pivots_rejects_invalid_grouping(
                             "id": "value_1",
                             "field": "claims",
                             "aggregation": "sum",
+                            "reference": "claims_sum",
                             "display_name": "Claims",
                             "use_grouping": use_grouping,
                         }
@@ -285,6 +458,7 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
                 "id": "value_1",
                 "field": "claims",
                 "aggregation": "sum",
+                "reference": "claims_sum",
                 "display_name": "Claims",
                 "sort_rows": "descending",
                 "color_scale": "none",
@@ -327,7 +501,13 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
             [
                 _pivot(
                     values=[
-                        {"id": "value_1", "field": "a", "aggregation": "mode", "display_name": "A"}
+                        {
+                            "id": "value_1",
+                            "field": "a",
+                            "aggregation": "mode",
+                            "reference": "a_mode",
+                            "display_name": "A",
+                        }
                     ]
                 )
             ],
@@ -345,6 +525,7 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
                             "id": "value_1",
                             "field": "claims",
                             "aggregation": "sum",
+                            "reference": "claims_sum",
                             "display_name": "Claims",
                             "sort_rows": "sideways",
                             "color_scale": "none",
@@ -362,6 +543,7 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
                             "id": "value_1",
                             "field": "claims",
                             "aggregation": "sum",
+                            "reference": "claims_sum",
                             "display_name": "Claims",
                             "sort_rows": "none",
                             "color_scale": "rainbow",
@@ -379,6 +561,7 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
                             "id": "value_1",
                             "field": "claims",
                             "aggregation": "sum",
+                            "reference": "claims_sum",
                             "display_name": "Claims",
                             "sort_rows": "ascending",
                             "color_scale": "none",
@@ -387,6 +570,7 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
                             "id": "value_2",
                             "field": "claims",
                             "aggregation": "average",
+                            "reference": "claims_mean",
                             "display_name": "Average claims",
                             "sort_rows": "descending",
                             "color_scale": "none",
@@ -432,6 +616,7 @@ def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> No
                             "id": "value_1",
                             "field": "claims",
                             "aggregation": "sum",
+                            "reference": "claims_sum",
                             "display_name": "Claims",
                             "sort_rows": "descending",
                             "color_scale": "none",
@@ -528,6 +713,7 @@ def test_validate_explore_pivots_allows_repeated_value_fields_with_unique_ids() 
                 "id": "value_1",
                 "field": "claims",
                 "aggregation": "sum",
+                "reference": "claims_sum",
                 "display_name": "Claims",
                 "sort_rows": "none",
                 "color_scale": "low_red_high_green",
@@ -540,6 +726,7 @@ def test_validate_explore_pivots_allows_repeated_value_fields_with_unique_ids() 
                 "id": "value_2",
                 "field": "claims",
                 "aggregation": "average",
+                "reference": "claims_mean",
                 "display_name": "Average claims",
                 "sort_rows": "descending",
                 "color_scale": "low_green_high_red",
@@ -557,6 +744,127 @@ def test_validate_explore_pivots_allows_repeated_value_fields_with_unique_ids() 
     )
 
     assert validate_explore_pivots([pivot], context="test")[0]["values"] == pivot["values"]
+
+
+def test_validate_explore_pivots_accepts_grouped_source_field_formulas() -> None:
+    pivot = _pivot(
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "claims_ratio",
+                "display_name": "Claims ratio",
+                "expression": 'pl.col("claims").sum() / pl.col("claims").mean()',
+                "number_format": "number",
+                "decimal_places": 2,
+                "use_grouping": False,
+            }
+        ],
+        values=[
+            {
+                "id": "value_1",
+                "field": "claims",
+                "aggregation": "sum",
+                "reference": "claims_sum",
+                "display_name": "Claims",
+            },
+            {
+                "id": "value_2",
+                "field": "claims",
+                "aggregation": "average",
+                "reference": "claims_mean",
+                "display_name": "Average claims",
+            },
+        ],
+    )
+
+    validated = validate_explore_pivots([pivot], context="test")[0]
+
+    assert validated["formulas"] == pivot["formulas"]
+    assert [value["reference"] for value in validated["values"]] == [
+        "claims_sum",
+        "claims_mean",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {
+                "values": [
+                    {
+                        "id": "value_1",
+                        "field": "claims",
+                        "aggregation": "sum",
+                        "reference": "not valid",
+                        "display_name": "Claims",
+                    }
+                ]
+            },
+            "reference",
+        ),
+        ({"formulas": {}}, "formulas must be a list"),
+        ({"formulas": [{}]}, "formula id"),
+        (
+            {
+                "formulas": [
+                    {
+                        "id": "formula_1",
+                        "reference": "ratio",
+                        "display_name": "Ratio",
+                        "expression": "  ",
+                    }
+                ]
+            },
+            "formula expression",
+        ),
+        (
+            {
+                "formulas": [
+                    {
+                        "id": "value_1",
+                        "reference": "ratio",
+                        "display_name": "Ratio",
+                        "expression": "pl.lit(1)",
+                    }
+                ]
+            },
+            "duplicate placement id",
+        ),
+        (
+            {
+                "formulas": [
+                    {
+                        "id": "formula_1",
+                        "reference": "claims_sum",
+                        "display_name": "Ratio",
+                        "expression": "pl.lit(1)",
+                    }
+                ]
+            },
+            "duplicate formula reference",
+        ),
+        (
+            {
+                "formulas": [
+                    {
+                        "id": "formula_1",
+                        "reference": "__haute_private",
+                        "display_name": "Ratio",
+                        "expression": "pl.lit(1)",
+                    }
+                ]
+            },
+            "reference",
+        ),
+    ],
+)
+def test_validate_explore_pivots_rejects_malformed_formulas(
+    updates: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_pivots([_pivot(**updates)], context="test")
 
 
 def test_validate_explore_pivots_accepts_canonical_typed_filter_members() -> None:

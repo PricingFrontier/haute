@@ -90,9 +90,11 @@ def _pivot(**updates: Any) -> dict[str, Any]:
                 "id": "sum_claims",
                 "field": "claims",
                 "aggregation": "sum",
+                "reference": "claims_sum",
                 "display_name": "Claims",
             }
         ],
+        "formulas": [],
         "options": {"row_grand_totals": True, "column_grand_totals": True},
     }
     pivot.update(updates)
@@ -275,29 +277,62 @@ def test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals(
     graph = _graph(path)
     report = _materialise(client, graph)
     values = [
-        {"id": "sum_claims", "field": "claims", "aggregation": "sum", "display_name": "Sum"},
+        {
+            "id": "sum_claims",
+            "field": "claims",
+            "aggregation": "sum",
+            "reference": "claims_sum",
+            "display_name": "Sum",
+        },
         {
             "id": "average_claims",
             "field": "claims",
             "aggregation": "average",
+            "reference": "claims_mean",
             "display_name": "Average",
         },
-        {"id": "min_claims", "field": "claims", "aggregation": "min", "display_name": "Min"},
-        {"id": "max_claims", "field": "claims", "aggregation": "max", "display_name": "Max"},
+        {
+            "id": "min_claims",
+            "field": "claims",
+            "aggregation": "min",
+            "reference": "claims_min",
+            "display_name": "Min",
+        },
+        {
+            "id": "max_claims",
+            "field": "claims",
+            "aggregation": "max",
+            "reference": "claims_max",
+            "display_name": "Max",
+        },
         {
             "id": "median_claims",
             "field": "claims",
             "aggregation": "median",
+            "reference": "claims_median",
             "display_name": "Median",
         },
-        {"id": "count_claims", "field": "claims", "aggregation": "count", "display_name": "Count"},
+        {
+            "id": "count_claims",
+            "field": "claims",
+            "aggregation": "count",
+            "reference": "claims_count",
+            "display_name": "Count",
+        },
         {
             "id": "policies",
             "field": "policy",
             "aggregation": "distinct_count",
+            "reference": "policy_distinct_count",
             "display_name": "Policies",
         },
-        {"id": "sum_again", "field": "claims", "aggregation": "sum", "display_name": "Sum again"},
+        {
+            "id": "sum_again",
+            "field": "claims",
+            "aggregation": "sum",
+            "reference": "claims_sum_2",
+            "display_name": "Sum again",
+        },
     ]
     pivot = _pivot(
         filters=[
@@ -337,6 +372,293 @@ def test_pivot_calculates_filters_aggregations_repeated_values_and_grand_totals(
     assert result["execution_metrics"]["execution_strategy"]["profile"] == "explore_analysis"
 
 
+def test_pivot_formulas_aggregate_source_fields_without_visible_values_and_recalculate_totals(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute.routes import _pivot_service as pivot_module
+
+    compiled_formula_ids: list[str] = []
+    original_formula_expression = pivot_module._formula_expression
+
+    def tracked_formula_expression(formula):
+        compiled_formula_ids.append(formula["id"])
+        return original_formula_expression(formula)
+
+    monkeypatch.setattr(pivot_module, "_formula_expression", tracked_formula_expression)
+    path = tmp_path / "exposure-formula.parquet"
+    pl.DataFrame(
+        {
+            "region": ["North", "North", "North", "South"],
+            "year": [2024, 2024, 2025, 2024],
+            "exposure": [10.0, 30.0, 10.0, 50.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[],
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "exposure_ratio",
+                "display_name": "Exposure ratio",
+                "expression": 'pl.col("exposure").sum() / pl.col("exposure").mean()',
+                "number_format": "number",
+                "decimal_places": 2,
+                "use_grouping": True,
+            },
+            {
+                "id": "formula_2",
+                "reference": "exposure_percentage",
+                "display_name": "Exposure percentage",
+                "expression": '(pl.col("exposure").sum() / pl.col("exposure").mean()) * 100',
+            },
+        ],
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert result["values"] == [
+        {"id": "formula_1", "field": "exposure_ratio", "aggregation": "formula"},
+        {"id": "formula_2", "field": "exposure_percentage", "aggregation": "formula"},
+    ]
+    assert (
+        _cell(
+            result,
+            [("string", "North")],
+            [("integer", "2024")],
+            "formula_1",
+        )
+        == 2.0
+    )
+    assert _cell(result, [("string", "North")], None, "formula_1") == 3.0
+    assert _cell(result, None, None, "formula_1") == 4.0
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "formula_2") == 200.0
+    assert _cell(result, None, None, "formula_2") == 400.0
+    assert compiled_formula_ids == ["formula_1", "formula_2"]
+
+
+def test_pivot_formula_allows_a_grouped_field_to_also_be_a_value(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "grouped-value-formula.parquet"
+    pl.DataFrame({"region": ["North", "North"], "year": [2024, 2025]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[
+            {
+                "id": "sum_year",
+                "field": "year",
+                "aggregation": "sum",
+                "reference": "year_sum",
+                "display_name": "Sum year",
+            }
+        ],
+        formulas=[
+            {
+                "id": "double_year",
+                "reference": "double_year",
+                "display_name": "Double year",
+                "expression": 'pl.col("year").sum() * 2',
+            }
+        ],
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "sum_year") == 2024
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "double_year") == 4048
+
+
+def test_pivot_value_order_controls_mixed_result_and_cell_order_without_affecting_value_sort(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "ordered-outputs.parquet"
+    pl.DataFrame(
+        {
+            "region": ["North", "South"],
+            "year": [2024, 2024],
+            "claims": [10.0, 20.0],
+            "paid": [100.0, 50.0],
+        }
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[
+            {
+                "id": "sum_claims",
+                "field": "claims",
+                "aggregation": "sum",
+                "reference": "claims_sum",
+                "display_name": "Claims",
+            },
+            {
+                "id": "sum_paid",
+                "field": "paid",
+                "aggregation": "sum",
+                "reference": "paid_sum",
+                "display_name": "Paid",
+                "sort_rows": "descending",
+            },
+        ],
+        formulas=[
+            {
+                "id": "total_amount",
+                "reference": "total_amount",
+                "display_name": "Total amount",
+                "expression": 'pl.col("claims").sum() + pl.col("paid").sum()',
+            }
+        ],
+        value_order=["total_amount", "sum_paid", "sum_claims"],
+        options={"row_grand_totals": False, "column_grand_totals": False, "sort_by": "sum_paid"},
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert [value["id"] for value in result["values"]] == [
+        "total_amount",
+        "sum_paid",
+        "sum_claims",
+    ]
+    assert [path["members"][0]["value"] for path in result["row_paths"]] == ["North", "South"]
+    first_cell_ids = [
+        cell["value_id"]
+        for cell in result["cells"]
+        if cell["row_index"] == 0 and cell["column_index"] == 0
+    ]
+    assert first_cell_ids == ["total_amount", "sum_paid", "sum_claims"]
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "total_amount") == 110.0
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "sum_paid") == 100.0
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "sum_claims") == 10.0
+
+    reordered_final, reordered = _run_pivot(
+        client,
+        graph,
+        {**pivot, "value_order": ["sum_claims", "sum_paid", "total_amount"]},
+    )
+
+    assert reordered_final["status"] == "completed", reordered_final
+    assert reordered is not None
+    assert reordered["calculation_key"] != result["calculation_key"]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        'pl.concat_list(pl.col("claims").sum())',
+        'pl.col("claims") * 2',
+        "42",
+        "pl.col(",
+    ],
+)
+def test_pivot_formula_failures_are_typed(
+    client: TestClient,
+    tmp_path: Path,
+    expression: str,
+) -> None:
+    path = tmp_path / "invalid-formula.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "calculated",
+                "display_name": "Calculated",
+                "expression": expression,
+            }
+        ]
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "contract_error"
+    assert result is None
+    assert final["failure"]["reason_code"] == "invalid_pivot_formula"
+    assert final["failure"]["dimensions"] == {"formula_id": "formula_1"}
+
+
+def test_pivot_formula_missing_source_field_is_typed_and_remediable(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "invalid-formula-reference.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "calculated",
+                "display_name": "Calculated",
+                "expression": 'pl.col("missing_claims").sum()',
+            },
+        ]
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "contract_error"
+    assert result is None
+    assert final["failure"]["reason_code"] == "invalid_pivot_formula"
+    assert "missing_claims" in final["failure"]["message"]
+    assert "missing_claims" in final["failure"]["remediation"]
+    assert final["failure"]["dimensions"] == {
+        "formula_id": "formula_1",
+        "missing_fields": "missing_claims",
+    }
+
+
+def test_pivot_formula_cannot_depend_on_another_formula_output(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "ordered-formula-inputs.parquet"
+    pl.DataFrame({"region": ["North"], "year": [2024], "claims": [10.0]}).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+
+    final, result = _run_pivot(
+        client,
+        graph,
+        _pivot(
+            formulas=[
+                {
+                    "id": "formula_1",
+                    "reference": "valid_result",
+                    "display_name": "Valid result",
+                    "expression": 'pl.col("claims").sum()',
+                },
+                {
+                    "id": "formula_2",
+                    "reference": "depends_on_earlier_formula",
+                    "display_name": "Depends on earlier formula",
+                    "expression": 'pl.col("valid_result").sum() + 1',
+                },
+            ]
+        ),
+    )
+
+    assert final["status"] == "contract_error"
+    assert result is None
+    assert final["failure"]["reason_code"] == "invalid_pivot_formula"
+    assert final["failure"]["dimensions"] == {
+        "formula_id": "formula_2",
+        "missing_fields": "valid_result",
+    }
+
+
 def test_pivot_normalises_binary_and_duration_min_max_results(
     client: TestClient,
     tmp_path: Path,
@@ -361,24 +683,28 @@ def test_pivot_normalises_binary_and_duration_min_max_results(
                 "id": "binary_min",
                 "field": "binary_value",
                 "aggregation": "min",
+                "reference": "binary_value_min",
                 "display_name": "Binary min",
             },
             {
                 "id": "binary_max",
                 "field": "binary_value",
                 "aggregation": "max",
+                "reference": "binary_value_max",
                 "display_name": "Binary max",
             },
             {
                 "id": "duration_min",
                 "field": "duration_value",
                 "aggregation": "min",
+                "reference": "duration_value_min",
                 "display_name": "Duration min",
             },
             {
                 "id": "duration_max",
                 "field": "duration_value",
                 "aggregation": "max",
+                "reference": "duration_value_max",
                 "display_name": "Duration max",
             },
         ]
@@ -451,6 +777,7 @@ def test_pivot_renders_integers_beyond_js_safe_range_as_decimal_strings(
                 "id": "max_claims",
                 "field": "claims",
                 "aggregation": "max",
+                "reference": "claims_max",
                 "display_name": "Max claims",
             }
         ],
@@ -489,6 +816,7 @@ def test_pivot_result_cache_ignores_name_visibility_and_value_display_name(
                 "id": "sum_claims",
                 "field": "claims",
                 "aggregation": "sum",
+                "reference": "claims_sum",
                 "display_name": "Renamed value",
             }
         ],
@@ -656,6 +984,7 @@ def test_pivot_sorts_rows_by_correct_value_total_without_displaying_totals(
                 "id": "average_claims",
                 "field": "claims",
                 "aggregation": "average",
+                "reference": "claims_mean",
                 "display_name": "Average claims",
                 "sort_rows": "descending",
                 "color_scale": "none",
@@ -703,6 +1032,7 @@ def test_pivot_sort_settings_affect_cache_but_formatting_is_presentation_only(
         "id": "sum_claims",
         "field": "claims",
         "aggregation": "sum",
+        "reference": "claims_sum",
         "display_name": "Claims",
         "sort_rows": "none",
         "color_scale": "none",
@@ -953,6 +1283,7 @@ def test_newer_pivot_job_supersedes_only_the_same_card_family(
                 "id": "sum_claims",
                 "field": "claims",
                 "aggregation": "average",
+                "reference": "claims_mean",
                 "display_name": "Average claims",
             }
         ]
@@ -1218,6 +1549,7 @@ def test_pivot_runtime_members_and_exact_filters_cover_all_persisted_kinds(
                         "id": "sum_text",
                         "field": "text",
                         "aggregation": "sum",
+                        "reference": "text_sum",
                         "display_name": "Text",
                     }
                 ]

@@ -27,7 +27,7 @@ from haute._contracts import Contract, get_column_contract
 from haute._edge_join import normalise_edge_join_decorator_kwargs
 from haute._explore_charts import validate_explore_charts
 from haute._explore_overview import validate_explore_overview
-from haute._explore_pivots import validate_explore_pivots
+from haute._explore_pivots import validate_explore_pivot_state
 from haute._logging import get_logger
 from haute._types import (
     MODEL_SCORE_CONFIG_KEYS,
@@ -186,11 +186,14 @@ def _build_node_config(
             )
             if overview:
                 config["overview"] = dict(overview)
-        if "pivots" in decorator_kwargs:
-            pivots = validate_explore_pivots(
-                decorator_kwargs["pivots"],
+        if "pivots" in decorator_kwargs or "pivot_formulas" in decorator_kwargs:
+            shared_formulas, pivots = validate_explore_pivot_state(
+                decorator_kwargs.get("pivot_formulas"),
+                decorator_kwargs.get("pivots", []),
                 context="explore decorator",
             )
+            if shared_formulas:
+                config["pivot_formulas"] = shared_formulas
             if pivots:
                 config["pivots"] = pivots
         if "charts" in decorator_kwargs:

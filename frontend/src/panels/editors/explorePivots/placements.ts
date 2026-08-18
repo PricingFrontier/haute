@@ -1,5 +1,9 @@
 import type { ExplorePivotMembersResponse } from "../../../api/types"
-import { defaultPivotAggregation } from "../../explore/pivotConfig"
+import {
+  defaultPivotAggregation,
+  nextPivotValueReference,
+  pivotValueReference,
+} from "../../explore/pivotConfig"
 import type {
   ExplorePivotConfig,
   PivotAxisPlacement,
@@ -45,6 +49,7 @@ function futurePlacementFields(placement: Placement): Record<string, unknown> {
     "field",
     "members",
     "aggregation",
+    "reference",
     "display_name",
     "sort",
     "sort_rows",
@@ -111,6 +116,7 @@ export function removeFromZone(
       return {
         ...pivot,
         values: pivot.values.filter((placement) => placement.id !== placementId),
+        value_order: pivot.value_order.filter((id) => id !== placementId),
       }
   }
 }
@@ -160,7 +166,10 @@ export function appendToZone(
           },
         ],
       }
-    case "values":
+    case "values": {
+      const aggregation = isValuePlacement(placement)
+        ? placement.aggregation
+        : defaultPivotAggregation(dtype)
       return {
         ...pivot,
         values: [
@@ -168,10 +177,10 @@ export function appendToZone(
           {
             ...common,
             ...displayedPlacementFormatting(placement),
-            aggregation:
-              isValuePlacement(placement)
-                ? placement.aggregation
-                : defaultPivotAggregation(dtype),
+            aggregation,
+            reference: isValuePlacement(placement)
+              ? pivotValueReference(placement)
+              : nextPivotValueReference(pivot, placement.field, aggregation),
             display_name:
               isValuePlacement(placement) ? placement.display_name : placement.field,
             sort_rows: isValuePlacement(placement)
@@ -183,7 +192,9 @@ export function appendToZone(
               : null,
           },
         ],
+        value_order: [...pivot.value_order, placement.id],
       }
+    }
   }
 }
 

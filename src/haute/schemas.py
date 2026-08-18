@@ -1107,7 +1107,7 @@ ExplorePivotMemberKind = Literal[
     "decimal",
 ]
 ExplorePivotAggregation = Literal[
-    "sum", "count", "average", "min", "max", "median", "distinct_count"
+    "sum", "count", "average", "min", "max", "median", "distinct_count", "formula"
 ]
 
 

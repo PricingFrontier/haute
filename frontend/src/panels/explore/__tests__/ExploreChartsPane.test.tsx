@@ -65,11 +65,14 @@ function pivot(
         id: `${id}_paid`,
         field: "paid",
         aggregation: "sum",
+        reference: "paid_sum",
         display_name: "Paid",
       },
     ],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? (overrides.values ?? [{ id: `${id}_paid` }]).map(({ id }) => id),
   }
 }
 
@@ -427,6 +430,7 @@ describe("ExploreChartsPane", () => {
           id: "overlong_paid",
           field: "paid",
           aggregation: "sum",
+          reference: "paid_sum",
           display_name: "x".repeat(201),
         },
       ],

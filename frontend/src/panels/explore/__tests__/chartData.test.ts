@@ -21,6 +21,7 @@ import {
   seedValueEncodings,
   type ExploreChartConfig,
 } from "../chartConfig"
+import { isPivotFormulaPlacement, pivotOutputs } from "../pivotConfig"
 import type { ExplorePivotConfig } from "../pivotConfig"
 
 function member(value: string): ExplorePivotMemberKey {
@@ -50,17 +51,23 @@ function pivot(
         id: "value_paid",
         field: "paid",
         aggregation: "sum",
+        reference: "paid_sum",
         display_name: "Paid",
       },
       {
         id: "value_claims",
         field: "claim_id",
         aggregation: "count",
+        reference: "claim_id_count",
         display_name: "Claims",
       },
     ],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? (overrides.values ?? [
+      { id: "value_paid" }, { id: "value_claims" },
+    ]).map(({ id }) => id),
   }
 }
 
@@ -82,16 +89,16 @@ function result(
     calculation_key: "calculation-current",
     row_fields: sourcePivot.rows.map(({ field }) => field),
     column_fields: sourcePivot.columns.map(({ field }) => field),
-    values: sourcePivot.values.map(({ id, field, aggregation }) => ({
-      id,
-      field,
-      aggregation,
-    })),
+    values: pivotOutputs(sourcePivot).map((output) =>
+      isPivotFormulaPlacement(output)
+        ? { id: output.id, field: output.reference, aggregation: "formula" }
+        : { id: output.id, field: output.field, aggregation: output.aggregation },
+    ),
     row_paths: rowPaths,
     column_paths: columnPaths,
     cells: rowPaths.flatMap((_, rowIndex) =>
       columnPaths.flatMap((__, columnIndex) =>
-        sourcePivot.values.map((value, valueIndex) => ({
+        pivotOutputs(sourcePivot).map((value, valueIndex) => ({
           row_index: rowIndex,
           column_index: columnIndex,
           value_id: value.id,
@@ -171,6 +178,32 @@ describe("pivot chart data adapter", () => {
     expect(data.series[2].formattedValues[0]).toBeNull()
     expect(data.series[0].formattedValues[0]).toMatch(/^£100/)
     expect(data.series[1].formattedValues[0]).toBe("101")
+  })
+
+  it("adapts formula outputs as ordinary chart series", () => {
+    const sourcePivot = pivot({
+      formulas: [{
+        id: "formula_average",
+        reference: "average_cost",
+        display_name: "Average cost",
+        expression: 'pl.col("paid").sum() / pl.col("claim_id").count()',
+        number_format: "number",
+        decimal_places: 2,
+        use_grouping: true,
+      }],
+    })
+
+    const data = adaptPivotChartData(
+      chart(sourcePivot),
+      sourcePivot,
+      result(sourcePivot),
+    )
+
+    expect(data.series.map(({ name }) => name)).toContain("2024 · Average cost")
+    expect(data.series.find(({ valueId }) => valueId === "formula_average")?.values).toEqual([
+      102,
+      202,
+    ])
   })
 
   it("uses typed canonical keys for exact overrides and reports dormant mappings", () => {
@@ -271,9 +304,9 @@ describe("pivot chart data adapter", () => {
     const sourcePivot = pivot({
       columns: [],
       values: [
-        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
-        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
-        { id: "value_c", field: "c", aggregation: "sum", display_name: "C" },
+        { id: "value_a", field: "a", aggregation: "sum", reference: "a_sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", reference: "b_sum", display_name: "B" },
+        { id: "value_c", field: "c", aggregation: "sum", reference: "c_sum", display_name: "C" },
       ],
     })
     const rows = ["mixed", "simple", "gapped", "empty"]
@@ -343,8 +376,8 @@ describe("pivot chart data adapter", () => {
     const sourcePivot = pivot({
       columns: [],
       values: [
-        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
-        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
+        { id: "value_a", field: "a", aggregation: "sum", reference: "a_sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", reference: "b_sum", display_name: "B" },
       ],
     })
     const sourceResult = result(sourcePivot, {
@@ -375,9 +408,9 @@ describe("pivot chart data adapter", () => {
     const sourcePivot = pivot({
       columns: [],
       values: [
-        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
-        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
-        { id: "value_c", field: "c", aggregation: "sum", display_name: "C" },
+        { id: "value_a", field: "a", aggregation: "sum", reference: "a_sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", reference: "b_sum", display_name: "B" },
+        { id: "value_c", field: "c", aggregation: "sum", reference: "c_sum", display_name: "C" },
       ],
     })
     const sourceResult = result(sourcePivot, {

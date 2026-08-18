@@ -1133,6 +1133,30 @@ describe("API response guards", () => {
     expect(members.members[1].key).toEqual({ kind: "null", value: null })
   })
 
+  it("parses formula identities in pivot results", () => {
+    const fixture = loadUiContractFixture<Record<string, unknown>>(
+      "explore_pivot_run_response",
+    )
+    const result = fixture.result as Record<string, unknown>
+    const values = result.values as unknown[]
+    const parsed = parseExplorePivotRunResponse({
+      ...fixture,
+      result: {
+        ...result,
+        values: [
+          ...values,
+          { id: "formula_1", field: "loss_ratio", aggregation: "formula" },
+        ],
+      },
+    })
+
+    expect(parsed.result?.values.at(-1)).toEqual({
+      id: "formula_1",
+      field: "loss_ratio",
+      aggregation: "formula",
+    })
+  })
+
   it("parses every typed pivot member key", () => {
     const parsed = parseExplorePivotMembersResponse({
       status: "ok",

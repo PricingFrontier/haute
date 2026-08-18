@@ -3,11 +3,14 @@ import {
   PIVOT_DECIMAL_PLACES_MAX,
   PIVOT_NUMBER_FORMATS,
   isNumericPivotDtype,
+  isPivotFormulaPlacement,
+  pivotOutputs,
 } from "../../explore/pivotConfig"
 import type {
   ExplorePivotConfig,
   PivotAxisPlacement,
   PivotDecimalPlaces,
+  PivotFormulaPlacement,
   PivotNumberFormat,
   PivotValuePlacement,
 } from "../../explore/pivotConfig"
@@ -15,11 +18,11 @@ import { effectivePivotNumberFormat } from "../../explore/pivotNumberFormat"
 import { INPUT_STYLE } from "../_shared"
 import type { Column } from "./placements"
 
-type DisplayedZone = "columns" | "rows" | "values"
+type DisplayedZone = "columns" | "rows" | "values" | "formulas"
 
 type FormattingEntry = {
   zone: DisplayedZone
-  placement: PivotAxisPlacement | PivotValuePlacement
+  placement: PivotAxisPlacement | PivotValuePlacement | PivotFormulaPlacement
   positionLabel: string
   displayLabel: string
   numeric: boolean
@@ -28,6 +31,7 @@ type FormattingEntry = {
 type PivotFormattingSectionProps = {
   pivot: ExplorePivotConfig
   persistPivot: (pivot: ExplorePivotConfig) => void
+  persistFormula: (formula: PivotFormulaPlacement) => void
   upstreamColumns: Column[]
 }
 
@@ -85,6 +89,7 @@ type FormattingChange = {
 export default function PivotFormattingSection({
   pivot,
   persistPivot,
+  persistFormula,
   upstreamColumns,
 }: PivotFormattingSectionProps) {
   const columnsByName = new Map(
@@ -105,13 +110,21 @@ export default function PivotFormattingSection({
       displayLabel: placement.field,
       numeric: isNumericPivotDtype(columnsByName.get(placement.field)?.dtype ?? ""),
     })),
-    ...pivot.values.map((placement, index) => ({
-      zone: "values" as const,
-      placement,
-      positionLabel: `Value ${index + 1}`,
-      displayLabel: placement.display_name,
-      numeric: isNumericProducingValue(placement, columnsByName),
-    })),
+    ...pivotOutputs(pivot).map((placement, index) => isPivotFormulaPlacement(placement)
+      ? {
+          zone: "formulas" as const,
+          placement,
+          positionLabel: `Formula ${index + 1}`,
+          displayLabel: placement.display_name,
+          numeric: true,
+        }
+      : {
+          zone: "values" as const,
+          placement,
+          positionLabel: `Value ${index + 1}`,
+          displayLabel: placement.display_name,
+          numeric: isNumericProducingValue(placement, columnsByName),
+        }),
   ]
 
   const persistFormatting = (
@@ -140,13 +153,20 @@ export default function PivotFormattingSection({
       })
       return
     }
-    persistPivot({
-      ...pivot,
-      values: pivot.values.map((placement) =>
-        placement.id === entry.placement.id
-          ? { ...placement, ...change }
-          : placement,
-      ),
+    if (entry.zone === "values") {
+      persistPivot({
+        ...pivot,
+        values: pivot.values.map((placement) =>
+          placement.id === entry.placement.id
+            ? { ...placement, ...change }
+            : placement,
+        ),
+      })
+      return
+    }
+    persistFormula({
+      ...(entry.placement as PivotFormulaPlacement),
+      ...change,
     })
   }
 
@@ -159,13 +179,17 @@ export default function PivotFormattingSection({
       >
         {entries.length === 0 ? (
           <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            Add a Column, Row, or Value to format its displayed numbers.
+            Add a Column, Row, Value, or Formula to format its displayed numbers.
           </p>
         ) : (
           <div className="mt-2 flex flex-col gap-2">
             {entries.map((entry) => {
             const accessibleLabel = `${entry.positionLabel} — ${entry.displayLabel}`
             const numberFormat = effectivePivotNumberFormat(entry.placement)
+            const sourceField = "field" in entry.placement &&
+              typeof entry.placement.field === "string"
+              ? entry.placement.field
+              : null
             const groupingApplies =
               numberFormat !== "general" ||
               entry.placement.decimal_places !== null &&
@@ -192,9 +216,10 @@ export default function PivotFormattingSection({
                     {entry.displayLabel}
                   </div>
                   {entry.zone === "values" &&
-                    entry.displayLabel !== entry.placement.field && (
+                    sourceField !== null &&
+                    entry.displayLabel !== sourceField && (
                       <div className="truncate text-[9px]" style={{ color: "var(--text-muted)" }}>
-                        {entry.placement.field}
+                        {sourceField}
                       </div>
                     )}
                 </div>

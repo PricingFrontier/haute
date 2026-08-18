@@ -28,7 +28,9 @@ from haute._types import (
     ExplorePivotAxisPlacement,
     ExplorePivotConfig,
     ExplorePivotFilterPlacement,
+    ExplorePivotFormula,
     ExplorePivotOptions,
+    ExplorePivotPersistedConfig,
     ExplorePivotRowPlacement,
     ExplorePivotValuePlacement,
     ModelScoreConfig,
@@ -554,7 +556,8 @@ class TestSelectedColumnsUniversal:
         assert get_type_hints(ExploreConfig) == {
             "code": str,
             "overview": ExploreOverviewConfig,
-            "pivots": list[ExplorePivotConfig],
+            "pivot_formulas": list[ExplorePivotFormula],
+            "pivots": list[ExplorePivotPersistedConfig],
             "charts": list[ExploreChartConfig],
         }
         assert get_type_hints(ExploreChartConfig) == {
@@ -580,7 +583,17 @@ class TestSelectedColumnsUniversal:
             "columns": list[ExplorePivotAxisPlacement],
             "rows": list[ExplorePivotRowPlacement],
             "values": list[ExplorePivotValuePlacement],
+            "formulas": list[ExplorePivotFormula],
+            "value_order": list[str],
             "options": ExplorePivotOptions,
+        }
+        assert get_type_hints(ExplorePivotPersistedConfig) == {
+            **{
+                key: value
+                for key, value in get_type_hints(ExplorePivotConfig).items()
+                if key != "formulas"
+            },
+            "formulas": list[str],
         }
         assert get_type_hints(ExplorePivotOptions) == {
             "row_grand_totals": bool,
@@ -590,6 +603,10 @@ class TestSelectedColumnsUniversal:
         assert get_type_hints(ExplorePivotAxisPlacement)["decimal_places"] == int | None
         assert get_type_hints(ExplorePivotRowPlacement)["decimal_places"] == int | None
         assert get_type_hints(ExplorePivotValuePlacement)["decimal_places"] == int | None
+        assert get_type_hints(ExplorePivotValuePlacement)["reference"] is str
+        assert get_type_hints(ExplorePivotFormula)["reference"] is str
+        assert get_type_hints(ExplorePivotFormula)["expression"] is str
+        assert get_type_hints(ExplorePivotFormula)["decimal_places"] == int | None
         pivot_number_format = Literal[
             "general",
             "number",
@@ -601,9 +618,11 @@ class TestSelectedColumnsUniversal:
         assert get_type_hints(ExplorePivotAxisPlacement)["number_format"] == pivot_number_format
         assert get_type_hints(ExplorePivotRowPlacement)["number_format"] == pivot_number_format
         assert get_type_hints(ExplorePivotValuePlacement)["number_format"] == pivot_number_format
+        assert get_type_hints(ExplorePivotFormula)["number_format"] == pivot_number_format
         assert get_type_hints(ExplorePivotAxisPlacement)["use_grouping"] is bool
         assert get_type_hints(ExplorePivotRowPlacement)["use_grouping"] is bool
         assert get_type_hints(ExplorePivotValuePlacement)["use_grouping"] is bool
+        assert get_type_hints(ExplorePivotFormula)["use_grouping"] is bool
         assert get_type_hints(ExplorePivotValuePlacement)["color_scale_split_by"] == str | None
         assert "decimal_places" not in get_type_hints(ExplorePivotFilterPlacement)
         assert "number_format" not in get_type_hints(ExplorePivotFilterPlacement)

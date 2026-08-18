@@ -18,15 +18,19 @@ const pivot: ExplorePivotConfig = {
       id: "v1",
       field: "paid",
       aggregation: "sum",
+      reference: "paid_sum",
       display_name: "Paid claims",
     },
     {
       id: "v2",
       field: "count",
       aggregation: "count",
+      reference: "count_count",
       display_name: "Claim count",
     },
   ],
+  formulas: [],
+  value_order: ["v1", "v2"],
   options: { row_grand_totals: true, column_grand_totals: true },
 }
 
@@ -84,6 +88,46 @@ describe("PivotTableGrid", () => {
     expect(screen.getAllByText("Paid claims").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Grand total").length).toBeGreaterThan(0)
     expect(screen.getAllByText("\u2014").length).toBeGreaterThan(0)
+  })
+
+  it("renders post-aggregation formulas after ordinary Values", () => {
+    const formulaPivot: ExplorePivotConfig = {
+      ...pivot,
+      formulas: [{
+        id: "formula_1",
+        reference: "average_cost",
+        display_name: "Average cost",
+        expression: 'pl.col("paid").sum() / pl.col("count").count()',
+        number_format: "number",
+        decimal_places: 2,
+        use_grouping: true,
+      }],
+      value_order: ["v1", "v2", "formula_1"],
+    }
+    const formulaResult: ExplorePivotResult = {
+      ...result(1),
+      row_paths: [{ members: [{ kind: "string", value: "North" }], is_grand_total: false }],
+      column_paths: [{ members: [{ kind: "integer", value: "2024" }], is_grand_total: false }],
+      values: [
+        ...result(1).values,
+        { id: "formula_1", field: "average_cost", aggregation: "formula" },
+      ],
+      cells: [
+        { row_index: 0, column_index: 0, value_id: "v1", value: 20 },
+        { row_index: 0, column_index: 0, value_id: "v2", value: 4 },
+        { row_index: 0, column_index: 0, value_id: "formula_1", value: 5 },
+      ],
+    }
+
+    render(<PivotTableGrid result={formulaResult} pivot={formulaPivot} />)
+
+    const headers = screen.getAllByRole("columnheader")
+    expect(headers.slice(-3).map((header) => header.textContent)).toEqual([
+      "Paid claims",
+      "Claim count",
+      "Average cost",
+    ])
+    expect(screen.getByRole("cell", { name: "5.00" })).toBeVisible()
   })
 
   it("keeps row-field headers when the pivot has no column fields", () => {

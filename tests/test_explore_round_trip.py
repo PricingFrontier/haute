@@ -209,6 +209,16 @@ def test_empty_overview_does_not_round_trip_into_config(tmp_path: Path) -> None:
 
 
 def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> None:
+    formula = {
+        "id": "formula_1",
+        "reference": "paid_share",
+        "display_name": "Paid share",
+        "expression": 'pl.col("paid").sum() / 100',
+        "number_format": "percent",
+        "decimal_places": 1,
+        "use_grouping": False,
+        "future_formula_setting": {"style": "compact"},
+    }
     pivots = [
         {
             "version": 1,
@@ -246,6 +256,7 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "id": "value_1",
                     "field": "paid",
                     "aggregation": "sum",
+                    "reference": "paid_sum",
                     "display_name": "Paid claims",
                     "sort_rows": "descending",
                     "color_scale": "low_red_high_green",
@@ -256,6 +267,8 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
                     "future_value_setting": {"precision": 2},
                 }
             ],
+            "formulas": ["formula_1"],
+            "value_order": ["formula_1", "value_1"],
             "options": {
                 "row_grand_totals": True,
                 "column_grand_totals": False,
@@ -273,6 +286,8 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
             "columns": [],
             "rows": [],
             "values": [],
+            "formulas": [],
+            "value_order": [],
             "options": {
                 "row_grand_totals": True,
                 "column_grand_totals": True,
@@ -331,7 +346,12 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
         }
     ]
     graph = _explore_graph_with_config(
-        {"overview": {"schema": True}, "pivots": pivots, "charts": charts}
+        {
+            "overview": {"schema": True},
+            "pivot_formulas": [formula],
+            "pivots": pivots,
+            "charts": charts,
+        }
     )
 
     code = graph_to_code(graph, pipeline_name="round_trip_display_cards")
@@ -339,7 +359,12 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
 
     assert "pivots=" in code
     assert "charts=" in code
-    assert code.index("overview=") < code.index("pivots=") < code.index("charts=")
+    assert (
+        code.index("overview=")
+        < code.index("pivot_formulas=")
+        < code.index("pivots=")
+        < code.index("charts=")
+    )
     parsed = parse_pipeline_source(
         code,
         source_file=str(tmp_path / "pipeline.py"),
@@ -348,6 +373,7 @@ def test_pivot_chart_cards_and_overview_round_trip_together(tmp_path: Path) -> N
 
     node_map = {n.id: n for n in parsed.nodes}
     assert node_map["inspect_claims"].data.config.get("overview") == {"schema": True}
+    assert node_map["inspect_claims"].data.config.get("pivot_formulas") == [formula]
     assert node_map["inspect_claims"].data.config.get("pivots") == pivots
     assert node_map["inspect_claims"].data.config.get("charts") == charts
 
@@ -384,3 +410,61 @@ def test_empty_pivots_do_not_round_trip_into_config(tmp_path: Path) -> None:
 
     node_map = {n.id: n for n in parsed.nodes}
     assert "pivots" not in node_map["inspect_claims"].data.config
+
+
+def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path: Path) -> None:
+    formula = {
+        "id": "formula_1",
+        "reference": "claim_share",
+        "display_name": "Claim share",
+        "expression": 'pl.col("claims").sum() / 100',
+    }
+    pivot_template = {
+        "version": 1,
+        "enabled": True,
+        "filters": [],
+        "columns": [],
+        "rows": [],
+        "values": [
+            {
+                "id": "value_1",
+                "field": "claims",
+                "aggregation": "sum",
+                "reference": "claims_sum",
+                "display_name": "Claims",
+            }
+        ],
+        "options": {"row_grand_totals": True, "column_grand_totals": True, "sort_by": None},
+    }
+    first = {
+        **pivot_template,
+        "id": "pivot_1",
+        "name": "First",
+        "formulas": ["formula_1"],
+        "value_order": ["formula_1", "value_1"],
+    }
+    second = {**pivot_template, "id": "pivot_2", "name": "Second", "formulas": ["formula_1"]}
+    graph = _explore_graph_with_config({"pivot_formulas": [formula], "pivots": [first, second]})
+
+    code = graph_to_code(graph, pipeline_name="round_trip_shared_formulas")
+    _write_configs(graph, tmp_path)
+
+    assert code.index("pivot_formulas=") < code.index("pivots=")
+    assert code.count("'expression': 'pl.col(\"claims\").sum() / 100'") == 1
+    parsed = parse_pipeline_source(
+        code, source_file=str(tmp_path / "pipeline.py"), _base_dir=tmp_path
+    )
+    config = {node.id: node for node in parsed.nodes}["inspect_claims"].data.config
+    assert config["pivot_formulas"] == [
+        {
+            **formula,
+            "decimal_places": None,
+            "number_format": "general",
+            "use_grouping": True,
+        }
+    ]
+    assert [pivot["formulas"] for pivot in config["pivots"]] == [
+        ["formula_1"],
+        ["formula_1"],
+    ]
+    assert config["pivots"][0]["value_order"] == ["formula_1", "value_1"]

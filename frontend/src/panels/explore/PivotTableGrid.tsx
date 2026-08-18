@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 
 import type { ExplorePivotMemberKey, ExplorePivotResult } from "../../api/types"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
+import { isPivotFormulaPlacement, pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 import { formatPivotNumber } from "./pivotNumberFormat"
 import type { PivotNumberFormatting } from "./pivotNumberFormat"
@@ -121,8 +122,8 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
   const visibleRows = result.row_paths.slice(start, end)
 
   const valuesById = useMemo(
-    () => new Map(pivot.values.map((value) => [value.id, value])),
-    [pivot.values],
+    () => new Map(pivotOutputs(pivot).map((value) => [value.id, value])),
+    [pivot],
   )
   const conditionalSplits = useMemo(() => {
     const splits = new Map<string, ConditionalSplit>()
@@ -314,7 +315,9 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                     )
                     const configuredValue = valuesById.get(value.id)
                     const numeric = numericCellValue(cell)
-                    const scale = configuredValue?.color_scale
+                    const scale = configuredValue && !isPivotFormulaPlacement(configuredValue)
+                      ? configuredValue.color_scale
+                      : undefined
                     const columnPath = result.column_paths[columnIndex]
                     const split = conditionalSplits.get(value.id)
                     const ordinary = !rowPath.is_grand_total && !columnPath?.is_grand_total

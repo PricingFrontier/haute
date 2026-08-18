@@ -32,8 +32,13 @@ function fullPivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotCon
     columns: [],
     rows: [],
     values: [],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
     ...overrides,
+    value_order: overrides.value_order ?? [
+      ...(overrides.values ?? []).map(({ id }) => id),
+      ...(overrides.formulas ?? []).map(({ id }) => id),
+    ],
   }
 }
 
@@ -182,6 +187,7 @@ describe("ExplorePivotsConfig", () => {
       columns: [],
       rows: [],
       values: [],
+      formulas: [],
       options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
     })
   })
@@ -228,6 +234,175 @@ describe("ExplorePivotsConfig", () => {
     expect(
       within(valueZone).getByRole("combobox", { name: "Aggregation for region" }),
     ).toHaveValue("count")
+  })
+
+  it("defines a shared calculated field once and adds it to each pivot's Values", () => {
+    const secondPivot = fullPivot({ id: "pivot_2", name: "Pivot 2" })
+    render(
+      <PivotConfigHarness
+        initialConfig={{ pivots: [fullPivot(), secondPivot] }}
+        columns={[
+          ...upstreamColumns,
+          { name: "total_claims", dtype: "Float64" },
+        ]}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+
+    const availableFields = screen.getByRole("group", { name: "Available pivot fields" })
+    const formulaSection = screen.getByTestId("pivot-formula-section")
+    const fieldAreas = screen.getByTestId("pivot-field-areas")
+    expect(
+      availableFields.compareDocumentPosition(formulaSection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      formulaSection.compareDocumentPosition(fieldAreas) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      screen.queryByText(/Calculated fields are defined once for this Explore node/),
+    ).not.toBeInTheDocument()
+
+    const formulaSearch = screen.getByRole("searchbox", { name: "Search formulas" })
+    const formulaList = screen.getByRole("group", { name: "Available formulas" })
+    expect(formulaList).toHaveClass("max-h-52", "overflow-y-auto")
+    expect(formulaList).not.toHaveClass("h-52")
+    expect(within(formulaList).getByText("No formulas yet.")).toBeVisible()
+
+    fireEvent.click(screen.getByRole("button", { name: "Add formula" }))
+    const newFormulaEditor = screen.getByRole("group", { name: "New formula" })
+    expect(
+      formulaList.compareDocumentPosition(newFormulaEditor) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    const sourceFieldButton = screen.getByRole("button", {
+      name: "Add total_claims to Formula",
+    })
+    expect(sourceFieldButton).toBeVisible()
+    expect(
+      screen.queryByRole("button", { name: "Add total_claims to Values" }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText("Source fields")).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/Return one aggregate per pivot group/),
+    ).not.toBeInTheDocument()
+    const expression = screen.getByRole("textbox", {
+      name: "Polars expression",
+    })
+    fireEvent.click(sourceFieldButton)
+    expect(expression).toHaveValue('pl.col("total_claims")')
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Formula name" }), {
+      target: { value: "Double average" },
+    })
+    fireEvent.change(expression, {
+      target: {
+        value: 'pl.col("total_claims").mean() * 2',
+      },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save formula" }))
+
+    expect(screen.queryByRole("textbox", { name: "Polars expression" })).not.toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Add total_claims to Values" }),
+    ).toBeVisible()
+    let formulaField = screen.getByRole("group", {
+      name: "Calculated field Double average",
+    })
+    expect(within(formulaList).getByRole("group", {
+      name: "Calculated field Double average",
+    })).toBe(formulaField)
+    fireEvent.change(formulaSearch, { target: { value: "not found" } })
+    expect(
+      within(formulaList).queryByRole("group", {
+        name: "Calculated field Double average",
+      }),
+    ).not.toBeInTheDocument()
+    expect(within(formulaList).getByText("No formulas match your search.")).toBeVisible()
+    fireEvent.change(formulaSearch, { target: { value: "double" } })
+    expect(within(formulaList).getByRole("group", {
+      name: "Calculated field Double average",
+    })).toBeVisible()
+    fireEvent.change(formulaSearch, { target: { value: "" } })
+    formulaField = within(formulaList).getByRole("group", {
+      name: "Calculated field Double average",
+    })
+    expect(within(formulaField).getByText("double_average")).toBeVisible()
+    expect(
+      within(formulaField).getByRole("button", { name: "Edit formula Double average" }),
+    ).toBeVisible()
+    fireEvent.click(
+      within(formulaField).getByRole("button", { name: "Add Double average to Values" }),
+    )
+    expect(
+      screen.getByRole("group", { name: "Double average in Values" }),
+    ).toBeVisible()
+
+    let persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.pivots[0].values).toEqual([])
+    expect(persisted.pivot_formulas).toMatchObject([{
+      id: "formula_1",
+      reference: "double_average",
+      display_name: "Double average",
+      expression: 'pl.col("total_claims").mean() * 2',
+    }])
+    expect(persisted.pivots[0].formulas).toEqual(["formula_1"])
+    expect(persisted.pivots[1].formulas).toEqual([])
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to pivots" }))
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 2" }))
+    const sharedFormulaField = screen.getByRole("group", {
+      name: "Calculated field Double average",
+    })
+    expect(
+      within(sharedFormulaField).getByRole("button", { name: "Add Double average to Values" }),
+    ).toBeEnabled()
+    expect(within(sharedFormulaField).queryByText(/Missing input:/)).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Polars expression" })).not.toBeInTheDocument()
+
+    fireEvent.click(
+      within(sharedFormulaField).getByRole("button", { name: "Add Double average to Values" }),
+    )
+    expect(screen.getByRole("group", { name: "Double average in Values" })).toBeVisible()
+
+    persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivot_formulas).toHaveLength(1)
+    expect(persisted.pivots.map((pivot: { formulas: string[] }) => pivot.formulas)).toEqual([
+      ["formula_1"],
+      ["formula_1"],
+    ])
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit formula Double average" }),
+    )
+    expect(
+      screen.getByRole("button", { name: "Add total_claims to Formula" }),
+    ).toBeVisible()
+    fireEvent.change(screen.getByRole("textbox", { name: "Formula name" }), {
+      target: { value: "Twice average" },
+    })
+    fireEvent.change(screen.getByRole("textbox", { name: "Polars expression" }), {
+      target: { value: 'pl.col("total_claims").mean() * 2 + 1' },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Save formula" }))
+
+    persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivot_formulas).toMatchObject([{
+      id: "formula_1",
+      reference: "double_average",
+      display_name: "Twice average",
+      expression: 'pl.col("total_claims").mean() * 2 + 1',
+    }])
+    expect(persisted.pivots.map((pivot: { formulas: string[] }) => pivot.formulas)).toEqual([
+      ["formula_1"],
+      ["formula_1"],
+    ])
+    expect(screen.queryByRole("textbox", { name: "Polars expression" })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to pivots" }))
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    expect(screen.getByRole("group", { name: "Calculated field Twice average" })).toBeVisible()
+    expect(screen.getByRole("group", { name: "Twice average in Values" })).toBeVisible()
   })
 
   it("keeps concise section titles outside their settings boxes after the field grid", () => {
@@ -435,12 +610,14 @@ describe("ExplorePivotsConfig", () => {
                   id: "value_1",
                   field: "claims",
                   aggregation: "sum",
+                  reference: "claims_sum",
                   display_name: "Claims",
                 },
                 {
                   id: "value_2",
                   field: "region",
                   aggregation: "count",
+                  reference: "region_count",
                   display_name: "Region count",
                 },
               ],
@@ -539,6 +716,7 @@ describe("ExplorePivotsConfig", () => {
                   id: "value_1",
                   field: "claims",
                   aggregation: "sum",
+                  reference: "claims_sum",
                   display_name: "Claims",
                   sort_rows: "none",
                   color_scale: "low_red_high_green",
@@ -547,6 +725,7 @@ describe("ExplorePivotsConfig", () => {
                   id: "value_2",
                   field: "region",
                   aggregation: "count",
+                  reference: "region_count",
                   display_name: "Regions",
                   sort_rows: "none",
                   color_scale: "low_green_high_red",
@@ -861,6 +1040,7 @@ describe("ExplorePivotsConfig", () => {
                 id: "value_1",
                 field: "claims",
                 aggregation: "sum",
+                reference: "claims_sum",
                 display_name: "Claims",
                 sort_rows: "none",
                 color_scale: "low_red_high_green",
@@ -961,6 +1141,53 @@ describe("ExplorePivotsConfig", () => {
     expect(onCommittedUpdate).toHaveBeenCalledTimes(3)
   })
 
+  it("regenerates a semantic Value reference after a field leaves Values", () => {
+    render(
+      <PivotConfigHarness
+        initialConfig={{
+          pivots: [
+            fullPivot({
+              values: [{
+                id: "value_1",
+                field: "claims",
+                aggregation: "sum",
+                reference: "claims_sum",
+                display_name: "Claims",
+              }],
+            }),
+          ],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+
+    const valueSource = screen.getByRole("group", { name: "claims in Values" })
+    const rowsTarget = screen.getByRole("group", { name: "Rows fields" })
+    const toRows = createDragDataTransfer()
+    fireEvent.dragStart(valueSource, { dataTransfer: toRows })
+    fireEvent.dragOver(rowsTarget, { dataTransfer: toRows })
+    fireEvent.drop(rowsTarget, { dataTransfer: toRows })
+
+    let persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivots[0].values).toEqual([])
+    expect(persisted.pivots[0].rows[0]).not.toHaveProperty("reference")
+
+    const rowSource = screen.getByRole("group", { name: "claims in Rows" })
+    const valuesTarget = screen.getByRole("group", { name: "Values fields" })
+    const toValues = createDragDataTransfer()
+    fireEvent.dragStart(rowSource, { dataTransfer: toValues })
+    fireEvent.dragOver(valuesTarget, { dataTransfer: toValues })
+    fireEvent.drop(valuesTarget, { dataTransfer: toValues })
+
+    persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivots[0].rows).toEqual([])
+    expect(persisted.pivots[0].values[0]).toMatchObject({
+      field: "claims",
+      aggregation: "sum",
+      reference: "claims_sum",
+    })
+  })
+
   it("rejects a drag into a duplicate-restricted target zone", () => {
     const onCommittedUpdate = vi.fn()
     render(
@@ -1049,6 +1276,111 @@ describe("ExplorePivotsConfig", () => {
     expect(onCommittedUpdate).toHaveBeenCalledTimes(1)
   })
 
+  it("reorders mixed Value outputs without moving formulas into another zone", () => {
+    const formula = {
+      id: "formula_1",
+      reference: "claims_per_year",
+      display_name: "Claims per year",
+      expression: 'pl.lit(1)',
+    }
+    const selectedFormulaPivot = fullPivot({
+      values: [
+        { id: "value_1", field: "claims", aggregation: "sum", reference: "claims_sum", display_name: "Claims" },
+        { id: "value_2", field: "year", aggregation: "count", reference: "year_count", display_name: "Years" },
+      ],
+      formulas: [formula],
+      value_order: ["value_1", "formula_1", "value_2"],
+    })
+    render(
+      <PivotConfigHarness initialConfig={{
+        pivot_formulas: [formula],
+        pivots: [{ ...selectedFormulaPivot, formulas: ["formula_1"] }],
+      }} />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+
+    const formulaCard = screen.getByRole("group", { name: "Claims per year in Values" })
+    const claimsCard = screen.getByRole("group", { name: "claims in Values" })
+    expect(formulaCard).toHaveAttribute("draggable", "true")
+    expect(formulaCard).toHaveAttribute("tabindex", "0")
+    expect(claimsCard.compareDocumentPosition(formulaCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    fireEvent.keyDown(formulaCard, { key: "ArrowDown" })
+    let persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivots[0].value_order).toEqual(["value_1", "value_2", "formula_1"])
+
+    fireEvent.keyDown(formulaCard, { key: "ArrowLeft" })
+    persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivots[0].value_order).toEqual(["value_1", "value_2", "formula_1"])
+
+    const transfer = createDragDataTransfer()
+    fireEvent.dragStart(formulaCard, { dataTransfer: transfer })
+    for (const zone of ["Filters", "Columns", "Rows"]) {
+      expect(screen.getByRole("group", { name: `${zone} fields` })).toHaveAttribute(
+        "data-drop-state",
+        "blocked",
+      )
+    }
+    fireEvent.dragEnd(formulaCard, { dataTransfer: transfer })
+
+    const reorderTransfer = createDragDataTransfer()
+    fireEvent.dragStart(formulaCard, { dataTransfer: reorderTransfer })
+    fireEvent.dragOver(claimsCard, { dataTransfer: reorderTransfer })
+    fireEvent.drop(claimsCard, { dataTransfer: reorderTransfer })
+
+    persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
+    expect(persisted.pivots[0].value_order).toEqual([
+      "formula_1",
+      "value_1",
+      "value_2",
+    ])
+  })
+
+  it("appends keyboard-moved fields after the full mixed Values list", () => {
+    const formula = {
+      id: "formula_1",
+      reference: "claims_per_year",
+      display_name: "Claims per year",
+      expression: "pl.lit(1)",
+    }
+    const configuredPivot = fullPivot({
+      rows: [{ id: "row_1", field: "year" }],
+      values: [
+        {
+          id: "value_1",
+          field: "claims",
+          aggregation: "sum",
+          reference: "claims_sum",
+          display_name: "Claims",
+        },
+      ],
+      formulas: [formula],
+      value_order: ["formula_1", "value_1"],
+    })
+    render(
+      <PivotConfigHarness
+        initialConfig={{
+          pivot_formulas: [formula],
+          pivots: [{ ...configuredPivot, formulas: ["formula_1"] }],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+
+    fireEvent.keyDown(screen.getByRole("group", { name: "year in Rows" }), {
+      key: "ArrowRight",
+    })
+
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.pivots[0].value_order).toEqual([
+      "formula_1",
+      "value_1",
+      "row_1",
+    ])
+  })
+
   it("retains missing fields as invalid chips and rejects duplicate names", () => {
     render(
       <PivotConfigHarness
@@ -1077,6 +1409,7 @@ describe("ExplorePivotsConfig", () => {
           id: "value_1",
           field: "claims",
           aggregation: "sum",
+          reference: "claims_sum",
           display_name: "Claims",
         },
       ],

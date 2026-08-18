@@ -53,11 +53,14 @@ function makePivot(
         id: `${id}-value`,
         field: "paid",
         aggregation: "sum",
+        reference: "paid_sum",
         display_name: "Paid",
       },
     ],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? (overrides.values ?? [{ id: `${id}-value` }]).map(({ id }) => id),
   }
 }
 
@@ -268,6 +271,7 @@ describe("ExplorePivotsPane", () => {
           id: "total-claims",
           field: "total_claims",
           aggregation: "average",
+          reference: "total_claims_mean",
           display_name: "Average total claims",
         },
       ],

@@ -14,8 +14,13 @@ import {
   createExplorePivot,
   parseExplorePivots,
   isNumericPivotDtype,
+  serializeExplorePivot,
 } from "../explore/pivotConfig"
-import type { ExplorePivotConfig, PivotValuePlacement } from "../explore/pivotConfig"
+import type {
+  ExplorePivotConfig,
+  PivotFormulaPlacement,
+  PivotValuePlacement,
+} from "../explore/pivotConfig"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import {
@@ -24,6 +29,7 @@ import {
   ExploreConfigCardListHeader,
 } from "./ExploreConfigCardList"
 import PivotFieldWell from "./explorePivots/PivotFieldWell"
+import PivotFormulaSection from "./explorePivots/PivotFormulaSection"
 import PivotFormattingSection from "./explorePivots/PivotFormattingSection"
 import { normalizePivotOrdering } from "./explorePivots/placements"
 import type { Column, LoadPivotFilterMembers } from "./explorePivots/placements"
@@ -48,8 +54,11 @@ type ExplorePivotsConfigProps = {
 type PivotEditorProps = {
   pivot: ExplorePivotConfig
   pivots: ExplorePivotConfig[]
+  formulas: PivotFormulaPlacement[]
   upstreamColumns: Column[]
   persistPivot: (pivot: ExplorePivotConfig) => void
+  persistFormula: (formula: PivotFormulaPlacement) => void
+  deleteFormula: (formula: PivotFormulaPlacement) => void
   onBack: () => void
   loadFilterMembers?: LoadPivotFilterMembers
   currentConfigHash: string | null
@@ -58,14 +67,20 @@ type PivotEditorProps = {
 function PivotEditor({
   pivot,
   pivots,
+  formulas,
   upstreamColumns,
   persistPivot,
+  persistFormula,
+  deleteFormula,
   onBack,
   loadFilterMembers,
   currentConfigHash,
 }: PivotEditorProps) {
   const [nameDraft, setNameDraft] = useState(pivot.name)
   const [nameError, setNameError] = useState<string | null>(null)
+  const [formulaFieldInserter, setFormulaFieldInserter] = useState<
+    ((field: string) => void) | null
+  >(null)
   const columnsByName = useMemo(
     () => new Map(upstreamColumns.map((column) => [column.name, column])),
     [upstreamColumns],
@@ -162,6 +177,19 @@ function PivotEditor({
         upstreamColumns={upstreamColumns}
         loadFilterMembers={loadFilterMembers}
         currentConfigHash={currentConfigHash}
+        formulaFieldInserter={formulaFieldInserter}
+        formulaSection={(
+          <PivotFormulaSection
+            pivot={pivot}
+            formulas={formulas}
+            persistPivot={persistPivot}
+            persistFormula={persistFormula}
+            deleteFormula={deleteFormula}
+            onFormulaEditorChange={(inserter) => {
+              setFormulaFieldInserter(() => inserter)
+            }}
+          />
+        )}
       />
 
       <section data-testid="pivot-sorting-section">
@@ -223,6 +251,7 @@ function PivotEditor({
       <PivotFormattingSection
         pivot={pivot}
         persistPivot={persistPivot}
+        persistFormula={persistFormula}
         upstreamColumns={upstreamColumns}
       />
 
@@ -554,20 +583,46 @@ export default function ExplorePivotsConfig({
 
   if (!parsed.ok) return <ConfigError error={parsed.error} />
   if (!parsedCharts.ok) return <ConfigError error={parsedCharts.error} />
-  const { pivots } = parsed
+  const { pivots, formulas } = parsed
   const configuredPivot = configuredPivotId
     ? pivots.find((candidate) => candidate.id === configuredPivotId)
     : undefined
 
+  const persistExploreState = (
+    nextPivots: ExplorePivotConfig[],
+    nextFormulas: PivotFormulaPlacement[] = formulas,
+  ) => onUpdate({
+    pivot_formulas: nextFormulas,
+    pivots: nextPivots.map(serializeExplorePivot),
+  })
+
   const persistPivot = (nextPivot: ExplorePivotConfig) => {
     const exists = pivots.some((candidate) => candidate.id === nextPivot.id)
-    onUpdate(
-      "pivots",
+    persistExploreState(
       exists
-        ? pivots.map((candidate) =>
-            candidate.id === nextPivot.id ? nextPivot : candidate,
-          )
+        ? pivots.map((candidate) => candidate.id === nextPivot.id ? nextPivot : candidate)
         : [...pivots, nextPivot],
+    )
+  }
+
+  const persistFormula = (nextFormula: PivotFormulaPlacement) => {
+    const exists = formulas.some((formula) => formula.id === nextFormula.id)
+    persistExploreState(
+      pivots,
+      exists
+        ? formulas.map((formula) => formula.id === nextFormula.id ? nextFormula : formula)
+        : [...formulas, nextFormula],
+    )
+  }
+
+  const deleteFormula = (formula: PivotFormulaPlacement) => {
+    persistExploreState(
+      pivots.map((pivot) => ({
+        ...pivot,
+        formulas: pivot.formulas.filter((candidate) => candidate.id !== formula.id),
+        value_order: pivot.value_order.filter((id) => id !== formula.id),
+      })),
+      formulas.filter((candidate) => candidate.id !== formula.id),
     )
   }
 
@@ -577,8 +632,11 @@ export default function ExplorePivotsConfig({
         key={configuredPivot.id}
         pivot={configuredPivot}
         pivots={pivots}
+        formulas={formulas}
         upstreamColumns={upstreamColumns}
         persistPivot={persistPivot}
+        persistFormula={persistFormula}
+        deleteFormula={deleteFormula}
         onBack={() => setExploreConfiguredPivot(nodeId, null)}
         loadFilterMembers={loadFilterMembers}
         currentConfigHash={currentConfigHash}
@@ -597,10 +655,7 @@ export default function ExplorePivotsConfig({
         if (configuredPivotId === pivot.id) {
           setExploreConfiguredPivot(nodeId, null)
         }
-        onUpdate(
-          "pivots",
-          pivots.filter((candidate) => candidate.id !== pivot.id),
-        )
+        persistExploreState(pivots.filter((candidate) => candidate.id !== pivot.id))
       }}
     />
   )
