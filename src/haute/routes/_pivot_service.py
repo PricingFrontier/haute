@@ -1015,8 +1015,13 @@ class PivotService:
         values = spec.pivot["values"]
         formulas = spec.pivot["formulas"]
         compiled_formulas = _compile_formulas(formulas, schema)
-        aggregate_outputs = [*values, *formulas]
-        outputs_by_id = {output["id"]: output for output in aggregate_outputs}
+        aggregate_outputs: list[ExplorePivotValuePlacement | ExplorePivotFormula] = [
+            *values,
+            *formulas,
+        ]
+        outputs_by_id: dict[str, ExplorePivotValuePlacement | ExplorePivotFormula] = {
+            output["id"]: output for output in aggregate_outputs
+        }
         if len(outputs_by_id) != len(aggregate_outputs):
             raise PivotContractError(
                 "invalid_pivot_output_order",
@@ -1024,7 +1029,9 @@ class PivotService:
                 "Correct duplicate Value or formula ids in the pivot configuration.",
             )
         try:
-            output_values = [outputs_by_id[output_id] for output_id in spec.pivot["value_order"]]
+            output_values: list[ExplorePivotValuePlacement | ExplorePivotFormula] = [
+                outputs_by_id[output_id] for output_id in spec.pivot["value_order"]
+            ]
         except KeyError as exc:
             raise PivotContractError(
                 "invalid_pivot_output_order",
@@ -1211,14 +1218,25 @@ class PivotService:
                 grand_total_values,
             )
 
-        result_values = [
-            ExplorePivotValueIdentity(
-                id=output["id"],
-                field=output["field"] if "aggregation" in output else output["reference"],
-                aggregation=output["aggregation"] if "aggregation" in output else "formula",
-            )
-            for output in output_values
-        ]
+        result_values: list[ExplorePivotValueIdentity] = []
+        for output in output_values:
+            if "aggregation" in output:
+                value_output = cast(ExplorePivotValuePlacement, output)
+                result_values.append(
+                    ExplorePivotValueIdentity(
+                        id=value_output["id"],
+                        field=value_output["field"],
+                        aggregation=value_output["aggregation"],
+                    )
+                )
+            else:
+                result_values.append(
+                    ExplorePivotValueIdentity(
+                        id=output["id"],
+                        field=output["reference"],
+                        aggregation="formula",
+                    )
+                )
         return ExplorePivotResult(
             node_id=spec.explore.node_id,
             pivot_id=spec.pivot["id"],
