@@ -405,6 +405,65 @@ describe("ExplorePivotsConfig", () => {
     expect(screen.getByRole("group", { name: "Twice average in Values" })).toBeVisible()
   })
 
+  it("deletes a shared formula from every pivot without disturbing other Values", () => {
+    const formula = {
+      id: "formula_1",
+      reference: "double_claims",
+      display_name: "Double claims",
+      expression: 'pl.col("claims").sum() * 2',
+    }
+    const firstPivot = fullPivot({
+      values: [{
+        id: "value_1",
+        field: "claims",
+        aggregation: "sum",
+        reference: "claims_sum",
+        display_name: "Claims",
+      }],
+      formulas: [formula],
+      value_order: ["value_1", "formula_1"],
+    })
+    const secondPivot = fullPivot({
+      id: "pivot_2",
+      name: "Pivot 2",
+      formulas: [formula],
+      value_order: ["formula_1"],
+    })
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true)
+    render(
+      <PivotConfigHarness
+        initialConfig={{
+          pivot_formulas: [formula],
+          pivots: [
+            { ...firstPivot, formulas: [formula.id] },
+            { ...secondPivot, formulas: [formula.id] },
+          ],
+        }}
+      />,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
+    fireEvent.click(screen.getByRole("button", { name: "Edit formula Double claims" }))
+    fireEvent.click(screen.getByRole("button", { name: "Delete formula Double claims" }))
+
+    expect(confirm).toHaveBeenCalledWith("Delete Double claims from every pivot?")
+    const persisted = JSON.parse(
+      screen.getByTestId("persisted-config").textContent ?? "{}",
+    )
+    expect(persisted.pivot_formulas).toEqual([])
+    expect(persisted.pivots.map((pivot: ExplorePivotConfig) => pivot.formulas)).toEqual([
+      [],
+      [],
+    ])
+    expect(persisted.pivots.map((pivot: ExplorePivotConfig) => pivot.value_order)).toEqual([
+      ["value_1"],
+      [],
+    ])
+    expect(screen.queryByRole("group", { name: "Calculated field Double claims" }))
+      .not.toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "claims in Values" })).toBeVisible()
+    confirm.mockRestore()
+  })
+
   it("keeps concise section titles outside their settings boxes after the field grid", () => {
     render(<PivotConfigHarness initialConfig={{ pivots: [fullPivot()] }} />)
     fireEvent.click(screen.getByRole("button", { name: "Configure Pivot 1" }))
@@ -1381,7 +1440,7 @@ describe("ExplorePivotsConfig", () => {
     ])
   })
 
-  it("retains missing fields as invalid chips and rejects duplicate names", () => {
+  it("retains missing fields as invalid chips and rejects blank or duplicate names", () => {
     render(
       <PivotConfigHarness
         initialConfig={{
@@ -1397,6 +1456,10 @@ describe("ExplorePivotsConfig", () => {
     expect(screen.getByText(/no longer available/i)).toBeInTheDocument()
 
     const name = screen.getByRole("textbox", { name: "Pivot name" })
+    fireEvent.change(name, { target: { value: "   " } })
+    fireEvent.blur(name)
+    expect(screen.getByRole("alert")).toHaveTextContent(/name cannot be blank/i)
+
     fireEvent.change(name, { target: { value: " other PIVOT " } })
     fireEvent.blur(name)
     expect(screen.getByRole("alert")).toHaveTextContent(/name must be unique/i)
