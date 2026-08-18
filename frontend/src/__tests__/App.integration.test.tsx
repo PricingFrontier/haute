@@ -721,6 +721,38 @@ describe("App integration — load a pipeline with nodes", () => {
     expect(await screen.findByText("31")).toBeInTheDocument()
     expect(screen.getByText(/Showing 2 of 4 rows/)).toBeInTheDocument()
   })
+
+  it("hydrates Pivot field actions from a current Explore cache report on cold load", async () => {
+    const sourceNode = makeNode("source_0", "Claims Source", "dataInput")
+    sourceNode.data.config = { inputType: "file", format: "parquet", mode: "scan", path: "data/claims.parquet", arguments: {} }
+    sourceNode.data._columns = [{ name: "upstream_only", dtype: "i64" }]
+    sourceNode.data._columnsSource = "live"
+    const exploreNode = makeNode("explore_1", "Claims Explore", "explore")
+    vi.mocked(api.loadPipeline).mockResolvedValueOnce({
+      nodes: [sourceNode, exploreNode], edges: [{ id: "e1", source: "source_0", target: "explore_1" }],
+      preamble: "", preserved_blocks: [], source_revision: "revision-test",
+    })
+    vi.mocked(api.getExploreCacheSnapshot).mockResolvedValueOnce({
+      state: "current", message: "Cached", result: {
+        status: "ok", node_id: "explore_1", upstream_node_id: "source_0", source: "live",
+        dataframe_cache_key: "explore_dataset:post-code", row_count: 1, column_count: 1, generated_at: 1,
+        columns: [{ name: "post_code_only", dtype: "Utf8", kind: "Text", null_count: 0, distinct_count: 1, unique_ratio: 1, is_high_cardinality: false, is_identifier_candidate: false, text_min_length: 1, text_mean_length: 1, text_max_length: 1, temporal_span: null }],
+        overview_summary: { data_quality: { issue_count: 0, issues: [], duplicate_row_count: 0, duplicate_ratio: 0 }, categorical_summary: [] },
+      },
+    })
+
+    render(<App />)
+    await waitForAppReady()
+    fireEvent.click(await screen.findByText("Claims Explore"))
+    fireEvent.click((await screen.findAllByRole("tab", { name: "Pivots" })).find(
+      (tab) => tab.id === "explore-pivots-tab",
+    )!)
+    await findEditorTestId("explore-pivots-config")
+    fireEvent.click(await screen.findByRole("button", { name: "Add Pivot" }))
+    fireEvent.click(screen.getByRole("button", { name: /configure pivot/i }))
+
+    expect(await screen.findByRole("group", { name: "post_code_only field actions" })).toBeInTheDocument()
+  })
 })
 
 describe("App integration — add a node via drag-and-drop from the palette", () => {

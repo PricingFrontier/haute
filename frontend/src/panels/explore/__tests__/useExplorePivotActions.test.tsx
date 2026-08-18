@@ -40,18 +40,22 @@ function pivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig 
     name: "Claims",
     enabled: true,
     filters: [],
-    rows: [{ id: "region", field: "region" }],
+    rows: [{ id: "region", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     columns: [],
     values: [
       {
         id: "paid",
         field: "paid",
         aggregation: "sum",
+        reference: "paid_sum",
         display_name: "Paid",
+        color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
       },
     ],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? (overrides.values ?? [{ id: "paid" }]).map(({ id }) => id),
   }
 }
 

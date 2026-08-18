@@ -35,8 +35,10 @@ import {
 import { adaptPivotChartData, type ChartSeriesData } from "../explore/chartData"
 import {
   isPivotResultFresh,
+  isPivotConfigured,
   parseExplorePivots,
   pivotCalculationIdentity,
+  pivotOutputs,
   type ExplorePivotConfig,
   type PivotResultFreshnessEntry,
 } from "../explore/pivotConfig"
@@ -170,7 +172,7 @@ function pivotSourceStatus(
   hasActiveJob: boolean,
   currentDataframeKey: string | null,
 ): PivotSourceStatus {
-  if (pivot.values.length === 0) return "unconfigured"
+  if (!isPivotConfigured(pivot)) return "unconfigured"
   if (hasActiveJob) return "loading"
   if (entry?.error && !entry.result) return "error"
   if (!entry?.result) return "not_calculated"
@@ -958,9 +960,9 @@ export default function ExploreChartsConfig({
             pivot={pivot}
             currentConfigHash={currentConfigHash}
           />
-          {pivot.values.length === 0 ? (
+          {!isPivotConfigured(pivot) ? (
             <div role="alert" className="text-xs" style={{ color: "var(--danger)" }}>
-              Add at least one Value to the source Pivot before configuring this chart.
+              Add at least one Value or calculated field to the source Pivot before configuring this chart.
             </div>
           ) : (
             <>
@@ -1123,7 +1125,7 @@ export default function ExploreChartsConfig({
                   </Field>
                 )}
               </div>
-              {pivot.values.map((value) => {
+              {pivotOutputs(pivot).map((value) => {
                 const encoding = chart.value_encodings.find((x) => x.value_id === value.id)
                 if (!encoding) return null
                 const valueSeries =
@@ -1291,7 +1293,7 @@ export default function ExploreChartsConfig({
                     .filter(({ id }) => data.dormantEncodingIds.includes(id))
                     .map(
                       ({ value_id }) =>
-                        pivot.values.find(({ id }) => id === value_id)
+                        pivotOutputs(pivot).find(({ id }) => id === value_id)
                           ?.display_name ?? "a removed Value",
                     )
                     .join(", ")}

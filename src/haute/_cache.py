@@ -761,6 +761,9 @@ CACHE_CONFIG_FIELD_CLASSIFICATIONS: Mapping[
                 "overview": (
                     "Overview-card visibility affects presentation, not the explored frame."
                 ),
+                "pivot_formulas": (
+                    "Pivot-formula definitions affect Pivot results, not the explored frame."
+                ),
                 "pivots": (
                     "Pivot-card configuration affects presentation, not the explored frame."
                 ),

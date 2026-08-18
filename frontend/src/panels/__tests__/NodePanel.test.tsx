@@ -4,6 +4,7 @@ import { render, screen, fireEvent, cleanup, within, act } from "@testing-librar
 import NodePanel from "../NodePanel"
 import { GraphProvider } from "../GraphContext"
 import type { SimpleNode, SimpleEdge } from "../editors"
+import type { ExploreCacheReport } from "../../api/types"
 import useUIStore from "../../stores/useUIStore"
 import useNodeResultsStore from "../../stores/useNodeResultsStore"
 import useSettingsStore from "../../stores/useSettingsStore"
@@ -232,7 +233,7 @@ describe("NodePanel", () => {
       explorePreviewPanes: {},
       modellingPanes: {},
     })
-    useNodeResultsStore.setState({ trainJobs: {} })
+    useNodeResultsStore.setState({ trainJobs: {}, exploreResults: {} })
     transformEditorProps.length = 0
     edgeJoinEditorProps.length = 0
     exploreCodeEditorProps.length = 0
@@ -903,6 +904,95 @@ describe("NodePanel", () => {
 
     expect(screen.getByRole("tab", { name: "Charts" })).toHaveAttribute("aria-selected", "true")
     expect(screen.getByTestId("explore-charts-config")).toBeInTheDocument()
+  })
+
+  it("hydrates Pivot fields from the current Explore cache report without waiting for preview columns", () => {
+    const exploreNode = makeNode({
+      id: "explore_1",
+      data: {
+        label: "Explore Claims",
+        description: "",
+        nodeType: "explore",
+        config: { code: "df = df.with_columns(derived_premium=pl.col('premium') * 2)" },
+      },
+    })
+    const sourceNode = makeNode({
+      id: "source_1",
+      data: {
+        label: "Claims Source",
+        description: "",
+        nodeType: "dataInput",
+        config: {},
+        _columns: [{ name: "upstream_premium", dtype: "Int64" }],
+      },
+    })
+    const sourceEdge = { id: "e_source_explore", source: "source_1", target: "explore_1" }
+
+    renderPanel({ node: exploreNode, allNodes: [sourceNode, exploreNode], edges: [sourceEdge] })
+    fireEvent.click(screen.getByRole("tab", { name: "Pivots" }))
+
+    expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([
+      { name: "upstream_premium", dtype: "Int64" },
+    ])
+    const currentConfigHash = explorePivotsConfigProps.at(-1)?.currentConfigHash as string
+    const report: ExploreCacheReport = {
+      status: "ok",
+      node_id: "explore_1",
+      upstream_node_id: "source_1",
+      source: "live",
+      dataframe_cache_key: "explore_dataset:current",
+      row_count: 1,
+      column_count: 1,
+      generated_at: 1,
+      columns: [],
+      overview_summary: {
+        data_quality: {
+          issue_count: 0,
+          issues: [],
+          duplicate_row_count: 0,
+          duplicate_ratio: 0,
+        },
+        categorical_summary: [],
+      },
+    }
+
+    act(() => {
+      useNodeResultsStore.setState({
+        exploreResults: {
+          explore_1: {
+            result: report,
+            jobId: "cache-status:explore_1",
+            configHash: currentConfigHash,
+            source: "live",
+            structuralVersion: 0,
+            nodeLabel: "Explore Claims",
+          },
+        },
+      })
+    })
+
+    // A current report's empty schema is authoritative over the connected
+    // upstream fallback: Explore code can deliberately project no fields.
+    expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([])
+
+    act(() => {
+      useNodeResultsStore.setState({
+        exploreResults: {
+          explore_1: {
+            result: report,
+            jobId: "cache-status:explore_1",
+            configHash: "stale-graph-source-identity",
+            source: "live",
+            structuralVersion: 0,
+            nodeLabel: "Explore Claims",
+          },
+        },
+      })
+    })
+
+    expect(explorePivotsConfigProps.at(-1)?.upstreamColumns).toEqual([
+      { name: "upstream_premium", dtype: "Int64" },
+    ])
   })
 
   it("refetches open filter members with the new graph/source when the Explore identity changes", () => {

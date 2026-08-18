@@ -21,7 +21,13 @@ import {
   seedValueEncodings,
   type ExploreChartConfig,
 } from "../chartConfig"
-import type { ExplorePivotConfig } from "../pivotConfig"
+import { isPivotFormulaPlacement, pivotOutputs } from "../pivotConfig"
+import type {
+  ExplorePivotConfig,
+  PivotAxisPlacement,
+  PivotFormulaPlacement,
+  PivotValuePlacement,
+} from "../pivotConfig"
 
 function member(value: string): ExplorePivotMemberKey {
   return { kind: "string", value }
@@ -34,33 +40,111 @@ function path(
   return { members, is_grand_total: isGrandTotal }
 }
 
-function pivot(
-  overrides: Partial<ExplorePivotConfig> = {},
-): ExplorePivotConfig {
+type FixtureAxisPlacement = {
+  id: string
+  field: string
+  sort?: PivotAxisPlacement["sort"]
+  number_format?: PivotAxisPlacement["number_format"]
+  decimal_places?: PivotAxisPlacement["decimal_places"]
+  use_grouping?: PivotAxisPlacement["use_grouping"]
+}
+type FixtureValuePlacement = {
+  id: string
+  field: string
+  aggregation: PivotValuePlacement["aggregation"]
+  reference: string
+  display_name: string
+  sort_rows?: PivotValuePlacement["sort_rows"]
+  color_scale?: PivotValuePlacement["color_scale"]
+  color_scale_split_by?: PivotValuePlacement["color_scale_split_by"]
+  number_format?: PivotValuePlacement["number_format"]
+  decimal_places?: PivotValuePlacement["decimal_places"]
+  use_grouping?: PivotValuePlacement["use_grouping"]
+}
+type FixtureFormulaPlacement = {
+  id: string
+  reference: string
+  display_name: string
+  expression: string
+  number_format?: PivotFormulaPlacement["number_format"]
+  decimal_places?: PivotFormulaPlacement["decimal_places"]
+  use_grouping?: PivotFormulaPlacement["use_grouping"]
+}
+type FixturePivotOverrides = {
+  version?: ExplorePivotConfig["version"]
+  id?: string
+  name?: string
+  enabled?: boolean
+  filters?: ExplorePivotConfig["filters"]
+  columns?: FixtureAxisPlacement[]
+  rows?: FixtureAxisPlacement[]
+  values?: FixtureValuePlacement[]
+  formulas?: FixtureFormulaPlacement[]
+  value_order?: string[]
+  options?: ExplorePivotConfig["options"]
+}
+
+function pivot(overrides: FixturePivotOverrides = {}): ExplorePivotConfig {
+  const { columns, rows, values: overrideValues, formulas: overrideFormulas, ...rest } = overrides
+  const values = (overrideValues ?? [
+    {
+      id: "value_paid",
+      field: "paid",
+      aggregation: "sum",
+      reference: "paid_sum",
+      display_name: "Paid",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
+    },
+    {
+      id: "value_claims",
+      field: "claim_id",
+      aggregation: "count",
+      reference: "claim_id_count",
+      display_name: "Claims",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
+    },
+  ]).map((value): PivotValuePlacement => ({
+    ...value,
+    color_scale_split_by: value.color_scale_split_by ?? null,
+    number_format: value.number_format ?? "general",
+    decimal_places: value.decimal_places ?? null,
+    use_grouping: value.use_grouping ?? true,
+  }))
+  const formulas = (overrideFormulas ?? []).map((formula): PivotFormulaPlacement => ({
+    ...formula,
+    number_format: formula.number_format ?? "general",
+    decimal_places: formula.decimal_places ?? null,
+    use_grouping: formula.use_grouping ?? true,
+  }))
+  const formattedRows = (rows ?? [{ id: "row_region", field: "region" }]).map(
+    (row): PivotAxisPlacement => ({
+      ...row,
+      number_format: row.number_format ?? "general",
+      decimal_places: row.decimal_places ?? null,
+      use_grouping: row.use_grouping ?? true,
+    }),
+  )
+  const formattedColumns = (columns ?? [{ id: "column_year", field: "year" }]).map(
+    (column): PivotAxisPlacement => ({
+      ...column,
+      number_format: column.number_format ?? "general",
+      decimal_places: column.decimal_places ?? null,
+      use_grouping: column.use_grouping ?? true,
+    }),
+  )
   return {
     version: 1,
     id: "pivot_1",
     name: "Claims pivot",
     enabled: true,
     filters: [],
-    rows: [{ id: "row_region", field: "region" }],
-    columns: [{ id: "column_year", field: "year" }],
-    values: [
-      {
-        id: "value_paid",
-        field: "paid",
-        aggregation: "sum",
-        display_name: "Paid",
-      },
-      {
-        id: "value_claims",
-        field: "claim_id",
-        aggregation: "count",
-        display_name: "Claims",
-      },
-    ],
+    rows: formattedRows,
+    columns: formattedColumns,
+    values,
+    formulas,
     options: { row_grand_totals: true, column_grand_totals: true },
-    ...overrides,
+    ...rest,
+    value_order: rest.value_order ?? [...values, ...formulas].map(({ id }) => id),
   }
 }
 
@@ -82,16 +166,16 @@ function result(
     calculation_key: "calculation-current",
     row_fields: sourcePivot.rows.map(({ field }) => field),
     column_fields: sourcePivot.columns.map(({ field }) => field),
-    values: sourcePivot.values.map(({ id, field, aggregation }) => ({
-      id,
-      field,
-      aggregation,
-    })),
+    values: pivotOutputs(sourcePivot).map((output) =>
+      isPivotFormulaPlacement(output)
+        ? { id: output.id, field: output.reference, aggregation: "formula" }
+        : { id: output.id, field: output.field, aggregation: output.aggregation },
+    ),
     row_paths: rowPaths,
     column_paths: columnPaths,
     cells: rowPaths.flatMap((_, rowIndex) =>
       columnPaths.flatMap((__, columnIndex) =>
-        sourcePivot.values.map((value, valueIndex) => ({
+        pivotOutputs(sourcePivot).map((value, valueIndex) => ({
           row_index: rowIndex,
           column_index: columnIndex,
           value_id: value.id,
@@ -171,6 +255,32 @@ describe("pivot chart data adapter", () => {
     expect(data.series[2].formattedValues[0]).toBeNull()
     expect(data.series[0].formattedValues[0]).toMatch(/^£100/)
     expect(data.series[1].formattedValues[0]).toBe("101")
+  })
+
+  it("adapts formula outputs as ordinary chart series", () => {
+    const sourcePivot = pivot({
+      formulas: [{
+        id: "formula_average",
+        reference: "average_cost",
+        display_name: "Average cost",
+        expression: 'pl.col("paid").sum() / pl.col("claim_id").count()',
+        number_format: "number",
+        decimal_places: 2,
+        use_grouping: true,
+      }],
+    })
+
+    const data = adaptPivotChartData(
+      chart(sourcePivot),
+      sourcePivot,
+      result(sourcePivot),
+    )
+
+    expect(data.series.map(({ name }) => name)).toContain("2024 · Average cost")
+    expect(data.series.find(({ valueId }) => valueId === "formula_average")?.values).toEqual([
+      102,
+      202,
+    ])
   })
 
   it("uses typed canonical keys for exact overrides and reports dormant mappings", () => {
@@ -271,9 +381,9 @@ describe("pivot chart data adapter", () => {
     const sourcePivot = pivot({
       columns: [],
       values: [
-        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
-        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
-        { id: "value_c", field: "c", aggregation: "sum", display_name: "C" },
+        { id: "value_a", field: "a", aggregation: "sum", reference: "a_sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", reference: "b_sum", display_name: "B" },
+        { id: "value_c", field: "c", aggregation: "sum", reference: "c_sum", display_name: "C" },
       ],
     })
     const rows = ["mixed", "simple", "gapped", "empty"]
@@ -343,8 +453,8 @@ describe("pivot chart data adapter", () => {
     const sourcePivot = pivot({
       columns: [],
       values: [
-        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
-        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
+        { id: "value_a", field: "a", aggregation: "sum", reference: "a_sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", reference: "b_sum", display_name: "B" },
       ],
     })
     const sourceResult = result(sourcePivot, {
@@ -375,9 +485,9 @@ describe("pivot chart data adapter", () => {
     const sourcePivot = pivot({
       columns: [],
       values: [
-        { id: "value_a", field: "a", aggregation: "sum", display_name: "A" },
-        { id: "value_b", field: "b", aggregation: "sum", display_name: "B" },
-        { id: "value_c", field: "c", aggregation: "sum", display_name: "C" },
+        { id: "value_a", field: "a", aggregation: "sum", reference: "a_sum", display_name: "A" },
+        { id: "value_b", field: "b", aggregation: "sum", reference: "b_sum", display_name: "B" },
+        { id: "value_c", field: "c", aggregation: "sum", reference: "c_sum", display_name: "C" },
       ],
     })
     const sourceResult = result(sourcePivot, {

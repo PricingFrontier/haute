@@ -6,6 +6,7 @@ import useNodeResultsStore, {
 } from "../../stores/useNodeResultsStore"
 import {
   isPivotResultFresh,
+  isPivotConfigured,
   pivotCalculationIdentity,
   type ExplorePivotConfig,
 } from "./pivotConfig"
@@ -64,7 +65,7 @@ export default function useAutoUpdateExplorePivots({
     for (const pivot of pivots) {
       if (seenPivotIds.has(pivot.id)) continue
       seenPivotIds.add(pivot.id)
-      if (pivot.values.length === 0) continue
+      if (!isPivotConfigured(pivot)) continue
 
       const resultKey = explorePivotResultKey(nodeId, pivot.id)
       const cached = pivotResults[resultKey]

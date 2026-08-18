@@ -1722,6 +1722,7 @@ const EXPLORE_PIVOT_AGGREGATIONS = [
   "max",
   "median",
   "distinct_count",
+  "formula",
 ] as const
 const PIVOT_INTEGER_PATTERN = /^-?(?:0|[1-9][0-9]*)$/
 const PIVOT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/

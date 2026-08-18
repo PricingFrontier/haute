@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import math
 import threading
 import time
@@ -30,8 +31,10 @@ from haute._explore_pivots import validate_explore_pivots
 from haute._hashing import content_hash_bytes
 from haute._lru_cache import LRUCache
 from haute._polars_utils import cancellable_streaming_collect
+from haute._sandbox import safe_globals, validate_user_code
 from haute._types import (
     ExplorePivotConfig,
+    ExplorePivotFormula,
     ExplorePivotMember,
     ExplorePivotRowPlacement,
     ExplorePivotValuePlacement,
@@ -370,6 +373,79 @@ def _value_alias(value_id: str) -> str:
     return f"__haute_pivot_value_{digest}"
 
 
+def _group_alias(field: str) -> str:
+    digest = content_hash_bytes(field.encode())[:20]
+    return f"__haute_pivot_group_{digest}"
+
+
+def _formula_expression(formula: ExplorePivotFormula) -> pl.Expr:
+    """Compile one configured expression under the normal user-code sandbox."""
+
+    try:
+        tree = ast.parse(formula["expression"], mode="eval")
+        validate_user_code(formula["expression"])
+        expression = eval(compile(tree, "<pivot formula>", "eval"), safe_globals(pl=pl), {})  # noqa: S307
+        if not isinstance(expression, pl.Expr):
+            raise TypeError("formula must return one Polars expression")
+        return expression.alias(_value_alias(formula["id"]))
+    except Exception as exc:
+        raise PivotContractError(
+            "invalid_pivot_formula",
+            "Pivot formula is invalid.",
+            "Use a safe Python expression that returns one Polars expression.",
+            formula_id=formula["id"],
+        ) from exc
+
+
+def _compile_formulas(
+    formulas: Sequence[ExplorePivotFormula],
+    schema: Mapping[str, pl.DataType],
+) -> list[tuple[ExplorePivotFormula, pl.Expr]]:
+    """Compile once and validate grouped expressions against the source schema."""
+
+    compiled: list[tuple[ExplorePivotFormula, pl.Expr]] = []
+    validation_frame = pl.LazyFrame(schema=schema)
+    for formula in formulas:
+        expression = _formula_expression(formula)
+        try:
+            source_fields = set(expression.meta.root_names())
+        except Exception as exc:
+            raise PivotContractError(
+                "invalid_pivot_formula",
+                "Pivot formula is invalid.",
+                "Use a safe Python expression that returns one Polars expression.",
+                formula_id=formula["id"],
+            ) from exc
+        missing = sorted(source_fields - schema.keys())
+        if missing:
+            missing_text = ", ".join(missing)
+            raise PivotContractError(
+                "invalid_pivot_formula",
+                f"Pivot formula uses unavailable source fields: {missing_text}.",
+                f"Use fields from the Explore dataset instead of: {missing_text}.",
+                formula_id=formula["id"],
+                missing_fields=missing_text,
+            )
+        try:
+            formula_dtype = (
+                validation_frame.group_by(pl.lit(0).alias("__haute_pivot_formula_validation_group"))
+                .agg(expression)
+                .collect_schema()[_value_alias(formula["id"])]
+            )
+            if formula_dtype.is_nested() or formula_dtype.base_type() == pl.Object:
+                raise TypeError("formula must produce one supported scalar per group")
+        except Exception as exc:
+            raise PivotContractError(
+                "invalid_pivot_formula",
+                "Pivot formula must produce one scalar aggregate per group.",
+                "Aggregate source fields in the Polars expression, for example "
+                'pl.col("amount").sum() * 2.',
+                formula_id=formula["id"],
+            ) from exc
+        compiled.append((formula, expression))
+    return compiled
+
+
 def _valid_value_expression(field: str, dtype: pl.DataType) -> pl.Expr:
     expression = pl.col(field)
     if dtype.base_type() in _FLOAT_BASE_TYPES:
@@ -500,10 +576,20 @@ class PivotService:
                     "id": placement["id"],
                     "field": placement["field"],
                     "aggregation": placement["aggregation"],
+                    "reference": placement["reference"],
                     "sort_rows": placement["sort_rows"] if placement["id"] == sort_by else "none",
                 }
                 for placement in pivot["values"]
             ],
+            "formulas": [
+                {
+                    "id": formula["id"],
+                    "reference": formula["reference"],
+                    "expression": formula["expression"],
+                }
+                for formula in pivot["formulas"]
+            ],
+            "value_order": pivot["value_order"],
             "options": {
                 "row_grand_totals": pivot["options"]["row_grand_totals"],
                 "column_grand_totals": pivot["options"]["column_grand_totals"],
@@ -754,11 +840,11 @@ class PivotService:
                     "Choose a supported scalar field.",
                     field=field,
                 )
-        if not pivot["values"]:
+        if not pivot["values"] and not pivot["formulas"]:
             raise PivotContractError(
                 "pivot_unconfigured",
-                "Configure at least one pivot value.",
-                "Add a value and aggregation to the pivot.",
+                "Configure at least one pivot value or formula.",
+                "Add a Value or calculated field to the pivot.",
             )
         for value in pivot["values"]:
             dtype = schema[value["field"]]
@@ -835,29 +921,78 @@ class PivotService:
         filtered: pl.LazyFrame,
         group_fields: Sequence[str],
         values: Sequence[ExplorePivotValuePlacement],
+        compiled_formulas: Sequence[tuple[ExplorePivotFormula, pl.Expr]],
         schema: Mapping[str, pl.DataType],
         context: ExecutionContext,
     ) -> pl.DataFrame:
         unique_group_fields = self._unique_fields(group_fields)
-        expressions = [_aggregation_expression(value, schema[value["field"]]) for value in values]
+        group_aliases = {field: _group_alias(field) for field in unique_group_fields}
+        expressions: list[pl.Expr] = []
+        seen_aggregations: set[tuple[str, str]] = set()
+        for value in values:
+            key = (value["field"], value["aggregation"])
+            if key in seen_aggregations:
+                continue
+            seen_aggregations.add(key)
+            expressions.append(_aggregation_expression(value, schema[value["field"]]))
+        expressions.extend(expression for _, expression in compiled_formulas)
         if unique_group_fields:
             query = filtered.group_by(unique_group_fields).agg(expressions)
         else:
             query = filtered.select(expressions)
-        return cancellable_streaming_collect(query, execution_context=context)
+        query = query.rename(group_aliases)
+        # Each configured Value gets a public reference, even when its aggregate
+        # was shared with an earlier identical (field, aggregation) Value.
+        first_aliases: dict[tuple[str, str], str] = {}
+        for value in values:
+            first_aliases.setdefault(
+                (value["field"], value["aggregation"]), _value_alias(value["id"])
+            )
+        if values:
+            query = query.with_columns(
+                [
+                    pl.col(first_aliases[(value["field"], value["aggregation"])]).alias(
+                        value["reference"]
+                    )
+                    for value in values
+                ]
+            )
+        visible_columns = [
+            *group_aliases.values(),
+            *(value["reference"] for value in values),
+            *(_value_alias(formula["id"]) for formula, _ in compiled_formulas),
+        ]
+        query = query.select(visible_columns)
+        query = query.rename({output["reference"]: _value_alias(output["id"]) for output in values})
+        query = query.rename({alias: field for field, alias in group_aliases.items()})
+        try:
+            return cancellable_streaming_collect(query, execution_context=context)
+        except PivotContractError:
+            raise
+        except Exception as exc:
+            if compiled_formulas:
+                raise PivotContractError(
+                    "invalid_pivot_formula",
+                    "A pivot formula failed while evaluating the grouped data.",
+                    "Check the selected formulas against the source field values and types.",
+                    formula_ids=", ".join(formula["id"] for formula, _ in compiled_formulas),
+                ) from exc
+            raise
 
     @staticmethod
     def _aggregate_map(
         frame: pl.DataFrame,
         group_fields: Sequence[str],
         values: Sequence[ExplorePivotValuePlacement],
+        formulas: Sequence[ExplorePivotFormula],
         warnings: set[str],
     ) -> dict[TypedPathTuple, tuple[str | float | int | bool | None, ...]]:
         result: dict[TypedPathTuple, tuple[str | float | int | bool | None, ...]] = {}
         for row in frame.iter_rows(named=True):
             path = _path_tuple(row, group_fields)
             result[path] = tuple(
-                _normalise_cell(row[_value_alias(value["id"])], warnings) for value in values
+                _normalise_cell(row[_value_alias(value["id"])], warnings)
+                for value in [*values, *formulas]
             )
         return result
 
@@ -873,6 +1008,43 @@ class PivotService:
         row_fields = [placement["field"] for placement in spec.pivot["rows"]]
         column_fields = [placement["field"] for placement in spec.pivot["columns"]]
         values = spec.pivot["values"]
+        formulas = spec.pivot["formulas"]
+        compiled_formulas = _compile_formulas(formulas, schema)
+        aggregate_outputs: list[ExplorePivotValuePlacement | ExplorePivotFormula] = [
+            *values,
+            *formulas,
+        ]
+        outputs_by_id: dict[str, ExplorePivotValuePlacement | ExplorePivotFormula] = {
+            output["id"]: output for output in aggregate_outputs
+        }
+        if len(outputs_by_id) != len(aggregate_outputs):
+            raise PivotContractError(
+                "invalid_pivot_output_order",
+                "Pivot output ids must be globally unique.",
+                "Correct duplicate Value or formula ids in the pivot configuration.",
+            )
+        try:
+            output_values: list[ExplorePivotValuePlacement | ExplorePivotFormula] = [
+                outputs_by_id[output_id] for output_id in spec.pivot["value_order"]
+            ]
+        except KeyError as exc:
+            raise PivotContractError(
+                "invalid_pivot_output_order",
+                "Pivot value_order references an unknown output id.",
+                "Refresh the pivot configuration and try again.",
+                value_id=str(exc),
+            ) from exc
+        if len(output_values) != len(aggregate_outputs) or len(
+            set(spec.pivot["value_order"])
+        ) != len(aggregate_outputs):
+            raise PivotContractError(
+                "invalid_pivot_output_order",
+                "Pivot value_order must contain every output id exactly once.",
+                "Refresh the pivot configuration and try again.",
+            )
+        aggregate_index_by_id = {
+            output["id"]: output_index for output_index, output in enumerate(aggregate_outputs)
+        }
 
         row_count, column_count = self._cardinalities(
             filtered,
@@ -890,7 +1062,7 @@ class PivotService:
         display_columns = column_count + int(add_column_total)
         self._limit(
             "display_cells",
-            display_rows * display_columns * max(len(values), 1),
+            display_rows * display_columns * max(len(output_values), 1),
             MAX_DISPLAY_CELLS,
         )
 
@@ -906,6 +1078,7 @@ class PivotService:
                 filtered,
                 [*row_fields, *column_fields],
                 values,
+                compiled_formulas,
                 schema,
                 context,
             )
@@ -913,6 +1086,7 @@ class PivotService:
                 base_frame,
                 self._unique_fields([*row_fields, *column_fields]),
                 values,
+                formulas,
                 warnings,
             )
             row_members: set[TypedPathTuple] = set()
@@ -928,11 +1102,14 @@ class PivotService:
             tuple[str | float | int | bool | None, ...],
         ] = {}
         if add_row_total:
-            frame = self._aggregate_frame(filtered, column_fields, values, schema, context)
+            frame = self._aggregate_frame(
+                filtered, column_fields, values, compiled_formulas, schema, context
+            )
             row_total_values = self._aggregate_map(
                 frame,
                 self._unique_fields(column_fields),
                 values,
+                formulas,
                 warnings,
             )
 
@@ -946,11 +1123,14 @@ class PivotService:
             None,
         )
         if row_paths and (add_column_total or active_sort_index is not None):
-            frame = self._aggregate_frame(filtered, row_fields, values, schema, context)
+            frame = self._aggregate_frame(
+                filtered, row_fields, values, compiled_formulas, schema, context
+            )
             column_total_values = self._aggregate_map(
                 frame,
                 self._unique_fields(row_fields),
                 values,
+                formulas,
                 warnings,
             )
 
@@ -972,8 +1152,8 @@ class PivotService:
 
         grand_total_values: tuple[str | float | int | bool | None, ...] | None = None
         if add_row_total and add_column_total:
-            frame = self._aggregate_frame(filtered, [], values, schema, context)
-            grand_total_values = self._aggregate_map(frame, [], values, warnings)[()]
+            frame = self._aggregate_frame(filtered, [], values, compiled_formulas, schema, context)
+            grand_total_values = self._aggregate_map(frame, [], values, formulas, warnings)[()]
 
         result_row_paths = [_path_model(path) for path in row_paths]
         result_column_paths = [_path_model(path) for path in column_paths]
@@ -996,7 +1176,8 @@ class PivotService:
                     cells,
                     row_index,
                     column_index,
-                    values,
+                    output_values,
+                    aggregate_index_by_id,
                     aggregated,
                 )
 
@@ -1007,7 +1188,8 @@ class PivotService:
                     cells,
                     row_index,
                     column_index,
-                    values,
+                    output_values,
+                    aggregate_index_by_id,
                     row_total_values.get(column_path),
                 )
         if add_column_total:
@@ -1017,7 +1199,8 @@ class PivotService:
                     cells,
                     row_index,
                     column_index,
-                    values,
+                    output_values,
+                    aggregate_index_by_id,
                     column_total_values.get(row_path),
                 )
         if add_row_total and add_column_total:
@@ -1025,10 +1208,30 @@ class PivotService:
                 cells,
                 len(row_paths),
                 len(column_paths),
-                values,
+                output_values,
+                aggregate_index_by_id,
                 grand_total_values,
             )
 
+        result_values: list[ExplorePivotValueIdentity] = []
+        for output in output_values:
+            if "aggregation" in output:
+                value_output = cast(ExplorePivotValuePlacement, output)
+                result_values.append(
+                    ExplorePivotValueIdentity(
+                        id=value_output["id"],
+                        field=value_output["field"],
+                        aggregation=value_output["aggregation"],
+                    )
+                )
+            else:
+                result_values.append(
+                    ExplorePivotValueIdentity(
+                        id=output["id"],
+                        field=output["reference"],
+                        aggregation="formula",
+                    )
+                )
         return ExplorePivotResult(
             node_id=spec.explore.node_id,
             pivot_id=spec.pivot["id"],
@@ -1037,14 +1240,7 @@ class PivotService:
             calculation_key=spec.calculation_key,
             row_fields=row_fields,
             column_fields=column_fields,
-            values=[
-                ExplorePivotValueIdentity(
-                    id=value["id"],
-                    field=value["field"],
-                    aggregation=value["aggregation"],
-                )
-                for value in values
-            ],
+            values=result_values,
             row_paths=result_row_paths,
             column_paths=result_column_paths,
             cells=cells,
@@ -1057,14 +1253,15 @@ class PivotService:
         cells: list[ExplorePivotCell],
         row_index: int,
         column_index: int,
-        values: Sequence[ExplorePivotValuePlacement],
+        output_values: Sequence[ExplorePivotValuePlacement | ExplorePivotFormula],
+        aggregate_index_by_id: Mapping[str, int],
         aggregated: tuple[str | float | int | bool | None, ...] | None,
     ) -> None:
-        for value_index, value in enumerate(values):
+        for value in output_values:
             cell_value = (
-                aggregated[value_index]
+                aggregated[aggregate_index_by_id[value["id"]]]
                 if aggregated is not None
-                else (0 if value["aggregation"] in _COUNT_AGGREGATIONS else None)
+                else (0 if value.get("aggregation") in _COUNT_AGGREGATIONS else None)
             )
             cells.append(
                 ExplorePivotCell(

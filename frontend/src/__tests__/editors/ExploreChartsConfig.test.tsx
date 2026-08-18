@@ -45,6 +45,25 @@ function pivot(
   id: string,
   overrides: Partial<ExplorePivotConfig> = {},
 ): ExplorePivotConfig {
+  const values = overrides.values ?? [
+    {
+      id: `${id}-paid`,
+      field: "paid",
+      aggregation: "sum",
+      reference: "paid_sum",
+      display_name: "Paid",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
+    },
+    {
+      id: `${id}-count`,
+      field: "claim_id",
+      aggregation: "count",
+      reference: "claim_id_count",
+      display_name: "Claims",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
+    },
+  ]
+  const formulas = overrides.formulas ?? []
   return {
     version: 1,
     id,
@@ -52,23 +71,12 @@ function pivot(
     enabled: true,
     filters: [],
     columns: [],
-    rows: [{ id: `${id}-row`, field: "region" }],
-    values: [
-      {
-        id: `${id}-paid`,
-        field: "paid",
-        aggregation: "sum",
-        display_name: "Paid",
-      },
-      {
-        id: `${id}-count`,
-        field: "claim_id",
-        aggregation: "count",
-        display_name: "Claims",
-      },
-    ],
+    rows: [{ id: `${id}-row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+    values,
+    formulas,
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? [...values, ...formulas].map(({ id }) => id),
   }
 }
 
@@ -775,7 +783,9 @@ describe("ExploreChartsConfig", () => {
           id: "source-rate",
           field: "rate",
           aggregation: "average",
+          reference: "rate_mean",
           display_name: "Rate",
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })
@@ -841,7 +851,9 @@ describe("ExploreChartsConfig", () => {
           id: "second-average",
           field: "paid",
           aggregation: "average",
+          reference: "paid_mean",
           display_name: "Average paid",
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })
@@ -1323,7 +1335,7 @@ describe("ExploreChartsConfig", () => {
 
   it("names dormant formatting instead of internal ids", () => {
     const sourcePivot = pivot("source", {
-      columns: [{ id: "source-year", field: "year" }],
+      columns: [{ id: "source-year", field: "year", number_format: "general", decimal_places: null, use_grouping: true }],
     })
     const configured = chart(sourcePivot)
     configured.series_overrides = [
@@ -1373,7 +1385,7 @@ describe("ExploreChartsConfig", () => {
 
   it("lists series and creates an exact override from a fresh result", () => {
     const sourcePivot = pivot("source", {
-      columns: [{ id: "source-year", field: "year" }],
+      columns: [{ id: "source-year", field: "year", number_format: "general", decimal_places: null, use_grouping: true }],
     })
     const configured = chart(sourcePivot)
     configured.value_encodings[0].id = "override_1"

@@ -1,4 +1,5 @@
 import type { ExplorePivotMemberKey } from "../../api/types"
+import { pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 
 export const CHART_CONFIG_VERSION = 1 as const
@@ -722,9 +723,10 @@ function defaultEncoding(
 export function seedValueEncodings(
   pivot: ExplorePivotConfig,
 ): ChartValueEncoding[] {
-  const lastValueIndex = pivot.values.length - 1
-  return pivot.values.map(({ id: valueId }, index) => {
-    const comboLine = pivot.values.length > 1 && index === lastValueIndex
+  const outputs = pivotOutputs(pivot)
+  const lastValueIndex = outputs.length - 1
+  return outputs.map(({ id: valueId }, index) => {
+    const comboLine = outputs.length > 1 && index === lastValueIndex
     return {
       ...defaultEncoding(`encoding_${index + 1}`, valueId),
       ...(comboLine ? { mark: "line" as ChartMark, markers: true } : {}),
@@ -746,7 +748,7 @@ export function reconcileValueEncodings(
   const encodedValueIds = new Set(
     chart.value_encodings.map(({ value_id }) => value_id),
   )
-  const missing = pivot.values.filter(({ id }) => !encodedValueIds.has(id))
+  const missing = pivotOutputs(pivot).filter(({ id }) => !encodedValueIds.has(id))
   if (missing.length === 0) return chart
 
   const takenIds = new Set([
@@ -801,13 +803,14 @@ export function applyChartPreset(
     return id
   }
 
-  const lastValueIndex = pivot.values.length - 1
-  const valueEncodings = pivot.values.map(({ id: valueId }, index) => {
+  const outputs = pivotOutputs(pivot)
+  const lastValueIndex = outputs.length - 1
+  const valueEncodings = outputs.map(({ id: valueId }, index) => {
     const existing = existingByValueId.get(valueId)
     // Combo's starting arrangement is Excel's classic: columns with the
     // last Value as a line (a single Value stays a plain column).
     const comboLine =
-      preset === "combo" && pivot.values.length > 1 && index === lastValueIndex
+      preset === "combo" && outputs.length > 1 && index === lastValueIndex
     const mark: ChartMark = comboLine ? "line" : "column"
     const stackGroup =
       mark === "column" &&
@@ -1099,7 +1102,7 @@ export function exploreChartSeriesLabel(
   pivot: ExplorePivotConfig,
 ): string {
   const { value_id: valueId, column_path: columnPath } = parseCanonicalSeriesKey(seriesKey)
-  const value = pivot.values.find(({ id }) => id === valueId)
+  const value = pivotOutputs(pivot).find(({ id }) => id === valueId)
   const valueName = value ? value.display_name : "a removed Value"
   const members = columnPath.map((member) => {
     if (member.kind === "null") return "(blank)"

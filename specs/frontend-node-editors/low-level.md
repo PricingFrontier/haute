@@ -26,7 +26,7 @@
 | `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
 | `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
 | `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
-| `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, and pointer/keyboard placement state. Props: the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
+| `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormulaSection.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, pointer/keyboard placement state, formula authoring, and the presentation-only decimal-place controls for displayed placements. Props include the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
 | `frontend/src/panels/editors/ExploreConfigCardList.tsx` | Shared Pivot/Chart list header, empty state, and action-card row, composing `ExploreToggleCard` with separate Delete and Configure actions. |
 | `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart version-1 validation and identity helpers consumed by the chart editor. |
@@ -365,9 +365,16 @@ per-node `useUIStore` lifecycle as chart cards: entering Configure stores the co
 id, Back clears the stored id, neither touches the preview
 pane, pane switches preserve it, and deleting the card clears it.
 
-The Configure subview receives `upstreamColumns: {name, dtype}[]` from `NodePanel`. It has a
-committed name input (blur/Enter), a case-insensitive search input, a fixed-height scrolling field
-box, and four ordered zones. Every compact field row renders its name and dtype followed by
+The Configure subview receives `upstreamColumns: {name, dtype}[]` from `NodePanel`. For an Explore
+node with a cached result whose `configHash` matches the current graph/source identity, `NodePanel`
+derives that array from the report's `columns`; this is the authoritative schema after the Explore
+node's own Polars code and it remains available without waiting for an ordinary preview request.
+An identity-mismatched retained report is never exposed. Until a current report exists, the
+existing connected-node preview columns remain the authoring fallback. A current report with an
+empty `columns` array is authoritative rather than falling back to fields absent from the cached
+frame. The subview has a committed name input (blur/Enter), a case-insensitive search input, a
+fixed-height scrolling field box, and four ordered zones. Every compact field row renders its name
+and dtype followed by
 `Add to:` and native Filters/Columns/Rows/Values buttons. A row action commits that one field
 directly to its target in one graph edit; there is no checkbox selection state or shared action
 block beneath the field box. Filters/Columns/Rows disable the matching row action when that field
@@ -398,28 +405,69 @@ graph or source changes the previous dataset's members stop being rendered (and 
 immediately rather than lingering until the replacement response lands. Display-only pivot and
 chart edits do not change that identity, so selecting a member neither hides the remaining
 choices nor triggers a redundant member reload.
-Row placements persist `sort: "ascending" | "descending"`, defaulting
-to ascending while parsing older v1 cards. Value placements persist
+Column and Row placements persist `number_format: "general" | "number" | "percent" |
+"currency_gbp" | "currency_usd" | "currency_eur"`, `decimal_places: null | 0..10`, and
+`use_grouping: bool`; Row placements additionally persist `sort: "ascending" | "descending"`.
+Value placements persist the same presentation trio plus
 `sort_rows: "none" | "ascending" | "descending"` and
-`color_scale: "none" | "low_red_high_green" | "low_green_high_red"`, both defaulting to none.
+`color_scale: "none" | "low_red_high_green" | "low_green_high_red"` and
+`color_scale_split_by: string | null`. A non-null split references a stable placement id currently
+in Rows or Columns and is valid only while the Value has an active colour scale. The numeric-format
+trio and nullable scale split are required on every version-1 placement that owns them; incomplete
+cards are rejected rather than defaulted or migrated. Row sort defaults to ascending and Value
+sort/scale default to none.
 `options.sort_by` persists the selected Row/Value placement id or null for default ascending Row
 labels. Older v1 cards derive it from their sole active Value sort, otherwise null. Placement cards
-render none of these controls. A full-width Sorting section after the area grid selects the target
-and direction; changing it atomically resets dormant Row directions to ascending and every
-non-target Value's `sort_rows` to none. A full-width Conditional formatting section follows it as
-a bordered rules box. Its ordered list is derived from Value placements whose `color_scale` is not
+render none of these controls. The Configure subview omits the redundant `Configure <pivot name>`
+page heading and begins with its committed Pivot name control. The standalone Sorting, Formatting, and Conditional Formatting
+titles preserve heading semantics while their text uses the shared `EditorLabel` contract:
+11px, bold, uppercase, `0.08em` tracking, and muted text. Each is followed after the standard
+`mt-1.5` spacing by a full-width `rounded-lg` bordered settings box. Sorting selects the target and
+direction. Its width-constrained
+`Sort by` and `Order` controls share one
+two-column row; changing them atomically resets dormant Row directions to ascending and every
+non-target Value's `sort_rows` to none. A full-width
+Formatting section follows Sorting with the same standalone-title-then-bordered-settings pattern and
+lists placements in Columns, Rows, then combined-`value_order` output order without an explanatory
+introduction. Each row is identified by its kind position and field/display label without exposing
+its internal id; Values and selected formulas keep their mixed display order but number
+independently per kind, so a leading formula never shifts a `Value N` label. Numeric Columns/Rows and numeric-producing
+Values expose native Format and Decimal places selects plus a Thousands separator checkbox.
+Format choices are General, Number, Percentage, Currency (£ GBP), Currency (US$ USD), and Currency
+(€ EUR); precision is Automatic followed by 0 through 10. Non-numeric placements remain visible
+with a Not numeric explanation. Filters are omitted because they do not appear in the result
+matrix. General/Automatic leaves grouping visibly inactive; checking its separator control
+switches that placement to Number so the requested commas take effect. Empty displayed zones
+explain that a displayed field must be added. Each control change
+commits exactly once, affects neither `pivotCalculationIdentity` nor automatic calculation
+scheduling, and rerenders retained members/cells immediately. Moving a formatted placement among
+Columns, Rows, and Values preserves its complete formatting trio; moving it to Filters removes
+those display-only settings, and moving a Filter into a displayed zone starts at General,
+Automatic precision, with grouping enabled.
+A full-width Conditional Formatting section follows Formatting with the same standalone title and
+  a bordered rules box beneath it. `Add rule` is inside that settings box, after the rule list and
+  any empty-state text at the bottom, rather than beside the title. Its ordered list is derived from Value placements whose `color_scale` is not
 none, so all persisted rules are simultaneously visible in Value-placement order. Each rule row
-contains a Value selector, a scale selector, its Low/High preview, and an explicitly named Remove
+contains a Value selector, a scale selector, a `Split scale by` selector, its Low/High preview, and an explicitly named Remove
 button. Selector options contain the row's current Value plus compatible numeric Values without an
-existing rule; changing it atomically moves the scale to the new Value and resets the former Value
-to none. `Add rule` selects the first compatible unformatted Value in placement order and assigns
-`low_red_high_green`; it is disabled when none remains. Removing sets that Value's scale to none.
-Changing an aggregation to a non-numeric result atomically resets its colour scale to none. Empty,
-ineligible, and fully-configured states explain why no additional rule can be added. Removing or moving the active sort
+existing rule; changing it atomically moves the scale and split to the new Value and resets the former
+Value to none/null. Split options are None (the entire Value domain), followed by the currently
+placed Rows and Columns grouped and labelled by zone; Filters and Values are never eligible. A split
+references the placement id, not its field name, so moving it between Rows and Columns preserves the
+rule. Removing it or moving it into Filters/Values atomically clears every dependent split.
+`Add rule` selects the first compatible unformatted Value in placement order and assigns
+`low_red_high_green` with a null split; it is disabled when none remains. Removing sets that Value's
+scale to none and split to null.
+Both rule previews use the same prominent Excel-style three-colour stops as the table cells:
+red `#F8696B`, yellow `#FFEB84`, and green `#63BE7B`; the reverse scale swaps only the endpoints.
+Changing an aggregation to a non-numeric result atomically resets its colour scale to none and split
+to null. Empty
+and ineligible states explain why no rule can be added; once every compatible Value has a visible
+rule, the disabled Add rule action is sufficient and no completion message is rendered. Removing or moving the active sort
 target outside Rows/Values clears `options.sort_by`; crossing between Rows and Values preserves the
 target with a valid direction for its new zone. Effective sort changes affect
-`pivotCalculationIdentity`; `sort_by` choices with identical effective ordering and colour-scale
-changes do not.
+`pivotCalculationIdentity`; `sort_by` choices with identical effective ordering, colour-scale and
+scale-split changes, and numeric-format changes do not.
 Missing upstream fields remain in place with `aria-invalid` and an
 explicit unavailable-field message. The Configure subview has no preview/refresh callback:
 committed calculation changes are observed by a mounted lower Pivots or Charts pane, which
@@ -528,6 +576,11 @@ diagnostics; `frontend/src/panels/__tests__/NodePanel.test.tsx` pins the lazy Ch
 cards, stable id allocation, future-field preservation, malformed-state diagnostics, and the
 absence of a speculative toggle. The same NodePanel suite pins the five-pane ordering, absence of
 Relationships, Pivots-pane dispatch, and per-node Pivots selection memory.
+The Pivot field-schema handoff is covered at two levels: `frontend/src/panels/__tests__/NodePanel.test.tsx` proves that a
+current identity-matched Explore report replaces the connected-node preview schema, including
+the authoritative empty-report-schema case and the stale-report fallback; an App integration
+case mounts the real `ExplorePivotsConfig` consumer and proves that a cold cache-status hydration
+renders the report's post-code fields as field-palette actions without waiting for preview rows.
 `frontend/src/__tests__/editors/EdgeJoinEditor.test.tsx` pins fixed role displays and swap
 availability, all seven join options, same-name/asymmetric mode transitions, automatic key
 clearing for `cross`, advanced Polars options, and visible diagnostics for conflicting role/key

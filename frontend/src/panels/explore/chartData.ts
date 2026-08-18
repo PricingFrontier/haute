@@ -9,6 +9,10 @@ import {
   type ChartStyle,
   type ExploreChartConfig,
 } from "./chartConfig"
+import {
+  isPivotFormulaPlacement,
+  pivotOutputs,
+} from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
 
 export const CHART_MAX_CATEGORIES = 500
@@ -223,10 +227,18 @@ function sameOrderedValues(
   pivot: ExplorePivotConfig,
   result: ExplorePivotResult,
 ): boolean {
+  const outputs = pivotOutputs(pivot)
   return (
-    pivot.values.length === result.values.length &&
-    pivot.values.every((value, index) => {
+    outputs.length === result.values.length &&
+    outputs.every((value, index) => {
       const resultValue = result.values[index]
+      if (isPivotFormulaPlacement(value)) {
+        return (
+          resultValue?.id === value.id &&
+          resultValue.field === value.reference &&
+          resultValue.aggregation === "formula"
+        )
+      }
       return (
         resultValue?.id === value.id &&
         resultValue.field === value.field &&
@@ -270,10 +282,10 @@ export function adaptPivotChartData(
       "The chart, Pivot configuration, and Pivot result must refer to the same Pivot.",
     )
   }
-  if (pivot.values.length === 0) {
+  if (pivotOutputs(pivot).length === 0) {
     fail(
       "chart_values_required",
-      "Add at least one Value to the source Pivot before rendering this chart.",
+      "Add at least one Value or calculated field to the source Pivot before rendering this chart.",
     )
   }
 
@@ -330,7 +342,7 @@ export function adaptPivotChartData(
     CHART_MAX_POINTS,
   )
 
-  const pivotValueById = new Map(pivot.values.map((value) => [value.id, value]))
+  const pivotValueById = new Map(pivotOutputs(pivot).map((value) => [value.id, value]))
   const encodingByValueId = new Map(
     chart.value_encodings.map((encoding) => [encoding.value_id, encoding]),
   )

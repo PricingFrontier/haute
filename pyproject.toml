@@ -352,6 +352,27 @@ min_branch_coverage = 90.0
 rationale = "Job storage drives async training and optimiser state."
 
 [[tool.haute.critical_coverage.files]]
+path = "src/haute/_explore_cache.py"
+min_statement_coverage = 84.0
+min_branch_coverage = 70.0
+rationale = "Explore cache generations are the durable handoff between materialisation, preview reloads, and Pivot execution; metadata, lease, restore, and publication safety must remain exercised."
+# Seeded from the focused Explore/Pivot suite measurement (84.67% stmt / 70.59% branch).
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_explore_service.py"
+min_statement_coverage = 94.0
+min_branch_coverage = 86.0
+rationale = "Explore orchestration owns cache identity, named-source isolation, worker lifecycle, and the report schema consumed by downstream analysis."
+# Seeded from the focused Explore/Pivot suite measurement (94.19% stmt / 86.96% branch).
+
+[[tool.haute.critical_coverage.files]]
+path = "src/haute/routes/_pivot_service.py"
+min_statement_coverage = 94.0
+min_branch_coverage = 87.0
+rationale = "Pivot execution enforces typed member semantics and hard cardinality bounds over materialised Explore datasets."
+# Seeded from the focused Explore/Pivot suite measurement (94.46% stmt / 87.16% branch).
+
+[[tool.haute.critical_coverage.files]]
 path = "src/haute/routes/json_cache.py"
 min_statement_coverage = 97.0
 min_branch_coverage = 90.0

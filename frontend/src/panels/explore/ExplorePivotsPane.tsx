@@ -14,6 +14,7 @@ import {
 import PivotTableGrid from "./PivotTableGrid"
 import {
   isPivotResultFresh,
+  isPivotConfigured,
   parseExplorePivots,
   pivotCalculationIdentity,
 } from "./pivotConfig"
@@ -159,12 +160,12 @@ export default function ExplorePivotsPane({
                 />
               </div>
 
-              {pivot.values.length === 0 ? (
+              {!isPivotConfigured(pivot) ? (
                 <div
                   className="px-3 py-5 text-center text-[11px]"
                   style={{ color: "var(--text-muted)" }}
                 >
-                  Add at least one Value in this pivot&apos;s configuration.
+                  Add at least one Value or calculated field in this pivot&apos;s configuration.
                 </div>
               ) : (
                 <>

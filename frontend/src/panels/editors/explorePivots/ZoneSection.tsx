@@ -3,12 +3,16 @@ import { GripVertical } from "lucide-react"
 import {
   PIVOT_AGGREGATION_LABELS,
   isNumericPivotDtype,
+  nextPivotValueReference,
+  pivotOutputs,
   pivotAggregationsForDtype,
 } from "../../explore/pivotConfig"
 import type {
   ExplorePivotConfig,
   PivotAggregation,
   PivotFilterPlacement,
+  PivotFormulaPlacement,
+  PivotOutputPlacement,
   PivotValuePlacement,
 } from "../../explore/pivotConfig"
 import { INPUT_STYLE } from "../_shared"
@@ -25,6 +29,7 @@ import type {
   Column,
   DraggedPlacement,
   LoadPivotFilterMembers,
+  Placement,
   PlacementDropTarget,
   Zone,
   ZoneDropState,
@@ -57,6 +62,12 @@ type ZoneSectionProps = {
   currentConfigHash: string | null
 }
 
+function isFormulaPlacement(
+  placement: Placement | PivotOutputPlacement,
+): placement is PivotFormulaPlacement {
+  return "expression" in placement
+}
+
 export default function ZoneSection({
   pivot,
   zone,
@@ -74,7 +85,7 @@ export default function ZoneSection({
   currentConfigHash,
 }: ZoneSectionProps) {
   const label = zoneLabel(zone)
-  const placements = zonePlacements(pivot, zone)
+  const placements = zone === "values" ? pivotOutputs(pivot) : zonePlacements(pivot, zone)
   const endTarget = { zone, index: placements.length }
   const canDropAtEnd =
     draggedPlacement !== null &&
@@ -134,7 +145,123 @@ export default function ZoneSection({
           </div>
         )}
         {placements.map((placement, index) => {
-          const column = columnsByName.get(placement.field)
+          if (zone === "values" && isFormulaPlacement(placement)) {
+            const canDropBefore = draggedPlacement !== null && canPositionPlacement(
+              draggedPlacement.sourceZone, draggedPlacement.placementId, zone, index,
+            )
+            const isDropBeforeActive = activeDropTarget?.zone === zone && activeDropTarget.index === index
+            return (
+              <div
+                key={placement.id}
+                role="group"
+                aria-label={`${placement.display_name} in Values`}
+                aria-describedby="pivot-formula-keyboard-instructions"
+                aria-grabbed={
+                  draggedPlacement?.sourceZone === zone &&
+                  draggedPlacement.placementId === placement.id
+                }
+                data-drop-position={isDropBeforeActive ? "before" : undefined}
+                tabIndex={0}
+                draggable
+                onDragStart={(event) => {
+                  const dragged = { sourceZone: zone, placementId: placement.id }
+                  event.dataTransfer.effectAllowed = "move"
+                  event.dataTransfer.setData(PIVOT_PLACEMENT_MIME, JSON.stringify(dragged))
+                  onDragPlacementStart(dragged)
+                }}
+                onDragEnd={onDragPlacementEnd}
+                onDragOver={(event) => {
+                  event.stopPropagation()
+                  if (!canDropBefore) return
+                  event.preventDefault()
+                  event.dataTransfer.dropEffect = "move"
+                  onDragPlacementOver({ zone, index })
+                }}
+                onDrop={(event) => {
+                  event.stopPropagation()
+                  if (!canDropBefore) {
+                    onDragPlacementEnd()
+                    return
+                  }
+                  event.preventDefault()
+                  onDropPlacement({ zone, index })
+                }}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return
+                  const targetIndex = event.key === "ArrowUp"
+                    ? index - 1
+                    : event.key === "ArrowDown"
+                      ? index + 2
+                      : null
+                  if (
+                    targetIndex !== null &&
+                    canPositionPlacement(zone, placement.id, zone, targetIndex)
+                  ) {
+                    event.preventDefault()
+                    onPositionPlacement(zone, placement.id, zone, targetIndex)
+                  }
+                }}
+                className="focus-ring cursor-grab rounded p-1.5 active:cursor-grabbing"
+                style={{
+                  background: "var(--bg-panel)",
+                  border: "1px solid var(--border)",
+                  color: "var(--text-primary)",
+                  boxShadow: isDropBeforeActive
+                    ? "inset 0 2px 0 var(--accent)"
+                    : undefined,
+                  opacity:
+                    draggedPlacement?.sourceZone === zone &&
+                    draggedPlacement.placementId === placement.id
+                      ? 0.55
+                      : 1,
+                }}
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <GripVertical
+                    size={12}
+                    aria-hidden="true"
+                    style={{ color: "var(--text-muted)" }}
+                  />
+                  <span className="text-xs font-medium">{placement.display_name}</span>
+                  <span
+                    className="rounded px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide"
+                    style={{
+                      color: "var(--text-muted)",
+                      background: "var(--bg-input)",
+                    }}
+                  >
+                    Formula
+                  </span>
+                  <span
+                    className="rounded px-1 py-0.5 font-mono text-[9px]"
+                    style={{
+                      color: "var(--text-muted)",
+                      background: "var(--bg-input)",
+                    }}
+                  >
+                    {placement.reference}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${placement.display_name} from Values`}
+                    onClick={() => persistPivot({
+                      ...pivot,
+                      formulas: pivot.formulas.filter(
+                        (candidate) => candidate.id !== placement.id,
+                      ),
+                      value_order: pivot.value_order.filter(
+                        (id) => id !== placement.id,
+                      ),
+                    })}
+                    className="ml-auto rounded px-1 text-[10px]"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            )
+          }
+          const column = columnsByName.get(placement.field as string)
           const missing = column === undefined
           const value = zone === "values" ? (placement as PivotValuePlacement) : undefined
           const filter = zone === "filters" ? (placement as PivotFilterPlacement) : undefined
@@ -218,7 +345,9 @@ export default function ZoneSection({
                   const target = ZONES[zoneIndex + 1]
                   if (target) {
                     targetZone = target.key
-                    targetIndex = zonePlacements(pivot, targetZone).length
+                    targetIndex = targetZone === "values"
+                      ? pivotOutputs(pivot).length
+                      : zonePlacements(pivot, targetZone).length
                   }
                 }
 
@@ -261,7 +390,7 @@ export default function ZoneSection({
                   aria-hidden="true"
                   style={{ color: "var(--text-muted)" }}
                 />
-                <span className="text-xs font-medium">{placement.field}</span>
+                <span className="text-xs font-medium">{placement.field as string}</span>
                 {missing && (
                   <span className="text-[10px]" style={{ color: "var(--danger)" }}>
                     No longer available
@@ -273,6 +402,12 @@ export default function ZoneSection({
                     value={value.aggregation}
                     onChange={(event) => {
                       const aggregation = event.target.value as PivotAggregation
+                      const reference = nextPivotValueReference(
+                        pivot,
+                        value.field,
+                        aggregation,
+                        value.id,
+                      )
                       persistPivot({
                         ...pivot,
                         values: pivot.values.map((candidate) =>
@@ -280,12 +415,19 @@ export default function ZoneSection({
                             ? {
                                 ...candidate,
                                 aggregation,
+                                reference,
                                 color_scale:
                                   aggregation === "count" ||
                                   aggregation === "distinct_count" ||
                                   (column !== undefined && isNumericPivotDtype(column.dtype))
                                     ? candidate.color_scale
                                     : "none",
+                                color_scale_split_by:
+                                  aggregation === "count" ||
+                                  aggregation === "distinct_count" ||
+                                  (column !== undefined && isNumericPivotDtype(column.dtype))
+                                    ? candidate.color_scale_split_by ?? null
+                                    : null,
                               }
                             : candidate,
                         ),

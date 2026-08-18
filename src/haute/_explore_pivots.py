@@ -1,4 +1,4 @@
-"""Migration and validation for persisted Explore pivot configuration."""
+"""Validation for persisted and runtime Explore pivot configuration."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import re
 from datetime import date, datetime, time
 from typing import Any
 
+from haute._graph_utils import _sanitize_func_name
 from haute.errors import ConfigError
 
 EXPLORE_PIVOT_CONFIG_VERSION = 1
@@ -17,19 +18,37 @@ PIVOT_AGGREGATIONS = frozenset(
 PIVOT_SORT_DIRECTIONS = frozenset({"ascending", "descending"})
 PIVOT_VALUE_SORTS = frozenset({"none", *PIVOT_SORT_DIRECTIONS})
 PIVOT_COLOR_SCALES = frozenset({"none", "low_red_high_green", "low_green_high_red"})
+PIVOT_DECIMAL_PLACES_MAX = 10
+PIVOT_NUMBER_FORMATS = frozenset(
+    {"general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"}
+)
 PIVOT_MEMBER_KINDS = frozenset(
     {"null", "string", "boolean", "integer", "float", "nan", "date", "datetime", "time", "decimal"}
 )
 
 _CARD_KEYS = frozenset(
-    {"version", "id", "name", "enabled", "filters", "columns", "rows", "values", "options"}
+    {
+        "version",
+        "id",
+        "name",
+        "enabled",
+        "filters",
+        "columns",
+        "rows",
+        "values",
+        "formulas",
+        "value_order",
+        "options",
+    }
 )
+_REFERENCE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
 _DECIMAL_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?\Z")
 _DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 _TIME_PATTERN = re.compile(
     r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-][0-9]{2}:[0-9]{2})?\Z"
 )
+_MISSING = object()
 
 
 def _is_simple_literal(value: Any) -> bool:
@@ -102,6 +121,110 @@ def _require_non_empty_string(
             actual_type=type(value).__name__,
         )
     return value
+
+
+def _validate_decimal_places(
+    value: Any,
+    *,
+    context: str,
+    card_index: int,
+    placement_index: int,
+) -> int | None:
+    """Validate the optional presentation precision for a pivot placement."""
+
+    if value is None:
+        return None
+    if type(value) is not int or not 0 <= value <= PIVOT_DECIMAL_PLACES_MAX:
+        raise ConfigError(
+            "Explore pivot decimal places must be an integer from 0 through "
+            f"{PIVOT_DECIMAL_PLACES_MAX} or null.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+            actual_type=type(value).__name__,
+        )
+    return value
+
+
+def _validate_number_format(
+    placement: dict[str, Any],
+    *,
+    context: str,
+    card_index: int,
+    placement_index: int,
+) -> str:
+    """Validate the required persisted number format for a v1 placement."""
+
+    if "number_format" not in placement:
+        raise ConfigError(
+            "Explore pivot number format is required.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+        )
+    number_format = placement["number_format"]
+    if not isinstance(number_format, str) or number_format not in PIVOT_NUMBER_FORMATS:
+        raise ConfigError(
+            "Explore pivot number format is unsupported.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+            actual_type=type(number_format).__name__,
+        )
+    return number_format
+
+
+def _validate_grouping(
+    placement: dict[str, Any],
+    *,
+    context: str,
+    card_index: int,
+    placement_index: int,
+) -> bool:
+    """Validate the required persisted grouping preference for a v1 placement."""
+
+    if "use_grouping" not in placement:
+        raise ConfigError(
+            "Explore pivot grouping preference is required.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+        )
+    use_grouping = placement["use_grouping"]
+    if type(use_grouping) is not bool:
+        raise ConfigError(
+            "Explore pivot grouping must be a boolean.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+            actual_type=type(use_grouping).__name__,
+        )
+    return use_grouping
+
+
+def _sanitised_reference(value: str, *, fallback: str) -> str:
+    reference = _sanitize_func_name(value).lower().strip("_")
+    contains_identifier_character = any(
+        character.isascii() and (character.isalnum() or character == "_") for character in value
+    )
+    if not reference or (reference == "unnamed_node" and not contains_identifier_character):
+        reference = fallback
+    if reference.startswith("__haute_"):
+        reference = f"{fallback}_{reference.lstrip('_')}"
+    return reference
+
+
+def _value_reference_stem(field: str, aggregation: str) -> str:
+    aggregation_suffix = "mean" if aggregation == "average" else aggregation
+    return f"{_sanitised_reference(field, fallback='value')}_{aggregation_suffix}"
+
+
+def _is_canonical_value_reference(reference: str, field: str, aggregation: str) -> bool:
+    stem = _value_reference_stem(field, aggregation)
+    return (
+        reference == stem
+        or re.fullmatch(rf"{re.escape(stem)}_(?:[2-9]|[1-9][0-9]+)", reference) is not None
+    )
 
 
 def _is_valid_temporal_member(kind: str, value: Any) -> bool:
@@ -239,9 +362,13 @@ def _validate_axis_placements(
         if zone == "filters":
             known_keys = frozenset({"id", "field", "members"})
         elif zone == "rows":
-            known_keys = frozenset({"id", "field", "sort"})
+            known_keys = frozenset(
+                {"id", "field", "sort", "decimal_places", "number_format", "use_grouping"}
+            )
         else:
-            known_keys = frozenset({"id", "field"})
+            known_keys = frozenset(
+                {"id", "field", "decimal_places", "number_format", "use_grouping"}
+            )
         copied = _copy_known_dict(
             placement,
             known_keys=known_keys,
@@ -273,6 +400,33 @@ def _validate_axis_placements(
         fields.add(field)
         copied["id"] = placement_id
         copied["field"] = field
+        if zone != "filters":
+            if "decimal_places" not in copied:
+                raise ConfigError(
+                    "Explore pivot decimal places is required.",
+                    context=context,
+                    index=card_index,
+                    placement_index=placement_index,
+                )
+            decimal_places = _validate_decimal_places(
+                copied["decimal_places"],
+                context=context,
+                card_index=card_index,
+                placement_index=placement_index,
+            )
+            copied["decimal_places"] = decimal_places
+            copied["number_format"] = _validate_number_format(
+                copied,
+                context=context,
+                card_index=card_index,
+                placement_index=placement_index,
+            )
+            copied["use_grouping"] = _validate_grouping(
+                copied,
+                context=context,
+                card_index=card_index,
+                placement_index=placement_index,
+            )
         if zone == "filters":
             members = copied.get("members")
             if not isinstance(members, list):
@@ -322,6 +476,7 @@ def _validate_values(
             actual_type=type(raw).__name__,
         )
     values: list[dict[str, Any]] = []
+    references: set[str] = set()
     for value_index, value in enumerate(raw):
         if not isinstance(value, dict):
             raise ConfigError(
@@ -333,7 +488,19 @@ def _validate_values(
         copied = _copy_known_dict(
             value,
             known_keys=frozenset(
-                {"id", "field", "aggregation", "display_name", "sort_rows", "color_scale"}
+                {
+                    "id",
+                    "field",
+                    "aggregation",
+                    "reference",
+                    "display_name",
+                    "sort_rows",
+                    "color_scale",
+                    "color_scale_split_by",
+                    "decimal_places",
+                    "number_format",
+                    "use_grouping",
+                }
             ),
             context=context,
             index=card_index,
@@ -345,13 +512,6 @@ def _validate_values(
         field = _require_non_empty_string(
             copied.get("field"), context=context, index=card_index, label="placement field"
         )
-        if placement_id in placement_ids:
-            raise ConfigError(
-                "Explore pivot has a duplicate placement id.",
-                context=context,
-                index=card_index,
-                placement_id=placement_id,
-            )
         aggregation = copied.get("aggregation")
         if not isinstance(aggregation, str) or aggregation not in PIVOT_AGGREGATIONS:
             raise ConfigError(
@@ -360,6 +520,42 @@ def _validate_values(
                 index=card_index,
                 value_index=value_index,
                 aggregation=aggregation,
+            )
+        reference = copied.get("reference")
+        reference = _require_non_empty_string(
+            reference, context=context, index=card_index, label="value reference"
+        )
+        if not _REFERENCE_PATTERN.fullmatch(reference) or reference.startswith("__haute_"):
+            raise ConfigError(
+                "Explore pivot value reference is invalid.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+                reference=reference,
+            )
+        if not _is_canonical_value_reference(reference, field, aggregation):
+            raise ConfigError(
+                "Explore pivot value reference must use its field-first aggregation alias.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+                reference=reference,
+                expected_reference=_value_reference_stem(field, aggregation),
+            )
+        if reference in references:
+            raise ConfigError(
+                "Explore pivot has a duplicate value reference.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+                reference=reference,
+            )
+        if placement_id in placement_ids:
+            raise ConfigError(
+                "Explore pivot has a duplicate placement id.",
+                context=context,
+                index=card_index,
+                placement_id=placement_id,
             )
         display_name = _require_non_empty_string(
             copied.get("display_name"),
@@ -385,17 +581,246 @@ def _validate_values(
                 value_index=value_index,
                 color_scale=color_scale,
             )
+        if "color_scale_split_by" not in copied:
+            raise ConfigError(
+                "Explore pivot colour scale split is required.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+            )
+        color_scale_split_by = copied["color_scale_split_by"]
+        if color_scale_split_by is not None and not isinstance(color_scale_split_by, str):
+            raise ConfigError(
+                "Explore pivot colour scale split must be a string or null.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+                actual_type=type(color_scale_split_by).__name__,
+            )
+        if "decimal_places" not in copied:
+            raise ConfigError(
+                "Explore pivot decimal places is required.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+            )
+        decimal_places = _validate_decimal_places(
+            copied["decimal_places"],
+            context=context,
+            card_index=card_index,
+            placement_index=value_index,
+        )
+        number_format = _validate_number_format(
+            copied,
+            context=context,
+            card_index=card_index,
+            placement_index=value_index,
+        )
+        use_grouping = _validate_grouping(
+            copied,
+            context=context,
+            card_index=card_index,
+            placement_index=value_index,
+        )
         placement_ids.add(placement_id)
+        references.add(reference)
         copied.update(
             id=placement_id,
             field=field,
+            reference=reference,
             aggregation=aggregation,
             display_name=display_name,
             sort_rows=sort_rows,
             color_scale=color_scale,
+            color_scale_split_by=color_scale_split_by,
+            decimal_places=decimal_places,
+            number_format=number_format,
+            use_grouping=use_grouping,
         )
         values.append(copied)
     return values
+
+
+def _validate_formulas(
+    raw: Any,
+    *,
+    context: str,
+    card_index: int | None,
+    placement_ids: set[str],
+    references: set[str],
+) -> list[dict[str, Any]]:
+    """Validate resolved formula objects for one card or the shared library.
+
+    ``card_index`` is the owning card's position, or ``None`` when validating the
+    Explore-level ``pivot_formulas`` library; library errors then report each
+    formula's own position in that list as ``index``.
+    """
+
+    if not isinstance(raw, list):
+        raise ConfigError(
+            "Explore pivot formulas must be a list.",
+            context=context,
+            **({} if card_index is None else {"index": card_index}),
+        )
+    formulas: list[dict[str, Any]] = []
+    for formula_index, formula in enumerate(raw):
+        entry_index = formula_index if card_index is None else card_index
+        if not isinstance(formula, dict):
+            raise ConfigError(
+                "Explore pivot formula entries must be dicts.",
+                context=context,
+                index=entry_index,
+                formula_index=formula_index,
+            )
+        copied = _copy_known_dict(
+            formula,
+            known_keys=frozenset(
+                {
+                    "id",
+                    "reference",
+                    "display_name",
+                    "expression",
+                    "decimal_places",
+                    "number_format",
+                    "use_grouping",
+                }
+            ),
+            context=context,
+            index=entry_index,
+            scope="formula",
+        )
+        formula_id = _require_non_empty_string(
+            copied.get("id"), context=context, index=entry_index, label="formula id"
+        )
+        if formula_id in placement_ids:
+            raise ConfigError(
+                "Explore pivot has a duplicate placement id.",
+                context=context,
+                index=entry_index,
+                placement_id=formula_id,
+            )
+        display_name = _require_non_empty_string(
+            copied.get("display_name"),
+            context=context,
+            index=entry_index,
+            label="formula display name",
+        )
+        reference = copied.get("reference")
+        reference = _require_non_empty_string(
+            reference, context=context, index=entry_index, label="formula reference"
+        )
+        if not _REFERENCE_PATTERN.fullmatch(reference) or reference.startswith("__haute_"):
+            raise ConfigError(
+                "Explore pivot formula reference is invalid.",
+                context=context,
+                index=entry_index,
+                formula_index=formula_index,
+                reference=reference,
+            )
+        if reference in references:
+            raise ConfigError(
+                "Explore pivot has a duplicate formula reference.",
+                context=context,
+                index=entry_index,
+                formula_index=formula_index,
+                reference=reference,
+            )
+        expression = _require_non_empty_string(
+            copied.get("expression"), context=context, index=entry_index, label="formula expression"
+        )
+        if "decimal_places" not in copied:
+            raise ConfigError(
+                "Explore pivot decimal places is required.",
+                context=context,
+                index=entry_index,
+                formula_index=formula_index,
+            )
+        decimal_places = _validate_decimal_places(
+            copied["decimal_places"],
+            context=context,
+            card_index=entry_index,
+            placement_index=formula_index,
+        )
+        copied.update(
+            id=formula_id,
+            reference=reference,
+            display_name=display_name,
+            expression=expression,
+            decimal_places=decimal_places,
+            number_format=_validate_number_format(
+                copied,
+                context=context,
+                card_index=entry_index,
+                placement_index=formula_index,
+            ),
+            use_grouping=_validate_grouping(
+                copied, context=context, card_index=entry_index, placement_index=formula_index
+            ),
+        )
+        placement_ids.add(formula_id)
+        references.add(reference)
+        formulas.append(copied)
+    return formulas
+
+
+def _validate_value_order(
+    raw: Any,
+    *,
+    values: list[dict[str, Any]],
+    formulas: list[dict[str, Any]],
+    context: str,
+    card_index: int,
+) -> list[str]:
+    """Validate the required mixed display sequence for a v1 card."""
+
+    expected = [*(value["id"] for value in values), *(formula["id"] for formula in formulas)]
+    if raw is _MISSING:
+        raise ConfigError(
+            "Explore pivot value_order is required.", context=context, index=card_index
+        )
+    if not isinstance(raw, list):
+        raise ConfigError(
+            "Explore pivot value_order must be a list.",
+            context=context,
+            index=card_index,
+            actual_type=type(raw).__name__,
+        )
+    order: list[str] = []
+    for value_index, output_id in enumerate(raw):
+        if not isinstance(output_id, str) or not output_id.strip():
+            raise ConfigError(
+                "Explore pivot value_order must contain non-empty string ids.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+            )
+        if output_id in order:
+            raise ConfigError(
+                "Explore pivot value_order has a duplicate id.",
+                context=context,
+                index=card_index,
+                value_id=output_id,
+            )
+        order.append(output_id)
+    expected_ids = set(expected)
+    order_ids = set(order)
+    unknown = order_ids - expected_ids
+    missing = expected_ids - order_ids
+    if unknown:
+        raise ConfigError(
+            "Explore pivot value_order contains an unknown id.",
+            context=context,
+            index=card_index,
+            value_id=next(output_id for output_id in order if output_id in unknown),
+        )
+    if missing:
+        raise ConfigError(
+            "Explore pivot value_order is missing an output id.",
+            context=context,
+            index=card_index,
+            value_id=next(output_id for output_id in expected if output_id in missing),
+        )
+    return order
 
 
 def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, Any]:
@@ -450,12 +875,49 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         card_index=index,
         placement_ids=placement_ids,
     )
+    references = {value["reference"] for value in values}
+    formulas = _validate_formulas(
+        copied.get("formulas"),
+        context=context,
+        card_index=index,
+        placement_ids=placement_ids,
+        references=references,
+    )
+    value_order = _validate_value_order(
+        copied.get("value_order", _MISSING),
+        values=values,
+        formulas=formulas,
+        context=context,
+        card_index=index,
+    )
     if sum(value["sort_rows"] != "none" for value in values) > 1:
         raise ConfigError(
             "Explore pivot may have only one active Value row sort.",
             context=context,
             index=index,
         )
+
+    split_axis_ids = {column["id"] for column in columns} | {row["id"] for row in rows}
+    for value in values:
+        color_scale_split_by = value["color_scale_split_by"]
+        if color_scale_split_by is None:
+            continue
+        if color_scale_split_by not in split_axis_ids:
+            raise ConfigError(
+                "Explore pivot colour scale split must reference a Row or Column placement.",
+                context=context,
+                index=index,
+                value_id=value["id"],
+                color_scale_split_by=color_scale_split_by,
+            )
+        if value["color_scale"] == "none":
+            raise ConfigError(
+                "Explore pivot colour scale split requires an active colour scale.",
+                context=context,
+                index=index,
+                value_id=value["id"],
+                color_scale_split_by=color_scale_split_by,
+            )
 
     options = copied.get("options")
     if not isinstance(options, dict):
@@ -534,6 +996,8 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         columns=columns,
         rows=rows,
         values=values,
+        formulas=formulas,
+        value_order=value_order,
         options=copied_options,
     )
     return copied
@@ -581,3 +1045,85 @@ def validate_explore_pivots(value: Any, *, context: str) -> list[dict[str, Any]]
         pivot_names.add(pivot_name_key)
         pivots.append(pivot)
     return pivots
+
+
+def validate_explore_pivot_state(
+    pivot_formulas: Any | None, pivots: Any, *, context: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate the canonical shared library and persisted formula-id selections."""
+
+    if not isinstance(pivots, list):
+        raise ConfigError(
+            "Explore pivots config must be a list.",
+            context=context,
+            actual_type=type(pivots).__name__,
+        )
+    if pivot_formulas is not None and not isinstance(pivot_formulas, list):
+        raise ConfigError(
+            "Explore pivot formulas config must be a list.",
+            context=context,
+            actual_type=type(pivot_formulas).__name__,
+        )
+
+    definitions = _validate_formulas(
+        list(pivot_formulas or []),
+        context=context,
+        card_index=None,
+        placement_ids=set(),
+        references=set(),
+    )
+    definitions_by_id = {definition["id"]: definition for definition in definitions}
+
+    selections: list[list[str]] = []
+    resolved_pivots: list[dict[str, Any]] = []
+    for pivot_index, raw_pivot in enumerate(pivots):
+        if not isinstance(raw_pivot, dict):
+            raise ConfigError(
+                "Explore pivot entries must be dicts.",
+                context=context,
+                index=pivot_index,
+                actual_type=type(raw_pivot).__name__,
+            )
+        raw_formulas = raw_pivot.get("formulas")
+        if not isinstance(raw_formulas, list):
+            raise ConfigError(
+                "Explore pivot formulas must be a list.", context=context, index=pivot_index
+            )
+        selected_ids: list[str] = []
+        selected: list[dict[str, Any]] = []
+        for formula_index, selection in enumerate(raw_formulas):
+            if not isinstance(selection, str) or not selection.strip():
+                raise ConfigError(
+                    "Explore pivot formula selections must contain shared formula ids.",
+                    context=context,
+                    index=pivot_index,
+                    formula_index=formula_index,
+                )
+            if selection in selected_ids:
+                raise ConfigError(
+                    "Explore pivot has a duplicate formula selection.",
+                    context=context,
+                    index=pivot_index,
+                    formula_id=selection,
+                )
+            definition = definitions_by_id.get(selection)
+            if definition is None:
+                raise ConfigError(
+                    "Explore pivot selected an unknown shared formula id.",
+                    context=context,
+                    index=pivot_index,
+                    formula_id=selection,
+                )
+            selected_ids.append(selection)
+            selected.append(copy.deepcopy(definition))
+        selections.append(selected_ids)
+        resolved = copy.deepcopy(raw_pivot)
+        resolved["formulas"] = selected
+        resolved_pivots.append(resolved)
+
+    # Card validation and the duplicate pivot id/name checks are shared with the
+    # request-path validator; only the persisted formula-id selections differ.
+    validated_pivots = validate_explore_pivots(resolved_pivots, context=context)
+    for pivot, selected_ids in zip(validated_pivots, selections, strict=True):
+        pivot["formulas"] = list(selected_ids)
+    return definitions, validated_pivots

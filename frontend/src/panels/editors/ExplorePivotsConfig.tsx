@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { ArrowLeft } from "lucide-react"
 
+import { EditorLabel } from "../../components/form"
 import useUIStore from "../../stores/useUIStore"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
 import {
@@ -13,8 +14,13 @@ import {
   createExplorePivot,
   parseExplorePivots,
   isNumericPivotDtype,
+  serializeExplorePivot,
 } from "../explore/pivotConfig"
-import type { ExplorePivotConfig, PivotValuePlacement } from "../explore/pivotConfig"
+import type {
+  ExplorePivotConfig,
+  PivotFormulaPlacement,
+  PivotValuePlacement,
+} from "../explore/pivotConfig"
 import { INPUT_STYLE } from "./_shared"
 import type { OnUpdateConfig } from "./_shared"
 import {
@@ -23,6 +29,8 @@ import {
   ExploreConfigCardListHeader,
 } from "./ExploreConfigCardList"
 import PivotFieldWell from "./explorePivots/PivotFieldWell"
+import PivotFormulaSection from "./explorePivots/PivotFormulaSection"
+import PivotFormattingSection from "./explorePivots/PivotFormattingSection"
 import { normalizePivotOrdering } from "./explorePivots/placements"
 import type { Column, LoadPivotFilterMembers } from "./explorePivots/placements"
 
@@ -46,8 +54,11 @@ type ExplorePivotsConfigProps = {
 type PivotEditorProps = {
   pivot: ExplorePivotConfig
   pivots: ExplorePivotConfig[]
+  formulas: PivotFormulaPlacement[]
   upstreamColumns: Column[]
   persistPivot: (pivot: ExplorePivotConfig) => void
+  persistFormula: (formula: PivotFormulaPlacement) => void
+  deleteFormula: (formula: PivotFormulaPlacement) => void
   onBack: () => void
   loadFilterMembers?: LoadPivotFilterMembers
   currentConfigHash: string | null
@@ -56,14 +67,20 @@ type PivotEditorProps = {
 function PivotEditor({
   pivot,
   pivots,
+  formulas,
   upstreamColumns,
   persistPivot,
+  persistFormula,
+  deleteFormula,
   onBack,
   loadFilterMembers,
   currentConfigHash,
 }: PivotEditorProps) {
   const [nameDraft, setNameDraft] = useState(pivot.name)
   const [nameError, setNameError] = useState<string | null>(null)
+  const [formulaFieldInserter, setFormulaFieldInserter] = useState<
+    ((field: string) => void) | null
+  >(null)
   const columnsByName = useMemo(
     () => new Map(upstreamColumns.map((column) => [column.name, column])),
     [upstreamColumns],
@@ -127,11 +144,8 @@ function PivotEditor({
       </button>
 
       <div>
-        <h3 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-          Configure {pivot.name}
-        </h3>
         <label
-          className="mt-3 block text-[11px] font-semibold"
+          className="block text-[11px] font-semibold"
           style={{ color: "var(--text-secondary)" }}
         >
           Pivot name
@@ -163,101 +177,97 @@ function PivotEditor({
         upstreamColumns={upstreamColumns}
         loadFilterMembers={loadFilterMembers}
         currentConfigHash={currentConfigHash}
+        formulaFieldInserter={formulaFieldInserter}
+        formulaSection={(
+          <PivotFormulaSection
+            pivot={pivot}
+            formulas={formulas}
+            persistPivot={persistPivot}
+            persistFormula={persistFormula}
+            deleteFormula={deleteFormula}
+            onFormulaEditorChange={(inserter) => {
+              setFormulaFieldInserter(() => inserter)
+            }}
+          />
+        )}
       />
 
-      <section data-testid="pivot-sorting-section" className="flex flex-col gap-2">
-        <h4 className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "var(--text-secondary)" }}>
-          Sorting
-        </h4>
-        <label className="text-[10px]">
-          Sort by
-          <select
-            aria-label="Sort by"
-            value={selectedSortBy}
-            onChange={(event) => persistPivot(normalizePivotOrdering(pivot, event.target.value || null))}
-            className="mt-1 block rounded px-1 py-0.5 text-[10px]"
-            style={INPUT_STYLE}
-          >
-            <option value="">Default — Row labels</option>
-            <optgroup label="Rows">
-              {pivot.rows.map((row) => <option key={row.id} value={row.id}>Row — {row.field}</option>)}
-            </optgroup>
-            <optgroup label="Values">
-              {pivot.values.map((value) => <option key={value.id} value={value.id}>Value — {valueDisplayLabel(value)}</option>)}
-            </optgroup>
-          </select>
-        </label>
-        <label className="text-[10px]">
-          Order
-          <select
-            aria-label="Order"
-            disabled={!selectedSortRow && !selectedSortValue}
-            value={selectedSortRow?.sort ?? selectedSortValue?.sort_rows ?? "ascending"}
-            onChange={(event) => {
-              const order = event.target.value as "ascending" | "descending"
-              if (selectedSortRow) {
-                persistPivot(normalizePivotOrdering({
-                  ...pivot,
-                  rows: pivot.rows.map((row) => row.id === selectedSortRow.id ? { ...row, sort: order } : row),
-                }, selectedSortRow.id))
-              } else if (selectedSortValue) {
-                persistPivot(normalizePivotOrdering({
-                  ...pivot,
-                  values: pivot.values.map((value) => value.id === selectedSortValue.id ? { ...value, sort_rows: order } : value),
-                }, selectedSortValue.id))
-              }
-            }}
-            className="mt-1 block rounded px-1 py-0.5 text-[10px] disabled:opacity-50"
-            style={INPUT_STYLE}
-          >
-            <option value="ascending">{selectedSortValueNumeric ? "Low → High" : "A → Z"}</option>
-            <option value="descending">{selectedSortValueNumeric ? "High → Low" : "Z → A"}</option>
-          </select>
-        </label>
+      <section data-testid="pivot-sorting-section">
+        <h4><EditorLabel as="span">Sorting</EditorLabel></h4>
+        <div
+          className="mt-1.5 rounded-lg border p-3"
+          style={{ borderColor: "var(--border)", background: "var(--bg-input)" }}
+        >
+          <div data-testid="pivot-sorting-controls" className="grid grid-cols-2 gap-2">
+            <label className="min-w-0 text-[10px]">
+              Sort by
+              <select
+                aria-label="Sort by"
+                value={selectedSortBy}
+                onChange={(event) => persistPivot(normalizePivotOrdering(pivot, event.target.value || null))}
+                className="mt-1 block w-full min-w-0 rounded px-1 py-0.5 text-[10px]"
+                style={INPUT_STYLE}
+              >
+                <option value="">Default — Row labels</option>
+                <optgroup label="Rows">
+                  {pivot.rows.map((row) => <option key={row.id} value={row.id}>Row — {row.field}</option>)}
+                </optgroup>
+                <optgroup label="Values">
+                  {pivot.values.map((value) => <option key={value.id} value={value.id}>Value — {valueDisplayLabel(value)}</option>)}
+                </optgroup>
+              </select>
+            </label>
+            <label className="min-w-0 text-[10px]">
+              Order
+              <select
+                aria-label="Order"
+                disabled={!selectedSortRow && !selectedSortValue}
+                value={selectedSortRow?.sort ?? selectedSortValue?.sort_rows ?? "ascending"}
+                onChange={(event) => {
+                  const order = event.target.value as "ascending" | "descending"
+                  if (selectedSortRow) {
+                    persistPivot(normalizePivotOrdering({
+                      ...pivot,
+                      rows: pivot.rows.map((row) => row.id === selectedSortRow.id ? { ...row, sort: order } : row),
+                    }, selectedSortRow.id))
+                  } else if (selectedSortValue) {
+                    persistPivot(normalizePivotOrdering({
+                      ...pivot,
+                      values: pivot.values.map((value) => value.id === selectedSortValue.id ? { ...value, sort_rows: order } : value),
+                    }, selectedSortValue.id))
+                  }
+                }}
+                className="mt-1 block w-full min-w-0 rounded px-1 py-0.5 text-[10px] disabled:opacity-50"
+                style={INPUT_STYLE}
+              >
+                <option value="ascending">{selectedSortValueNumeric ? "Low → High" : "A → Z"}</option>
+                <option value="descending">{selectedSortValueNumeric ? "High → Low" : "Z → A"}</option>
+              </select>
+            </label>
+          </div>
+        </div>
       </section>
 
-      <section
-        data-testid="pivot-conditional-formatting-section"
-        className="rounded-md border p-3"
-        style={{ borderColor: "var(--border)", background: "var(--bg-input)" }}
-      >
-        <div className="flex items-center justify-between gap-3">
-          <h4
-            className="text-[11px] font-bold uppercase tracking-wide"
-            style={{ color: "var(--text-secondary)" }}
-          >
-            Conditional formatting
-          </h4>
-          <button
-            type="button"
-            aria-label="Add conditional formatting rule"
-            disabled={unformattedCompatibleValues.length === 0}
-            onClick={() => {
-              const nextValue = unformattedCompatibleValues[0]
-              if (!nextValue) return
-              persistPivot({
-                ...pivot,
-                values: pivot.values.map((value) =>
-                  value.id === nextValue.id
-                    ? { ...value, color_scale: "low_red_high_green" }
-                    : value,
-                ),
-              })
-            }}
-            className="focus-ring rounded px-2 py-1 text-[10px] font-semibold disabled:opacity-50"
-            style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
-          >
-            Add rule
-          </button>
-        </div>
+      <PivotFormattingSection
+        pivot={pivot}
+        persistPivot={persistPivot}
+        persistFormula={persistFormula}
+        upstreamColumns={upstreamColumns}
+      />
 
-        {conditionalFormattingRules.length === 0 ? (
-          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            No conditional formatting rules.
-          </p>
-        ) : (
-          <div className="mt-2 flex flex-col gap-2">
-            {conditionalFormattingRules.map((rule, index) => {
+      <section data-testid="pivot-conditional-formatting-section">
+        <h4><EditorLabel as="span">Conditional Formatting</EditorLabel></h4>
+        <div
+          className="mt-1.5 rounded-lg border p-3"
+          style={{ borderColor: "var(--border)", background: "var(--bg-input)" }}
+        >
+          {conditionalFormattingRules.length === 0 ? (
+            <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+              No conditional formatting rules.
+            </p>
+          ) : (
+            <div className="mt-2 flex flex-col gap-2">
+              {conditionalFormattingRules.map((rule, index) => {
               const compatibleTargets = pivot.values.filter(
                 (value) =>
                   value.id === rule.id ||
@@ -282,9 +292,19 @@ function PivotEditor({
                         persistPivot({
                           ...pivot,
                           values: pivot.values.map((value) => {
-                            if (value.id === rule.id) return { ...value, color_scale: "none" }
+                            if (value.id === rule.id) {
+                              return {
+                                ...value,
+                                color_scale: "none",
+                                color_scale_split_by: null,
+                              }
+                            }
                             if (value.id === targetId) {
-                              return { ...value, color_scale: rule.color_scale }
+                              return {
+                                ...value,
+                                color_scale: rule.color_scale,
+                                color_scale_split_by: rule.color_scale_split_by ?? null,
+                              }
                             }
                             return value
                           }),
@@ -325,6 +345,44 @@ function PivotEditor({
                       <option value="low_green_high_red">Low green → High red</option>
                     </select>
                   </label>
+                  <label className="text-[10px]">
+                    Split scale by
+                    <select
+                      aria-label={`Split scale by for conditional formatting rule ${index + 1}`}
+                      value={rule.color_scale_split_by ?? ""}
+                      onChange={(event) =>
+                        persistPivot({
+                          ...pivot,
+                          values: pivot.values.map((value) =>
+                            value.id === rule.id
+                              ? {
+                                  ...value,
+                                  color_scale_split_by: event.target.value || null,
+                                }
+                              : value,
+                          ),
+                        })
+                      }
+                      className="mt-1 block rounded px-1 py-0.5 text-[10px]"
+                      style={INPUT_STYLE}
+                    >
+                      <option value="">None — entire Value</option>
+                      {pivot.rows.length > 0 && (
+                        <optgroup label="Rows">
+                          {pivot.rows.map((row) => (
+                            <option key={row.id} value={row.id}>Row — {row.field}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {pivot.columns.length > 0 && (
+                        <optgroup label="Columns">
+                          {pivot.columns.map((column) => (
+                            <option key={column.id} value={column.id}>Column — {column.field}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </label>
                   <div
                     role="img"
                     aria-label={`Colour scale preview for ${previewLabel}`}
@@ -350,7 +408,11 @@ function PivotEditor({
                         ...pivot,
                         values: pivot.values.map((value) =>
                           value.id === rule.id
-                            ? { ...value, color_scale: "none" }
+                            ? {
+                                ...value,
+                                color_scale: "none",
+                                color_scale_split_by: null,
+                              }
                             : value,
                         ),
                       })
@@ -361,24 +423,47 @@ function PivotEditor({
                   </button>
                 </div>
               )
-            })}
+              })}
+            </div>
+          )}
+          {pivot.values.length === 0 && (
+            <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              Add a Value field to create a rule.
+            </p>
+          )}
+          {pivot.values.length > 0 && compatibleConditionalFormattingValues.length === 0 && (
+            <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+              Add a numeric-producing Value field to create a rule.
+            </p>
+          )}
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              aria-label="Add conditional formatting rule"
+              disabled={unformattedCompatibleValues.length === 0}
+              onClick={() => {
+                const nextValue = unformattedCompatibleValues[0]
+                if (!nextValue) return
+                persistPivot({
+                  ...pivot,
+                  values: pivot.values.map((value) =>
+                    value.id === nextValue.id
+                      ? {
+                          ...value,
+                          color_scale: "low_red_high_green",
+                          color_scale_split_by: null,
+                        }
+                      : value,
+                  ),
+                })
+              }}
+              className="focus-ring rounded px-2 py-1 text-[10px] font-semibold disabled:opacity-50"
+              style={{ border: "1px solid var(--border)", color: "var(--text-secondary)" }}
+            >
+              Add rule
+            </button>
           </div>
-        )}
-        {pivot.values.length === 0 && (
-          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            Add a Value field to create a rule.
-          </p>
-        )}
-        {pivot.values.length > 0 && compatibleConditionalFormattingValues.length === 0 && (
-          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            Add a numeric-producing Value field to create a rule.
-          </p>
-        )}
-        {compatibleConditionalFormattingValues.length > 0 && unformattedCompatibleValues.length === 0 && (
-          <p className="mt-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-            All compatible Value fields already have rules.
-          </p>
-        )}
+        </div>
       </section>
 
       <div className="flex flex-col gap-1">
@@ -498,20 +583,46 @@ export default function ExplorePivotsConfig({
 
   if (!parsed.ok) return <ConfigError error={parsed.error} />
   if (!parsedCharts.ok) return <ConfigError error={parsedCharts.error} />
-  const { pivots } = parsed
+  const { pivots, formulas } = parsed
   const configuredPivot = configuredPivotId
     ? pivots.find((candidate) => candidate.id === configuredPivotId)
     : undefined
 
+  const persistExploreState = (
+    nextPivots: ExplorePivotConfig[],
+    nextFormulas: PivotFormulaPlacement[] = formulas,
+  ) => onUpdate({
+    pivot_formulas: nextFormulas,
+    pivots: nextPivots.map(serializeExplorePivot),
+  })
+
   const persistPivot = (nextPivot: ExplorePivotConfig) => {
     const exists = pivots.some((candidate) => candidate.id === nextPivot.id)
-    onUpdate(
-      "pivots",
+    persistExploreState(
       exists
-        ? pivots.map((candidate) =>
-            candidate.id === nextPivot.id ? nextPivot : candidate,
-          )
+        ? pivots.map((candidate) => candidate.id === nextPivot.id ? nextPivot : candidate)
         : [...pivots, nextPivot],
+    )
+  }
+
+  const persistFormula = (nextFormula: PivotFormulaPlacement) => {
+    const exists = formulas.some((formula) => formula.id === nextFormula.id)
+    persistExploreState(
+      pivots,
+      exists
+        ? formulas.map((formula) => formula.id === nextFormula.id ? nextFormula : formula)
+        : [...formulas, nextFormula],
+    )
+  }
+
+  const deleteFormula = (formula: PivotFormulaPlacement) => {
+    persistExploreState(
+      pivots.map((pivot) => ({
+        ...pivot,
+        formulas: pivot.formulas.filter((candidate) => candidate.id !== formula.id),
+        value_order: pivot.value_order.filter((id) => id !== formula.id),
+      })),
+      formulas.filter((candidate) => candidate.id !== formula.id),
     )
   }
 
@@ -521,8 +632,11 @@ export default function ExplorePivotsConfig({
         key={configuredPivot.id}
         pivot={configuredPivot}
         pivots={pivots}
+        formulas={formulas}
         upstreamColumns={upstreamColumns}
         persistPivot={persistPivot}
+        persistFormula={persistFormula}
+        deleteFormula={deleteFormula}
         onBack={() => setExploreConfiguredPivot(nodeId, null)}
         loadFilterMembers={loadFilterMembers}
         currentConfigHash={currentConfigHash}
@@ -541,10 +655,7 @@ export default function ExplorePivotsConfig({
         if (configuredPivotId === pivot.id) {
           setExploreConfiguredPivot(nodeId, null)
         }
-        onUpdate(
-          "pivots",
-          pivots.filter((candidate) => candidate.id !== pivot.id),
-        )
+        persistExploreState(pivots.filter((candidate) => candidate.id !== pivot.id))
       }}
     />
   )

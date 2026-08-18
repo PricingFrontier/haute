@@ -465,7 +465,7 @@ describe("useNodeResultsStore", () => {
       const report = makeExploreReport({ row_count: 500 })
       s.startExploreJob("e1", "ej-1", "Explore Node", "h1", "pricing", 1)
       s.completeExploreJob("e1", report)
-      s.startExploreJob("e1", "ej-2", "Explore Node", "h2", "pricing", 2)
+      s.startExploreJob("e1", "ej-2", "Renamed Explore Node", "h2", "batch", 2)
       s.failExploreJob("e1", "Out of memory", {
         status: "memory_limited",
         progress: 1,
@@ -479,6 +479,12 @@ describe("useNodeResultsStore", () => {
       expect(cached.error).toBe("Out of memory")
       expect(cached.result).toBe(report)
       expect(cached.terminalStatus?.status).toBe("memory_limited")
+      expect(cached).toMatchObject({
+        configHash: "h1",
+        source: "pricing",
+        structuralVersion: 1,
+        nodeLabel: "Explore Node",
+      })
     })
 
     it("trims Explore results by LRU while preserving the pinned node", () => {

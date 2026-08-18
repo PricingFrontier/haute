@@ -11,22 +11,34 @@ const pivot: ExplorePivotConfig = {
   name: "Claims by region",
   enabled: true,
   filters: [],
-  rows: [{ id: "r1", field: "region" }],
-  columns: [{ id: "c1", field: "year" }],
+  rows: [{ id: "r1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+  columns: [{ id: "c1", field: "year", number_format: "general", decimal_places: null, use_grouping: true }],
   values: [
     {
       id: "v1",
       field: "paid",
       aggregation: "sum",
+      reference: "paid_sum",
       display_name: "Paid claims",
+      color_scale_split_by: null,
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
     },
     {
       id: "v2",
       field: "count",
       aggregation: "count",
+      reference: "count_count",
       display_name: "Claim count",
+      color_scale_split_by: null,
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
     },
   ],
+  formulas: [],
+  value_order: ["v1", "v2"],
   options: { row_grand_totals: true, column_grand_totals: true },
 }
 
@@ -86,6 +98,46 @@ describe("PivotTableGrid", () => {
     expect(screen.getAllByText("\u2014").length).toBeGreaterThan(0)
   })
 
+  it("renders post-aggregation formulas after ordinary Values", () => {
+    const formulaPivot: ExplorePivotConfig = {
+      ...pivot,
+      formulas: [{
+        id: "formula_1",
+        reference: "average_cost",
+        display_name: "Average cost",
+        expression: 'pl.col("paid").sum() / pl.col("count").count()',
+        number_format: "number",
+        decimal_places: 2,
+        use_grouping: true,
+      }],
+      value_order: ["v1", "v2", "formula_1"],
+    }
+    const formulaResult: ExplorePivotResult = {
+      ...result(1),
+      row_paths: [{ members: [{ kind: "string", value: "North" }], is_grand_total: false }],
+      column_paths: [{ members: [{ kind: "integer", value: "2024" }], is_grand_total: false }],
+      values: [
+        ...result(1).values,
+        { id: "formula_1", field: "average_cost", aggregation: "formula" },
+      ],
+      cells: [
+        { row_index: 0, column_index: 0, value_id: "v1", value: 20 },
+        { row_index: 0, column_index: 0, value_id: "v2", value: 4 },
+        { row_index: 0, column_index: 0, value_id: "formula_1", value: 5 },
+      ],
+    }
+
+    render(<PivotTableGrid result={formulaResult} pivot={formulaPivot} />)
+
+    const headers = screen.getAllByRole("columnheader")
+    expect(headers.slice(-3).map((header) => header.textContent)).toEqual([
+      "Paid claims",
+      "Claim count",
+      "Average cost",
+    ])
+    expect(screen.getByRole("cell", { name: "5.00" })).toBeVisible()
+  })
+
   it("keeps row-field headers when the pivot has no column fields", () => {
     const noColumns = result()
     noColumns.column_fields = []
@@ -97,6 +149,158 @@ describe("PivotTableGrid", () => {
     expect(
       screen.getByRole("columnheader", { name: "Paid claims" }),
     ).toBeVisible()
+  })
+
+  it("formats currencies and percentages across Columns, Rows, and Values exactly", () => {
+    const formattedPivot: ExplorePivotConfig = {
+      ...pivot,
+      rows: [{
+        ...pivot.rows[0],
+        number_format: "currency_gbp",
+        decimal_places: 2,
+        use_grouping: true,
+      }],
+      columns: [{
+        ...pivot.columns[0],
+        number_format: "percent",
+        decimal_places: 1,
+        use_grouping: true,
+      }],
+      values: [
+        {
+          ...pivot.values[0],
+          number_format: "currency_usd",
+          decimal_places: 2,
+          use_grouping: true,
+        },
+        {
+          ...pivot.values[1],
+          number_format: "currency_eur",
+          decimal_places: 0,
+          use_grouping: false,
+        },
+      ],
+    }
+    const formatted = result(1)
+    formatted.row_paths = [{
+      members: [{ kind: "decimal", value: "1234.555" }],
+      is_grand_total: false,
+    }]
+    formatted.column_paths = [{
+      members: [{ kind: "decimal", value: "0.125" }],
+      is_grand_total: false,
+    }]
+    formatted.cells = [
+      {
+        row_index: 0,
+        column_index: 0,
+        value_id: "v1",
+        value: "900719925474099312345.125",
+      },
+      { row_index: 0, column_index: 0, value_id: "v2", value: -2.5 },
+    ]
+
+    render(<PivotTableGrid result={formatted} pivot={formattedPivot} />)
+
+    expect(screen.getByRole("rowheader", { name: "£1,234.56" })).toBeVisible()
+    expect(screen.getByRole("columnheader", { name: "12.5%" })).toBeVisible()
+    expect(screen.getByRole("cell", {
+      name: "US$900,719,925,474,099,312,345.13",
+    })).toBeVisible()
+    expect(screen.getByRole("cell", { name: "-€3" })).toBeVisible()
+  })
+
+  it("supports automatic exact Number formatting with optional thousands separators", () => {
+    const formattedPivot: ExplorePivotConfig = {
+      ...pivot,
+      values: [
+        {
+          ...pivot.values[0],
+          number_format: "number",
+          decimal_places: null,
+          use_grouping: true,
+        },
+        {
+          ...pivot.values[1],
+          number_format: "number",
+          decimal_places: 2,
+          use_grouping: false,
+        },
+      ],
+    }
+    const formatted = result(1)
+    formatted.cells = [
+      {
+        row_index: 0,
+        column_index: 0,
+        value_id: "v1",
+        value: "900719925474099312345.1200",
+      },
+      {
+        row_index: 0,
+        column_index: 0,
+        value_id: "v2",
+        value: "1234567.891",
+      },
+    ]
+
+    render(<PivotTableGrid result={formatted} pivot={formattedPivot} />)
+
+    expect(screen.getByRole("cell", {
+      name: "900,719,925,474,099,312,345.1200",
+    })).toBeVisible()
+    expect(screen.getByRole("cell", { name: "1234567.89" })).toBeVisible()
+  })
+
+  it("uses standard automatic precision for percentages and currencies", () => {
+    const formattedPivot: ExplorePivotConfig = {
+      ...pivot,
+      values: [
+        {
+          ...pivot.values[0],
+          number_format: "percent",
+          decimal_places: null,
+          use_grouping: true,
+        },
+        {
+          ...pivot.values[1],
+          number_format: "currency_gbp",
+          decimal_places: null,
+          use_grouping: true,
+        },
+      ],
+    }
+    const formatted = result(1)
+    formatted.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: "0.50004" },
+      { row_index: 0, column_index: 0, value_id: "v2", value: 100 },
+    ]
+
+    render(<PivotTableGrid result={formatted} pivot={formattedPivot} />)
+
+    expect(screen.getByRole("cell", { name: "50%" })).toBeVisible()
+    expect(screen.getByRole("cell", { name: "£100.00" })).toBeVisible()
+  })
+
+  it("keeps Automatic precision and non-numeric typed members unchanged", () => {
+    const automatic = result(1)
+    automatic.row_paths = [{
+      members: [{ kind: "string", value: "001.50" }],
+      is_grand_total: false,
+    }]
+    automatic.column_paths = [{
+      members: [{ kind: "decimal", value: "1.2300" }],
+      is_grand_total: false,
+    }]
+    automatic.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: "1.2300" },
+    ]
+
+    render(<PivotTableGrid result={automatic} pivot={pivot} />)
+
+    expect(screen.getByRole("rowheader", { name: "001.50" })).toBeVisible()
+    expect(screen.getByRole("columnheader", { name: "1.2300" })).toBeVisible()
+    expect(screen.getByRole("cell", { name: "1.2300" })).toBeVisible()
   })
 
   it("shows a clear empty state when no groups match", () => {
@@ -149,9 +353,9 @@ describe("PivotTableGrid", () => {
     const { container } = render(<PivotTableGrid result={formatted} pivot={formattedPivot} />)
     const cells = container.querySelectorAll('td[data-conditional-format="low_red_high_green"]')
     expect(cells).toHaveLength(3)
-    expect((cells[0] as HTMLElement).style.background).toBe("rgb(254, 202, 202)")
-    expect((cells[1] as HTMLElement).style.background).toBe("rgb(254, 240, 138)")
-    expect((cells[2] as HTMLElement).style.background).toBe("rgb(187, 247, 208)")
+    expect((cells[0] as HTMLElement).style.background).toBe("rgb(248, 105, 107)")
+    expect((cells[1] as HTMLElement).style.background).toBe("rgb(255, 235, 132)")
+    expect((cells[2] as HTMLElement).style.background).toBe("rgb(99, 190, 123)")
   })
 
   it("reverses endpoint colours and uses yellow for equal values", () => {
@@ -166,8 +370,106 @@ describe("PivotTableGrid", () => {
     ]
     const reverse = { ...pivot, values: [{ ...pivot.values[0], color_scale: "low_green_high_red" as const }, pivot.values[1]] }
     const { container, rerender } = render(<PivotTableGrid result={formatted} pivot={reverse} />)
-    expect((container.querySelector('td[data-conditional-format]') as HTMLElement).style.background).toBe("rgb(254, 240, 138)")
+    expect((container.querySelector('td[data-conditional-format]') as HTMLElement).style.background).toBe("rgb(255, 235, 132)")
     rerender(<PivotTableGrid result={{ ...formatted, cells: [formatted.cells[0], { row_index: 0, column_index: 1, value_id: "v1", value: 10 }] }} pivot={reverse} />)
-    expect((container.querySelectorAll('td[data-conditional-format]')[0] as HTMLElement).style.background).toBe("rgb(187, 247, 208)")
+    expect((container.querySelectorAll('td[data-conditional-format]')[0] as HTMLElement).style.background).toBe("rgb(99, 190, 123)")
+  })
+
+  it("calculates an independent colour domain for each selected Row member", () => {
+    const splitPivot: ExplorePivotConfig = {
+      ...pivot,
+      values: [{
+        ...pivot.values[0],
+        color_scale: "low_red_high_green",
+        color_scale_split_by: "r1",
+      }, pivot.values[1]],
+    }
+    const formatted = result(2)
+    formatted.row_paths = [
+      { members: [{ kind: "string", value: "Comprehensive" }], is_grand_total: false },
+      { members: [{ kind: "string", value: "Third party" }], is_grand_total: false },
+    ]
+    formatted.column_paths = [
+      { members: [{ kind: "integer", value: "2024" }], is_grand_total: false },
+      { members: [{ kind: "integer", value: "2025" }], is_grand_total: false },
+    ]
+    formatted.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: 0 },
+      { row_index: 0, column_index: 1, value_id: "v1", value: 10 },
+      { row_index: 1, column_index: 0, value_id: "v1", value: 100 },
+      { row_index: 1, column_index: 1, value_id: "v1", value: 200 },
+    ]
+
+    const { container } = render(<PivotTableGrid result={formatted} pivot={splitPivot} />)
+    const colours = Array.from(container.querySelectorAll('td[data-conditional-format]'))
+      .map((cell) => (cell as HTMLElement).style.background)
+    expect(colours).toEqual([
+      "rgb(248, 105, 107)",
+      "rgb(99, 190, 123)",
+      "rgb(248, 105, 107)",
+      "rgb(99, 190, 123)",
+    ])
+  })
+
+  it("calculates an independent colour domain for each selected Column member", () => {
+    const splitPivot: ExplorePivotConfig = {
+      ...pivot,
+      values: [{
+        ...pivot.values[0],
+        color_scale: "low_red_high_green",
+        color_scale_split_by: "c1",
+      }, pivot.values[1]],
+    }
+    const formatted = result(2)
+    formatted.row_paths = [
+      { members: [{ kind: "string", value: "North" }], is_grand_total: false },
+      { members: [{ kind: "string", value: "South" }], is_grand_total: false },
+    ]
+    formatted.column_paths = [
+      { members: [{ kind: "integer", value: "2024" }], is_grand_total: false },
+      { members: [{ kind: "integer", value: "2025" }], is_grand_total: false },
+    ]
+    formatted.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: 0 },
+      { row_index: 0, column_index: 1, value_id: "v1", value: 100 },
+      { row_index: 1, column_index: 0, value_id: "v1", value: 10 },
+      { row_index: 1, column_index: 1, value_id: "v1", value: 200 },
+    ]
+
+    const { container } = render(<PivotTableGrid result={formatted} pivot={splitPivot} />)
+    const colours = Array.from(container.querySelectorAll('td[data-conditional-format]'))
+      .map((cell) => (cell as HTMLElement).style.background)
+    expect(colours).toEqual([
+      "rgb(248, 105, 107)",
+      "rgb(248, 105, 107)",
+      "rgb(99, 190, 123)",
+      "rgb(99, 190, 123)",
+    ])
+  })
+
+  it("omits stale split formatting until a result with the current axis arrives", () => {
+    const formatted = result(2)
+    formatted.row_paths = [
+      { members: [{ kind: "string", value: "North" }], is_grand_total: false },
+      { members: [{ kind: "string", value: "South" }], is_grand_total: false },
+    ]
+    formatted.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: 1 },
+      { row_index: 1, column_index: 0, value_id: "v1", value: 10 },
+    ]
+    const rowSplit = {
+      ...pivot,
+      values: [{ ...pivot.values[0], color_scale: "low_red_high_green" as const, color_scale_split_by: "r1" }, pivot.values[1]],
+    }
+    const movedToColumns = {
+      ...rowSplit,
+      rows: [],
+      columns: [{ id: "r1", field: "region", number_format: "general" as const, decimal_places: null, use_grouping: true }],
+    }
+    const { container, rerender } = render(<PivotTableGrid result={formatted} pivot={rowSplit} />)
+    expect(container.querySelectorAll("td[data-conditional-format]")).toHaveLength(2)
+
+    expect(() => rerender(<PivotTableGrid result={formatted} pivot={movedToColumns} />)).not.toThrow()
+    expect(container.querySelectorAll("td[data-conditional-format]")).toHaveLength(0)
   })
 })

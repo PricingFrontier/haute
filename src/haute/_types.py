@@ -438,6 +438,11 @@ class ExplorePivotFilterPlacement(TypedDict):
 class ExplorePivotAxisPlacement(TypedDict):
     id: str
     field: str
+    decimal_places: int | None
+    number_format: Literal[
+        "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
+    ]
+    use_grouping: bool
 
 
 class ExplorePivotRowPlacement(ExplorePivotAxisPlacement):
@@ -448,9 +453,28 @@ class ExplorePivotValuePlacement(TypedDict):
     id: str
     field: str
     aggregation: Literal["sum", "count", "average", "min", "max", "median", "distinct_count"]
+    reference: str
     display_name: str
     sort_rows: Literal["none", "ascending", "descending"]
     color_scale: Literal["none", "low_red_high_green", "low_green_high_red"]
+    color_scale_split_by: str | None
+    decimal_places: int | None
+    number_format: Literal[
+        "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
+    ]
+    use_grouping: bool
+
+
+class ExplorePivotFormula(TypedDict):
+    id: str
+    reference: str
+    display_name: str
+    expression: str
+    decimal_places: int | None
+    number_format: Literal[
+        "general", "number", "percent", "currency_gbp", "currency_usd", "currency_eur"
+    ]
+    use_grouping: bool
 
 
 class ExplorePivotOptions(TypedDict):
@@ -460,7 +484,7 @@ class ExplorePivotOptions(TypedDict):
 
 
 class ExplorePivotConfig(TypedDict):
-    """Persisted version-1 state for one Explore pivot card."""
+    """Resolved runtime state for one version-1 Explore pivot card."""
 
     version: Literal[1]
     id: str
@@ -470,6 +494,24 @@ class ExplorePivotConfig(TypedDict):
     columns: list[ExplorePivotAxisPlacement]
     rows: list[ExplorePivotRowPlacement]
     values: list[ExplorePivotValuePlacement]
+    formulas: list[ExplorePivotFormula]
+    value_order: list[str]
+    options: ExplorePivotOptions
+
+
+class ExplorePivotPersistedConfig(TypedDict):
+    """Persisted pivot state; shared formulas are selected by id only."""
+
+    version: Literal[1]
+    id: str
+    name: str
+    enabled: bool
+    filters: list[ExplorePivotFilterPlacement]
+    columns: list[ExplorePivotAxisPlacement]
+    rows: list[ExplorePivotRowPlacement]
+    values: list[ExplorePivotValuePlacement]
+    formulas: list[str]
+    value_order: list[str]
     options: ExplorePivotOptions
 
 
@@ -478,7 +520,8 @@ class ExploreConfig(TypedDict, total=False):
 
     code: str
     overview: ExploreOverviewConfig
-    pivots: list[ExplorePivotConfig]
+    pivot_formulas: list[ExplorePivotFormula]
+    pivots: list[ExplorePivotPersistedConfig]
     charts: list[ExploreChartConfig]
 
 

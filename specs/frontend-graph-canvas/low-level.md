@@ -983,8 +983,9 @@ again through the editor and save paths.
   - `frontend/src/__tests__/App.shallowHash.test.ts` — unit and benchmark coverage for
     `shallowNodeDataHash`/`graphFingerprintShallow`, the primitives behind
     `structuralFingerprint`: input-identity invariants (result-only fields
-    don't flip the hash), input-key sensitivity (every structural field
-    does), and benchmark assertions that the shallow hash stays bounded
+    don't flip the hash, and Explore overview/shared-formula/pivot/chart settings are
+    non-structural), input-key sensitivity (every structural field does), and benchmark
+    assertions that the shallow hash stays bounded
     relative to a full-stringify baseline.
   - `frontend/src/__tests__/App.backgroundJobsIsolation.test.tsx` — the background-job store
     subscription that feeds toolbar counts does not re-render the editor

@@ -16,8 +16,15 @@ function dataAffectingConfig(node: SimpleNode): Record<string, unknown> {
   const config = node.data.config ?? {}
   if (!isExploreNode(node)) return config
 
-  const { overview: _overview, pivots: _pivots, charts: _charts, ...dataConfig } = config
+  const {
+    overview: _overview,
+    pivot_formulas: _pivotFormulas,
+    pivots: _pivots,
+    charts: _charts,
+    ...dataConfig
+  } = config
   void _overview
+  void _pivotFormulas
   void _pivots
   void _charts
   return dataConfig

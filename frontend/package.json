@@ -74,6 +74,33 @@
         }
       },
       {
+        "pattern": "src/panels/ExplorePreview.tsx",
+        "thresholds": {
+          "statements": 86,
+          "branches": 82,
+          "functions": 100,
+          "lines": 90
+        }
+      },
+      {
+        "pattern": "src/panels/editors/ExplorePivotsConfig.tsx",
+        "thresholds": {
+          "statements": 89,
+          "branches": 83,
+          "functions": 94,
+          "lines": 90
+        }
+      },
+      {
+        "pattern": "src/panels/explore/cacheIdentity.ts",
+        "thresholds": {
+          "statements": 96,
+          "branches": 94,
+          "functions": 91,
+          "lines": 96
+        }
+      },
+      {
         "pattern": "src/types/guards.ts",
         "thresholds": {
           "statements": 86,

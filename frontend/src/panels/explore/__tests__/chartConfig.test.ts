@@ -25,6 +25,33 @@ import type { ExplorePivotConfig } from "../pivotConfig"
 function pivot(
   overrides: Partial<ExplorePivotConfig> = {},
 ): ExplorePivotConfig {
+  const values = overrides.values ?? [
+    {
+      id: "value_1",
+      field: "amount",
+      aggregation: "sum",
+      reference: "amount_sum",
+      display_name: "Amount",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
+    },
+    {
+      id: "value_2",
+      field: "count",
+      aggregation: "count",
+      reference: "count_count",
+      display_name: "Count",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
+    },
+    {
+      id: "value_3",
+      field: "rate",
+      aggregation: "average",
+      reference: "rate_mean",
+      display_name: "Rate",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
+    },
+  ]
+  const formulas = overrides.formulas ?? []
   return {
     version: 1,
     id: "pivot_1",
@@ -33,28 +60,11 @@ function pivot(
     filters: [],
     columns: [],
     rows: [],
-    values: [
-      {
-        id: "value_1",
-        field: "amount",
-        aggregation: "sum",
-        display_name: "Amount",
-      },
-      {
-        id: "value_2",
-        field: "count",
-        aggregation: "count",
-        display_name: "Count",
-      },
-      {
-        id: "value_3",
-        field: "rate",
-        aggregation: "average",
-        display_name: "Rate",
-      },
-    ],
+    values,
+    formulas,
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? [...values, ...formulas].map(({ id }) => id),
   }
 }
 
@@ -930,6 +940,27 @@ describe("exploreChartSeriesLabel", () => {
 })
 
 describe("reconcileValueEncodings", () => {
+  it("treats post-aggregation formulas as chartable Pivot outputs", () => {
+    const sourcePivot = pivot({
+      formulas: [{
+        id: "formula_1",
+        reference: "average_cost",
+        display_name: "Average cost",
+        expression: 'pl.col("amount").sum() / pl.col("count").count()',
+        number_format: "number",
+        decimal_places: 2,
+        use_grouping: true,
+      }],
+    })
+
+    expect(seedValueEncodings(sourcePivot).map(({ value_id }) => value_id)).toEqual([
+      "value_1",
+      "value_2",
+      "value_3",
+      "formula_1",
+    ])
+  })
+
   it("returns the same reference when every pivot Value is encoded", () => {
     const sourcePivot = pivot()
     const complete = configured(sourcePivot)
@@ -944,7 +975,9 @@ describe("reconcileValueEncodings", () => {
           id: "value_4",
           field: "exposure",
           aggregation: "sum",
+          reference: "exposure_sum",
           display_name: "Exposure",
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })

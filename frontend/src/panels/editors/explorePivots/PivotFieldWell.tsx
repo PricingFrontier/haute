@@ -6,11 +6,13 @@
  * embed this component.
  */
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, type ReactNode } from "react"
 
 import {
   defaultPivotAggregation,
+  nextPivotValueReference,
   nextPivotPlacementId,
+  pivotOutputs,
 } from "../../explore/pivotConfig"
 import type { ExplorePivotConfig } from "../../explore/pivotConfig"
 import { INPUT_STYLE } from "../_shared"
@@ -38,6 +40,28 @@ type PivotFieldWellProps = {
   upstreamColumns: Column[]
   loadFilterMembers?: LoadPivotFilterMembers
   currentConfigHash: string | null
+  formulaSection?: ReactNode
+  formulaFieldInserter?: ((field: string) => void) | null
+}
+
+function isFormulaInValues(pivot: ExplorePivotConfig, placementId: string): boolean {
+  return pivot.formulas.some((formula) => formula.id === placementId)
+}
+
+/**
+ * Where a Values-zone output lands in `value_order` when dropped at
+ * `targetIndex`, or null when the output is not in the order.
+ */
+function valuesReorderPlan(
+  pivot: ExplorePivotConfig,
+  placementId: string,
+  targetIndex: number,
+): { sourceIndex: number; insertionIndex: number } | null {
+  const sourceIndex = pivot.value_order.indexOf(placementId)
+  if (sourceIndex < 0) return null
+  const clampedIndex = Math.max(0, Math.min(targetIndex, pivot.value_order.length))
+  const insertionIndex = sourceIndex < clampedIndex ? clampedIndex - 1 : clampedIndex
+  return { sourceIndex, insertionIndex }
 }
 
 export default function PivotFieldWell({
@@ -46,6 +70,8 @@ export default function PivotFieldWell({
   upstreamColumns,
   loadFilterMembers,
   currentConfigHash,
+  formulaSection,
+  formulaFieldInserter,
 }: PivotFieldWellProps) {
   const [fieldSearch, setFieldSearch] = useState("")
   const [draggedPlacement, setDraggedPlacement] =
@@ -65,6 +91,7 @@ export default function PivotFieldWell({
     if (hasDuplicateInZone(pivot, zone, column.name)) return
     const prefix = zone.slice(0, -1)
     const id = nextPivotPlacementId(pivot, prefix)
+    const aggregation = defaultPivotAggregation(column.dtype)
     const placement: Placement =
       zone === "filters"
         ? { id, field: column.name, members: [] }
@@ -72,12 +99,24 @@ export default function PivotFieldWell({
           ? {
               id,
               field: column.name,
-              aggregation: defaultPivotAggregation(column.dtype),
+              aggregation,
+              reference: nextPivotValueReference(pivot, column.name, aggregation),
               display_name: column.name,
               sort_rows: "none",
               color_scale: "none",
+              color_scale_split_by: null,
+              number_format: "general",
+              decimal_places: null,
+              use_grouping: true,
             }
-          : { id, field: column.name, sort: "ascending" }
+          : {
+              id,
+              field: column.name,
+              sort: "ascending",
+              number_format: "general",
+              decimal_places: null,
+              use_grouping: true,
+            }
 
     persistPivot(normalizePivotOrdering(appendToZone(pivot, zone, placement, column.dtype)))
   }
@@ -88,6 +127,13 @@ export default function PivotFieldWell({
     targetZone: Zone,
     targetIndex: number,
   ) => {
+    if (sourceZone === "values" && isFormulaInValues(pivot, placementId) && targetZone !== "values") {
+      return false
+    }
+    if (sourceZone === "values" && targetZone === "values") {
+      const plan = valuesReorderPlan(pivot, placementId, targetIndex)
+      return plan !== null && plan.insertionIndex !== plan.sourceIndex
+    }
     const sourcePlacements = zonePlacements(pivot, sourceZone)
     const sourceIndex = sourcePlacements.findIndex(
       (candidate) => candidate.id === placementId,
@@ -102,7 +148,9 @@ export default function PivotFieldWell({
       return false
     }
 
-    const targetLength = zonePlacements(pivot, targetZone).length
+    const targetLength = targetZone === "values"
+      ? pivotOutputs(pivot).length
+      : zonePlacements(pivot, targetZone).length
     const clampedIndex = Math.max(0, Math.min(targetIndex, targetLength))
     const insertionIndex =
       sourceZone === targetZone && sourceIndex < clampedIndex
@@ -128,6 +176,18 @@ export default function PivotFieldWell({
       return
     }
 
+    if (sourceZone === "values" && isFormulaInValues(pivot, placementId) && targetZone !== "values") {
+      return
+    }
+    if (sourceZone === "values" && targetZone === "values") {
+      const plan = valuesReorderPlan(pivot, placementId, targetIndex)
+      if (plan === null) return
+      const nextOrder = pivot.value_order.filter((id) => id !== placementId)
+      nextOrder.splice(plan.insertionIndex, 0, placementId)
+      persistPivot({ ...pivot, value_order: nextOrder })
+      return
+    }
+
     const sourcePlacements = zonePlacements(pivot, sourceZone)
     const sourceIndex = sourcePlacements.findIndex(
       (candidate) => candidate.id === placementId,
@@ -137,7 +197,9 @@ export default function PivotFieldWell({
       throw new Error(`Pivot placement ${placementId} disappeared during movement.`)
     }
 
-    const targetLength = zonePlacements(pivot, targetZone).length
+    const targetLength = targetZone === "values"
+      ? pivotOutputs(pivot).length
+      : zonePlacements(pivot, targetZone).length
     const clampedIndex = Math.max(0, Math.min(targetIndex, targetLength))
     const insertionIndex =
       sourceZone === targetZone && sourceIndex < clampedIndex
@@ -161,8 +223,16 @@ export default function PivotFieldWell({
     if (!convertedPlacement) {
       throw new Error(`Pivot placement ${placementId} was not appended to ${targetZone}.`)
     }
-    nextTargetPlacements.splice(insertionIndex, 0, convertedPlacement)
-    persistPivot(normalizePivotOrdering({ ...appended, [targetZone]: nextTargetPlacements }, pivot.options.sort_by ?? null))
+    nextTargetPlacements.splice(Math.min(insertionIndex, nextTargetPlacements.length), 0, convertedPlacement)
+    const withTarget = { ...appended, [targetZone]: nextTargetPlacements }
+    const valueOrder = targetZone === "values"
+      ? (() => {
+          const order = withTarget.value_order.filter((id) => id !== placementId)
+          order.splice(insertionIndex, 0, placementId)
+          return order
+        })()
+      : withTarget.value_order
+    persistPivot(normalizePivotOrdering({ ...withTarget, value_order: valueOrder }, pivot.options.sort_by ?? null))
   }
 
   const clearDragPlacement = () => {
@@ -246,28 +316,45 @@ export default function PivotFieldWell({
                   >
                     Add to:
                   </span>
-                  {ZONES.map(({ key, label }) => (
+                  {formulaFieldInserter ? (
                     <button
-                      key={key}
                       type="button"
-                      aria-label={`Add ${column.name} to ${label}`}
-                      disabled={hasDuplicateInZone(pivot, key, column.name)}
-                      onClick={() => addPlacement(column, key)}
-                      className="focus-ring rounded px-1.5 py-0.5 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={`Add ${column.name} to Formula`}
+                      onClick={() => formulaFieldInserter(column.name)}
+                      className="focus-ring rounded px-1.5 py-0.5 text-[10px] font-semibold"
                       style={{
                         border: "1px solid var(--border)",
                         color: "var(--text-secondary)",
                       }}
                     >
-                      {label}
+                      Formula
                     </button>
-                  ))}
+                  ) : (
+                    ZONES.map(({ key, label }) => (
+                      <button
+                        key={key}
+                        type="button"
+                        aria-label={`Add ${column.name} to ${label}`}
+                        disabled={hasDuplicateInZone(pivot, key, column.name)}
+                        onClick={() => addPlacement(column, key)}
+                        className="focus-ring rounded px-1.5 py-0.5 text-[10px] font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+                        style={{
+                          border: "1px solid var(--border)",
+                          color: "var(--text-secondary)",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))
+                  )}
                 </div>
               </div>
             ))
           )}
         </div>
       </div>
+
+      {formulaSection}
 
       <div>
         <div
@@ -279,6 +366,9 @@ export default function PivotFieldWell({
           <span id="pivot-field-keyboard-instructions" className="sr-only">
             Focus a field card and use Up or Down to reorder it, or Left or Right
             to move it between areas.
+          </span>
+          <span id="pivot-formula-keyboard-instructions" className="sr-only">
+            Focus a formula card and use Up or Down to reorder it within Values.
           </span>
         </div>
         <div

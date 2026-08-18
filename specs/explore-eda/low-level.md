@@ -65,10 +65,28 @@
   series overrides, primary/secondary axes, and legend. Style mappings contain only closed mark,
   axis, number-format, colour, stack (`stack_group` plus Boolean `stack_normalize`), marker, and
   label values.
-- **`ExplorePivotConfig`** (`_types.py`) — version-1 persisted card with `id`, `name`,
-  `enabled`, ordered Filter/Columns/Rows/Values placements, and grand-total options. Each
+- **`ExplorePivotPersistedConfig` / `ExplorePivotConfig`** (`_types.py`) — the version-1 persisted
+  card contains `id`, `name`, `enabled`, ordered Filter/Columns/Rows/Values placements, ordered
+  selected shared-formula ids, a combined `value_order` of Value/formula ids, and grand-total
+  options. The runtime form replaces those ids with resolved formula objects for calculation
+  requests. `value_order` is required and must cover the exact Value/formula id union once.
+  **`ExplorePivotFormula`** definitions live
+  once in the Explore-level `pivot_formulas` library. Each
   placement owns a stable id. Filter members are typed scalars and Value placements add one of
-  the seven supported aggregations plus a presentation-only display name.
+  the seven supported aggregations, a stable field-first aggregation reference, and a
+  presentation-only display name. A formula owns a stable id/reference, display name, a Python
+  expression returning one Polars `pl.Expr`, and numeric presentation settings. Persisted Value
+  and formula references are required, each pivot's `formulas` list contains ids only, and shared
+  definitions exist only in `pivot_formulas`; missing fields and inline definitions fail
+  validation without migration. The frontend runtime parser resolves each selected id to its
+  shared formula object before sending a calculation request to `PivotService`.
+  Column, Row, Value, and formula
+  placements also own presentation-only `number_format`, `decimal_places: None | 0..10`, and
+  `use_grouping` settings. The closed formats are General, Number, Percentage, and GBP/USD/EUR
+  currency. Every numeric-format field is required on a version-1 card. Value placements
+  additionally own `color_scale` and required nullable `color_scale_split_by`; a non-null split is
+  valid only for an active scale and references a current Row/Column placement id. Missing fields
+  are rejected rather than defaulted or migrated.
 - **`PivotCalculationSpec`** (`_pivot_service.py`, frozen dataclass) — resolved Explore cache
   request/key, validated v1 pivot, calculation hash, result-cache key, and latest-wins family key
   `("explore_pivot", source_file, node_id, source, pivot_id)`.
@@ -91,19 +109,46 @@
 - `EXPLORE_PIVOT_RESULT_VERSION = 1`; limits are `MAX_ROW_GROUPS = 500`,
   `MAX_COLUMN_GROUPS = 100`, `MAX_DISPLAY_CELLS = 50_000`, and
   `MAX_FILTER_MEMBERS = 500`. Cardinalities are collected first under the admitted context. The
-  displayed-cell check includes each requested total path and uses `max(len(values), 1)` so even
-  an unconfigured layout has a bounded shape.
+  displayed-cell check includes each requested total path and uses the selected output count,
+  `max(len(values) + len(selected_formulas), 1)`, so even an unconfigured layout has a bounded
+  shape.
 - `ExploreService.prepare_spec()` is the sole derivation of the Explore dataframe cache identity.
   `PivotService` consumes its request/key and calls `request.cache.get/scan`; it does not invoke
   graph execution. Cache eviction between admission and scan becomes a typed local
   `cache_required` failure, never fresh execution.
 - Calculation canonicalisation includes only ordered filter field/member keys, ordered row and
-  column fields plus their effective Row directions, Value placement ids/fields/aggregations plus
-  the selected Value direction, total options, dataframe key, and result schema version. A
+  column fields plus their effective Row directions, Value placement ids/fields/aggregations/
+  references plus the selected Value direction, ordered selected shared-formula
+  ids/references/expressions, the combined `value_order`, total
+  options, dataframe key, and result schema version. A
   `sort_by` selection whose effective ordering is unchanged reuses the same key. It excludes
-  card name/enabled, Value display names, Value colour scales, and all unknown presentation
+  card name/enabled, Value/formula display names, all Column/Row/Value/formula numeric-format
+  settings, Value colour scales and their split-by references, and all unknown presentation
   fields. The in-process result LRU stores at most 32 matrices.
-- Aggregation aliases are derived from stable Value placement ids rather than field names.
+- Physical aggregation aliases are internal. Public Value references use field-first names such as
+  `total_claims_sum` and `total_claims_mean`. Exact `(field, aggregation)` duplicates are computed
+  once per grouping query and projected to each stable Value reference; different aggregations of
+  the same field remain separate expressions in the same Polars aggregation. Formula expressions
+  are compiled once per pivot calculation with the full `pl` namespace under the existing
+  user-code AST sandbox and added to that same grouped query. They use source fields directly and
+  declare their own aggregations, for example `pl.col("total_claims").sum() * 2`; neither visible
+  Value references nor earlier formula references are inputs. Polars expression metadata supplies
+  root source-column names, which must exist in the Explore dataframe schema. Planning against a
+  grouped schema requires each expression to produce one supported scalar rather than a List,
+  Struct, Object, or other nested output. No selected Value or hidden dependency is required.
+  Each expression is physically aliased to a reserved name derived from its stable placement id,
+  so a public formula reference may safely equal a grouped source-field name. Formula and ordinary
+  Value outputs follow the pivot's combined `value_order` and use the existing value-cell
+  coordinates; their result
+  identity uses the formula reference as `field` and `aggregation="formula"`. While a formula
+  editor is open, the existing source-field selector replaces its placement buttons with one
+  `Add to: Formula` action that inserts `pl.col(<source field>)` at the cursor; it does not infer
+  compatibility from one pivot's Values. The shared-formula library uses a dedicated search input
+  followed by a content-sized list of compact formula rows that becomes vertically scrolling at
+  its maximum height; its single active add/edit form remains outside that list.
+  Selected formula cards use the same pointer and Up/Down keyboard reorder affordances as ordinary
+  Values, but their drag targets are restricted to Values; Filters, Columns, Rows, and Left-arrow
+  movement out of Values remain blocked.
   Numeric operations first map floating NaN to null. `sum`/`average`/`median` require numeric
   fields; `min`/`max` also accept supported scalar non-numeric fields. Empty aggregates return
   null, while `count` and `distinct_count` return integer zero. Result normalisation preserves
@@ -593,3 +638,15 @@ For each `ExploreColumnStat` whose dtype (looked up in `schema`) is not numeric,
 - `tests/test_explore_pivot_routes.py` exercises cache-required behaviour, typed filters,
   bounded aggregation/cardinality, sorting/totals, latest-wins job lifecycle, member lookup,
   export, and JSON-safe scalar results including Binary and Duration min/max values.
+  Its runtime type matrix covers every persisted member kind (null, NaN, string, Boolean,
+  integer, finite float, decimal, date, datetime, and time), dtype-mismatch failures, and
+  unsupported dimension/value dtypes rather than stopping at config validation. The four hard
+  bounds (row groups, column groups, displayed cells, and filter members) are each pinned at and
+  immediately above their limit.
+- Explore route tests pin every terminal worker mapping (`memory_limited`, `contract_error`,
+  `error`, cancellation, and supersession), zero and multiple upstream parents, missing nodes,
+  named-source cache isolation, and the cache-identity invalidation matrix for upstream code,
+  Explore code, preamble, source file, and input source.
+- Focused persistent-cache tests cover metadata/report/artifact inconsistency, cleanup after a
+  failed process-cache restore, nested simultaneous reader leases, and publication-path
+  validation in addition to the route-level restart, refresh, and corrupt-pointer scenarios.

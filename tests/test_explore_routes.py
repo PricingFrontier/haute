@@ -342,10 +342,18 @@ def test_durable_explore_generation_is_retained_while_a_reader_holds_a_lease(
         assert snapshot.state == "current"
         leased_generation_dir = snapshot.data_path.parent
 
-        refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
-        assert _poll_explore(client, refreshed["job_id"])["status"] == "completed"
-        assert leased_generation_dir.exists()
+        # Two readers may hold the same immutable generation. Releasing one
+        # lease after a refresh must not retire the artifact out from under
+        # the other reader.
+        with store.lease(spec.family_key, report_cache_key=spec.report_cache_key) as nested:
+            assert nested is not None
+            assert nested.generation_id == snapshot.generation_id
 
+            refreshed = client.post("/api/explore/run", json={**body, "refresh": True}).json()
+            assert _poll_explore(client, refreshed["job_id"])["status"] == "completed"
+            assert leased_generation_dir.exists()
+
+        assert leased_generation_dir.exists()
         spec.dataframe_cache_request.cache.clear()
         restored = store.restore(
             snapshot,
@@ -645,6 +653,109 @@ def test_explore_cache_status_fails_loudly_for_corrupt_selected_generation(
     assert response.json()["detail"] == "Internal server error"
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    ["family", "report_identity", "artifact_shape"],
+)
+def test_explore_cache_status_rejects_inconsistent_generation_metadata(
+    client: TestClient,
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    from haute._explore_cache import ExplorePersistentCacheStore
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    store = ExplorePersistentCacheStore(spec.project_root)
+    family_dir = store._family_dir(spec.family_key)
+    pointer = json.loads((family_dir / "current.json").read_text(encoding="utf-8"))
+    metadata_path = family_dir / "generations" / pointer["generation_id"] / "meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if corruption == "family":
+        metadata["family"] = ["explore", "wrong.py", "explore", "live"]
+    elif corruption == "report_identity":
+        metadata["report"]["node_id"] = "another_explore"
+    else:
+        metadata["artifact"]["row_count"] += 1
+    atomic_write_text(metadata_path, json.dumps(metadata))
+    _explore_service._report_cache.clear()
+    spec.dataframe_cache_request.cache.clear()
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+
+
+def test_failed_durable_restore_removes_partial_process_cache_artifact(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute import _explore_cache as persistent_cache_module
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    started = client.post("/api/explore/run", json=body).json()
+    assert _poll_explore(client, started["job_id"])["status"] == "completed"
+    spec = _explore_service.prepare_spec(ExploreRunRequest.model_validate(body))
+    dataframe_key = spec.dataframe_cache_request.keys_by_node[spec.node_id]
+    spec.dataframe_cache_request.cache.clear()
+    _explore_service._report_cache.clear()
+    target = spec.dataframe_cache_request.cache.path_for_key(dataframe_key)
+    assert not target.exists()
+
+    def leave_partial_copy_then_fail(_source: Path, destination: Path) -> None:
+        Path(destination).write_bytes(b"partial parquet")
+        raise OSError("forced durable restore copy failure")
+
+    monkeypatch.setattr(persistent_cache_module.shutil, "copy2", leave_partial_copy_then_fail)
+
+    response = client.post("/api/explore/cache-status", json=body)
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error"
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("operation", ["commit_publication", "discard_publication"])
+def test_persistent_cache_rejects_publication_paths_outside_the_family(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    import uuid
+
+    from haute._explore_cache import (
+        ExplorePersistentCachePublication,
+        ExplorePersistentCacheStore,
+    )
+
+    store = ExplorePersistentCacheStore(tmp_path)
+    family_key = ("explore", str(tmp_path / "pipeline.py"), "explore", "live")
+    generation_id = str(uuid.uuid4())
+    publication = ExplorePersistentCachePublication(
+        family_key=family_key,
+        generation_id=generation_id,
+        staging_path=tmp_path / "outside-staging",
+        final_path=tmp_path / "outside-final",
+    )
+
+    with pytest.raises(ValueError, match="publication paths"):
+        getattr(store, operation)(publication)
+
+
 def test_explore_cache_status_reports_stale_durable_generation_despite_warm_process_caches(
     client: TestClient,
     tmp_path: Path,
@@ -914,6 +1025,109 @@ def test_explore_code_config_change_invalidates_analysis_dataframe_cache(
     )
 
 
+@pytest.mark.parametrize("change", ["preamble", "source_file", "input_source"])
+def test_explore_analysis_identity_includes_runtime_inputs(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    from haute.routes.explore import _explore_service
+    from haute.schemas import ExploreRunRequest
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    first_graph = _explore_graph(str(path))
+    second_graph = _explore_graph(str(path))
+    first_source = "live"
+    second_source = "live"
+    if change == "preamble":
+        first_graph["preamble"] = "import polars as pl\nIDENTITY_MARKER = 1"
+        second_graph["preamble"] = "import polars as pl\nIDENTITY_MARKER = 2"
+    elif change == "source_file":
+        first_pipeline = tmp_path / "first_pipeline.py"
+        second_pipeline = tmp_path / "second_pipeline.py"
+        first_pipeline.write_text("# first\n", encoding="utf-8")
+        second_pipeline.write_text("# second\n", encoding="utf-8")
+        first_graph["source_file"] = str(first_pipeline)
+        second_graph["source_file"] = str(second_pipeline)
+    else:
+        second_source = "batch"
+
+    first = _explore_service.prepare_spec(
+        ExploreRunRequest.model_validate(
+            {"graph": first_graph, "node_id": "explore", "source": first_source}
+        )
+    )
+    second = _explore_service.prepare_spec(
+        ExploreRunRequest.model_validate(
+            {"graph": second_graph, "node_id": "explore", "source": second_source}
+        )
+    )
+
+    assert first.dataframe_cache_key != second.dataframe_cache_key
+    assert first.report_cache_key != second.report_cache_key
+
+
+def test_explore_runs_for_different_sources_do_not_supersede_each_other(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from haute._execution_context import ExecutionContext
+    from haute.routes import _explore_service as service_module
+    from haute.routes.explore import _explore_service
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    graph = _explore_graph(str(path))
+    entered = threading.Barrier(3)
+    release = threading.Event()
+    original_materialise = _explore_service._materialise_and_summarise
+
+    def create_unadmitted_context(*, operation, profile, job_id, cancellation_token):
+        return ExecutionContext(
+            operation=operation,
+            profile=profile,
+            job_id=job_id,
+            cancellation_token=cancellation_token,
+        )
+
+    def gated_materialise(*args, **kwargs):
+        entered.wait(timeout=5.0)
+        assert release.wait(timeout=5.0)
+        return original_materialise(*args, **kwargs)
+
+    # Admission capacity is orthogonal to supersession identity. Use normal
+    # execution contexts so both named sources can reach the registry seam.
+    monkeypatch.setattr(
+        service_module,
+        "create_admitted_execution_context",
+        create_unadmitted_context,
+    )
+    monkeypatch.setattr(
+        _explore_service,
+        "_materialise_and_summarise",
+        gated_materialise,
+    )
+
+    live = client.post(
+        "/api/explore/run",
+        json={"graph": graph, "node_id": "explore", "source": "live"},
+    ).json()
+    batch = client.post(
+        "/api/explore/run",
+        json={"graph": graph, "node_id": "explore", "source": "batch"},
+    ).json()
+    try:
+        entered.wait(timeout=5.0)
+        assert client.get(f"/api/explore/status/{live['job_id']}").json()["status"] == "running"
+        assert client.get(f"/api/explore/status/{batch['job_id']}").json()["status"] == "running"
+    finally:
+        release.set()
+
+    assert _poll_explore(client, live["job_id"])["status"] == "completed"
+    assert _poll_explore(client, batch["job_id"])["status"] == "completed"
+
+
 def test_explore_rejects_non_explore_node_before_execution(
     client: TestClient,
     tmp_path: Path,
@@ -1106,6 +1320,137 @@ def test_explore_status_unknown_job_is_404(client: TestClient) -> None:
     response = client.get("/api/explore/status/not-a-job")
 
     assert response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_status"),
+    [
+        ("admission", "memory_limited"),
+        ("memory", "memory_limited"),
+        ("public_contract", "contract_error"),
+        ("contract", "contract_error"),
+        ("unexpected", "error"),
+    ],
+)
+def test_explore_worker_maps_failures_to_typed_terminal_statuses(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_status: str,
+) -> None:
+    from haute._execution_admission import ExecutionAdmissionError
+    from haute._execution_context import ExecutionMemoryLimitExceededError, ExecutionProfile
+    from haute.errors import ContractMismatchError, GroupByExecutionUnsupportedError
+    from haute.routes import _explore_service as service_module
+    from haute.routes.explore import _explore_service
+
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    body = {"graph": _explore_graph(str(path)), "node_id": "explore", "source": "live"}
+
+    if failure_kind == "admission":
+        failure: BaseException = ExecutionAdmissionError(
+            "explore_cache",
+            profile=ExecutionProfile.EXPLORE_ANALYSIS,
+            memory_limit_bytes=1,
+            rss_at_admission_bytes=2,
+            reason="forced admission failure",
+        )
+
+        def fail_admission(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(service_module, "create_admitted_execution_context", fail_admission)
+    else:
+        if failure_kind == "memory":
+            failure = ExecutionMemoryLimitExceededError(
+                "explore_cache",
+                rss_bytes=2,
+                limit_bytes=1,
+            )
+        elif failure_kind == "public_contract":
+            failure = GroupByExecutionUnsupportedError(
+                "Group-by exceeds admitted Explore headroom",
+                node_id="prep",
+                operator="group_by",
+                profile="explore_analysis",
+                reason_code="estimated_peak_exceeds_headroom",
+                remediation="Reduce the input or increase available memory.",
+                estimated_peak_bytes=2,
+                headroom_bytes=1,
+            )
+        elif failure_kind == "contract":
+            failure = ContractMismatchError("forced Explore contract mismatch", node_id="prep")
+        else:
+            failure = RuntimeError("forced unexpected Explore failure")
+
+        def fail_materialisation(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(
+            _explore_service,
+            "_materialise_and_summarise",
+            fail_materialisation,
+        )
+
+    started = client.post("/api/explore/run", json=body)
+
+    assert started.status_code == 200
+    final = _poll_explore(client, started.json()["job_id"])
+    assert final["status"] == expected_status
+    assert final["terminal_reason"] == expected_status
+    assert final["result"] is None
+    if failure_kind == "public_contract":
+        stored = _explore_service._store.require_job(started.json()["job_id"])
+        assert stored["error_code"] == "group_by_execution_unsupported"
+
+
+def test_explore_run_rejects_missing_node_before_execution(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+
+    response = client.post(
+        "/api/explore/run",
+        json={"graph": _explore_graph(str(path)), "node_id": "missing", "source": "live"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_explore_rejects_node_with_multiple_parents(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quotes.parquet"
+    pl.DataFrame({"quote_id": ["a"], "premium": [10]}).write_parquet(path)
+    graph = _explore_graph(str(path))
+    graph["nodes"].append(
+        {
+            "id": "second_parent",
+            "type": "polars",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "second_parent",
+                "nodeType": "polars",
+                "config": {"code": "df = source"},
+            },
+        }
+    )
+    graph["edges"].append(make_edge("second_parent", "explore").model_dump())
+
+    response = client.post(
+        "/api/explore/run",
+        json={"graph": graph, "node_id": "explore", "source": "live"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        "Explore node 'explore' must have exactly one upstream input (found 2)."
+    )
 
 
 # ---------------------------------------------------------------------------

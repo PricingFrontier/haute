@@ -59,17 +59,21 @@ function pivot(
     enabled: true,
     filters: [],
     columns: [],
-    rows: [{ id: `${id}_row`, field: "region" }],
+    rows: [{ id: `${id}_row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     values: [
       {
         id: `${id}_paid`,
         field: "paid",
         aggregation: "sum",
+        reference: "paid_sum",
         display_name: "Paid",
+        color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
       },
     ],
+    formulas: [],
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
+    value_order: overrides.value_order ?? (overrides.values ?? [{ id: `${id}_paid` }]).map(({ id }) => id),
   }
 }
 
@@ -427,7 +431,9 @@ describe("ExploreChartsPane", () => {
           id: "overlong_paid",
           field: "paid",
           aggregation: "sum",
+          reference: "paid_sum",
           display_name: "x".repeat(201),
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })

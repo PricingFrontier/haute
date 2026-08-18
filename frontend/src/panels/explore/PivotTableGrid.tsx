@@ -2,7 +2,10 @@ import { useMemo, useState } from "react"
 
 import type { ExplorePivotMemberKey, ExplorePivotResult } from "../../api/types"
 import { PIVOT_CONDITIONAL_FORMAT_COLORS } from "../../theme/colors"
+import { isPivotFormulaPlacement, pivotOutputs } from "./pivotConfig"
 import type { ExplorePivotConfig } from "./pivotConfig"
+import { formatPivotNumber } from "./pivotNumberFormat"
+import type { PivotNumberFormatting } from "./pivotNumberFormat"
 
 type PivotTableGridProps = {
   result: ExplorePivotResult
@@ -16,7 +19,9 @@ const ROW_HEADER_WIDTH = 140
 const STRICT_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?$/
 
 type Color = readonly [number, number, number]
-const PALE_RED: Color = PIVOT_CONDITIONAL_FORMAT_COLORS.low.rgb
+type ConditionalDomain = readonly [number, number, number]
+type ConditionalSplit = { axis: "row" | "column"; level: number } | null
+const RED: Color = PIVOT_CONDITIONAL_FORMAT_COLORS.low.rgb
 const YELLOW: Color = PIVOT_CONDITIONAL_FORMAT_COLORS.midpoint.rgb
 const GREEN: Color = PIVOT_CONDITIONAL_FORMAT_COLORS.high.rgb
 
@@ -48,7 +53,7 @@ function interpolate(left: Color, right: Color, ratio: number): string {
 function conditionalColor(value: number, domain: readonly [number, number, number], scale: "low_red_high_green" | "low_green_high_red"): string {
   const [minimum, midpoint, maximum] = domain
   if (minimum === maximum) return colorCss(YELLOW)
-  const [low, high] = scale === "low_red_high_green" ? [PALE_RED, GREEN] : [GREEN, PALE_RED]
+  const [low, high] = scale === "low_red_high_green" ? [RED, GREEN] : [GREEN, RED]
   if (value <= midpoint) {
     const ratio = midpoint === minimum ? 1 : (value - minimum) / (midpoint - minimum)
     return interpolate(low, YELLOW, ratio)
@@ -57,19 +62,28 @@ function conditionalColor(value: number, domain: readonly [number, number, numbe
   return interpolate(YELLOW, high, ratio)
 }
 
-function memberLabel(member: ExplorePivotMemberKey): string {
+function memberLabel(
+  member: ExplorePivotMemberKey,
+  formatting: PivotNumberFormatting | undefined,
+): string {
   if (member.kind === "null") return "(blank)"
   if (member.kind === "nan") return "(NaN)"
+  if (
+    (member.kind === "integer" || member.kind === "float" || member.kind === "decimal")
+  ) {
+    return formatPivotNumber(member.value, formatting ?? {}) ?? String(member.value)
+  }
   return String(member.value)
 }
 
 function pathLabel(
   path: ExplorePivotResult["row_paths"][number],
   level: number,
+  formatting: PivotNumberFormatting | undefined,
 ): string {
   if (path.is_grand_total) return level === 0 ? "Grand total" : ""
   const member = path.members[level]
-  return member ? memberLabel(member) : ""
+  return member ? memberLabel(member, formatting) : ""
 }
 
 function cellKey(
@@ -78,6 +92,21 @@ function cellKey(
   valueId: string,
 ): string {
   return `${rowIndex}:${columnIndex}:${valueId}`
+}
+
+function conditionalDomainScope(
+  split: ConditionalSplit,
+  rowPath: ExplorePivotResult["row_paths"][number],
+  columnPath: ExplorePivotResult["column_paths"][number],
+): string {
+  if (split === null) return "global"
+  const member = split.axis === "row"
+    ? rowPath.members[split.level]
+    : columnPath.members[split.level]
+  if (!member) {
+    throw new Error(`Pivot conditional formatting split is missing its ${split.axis} path member.`)
+  }
+  return JSON.stringify([member.kind, member.value])
 }
 
 export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
@@ -93,9 +122,41 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
   const visibleRows = result.row_paths.slice(start, end)
 
   const valuesById = useMemo(
-    () => new Map(pivot.values.map((value) => [value.id, value])),
-    [pivot.values],
+    () => new Map(pivotOutputs(pivot).map((value) => [value.id, value])),
+    [pivot],
   )
+  const conditionalSplits = useMemo(() => {
+    const splits = new Map<string, ConditionalSplit>()
+    for (const value of pivot.values) {
+      if (
+        value.color_scale !== "low_red_high_green" &&
+        value.color_scale !== "low_green_high_red"
+      ) continue
+      const splitBy = value.color_scale_split_by
+      if (splitBy === null || splitBy === undefined) {
+        splits.set(value.id, null)
+        continue
+      }
+      const rowLevel = pivot.rows.findIndex((row) => row.id === splitBy)
+      if (rowLevel >= 0) {
+        if (result.row_fields[rowLevel] === pivot.rows[rowLevel].field) {
+          splits.set(value.id, { axis: "row", level: rowLevel })
+        }
+        continue
+      }
+      const columnLevel = pivot.columns.findIndex((column) => column.id === splitBy)
+      if (columnLevel >= 0) {
+        if (result.column_fields[columnLevel] === pivot.columns[columnLevel].field) {
+          splits.set(value.id, { axis: "column", level: columnLevel })
+        }
+        continue
+      }
+      throw new Error(
+        `Pivot conditional formatting split "${splitBy}" does not reference a placed Row or Column.`,
+      )
+    }
+    return splits
+  }, [pivot.columns, pivot.rows, pivot.values, result.column_fields, result.row_fields])
   const cells = useMemo(() => {
     const indexed = new Map<
       string,
@@ -110,22 +171,33 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
     return indexed
   }, [result.cells])
   const conditionalDomains = useMemo(() => {
-    const values = new Map<string, number[]>()
+    const bucketsByValue = new Map<string, Map<string, number[]>>()
     for (const cell of result.cells) {
-      if (result.row_paths[cell.row_index]?.is_grand_total || result.column_paths[cell.column_index]?.is_grand_total) continue
+      const rowPath = result.row_paths[cell.row_index]
+      const columnPath = result.column_paths[cell.column_index]
+      if (!rowPath || !columnPath || rowPath.is_grand_total || columnPath.is_grand_total) continue
       const numeric = numericCellValue(cell.value)
       if (numeric === null) continue
-      const bucket = values.get(cell.value_id) ?? []
+      const split = conditionalSplits.get(cell.value_id)
+      if (split === undefined) continue
+      const scope = conditionalDomainScope(split, rowPath, columnPath)
+      const valueBuckets = bucketsByValue.get(cell.value_id) ?? new Map<string, number[]>()
+      const bucket = valueBuckets.get(scope) ?? []
       bucket.push(numeric)
-      values.set(cell.value_id, bucket)
+      valueBuckets.set(scope, bucket)
+      bucketsByValue.set(cell.value_id, valueBuckets)
     }
-    return new Map(
-      [...values].map(([valueId, numbers]) => {
+    const domains = new Map<string, Map<string, ConditionalDomain>>()
+    for (const [valueId, valueBuckets] of bucketsByValue) {
+      const valueDomains = new Map<string, ConditionalDomain>()
+      for (const [scope, numbers] of valueBuckets) {
         const sorted = [...numbers].sort((left, right) => left - right)
-        return [valueId, [sorted[0], median(sorted), sorted[sorted.length - 1]] as const]
-      }),
-    )
-  }, [result.cells, result.column_paths, result.row_paths])
+        valueDomains.set(scope, [sorted[0], median(sorted), sorted[sorted.length - 1]])
+      }
+      domains.set(valueId, valueDomains)
+    }
+    return domains
+  }, [conditionalSplits, result.cells, result.column_paths, result.row_paths])
 
   const dataColumnCount = result.column_paths.length * result.values.length
   const totalColumns = Math.max(
@@ -173,7 +245,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                   className="px-2 py-1.5 font-medium"
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
-                  {pathLabel(path, level)}
+                  {pathLabel(path, level, pivot.columns[level])}
                 </th>
               ))}
             </tr>
@@ -219,7 +291,11 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
             return (
               <tr key={rowIndex} style={{ height: ROW_HEIGHT }}>
                 {result.row_fields.map((field, level) => {
-                  const label = pathLabel(rowPath, level)
+                  const label = pathLabel(
+                    rowPath,
+                    level,
+                    pivot.rows[level],
+                  )
                   return (
                     <th
                       key={field}
@@ -243,11 +319,19 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                     )
                     const configuredValue = valuesById.get(value.id)
                     const numeric = numericCellValue(cell)
-                    const scale = configuredValue?.color_scale
-                    const domain = conditionalDomains.get(value.id)
+                    const scale = configuredValue && !isPivotFormulaPlacement(configuredValue)
+                      ? configuredValue.color_scale
+                      : undefined
+                    const columnPath = result.column_paths[columnIndex]
+                    const split = conditionalSplits.get(value.id)
+                    const ordinary = !rowPath.is_grand_total && !columnPath?.is_grand_total
+                    const domain = ordinary && columnPath && split !== undefined
+                      ? conditionalDomains.get(value.id)?.get(
+                          conditionalDomainScope(split, rowPath, columnPath),
+                        )
+                      : undefined
                     const eligible =
-                      !rowPath.is_grand_total &&
-                      !result.column_paths[columnIndex]?.is_grand_total &&
+                      ordinary &&
                       numeric !== null &&
                       scale !== undefined &&
                       scale !== "none" &&
@@ -269,7 +353,10 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
                       >
                         {cell === null || cell === undefined
                           ? "\u2014"
-                          : String(cell)}
+                          : formatPivotNumber(
+                              cell,
+                              configuredValue ?? {},
+                            ) ?? String(cell)}
                       </td>
                     )
                   }),
