@@ -146,18 +146,22 @@ def _validate_decimal_places(
     return value
 
 
-def _normalise_number_format(
+def _validate_number_format(
     placement: dict[str, Any],
     *,
-    decimal_places: int | None,
     context: str,
     card_index: int,
     placement_index: int,
 ) -> str:
-    """Validate the persisted number format and migrate absent v1 values."""
+    """Validate the required persisted number format for a v1 placement."""
 
     if "number_format" not in placement:
-        return "number" if decimal_places is not None else "general"
+        raise ConfigError(
+            "Explore pivot number format is required.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+        )
     number_format = placement["number_format"]
     if not isinstance(number_format, str) or number_format not in PIVOT_NUMBER_FORMATS:
         raise ConfigError(
@@ -170,17 +174,22 @@ def _normalise_number_format(
     return number_format
 
 
-def _normalise_grouping(
+def _validate_grouping(
     placement: dict[str, Any],
     *,
     context: str,
     card_index: int,
     placement_index: int,
 ) -> bool:
-    """Validate the persisted grouping preference and migrate absent v1 values."""
+    """Validate the required persisted grouping preference for a v1 placement."""
 
     if "use_grouping" not in placement:
-        return True
+        raise ConfigError(
+            "Explore pivot grouping preference is required.",
+            context=context,
+            index=card_index,
+            placement_index=placement_index,
+        )
     use_grouping = placement["use_grouping"]
     if type(use_grouping) is not bool:
         raise ConfigError(
@@ -392,21 +401,27 @@ def _validate_axis_placements(
         copied["id"] = placement_id
         copied["field"] = field
         if zone != "filters":
+            if "decimal_places" not in copied:
+                raise ConfigError(
+                    "Explore pivot decimal places is required.",
+                    context=context,
+                    index=card_index,
+                    placement_index=placement_index,
+                )
             decimal_places = _validate_decimal_places(
-                copied.get("decimal_places"),
+                copied["decimal_places"],
                 context=context,
                 card_index=card_index,
                 placement_index=placement_index,
             )
             copied["decimal_places"] = decimal_places
-            copied["number_format"] = _normalise_number_format(
+            copied["number_format"] = _validate_number_format(
                 copied,
-                decimal_places=decimal_places,
                 context=context,
                 card_index=card_index,
                 placement_index=placement_index,
             )
-            copied["use_grouping"] = _normalise_grouping(
+            copied["use_grouping"] = _validate_grouping(
                 copied,
                 context=context,
                 card_index=card_index,
@@ -566,7 +581,14 @@ def _validate_values(
                 value_index=value_index,
                 color_scale=color_scale,
             )
-        color_scale_split_by = copied.get("color_scale_split_by")
+        if "color_scale_split_by" not in copied:
+            raise ConfigError(
+                "Explore pivot colour scale split is required.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+            )
+        color_scale_split_by = copied["color_scale_split_by"]
         if color_scale_split_by is not None and not isinstance(color_scale_split_by, str):
             raise ConfigError(
                 "Explore pivot colour scale split must be a string or null.",
@@ -575,20 +597,26 @@ def _validate_values(
                 value_index=value_index,
                 actual_type=type(color_scale_split_by).__name__,
             )
+        if "decimal_places" not in copied:
+            raise ConfigError(
+                "Explore pivot decimal places is required.",
+                context=context,
+                index=card_index,
+                value_index=value_index,
+            )
         decimal_places = _validate_decimal_places(
-            copied.get("decimal_places"),
+            copied["decimal_places"],
             context=context,
             card_index=card_index,
             placement_index=value_index,
         )
-        number_format = _normalise_number_format(
+        number_format = _validate_number_format(
             copied,
-            decimal_places=decimal_places,
             context=context,
             card_index=card_index,
             placement_index=value_index,
         )
-        use_grouping = _normalise_grouping(
+        use_grouping = _validate_grouping(
             copied,
             context=context,
             card_index=card_index,
@@ -690,8 +718,15 @@ def _validate_formulas(
         expression = _require_non_empty_string(
             copied.get("expression"), context=context, index=card_index, label="formula expression"
         )
+        if "decimal_places" not in copied:
+            raise ConfigError(
+                "Explore pivot decimal places is required.",
+                context=context,
+                index=card_index,
+                formula_index=formula_index,
+            )
         decimal_places = _validate_decimal_places(
-            copied.get("decimal_places"),
+            copied["decimal_places"],
             context=context,
             card_index=card_index,
             placement_index=formula_index,
@@ -702,14 +737,13 @@ def _validate_formulas(
             display_name=display_name,
             expression=expression,
             decimal_places=decimal_places,
-            number_format=_normalise_number_format(
+            number_format=_validate_number_format(
                 copied,
-                decimal_places=decimal_places,
                 context=context,
                 card_index=card_index,
                 placement_index=formula_index,
             ),
-            use_grouping=_normalise_grouping(
+            use_grouping=_validate_grouping(
                 copied, context=context, card_index=card_index, placement_index=formula_index
             ),
         )
@@ -719,7 +753,7 @@ def _validate_formulas(
     return formulas
 
 
-def _normalise_value_order(
+def _validate_value_order(
     raw: Any,
     *,
     values: list[dict[str, Any]],
@@ -727,11 +761,13 @@ def _normalise_value_order(
     context: str,
     card_index: int,
 ) -> list[str]:
-    """Validate the mixed display sequence, defaulting legacy v1 cards."""
+    """Validate the required mixed display sequence for a v1 card."""
 
     expected = [*(value["id"] for value in values), *(formula["id"] for formula in formulas)]
     if raw is _MISSING:
-        return expected
+        raise ConfigError(
+            "Explore pivot value_order is required.", context=context, index=card_index
+        )
     if not isinstance(raw, list):
         raise ConfigError(
             "Explore pivot value_order must be a list.",
@@ -837,7 +873,7 @@ def _validate_v1(raw: dict[Any, Any], *, context: str, index: int) -> dict[str, 
         placement_ids=placement_ids,
         references=references,
     )
-    value_order = _normalise_value_order(
+    value_order = _validate_value_order(
         copied.get("value_order", _MISSING),
         values=values,
         formulas=formulas,
@@ -1067,9 +1103,6 @@ def validate_explore_pivot_state(
     pivot_names: set[str] = set()
     for pivot_index, (raw_pivot, selected_ids) in enumerate(zip(pivots, selections, strict=True)):
         base_raw = copy.deepcopy(raw_pivot)
-        base_raw["formulas"] = []
-        raw_value_order = base_raw.pop("value_order", _MISSING)
-        pivot = _validate_v1(base_raw, context=context, index=pivot_index)
         selected: list[dict[str, Any]] = []
         for formula_id in selected_ids:
             definition = definitions_by_id.get(formula_id)
@@ -1081,25 +1114,9 @@ def validate_explore_pivot_state(
                     formula_id=formula_id,
                 )
             selected.append(copy.deepcopy(definition))
-        _validate_formulas(
-            selected,
-            context=context,
-            card_index=pivot_index,
-            placement_ids={
-                placement["id"]
-                for zone in ("filters", "columns", "rows", "values")
-                for placement in pivot[zone]
-            },
-            references={value["reference"] for value in pivot["values"]},
-        )
+        base_raw["formulas"] = selected
+        pivot = _validate_v1(base_raw, context=context, index=pivot_index)
         pivot["formulas"] = list(selected_ids)
-        pivot["value_order"] = _normalise_value_order(
-            raw_value_order,
-            values=pivot["values"],
-            formulas=selected,
-            context=context,
-            card_index=pivot_index,
-        )
 
         pivot_id = pivot["id"]
         pivot_name_key = pivot["name"].strip().lower()

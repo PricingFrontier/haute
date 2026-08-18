@@ -176,8 +176,8 @@ Out of scope (owned elsewhere):
   selected formula id exactly once. The Values area renders that combined order: ordinary Values
   retain their existing cross-area drag behaviour, while formulas can be dragged or keyboard-
   reordered only within Values and are blocked from Filters, Columns, and Rows. This order is the
-  displayed pivot-column order. A missing `value_order` on an older version-1 card normalises to
-  ordinary Values followed by selected formulas. Beneath the normal field selector, the formula
+  displayed pivot-column order. `value_order` is required on every version-1 card; an incomplete
+  card is rejected rather than migrated. Beneath the normal field selector, the formula
   area mirrors the source-field picker with a formula search input and a content-sized list that
   grows to a bounded, scrolling maximum. Its compact calculated-field rows expose `Edit formula`
   and `Add to: Values` actions. It opens one
@@ -253,15 +253,15 @@ Out of scope (owned elsewhere):
   A v1 card requires exactly supported `version: 1`, non-empty `id` and `name`, Boolean
   `enabled`, list-valued `filters`/`columns`/`rows`/`values`, and Boolean
   `options.row_grand_totals`/`options.column_grand_totals`; `formulas` is a required list of unique
-  ids from the Explore node's `pivot_formulas` library. `value_order`, when present, is a list of
-  non-empty unique ids that covers every placed Value and selected formula exactly once; omission
-  receives the deterministic Values-then-formulas version-1 default.
+  ids from the Explore node's `pivot_formulas` library. `value_order` is a required list of
+  non-empty unique ids that covers every placed Value and selected formula exactly once.
   Card ids and lower-cased trimmed names are unique. Placement ids are non-empty and unique across
   the card; Filter/Rows/Columns reject a repeated field within the same zone, while Values may
   repeat fields. Value references are required valid non-reserved identifiers and unique within
   the card. Shared formula definitions live only in `pivot_formulas`; formula references are
   required, and shared formula ids/references are unique in the Explore node. Inline formula
-  objects, missing references, and missing formula selections are rejected rather than migrated.
+  objects, missing references, missing formula selections, and incomplete numeric-format or
+  conditional-format fields are rejected rather than migrated.
   Every known nested field
   is type checked and unknown string-keyed fields are retained only when they use the finite,
   recursively simple-literal grammar. An empty list remains empty so callers may omit

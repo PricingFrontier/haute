@@ -35,6 +35,7 @@ import {
 import { adaptPivotChartData, type ChartSeriesData } from "../explore/chartData"
 import {
   isPivotResultFresh,
+  isPivotConfigured,
   parseExplorePivots,
   pivotCalculationIdentity,
   pivotOutputs,
@@ -171,7 +172,7 @@ function pivotSourceStatus(
   hasActiveJob: boolean,
   currentDataframeKey: string | null,
 ): PivotSourceStatus {
-  if (pivot.values.length === 0) return "unconfigured"
+  if (!isPivotConfigured(pivot)) return "unconfigured"
   if (hasActiveJob) return "loading"
   if (entry?.error && !entry.result) return "error"
   if (!entry?.result) return "not_calculated"
@@ -959,9 +960,9 @@ export default function ExploreChartsConfig({
             pivot={pivot}
             currentConfigHash={currentConfigHash}
           />
-          {pivot.values.length === 0 ? (
+          {!isPivotConfigured(pivot) ? (
             <div role="alert" className="text-xs" style={{ color: "var(--danger)" }}>
-              Add at least one Value to the source Pivot before configuring this chart.
+              Add at least one Value or calculated field to the source Pivot before configuring this chart.
             </div>
           ) : (
             <>

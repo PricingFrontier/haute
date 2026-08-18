@@ -11,8 +11,8 @@ const pivot: ExplorePivotConfig = {
   name: "Claims by region",
   enabled: true,
   filters: [],
-  rows: [{ id: "r1", field: "region" }],
-  columns: [{ id: "c1", field: "year" }],
+  rows: [{ id: "r1", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
+  columns: [{ id: "c1", field: "year", number_format: "general", decimal_places: null, use_grouping: true }],
   values: [
     {
       id: "v1",
@@ -20,6 +20,10 @@ const pivot: ExplorePivotConfig = {
       aggregation: "sum",
       reference: "paid_sum",
       display_name: "Paid claims",
+      color_scale_split_by: null,
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
     },
     {
       id: "v2",
@@ -27,6 +31,10 @@ const pivot: ExplorePivotConfig = {
       aggregation: "count",
       reference: "count_count",
       display_name: "Claim count",
+      color_scale_split_by: null,
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
     },
   ],
   formulas: [],
@@ -437,5 +445,31 @@ describe("PivotTableGrid", () => {
       "rgb(99, 190, 123)",
       "rgb(99, 190, 123)",
     ])
+  })
+
+  it("omits stale split formatting until a result with the current axis arrives", () => {
+    const formatted = result(2)
+    formatted.row_paths = [
+      { members: [{ kind: "string", value: "North" }], is_grand_total: false },
+      { members: [{ kind: "string", value: "South" }], is_grand_total: false },
+    ]
+    formatted.cells = [
+      { row_index: 0, column_index: 0, value_id: "v1", value: 1 },
+      { row_index: 1, column_index: 0, value_id: "v1", value: 10 },
+    ]
+    const rowSplit = {
+      ...pivot,
+      values: [{ ...pivot.values[0], color_scale: "low_red_high_green" as const, color_scale_split_by: "r1" }, pivot.values[1]],
+    }
+    const movedToColumns = {
+      ...rowSplit,
+      rows: [],
+      columns: [{ id: "r1", field: "region", number_format: "general" as const, decimal_places: null, use_grouping: true }],
+    }
+    const { container, rerender } = render(<PivotTableGrid result={formatted} pivot={rowSplit} />)
+    expect(container.querySelectorAll("td[data-conditional-format]")).toHaveLength(2)
+
+    expect(() => rerender(<PivotTableGrid result={formatted} pivot={movedToColumns} />)).not.toThrow()
+    expect(container.querySelectorAll("td[data-conditional-format]")).toHaveLength(0)
   })
 })

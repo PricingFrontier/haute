@@ -412,10 +412,10 @@ Value placements persist the same presentation trio plus
 `sort_rows: "none" | "ascending" | "descending"` and
 `color_scale: "none" | "low_red_high_green" | "low_green_high_red"` and
 `color_scale_split_by: string | null`. A non-null split references a stable placement id currently
-in Rows or Columns and is valid only while the Value has an active colour scale. Older v1 cards default
-decimal places to null (Automatic), grouping to true, and format to General unless a pre-existing
-fixed decimal setting makes Number the compatibility default. Row sort defaults to ascending and
-Value sort/scale default to none while the scale split defaults to null.
+in Rows or Columns and is valid only while the Value has an active colour scale. The numeric-format
+trio and nullable scale split are required on every version-1 placement that owns them; incomplete
+cards are rejected rather than defaulted or migrated. Row sort defaults to ascending and Value
+sort/scale default to none.
 `options.sort_by` persists the selected Row/Value placement id or null for default ascending Row
 labels. Older v1 cards derive it from their sole active Value sort, otherwise null. Placement cards
 render none of these controls. The Configure subview omits the redundant `Configure <pivot name>`

@@ -285,7 +285,7 @@ export function adaptPivotChartData(
   if (pivotOutputs(pivot).length === 0) {
     fail(
       "chart_values_required",
-      "Add at least one Value to the source Pivot before rendering this chart.",
+      "Add at least one Value or calculated field to the source Pivot before rendering this chart.",
     )
   }
 

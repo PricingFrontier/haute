@@ -418,6 +418,9 @@ def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path
         "reference": "claim_share",
         "display_name": "Claim share",
         "expression": 'pl.col("claims").sum() / 100',
+        "number_format": "general",
+        "decimal_places": None,
+        "use_grouping": True,
     }
     pivot_template = {
         "version": 1,
@@ -432,6 +435,10 @@ def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path
                 "aggregation": "sum",
                 "reference": "claims_sum",
                 "display_name": "Claims",
+                "color_scale_split_by": None,
+                "number_format": "general",
+                "decimal_places": None,
+                "use_grouping": True,
             }
         ],
         "options": {"row_grand_totals": True, "column_grand_totals": True, "sort_by": None},
@@ -443,7 +450,13 @@ def test_shared_pivot_formulas_round_trip_once_with_multiple_selections(tmp_path
         "formulas": ["formula_1"],
         "value_order": ["formula_1", "value_1"],
     }
-    second = {**pivot_template, "id": "pivot_2", "name": "Second", "formulas": ["formula_1"]}
+    second = {
+        **pivot_template,
+        "id": "pivot_2",
+        "name": "Second",
+        "formulas": ["formula_1"],
+        "value_order": ["value_1", "formula_1"],
+    }
     graph = _explore_graph_with_config({"pivot_formulas": [formula], "pivots": [first, second]})
 
     code = graph_to_code(graph, pipeline_name="round_trip_shared_formulas")

@@ -22,6 +22,7 @@ import {
 import { adaptPivotChartData, ChartDataError } from "./chartData"
 import {
   isPivotResultFresh,
+  isPivotConfigured,
   parseExplorePivots,
   pivotCalculationIdentity,
   type ExplorePivotConfig,
@@ -172,7 +173,7 @@ function ChartCard({
         >
           <Settings2 size={13} aria-hidden="true" />
         </button>
-        {pivot && pivot.values.length > 0 && (
+        {pivot && isPivotConfigured(pivot) && (
           <PivotRunStatusActions
             activeJobId={job?.jobId ?? null}
             submitting={submitting}
@@ -194,9 +195,9 @@ function ChartCard({
           Configure.
         </CardMessage>
       )}
-      {pivot && pivot.values.length === 0 && (
+      {pivot && !isPivotConfigured(pivot) && (
         <CardMessage>
-          Add at least one Value in {pivot.name}&apos;s configuration.
+          Add at least one Value or calculated field in {pivot.name}&apos;s configuration.
         </CardMessage>
       )}
       {pivot && job && (

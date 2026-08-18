@@ -59,7 +59,7 @@ function pivot(
     enabled: true,
     filters: [],
     columns: [],
-    rows: [{ id: `${id}_row`, field: "region" }],
+    rows: [{ id: `${id}_row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     values: [
       {
         id: `${id}_paid`,
@@ -67,6 +67,7 @@ function pivot(
         aggregation: "sum",
         reference: "paid_sum",
         display_name: "Paid",
+        color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
       },
     ],
     formulas: [],
@@ -432,6 +433,7 @@ describe("ExploreChartsPane", () => {
           aggregation: "sum",
           reference: "paid_sum",
           display_name: "x".repeat(201),
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })

@@ -21,14 +21,31 @@ function pivot(): ExplorePivotConfig {
     name: "Claims",
     enabled: true,
     filters: [],
-    rows: [{ id: "region", field: "region" }],
+    rows: [{ id: "region", field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     columns: [],
     values: [
-      { id: "paid", field: "paid", aggregation: "sum", reference: "paid_sum", display_name: "Paid" },
+      { id: "paid", field: "paid", aggregation: "sum", reference: "paid_sum", display_name: "Paid", color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true },
     ],
     formulas: [],
-    value_order: ["value_1"],
+    value_order: ["paid"],
     options: { row_grand_totals: true, column_grand_totals: true },
+  }
+}
+
+function formulaOnlyPivot(): ExplorePivotConfig {
+  return {
+    ...pivot(),
+    values: [],
+    formulas: [{
+      id: "formula_1",
+      reference: "claim_count",
+      display_name: "Claim count",
+      expression: "pl.len()",
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
+    }],
+    value_order: ["formula_1"],
   }
 }
 
@@ -38,6 +55,7 @@ function Consumer({
   updatePivot,
   activeReport = report,
   submitting = {},
+  pivots = [pivot()],
 }: {
   updatePivot: (
     target: ExplorePivotConfig,
@@ -46,10 +64,11 @@ function Consumer({
   ) => Promise<void>
   activeReport?: ExploreCacheReport
   submitting?: Readonly<Record<string, boolean>>
+  pivots?: readonly ExplorePivotConfig[]
 }) {
   useAutoUpdateExplorePivots({
     nodeId: NODE_ID,
-    pivots: [pivot()],
+    pivots,
     report: activeReport,
     submitting,
     updatePivot,
@@ -74,6 +93,19 @@ describe("useAutoUpdateExplorePivots claim serialisation", () => {
     expect(updatePivot).toHaveBeenCalledTimes(1)
     expect(updatePivot).toHaveBeenCalledWith(
       expect.objectContaining({ id: "claims" }),
+      "df-1",
+      expect.any(Number),
+    )
+  })
+
+  it("schedules a pivot configured with a selected formula and no ordinary Values", () => {
+    const updatePivot = vi.fn().mockResolvedValue(undefined)
+
+    render(<Consumer updatePivot={updatePivot} pivots={[formulaOnlyPivot()]} />)
+
+    expect(updatePivot).toHaveBeenCalledTimes(1)
+    expect(updatePivot).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "claims", values: [], value_order: ["formula_1"] }),
       "df-1",
       expect.any(Number),
     )

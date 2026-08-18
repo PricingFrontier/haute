@@ -52,6 +52,7 @@ function pivot(
       aggregation: "sum",
       reference: "paid_sum",
       display_name: "Paid",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
     {
       id: `${id}-count`,
@@ -59,6 +60,7 @@ function pivot(
       aggregation: "count",
       reference: "claim_id_count",
       display_name: "Claims",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
   ]
   const formulas = overrides.formulas ?? []
@@ -69,7 +71,7 @@ function pivot(
     enabled: true,
     filters: [],
     columns: [],
-    rows: [{ id: `${id}-row`, field: "region" }],
+    rows: [{ id: `${id}-row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     values,
     formulas,
     options: { row_grand_totals: true, column_grand_totals: true },
@@ -783,6 +785,7 @@ describe("ExploreChartsConfig", () => {
           aggregation: "average",
           reference: "rate_mean",
           display_name: "Rate",
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })
@@ -850,6 +853,7 @@ describe("ExploreChartsConfig", () => {
           aggregation: "average",
           reference: "paid_mean",
           display_name: "Average paid",
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })
@@ -1331,7 +1335,7 @@ describe("ExploreChartsConfig", () => {
 
   it("names dormant formatting instead of internal ids", () => {
     const sourcePivot = pivot("source", {
-      columns: [{ id: "source-year", field: "year" }],
+      columns: [{ id: "source-year", field: "year", number_format: "general", decimal_places: null, use_grouping: true }],
     })
     const configured = chart(sourcePivot)
     configured.series_overrides = [
@@ -1381,7 +1385,7 @@ describe("ExploreChartsConfig", () => {
 
   it("lists series and creates an exact override from a fresh result", () => {
     const sourcePivot = pivot("source", {
-      columns: [{ id: "source-year", field: "year" }],
+      columns: [{ id: "source-year", field: "year", number_format: "general", decimal_places: null, use_grouping: true }],
     })
     const configured = chart(sourcePivot)
     configured.value_encodings[0].id = "override_1"

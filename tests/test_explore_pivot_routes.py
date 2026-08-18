@@ -98,6 +98,20 @@ def _pivot(**updates: Any) -> dict[str, Any]:
         "options": {"row_grand_totals": True, "column_grand_totals": True},
     }
     pivot.update(updates)
+    for placement in [*pivot["columns"], *pivot["rows"], *pivot["values"], *pivot["formulas"]]:
+        placement.setdefault("number_format", "general")
+        placement.setdefault("decimal_places", None)
+        placement.setdefault("use_grouping", True)
+    for value in pivot["values"]:
+        value.setdefault("color_scale_split_by", None)
+    pivot.setdefault(
+        "value_order",
+        [
+            *(value["id"] for value in pivot["values"]),
+            *(formula["id"] for formula in pivot["formulas"]),
+        ],
+    )
+    pivot["options"].setdefault("sort_by", None)
     return pivot
 
 
@@ -475,6 +489,39 @@ def test_pivot_formula_allows_a_grouped_field_to_also_be_a_value(
     assert result is not None
     assert _cell(result, [("string", "North")], [("integer", "2024")], "sum_year") == 2024
     assert _cell(result, [("string", "North")], [("integer", "2024")], "double_year") == 4048
+
+
+def test_pivot_formula_reference_matching_a_grouped_field_uses_an_internal_alias(
+    client: TestClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "formula-reference-matches-group.parquet"
+    pl.DataFrame(
+        {"region": ["North", "North", "South"], "year": [2024, 2025, 2024], "claims": [2, 3, 5]}
+    ).write_parquet(path)
+    graph = _graph(path)
+    _materialise(client, graph)
+    pivot = _pivot(
+        values=[],
+        formulas=[
+            {
+                "id": "formula_1",
+                "reference": "region",
+                "display_name": "Claims total",
+                "expression": 'pl.col("claims").sum()',
+                "number_format": "general",
+                "decimal_places": None,
+                "use_grouping": True,
+            }
+        ],
+    )
+
+    final, result = _run_pivot(client, graph, pivot)
+
+    assert final["status"] == "completed", final
+    assert result is not None
+    assert _cell(result, [("string", "North")], [("integer", "2024")], "formula_1") == 2
+    assert _cell(result, [("string", "North")], [("integer", "2025")], "formula_1") == 3
+    assert _cell(result, [("string", "South")], [("integer", "2024")], "formula_1") == 5
 
 
 def test_pivot_value_order_controls_mixed_result_and_cell_order_without_affecting_value_sort(

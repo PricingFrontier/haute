@@ -9,7 +9,12 @@ import {
   createExploreChart,
   seedValueEncodings,
 } from "../../panels/explore/chartConfig"
-import type { ExplorePivotConfig } from "../../panels/explore/pivotConfig"
+import type {
+  ExplorePivotConfig,
+  PivotAxisPlacement,
+  PivotFormulaPlacement,
+  PivotValuePlacement,
+} from "../../panels/explore/pivotConfig"
 
 afterEach(() => {
   cleanup()
@@ -22,22 +27,92 @@ const upstreamColumns = [
   { name: "claims", dtype: "Float64" },
 ]
 
-function fullPivot(overrides: Partial<ExplorePivotConfig> = {}): ExplorePivotConfig {
+type FixtureAxisPlacement = {
+  id: string
+  field: string
+  sort?: PivotAxisPlacement["sort"]
+  number_format?: PivotAxisPlacement["number_format"]
+  decimal_places?: PivotAxisPlacement["decimal_places"]
+  use_grouping?: PivotAxisPlacement["use_grouping"]
+}
+type FixtureValuePlacement = {
+  id: string
+  field: string
+  aggregation: PivotValuePlacement["aggregation"]
+  reference: string
+  display_name: string
+  sort_rows?: PivotValuePlacement["sort_rows"]
+  color_scale?: PivotValuePlacement["color_scale"]
+  color_scale_split_by?: PivotValuePlacement["color_scale_split_by"]
+  number_format?: PivotValuePlacement["number_format"]
+  decimal_places?: PivotValuePlacement["decimal_places"]
+  use_grouping?: PivotValuePlacement["use_grouping"]
+}
+type FixtureFormulaPlacement = {
+  id: string
+  reference: string
+  display_name: string
+  expression: string
+  number_format?: PivotFormulaPlacement["number_format"]
+  decimal_places?: PivotFormulaPlacement["decimal_places"]
+  use_grouping?: PivotFormulaPlacement["use_grouping"]
+}
+type FixturePivotOverrides = {
+  version?: ExplorePivotConfig["version"]
+  id?: string
+  name?: string
+  enabled?: boolean
+  filters?: ExplorePivotConfig["filters"]
+  columns?: FixtureAxisPlacement[]
+  rows?: FixtureAxisPlacement[]
+  values?: FixtureValuePlacement[]
+  formulas?: FixtureFormulaPlacement[]
+  value_order?: string[]
+  options?: ExplorePivotConfig["options"]
+}
+
+function fullPivot(overrides: FixturePivotOverrides = {}): ExplorePivotConfig {
+  const { columns = [], rows = [], values = [], formulas = [], ...rest } = overrides
+  const formattedColumns = columns.map((placement): PivotAxisPlacement => ({
+    ...placement,
+    number_format: placement.number_format ?? "general",
+    decimal_places: placement.decimal_places ?? null,
+    use_grouping: placement.use_grouping ?? true,
+  }))
+  const formattedRows = rows.map((placement): PivotAxisPlacement => ({
+    ...placement,
+    number_format: placement.number_format ?? "general",
+    decimal_places: placement.decimal_places ?? null,
+    use_grouping: placement.use_grouping ?? true,
+  }))
+  const formattedValues = values.map((placement): PivotValuePlacement => ({
+    ...placement,
+    color_scale_split_by: placement.color_scale_split_by ?? null,
+    number_format: placement.number_format ?? "general",
+    decimal_places: placement.decimal_places ?? null,
+    use_grouping: placement.use_grouping ?? true,
+  }))
+  const formattedFormulas = formulas.map((placement): PivotFormulaPlacement => ({
+    ...placement,
+    number_format: placement.number_format ?? "general",
+    decimal_places: placement.decimal_places ?? null,
+    use_grouping: placement.use_grouping ?? true,
+  }))
   return {
     version: 1,
     id: "pivot_1",
     name: "Pivot 1",
     enabled: true,
     filters: [],
-    columns: [],
-    rows: [],
-    values: [],
-    formulas: [],
+    columns: formattedColumns,
+    rows: formattedRows,
+    values: formattedValues,
+    formulas: formattedFormulas,
     options: { row_grand_totals: true, column_grand_totals: true, sort_by: null },
-    ...overrides,
-    value_order: overrides.value_order ?? [
-      ...(overrides.values ?? []).map(({ id }) => id),
-      ...(overrides.formulas ?? []).map(({ id }) => id),
+    ...rest,
+    value_order: rest.value_order ?? [
+      ...formattedValues.map(({ id }) => id),
+      ...formattedFormulas.map(({ id }) => id),
     ],
   }
 }
@@ -406,11 +481,14 @@ describe("ExplorePivotsConfig", () => {
   })
 
   it("deletes a shared formula from every pivot without disturbing other Values", () => {
-    const formula = {
+    const formula: PivotFormulaPlacement = {
       id: "formula_1",
       reference: "double_claims",
       display_name: "Double claims",
       expression: 'pl.col("claims").sum() * 2',
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
     }
     const firstPivot = fullPivot({
       values: [{
@@ -1275,9 +1353,9 @@ describe("ExplorePivotsConfig", () => {
     expect(onCommittedUpdate).not.toHaveBeenCalled()
     const persisted = JSON.parse(screen.getByTestId("persisted-config").textContent ?? "{}")
     expect(persisted.pivots[0].columns).toEqual([
-      { id: "column_1", field: "year" },
+      { id: "column_1", field: "year", number_format: "general", decimal_places: null, use_grouping: true },
     ])
-    expect(persisted.pivots[0].rows).toEqual([{ id: "row_1", field: "year" }])
+    expect(persisted.pivots[0].rows).toEqual([{ id: "row_1", field: "year", number_format: "general", decimal_places: null, use_grouping: true }])
   })
 
   it("reorders within an area by dragging and omits redundant movement controls", () => {
@@ -1336,11 +1414,14 @@ describe("ExplorePivotsConfig", () => {
   })
 
   it("reorders mixed Value outputs without moving formulas into another zone", () => {
-    const formula = {
+    const formula: PivotFormulaPlacement = {
       id: "formula_1",
       reference: "claims_per_year",
       display_name: "Claims per year",
       expression: 'pl.lit(1)',
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
     }
     const selectedFormulaPivot = fullPivot({
       values: [
@@ -1396,11 +1477,14 @@ describe("ExplorePivotsConfig", () => {
   })
 
   it("appends keyboard-moved fields after the full mixed Values list", () => {
-    const formula = {
+    const formula: PivotFormulaPlacement = {
       id: "formula_1",
       reference: "claims_per_year",
       display_name: "Claims per year",
       expression: "pl.lit(1)",
+      number_format: "general",
+      decimal_places: null,
+      use_grouping: true,
     }
     const configuredPivot = fullPivot({
       rows: [{ id: "row_1", field: "year" }],

@@ -24,7 +24,10 @@ import useSettingsStore from "../../../stores/useSettingsStore"
 import type { SimpleNode } from "../../editors"
 import ExplorePivotsPane from "../ExplorePivotsPane"
 import {
+  isPivotFormulaPlacement,
   pivotCalculationIdentity,
+  pivotOutputs,
+  serializeExplorePivot,
   type ExplorePivotConfig,
 } from "../pivotConfig"
 
@@ -46,7 +49,7 @@ function makePivot(
     name: `Pivot ${id}`,
     enabled: true,
     filters: [],
-    rows: [{ id: `${id}-row`, field: "region" }],
+    rows: [{ id: `${id}-row`, field: "region", number_format: "general", decimal_places: null, use_grouping: true }],
     columns: [],
     values: [
       {
@@ -55,6 +58,7 @@ function makePivot(
         aggregation: "sum",
         reference: "paid_sum",
         display_name: "Paid",
+        color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
       },
     ],
     formulas: [],
@@ -65,6 +69,9 @@ function makePivot(
 }
 
 function makeNode(pivots: ExplorePivotConfig[]): SimpleNode {
+  const formulas = new Map(
+    pivots.flatMap((pivot) => pivot.formulas.map((formula) => [formula.id, formula] as const)),
+  )
   return {
     id: "explore_1",
     type: "explore",
@@ -72,7 +79,10 @@ function makeNode(pivots: ExplorePivotConfig[]): SimpleNode {
       label: "Explore Claims",
       description: "",
       nodeType: "explore",
-      config: { pivots },
+      config: {
+        pivot_formulas: [...formulas.values()],
+        pivots: pivots.map(serializeExplorePivot),
+      },
     },
   }
 }
@@ -106,6 +116,7 @@ function makeResult(
   pivot: ExplorePivotConfig,
   dataframeCacheKey = "explore_dataset:current",
 ): ExplorePivotResult {
+  const outputs = pivotOutputs(pivot)
   return {
     version: 1,
     node_id: "explore_1",
@@ -115,11 +126,9 @@ function makeResult(
     calculation_key: "calculation-key",
     row_fields: ["region"],
     column_fields: [],
-    values: pivot.values.map(({ id, field, aggregation }) => ({
-      id,
-      field,
-      aggregation,
-    })),
+    values: outputs.map((output) => isPivotFormulaPlacement(output)
+      ? { id: output.id, field: output.reference, aggregation: "formula" }
+      : { id: output.id, field: output.field, aggregation: output.aggregation }),
     row_paths: [
       {
         members: [{ kind: "string", value: "North" }],
@@ -131,7 +140,7 @@ function makeResult(
       {
         row_index: 0,
         column_index: 0,
-        value_id: pivot.values[0].id,
+        value_id: outputs[0].id,
         value: 42,
       },
     ],
@@ -250,7 +259,7 @@ describe("ExplorePivotsPane", () => {
     ).toBeVisible()
   })
 
-  it("does not schedule or render a refresh action for a pivot without Values", () => {
+  it("does not schedule or render a refresh action for a pivot without outputs", () => {
     const pivot = makePivot("unconfigured", { values: [] })
 
     renderPane([pivot])
@@ -258,14 +267,38 @@ describe("ExplorePivotsPane", () => {
     expect(screen.queryByRole("button", { name: "Update" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
     expect(
-      screen.getByText("Add at least one Value in this pivot's configuration."),
+      screen.getByText("Add at least one Value or calculated field in this pivot's configuration."),
     ).toBeVisible()
+    expect(mockRunExplorePivot).not.toHaveBeenCalled()
+  })
+
+  it("renders a retained formula-only pivot as configured", () => {
+    const pivot = makePivot("formula-only", {
+      values: [],
+      formulas: [{
+        id: "claim_count",
+        reference: "claim_count",
+        display_name: "Claim count",
+        expression: "pl.len()",
+        number_format: "general",
+        decimal_places: null,
+        use_grouping: true,
+      }],
+      value_order: ["claim_count"],
+    })
+    completeStoredResult(pivot)
+
+    renderPane([pivot])
+
+    expect(screen.getByRole("table", { name: `${pivot.name} results` })).toBeVisible()
+    expect(screen.getByRole("columnheader", { name: "Claim count" })).toBeVisible()
+    expect(screen.queryByText(/Add at least one Value or calculated field/)).not.toBeInTheDocument()
     expect(mockRunExplorePivot).not.toHaveBeenCalled()
   })
 
   it("waits for cached Explore data without a report or retained result", () => {
     const pivot = makePivot("average-claims", {
-      rows: [{ id: "cover-type", field: "cover_type" }],
+      rows: [{ id: "cover-type", field: "cover_type", number_format: "general", decimal_places: null, use_grouping: true }],
       values: [
         {
           id: "total-claims",
@@ -273,6 +306,7 @@ describe("ExplorePivotsPane", () => {
           aggregation: "average",
           reference: "total_claims_mean",
           display_name: "Average total claims",
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })

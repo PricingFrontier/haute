@@ -121,13 +121,15 @@
    When only the current Explore report is absent, a retained table remains visible but stale and
    no request is started.
 3. The pane distinguishes malformed config, no cards, all-disabled cards, an enabled card without
-   Values, an uncalculated card, a submitting request, a running job, fresh and stale retained
-   results, and per-card failures. A running refresh may keep its retained table visible while the
+   any Value or selected formula, an uncalculated card, a submitting request, a running job, fresh
+   and stale retained results, and per-card failures. A running refresh may keep its retained table visible while the
    card exposes progress and Cancel. Cache-key mismatch, calculation-identity mismatch, or an
    absent report marks a retained result stale; only an absent retained result uses the
    uncalculated guidance.
-4. A card without Values is excluded from automatic calculation. Otherwise automatic calculation
-   and failure-only Retry share explicit handling for cache-required, completed-with-result, and
+4. Only a card without either a Value or selected formula is excluded from automatic calculation.
+   Every configured card, including a formula-only card, follows the same automatic, manual, table,
+   and chart lifecycle. Automatic calculation and failure-only Retry share explicit handling for
+   cache-required, completed-with-result, and
    started-with-job responses. A completed response without a result, a started response without
    a job id, and a rejected request become retained terminal failures and always clear submitting
    state. Automatic effect re-renders and several consumers of one Pivot are deduplicated, so the
@@ -160,7 +162,9 @@
    partitions those cells by the selected path level's typed `{kind, value}` member and calculates an
    independent domain for every distinct member (the same member is pooled across other path levels).
    Split references are validated against the current placed axes rather than silently falling back
-   to a global scale. Every domain excludes grand-total row/column and blank/non-numeric cells, and
+   to a global scale. When a retained result's axes predate a current placement move, split colouring
+   is omitted until the matching result arrives rather than indexing the stale path shape. Every
+   domain excludes grand-total row/column and blank/non-numeric cells, and
    uses the minimum, median (Excel-style 50th-percentile yellow midpoint), and maximum.
    It interpolates the prominent Excel-style red `#F8696B`, yellow `#FFEB84`, and green `#63BE7B`
    stops, or the reversed endpoints, while retaining dark readable text. The rule-editor preview

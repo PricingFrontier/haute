@@ -58,6 +58,7 @@ def _pivot(**updates: object) -> dict[str, object]:
             }
         ],
         "formulas": [],
+        "value_order": ["value_1"],
         "options": {
             "row_grand_totals": True,
             "column_grand_totals": True,
@@ -65,7 +66,43 @@ def _pivot(**updates: object) -> dict[str, object]:
         },
     }
     pivot.update(updates)
+    placement_lists = [
+        items
+        for items in (pivot["columns"], pivot["rows"], pivot["values"], pivot["formulas"])
+        if isinstance(items, list)
+    ]
+    for placement in [item for items in placement_lists for item in items]:
+        if isinstance(placement, dict):
+            placement.setdefault("number_format", "general")
+            placement.setdefault("decimal_places", None)
+            placement.setdefault("use_grouping", True)
+    for value in pivot["values"] if isinstance(pivot["values"], list) else []:
+        if isinstance(value, dict):
+            value.setdefault("color_scale_split_by", None)
+    if ("values" in updates or "formulas" in updates) and "value_order" not in updates:
+        pivot["value_order"] = [
+            *(value["id"] for value in pivot["values"] if isinstance(value, dict)),
+            *(
+                formula if isinstance(formula, str) else formula.get("id", "")
+                for formula in (pivot["formulas"] if isinstance(pivot["formulas"], list) else [])
+                if isinstance(formula, (str, dict))
+            ),
+        ]
     return pivot
+
+
+def _formula(**updates: object) -> dict[str, object]:
+    formula: dict[str, object] = {
+        "id": "formula_1",
+        "reference": "claim_share",
+        "display_name": "Claim share",
+        "expression": 'pl.col("claims").sum() / 100',
+        "number_format": "general",
+        "decimal_places": None,
+        "use_grouping": True,
+    }
+    formula.update(updates)
+    return formula
 
 
 def test_validate_explore_pivots_rejects_versionless_cards_instead_of_migrating() -> None:
@@ -77,7 +114,6 @@ def test_validate_explore_pivots_rejects_versionless_cards_instead_of_migrating(
 def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -> None:
     raw = [_pivot(future={"nested": [1, 2]})]
     expected = copy.deepcopy(raw)
-    expected[0]["value_order"] = ["value_1"]
 
     validated = validate_explore_pivots(raw, context="test")
 
@@ -88,61 +124,28 @@ def test_validate_explore_pivots_accepts_v1_and_returns_a_deep_detached_copy() -
     assert validated[0]["future"] is not raw[0]["future"]
 
 
-def test_validate_explore_pivots_defaults_formatting_sort_and_colour_fields_on_canonical_v1() -> (
-    None
-):
-    pivot = _pivot(
-        columns=[{"id": "column_1", "field": "year"}],
-        rows=[{"id": "row_1", "field": "region"}],
-        values=[
-            {
-                "id": "value_1",
-                "field": "claims",
-                "aggregation": "sum",
-                "reference": "claims_sum",
-                "display_name": "Claims",
-            }
-        ],
-        options={"row_grand_totals": True, "column_grand_totals": True},
-    )
-    validated = validate_explore_pivots([pivot], context="test")[0]
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        (("value_order",), "value_order is required"),
+        (("columns", 0, "number_format"), "number format is required"),
+        (("columns", 0, "decimal_places"), "decimal places is required"),
+        (("columns", 0, "use_grouping"), "grouping preference is required"),
+        (("rows", 0, "number_format"), "number format is required"),
+        (("values", 0, "color_scale_split_by"), "colour scale split is required"),
+    ],
+)
+def test_validate_explore_pivots_rejects_missing_current_v1_fields(
+    path: tuple[str | int, ...], message: str
+) -> None:
+    pivot = _pivot()
+    target: object = pivot
+    for segment in path[:-1]:
+        target = target[segment]  # type: ignore[index]
+    del target[path[-1]]  # type: ignore[index]
 
-    assert validated["columns"] == [
-        {
-            "id": "column_1",
-            "field": "year",
-            "number_format": "general",
-            "decimal_places": None,
-            "use_grouping": True,
-        }
-    ]
-    assert validated["rows"] == [
-        {
-            "id": "row_1",
-            "field": "region",
-            "sort": "ascending",
-            "number_format": "general",
-            "decimal_places": None,
-            "use_grouping": True,
-        }
-    ]
-    assert validated["values"] == [
-        {
-            "id": "value_1",
-            "field": "claims",
-            "aggregation": "sum",
-            "reference": "claims_sum",
-            "display_name": "Claims",
-            "sort_rows": "none",
-            "color_scale": "none",
-            "color_scale_split_by": None,
-            "number_format": "general",
-            "decimal_places": None,
-            "use_grouping": True,
-        }
-    ]
-    assert validated["formulas"] == []
-    assert validated["options"]["sort_by"] is None
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_pivots([pivot], context="test")
 
 
 @pytest.mark.parametrize(
@@ -225,14 +228,7 @@ def test_validate_explore_pivots_accepts_double_digit_duplicate_reference_suffix
 
 
 def test_validate_explore_pivot_state_resolves_shared_formulas_and_rejects_unknown_ids() -> None:
-    definitions = [
-        {
-            "id": "formula_1",
-            "reference": "claim_share",
-            "display_name": "Claim share",
-            "expression": 'pl.col("claims").sum() / 100',
-        }
-    ]
+    definitions = [_formula()]
     first = _pivot(formulas=["formula_1"])
     second = _pivot(id="pivot_2", name="Second", formulas=["formula_1"])
 
@@ -245,24 +241,32 @@ def test_validate_explore_pivot_state_resolves_shared_formulas_and_rejects_unkno
 
 
 def test_validate_explore_pivot_state_rejects_inline_formula_selections() -> None:
-    definition = {
-        "id": "formula_1",
-        "reference": "claim_share",
-        "display_name": "Claim share",
-        "expression": 'pl.col("claims").sum() / 100',
-    }
+    definition = _formula()
 
     with pytest.raises(ConfigError, match="formula.*id"):
         validate_explore_pivot_state([definition], [_pivot(formulas=[definition])], context="test")
 
 
-def test_value_order_normalises_legacy_cards_and_validates_selected_formula_order() -> None:
-    definition = {
-        "id": "formula_1",
-        "reference": "claim_share",
-        "display_name": "Claim share",
-        "expression": 'pl.col("claims").sum() / 100',
-    }
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("number_format", "number format is required"),
+        ("decimal_places", "decimal places is required"),
+        ("use_grouping", "grouping preference is required"),
+    ],
+)
+def test_validate_explore_pivot_state_rejects_incomplete_formula_formatting(
+    field: str, message: str
+) -> None:
+    definition = _formula()
+    del definition[field]
+
+    with pytest.raises(ConfigError, match=message):
+        validate_explore_pivot_state([definition], [_pivot(formulas=["formula_1"])], context="test")
+
+
+def test_value_order_requires_current_v1_cards_and_validates_selected_formula_order() -> None:
+    definition = _formula()
     values = [
         _pivot()["values"][0],
         {
@@ -274,8 +278,10 @@ def test_value_order_normalises_legacy_cards_and_validates_selected_formula_orde
         },
     ]
 
-    legacy = validate_explore_pivots([_pivot(values=values)], context="test")[0]
-    assert legacy["value_order"] == ["value_1", "value_2"]
+    missing_order = _pivot(values=values)
+    del missing_order["value_order"]
+    with pytest.raises(ConfigError, match="value_order is required"):
+        validate_explore_pivots([missing_order], context="test")
 
     _, pivots = validate_explore_pivot_state(
         [definition],
@@ -426,29 +432,12 @@ def test_validate_explore_pivots_rejects_invalid_grouping(
         )
 
 
-def test_validate_explore_pivots_migrates_fixed_decimal_placements_to_number() -> None:
-    validated = validate_explore_pivots(
-        [
-            _pivot(
-                columns=[
-                    {
-                        "id": "column_1",
-                        "field": "year",
-                        "decimal_places": 2,
-                    }
-                ]
-            )
-        ],
-        context="test",
-    )[0]
+def test_validate_explore_pivots_rejects_fixed_decimals_without_a_number_format() -> None:
+    pivot = _pivot(columns=[{"id": "column_1", "field": "year", "decimal_places": 2}])
+    del pivot["columns"][0]["number_format"]
 
-    assert validated["columns"][0] == {
-        "id": "column_1",
-        "field": "year",
-        "number_format": "number",
-        "decimal_places": 2,
-        "use_grouping": True,
-    }
+    with pytest.raises(ConfigError, match="number format is required"):
+        validate_explore_pivots([pivot], context="test")
 
 
 def test_validate_explore_pivots_derives_legacy_active_value_sort_target() -> None:

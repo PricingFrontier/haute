@@ -22,6 +22,7 @@ import {
 import type { SimpleEdge, SimpleNode } from "../editors"
 import {
   pivotCalculationIdentity,
+  isPivotConfigured,
   type ExplorePivotConfig,
 } from "./pivotConfig"
 
@@ -197,7 +198,7 @@ export default function useExplorePivotActions({
       requestedDataframeCacheKey: string | null = null,
       autoClaimToken?: number,
     ) => {
-      if (pivot.values.length === 0) return
+      if (!isPivotConfigured(pivot)) return
 
       const key = explorePivotResultKey(node.id, pivot.id)
       const calculationIdentity = pivotCalculationIdentity(pivot)

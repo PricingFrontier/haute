@@ -139,12 +139,16 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
       }
       const rowLevel = pivot.rows.findIndex((row) => row.id === splitBy)
       if (rowLevel >= 0) {
-        splits.set(value.id, { axis: "row", level: rowLevel })
+        if (result.row_fields[rowLevel] === pivot.rows[rowLevel].field) {
+          splits.set(value.id, { axis: "row", level: rowLevel })
+        }
         continue
       }
       const columnLevel = pivot.columns.findIndex((column) => column.id === splitBy)
       if (columnLevel >= 0) {
-        splits.set(value.id, { axis: "column", level: columnLevel })
+        if (result.column_fields[columnLevel] === pivot.columns[columnLevel].field) {
+          splits.set(value.id, { axis: "column", level: columnLevel })
+        }
         continue
       }
       throw new Error(
@@ -152,7 +156,7 @@ export default function PivotTableGrid({ result, pivot }: PivotTableGridProps) {
       )
     }
     return splits
-  }, [pivot.columns, pivot.rows, pivot.values])
+  }, [pivot.columns, pivot.rows, pivot.values, result.column_fields, result.row_fields])
   const cells = useMemo(() => {
     const indexed = new Map<
       string,

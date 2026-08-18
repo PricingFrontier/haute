@@ -69,8 +69,8 @@
   card contains `id`, `name`, `enabled`, ordered Filter/Columns/Rows/Values placements, ordered
   selected shared-formula ids, a combined `value_order` of Value/formula ids, and grand-total
   options. The runtime form replaces those ids with resolved formula objects for calculation
-  requests. Missing `value_order` on an older version-1 card normalises to Value ids followed by
-  selected formula ids; otherwise it must cover that exact union once. **`ExplorePivotFormula`** definitions live
+  requests. `value_order` is required and must cover the exact Value/formula id union once.
+  **`ExplorePivotFormula`** definitions live
   once in the Explore-level `pivot_formulas` library. Each
   placement owns a stable id. Filter members are typed scalars and Value placements add one of
   the seven supported aggregations, a stable field-first aggregation reference, and a
@@ -83,10 +83,10 @@
   Column, Row, Value, and formula
   placements also own presentation-only `number_format`, `decimal_places: None | 0..10`, and
   `use_grouping` settings. The closed formats are General, Number, Percentage, and GBP/USD/EUR
-  currency. Older version-1 cards default to General/Automatic/grouping-on, except that an existing
-  fixed decimal setting migrates to Number to preserve its established rendering. Value placements
-  additionally own `color_scale` and nullable `color_scale_split_by`; a non-null split is valid only
-  for an active scale and references a current Row/Column placement id. Omitted splits default null.
+  currency. Every numeric-format field is required on a version-1 card. Value placements
+  additionally own `color_scale` and required nullable `color_scale_split_by`; a non-null split is
+  valid only for an active scale and references a current Row/Column placement id. Missing fields
+  are rejected rather than defaulted or migrated.
 - **`PivotCalculationSpec`** (`_pivot_service.py`, frozen dataclass) — resolved Explore cache
   request/key, validated v1 pivot, calculation hash, result-cache key, and latest-wins family key
   `("explore_pivot", source_file, node_id, source, pivot_id)`.
@@ -136,7 +136,8 @@
   root source-column names, which must exist in the Explore dataframe schema. Planning against a
   grouped schema requires each expression to produce one supported scalar rather than a List,
   Struct, Object, or other nested output. No selected Value or hidden dependency is required.
-  Each expression is forcibly aliased to its persisted formula reference. Formula and ordinary
+  Each expression is physically aliased to a reserved name derived from its stable placement id,
+  so a public formula reference may safely equal a grouped source-field name. Formula and ordinary
   Value outputs follow the pivot's combined `value_order` and use the existing value-cell
   coordinates; their result
   identity uses the formula reference as `field` and `aggregation="formula"`. While a formula

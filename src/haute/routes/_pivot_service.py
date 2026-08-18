@@ -387,7 +387,7 @@ def _formula_expression(formula: ExplorePivotFormula) -> pl.Expr:
         expression = eval(compile(tree, "<pivot formula>", "eval"), safe_globals(pl=pl), {})  # noqa: S307
         if not isinstance(expression, pl.Expr):
             raise TypeError("formula must return one Polars expression")
-        return expression.alias(formula["reference"])
+        return expression.alias(_value_alias(formula["id"]))
     except Exception as exc:
         raise PivotContractError(
             "invalid_pivot_formula",
@@ -430,7 +430,7 @@ def _compile_formulas(
             formula_dtype = (
                 validation_frame.group_by(pl.lit(0).alias("__haute_pivot_formula_validation_group"))
                 .agg(expression)
-                .collect_schema()[formula["reference"]]
+                .collect_schema()[_value_alias(formula["id"])]
             )
             if formula_dtype.is_nested() or formula_dtype.base_type() == pl.Object:
                 raise TypeError("formula must produce one supported scalar per group")
@@ -960,15 +960,10 @@ class PivotService:
         visible_columns = [
             *group_aliases.values(),
             *(value["reference"] for value in values),
-            *(formula["reference"] for formula, _ in compiled_formulas),
+            *(_value_alias(formula["id"]) for formula, _ in compiled_formulas),
         ]
         query = query.select(visible_columns)
-        query = query.rename(
-            {
-                output["reference"]: _value_alias(output["id"])
-                for output in [*values, *(formula for formula, _ in compiled_formulas)]
-            }
-        )
+        query = query.rename({output["reference"]: _value_alias(output["id"]) for output in values})
         query = query.rename({alias: field for field, alias in group_aliases.items()})
         try:
             return cancellable_streaming_collect(query, execution_context=context)

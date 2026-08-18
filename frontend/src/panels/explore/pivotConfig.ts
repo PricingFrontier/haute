@@ -54,9 +54,9 @@ export type PivotAxisPlacement = {
   id: string
   field: string
   sort?: "ascending" | "descending"
-  number_format?: PivotNumberFormat
-  decimal_places?: PivotDecimalPlaces
-  use_grouping?: boolean
+  number_format: PivotNumberFormat
+  decimal_places: PivotDecimalPlaces
+  use_grouping: boolean
   [key: string]: unknown
 }
 
@@ -68,10 +68,10 @@ export type PivotValuePlacement = {
   display_name: string
   sort_rows?: "none" | "ascending" | "descending"
   color_scale?: "none" | "low_red_high_green" | "low_green_high_red"
-  color_scale_split_by?: string | null
-  number_format?: PivotNumberFormat
-  decimal_places?: PivotDecimalPlaces
-  use_grouping?: boolean
+  color_scale_split_by: string | null
+  number_format: PivotNumberFormat
+  decimal_places: PivotDecimalPlaces
+  use_grouping: boolean
   [key: string]: unknown
 }
 
@@ -80,9 +80,9 @@ export type PivotFormulaPlacement = {
   reference: string
   display_name: string
   expression: string
-  number_format?: PivotNumberFormat
-  decimal_places?: PivotDecimalPlaces
-  use_grouping?: boolean
+  number_format: PivotNumberFormat
+  decimal_places: PivotDecimalPlaces
+  use_grouping: boolean
   [key: string]: unknown
 }
 
@@ -263,6 +263,15 @@ function parseNumberFormatting(
   position: number,
   scope: string,
 ): ParsedNumberFormatting | string {
+  if (entry.number_format === undefined) {
+    return `Pivot ${position} ${scope} number format is required.`
+  }
+  if (entry.decimal_places === undefined) {
+    return `Pivot ${position} ${scope} decimal places is required.`
+  }
+  if (entry.use_grouping === undefined) {
+    return `Pivot ${position} ${scope} grouping is required.`
+  }
   const decimalPlaces = parseDecimalPlaces(
     entry.decimal_places,
     position,
@@ -270,18 +279,11 @@ function parseNumberFormatting(
   )
   if (typeof decimalPlaces === "string") return decimalPlaces
 
-  const defaultFormat: PivotNumberFormat = decimalPlaces === null
-    ? "general"
-    : "number"
-  const numberFormat = entry.number_format === undefined
-    ? defaultFormat
-    : entry.number_format
+  const numberFormat = entry.number_format
   if (typeof numberFormat !== "string" || !NUMBER_FORMATS.has(numberFormat)) {
     return `Pivot ${position} ${scope} has an unsupported number format.`
   }
-  const useGrouping = entry.use_grouping === undefined
-    ? true
-    : entry.use_grouping
+  const useGrouping = entry.use_grouping
   if (typeof useGrouping !== "boolean") {
     return `Pivot ${position} ${scope} grouping must be a boolean.`
   }
@@ -508,8 +510,10 @@ function parseValues(
     if (entry.color_scale !== undefined && (typeof entry.color_scale !== "string" || !COLOR_SCALES.has(entry.color_scale as PivotValuePlacement["color_scale"]))) {
       return `Pivot ${position} value has an unsupported color scale.`
     }
+    if (entry.color_scale_split_by === undefined) {
+      return `Pivot ${position} value color scale split is required.`
+    }
     if (
-      entry.color_scale_split_by !== undefined &&
       entry.color_scale_split_by !== null &&
       typeof entry.color_scale_split_by !== "string"
     ) {
@@ -528,7 +532,7 @@ function parseValues(
       display_name: entry.display_name,
       sort_rows: (entry.sort_rows ?? "none") as PivotValuePlacement["sort_rows"],
       color_scale: (entry.color_scale ?? "none") as PivotValuePlacement["color_scale"],
-      color_scale_split_by: entry.color_scale_split_by ?? null,
+      color_scale_split_by: entry.color_scale_split_by,
       ...formatting,
     })
   }
@@ -663,7 +667,9 @@ function parseValueOrder(
     ...values.map((value) => value.id),
     ...formulas.map((formula) => formula.id),
   ]
-  if (raw === undefined) return expectedIds
+  if (raw === undefined) {
+    return `Pivot ${position} value order is required.`
+  }
   if (!Array.isArray(raw) || raw.some((id) => !nonEmptyString(id))) {
     return `Pivot ${position} value order must be a list of output placement ids.`
   }
@@ -881,6 +887,11 @@ export function pivotOutputs(pivot: ExplorePivotConfig): PivotOutputPlacement[] 
     throw new Error("Pivot value_order contains duplicate output ids.")
   }
   return ordered
+}
+
+/** True when the Pivot has an output selected for calculation and display. */
+export function isPivotConfigured(pivot: ExplorePivotConfig): boolean {
+  return pivotOutputs(pivot).length > 0
 }
 
 export function isPivotFormulaPlacement(

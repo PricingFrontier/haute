@@ -32,6 +32,7 @@ function pivot(
       aggregation: "sum",
       reference: "amount_sum",
       display_name: "Amount",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
     {
       id: "value_2",
@@ -39,6 +40,7 @@ function pivot(
       aggregation: "count",
       reference: "count_count",
       display_name: "Count",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
     {
       id: "value_3",
@@ -46,6 +48,7 @@ function pivot(
       aggregation: "average",
       reference: "rate_mean",
       display_name: "Rate",
+      color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
     },
   ]
   const formulas = overrides.formulas ?? []
@@ -974,6 +977,7 @@ describe("reconcileValueEncodings", () => {
           aggregation: "sum",
           reference: "exposure_sum",
           display_name: "Exposure",
+          color_scale_split_by: null, number_format: "general", decimal_places: null, use_grouping: true,
         },
       ],
     })
