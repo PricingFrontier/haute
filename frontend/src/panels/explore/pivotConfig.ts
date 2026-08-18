@@ -1,4 +1,5 @@
 import { isNumericDtype } from "../../utils/polarsDtypes"
+import { sanitizeName } from "../../utils/sanitizeName"
 
 export const PIVOT_CONFIG_VERSION = 1 as const
 export const PIVOT_DECIMAL_PLACES_MAX = 10
@@ -195,12 +196,13 @@ function isValidFormulaReference(value: unknown): value is string {
 }
 
 function referenceStem(value: string, fallback: string): string {
-  let stem = value
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-  if (!stem) stem = fallback
-  if (/^[0-9]/.test(stem)) stem = `_${stem}`
+  let stem = sanitizeName(value).toLowerCase()
+  while (stem.startsWith("_")) stem = stem.slice(1)
+  while (stem.endsWith("_")) stem = stem.slice(0, -1)
+  const containsIdentifierCharacter = [...value].some((character) =>
+    /^[a-zA-Z0-9_]$/.test(character),
+  )
+  if (!stem || (stem === "unnamed_node" && !containsIdentifierCharacter)) stem = fallback
   if (stem.startsWith(RESERVED_FORMULA_REFERENCE_PREFIX)) stem = `${fallback}_${stem}`
   return stem
 }

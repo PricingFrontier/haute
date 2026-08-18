@@ -27,7 +27,16 @@ describe("buildExploreCacheIdentity", () => {
   it("excludes display config and downstream graph changes", () => {
     const displayOnly = {
       ...explore,
-      data: { ...explore.data, config: { ...explore.data.config, overview: { schema: true }, pivots: [], charts: [] } },
+      data: {
+        ...explore.data,
+        config: {
+          ...explore.data.config,
+          overview: { schema: true },
+          pivot_formulas: [{ id: "formula_1", expression: 'pl.col("paid").sum()' }],
+          pivots: [],
+          charts: [],
+        },
+      },
     }
     const changedDownstream = {
       ...downstream,

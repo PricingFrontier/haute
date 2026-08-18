@@ -219,8 +219,16 @@ describe("shallowNodeDataHash — input-key sensitivity", () => {
         pivots: [{ id: "pivot_1" }],
       },
     }
+    const formulasChanged = {
+      ...exploreBase,
+      config: {
+        code: "df = df.select(pl.all())",
+        pivot_formulas: [{ id: "formula_1", expression: 'pl.col("paid").sum()' }],
+      },
+    }
 
     expect(shallowNodeDataHash(overviewChanged)).toBe(shallowNodeDataHash(exploreBase))
+    expect(shallowNodeDataHash(formulasChanged)).toBe(shallowNodeDataHash(exploreBase))
     expect(shallowNodeDataHash(pivotsChanged)).toBe(shallowNodeDataHash(exploreBase))
     expect(shallowNodeDataHash(chartsChanged)).toBe(shallowNodeDataHash(exploreBase))
     expect(shallowNodeDataHash(codeChanged)).not.toBe(shallowNodeDataHash(exploreBase))

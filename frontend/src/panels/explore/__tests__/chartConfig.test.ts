@@ -25,6 +25,30 @@ import type { ExplorePivotConfig } from "../pivotConfig"
 function pivot(
   overrides: Partial<ExplorePivotConfig> = {},
 ): ExplorePivotConfig {
+  const values = overrides.values ?? [
+    {
+      id: "value_1",
+      field: "amount",
+      aggregation: "sum",
+      reference: "amount_sum",
+      display_name: "Amount",
+    },
+    {
+      id: "value_2",
+      field: "count",
+      aggregation: "count",
+      reference: "count_count",
+      display_name: "Count",
+    },
+    {
+      id: "value_3",
+      field: "rate",
+      aggregation: "average",
+      reference: "rate_mean",
+      display_name: "Rate",
+    },
+  ]
+  const formulas = overrides.formulas ?? []
   return {
     version: 1,
     id: "pivot_1",
@@ -33,35 +57,11 @@ function pivot(
     filters: [],
     columns: [],
     rows: [],
-    values: [
-      {
-        id: "value_1",
-        field: "amount",
-        aggregation: "sum",
-        reference: "amount_sum",
-        display_name: "Amount",
-      },
-      {
-        id: "value_2",
-        field: "count",
-        aggregation: "count",
-        reference: "count_count",
-        display_name: "Count",
-      },
-      {
-        id: "value_3",
-        field: "rate",
-        aggregation: "average",
-        reference: "rate_mean",
-        display_name: "Rate",
-      },
-    ],
-    formulas: [],
+    values,
+    formulas,
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
-    value_order: overrides.value_order ?? (overrides.values ?? [
-      { id: "value_1" }, { id: "value_2" }, { id: "value_3" },
-    ]).map(({ id }) => id),
+    value_order: overrides.value_order ?? [...values, ...formulas].map(({ id }) => id),
   }
 }
 

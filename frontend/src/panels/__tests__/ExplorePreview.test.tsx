@@ -557,6 +557,8 @@ describe("ExplorePreview", () => {
           columns: [],
           rows: [],
           values: [],
+          formulas: [],
+          value_order: [],
           options: { row_grand_totals: true, column_grand_totals: true },
         },
       ],

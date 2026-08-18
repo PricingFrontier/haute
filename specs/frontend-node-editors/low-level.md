@@ -26,7 +26,7 @@
 | `frontend/src/panels/editors/explorePivots/placements.ts` | Pure pivot placement domain helpers shared by the pivot editor and its subviews: zone types and labels, placement add/remove/append transforms, sort-ordering normalisation, duplicate-field checks, and typed member identity. |
 | `frontend/src/panels/editors/explorePivots/FilterMemberPicker.tsx` | Filter-member picker subview: immediate initial load, debounced non-empty search, request aborting, and Explore-cache-identity gating of displayed members. |
 | `frontend/src/panels/editors/explorePivots/ZoneSection.tsx` | One drag-and-drop area-grid zone: placement chips, keyboard repositioning, aggregation selection, remove actions, and the nested filter-member picker. |
-| `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, pointer/keyboard placement state, and the presentation-only decimal-place controls for displayed placements. Props include the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
+| `frontend/src/panels/editors/explorePivots/PivotFieldWell.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormulaSection.tsx`, `frontend/src/panels/editors/explorePivots/PivotFormattingSection.tsx` | Pivot field-authoring surface composed by the Pivots editor: field search, dtype-labelled available-fields list with per-zone Add actions, the four-zone `ZoneSection` grid, pointer/keyboard placement state, formula authoring, and the presentation-only decimal-place controls for displayed placements. Props include the pivot, `persistPivot`, upstream columns, filter-member loading, and the current config hash. |
 | `frontend/src/panels/editors/ExploreToggleCard.tsx` | Shared full-body Explore checkbox card used by Overview, Pivot, and Chart configuration, including enabled/disabled presentation and accessible label/description wiring. |
 | `frontend/src/panels/editors/ExploreConfigCardList.tsx` | Shared Pivot/Chart list header, empty state, and action-card row, composing `ExploreToggleCard` with separate Delete and Configure actions. |
 | `frontend/src/panels/explore/chartConfig.ts` | [frontend-preview-explore](../frontend-preview-explore/low-level.md)-owned chart version-1 validation and identity helpers consumed by the chart editor. |
@@ -574,7 +574,7 @@ diagnostics; `frontend/src/panels/__tests__/NodePanel.test.tsx` pins the lazy Ch
 cards, stable id allocation, future-field preservation, malformed-state diagnostics, and the
 absence of a speculative toggle. The same NodePanel suite pins the five-pane ordering, absence of
 Relationships, Pivots-pane dispatch, and per-node Pivots selection memory.
-The Pivot field-schema handoff is covered at two levels: `NodePanel.test.tsx` proves that a
+The Pivot field-schema handoff is covered at two levels: `frontend/src/panels/__tests__/NodePanel.test.tsx` proves that a
 current identity-matched Explore report replaces the connected-node preview schema, including
 the authoritative empty-report-schema case and the stale-report fallback; an App integration
 case mounts the real `ExplorePivotsConfig` consumer and proves that a cold cache-status hydration

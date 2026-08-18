@@ -8,6 +8,7 @@ import re
 from datetime import date, datetime, time
 from typing import Any
 
+from haute._graph_utils import _sanitize_func_name
 from haute.errors import ConfigError
 
 EXPLORE_PIVOT_CONFIG_VERSION = 1
@@ -41,7 +42,6 @@ _CARD_KEYS = frozenset(
     }
 )
 _REFERENCE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_REFERENCE_SANITISE_PATTERN = re.compile(r"[^a-z0-9_]+")
 _INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
 _DECIMAL_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:E[+-]?[0-9]+)?\Z")
 _DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
@@ -194,11 +194,12 @@ def _normalise_grouping(
 
 
 def _sanitised_reference(value: str, *, fallback: str) -> str:
-    reference = _REFERENCE_SANITISE_PATTERN.sub("_", value.lower()).strip("_")
-    if not reference:
+    reference = _sanitize_func_name(value).lower().strip("_")
+    contains_identifier_character = any(
+        character.isascii() and (character.isalnum() or character == "_") for character in value
+    )
+    if not reference or (reference == "unnamed_node" and not contains_identifier_character):
         reference = fallback
-    if reference[0].isdigit():
-        reference = f"_{reference}"
     if reference.startswith("__haute_"):
         reference = f"{fallback}_{reference.lstrip('_')}"
     return reference

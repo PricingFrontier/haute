@@ -45,6 +45,23 @@ function pivot(
   id: string,
   overrides: Partial<ExplorePivotConfig> = {},
 ): ExplorePivotConfig {
+  const values = overrides.values ?? [
+    {
+      id: `${id}-paid`,
+      field: "paid",
+      aggregation: "sum",
+      reference: "paid_sum",
+      display_name: "Paid",
+    },
+    {
+      id: `${id}-count`,
+      field: "claim_id",
+      aggregation: "count",
+      reference: "claim_id_count",
+      display_name: "Claims",
+    },
+  ]
+  const formulas = overrides.formulas ?? []
   return {
     version: 1,
     id,
@@ -53,26 +70,11 @@ function pivot(
     filters: [],
     columns: [],
     rows: [{ id: `${id}-row`, field: "region" }],
-    values: [
-      {
-        id: `${id}-paid`,
-        field: "paid",
-        aggregation: "sum",
-        reference: "paid_sum",
-        display_name: "Paid",
-      },
-      {
-        id: `${id}-count`,
-        field: "claim_id",
-        aggregation: "count",
-        reference: "claim_id_count",
-        display_name: "Claims",
-      },
-    ],
-    formulas: [],
+    values,
+    formulas,
     options: { row_grand_totals: true, column_grand_totals: true },
     ...overrides,
-    value_order: overrides.value_order ?? (overrides.values ?? []).map(({ id }) => id),
+    value_order: overrides.value_order ?? [...values, ...formulas].map(({ id }) => id),
   }
 }
 
